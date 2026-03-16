@@ -350,6 +350,70 @@ Running at 3 AM means it doesn't compete with interactive conversations. The age
 
 Every 2-3 days works well. Once a week is the minimum. If you skip this entirely, the agent's memory context gets increasingly noisy and you'll notice degraded recall quality after a few weeks.
 
+## Docker Deployment
+
+For a portable and reproducible setup, you can run the Talon daemon in a Docker container.
+
+### Prerequisites
+
+- Docker and Docker Compose installed.
+- AI provider CLIs installed on the host (if you want to use them from the host) OR configured via API keys in `.env`.
+
+### Quick Start
+
+1.  **Prepare configuration:**
+    ```bash
+    cp config/talond.example.yaml config/talond.yaml
+    mkdir -p personas data
+    ```
+2.  **Set up secrets:**
+    ```bash
+    cp deploy/.env.example .env
+    # Edit .env with your API keys and tokens
+    ```
+3.  **Build and start:**
+    ```bash
+    docker compose -f deploy/docker-compose.yaml up -d --build
+    ```
+
+### Persistence and Volumes
+
+The `docker-compose.yaml` defines several volumes:
+- `talond-data`: A named volume for the SQLite database, PID file, and IPC sockets.
+- `/config/talond.yaml`: Bind-mounted from the host.
+- `/personas`: Bind-mounted from the host `personas/` directory.
+
+If you want to use `talonctl` from your host machine (outside the container) to check status or reload config, you should use a bind mount for the data directory in `docker-compose.yaml`:
+
+```yaml
+    volumes:
+      - ./data:/data
+```
+
+This allows the host `talonctl` to read/write the IPC files in the same directory as the containerized daemon.
+
+### Using `talonctl` with Docker
+
+You can run `talonctl` commands directly inside the running container:
+
+```bash
+docker exec -it talond node dist/cli/index.js status
+docker exec -it talond node dist/cli/index.js reload
+```
+
+Or use the host's `talonctl` if you have a bind mount for the data directory:
+
+```bash
+npx talonctl status
+```
+
+### AI Providers in Docker
+
+The Docker image uses the `node:22-slim` base and does not include AI provider CLIs like `claude` or `gemini` by default. To use them from within the container, you have two options:
+
+1.  **API Keys:** Configure your providers in `talond.yaml` to use API keys via environment variables (e.g., `${SUBAGENT_ANTHROPIC_API_KEY}`).
+2.  **Custom Image:** Create a custom Dockerfile that installs the required CLIs.
+
 ## Recommended deployment setup
 
 ### Dedicated VM

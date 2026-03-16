@@ -67,12 +67,17 @@ COPY config/talond.example.yaml ./config/
 # Volume mount points:
 #   /data    — SQLite database file, PID file, IPC sockets
 #   /config  — talond.yaml (bind-mount your config here at runtime)
-VOLUME ["/data", "/config"]
+#   /personas — persona directories (optional)
+VOLUME ["/data", "/config", "/personas"]
 
 # Ensure the daemon user can write to the data directory at runtime.
 # The directory is created here so Docker creates it as root; at startup
 # the container can chown it if needed, or the host pre-creates it.
-RUN mkdir -p /data /config && chown talond:talond /data /config
+RUN mkdir -p /data /config /personas && chown talond:talond /data /config /personas
+
+# Create a symlink from /opt/talond/data to /data so that if dataDir
+# is set to "data" (the default), it resolves to the volume mount.
+RUN ln -s /data /opt/talond/data
 
 # Switch to the non-root user for all subsequent commands
 USER talond
@@ -86,4 +91,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
         try{process.kill(p,0);process.exit(0);}catch{process.exit(1);}} \
         process.exit(0);"
 
-ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/talond/dist/daemon/main.js", "--config", "/config/talond.yaml"]
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/talond/dist/index.js", "--config", "/config/talond.yaml"]

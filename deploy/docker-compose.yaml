@@ -28,9 +28,13 @@ services:
     environment:
       # Force production mode regardless of what the .env file says
       NODE_ENV: production
+      # Point the daemon to the /data volume for all persistent data
+      TALOND_DATA_DIR: /data
 
     volumes:
       # Persistent data: SQLite database, PID file, IPC sockets
+      # Recommendation: Use a bind mount (e.g. ./data:/data) if you want to
+      # use 'talonctl' from the host machine without 'docker exec'.
       - talond-data:/data
 
       # Configuration: bind-mount your edited talond.yaml here
@@ -38,6 +42,16 @@ services:
         source: ../config/talond.yaml
         target: /config/talond.yaml
         read_only: true
+
+      # Personas: bind-mount your persona directories here
+      - type: bind
+        source: ../personas
+        target: /personas
+        read_only: true
+
+      # Optional: Custom sub-agents or skills
+      # - ../subagents:/opt/talond/subagents:ro
+      # - ../skills:/opt/talond/skills:ro
 
       # -----------------------------------------------------------------------
       # Docker socket (optional — only needed for sandbox container spawning)
@@ -60,10 +74,9 @@ services:
     # ports:
     #   - "127.0.0.1:5173:5173"  # MCP server (if enabled in talond.yaml)
 
-    # Health check mirrors the HEALTHCHECK in the Dockerfile but is also
-    # expressed here so Compose restarts unhealthy containers.
+    # Health check: verify the process is alive by checking the PID file.
     healthcheck:
-      test: ["CMD", "node", "-e", "process.exit(0)"]
+      test: ["CMD", "node", "-e", "const fs=require('fs'); const pid=process.env.TALON_PID_FILE||'/data/talond.pid'; if(fs.existsSync(pid)){const p=parseInt(fs.readFileSync(pid,'utf8').trim()); try{process.kill(p,0);process.exit(0);}catch{process.exit(1);}} process.exit(0);"]
       interval: 30s
       timeout: 5s
       start_period: 15s
