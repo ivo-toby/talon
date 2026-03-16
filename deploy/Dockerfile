@@ -68,22 +68,25 @@ COPY config/talond.example.yaml ./config/
 #   /data    — SQLite database file, PID file, IPC sockets
 #   /config  — talond.yaml (bind-mount your config here at runtime)
 #   /personas — persona directories (optional)
-VOLUME ["/data", "/config", "/personas"]
+#   /skills   — custom skills (optional)
+#   /subagents — custom sub-agents (optional)
+VOLUME ["/data", "/config", "/personas", "/skills", "/subagents"]
 
-# Ensure the daemon user can write to the data directory at runtime.
-# The directory is created here so Docker creates it as root; at startup
-# the container can chown it if needed, or the host pre-creates it.
-RUN mkdir -p /data /config /personas && chown talond:talond /data /config /personas
+# Ensure the daemon user can write to the volumes at runtime.
+RUN mkdir -p /data /config /personas /skills /subagents && \
+    chown talond:talond /data /config /personas /skills /subagents
 
-# Create a symlink from /opt/talond/data to /data so that if dataDir
-# is set to "data" (the default), it resolves to the volume mount.
-RUN ln -s /data /opt/talond/data
+# Create symlinks from /opt/talond/<dir> to /<dir> so that relative paths
+# in the config (e.g. personas/assistant) resolve to the volume mounts.
+RUN ln -s /data /opt/talond/data && \
+    ln -s /personas /opt/talond/personas && \
+    ln -s /skills /opt/talond/skills && \
+    ln -s /subagents /opt/talond/subagents
 
 # Switch to the non-root user for all subsequent commands
 USER talond
 
 # Health check: verify the process is alive by checking the PID file.
-# Falls back to a simple node sanity check when no PID file is present yet.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD node -e "const fs=require('fs'); \
         const pid=process.env.TALON_PID_FILE||'/data/talond.pid'; \
