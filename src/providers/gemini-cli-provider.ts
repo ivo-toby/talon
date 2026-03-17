@@ -114,7 +114,17 @@ export class GeminiCliProvider implements AgentProvider {
     let usage: AgentUsage | undefined;
 
     try {
-      const parsed = JSON.parse(raw.stdout) as {
+      // Find the first '{' and last '}' to extract the JSON block.
+      // Informational messages (e.g. "Loaded cached credentials") might appear on stdout or stderr.
+      const start = raw.stdout.indexOf('{');
+      const end = raw.stdout.lastIndexOf('}');
+
+      if (start === -1 || end === -1 || end < start) {
+        throw new Error('No JSON object found in stdout');
+      }
+
+      const jsonStr = raw.stdout.substring(start, end + 1);
+      const parsed = JSON.parse(jsonStr) as {
         response?: string;
         stats?: GeminiStats;
       };
@@ -194,18 +204,20 @@ export class GeminiCliProvider implements AgentProvider {
       // provider-specific and meaningless to Gemini CLI. Use the provider's
       // own configured default model, or let Gemini pick its own default.
       const model = this.readDefaultModel();
-      const args = ['--approval-mode', 'yolo', '--output-format', 'json'];
+
+      // --approval-mode yolo: automatically accept all actions
+      // --output-format json: return response and stats as JSON
+      // --prompt "": run in non-interactive (headless) mode, taking the prompt from stdin
+      const args = ['--approval-mode', 'yolo', '--output-format', 'json', '--prompt', ''];
 
       if (model) {
         args.push('--model', model);
       }
 
-      args.push(input.prompt);
-
       return ok({
         command: this.config.command,
         args,
-        stdin: '',
+        stdin: input.prompt,
         env: {
           GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsPath,
           GEMINI_SYSTEM_MD: systemPromptPath,

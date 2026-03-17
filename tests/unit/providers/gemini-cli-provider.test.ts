@@ -60,16 +60,17 @@ describe('GeminiCliProvider', () => {
     cleanupPaths.push(...invocation.cleanupPaths);
 
     expect(invocation.command).toBe('gemini');
-    expect(invocation.stdin).toBe('');
+    expect(invocation.stdin).toBe('Refactor the auth module.');
     expect(invocation.cwd).toBe('/tmp');
     expect(invocation.args).toEqual([
       '--approval-mode',
       'yolo',
       '--output-format',
       'json',
+      '--prompt',
+      '',
       '--model',
       'gemini-2.5-pro',
-      'Refactor the auth module.',
     ]);
     expect(invocation.env).toEqual(
       expect.objectContaining({
@@ -144,6 +145,35 @@ describe('GeminiCliProvider', () => {
         inputTokens: 120,
         outputTokens: 30,
       },
+    });
+  });
+
+  it('parses Gemini JSON output even when preceded by informational messages', () => {
+    const jsonOutput = JSON.stringify({
+      response: 'Clean response.',
+      stats: {
+        models: {
+          'gemini-2.5-pro': {
+            tokens: {
+              input: 10,
+              candidates: 5,
+            },
+          },
+        },
+      },
+    });
+
+    const result = provider.parseBackgroundResult({
+      stdout: `Loaded cached credentials.\nServer starting...\n${jsonOutput}`,
+      stderr: '',
+      exitCode: 0,
+      timedOut: false,
+    });
+
+    expect(result.output).toBe('Clean response.');
+    expect(result.usage).toEqual({
+      inputTokens: 10,
+      outputTokens: 5,
     });
   });
 
