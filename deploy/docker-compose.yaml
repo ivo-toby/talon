@@ -5,7 +5,8 @@
 #   1. cp config/talond.example.yaml config/talond.yaml
 #   2. Edit config/talond.yaml with your API keys and channel settings
 #   3. cp deploy/.env.example .env  (and fill in secrets)
-#   4. docker compose up -d
+#   4. mkdir -p personas data
+#   5. docker compose up -d
 # =============================================================================
 
 services:
@@ -28,8 +29,9 @@ services:
     environment:
       # Force production mode regardless of what the .env file says
       NODE_ENV: production
-      # Point the daemon to the /data volume for all persistent data
+      # Point the daemon to the correct in-container paths
       TALOND_DATA_DIR: /data
+      TALOND_CONFIG_PATH: /config/talond.yaml
 
     volumes:
       # Persistent data: SQLite database, PID file, IPC sockets
@@ -43,15 +45,20 @@ services:
         target: /config/talond.yaml
         read_only: true
 
-      # Personas: bind-mount your persona directories here
+      # Personas: bind-mount so you can edit prompts from the host
+      # and so Claude Code skills can manage personas.
+      # Create the directory first: mkdir -p personas
       - type: bind
         source: ../personas
         target: /personas
-        read_only: true
 
-      # Optional: Custom sub-agents or skills
-      # - ../subagents:/opt/talond/subagents:ro
-      # - ../skills:/opt/talond/skills:ro
+      # Optional: Custom skills or sub-agents — uncomment if used
+      # - type: bind
+      #   source: ../skills
+      #   target: /skills
+      # - type: bind
+      #   source: ../subagents
+      #   target: /subagents
 
       # -----------------------------------------------------------------------
       # Docker socket (optional — only needed for sandbox container spawning)
@@ -74,9 +81,10 @@ services:
     # ports:
     #   - "127.0.0.1:5173:5173"  # MCP server (if enabled in talond.yaml)
 
-    # Health check: verify the process is alive by checking the PID file.
+    # Health check: verify the daemon process is alive via PID file.
+    # Reports unhealthy if the PID file is missing or the process is dead.
     healthcheck:
-      test: ["CMD", "node", "-e", "const fs=require('fs'); const pid=process.env.TALON_PID_FILE||'/data/talond.pid'; if(fs.existsSync(pid)){const p=parseInt(fs.readFileSync(pid,'utf8').trim()); try{process.kill(p,0);process.exit(0);}catch{process.exit(1);}} process.exit(0);"]
+      test: ["CMD", "node", "-e", "const fs=require('fs');const p=process.env.TALON_PID_FILE||'/data/talond.pid';if(!fs.existsSync(p)){process.exit(1);}try{process.kill(parseInt(fs.readFileSync(p,'utf8').trim()),0);process.exit(0);}catch{process.exit(1);}"]
       interval: 30s
       timeout: 5s
       start_period: 15s

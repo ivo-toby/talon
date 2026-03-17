@@ -67,10 +67,11 @@ COPY config/talond.example.yaml ./config/
 # Volume mount points:
 #   /data    — SQLite database file, PID file, IPC sockets
 #   /config  — talond.yaml (bind-mount your config here at runtime)
-#   /personas — persona directories (optional)
-#   /skills   — custom skills (optional)
-#   /subagents — custom sub-agents (optional)
-VOLUME ["/data", "/config", "/personas", "/skills", "/subagents"]
+# Optional bind mounts (not declared as VOLUME to avoid anonymous volume surprises):
+#   /personas — persona directories
+#   /skills   — custom skills
+#   /subagents — custom sub-agents
+VOLUME ["/data", "/config"]
 
 # Ensure the daemon user can write to the volumes at runtime.
 RUN mkdir -p /data /config /personas /skills /subagents && \
@@ -87,11 +88,12 @@ RUN ln -s /data /opt/talond/data && \
 USER talond
 
 # Health check: verify the process is alive by checking the PID file.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+# Exits non-zero if the PID file is missing (daemon not started) or the process is dead.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD node -e "const fs=require('fs'); \
         const pid=process.env.TALON_PID_FILE||'/data/talond.pid'; \
-        if(fs.existsSync(pid)){const p=parseInt(fs.readFileSync(pid,'utf8').trim()); \
-        try{process.kill(p,0);process.exit(0);}catch{process.exit(1);}} \
-        process.exit(0);"
+        if(!fs.existsSync(pid)){process.exit(1);} \
+        const p=parseInt(fs.readFileSync(pid,'utf8').trim()); \
+        try{process.kill(p,0);process.exit(0);}catch{process.exit(1);}"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/talond/dist/index.js", "--config", "/config/talond.yaml"]

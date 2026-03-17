@@ -364,7 +364,7 @@ For a portable and reproducible setup, you can run the Talon daemon in a Docker 
 1.  **Prepare configuration:**
     ```bash
     cp config/talond.example.yaml config/talond.yaml
-    mkdir -p personas data
+    mkdir -p personas
     ```
 2.  **Set up secrets:**
     ```bash
@@ -378,34 +378,44 @@ For a portable and reproducible setup, you can run the Talon daemon in a Docker 
 
 ### Persistence and Volumes
 
-The `docker-compose.yaml` defines several volumes:
+The `docker-compose.yaml` defines:
 - `talond-data`: A named volume for the SQLite database, PID file, and IPC sockets.
-- `/config/talond.yaml`: Bind-mounted from the host.
-- `/personas`: Bind-mounted from the host `personas/` directory.
+- `/config/talond.yaml`: Bind-mounted read-only from the host.
+- `/personas`: Bind-mounted from the host `personas/` directory (read-write so the daemon can write artifacts).
 
-If you want to use `talonctl` from your host machine (outside the container) to check status or reload config, you should use a bind mount for the data directory in `docker-compose.yaml`:
-
-```yaml
-    volumes:
-      - ./data:/data
-```
-
-This allows the host `talonctl` to read/write the IPC files in the same directory as the containerized daemon.
+Optional bind mounts for `/skills` and `/subagents` are commented out in the compose file. Uncomment them if you use custom skills or sub-agents.
 
 ### Using `talonctl` with Docker
 
-You can run `talonctl` commands directly inside the running container:
+Use the included wrapper script to run CLI commands against the containerized daemon:
+
+```bash
+./deploy/talonctl-docker.sh status
+./deploy/talonctl-docker.sh list-channels
+./deploy/talonctl-docker.sh reload
+```
+
+Or run commands directly:
 
 ```bash
 docker exec -it talond node dist/cli/index.js status
-docker exec -it talond node dist/cli/index.js reload
 ```
 
-Or use the host's `talonctl` if you have a bind mount for the data directory:
+The wrapper forwards all arguments to `talonctl` inside the container. Set `TALOND_CONTAINER` to override the container name if it differs from `talond`.
+
+### Using Claude Code skills with Docker
+
+The Claude Code setup skills (`/talon-setup`, `/add-slack`, `/add-telegram`, etc.) work with Docker deployments. They edit config and persona files on the host filesystem, which are bind-mounted into the container. After making changes:
 
 ```bash
-npx talonctl status
+# Reload config without restarting
+./deploy/talonctl-docker.sh reload
+
+# Or restart the container to pick up all changes
+docker compose -f deploy/docker-compose.yaml restart
 ```
+
+The config file is mounted read-only. If a skill needs to modify `talond.yaml`, edit it on the host and reload. Persona files are read-write and take effect on the next agent run.
 
 ### AI Providers in Docker
 
