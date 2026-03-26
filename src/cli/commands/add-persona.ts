@@ -42,6 +42,7 @@ export interface AddPersonaOptions {
   name: string;
   configPath?: string;
   personasDir?: string;
+  templatesDir?: string;
 }
 
 export interface AddPersonaEntry {
@@ -106,7 +107,7 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   if (isNewPersona) {
     try {
       // Prefer a named template from templates/<name>/system.md if it exists.
-      const templateFile = path.join('templates', options.name, 'system.md');
+      const templateFile = path.join(options.templatesDir ?? 'templates', options.name, 'system.md');
       const content = existsSync(templateFile)
         ? await fs.readFile(templateFile, 'utf-8')
         : buildSystemPromptTemplate(options.name);

@@ -154,10 +154,12 @@ program
   .description('Scaffold a persona directory and add it to talond.yaml')
   .requiredOption('--name <name>', 'Persona name (e.g. assistant)')
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
-  .action(async (opts: { name: string; config: string }) => {
+  .option('--templates-dir <path>', 'Path to templates directory', 'templates')
+  .action(async (opts: { name: string; config: string; templatesDir: string }) => {
     await addPersonaCommand({
       name: opts.name,
       configPath: opts.config,
+      templatesDir: opts.templatesDir,
     });
   });
 

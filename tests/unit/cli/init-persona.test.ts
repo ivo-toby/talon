@@ -100,6 +100,26 @@ describe('initPersona()', () => {
     expect(content).toBe(existingContent);
   });
 
+  it('rejects names with path traversal characters', async () => {
+    await expect(
+      initPersona({
+        name: '../evil',
+        templatesDir: templatesDir(),
+        personasDir: personasDir(),
+      }),
+    ).rejects.toThrow(/invalid/i);
+  });
+
+  it('rejects empty names', async () => {
+    await expect(
+      initPersona({
+        name: '',
+        templatesDir: templatesDir(),
+        personasDir: personasDir(),
+      }),
+    ).rejects.toThrow(/empty/i);
+  });
+
   it('creates personas/<name>/ directory if it does not exist', async () => {
     const result = await initPersona({
       name: 'brand-new',

@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { buildSystemPromptTemplate } from './add-persona.js';
+import { validateName } from '../config-utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -40,30 +41,42 @@ export interface InitPersonaResult {
  * 3. Never overwrites an existing `personas/<name>/system.md`.
  */
 export async function initPersona(options: InitPersonaOptions): Promise<InitPersonaResult> {
+  // Validate name to prevent path traversal.
+  const nameError = validateName(options.name, 'Persona');
+  if (nameError) {
+    throw new Error(nameError);
+  }
+
   const templatesDir = options.templatesDir ?? 'templates';
   const personasDir = options.personasDir ?? 'personas';
 
   const personaDir = path.join(personasDir, options.name);
   const systemPromptFile = path.join(personaDir, 'system.md');
 
-  // Never overwrite.
-  if (existsSync(systemPromptFile)) {
-    return { systemPromptFile, created: false, usedTemplate: null };
-  }
-
   // Ensure target directory exists.
   await fs.mkdir(personaDir, { recursive: true });
 
-  // Check for a named template.
+  // Determine content: prefer named template, fall back to generic.
   const templateFile = path.join(templatesDir, options.name, 'system.md');
   let usedTemplate: string | null = null;
+  let content: string;
 
   if (existsSync(templateFile)) {
-    const content = await fs.readFile(templateFile, 'utf-8');
-    await fs.writeFile(systemPromptFile, content, 'utf-8');
+    content = await fs.readFile(templateFile, 'utf-8');
     usedTemplate = templateFile;
   } else {
-    await fs.writeFile(systemPromptFile, buildSystemPromptTemplate(options.name), 'utf-8');
+    content = buildSystemPromptTemplate(options.name);
+  }
+
+  // Atomic exclusive write — if the file already exists, EEXIST is raised
+  // instead of silently overwriting (avoids TOCTOU race).
+  try {
+    await fs.writeFile(systemPromptFile, content, { flag: 'wx', encoding: 'utf-8' });
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
+      return { systemPromptFile, created: false, usedTemplate: null };
+    }
+    throw err;
   }
 
   return { systemPromptFile, created: true, usedTemplate };
