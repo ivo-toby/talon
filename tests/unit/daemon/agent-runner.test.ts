@@ -511,6 +511,7 @@ describe('AgentRunner', () => {
       );
     });
 
+
     it('reports usageDetails with snake_case keys for LangFuse pricing lookup', async () => {
       mockQuery.mockReturnValue(
         makeAgentStream({
