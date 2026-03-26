@@ -24,6 +24,7 @@ interface BackgroundTaskRow {
   started_at: number;
   completed_at: number | null;
   timeout_minutes: number;
+  parent_traceparent: string | null;
 }
 
 function rowToTask(row: BackgroundTaskRow): BackgroundTask {
@@ -43,6 +44,7 @@ function rowToTask(row: BackgroundTaskRow): BackgroundTask {
     startedAt: row.started_at,
     completedAt: row.completed_at,
     timeoutMinutes: row.timeout_minutes,
+    parentTraceparent: row.parent_traceparent,
   };
 }
 
@@ -61,9 +63,9 @@ export class BackgroundTaskRepository extends BaseRepository {
 
     this.insertStmt = db.prepare(`
       INSERT INTO background_tasks
-        (id, persona_id, provider_name, thread_id, channel_id, prompt, working_dir, status, output, error, pid, created_at, started_at, completed_at, timeout_minutes)
+        (id, persona_id, provider_name, thread_id, channel_id, prompt, working_dir, status, output, error, pid, created_at, started_at, completed_at, timeout_minutes, parent_traceparent)
       VALUES
-        (@id, @persona_id, @provider_name, @thread_id, @channel_id, @prompt, @working_dir, @status, @output, @error, @pid, @created_at, @started_at, @completed_at, @timeout_minutes)
+        (@id, @persona_id, @provider_name, @thread_id, @channel_id, @prompt, @working_dir, @status, @output, @error, @pid, @created_at, @started_at, @completed_at, @timeout_minutes, @parent_traceparent)
     `);
 
     this.findByIdStmt = db.prepare(`SELECT * FROM background_tasks WHERE id = ?`);
@@ -120,6 +122,7 @@ export class BackgroundTaskRepository extends BaseRepository {
         started_at: now,
         completed_at: null,
         timeout_minutes: input.timeoutMinutes,
+        parent_traceparent: input.parentTraceparent ?? null,
       };
 
       this.insertStmt.run(row);

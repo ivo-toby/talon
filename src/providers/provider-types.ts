@@ -64,6 +64,7 @@ export interface ProviderSpawnInput {
   mcpServers: Record<string, CanonicalMcpServer>;
   cwd: string;
   timeoutMs: number;
+  traceparent?: string;
 }
 
 export interface PreparedProviderInvocation {

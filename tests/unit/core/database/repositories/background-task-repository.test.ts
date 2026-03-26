@@ -20,8 +20,9 @@ function createTestDb(): Database.Database {
       pid             INTEGER,
       created_at      INTEGER NOT NULL,
       started_at      INTEGER NOT NULL,
-      completed_at    INTEGER,
-      timeout_minutes INTEGER NOT NULL DEFAULT 30
+      completed_at        INTEGER,
+      timeout_minutes     INTEGER NOT NULL DEFAULT 30,
+      parent_traceparent  TEXT
     );
 
     CREATE INDEX idx_background_tasks_status ON background_tasks(status);

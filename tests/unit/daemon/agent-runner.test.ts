@@ -454,6 +454,98 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('includes tags with persona, itemType, and provider in the root trace', async () => {
+      await runner.run(makeQueueItem({ type: 'schedule' }));
+
+      expect(ctx.observability.observe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'agent',
+          name: 'foreground-run',
+          trace: expect.objectContaining({
+            tags: expect.arrayContaining([
+              'persona:TestBot',
+              'itemType:schedule',
+              'provider:claude-code',
+            ]),
+          }),
+        }),
+        expect.any(Function),
+      );
+    });
+
+    it('includes trace.input at the root observation level', async () => {
+      const item = makeQueueItem({ payload: { personaId: 'persona-001', content: 'Hello world' } });
+
+      await runner.run(item);
+
+      expect(ctx.observability.observe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'agent',
+          name: 'foreground-run',
+          trace: expect.objectContaining({
+            input: expect.objectContaining({ content: 'Hello world' }),
+          }),
+        }),
+        expect.any(Function),
+      );
+    });
+
+    it('includes userId from langfuse config owner in the root trace', async () => {
+      ctx.config = {
+        ...ctx.config,
+        langfuse: { owner: 'ivo' } as any,
+      } as any;
+      runner = new AgentRunner(ctx);
+
+      await runner.run(makeQueueItem());
+
+      expect(ctx.observability.observe).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'agent',
+          name: 'foreground-run',
+          trace: expect.objectContaining({
+            userId: 'ivo',
+          }),
+        }),
+        expect.any(Function),
+      );
+    });
+
+    it('reports usageDetails with snake_case keys for LangFuse pricing lookup', async () => {
+      mockQuery.mockReturnValue(
+        makeAgentStream({
+          usage: {
+            input_tokens: 200,
+            output_tokens: 75,
+            cache_read_input_tokens: 1_000,
+            cache_creation_input_tokens: 500,
+          },
+        }),
+      );
+
+      let generationHandle: ReturnType<typeof makeObservationHandle> | undefined;
+      ctx.observability.observe = vi.fn(async (input: { type: string }, fn: (h: ReturnType<typeof makeObservationHandle>) => Promise<unknown>) => {
+        const traceparent = input.type === 'generation' ? GENERATION_TRACEPARENT : null;
+        const handle = makeObservationHandle(traceparent);
+        if (input.type === 'generation') generationHandle = handle;
+        return await fn(handle);
+      });
+      runner = new AgentRunner(ctx);
+
+      await runner.run(makeQueueItem());
+
+      expect(generationHandle?.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usageDetails: expect.objectContaining({
+            input_tokens: 200,
+            output_tokens: 75,
+            cache_read_input_tokens: 1_000,
+            cache_creation_input_tokens: 500,
+          }),
+        }),
+      );
+    });
+
     it('uses the selected provider recentMessageCount when assembling fresh-session context', async () => {
       await runner.run(makeQueueItem());
 
@@ -2164,4 +2256,5 @@ describe('AgentRunner', () => {
       expect(streamingEventCalls).toHaveLength(0);
     });
   });
+
 });

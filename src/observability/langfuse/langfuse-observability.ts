@@ -16,6 +16,8 @@ import {
   type LangfuseSpan,
   type LangfuseTool,
 } from '@langfuse/tracing';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { SEMRESATTRS_SERVICE_NAME, SEMRESATTRS_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
 import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base';
 import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node';
 
@@ -53,6 +55,10 @@ export class LangfuseObservabilityService implements ObservabilityService {
     options: LangfuseObservabilityOptions = {},
   ) {
     this.provider = new NodeTracerProvider({
+      resource: resourceFromAttributes({
+        [SEMRESATTRS_SERVICE_NAME]: 'talond',
+        ...(config.release ? { [SEMRESATTRS_SERVICE_VERSION]: config.release } : {}),
+      }),
       spanProcessors: [
         new LangfuseSpanProcessor({
           publicKey: config.publicKey,
@@ -184,7 +190,25 @@ export class LangfuseObservabilityService implements ObservabilityService {
     input: ObservationInput,
   ): StartedObservationHandle {
     const parentSpanContext = parseTraceparent(traceparent);
-    const observation = this.startTypedObservationSync(input, parentSpanContext);
+
+    // If the caller supplied trace-level attributes (userId, tags, metadata,
+    // sessionId), propagate them into the OTEL context so the Langfuse
+    // exporter picks them up — identical to what observeInternal does for
+    // the async path.
+    const startObservation = () => this.startTypedObservationSync(input, parentSpanContext);
+    const observation = input.trace
+      ? propagateAttributes(
+          {
+            userId: input.trace.userId,
+            sessionId: input.trace.sessionId,
+            metadata: input.trace.metadata,
+            version: input.trace.version ?? this.config.release,
+            tags: input.trace.tags,
+            traceName: input.trace.name ?? input.name,
+          },
+          startObservation,
+        )
+      : startObservation();
 
     return {
       update: (update) => this.applyUpdate(observation, update),

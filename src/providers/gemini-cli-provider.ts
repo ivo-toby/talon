@@ -208,6 +208,7 @@ export class GeminiCliProvider implements AgentProvider {
         env: {
           GEMINI_CLI_SYSTEM_SETTINGS_PATH: settingsPath,
           GEMINI_SYSTEM_MD: systemPromptPath,
+          ...(input.traceparent ? { TALOND_TRACEPARENT: input.traceparent } : {}),
         },
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,

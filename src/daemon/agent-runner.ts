@@ -143,33 +143,38 @@ export class AgentRunner {
     const content = typeof item.payload.content === 'string' ? item.payload.content : '';
     let runFinalized = false;
 
+    const runInput = {
+      content,
+      itemType: item.type,
+      persona: personaName,
+      provider: providerEntry.provider.name,
+    };
+
+    const runMetadata = {
+      runId,
+      threadId: item.threadId,
+      personaId,
+      personaName,
+      provider: providerEntry.provider.name,
+    };
+
     try {
       await this.ctx.observability.observe(
         {
           type: 'agent',
           name: 'foreground-run',
-          input: {
-            content,
-            itemType: item.type,
-            persona: personaName,
-            provider: providerEntry.provider.name,
-          },
-          metadata: {
-            runId,
-            threadId: item.threadId,
-            personaId,
-            personaName,
-            provider: providerEntry.provider.name,
-          },
+          input: runInput,
+          metadata: runMetadata,
           trace: {
             sessionId: item.threadId,
-            metadata: {
-              runId,
-              threadId: item.threadId,
-              personaId,
-              personaName,
-              provider: providerEntry.provider.name,
-            },
+            userId: this.ctx.config.langfuse?.owner,
+            tags: [
+              `persona:${personaName}`,
+              `itemType:${item.type}`,
+              `provider:${providerEntry.provider.name}`,
+            ],
+            input: runInput,
+            metadata: runMetadata,
           },
         },
         async (runObservation) => {
@@ -612,10 +617,12 @@ export class AgentRunner {
                       resumeSessionId: resumeSessionId ?? null,
                     },
                     usageDetails: {
-                      inputTokens: usage.inputTokens,
-                      outputTokens: usage.outputTokens,
-                      cacheReadTokens: usage.cacheReadTokens ?? 0,
-                      cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+                      // Snake_case keys align with Anthropic's API field names and
+                      // match LangFuse's pricing lookup regex (e.g. "^input" → input_tokens).
+                      input_tokens: usage.inputTokens,
+                      output_tokens: usage.outputTokens,
+                      cache_read_input_tokens: usage.cacheReadTokens ?? 0,
+                      cache_creation_input_tokens: usage.cacheWriteTokens ?? 0,
                     },
                     costDetails:
                       usage.totalCostUsd !== undefined
@@ -848,7 +855,7 @@ export class AgentRunner {
       const observation = this.ctx.observability.startWithTraceparent(traceparent, {
         type: 'tool',
         name: this.getProviderToolObservationName(event),
-        input: event.input,
+        input: event.input ?? {},
         metadata: {
           ...metadata,
           messageType: event.messageType,
@@ -888,7 +895,7 @@ export class AgentRunner {
           {
             type: 'tool',
             name: this.getProviderToolObservationName(event),
-            input: event.input,
+            input: event.input ?? {},
             metadata: {
               ...metadata,
               messageType: event.messageType,

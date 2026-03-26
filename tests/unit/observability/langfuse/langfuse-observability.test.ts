@@ -196,4 +196,55 @@ describe('LangfuseObservabilityService', () => {
     expect(contextDisable).toHaveBeenCalledOnce();
     expect(propagationDisable).toHaveBeenCalledOnce();
   });
+
+  it('sets service.name to "talond" on the OTEL tracer provider resource', async () => {
+    const service = new LangfuseObservabilityService(
+      {
+        enabled: true,
+        publicKey: 'pk-lf-test',
+        secretKey: 'sk-lf-test',
+        baseUrl: 'https://cloud.langfuse.com',
+        environment: 'test',
+        exportMode: 'immediate',
+        flushAt: 1,
+        flushIntervalSeconds: 1,
+      },
+      createSilentLogger(),
+      { exporter, shouldExportSpan: () => true },
+    );
+
+    await service.observe({ type: 'agent', name: 'test-run' }, async () => undefined);
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0].resource.attributes['service.name']).toBe('talond');
+
+    await service.shutdown();
+  });
+
+  it('sets service.version from config.release on the OTEL resource', async () => {
+    const service = new LangfuseObservabilityService(
+      {
+        enabled: true,
+        publicKey: 'pk-lf-test',
+        secretKey: 'sk-lf-test',
+        baseUrl: 'https://cloud.langfuse.com',
+        environment: 'test',
+        release: '1.2.3',
+        exportMode: 'immediate',
+        flushAt: 1,
+        flushIntervalSeconds: 1,
+      },
+      createSilentLogger(),
+      { exporter, shouldExportSpan: () => true },
+    );
+
+    await service.observe({ type: 'agent', name: 'test-run' }, async () => undefined);
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans).toHaveLength(1);
+    expect(spans[0].resource.attributes['service.version']).toBe('1.2.3');
+
+    await service.shutdown();
+  });
 });

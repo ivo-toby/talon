@@ -364,6 +364,46 @@ describe('ClaudeCodeProvider', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // TALOND_TRACEPARENT env var injection (F4)
+  // ---------------------------------------------------------------------------
+
+  it('includes TALOND_TRACEPARENT in env when traceparent is provided', () => {
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Do something.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 30_000,
+      traceparent: '00-abc123-def456-01',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+
+    expect(invocation.env).toEqual(
+      expect.objectContaining({ TALOND_TRACEPARENT: '00-abc123-def456-01' }),
+    );
+  });
+
+  it('does not set env when traceparent is not provided', () => {
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Do something.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 30_000,
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+
+    // env should be undefined (or not contain TALOND_TRACEPARENT)
+    expect(invocation.env?.TALOND_TRACEPARENT).toBeUndefined();
+  });
+
   it('prepareBackgroundInvocation with empty mcpServers writes a valid empty JSON config', () => {
     const result = provider.prepareBackgroundInvocation({
       prompt: 'Empty servers test.',

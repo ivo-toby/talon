@@ -171,6 +171,7 @@ export class BackgroundAgentHandler {
             : undefined,
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.timeoutMinutes ? { timeoutMinutes: args.timeoutMinutes } : {}),
+      traceparent: context.traceparent,
     });
 
     if (spawnResult.isErr()) {

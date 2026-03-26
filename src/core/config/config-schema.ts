@@ -249,6 +249,7 @@ export const LangfuseConfigSchema = z
     baseUrl: z.string().url().default('https://cloud.langfuse.com'),
     environment: z.string().default('production'),
     release: z.string().optional(),
+    owner: z.string().optional(),
     exportMode: z.enum(['batched', 'immediate']).default('batched'),
     flushAt: z.number().int().min(1).default(20),
     flushIntervalSeconds: z.number().int().min(1).default(5),
