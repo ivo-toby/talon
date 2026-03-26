@@ -33,6 +33,9 @@ export interface WhatsAppWebhookServerConfig {
   webhookPath?: string;
 }
 
+/** Maximum accepted POST body size in bytes (5 MB). */
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // WhatsAppWebhookServer
 // ---------------------------------------------------------------------------
@@ -165,7 +168,7 @@ export class WhatsAppWebhookServer {
       return;
     }
 
-    if (mode !== 'subscribe' || token !== this.config.verifyToken) {
+    if (mode !== 'subscribe' || !this.timingSafeStringEqual(token ?? '', this.config.verifyToken)) {
       this.logger.warn({ mode, tokenMatch: token === this.config.verifyToken }, 'whatsapp-webhook-server: verification failed');
       res.writeHead(403).end('Forbidden');
       return;
@@ -221,14 +224,45 @@ export class WhatsAppWebhookServer {
 
   /**
    * Read the full request body into a Buffer.
+   * Rejects with an error if the body exceeds MAX_BODY_BYTES.
    */
   private readBody(req: IncomingMessage): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let totalBytes = 0;
+
+      req.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BODY_BYTES) {
+          reject(new Error(`Request body exceeds maximum size of ${MAX_BODY_BYTES} bytes`));
+          req.destroy();
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on('end', () => resolve(Buffer.concat(chunks)));
       req.on('error', reject);
     });
+  }
+
+  /**
+   * Timing-safe string equality check.
+   * Pads both strings to the same length before comparison so the time taken
+   * does not reveal how many characters match.
+   */
+  private timingSafeStringEqual(a: string, b: string): boolean {
+    try {
+      const bufA = Buffer.from(a, 'utf-8');
+      const bufB = Buffer.from(b, 'utf-8');
+      if (bufA.length !== bufB.length) {
+        // Compare against itself to keep constant time, then return false.
+        timingSafeEqual(bufA, bufA);
+        return false;
+      }
+      return timingSafeEqual(bufA, bufB);
+    } catch {
+      return false;
+    }
   }
 
   /**
