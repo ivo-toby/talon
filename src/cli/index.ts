@@ -21,7 +21,6 @@ import { doctorCommand } from './commands/doctor.js';
 import { setupCommand } from './commands/setup.js';
 import { addChannelCommand } from './commands/add-channel.js';
 import { addPersonaCommand } from './commands/add-persona.js';
-import { initPersonaCommand } from './commands/init-persona.js';
 import { addSkillCommand } from './commands/add-skill.js';
 import { queuePurgeCommand } from './commands/queue-purge.js';
 import { chatCommand } from './commands/chat.js';
@@ -161,16 +160,6 @@ program
       configPath: opts.config,
       templatesDir: opts.templatesDir,
     });
-  });
-
-program
-  .command('init-persona')
-  .description('Copy persona template files to personas/<name>/ (skips existing files)')
-  .requiredOption('--name <name>', 'Persona name (e.g. assistant)')
-  .option('--templates-dir <path>', 'Path to templates directory', 'templates')
-  .option('--personas-dir <path>', 'Path to personas directory', 'personas')
-  .action(async (opts: { name: string; templatesDir: string; personasDir: string }) => {
-    await initPersonaCommand({ name: opts.name, templatesDir: opts.templatesDir, personasDir: opts.personasDir });
   });
 
 program
