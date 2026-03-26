@@ -10,6 +10,7 @@ import type { BackgroundTaskRepository } from '../../core/database/repositories/
 import type { CanonicalMcpServer } from '../../providers/provider-types.js';
 import type { AgentProvider } from '../../providers/provider.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
+import type { ObservabilityService, StartedObservationHandle } from '../../observability/langfuse/observability-types.js';
 
 export interface SpawnBackgroundAgentInput {
   prompt: string;
@@ -23,6 +24,7 @@ export interface SpawnBackgroundAgentInput {
   provider?: string;
   workingDirectory?: string;
   timeoutMinutes?: number;
+  traceparent?: string;
 }
 
 interface BackgroundAgentManagerDeps {
@@ -36,12 +38,14 @@ interface BackgroundAgentManagerDeps {
   processFactory?: (options: BackgroundAgentProcessOptions) => BackgroundAgentProcess;
   isPidAlive?: (pid: number) => boolean;
   readProcessCommandLine?: (pid: number) => string | null;
+  observability?: ObservabilityService;
 }
 
 interface ManagedProcess {
   kill: () => void;
   cleanupPaths: string[];
   provider: AgentProvider;
+  observation?: StartedObservationHandle;
 }
 
 const MAX_STORED_OUTPUT = 100 * 1024;
@@ -123,6 +127,22 @@ export class BackgroundAgentManager {
         'background-agent: timeout clamped to minimum',
       );
     }
+
+    // Start a LangFuse observation span if observability is available.
+    const observation = this.deps.observability
+      ? this.deps.observability.startWithTraceparent(input.traceparent ?? null, {
+          type: 'agent',
+          name: 'background-agent',
+          input: { prompt: input.prompt, taskId, threadId: input.threadId },
+          trace: {
+            userId: undefined,
+            tags: ['background-agent', `provider:${providerEntry.provider.name}`],
+          },
+        })
+      : undefined;
+
+    const childTraceparent = observation?.getTraceparent() ?? undefined;
+
     const systemPrompt = this.buildSystemPrompt({
       personaPrompt: input.personaPrompt,
       taskPrompt: input.prompt,
@@ -138,8 +158,10 @@ export class BackgroundAgentManager {
       mcpServers: input.mcpServers,
       cwd: input.workingDirectory ?? process.cwd(),
       timeoutMs: timeoutMinutes * 60 * 1000,
+      traceparent: childTraceparent,
     });
     if (invocationResult.isErr()) {
+      observation?.end();
       return err(invocationResult.error);
     }
 
@@ -158,9 +180,11 @@ export class BackgroundAgentManager {
       error: null,
       pid: null,
       timeoutMinutes,
+      parentTraceparent: input.traceparent ?? null,
     });
 
     if (createResult.isErr()) {
+      observation?.end();
       this.cleanupPaths(invocation.cleanupPaths);
       return err(new BackgroundAgentError(createResult.error.message, createResult.error));
     }
@@ -176,6 +200,7 @@ export class BackgroundAgentManager {
 
     const startResult = processInstance.start();
     if (startResult.isErr()) {
+      observation?.end();
       this.deps.repository.updateStatus(taskId, 'failed', undefined, startResult.error.message);
       this.cleanupPaths(invocation.cleanupPaths);
       return err(startResult.error);
@@ -190,6 +215,7 @@ export class BackgroundAgentManager {
       kill: () => processInstance.kill(),
       cleanupPaths: invocation.cleanupPaths,
       provider: providerEntry.provider,
+      observation,
     });
 
     void completion.then((result) => {
@@ -324,6 +350,9 @@ export class BackgroundAgentManager {
     if (result.isErr()) {
       this.deps.repository.updateStatus(taskId, 'failed', undefined, this.truncate(result.error.message));
       this.enqueueNotification(taskId);
+      const failedProcess = this.processes.get(taskId);
+      failedProcess?.observation?.update({ statusMessage: result.error.message });
+      failedProcess?.observation?.end();
       this.cleanupTask(taskId);
       return;
     }
@@ -349,23 +378,36 @@ export class BackgroundAgentManager {
           timedOut: processResult.timedOut,
         };
 
+    let finalStatus: string;
+    let finalStatusMessage: string | undefined;
     if (parsedResult.timedOut) {
+      finalStatus = 'timed_out';
+      finalStatusMessage = 'Process timed out';
       this.deps.repository.updateStatus(
         taskId,
         'timed_out',
         this.truncate(parsedResult.output),
-        'Process timed out',
+        finalStatusMessage,
       );
     } else if (parsedResult.exitCode === 0) {
+      finalStatus = 'completed';
       this.deps.repository.updateStatus(taskId, 'completed', this.truncate(parsedResult.output));
     } else {
+      finalStatus = 'failed';
+      finalStatusMessage = parsedResult.stderr || `Process exited with code ${parsedResult.exitCode}`;
       this.deps.repository.updateStatus(
         taskId,
         'failed',
         this.truncate(parsedResult.output),
-        this.truncate(parsedResult.stderr || `Process exited with code ${parsedResult.exitCode}`),
+        this.truncate(finalStatusMessage),
       );
     }
+
+    managedProcess?.observation?.update({
+      output: parsedResult.output?.trim(),
+      statusMessage: finalStatusMessage ?? finalStatus,
+    });
+    managedProcess?.observation?.end();
 
     this.enqueueNotification(taskId);
     this.cleanupTask(taskId);

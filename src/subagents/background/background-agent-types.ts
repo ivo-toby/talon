@@ -21,6 +21,7 @@ export interface BackgroundTask {
   startedAt: number;
   completedAt: number | null;
   timeoutMinutes: number;
+  parentTraceparent: string | null;
 }
 
 export interface BackgroundTaskResult {

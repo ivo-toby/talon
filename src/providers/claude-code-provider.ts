@@ -59,6 +59,7 @@ export class ClaudeCodeProvider implements AgentProvider {
           '--no-session-persistence',
         ],
         stdin: input.prompt,
+        env: input.traceparent ? { TALOND_TRACEPARENT: input.traceparent } : undefined,
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         cleanupPaths: [tempDir],

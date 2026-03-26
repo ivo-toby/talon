@@ -25,8 +25,9 @@ function createTestDb(): Database.Database {
       pid             INTEGER,
       created_at      INTEGER NOT NULL,
       started_at      INTEGER NOT NULL,
-      completed_at    INTEGER,
-      timeout_minutes INTEGER NOT NULL DEFAULT 30
+      completed_at        INTEGER,
+      timeout_minutes     INTEGER NOT NULL DEFAULT 30,
+      parent_traceparent  TEXT
     );
     CREATE INDEX idx_background_tasks_status ON background_tasks(status);
     CREATE INDEX idx_background_tasks_thread_created ON background_tasks(thread_id, created_at DESC);
@@ -483,6 +484,164 @@ describe('BackgroundAgentManager', () => {
     expect(result._unsafeUnwrapErr().message).toContain('2');
     // process.start must never have been called
     expect(processStart).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Observability / LangFuse trace linking (F4)
+  // ---------------------------------------------------------------------------
+
+  function makeObservability() {
+    const observation = {
+      end: vi.fn(),
+      update: vi.fn(),
+      getTraceparent: vi.fn().mockReturnValue('00-child-trace-child-span-01'),
+    };
+    const observability = {
+      startWithTraceparent: vi.fn().mockReturnValue(observation),
+      start: vi.fn().mockReturnValue(observation),
+      observe: vi.fn(),
+      observeWithTraceparent: vi.fn(),
+      shutdown: vi.fn(),
+    };
+    return { observability, observation };
+  }
+
+  function createManagerWithObservability() {
+    const { observability, observation } = makeObservability();
+    const claudeProvider = {
+      name: 'claude-code',
+      createExecutionStrategy: vi.fn(),
+      prepareBackgroundInvocation,
+      parseBackgroundResult,
+      estimateContextUsage: vi.fn(),
+    };
+    const providerEntry = {
+      provider: claudeProvider,
+      config: {
+        enabled: true,
+        command: 'claude',
+        contextWindowTokens: 200000,
+      },
+    };
+
+    const manager = new BackgroundAgentManager({
+      repository,
+      queueManager,
+      maxConcurrent: 2,
+      defaultTimeoutMinutes: 30,
+      defaultProvider: 'claude-code',
+      providerRegistry: {
+        getDefault: vi.fn().mockReturnValue(providerEntry),
+        listEnabled: vi.fn().mockReturnValue(['claude-code']),
+        get: vi.fn((name: string) => (name === 'claude-code' ? providerEntry : undefined)),
+      } as any,
+      logger: makeLogger(),
+      processFactory,
+      isPidAlive: vi.fn().mockReturnValue(false),
+      readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
+      observability,
+    });
+
+    return { manager, observability, observation };
+  }
+
+  it('starts a background agent observation span on spawn', () => {
+    const { manager, observability } = createManagerWithObservability();
+
+    manager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
+
+    expect(observability.startWithTraceparent).toHaveBeenCalledWith(
+      '00-aaa-bbb-01',
+      expect.objectContaining({
+        type: 'agent',
+        name: 'background-agent',
+        input: expect.objectContaining({
+          prompt: spawnInput.prompt,
+          threadId: spawnInput.threadId,
+        }),
+        trace: expect.objectContaining({
+          tags: expect.arrayContaining(['background-agent', 'provider:claude-code']),
+        }),
+      }),
+    );
+  });
+
+  it('passes traceparent from parent observation to prepareBackgroundInvocation', () => {
+    const { manager } = createManagerWithObservability();
+
+    // The mock observation returns 'child-traceparent-value' from getTraceparent
+    const { observation } = makeObservability();
+    observation.getTraceparent.mockReturnValue('child-traceparent-value');
+
+    // Override the observability mock in manager to return our custom observation
+    const { observability: obs } = makeObservability();
+    obs.startWithTraceparent.mockReturnValue(observation);
+
+    // Use a fresh manager with the specific mock
+    const claudeProvider = {
+      name: 'claude-code',
+      createExecutionStrategy: vi.fn(),
+      prepareBackgroundInvocation,
+      parseBackgroundResult,
+      estimateContextUsage: vi.fn(),
+    };
+    const providerEntry = {
+      provider: claudeProvider,
+      config: { enabled: true, command: 'claude', contextWindowTokens: 200000 },
+    };
+    const freshManager = new BackgroundAgentManager({
+      repository,
+      queueManager,
+      maxConcurrent: 2,
+      defaultTimeoutMinutes: 30,
+      defaultProvider: 'claude-code',
+      providerRegistry: {
+        getDefault: vi.fn().mockReturnValue(providerEntry),
+        listEnabled: vi.fn().mockReturnValue(['claude-code']),
+        get: vi.fn((name: string) => (name === 'claude-code' ? providerEntry : undefined)),
+      } as any,
+      logger: makeLogger(),
+      processFactory,
+      isPidAlive: vi.fn().mockReturnValue(false),
+      readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
+      observability: obs,
+    });
+
+    freshManager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
+
+    expect(prepareBackgroundInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        traceparent: 'child-traceparent-value',
+      }),
+    );
+  });
+
+  it('ends the observation span on task completion', async () => {
+    const { manager, observation } = createManagerWithObservability();
+    manager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
+
+    completionResolve?.(
+      ok({
+        stdout: 'Done!',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observation.end).toHaveBeenCalled();
+  });
+
+  it('works without observability service (backwards compatible)', () => {
+    // createManager() does not pass observability — it should spawn fine
+    const manager = createManager();
+
+    const result = manager.spawn(spawnInput);
+
+    expect(result.isOk()).toBe(true);
+    expect(prepareBackgroundInvocation).toHaveBeenCalled();
   });
 
   it('uses an explicit provider override, persists provider_name, and forwards env overrides', () => {

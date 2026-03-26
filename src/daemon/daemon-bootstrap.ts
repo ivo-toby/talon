@@ -399,6 +399,7 @@ export async function bootstrap(
       defaultProvider: config.backgroundAgent.defaultProvider,
       providerRegistry: backgroundProviderRegistry,
       logger,
+      observability,
     });
     backgroundAgentManager.recoverOrphanedTasks();
   }
