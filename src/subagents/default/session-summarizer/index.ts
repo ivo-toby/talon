@@ -35,6 +35,7 @@ export async function run(
       prompt: `Summarize this conversation transcript:\n\n${transcript}`,
       schema: SummarySchema,
       maxOutputTokens: ctx.maxOutputTokens,
+      experimental_telemetry: ctx.telemetry,
     });
 
     return ok({

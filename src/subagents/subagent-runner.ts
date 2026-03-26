@@ -173,6 +173,11 @@ export class SubAgentRunner {
         maxOutputTokens: agent.manifest.model.maxTokens,
         rootPaths: agent.manifest.rootPaths,
         services: { ...this.services, logger: childLogger },
+        // Enable OTEL telemetry on AI SDK calls so sub-agent LLM generations
+        // appear as child spans under the parent subagent:<name> observation.
+        // The ambient OTEL context (set by observability.observe()) propagates
+        // automatically via AsyncLocalStorage — no traceparent threading needed.
+        telemetry: { isEnabled: !(this.observability instanceof NoopObservabilityService) },
       };
 
       const runResult = await this.runWithTimeout(

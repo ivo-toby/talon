@@ -346,6 +346,7 @@ export async function bootstrap(
               queue: repos.queue,
               logger,
             },
+            telemetry: { isEnabled: true },
           },
           input,
         );

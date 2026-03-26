@@ -145,6 +145,7 @@ export async function run(
       system: ctx.systemPrompt,
       prompt,
       maxOutputTokens: ctx.maxOutputTokens,
+      experimental_telemetry: ctx.telemetry,
     });
 
     const ranked = parseResponse(text);

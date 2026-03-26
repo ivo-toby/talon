@@ -251,4 +251,38 @@ describe('SubAgentRunner', () => {
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('Failed to resolve model');
   });
+
+  it('passes telemetry.isEnabled=false when no observability service is provided (Noop)', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    // No observability → defaults to NoopObservabilityService inside the runner
+    const runner = makeRunner(agents, mockResolver, undefined);
+
+    const result = await runner.execute('test-agent', {}, makeContext());
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.telemetry).toEqual({ isEnabled: false });
+  });
+
+  it('passes telemetry.isEnabled=true when a real observability service is provided', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const observe = vi.fn(async (_input, fn) =>
+      fn({ update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) }),
+    );
+    const realObservability = {
+      observe,
+      observeWithTraceparent: vi.fn(),
+      startWithTraceparent: vi.fn(),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ObservabilityService;
+    const runner = makeRunner(agents, mockResolver, realObservability);
+
+    const result = await runner.execute('test-agent', {}, makeContext());
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.telemetry).toEqual({ isEnabled: true });
+  });
 });

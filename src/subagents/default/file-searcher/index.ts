@@ -99,6 +99,7 @@ export async function run(
       system: ctx.systemPrompt,
       prompt: `Query: "${query}"\n\nMatches:\n\n${matchSummary}`,
       maxOutputTokens: ctx.maxOutputTokens,
+      experimental_telemetry: ctx.telemetry,
     });
 
     let ranked: Array<{ path: string; snippet: string; relevance: number }> = [];

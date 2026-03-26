@@ -81,6 +81,7 @@ export async function run(
       prompt,
       schema: GroomResponseSchema,
       maxOutputTokens: ctx.maxOutputTokens,
+      experimental_telemetry: ctx.telemetry,
     });
 
     // 3. Check if any actions were returned.
