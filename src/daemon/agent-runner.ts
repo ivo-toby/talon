@@ -1,13 +1,19 @@
 import { join } from 'node:path';
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { v4 as uuidv4 } from 'uuid';
 import { ok, err, type Result } from 'neverthrow';
+import { z } from 'zod';
 
 import type { DaemonContext } from './daemon-context.js';
 import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
-import type { AgentUsage, CanonicalMcpServer } from '../providers/provider-types.js';
+import type {
+  AgentUsage,
+  CanonicalMcpSdkServer,
+  CanonicalMcpServer,
+} from '../providers/provider-types.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
 
 /** Default maximum time (ms) an Agent SDK query may run before being aborted. */
@@ -177,6 +183,10 @@ export class AgentRunner {
             const personaSkills = this.ctx.loadedSkills.filter((skill) =>
               loadedPersona.config.skills.includes(skill.manifest.name),
             );
+            const skillContentMap = new Map<string, string>();
+            for (const skill of personaSkills) {
+              skillContentMap.set(skill.manifest.name, skill.promptContents.join('\n'));
+            }
             const personaRuntimeContext = buildPersonaRuntimeContext({
               loadedPersona,
               resolvedSkills: personaSkills,
@@ -378,9 +388,47 @@ export class AgentRunner {
                   model,
                 },
                 async (generationObservation) => {
+                  const sdkSkillServer: Record<string, CanonicalMcpSdkServer> = {};
+                  if (strategy.type === 'sdk' && skillContentMap.size > 0) {
+                    const skillLoaderServer = createSdkMcpServer({
+                      name: '__talond_skill_loader',
+                      tools: [
+                        tool(
+                          'skill_load',
+                          'Load the full instructions for a skill. Pass the skill name exactly as shown in Available Skills.',
+                          { name: z.string().describe('Skill name') },
+                          async (args) => {
+                            const content = skillContentMap.get(args.name);
+                            if (content === undefined) {
+                              return {
+                                content: [
+                                  {
+                                    type: 'text' as const,
+                                    text: `Error: skill "${args.name}" not found. Available: ${[...skillContentMap.keys()].join(', ')}`,
+                                  },
+                                ],
+                                isError: true,
+                              };
+                            }
+
+                            this.ctx.logger.info({ runId, skill: args.name }, 'skill.loaded');
+                            return {
+                              content: [{ type: 'text' as const, text: content }],
+                            };
+                          },
+                        ),
+                      ],
+                    });
+                    sdkSkillServer.__talond_skill_loader = {
+                      transport: 'sdk',
+                      instance: skillLoaderServer,
+                    };
+                  }
+
                   const mcpServers: Record<string, CanonicalMcpServer> = {
                     ...baseMcpServers,
-                    'host-tools': {
+                    ...sdkSkillServer,
+                    __talond_host_tools: {
                       transport: 'stdio',
                       command: 'node',
                       args: [join(import.meta.dirname, '../../dist/tools/host-tools-mcp-server.js')],
@@ -395,6 +443,22 @@ export class AgentRunner {
                       },
                     },
                   };
+
+                  if (strategy.type === 'cli' && skillContentMap.size > 0) {
+                    mcpServers.__talond_skill_loader = {
+                      transport: 'stdio',
+                      command: 'node',
+                      args: [join(import.meta.dirname, '../../dist/tools/skill-loader-mcp-server.js')],
+                      env: {
+                        ...process.env,
+                        TALOND_SOCKET: this.ctx.hostToolsBridge.path,
+                        TALOND_RUN_ID: runId,
+                        TALOND_THREAD_ID: item.threadId,
+                        TALOND_PERSONA_ID: personaId,
+                        TALOND_TRACEPARENT: generationObservation.getTraceparent() ?? '',
+                      },
+                    };
+                  }
 
                   this.ctx.logger.info(
                     {
@@ -861,7 +925,11 @@ export class AgentRunner {
     messageType: string;
     serverName?: string;
   }): boolean {
-    return event.messageType === 'mcp_tool_use' && event.serverName === 'host-tools';
+    return event.messageType === 'mcp_tool_use'
+      && (
+        event.serverName === '__talond_host_tools'
+        || event.serverName === '__talond_skill_loader'
+      );
   }
 
   private isProviderToolStartEvent(messageType: string): boolean {

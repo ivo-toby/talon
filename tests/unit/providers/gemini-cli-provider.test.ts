@@ -49,6 +49,10 @@ describe('GeminiCliProvider', () => {
           url: 'https://sse.example.test',
           headers: { 'X-Token': 'abc123' },
         },
+        inProcess: {
+          transport: 'sdk',
+          instance: { connect: vi.fn() },
+        },
       },
       cwd: '/tmp',
       timeoutMs: 60_000,

@@ -39,7 +39,16 @@ export interface CanonicalMcpHttpServer {
   headers?: Record<string, string>;
 }
 
-export type CanonicalMcpServer = CanonicalMcpStdioServer | CanonicalMcpHttpServer;
+export interface CanonicalMcpSdkServer {
+  transport: 'sdk';
+  /** Live McpServer instance from @modelcontextprotocol/sdk - not serializable. */
+  instance: unknown;
+}
+
+export type CanonicalMcpServer =
+  | CanonicalMcpStdioServer
+  | CanonicalMcpHttpServer
+  | CanonicalMcpSdkServer;
 
 export interface ProviderResult {
   output: string;

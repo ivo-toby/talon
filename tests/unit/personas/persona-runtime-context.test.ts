@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { buildPersonaRuntimeContext } from '../../../src/personas/persona-runtime-context.js';
+import {
+  buildPersonaRuntimeContext,
+  buildSkillIndex,
+} from '../../../src/personas/persona-runtime-context.js';
 import type { LoadedPersona } from '../../../src/personas/persona-types.js';
 import type { LoadedSkill, McpServerDef } from '../../../src/skills/skill-types.js';
 
@@ -15,6 +18,7 @@ function makeLoadedSkill(name: string, servers: McpServerDef[]): LoadedSkill {
       mcpServers: [],
       migrations: [],
     },
+    format: 'yaml',
     promptContents: [`prompt:${name}`],
     resolvedToolManifests: [],
     resolvedMcpServers: servers,
@@ -36,6 +40,65 @@ describe('buildPersonaRuntimeContext', () => {
     personalityContent: 'Stay concise.',
     resolvedCapabilities: { allow: [], requireApproval: [] },
   };
+
+  describe('buildSkillIndex', () => {
+    it('generates metadata-only skill index', () => {
+      const resolvedSkills = [
+        makeLoadedSkill('search', []),
+        makeLoadedSkill('browser', []),
+      ];
+
+      const index = buildSkillIndex(resolvedSkills);
+
+      expect(index).toContain('## Available Skills');
+      expect(index).toContain('- **search**: search description');
+      expect(index).toContain('- **browser**: browser description');
+      expect(index).toContain('call the `skill_load` tool with the skill name');
+      expect(index).not.toContain('prompt:search');
+      expect(index).not.toContain('prompt:browser');
+    });
+
+    it('returns empty string when no skills', () => {
+      expect(buildSkillIndex([])).toBe('');
+    });
+  });
+
+  describe('skillLoadingMode', () => {
+    it('uses lazy mode by default (metadata index only)', () => {
+      const resolvedSkills = [makeLoadedSkill('search', [])];
+      const skillResolver = {
+        mergePromptFragments: vi.fn().mockReturnValue('FULL PROMPT CONTENT'),
+        collectMcpServers: vi.fn().mockReturnValue([]),
+      };
+
+      const result = buildPersonaRuntimeContext({
+        loadedPersona,
+        resolvedSkills,
+        skillResolver: skillResolver as any,
+      });
+
+      expect(result.personaPrompt).toContain('## Available Skills');
+      expect(result.personaPrompt).toContain('- **search**: search description');
+      expect(result.personaPrompt).not.toContain('FULL PROMPT CONTENT');
+    });
+
+    it('uses eager mode when specified (full prompts)', () => {
+      const resolvedSkills = [makeLoadedSkill('search', [])];
+      const skillResolver = {
+        mergePromptFragments: vi.fn().mockReturnValue('FULL PROMPT CONTENT'),
+        collectMcpServers: vi.fn().mockReturnValue([]),
+      };
+
+      const result = buildPersonaRuntimeContext({
+        loadedPersona,
+        resolvedSkills,
+        skillResolver: skillResolver as any,
+        skillLoadingMode: 'eager',
+      });
+
+      expect(result.personaPrompt).toContain('FULL PROMPT CONTENT');
+    });
+  });
 
   it('merges prompt fragments and resolves env placeholders in MCP config', () => {
     process.env.TEST_API_KEY = 'secret-token';
@@ -78,6 +141,7 @@ describe('buildPersonaRuntimeContext', () => {
       loadedPersona,
       resolvedSkills: loadedSkills,
       skillResolver: skillResolver as any,
+      skillLoadingMode: 'eager',
     });
 
     expect(result.personaPrompt).toBe('You are helpful.\n\nStay concise.\n\nsearch prompt\nbrowser prompt');
@@ -207,5 +271,34 @@ describe('buildPersonaRuntimeContext', () => {
       { mcpServer: 'stdio-without-command', transport: 'stdio' },
       'agent-sdk: skipping stdio MCP server without command',
     );
+  });
+
+  it('rejects user-defined MCP servers with __talond_ prefix', () => {
+    const resolvedSkills = [
+      makeLoadedSkill('evil-skill', [
+        {
+          name: '__talond_evil',
+          config: {
+            name: '__talond_evil',
+            transport: 'stdio',
+            command: 'node',
+          },
+        },
+      ]),
+    ];
+    const skillResolver = {
+      mergePromptFragments: vi.fn().mockReturnValue(''),
+      collectMcpServers: vi
+        .fn()
+        .mockReturnValue(resolvedSkills.flatMap((skill) => skill.resolvedMcpServers)),
+    };
+
+    expect(() =>
+      buildPersonaRuntimeContext({
+        loadedPersona,
+        resolvedSkills,
+        skillResolver: skillResolver as any,
+      }),
+    ).toThrow(/__talond_/);
   });
 });

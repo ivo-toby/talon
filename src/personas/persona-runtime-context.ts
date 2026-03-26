@@ -12,10 +12,28 @@ interface BuildPersonaRuntimeContextOptions {
   loadedPersona: LoadedPersona;
   resolvedSkills: LoadedSkill[];
   skillResolver: SkillResolver;
+  skillLoadingMode?: 'lazy' | 'eager';
   excludeServerNames?: string[];
   logger?: {
     warn: (payload: Record<string, unknown>, message: string) => void;
   };
+}
+
+export function buildSkillIndex(resolvedSkills: LoadedSkill[]): string {
+  if (resolvedSkills.length === 0) {
+    return '';
+  }
+
+  const lines = resolvedSkills.map(
+    (skill) => `- **${skill.manifest.name}**: ${skill.manifest.description}`,
+  );
+
+  return [
+    '## Available Skills',
+    ...lines,
+    '',
+    'To use a skill, call the `skill_load` tool with the skill name. The tool returns the full instructions for that skill.',
+  ].join('\n');
 }
 
 function resolveEnvPlaceholder(value: string): string {
@@ -44,7 +62,11 @@ function resolveHeaderPlaceholders(
 export function buildPersonaRuntimeContext(
   options: BuildPersonaRuntimeContextOptions,
 ): PersonaRuntimeContext {
-  const skillPrompt = options.skillResolver.mergePromptFragments(options.resolvedSkills);
+  const mode = options.skillLoadingMode ?? 'lazy';
+  const skillPrompt =
+    mode === 'eager'
+      ? options.skillResolver.mergePromptFragments(options.resolvedSkills)
+      : buildSkillIndex(options.resolvedSkills);
   const personaPrompt = [
     options.loadedPersona.systemPromptContent ?? '',
     options.loadedPersona.personalityContent ?? '',
@@ -61,6 +83,12 @@ export function buildPersonaRuntimeContext(
       : options.resolvedSkills.flatMap((skill) => skill.resolvedMcpServers);
 
   for (const server of serverDefs) {
+    if (server.name.startsWith('__talond_')) {
+      throw new Error(
+        `MCP server name "${server.name}" uses reserved prefix "__talond_". Skill-defined MCP servers must not use this prefix.`,
+      );
+    }
+
     if (excluded.has(server.name)) {
       continue;
     }

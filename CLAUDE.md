@@ -46,7 +46,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Tools     | `src/tools/`               | 6 host-tools + capability-based filtering via `tool-filter.ts`      |
 | MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |
 | Personas  | `src/personas/`            | Persona config loading + capability merging                         |
-| Skills    | `src/skills/`              | Declarative skill bundles (YAML + prompt fragments + MCP servers)   |
+| Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool) |
 | SubAgents | `src/subagents/`           | Loader, model resolver, runner for cheap-model sub-agent tasks      |
 | Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema) |
 | Database  | `src/core/database/`       | better-sqlite3 wrapper, 14 repositories, SQL migrations             |
@@ -59,7 +59,9 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 - **SQLite (better-sqlite3)** with WAL mode — single-file, no external DB dependency. Repository pattern allows future migration.
 - **Agent SDK runs on host** (not in container) — session persistence via `sessionId` tracked in DB + in-memory cache.
 - **Capability-based security** — default-deny. Persona `capabilities.allow` lists what tools/channels are accessible. `requireApproval` triggers human confirmation.
-- **Skills are declarative** — YAML manifest + prompt fragments + MCP server configs. No executable code in skills.
+- **Skills are declarative** — two formats: `skill.yaml` + `prompts/*.md` (legacy) or single `SKILL.md` with YAML frontmatter (preferred). No executable code in skills.
+- **Lazy skill loading** — only skill name + description injected into system prompts. Full content loaded on demand via `skill_load` tool (in-process MCP server for Claude SDK, external MCP server for Gemini CLI). Background agents use eager loading.
+- **Internal MCP server prefix** — `__talond_` prefix is reserved for internal MCP servers (`__talond_host_tools`, `__talond_skill_loader`). User-defined servers with this prefix are rejected.
 
 ### Database
 

@@ -35,6 +35,7 @@ export interface AddSkillOptions {
   personaName: string;
   configPath?: string;
   skillsDir?: string;
+  format?: 'yaml' | 'skillmd';
 }
 
 export interface AddSkillResult {
@@ -42,6 +43,7 @@ export interface AddSkillResult {
   personaName: string;
   skillDir: string;
   manifestPath: string;
+  skillFilePath: string;
 }
 
 /** Skill manifest shape written to skill.yaml. */
@@ -112,35 +114,86 @@ export async function addSkill(options: AddSkillOptions): Promise<AddSkillResult
 
   // Scaffold skill directory.
   const skillDir = path.join(skillsDir, options.name);
-  const promptsDir = path.join(skillDir, 'prompts');
-  const manifestPath = path.join(skillDir, 'skill.yaml');
+  const format = options.format ?? 'yaml';
 
-  try {
-    await fs.mkdir(promptsDir, { recursive: true });
-  } catch (cause) {
-    throw new Error(`Error creating skill directory "${promptsDir}": ${String(cause)}`);
+  // Prevent creating an ambiguous skill directory with both formats.
+  if (format === 'skillmd' && existsSync(path.join(skillDir, 'skill.yaml'))) {
+    throw new Error(
+      `Skill "${options.name}" already has a skill.yaml. Cannot create SKILL.md alongside it (ambiguous format).`,
+    );
+  }
+  if (format === 'yaml' && existsSync(path.join(skillDir, 'SKILL.md'))) {
+    throw new Error(
+      `Skill "${options.name}" already has a SKILL.md. Cannot create skill.yaml alongside it (ambiguous format).`,
+    );
   }
 
-  // Write skill manifest stub if it doesn't already exist.
-  if (!existsSync(manifestPath)) {
-    const manifest: SkillManifest = buildSkillManifest(options.name);
-    const manifestYaml = yaml.dump(manifest, {
-      lineWidth: 120,
-      quotingType: '"',
-      forceQuotes: false,
-    });
+  let skillFilePath: string;
 
-    const header = [
-      `# skill.yaml — ${options.name} skill manifest`,
-      '# Edit this file to configure the skill.',
-      '',
-      '',
-    ].join('\n');
+  if (format === 'skillmd') {
+    // SKILL.md format: single file with YAML frontmatter, no prompts/ subdir.
+    const skillMdPath = path.join(skillDir, 'SKILL.md');
+    skillFilePath = skillMdPath;
 
     try {
-      await fs.writeFile(manifestPath, header + manifestYaml, 'utf-8');
+      await fs.mkdir(skillDir, { recursive: true });
     } catch (cause) {
-      throw new Error(`Error writing skill manifest "${manifestPath}": ${String(cause)}`);
+      throw new Error(`Error creating skill directory "${skillDir}": ${String(cause)}`);
+    }
+
+    if (!existsSync(skillMdPath)) {
+      const stub = [
+        '---',
+        `name: ${options.name}`,
+        'version: 0.1.0',
+        `description: "${options.name} — replace with a meaningful description."`,
+        '---',
+        '',
+        `# ${options.name}`,
+        '',
+        'Replace this with skill instructions.',
+        '',
+      ].join('\n');
+
+      try {
+        await fs.writeFile(skillMdPath, stub, 'utf-8');
+      } catch (cause) {
+        throw new Error(`Error writing SKILL.md "${skillMdPath}": ${String(cause)}`);
+      }
+    }
+  } else {
+    // Default yaml format: skill.yaml + prompts/ directory.
+    const promptsDir = path.join(skillDir, 'prompts');
+    const manifestPath = path.join(skillDir, 'skill.yaml');
+    skillFilePath = manifestPath;
+
+    try {
+      await fs.mkdir(promptsDir, { recursive: true });
+    } catch (cause) {
+      throw new Error(`Error creating skill directory "${promptsDir}": ${String(cause)}`);
+    }
+
+    // Write skill manifest stub if it doesn't already exist.
+    if (!existsSync(manifestPath)) {
+      const manifest: SkillManifest = buildSkillManifest(options.name);
+      const manifestYaml = yaml.dump(manifest, {
+        lineWidth: 120,
+        quotingType: '"',
+        forceQuotes: false,
+      });
+
+      const header = [
+        `# skill.yaml — ${options.name} skill manifest`,
+        '# Edit this file to configure the skill.',
+        '',
+        '',
+      ].join('\n');
+
+      try {
+        await fs.writeFile(manifestPath, header + manifestYaml, 'utf-8');
+      } catch (cause) {
+        throw new Error(`Error writing skill manifest "${manifestPath}": ${String(cause)}`);
+      }
     }
   }
 
@@ -154,7 +207,8 @@ export async function addSkill(options: AddSkillOptions): Promise<AddSkillResult
     name: options.name,
     personaName: options.personaName,
     skillDir,
-    manifestPath,
+    manifestPath: format === 'yaml' ? path.join(skillDir, 'skill.yaml') : path.join(skillDir, 'SKILL.md'),
+    skillFilePath,
   };
 }
 
@@ -171,12 +225,14 @@ export async function addSkillCommand(options: AddSkillOptions): Promise<void> {
   try {
     const result = await addSkill(options);
     console.log(`Created skill directory:  ${result.skillDir}`);
-    console.log(`Created prompts directory: ${path.join(result.skillDir, 'prompts')}`);
-    console.log(`Created skill manifest:   ${result.manifestPath}`);
+    if (options.format !== 'skillmd') {
+      console.log(`Created prompts directory: ${path.join(result.skillDir, 'prompts')}`);
+    }
+    console.log(`Created skill file:       ${result.skillFilePath}`);
     console.log(
       `Added skill "${result.name}" to persona "${result.personaName}" in "${options.configPath ?? DEFAULT_CONFIG_PATH}".`,
     );
-    console.log(`Edit "${result.manifestPath}" to configure the skill.`);
+    console.log(`Edit "${result.skillFilePath}" to configure the skill.`);
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     process.exit(1);

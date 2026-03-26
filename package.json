@@ -40,6 +40,7 @@
     "commander": "^12.1.0",
     "cron-parser": "^4.9.0",
     "dockerode": "^4.0.2",
+    "gray-matter": "^4.0.3",
     "js-yaml": "^4.1.0",
     "marked": "^17.0.4",
     "marked-terminal": "^7.3.0",

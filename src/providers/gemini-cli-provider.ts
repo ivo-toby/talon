@@ -233,6 +233,11 @@ export class GeminiCliProvider implements AgentProvider {
     const nativeServers: Record<string, unknown> = {};
 
     for (const [name, server] of Object.entries(mcpServers)) {
+      if (server.transport === 'sdk') {
+        // SDK in-process servers are not supported by CLI providers - skip
+        continue;
+      }
+
       if (server.transport === 'stdio') {
         nativeServers[name] = {
           command: server.command,

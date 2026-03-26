@@ -133,7 +133,8 @@ export class BackgroundAgentHandler {
       loadedPersona,
       resolvedSkills: personaSkills,
       skillResolver: this.deps.skillResolver,
-      excludeServerNames: ['host-tools'],
+      excludeServerNames: ['__talond_host_tools'],
+      skillLoadingMode: 'eager',
       logger: this.deps.logger,
     });
 

@@ -246,6 +246,68 @@ describe('ClaudeCodeProvider', () => {
     expect(typeof iterable[Symbol.asyncIterator]).toBe('function');
   });
 
+  it('passes SDK MCP server instances through to the Claude SDK strategy', async () => {
+    const sdkInstance = { connect: vi.fn() };
+    const queryMock = vi.fn(() =>
+      (async function* () {
+        yield {
+          type: 'result',
+          result: 'Finished.',
+          session_id: 'session-001',
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+          },
+          is_error: false,
+        };
+      })(),
+    );
+
+    vi.doMock('@anthropic-ai/claude-agent-sdk', () => ({
+      query: queryMock,
+    }));
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+
+      for await (const _event of strategy.run({
+        prompt: 'Inspect SDK MCP',
+        systemPrompt: 'You are helpful.',
+        model: 'claude-3-5-sonnet-20241022',
+        mcpServers: {
+          inProcess: {
+            transport: 'sdk',
+            instance: sdkInstance,
+          },
+          remoteBrowser: {
+            transport: 'http',
+            url: 'https://mcp.example.test',
+          },
+        },
+        cwd: '/tmp',
+        maxTurns: 4,
+        timeoutMs: 30_000,
+      })) {
+        // drain iterable
+      }
+
+      expect(queryMock).toHaveBeenCalledWith({
+        prompt: 'Inspect SDK MCP',
+        options: expect.objectContaining({
+          mcpServers: {
+            inProcess: sdkInstance,
+            remoteBrowser: {
+              type: 'http',
+              url: 'https://mcp.example.test',
+            },
+          },
+        }),
+      });
+    } finally {
+      vi.doUnmock('@anthropic-ai/claude-agent-sdk');
+    }
+  });
+
   it('parseBackgroundResult with timedOut:true preserves the flag and surfaces stderr', () => {
     const result = provider.parseBackgroundResult({
       stdout: '',
@@ -400,7 +462,7 @@ describe('ClaudeCodeProvider', () => {
                   type: 'mcp_tool_use',
                   id: 'mcpu_001',
                   name: 'memory_access',
-                  server_name: 'host-tools',
+                  server_name: '__talond_host_tools',
                   input: { operation: 'read', key: 'profile' },
                 },
               ],
@@ -441,7 +503,7 @@ describe('ClaudeCodeProvider', () => {
         tool: 'memory_access',
         toolUseId: 'mcpu_001',
         input: { operation: 'read', key: 'profile' },
-        serverName: 'host-tools',
+        serverName: '__talond_host_tools',
         subtype: undefined,
       });
     } finally {

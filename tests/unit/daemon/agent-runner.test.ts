@@ -13,9 +13,32 @@ import { ok, err } from 'neverthrow';
 // ---------------------------------------------------------------------------
 
 const mockQuery = vi.fn();
+const mockCreateSdkMcpServer = vi.fn((options: { name: string; tools?: unknown[] }) => ({
+  type: 'sdk',
+  name: options.name,
+  instance: {
+    connect: vi.fn(),
+    tools: options.tools ?? [],
+  },
+}));
+const mockSdkTool = vi.fn(
+  (
+    name: string,
+    description: string,
+    inputSchema: Record<string, unknown>,
+    handler: (args: Record<string, string>) => Promise<unknown>,
+  ) => ({
+    name,
+    description,
+    inputSchema,
+    handler,
+  }),
+);
 
 vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
+  createSdkMcpServer: (...args: unknown[]) => mockCreateSdkMcpServer(...args),
+  tool: (...args: unknown[]) => mockSdkTool(...args),
 }));
 
 // ---------------------------------------------------------------------------
@@ -265,6 +288,8 @@ describe('AgentRunner', () => {
     runner = new AgentRunner(ctx);
     mockQuery.mockReset();
     mockQuery.mockReturnValue(makeAgentStream());
+    mockCreateSdkMcpServer.mockClear();
+    mockSdkTool.mockClear();
   });
 
   // -------------------------------------------------------------------------
@@ -1442,7 +1467,7 @@ describe('AgentRunner', () => {
       const queryCall = mockQuery.mock.calls[0]![0] as {
         options: { mcpServers: Record<string, any> };
       };
-      const allowedTools = queryCall.options.mcpServers['host-tools'].env.TALOND_ALLOWED_TOOLS
+      const allowedTools = queryCall.options.mcpServers.__talond_host_tools.env.TALOND_ALLOWED_TOOLS
         .split(',')
         .filter(Boolean);
 
@@ -1456,9 +1481,168 @@ describe('AgentRunner', () => {
       const queryCall = mockQuery.mock.calls[0]![0] as {
         options: { mcpServers: Record<string, any> };
       };
-      expect(queryCall.options.mcpServers['host-tools'].env.TALOND_TRACEPARENT).toBe(
+      expect(queryCall.options.mcpServers.__talond_host_tools.env.TALOND_TRACEPARENT).toBe(
         GENERATION_TRACEPARENT,
       );
+    });
+
+    it('injects an in-process skill_load MCP server for SDK providers', async () => {
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'claude-sonnet-4-20250514',
+          skills: ['brainstorming', 'empty'],
+          capabilities: { allow: [] },
+        },
+        systemPromptContent: 'You are a test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*'],
+          requireApproval: [],
+        },
+      } as any));
+
+      (ctx as any).loadedSkills = [
+        {
+          manifest: { name: 'brainstorming' },
+          format: 'yaml',
+          promptContents: ['Line 1', 'Line 2'],
+          resolvedToolManifests: [],
+          resolvedMcpServers: [],
+          migrationPaths: [],
+        },
+        {
+          manifest: { name: 'empty' },
+          format: 'yaml',
+          promptContents: [''],
+          resolvedToolManifests: [],
+          resolvedMcpServers: [],
+          migrationPaths: [],
+        },
+      ];
+
+      await runner.run(makeQueueItem());
+
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any> };
+      };
+      expect(mockSdkTool).toHaveBeenCalledWith(
+        'skill_load',
+        expect.stringContaining('Load the full instructions for a skill'),
+        expect.any(Object),
+        expect.any(Function),
+      );
+      expect(mockCreateSdkMcpServer).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: '__talond_skill_loader',
+          tools: expect.any(Array),
+        }),
+      );
+      expect(queryCall.options.mcpServers.__talond_skill_loader).toBe(
+        mockCreateSdkMcpServer.mock.results[0]?.value,
+      );
+
+      const toolDefinition = mockSdkTool.mock.results[0]?.value as {
+        handler: (args: { name: string }) => Promise<{
+          content: Array<{ type: 'text'; text: string }>;
+          isError?: boolean;
+        }>;
+      };
+      expect(toolDefinition).toBeDefined();
+      await expect(toolDefinition.handler({ name: 'brainstorming' })).resolves.toEqual({
+        content: [{ type: 'text', text: 'Line 1\nLine 2' }],
+      });
+      await expect(toolDefinition.handler({ name: 'missing' })).resolves.toEqual({
+        content: [
+          {
+            type: 'text',
+            text: 'Error: skill "missing" not found. Available: brainstorming, empty',
+          },
+        ],
+        isError: true,
+      });
+    });
+
+    it('injects the skill_load stdio MCP server for CLI providers when skills are available', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'Gemini result',
+        sessionId: undefined,
+        usage: {
+          inputTokens: 500_000,
+          outputTokens: 120,
+        },
+        isError: false,
+      });
+
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'gemini-2.5-pro',
+          provider: 'gemini-cli',
+          skills: ['brainstorming'],
+          capabilities: { allow: [] },
+        },
+        systemPromptContent: 'You are a Gemini test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*'],
+          requireApproval: [],
+        },
+      } as any));
+      ctx.config.agentRunner.defaultProvider = 'gemini-cli';
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'gemini-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: false as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 500_000,
+              metrics: {
+                input_tokens: 500_000,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'gemini',
+            contextWindowTokens: 1_000_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.8,
+            }),
+          }),
+        }),
+      } as any;
+      (ctx as any).loadedSkills = [
+        {
+          manifest: { name: 'brainstorming' },
+          format: 'yaml',
+          promptContents: ['Line 1', 'Line 2'],
+          resolvedToolManifests: [],
+          resolvedMcpServers: [],
+          migrationPaths: [],
+        },
+      ];
+
+      await runner.run(makeQueueItem());
+
+      const queryInput = cliRun.mock.calls[0]?.[0] as {
+        mcpServers: Record<string, any>;
+      };
+
+      expect(queryInput.mcpServers.__talond_skill_loader).toEqual({
+        transport: 'stdio',
+        command: 'node',
+        args: [expect.stringContaining('dist/tools/skill-loader-mcp-server.js')],
+        env: expect.objectContaining({
+          TALOND_SOCKET: '/tmp/test-data/host-tools.sock',
+          TALOND_RUN_ID: expect.any(String),
+          TALOND_THREAD_ID: 'thread-001',
+          TALOND_PERSONA_ID: 'persona-001',
+          TALOND_TRACEPARENT: GENERATION_TRACEPARENT,
+        }),
+      });
     });
   });
 
@@ -1489,6 +1673,9 @@ describe('AgentRunner', () => {
         (ctx as any).loadedSkills = [
           {
             manifest: { name: 'github' },
+            format: 'yaml',
+            promptContents: [],
+            resolvedToolManifests: [],
             resolvedMcpServers: [
               {
                 name: 'github',
@@ -1504,6 +1691,7 @@ describe('AgentRunner', () => {
                 },
               },
             ],
+            migrationPaths: [],
           },
         ];
 
@@ -1547,6 +1735,9 @@ describe('AgentRunner', () => {
       (ctx as any).loadedSkills = [
         {
           manifest: { name: 'github' },
+          format: 'yaml',
+          promptContents: [],
+          resolvedToolManifests: [],
           resolvedMcpServers: [
             {
               name: 'github',
@@ -1558,6 +1749,7 @@ describe('AgentRunner', () => {
               },
             },
           ],
+          migrationPaths: [],
         },
       ];
 
@@ -1595,6 +1787,9 @@ describe('AgentRunner', () => {
       (ctx as any).loadedSkills = [
         {
           manifest: { name: 'local' },
+          format: 'yaml',
+          promptContents: [],
+          resolvedToolManifests: [],
           resolvedMcpServers: [
             {
               name: 'local-mcp',
@@ -1607,6 +1802,7 @@ describe('AgentRunner', () => {
               },
             },
           ],
+          migrationPaths: [],
         },
       ];
 
@@ -1638,6 +1834,9 @@ describe('AgentRunner', () => {
       (ctx as any).loadedSkills = [
         {
           manifest: { name: 'remote' },
+          format: 'yaml',
+          promptContents: [],
+          resolvedToolManifests: [],
           resolvedMcpServers: [
             {
               name: 'remote-mcp',
@@ -1648,6 +1847,7 @@ describe('AgentRunner', () => {
               },
             },
           ],
+          migrationPaths: [],
         },
       ];
 
@@ -1739,7 +1939,7 @@ describe('AgentRunner', () => {
       expect(ctx.observability.observeWithTraceparent).not.toHaveBeenCalled();
     });
 
-    it('skips duplicate provider tool observations for host-tools MCP calls', async () => {
+    it('skips duplicate provider tool observations for internal host-tools MCP calls', async () => {
       ctx.observability.startWithTraceparent = vi.fn(() => makeStartedObservationHandle(null));
 
       async function* streamWithHostToolsMcpCall() {
@@ -1751,7 +1951,7 @@ describe('AgentRunner', () => {
                 type: 'mcp_tool_use',
                 id: 'mcpu_001',
                 name: 'memory_access',
-                server_name: 'host-tools',
+                server_name: '__talond_host_tools',
                 input: { operation: 'read', key: 'profile' },
               },
             ],
@@ -1782,6 +1982,57 @@ describe('AgentRunner', () => {
       }
 
       mockQuery.mockReturnValue(streamWithHostToolsMcpCall());
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.observability.startWithTraceparent).not.toHaveBeenCalled();
+      expect(ctx.observability.observeWithTraceparent).not.toHaveBeenCalled();
+    });
+
+    it('skips duplicate provider tool observations for internal skill_load MCP calls', async () => {
+      ctx.observability.startWithTraceparent = vi.fn(() => makeStartedObservationHandle(null));
+
+      async function* streamWithSkillLoaderMcpCall() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_use',
+                id: 'mcpu_001',
+                name: 'skill_load',
+                server_name: '__talond_skill_loader',
+                input: { name: 'brainstorming' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_result',
+                tool_use_id: 'mcpu_001',
+                content: 'skill contents',
+                is_error: false,
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'Loaded skill.',
+          session_id: 'session-xyz',
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 200, output_tokens: 100 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithSkillLoaderMcpCall());
 
       const result = await runner.run(makeQueueItem());
 
@@ -1830,7 +2081,7 @@ describe('AgentRunner', () => {
       );
     });
 
-    it('does not create duplicate provider observations for host-tools mcp_tool_use assistant blocks', async () => {
+    it('does not create duplicate provider observations for internal host-tools mcp_tool_use assistant blocks', async () => {
       async function* streamWithMcpToolUse() {
         yield {
           type: 'assistant',
@@ -1840,7 +2091,7 @@ describe('AgentRunner', () => {
                 type: 'mcp_tool_use',
                 id: 'mcpu_001',
                 name: 'memory_access',
-                server_name: 'host-tools',
+                server_name: '__talond_host_tools',
                 input: { operation: 'read', key: 'profile' },
               },
             ],

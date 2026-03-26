@@ -89,6 +89,8 @@ export interface SkillManifest {
 export interface LoadedSkill {
   /** The validated manifest from skill.yaml. */
   manifest: SkillManifest;
+  /** Source manifest format used to load this skill. */
+  format: 'yaml' | 'skillmd';
   /**
    * Contents of each prompt fragment file, in the order they were
    * declared in (or discovered from) the skill directory.
@@ -145,7 +147,7 @@ export interface ResolvedSkillSet {
 export interface SkillDirectory {
   /** Absolute path to the skill's root directory. */
   rootDir: string;
-  /** Absolute path to the manifest file (`<rootDir>/skill.yaml`). */
+  /** Absolute path to the manifest file. */
   manifestPath: string;
   /** Absolute path to the prompts directory (`<rootDir>/prompts/`). */
   promptsDir: string;

@@ -80,6 +80,38 @@ async function writeMinimalManifest(skillDir: string, overrides: Record<string, 
 }
 
 /**
+ * Writes a minimal valid SKILL.md with YAML frontmatter to the given directory.
+ */
+async function writeSkillMd(
+  skillDir: string,
+  frontmatter: Record<string, unknown> = {},
+  body = 'Default skill body.',
+): Promise<void> {
+  const manifest = {
+    name: 'test-skill',
+    description: 'A test skill',
+    version: '1.0.0',
+    ...frontmatter,
+  };
+  const lines = Object.entries(manifest)
+    .filter(([, value]) => value !== undefined)
+    .map(([k, v]) => {
+      if (Array.isArray(v)) {
+        if (v.length === 0) return `${k}: []`;
+        return `${k}:\n${v.map((item) => `  - ${item}`).join('\n')}`;
+      }
+      return `${k}: ${JSON.stringify(v)}`;
+    })
+    .join('\n');
+
+  await writeFile(
+    join(skillDir, 'SKILL.md'),
+    `---\n${lines}\n---\n\n${body}\n`,
+    'utf-8',
+  );
+}
+
+/**
  * Returns a minimal ToolManifest YAML string.
  */
 function toolManifestYaml(name = 'test-tool'): string {
@@ -164,6 +196,76 @@ describe('SkillLoader', () => {
         expect.objectContaining({ skill: 'test-skill' }),
         expect.any(String),
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // loadFromDirectory — SKILL.md format
+  // -------------------------------------------------------------------------
+
+  describe('SKILL.md format', () => {
+    it('loads skill from SKILL.md with frontmatter', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeSkillMd(
+        skillDir,
+        {
+          name: 'markdown-skill',
+          description: 'Skill loaded from markdown',
+        },
+        '# Markdown Skill\n\nUse this skill carefully.',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isOk()).toBe(true);
+
+      const skill = result._unsafeUnwrap();
+      expect(skill.manifest.name).toBe('markdown-skill');
+      expect(skill.manifest.description).toBe('Skill loaded from markdown');
+      expect(skill.format).toBe('skillmd');
+      expect(skill.promptContents).toEqual(['# Markdown Skill\n\nUse this skill carefully.']);
+    });
+
+    it('errors when both skill.yaml and SKILL.md exist', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeMinimalManifest(skillDir);
+      await writeSkillMd(skillDir);
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toMatch(/ambiguous/i);
+    });
+
+    it('loads MCP servers from mcp/ alongside SKILL.md', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeSkillMd(skillDir);
+      const mcpDir = join(skillDir, 'mcp');
+      await mkdir(mcpDir);
+      await writeFile(join(mcpDir, 'server.json'), mcpServerDefJson('server'), 'utf-8');
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isOk()).toBe(true);
+
+      const skill = result._unsafeUnwrap();
+      expect(skill.format).toBe('skillmd');
+      expect(skill.resolvedMcpServers).toHaveLength(1);
+      expect(skill.resolvedMcpServers[0].name).toBe('server');
+    });
+
+    it('defaults version to 0.1.0 when omitted in frontmatter', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeSkillMd(
+        skillDir,
+        {
+          name: 'versionless-skill',
+          description: 'No explicit version',
+          version: undefined,
+        },
+        'Body',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().manifest.version).toBe('0.1.0');
     });
   });
 

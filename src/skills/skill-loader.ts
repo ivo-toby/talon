@@ -23,12 +23,13 @@
 import { readFile, readdir, access } from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
 import { join } from 'node:path';
+import matter from 'gray-matter';
 import yaml from 'js-yaml';
 import { ok, err, type Result } from 'neverthrow';
 import type pino from 'pino';
 import { z } from 'zod';
 import { SkillError } from '../core/errors/index.js';
-import { SkillManifestSchema } from './skill-schema.js';
+import { SkillManifestSchema, SkillMdFrontmatterSchema } from './skill-schema.js';
 import type { LoadedSkill, McpServerDef } from './skill-types.js';
 import type { ToolManifest } from '../tools/tool-types.js';
 
@@ -141,6 +142,21 @@ export class SkillLoader {
   async loadFromDirectory(skillDir: string): Promise<Result<LoadedSkill, SkillError>> {
     this.logger.debug({ skillDir }, 'loading skill from directory');
 
+    const hasSkillYaml = await this.fileExists(join(skillDir, 'skill.yaml'));
+    const hasSkillMd = await this.fileExists(join(skillDir, 'SKILL.md'));
+
+    if (hasSkillYaml && hasSkillMd) {
+      return err(
+        new SkillError(
+          `Skill directory "${skillDir}" is ambiguous: both "skill.yaml" and "SKILL.md" exist`,
+        ),
+      );
+    }
+
+    if (hasSkillMd) {
+      return this.loadFromSkillMd(skillDir);
+    }
+
     // 1. Read and validate the manifest.
     const manifestResult = await this.readManifest(skillDir);
     if (manifestResult.isErr()) return err(manifestResult.error);
@@ -183,6 +199,7 @@ export class SkillLoader {
 
     const loaded: LoadedSkill = {
       manifest,
+      format: 'yaml',
       promptContents,
       resolvedToolManifests,
       resolvedMcpServers,
@@ -269,6 +286,15 @@ export class SkillLoader {
   // Private helpers
   // -------------------------------------------------------------------------
 
+  private async fileExists(filePath: string): Promise<boolean> {
+    try {
+      await access(filePath, fsConstants.R_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Reads and validates `skill.yaml` inside the given directory.
    */
@@ -307,6 +333,87 @@ export class SkillLoader {
     }
 
     return ok(parseResult.data);
+  }
+
+  /**
+   * Reads and validates `SKILL.md` inside the given directory.
+   */
+  private async loadFromSkillMd(skillDir: string): Promise<Result<LoadedSkill, SkillError>> {
+    const skillMdPath = join(skillDir, 'SKILL.md');
+    let frontmatter: unknown;
+    let body = '';
+
+    try {
+      const content = await readFile(skillMdPath, 'utf-8');
+      const parsed = matter(content);
+      frontmatter = parsed.data;
+      body = parsed.content.trim();
+    } catch (cause) {
+      return err(
+        new SkillError(
+          `Failed to read skill markdown at "${skillMdPath}": ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+
+    const parseResult = SkillMdFrontmatterSchema.safeParse(frontmatter);
+    if (!parseResult.success) {
+      const issues = parseResult.error.issues
+        .map((i) => `${i.path.join('.') || '<root>'}: ${i.message}`)
+        .join('; ');
+      return err(
+        new SkillError(
+          `Skill markdown frontmatter validation failed for "${skillMdPath}": ${issues}`,
+        ),
+      );
+    }
+
+    const manifest: LoadedSkill['manifest'] = {
+      ...parseResult.data,
+      promptFragments: [],
+      toolManifests: [],
+      mcpServers: [],
+      migrations: [],
+    };
+
+    for (const label of manifest.requiredCapabilities) {
+      const { valid, warning, error } = validateCapabilityLabel(label);
+      if (warning) {
+        this.logger.warn({ skill: manifest.name, label }, warning);
+      }
+      if (!valid) {
+        return err(
+          new SkillError(
+            `Skill "${manifest.name}" has malformed requiredCapability: ${error ?? label}`,
+          ),
+        );
+      }
+    }
+
+    const toolResult = await this.loadToolManifests(skillDir, manifest.name);
+    if (toolResult.isErr()) return err(toolResult.error);
+    const resolvedToolManifests = toolResult.value;
+
+    const mcpResult = await this.loadMcpServerDefs(skillDir, manifest.name);
+    if (mcpResult.isErr()) return err(mcpResult.error);
+    const resolvedMcpServers = mcpResult.value;
+
+    const migrationsResult = await this.collectMigrationPaths(skillDir, manifest.name);
+    if (migrationsResult.isErr()) return err(migrationsResult.error);
+    const migrationPaths = migrationsResult.value;
+
+    const loaded: LoadedSkill = {
+      manifest,
+      format: 'skillmd',
+      promptContents: body.length > 0 ? [body] : [],
+      resolvedToolManifests,
+      resolvedMcpServers,
+      migrationPaths,
+    };
+
+    this.logger.info({ skill: manifest.name, skillDir }, 'skill loaded');
+    return ok(loaded);
   }
 
   /**

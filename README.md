@@ -45,7 +45,7 @@ It is built for single-user or small-team deployments where you want persistent,
 - **Persona-per-channel** — Each channel gets its own agent with a dedicated system prompt, model, tools, and capabilities
 - **Claude Agent SDK** — Agents run via the Anthropic Agent SDK with session persistence and multi-turn support
 - **Per-thread memory** — Each conversation thread gets its own workspace with transcript, working memory, and artifacts
-- **Skills** — Modular prompt fragments and tool bundles that snap onto personas
+- **Skills** — Modular prompt and tool bundles with lazy loading (metadata-only in system prompt, full content on demand)
 - **MCP integration** — Connect external MCP tool servers via stdio, policy-enforced through host-tools bridge
 
 ### Provider abstraction
@@ -649,27 +649,53 @@ flowchart LR
 
 ## Skills
 
-Skills are modular bundles of prompts, tools, and configuration that snap onto personas.
+Skills are modular bundles of prompts, tools, and configuration that snap onto personas. Skills use **lazy loading** — only metadata (name + description) is injected into the system prompt. Full instructions are loaded on demand when the agent calls the `skill_load` tool.
 
-### Skill Structure
+### Skill Formats
+
+Two on-disk formats are supported:
+
+**SKILL.md** (recommended) — single file with YAML frontmatter:
 
 ```
 skills/<skill_name>/
-  skill.yaml          # metadata, required capabilities, config schema
-  prompts/*.md        # persona augmentation fragments
-  tools/*.yaml        # tool manifests (capability labels + schemas)
-  mcp/*.json          # MCP server definitions (optional)
-  migrations/*.sql    # DB migrations (optional)
+  SKILL.md             # YAML frontmatter + markdown instructions
+  mcp/*.json           # MCP server definitions (optional)
+  tools/*.yaml         # tool manifests (optional)
+  migrations/*.sql     # DB migrations (optional)
+```
+
+**skill.yaml + prompts/** (legacy) — separate manifest and prompt files:
+
+```
+skills/<skill_name>/
+  skill.yaml           # metadata, required capabilities
+  prompts/*.md         # prompt instruction fragments
+  mcp/*.json           # MCP server definitions (optional)
+  tools/*.yaml         # tool manifests (optional)
+  migrations/*.sql     # DB migrations (optional)
 ```
 
 ### Adding a Skill
 
 ```bash
-# Scaffold a new skill and attach it to a persona
+# SKILL.md format (recommended)
+npx talonctl add-skill --name web-search --persona assistant --format skillmd
+
+# Legacy YAML format
 npx talonctl add-skill --name web-search --persona assistant
 ```
 
-This creates the skill directory structure, generates a default `skill.yaml`, and adds the skill to the persona in `talond.yaml`.
+### Lazy Loading
+
+Only skill name and description are included in the agent's system prompt per run. When the agent needs a skill's full instructions, it calls `skill_load`. MCP servers from skills still connect eagerly at startup.
+
+| Scenario | Eager (old) | Lazy (current) |
+|---|---|---|
+| 7 skills, using 1 | ~21k tokens | ~3.7k tokens |
+| 20 skills, using 0 | ~60k tokens | ~2k tokens |
+
+Background agents use eager loading to ensure full access without calling `skill_load`.
 
 ### Skill Resolution
 
@@ -907,7 +933,7 @@ npx talonctl reload
 | `talonctl setup`                              | First-time interactive setup (checks environment, creates dirs, generates config) |
 | `talonctl add-channel --name <n> --type <t>`  | Add a channel connector to config                                                 |
 | `talonctl add-persona --name <n>`             | Scaffold a persona directory and add to config                                    |
-| `talonctl add-skill --name <n> --persona <p>` | Scaffold a skill and attach to a persona                                          |
+| `talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Scaffold a skill (`yaml` or `skillmd` format) and attach to a persona |
 
 ```bash
 # Full setup flow

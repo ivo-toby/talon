@@ -91,11 +91,11 @@ function createHandler(overrides: Record<string, unknown> = {}) {
       mergePromptFragments: vi.fn().mockReturnValue('Skill instructions.'),
       collectMcpServers: vi.fn().mockReturnValue([
         {
-          name: 'host-tools',
+          name: 'some-skill-server',
           config: {
             transport: 'stdio',
             command: 'node',
-            args: ['host-tools.js'],
+            args: ['some-skill-server.js'],
           },
         },
         {
@@ -173,6 +173,11 @@ describe('BackgroundAgentHandler', () => {
         timeoutMinutes: 45,
         threadContext: 'Previous thread summary.',
         mcpServers: {
+          'some-skill-server': {
+            transport: 'stdio',
+            command: 'node',
+            args: ['some-skill-server.js'],
+          },
           perplexity: {
             transport: 'stdio',
             command: 'npx',

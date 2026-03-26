@@ -267,6 +267,11 @@ export class ClaudeCodeProvider implements AgentProvider {
     const nativeServers: Record<string, unknown> = {};
 
     for (const [name, server] of Object.entries(mcpServers)) {
+      if (server.transport === 'sdk') {
+        nativeServers[name] = server.instance;
+        continue;
+      }
+
       if (server.transport === 'stdio') {
         nativeServers[name] = {
           type: 'stdio',

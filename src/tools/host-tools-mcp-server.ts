@@ -428,7 +428,7 @@ async function main(): Promise<void> {
 
   const server = new Server(
     {
-      name: 'host-tools',
+      name: '__talond_host_tools',
       version: '1.0.0',
     },
     {

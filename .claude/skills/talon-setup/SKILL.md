@@ -39,7 +39,7 @@ All config mutations go through these commands:
 | `npx talonctl setup` | Bootstrap (dirs, config, migrations) |
 | `npx talonctl add-channel --name <n> --type <t>` | Add a channel |
 | `npx talonctl add-persona --name <n>` | Scaffold persona + add to config |
-| `npx talonctl add-skill --name <n> --persona <p>` | Add a skill to a persona |
+| `npx talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Add a skill to a persona |
 | `npx talonctl bind --persona <p> --channel <c>` | Bind persona to channel |
 | `npx talonctl unbind --persona <p> --channel <c>` | Remove binding |
 | `npx talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add MCP server |
@@ -99,6 +99,22 @@ What would you like to do?
   h) Show current config summary
   i) Test a provider
   j) Check environment variables
+```
+
+## Skill formats
+
+When adding a skill, choose a format with `--format`:
+
+- **SKILL.md** (`--format skillmd`, recommended for new skills): Single markdown file with YAML frontmatter for metadata and markdown body for instructions. No separate prompts directory.
+- **skill.yaml** (`--format yaml`, default/legacy): Separate YAML manifest file plus a `prompts/` directory for prompt fragments.
+
+Example:
+```bash
+# New style (recommended)
+npx talonctl add-skill --name my-skill --persona assistant --format skillmd
+
+# Legacy style (default if --format is omitted)
+npx talonctl add-skill --name my-skill --persona assistant
 ```
 
 ## Full setup flow

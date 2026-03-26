@@ -19,7 +19,7 @@ import { z } from 'zod';
  * Capability label: `domain.action:scope` or `domain.action`.
  * We use a permissive string check here; the loader does stricter validation.
  */
-const CapabilityLabelSchema = z.string().min(1);
+export const CapabilityLabelSchema = z.string().min(1);
 
 // ---------------------------------------------------------------------------
 // SkillManifest schema
@@ -73,6 +73,13 @@ export const SkillManifestSchema = z.object({
   migrations: z.array(z.string()).default([]),
 });
 
+export const SkillMdFrontmatterSchema = z.object({
+  name: z.string().min(1, 'skill name must be non-empty'),
+  version: z.string().min(1).default('0.1.0'),
+  description: z.string().min(1, 'skill description must be non-empty'),
+  requiredCapabilities: z.array(CapabilityLabelSchema).default([]),
+});
+
 // ---------------------------------------------------------------------------
 // Inferred types
 // ---------------------------------------------------------------------------
@@ -82,3 +89,7 @@ export type SkillManifestInput = z.input<typeof SkillManifestSchema>;
 
 /** TypeScript type of the validated/transformed output. */
 export type SkillManifestOutput = z.output<typeof SkillManifestSchema>;
+
+export type SkillMdFrontmatterInput = z.input<typeof SkillMdFrontmatterSchema>;
+
+export type SkillMdFrontmatterOutput = z.output<typeof SkillMdFrontmatterSchema>;

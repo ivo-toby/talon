@@ -165,11 +165,17 @@ program
   .description('Scaffold a skill directory and add it to a persona in talond.yaml')
   .requiredOption('--name <name>', 'Skill name (e.g. web-search)')
   .requiredOption('--persona <persona>', 'Persona to attach the skill to')
+  .option('--format <format>', 'Skill format: yaml or skillmd', 'yaml')
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
-  .action(async (opts: { name: string; persona: string; config: string }) => {
+  .action(async (opts: { name: string; persona: string; format: string; config: string }) => {
+    if (opts.format !== 'yaml' && opts.format !== 'skillmd') {
+      console.error(`Error: invalid format "${opts.format}". Must be "yaml" or "skillmd".`);
+      process.exit(1);
+    }
     await addSkillCommand({
       name: opts.name,
       personaName: opts.persona,
+      format: opts.format,
       configPath: opts.config,
     });
   });

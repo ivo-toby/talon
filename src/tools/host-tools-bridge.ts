@@ -228,6 +228,12 @@ export class HostToolsBridge {
     const normalizedTool = TOOL_NAME_MAP[tool] || tool;
 
     try {
+      if (normalizedTool === 'skill.load') {
+        const result = await this.dispatch(normalizedTool, args, context);
+        this.sendResponse(socket, { id, result });
+        return;
+      }
+
       const result = await this.ctx.observability.observeWithTraceparent(
         context.traceparent,
         {
@@ -316,6 +322,25 @@ export class HostToolsBridge {
     socket.write(JSON.stringify(response) + '\n');
   }
 
+  private resolveSkillContent(personaId: string, skillName: string): string | null {
+    const personaRow = this.ctx.repos.persona.findById(personaId);
+    if (personaRow.isErr() || !personaRow.value) return null;
+    const loadedPersona = this.ctx.personaLoader.getByName(personaRow.value.name);
+    if (loadedPersona.isErr() || !loadedPersona.value) return null;
+    if (!loadedPersona.value.config.skills.includes(skillName)) return null;
+    const skill = this.ctx.loadedSkills.find((s) => s.manifest.name === skillName);
+    if (!skill) return null;
+    return skill.promptContents.join('\n');
+  }
+
+  private listAvailableSkills(personaId: string): string[] {
+    const personaRow = this.ctx.repos.persona.findById(personaId);
+    if (personaRow.isErr() || !personaRow.value) return [];
+    const loadedPersona = this.ctx.personaLoader.getByName(personaRow.value.name);
+    if (loadedPersona.isErr() || !loadedPersona.value) return [];
+    return loadedPersona.value.config.skills;
+  }
+
   /**
    * Resolves persona capabilities by looking up the persona name from the
    * database and then fetching the loaded persona from the PersonaLoader cache.
@@ -361,6 +386,27 @@ export class HostToolsBridge {
     args: Record<string, unknown>,
     context: ToolExecutionContext,
   ): Promise<ToolCallResult> {
+    if (tool === 'skill.load') {
+      const name = typeof args.name === 'string' ? args.name : '';
+      const content = this.resolveSkillContent(context.personaId, name);
+      if (content === null) {
+        const available = this.listAvailableSkills(context.personaId);
+        return {
+          requestId: context.requestId ?? 'unknown',
+          tool,
+          status: 'error',
+          error: `Skill "${name}" not found. Available: ${available.join(', ')}`,
+        };
+      }
+      this.ctx.logger.info({ skill: name, runId: context.runId }, 'skill.loaded via bridge');
+      return {
+        requestId: context.requestId ?? 'unknown',
+        tool,
+        status: 'success',
+        result: content,
+      };
+    }
+
     switch (tool) {
       case 'schedule.manage':
         return this.scheduleHandler.execute(args as unknown as ScheduleManageArgs, context);

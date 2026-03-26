@@ -4,6 +4,9 @@
  * Prints all skills for a persona (or all personas) from talond.yaml.
  */
 
+import { existsSync } from 'node:fs';
+import path from 'node:path';
+
 import {
   DEFAULT_CONFIG_PATH,
   readConfig,
@@ -21,6 +24,7 @@ export interface ListSkillsOptions {
 export interface SkillInfo {
   personaName: string;
   skillName: string;
+  format: 'yaml' | 'skillmd' | 'unknown';
 }
 
 // ---------------------------------------------------------------------------
@@ -50,11 +54,18 @@ export async function listSkills(options: ListSkillsOptions = {}): Promise<Skill
     personas = [found];
   }
 
+  const skillsDir = 'skills';
   const result: SkillInfo[] = [];
   for (const p of personas) {
     const skills = Array.isArray(p.skills) ? p.skills : [];
     for (const skillName of skills) {
-      result.push({ personaName: p.name, skillName });
+      let format: SkillInfo['format'] = 'unknown';
+      if (existsSync(path.join(skillsDir, skillName, 'SKILL.md'))) {
+        format = 'skillmd';
+      } else if (existsSync(path.join(skillsDir, skillName, 'skill.yaml'))) {
+        format = 'yaml';
+      }
+      result.push({ personaName: p.name, skillName, format });
     }
   }
 
@@ -74,11 +85,11 @@ export async function listSkillsCommand(options: ListSkillsOptions = {}): Promis
       return;
     }
 
-    console.log(`${'PERSONA'.padEnd(25)} SKILL`);
-    console.log(`${'─'.repeat(25)} ${'─'.repeat(25)}`);
+    console.log(`${'PERSONA'.padEnd(25)} ${'SKILL'.padEnd(25)} FORMAT`);
+    console.log(`${'─'.repeat(25)} ${'─'.repeat(25)} ${'─'.repeat(10)}`);
 
     for (const s of skills) {
-      console.log(`${s.personaName.padEnd(25)} ${s.skillName}`);
+      console.log(`${s.personaName.padEnd(25)} ${s.skillName.padEnd(25)} ${s.format}`);
     }
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);

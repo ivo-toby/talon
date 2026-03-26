@@ -400,6 +400,49 @@ describe('HostToolsBridge', () => {
       );
     });
 
+    it('dispatches skill.load before capability checks for persona-owned skills', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          skills: ['brainstorming'],
+        },
+        resolvedCapabilities: {
+          allow: [],
+          requireApproval: [],
+        },
+      } as any));
+      mockCtx.loadedSkills = [
+        {
+          manifest: { name: 'brainstorming' },
+          promptContents: ['Line 1', 'Line 2'],
+        },
+      ] as any;
+
+      bridge = new HostToolsBridge(mockCtx);
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-001',
+          tool: 'skill.load',
+          args: {
+            name: 'brainstorming',
+          },
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-001',
+            traceparent: '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01',
+          },
+        }),
+        socket,
+      );
+
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"success"');
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('Line 1\\nLine 2');
+      expect(mockCtx.observability.observeWithTraceparent).not.toHaveBeenCalled();
+    });
+
     it('traces rejected tool calls as failed tool observations', async () => {
       const update = vi.fn();
       mockCtx.observability.observeWithTraceparent = vi.fn(async (_traceparent, _input, fn) =>
