@@ -105,7 +105,12 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   const isNewPersona = !existsSync(systemPromptFile);
   if (isNewPersona) {
     try {
-      await fs.writeFile(systemPromptFile, buildSystemPromptTemplate(options.name), 'utf-8');
+      // Prefer a named template from templates/<name>/system.md if it exists.
+      const templateFile = path.join('templates', options.name, 'system.md');
+      const content = existsSync(templateFile)
+        ? await fs.readFile(templateFile, 'utf-8')
+        : buildSystemPromptTemplate(options.name);
+      await fs.writeFile(systemPromptFile, content, 'utf-8');
     } catch (cause) {
       throw new Error(`Error writing system prompt file "${systemPromptFile}": ${String(cause)}`);
     }
