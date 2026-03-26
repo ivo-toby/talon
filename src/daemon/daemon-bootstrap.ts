@@ -59,6 +59,7 @@ import { ContextRoller } from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
+import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 
 // ---------------------------------------------------------------------------
@@ -346,7 +347,7 @@ export async function bootstrap(
               queue: repos.queue,
               logger,
             },
-            telemetry: { isEnabled: true },
+            telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
           },
           input,
         );
