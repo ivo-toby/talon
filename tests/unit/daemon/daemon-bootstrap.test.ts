@@ -462,7 +462,12 @@ describe('bootstrap', () => {
       const result = await bootstrap('/config.yaml', logger);
 
       expect(result.isOk()).toBe(true);
-      expect(createObservabilityService).toHaveBeenCalledWith(config.langfuse, logger);
+      // Bootstrap may augment langfuse config with auto-resolved release version (F9).
+      // Use objectContaining to verify the base config is passed through unchanged.
+      expect(createObservabilityService).toHaveBeenCalledWith(
+        expect.objectContaining(config.langfuse as Record<string, unknown>),
+        logger,
+      );
       expect(result._unsafeUnwrap().observability).toBe(observability);
     });
     it('calls recoverFromCrash during bootstrap', async () => {

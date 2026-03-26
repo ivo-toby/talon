@@ -144,19 +144,21 @@ export class AgentRunner {
       provider: providerEntry.provider.name,
     };
 
+    const runMetadata = {
+      runId,
+      threadId: item.threadId,
+      personaId,
+      personaName,
+      provider: providerEntry.provider.name,
+    };
+
     try {
       await this.ctx.observability.observe(
         {
           type: 'agent',
           name: 'foreground-run',
           input: runInput,
-          metadata: {
-            runId,
-            threadId: item.threadId,
-            personaId,
-            personaName,
-            provider: providerEntry.provider.name,
-          },
+          metadata: runMetadata,
           trace: {
             sessionId: item.threadId,
             userId: this.ctx.config.langfuse?.owner,
@@ -166,13 +168,7 @@ export class AgentRunner {
               `provider:${providerEntry.provider.name}`,
             ],
             input: runInput,
-            metadata: {
-              runId,
-              threadId: item.threadId,
-              personaId,
-              personaName,
-              provider: providerEntry.provider.name,
-            },
+            metadata: runMetadata,
           },
         },
         async (runObservation) => {
@@ -557,10 +553,12 @@ export class AgentRunner {
                       resumeSessionId: resumeSessionId ?? null,
                     },
                     usageDetails: {
-                      inputTokens: usage.inputTokens,
-                      outputTokens: usage.outputTokens,
-                      cacheReadTokens: usage.cacheReadTokens ?? 0,
-                      cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+                      // Snake_case keys align with Anthropic's API field names and
+                      // match LangFuse's pricing lookup regex (e.g. "^input" → input_tokens).
+                      input_tokens: usage.inputTokens,
+                      output_tokens: usage.outputTokens,
+                      cache_read_input_tokens: usage.cacheReadTokens ?? 0,
+                      cache_creation_input_tokens: usage.cacheWriteTokens ?? 0,
                     },
                     costDetails:
                       usage.totalCostUsd !== undefined
