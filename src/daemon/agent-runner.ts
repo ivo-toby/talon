@@ -487,6 +487,9 @@ export class AgentRunner {
                   const activeProviderToolObservations = new Map<string, StartedObservationHandle>();
                   const ignoredProviderToolUseIds = new Set<string>();
                   const pendingProviderToolTasks: Array<Promise<void>> = [];
+                  // FIFO queue for tool events that lack a toolUseId (e.g. claude-code tool_use/tool_result
+                  // streaming events). Events are sequential so FIFO order correctly pairs starts with ends.
+                  const pendingNoIdToolObservations: StartedObservationHandle[] = [];
 
                   const queryInput = {
                     prompt: content,
@@ -549,6 +552,7 @@ export class AgentRunner {
                             activeProviderToolObservations,
                             ignoredProviderToolUseIds,
                             pendingProviderToolTasks,
+                            pendingNoIdToolObservations,
                             event,
                           );
                           this.ctx.logger.debug(
@@ -594,7 +598,7 @@ export class AgentRunner {
                     if (activeIterator?.return) {
                       activeIterator.return(undefined).catch(() => {});
                     }
-                    this.finishProviderToolObservations(activeProviderToolObservations, {
+                    this.finishProviderToolObservations(activeProviderToolObservations, pendingNoIdToolObservations, {
                       level: 'ERROR',
                       statusMessage: cause instanceof Error ? cause.message : String(cause),
                     });
@@ -606,7 +610,7 @@ export class AgentRunner {
                     clearTimeout(timeoutId!);
                   }
 
-                  this.finishProviderToolObservations(activeProviderToolObservations);
+                  this.finishProviderToolObservations(activeProviderToolObservations, pendingNoIdToolObservations);
                   ignoredProviderToolUseIds.clear();
                   await Promise.allSettled(pendingProviderToolTasks);
 
@@ -826,6 +830,7 @@ export class AgentRunner {
     activeProviderToolObservations: Map<string, StartedObservationHandle>,
     ignoredProviderToolUseIds: Set<string>,
     pendingProviderToolTasks: Array<Promise<void>>,
+    pendingNoIdToolObservations: StartedObservationHandle[],
     event: {
       messageType: string;
       tool?: string;
@@ -884,35 +889,43 @@ export class AgentRunner {
       return;
     }
 
+    // Handle result events for tools that had no toolUseId — match by FIFO order.
+    if (this.isProviderToolResultEvent(event.messageType) && !event.toolUseId) {
+      const observation = pendingNoIdToolObservations.shift();
+      if (observation) {
+        observation.update({
+          output: event.output,
+          level: event.isError ? 'ERROR' : undefined,
+          statusMessage: event.isError ? 'Tool call returned an error' : undefined,
+        });
+        observation.end();
+      }
+      return;
+    }
+
     if (!this.isProviderToolStartEvent(event.messageType)) {
       return;
     }
 
-    pendingProviderToolTasks.push(
-      this.ctx.observability
-        .observeWithTraceparent(
-          traceparent,
-          {
-            type: 'tool',
-            name: this.getProviderToolObservationName(event),
-            input: event.input ?? {},
-            metadata: {
-              ...metadata,
-              messageType: event.messageType,
-              subtype: event.subtype ?? null,
-              serverName: event.serverName ?? null,
-            },
-          },
-          async () => undefined,
-        )
-        .catch((error) => {
-          this.ctx.logger.debug({ err: error }, 'agent-runner: provider tool observation failed');
-        }),
-    );
+    // Start events without toolUseId: track with FIFO queue so we can end them when the
+    // matching result event arrives. This avoids the zero-latency observation problem.
+    const noIdObservation = this.ctx.observability.startWithTraceparent(traceparent, {
+      type: 'tool',
+      name: this.getProviderToolObservationName(event),
+      input: event.input ?? {},
+      metadata: {
+        ...metadata,
+        messageType: event.messageType,
+        subtype: event.subtype ?? null,
+        serverName: event.serverName ?? null,
+      },
+    });
+    pendingNoIdToolObservations.push(noIdObservation);
   }
 
   private finishProviderToolObservations(
     activeProviderToolObservations: Map<string, StartedObservationHandle>,
+    pendingNoIdToolObservations: StartedObservationHandle[],
     update?: {
       level?: 'ERROR';
       statusMessage?: string;
@@ -924,8 +937,16 @@ export class AgentRunner {
       }
       observation.end();
     }
-
     activeProviderToolObservations.clear();
+
+    // End any unmatched no-id observations (e.g. on error path where result never arrived)
+    for (const observation of pendingNoIdToolObservations) {
+      if (update) {
+        observation.update(update);
+      }
+      observation.end();
+    }
+    pendingNoIdToolObservations.splice(0);
   }
 
   private shouldSkipProviderToolObservation(event: {

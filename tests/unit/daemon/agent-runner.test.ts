@@ -2133,10 +2133,18 @@ describe('AgentRunner', () => {
       expect(ctx.observability.observeWithTraceparent).not.toHaveBeenCalled();
     });
 
-    it('records tool_use streaming events as tool observations', async () => {
+    it('records tool_use streaming events as tool observations using startWithTraceparent', async () => {
+      const toolObservation = makeStartedObservationHandle(null);
+      ctx.observability.startWithTraceparent = vi.fn((tp, input) => {
+        // Generation observation returns GENERATION_TRACEPARENT; tool observations get null.
+        if (input.type === 'generation') return makeStartedObservationHandle(GENERATION_TRACEPARENT);
+        return toolObservation;
+      });
+
+
       async function* streamWithToolUse() {
         yield { type: 'tool_use', tool: 'Read', subtype: undefined };
-        yield { type: 'tool_result', tool: 'Read', subtype: 'success' };
+        yield { type: 'tool_result', tool: 'Read', subtype: 'success', content: 'file contents' };
         yield {
           type: 'assistant',
           message: { content: [{ text: 'Done reading.' }] },
@@ -2157,11 +2165,13 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.observability.observeWithTraceparent).toHaveBeenCalledWith(
+      // Tool observation must be started (not immediately completed)
+      expect(ctx.observability.startWithTraceparent).toHaveBeenCalledWith(
         GENERATION_TRACEPARENT,
         expect.objectContaining({
           type: 'tool',
           name: 'Read',
+          input: {},
           metadata: expect.objectContaining({
             runId: expect.any(String),
             threadId: 'thread-001',
@@ -2169,8 +2179,45 @@ describe('AgentRunner', () => {
             messageType: 'tool_use',
           }),
         }),
-        expect.any(Function),
       );
+      // Result must be written and span ended only after tool_result arrives (not immediately)
+      expect(toolObservation.update).toHaveBeenCalledWith(
+        expect.objectContaining({ output: 'file contents' }),
+      );
+      expect(toolObservation.end).toHaveBeenCalledOnce();
+      // observeWithTraceparent must NOT be used for the no-toolUseId path (it causes zero-latency spans)
+      expect(ctx.observability.observeWithTraceparent).not.toHaveBeenCalled();
+    });
+
+    it('ends no-toolUseId tool observation with ERROR when tool_result is an error', async () => {
+      const toolObservation = makeStartedObservationHandle(null);
+      ctx.observability.startWithTraceparent = vi.fn((tp, input) => {
+        if (input.type === 'generation') return makeStartedObservationHandle(GENERATION_TRACEPARENT);
+        return toolObservation;
+      });
+
+      async function* streamWithErrorResult() {
+        yield { type: 'tool_use', tool: 'Bash', subtype: undefined };
+        yield { type: 'tool_result', tool: 'Bash', subtype: 'error', is_error: true, content: 'command failed' };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'Handled error.',
+          session_id: 'session-xyz',
+          total_cost_usd: 0.005,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithErrorResult());
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(toolObservation.update).toHaveBeenCalledWith(
+        expect.objectContaining({ level: 'ERROR', output: 'command failed' }),
+      );
+      expect(toolObservation.end).toHaveBeenCalledOnce();
     });
 
     it('does not create duplicate provider observations for internal host-tools mcp_tool_use assistant blocks', async () => {
