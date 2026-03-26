@@ -228,7 +228,7 @@ npx talonctl setup
 # Add a Telegram channel
 npx talonctl add-channel --name my-telegram --type telegram
 
-# Add a persona
+# Add a persona (copies system.md from templates/ if available)
 npx talonctl add-persona --name assistant
 
 # Run database migrations
@@ -617,6 +617,12 @@ bindings:
     isDefault: true
 ```
 
+### Persona templates
+
+Default system prompt templates live in `templates/<name>/system.md` and are safe to commit. The `personas/` directory is gitignored — personal prompts stay local.
+
+When creating a persona, `add-persona` checks `templates/<name>/system.md` first. If a named template exists it is copied to `personas/<name>/system.md`; otherwise a generic starter prompt is generated. Existing files are never overwritten — your customisations are safe.
+
 ### Capability Labels
 
 Tools are gated by scoped capability labels. Capabilities are listed in `allow` or `requireApproval` arrays — anything not listed is denied by default.
@@ -932,7 +938,7 @@ npx talonctl reload
 | --------------------------------------------- | --------------------------------------------------------------------------------- |
 | `talonctl setup`                              | First-time interactive setup (checks environment, creates dirs, generates config) |
 | `talonctl add-channel --name <n> --type <t>`  | Add a channel connector to config                                                 |
-| `talonctl add-persona --name <n>`             | Scaffold a persona directory and add to config                                    |
+| `talonctl add-persona --name <n>`             | Scaffold a persona directory and add to config (uses template if available)        |
 | `talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Scaffold a skill (`yaml` or `skillmd` format) and attach to a persona |
 
 ```bash

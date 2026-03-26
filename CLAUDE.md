@@ -92,7 +92,7 @@ Tests in `tests/` using vitest. Coverage thresholds: 80% (branches, functions, l
 - `selfdoc.md` — Architecture overview written as self-documentation
 - `BOARD.md` — Project task tracking
 - `config/talond.example.yaml` — Full config reference
-- `personas/assistant/system.md` — Active persona system prompt
+- `templates/assistant/system.md` — Default persona system prompt template
 
 ## Workflow
 
