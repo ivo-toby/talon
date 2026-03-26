@@ -95,6 +95,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
         queue: {} as any,
         logger,
       },
+      telemetry: { isEnabled: false },
     },
     input,
   );

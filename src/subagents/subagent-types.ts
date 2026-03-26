@@ -120,6 +120,14 @@ export interface SubAgentContext {
   rootPaths: string[];
   /** Injected repository and infrastructure services. */
   services: SubAgentServices;
+  /**
+   * OTEL telemetry config forwarded to AI SDK `experimental_telemetry`.
+   * When `isEnabled` is true, `generateText`/`generateObject` calls emit child
+   * spans that appear under the parent `subagent:<name>` observation in LangFuse.
+   * The AI SDK uses the ambient OTEL context (AsyncLocalStorage), so no
+   * traceparent needs to be threaded manually — just enabling it is enough.
+   */
+  telemetry: { isEnabled: boolean };
 }
 
 // ---------------------------------------------------------------------------
