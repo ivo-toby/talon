@@ -279,7 +279,7 @@ backgroundAgent:
 personas:
   - name: assistant
     model: claude-sonnet-4-6
-    systemPromptFile: templates/assistant/system.md
+    systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
       - session-summarizer
