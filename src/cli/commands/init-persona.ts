@@ -56,6 +56,11 @@ export async function initPersona(options: InitPersonaOptions): Promise<InitPers
   // Ensure target directory exists.
   await fs.mkdir(personaDir, { recursive: true });
 
+  // Short-circuit: if the destination already exists, skip template I/O entirely.
+  if (existsSync(systemPromptFile)) {
+    return { systemPromptFile, created: false, usedTemplate: null };
+  }
+
   // Determine content: prefer named template, fall back to generic.
   const templateFile = path.join(templatesDir, options.name, 'system.md');
   let usedTemplate: string | null = null;
@@ -68,8 +73,8 @@ export async function initPersona(options: InitPersonaOptions): Promise<InitPers
     content = buildSystemPromptTemplate(options.name);
   }
 
-  // Atomic exclusive write — if the file already exists, EEXIST is raised
-  // instead of silently overwriting (avoids TOCTOU race).
+  // Atomic exclusive write — EEXIST guard handles the race between the
+  // existsSync check above and this write.
   try {
     await fs.writeFile(systemPromptFile, content, { flag: 'wx', encoding: 'utf-8' });
   } catch (err: unknown) {

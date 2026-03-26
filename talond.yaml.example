@@ -62,7 +62,7 @@ channels:
 personas:
   - name: assistant                  # unique persona identifier
     model: claude-sonnet-4-6         # AI model to use for this persona
-    systemPromptFile: personas/assistant/system.md  # path to system prompt markdown
+    systemPromptFile: templates/assistant/system.md  # path to system prompt markdown
     skills: []                       # skill names to load (from skills/ directory)
     subagents:                       # sub-agent names (from subagents/default/)
       - session-summarizer

@@ -103,18 +103,23 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   }
 
   // Write system prompt template and personality scaffold only for new personas.
-  const isNewPersona = !existsSync(systemPromptFile);
-  if (isNewPersona) {
-    try {
-      // Prefer a named template from templates/<name>/system.md if it exists.
-      const templateFile = path.join(options.templatesDir ?? 'templates', options.name, 'system.md');
-      const content = existsSync(templateFile)
-        ? await fs.readFile(templateFile, 'utf-8')
-        : buildSystemPromptTemplate(options.name);
-      await fs.writeFile(systemPromptFile, content, 'utf-8');
-    } catch (cause) {
+  // Use exclusive write (wx) to avoid TOCTOU race.
+  let isNewPersona = false;
+  try {
+    const templateFile = path.join(options.templatesDir ?? 'templates', options.name, 'system.md');
+    const content = existsSync(templateFile)
+      ? await fs.readFile(templateFile, 'utf-8')
+      : buildSystemPromptTemplate(options.name);
+    await fs.writeFile(systemPromptFile, content, { flag: 'wx', encoding: 'utf-8' });
+    isNewPersona = true;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === 'EEXIST') {
+      // File already exists — skip, don't throw.
+    } else {
       throw new Error(`Error writing system prompt file "${systemPromptFile}": ${String(cause)}`);
     }
+  }
+  if (isNewPersona) {
 
     // Scaffold personality folder with example file and default task prompts.
     const personalityDir = path.join(personaDir, 'personality');
