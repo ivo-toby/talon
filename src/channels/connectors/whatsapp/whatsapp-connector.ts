@@ -5,10 +5,15 @@
  * Translates between the canonical InboundEvent / AgentOutput types and
  * WhatsApp Cloud API payloads.
  *
- * This connector is send-only with externally-fed webhook ingestion:
- * - No webhook server is started; the daemon's HTTP endpoint should proxy
- *   incoming webhook requests to `feedWebhook()`.
- * - Outbound messages are sent via the WhatsApp Cloud API graph endpoint.
+ * Two inbound modes are supported:
+ * - **Webhook server mode** (default when `appSecret` is configured): an
+ *   embedded HTTP server receives and validates POST requests from the Meta
+ *   Cloud API and routes them to `feedWebhook()` automatically.
+ * - **External proxy mode** (when `appSecret` is absent): no server is
+ *   started; the caller is expected to proxy inbound webhook payloads to
+ *   `feedWebhook()` directly.
+ *
+ * Outbound messages are always sent via the WhatsApp Cloud API graph endpoint.
  */
 
 import type pino from 'pino';
@@ -22,6 +27,7 @@ import type {
   WhatsAppSendResult,
 } from './whatsapp-types.js';
 import { markdownToWhatsApp } from './whatsapp-format.js';
+import { WhatsAppWebhookServer } from './whatsapp-webhook-server.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,6 +56,7 @@ export class WhatsAppConnector implements ChannelConnector {
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
   private running = false;
+  private webhookServer: WhatsAppWebhookServer | null = null;
 
   constructor(
     private readonly config: WhatsAppConfig,
@@ -64,32 +71,62 @@ export class WhatsAppConnector implements ChannelConnector {
   // ---------------------------------------------------------------------------
 
   /**
-   * Mark the connector as started. Idempotent — no-op if already running.
+   * Mark the connector as started and, if configured, start the inbound
+   * webhook HTTP server.
    *
-   * No webhook server is started here. Webhook delivery is expected to be
-   * handled externally (e.g. an nginx proxy forwarding to the daemon's HTTP
-   * endpoint, which then calls `feedWebhook()`).
+   * The webhook server is started when both `appSecret` and `webhookPort` (or
+   * a default port) are present in the config. When `appSecret` is absent the
+   * connector operates in send-only mode and no server is started.
+   *
+   * Idempotent — no-op if already running.
    */
-  start(): Promise<void> {
+  async start(): Promise<void> {
     if (this.running) {
       this.logger.debug({ channelName: this.name }, 'whatsapp connector already running');
-      return Promise.resolve();
+      return;
     }
     this.running = true;
-    this.logger.info({ channelName: this.name }, 'whatsapp connector started');
-    return Promise.resolve();
+
+    if (this.config.appSecret) {
+      const srv = new WhatsAppWebhookServer(
+        {
+          verifyToken: this.config.verifyToken,
+          appSecret: this.config.appSecret,
+          webhookPath: this.config.webhookPath,
+        },
+        this.logger,
+      );
+      srv.onPayload((payload) => this.feedWebhook(payload));
+      const host = this.config.webhookHost ?? '0.0.0.0';
+      const port = this.config.webhookPort ?? 3000;
+      const boundPort = await srv.start(host, port);
+      this.webhookServer = srv;
+      this.logger.info(
+        { channelName: this.name, host, port: boundPort },
+        'whatsapp connector started with webhook server',
+      );
+    } else {
+      this.logger.info(
+        { channelName: this.name },
+        'whatsapp connector started (send-only; no appSecret configured)',
+      );
+    }
   }
 
   /**
-   * Mark the connector as stopped. Idempotent — no-op if already stopped.
+   * Stop the connector and shut down the webhook server if one is running.
+   * Idempotent — no-op if already stopped.
    */
-  stop(): Promise<void> {
+  async stop(): Promise<void> {
     if (!this.running) {
-      return Promise.resolve();
+      return;
     }
     this.running = false;
+    if (this.webhookServer) {
+      await this.webhookServer.stop();
+      this.webhookServer = null;
+    }
     this.logger.info({ channelName: this.name }, 'whatsapp connector stopped');
-    return Promise.resolve();
   }
 
   /**

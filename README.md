@@ -37,7 +37,7 @@ It is built for single-user or small-team deployments where you want persistent,
 - **Slack** — Socket Mode with mrkdwn formatting
 - **Terminal** — WebSocket server with `talonctl chat` client, rendered markdown output, persistent threads
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
-- **WhatsApp** — Cloud API with webhook inbound _(inbound not yet implemented)_
+- **WhatsApp** — Cloud API with embedded webhook server (HMAC-SHA256 signature validation)
 - **Email** — IMAP polling + SMTP send, thread tracking via In-Reply-To headers _(not yet tested)_
 
 ### Agent System
@@ -487,9 +487,11 @@ channels:
 
 ### WhatsApp
 
-> **Not yet implemented**: The connector has send support and a `feedWebhook()` ingestion method, but no HTTP webhook server to receive events from the WhatsApp Cloud API. Needs a webhook endpoint that proxies incoming POST requests to `feedWebhook()`. See TASK-067.
+Webhook-based connector using the WhatsApp Cloud API. The connector embeds a lightweight HTTP server that handles Meta's webhook verification challenge and validates inbound event payloads using HMAC-SHA256 signatures.
 
-Webhook-based connector using the WhatsApp Cloud API.
+#### Minimal config (send-only, external proxy)
+
+If you prefer to proxy webhook events yourself (e.g. via nginx), omit `appSecret` and call `feedWebhook()` directly. The embedded server is not started.
 
 ```yaml
 channels:
@@ -502,7 +504,36 @@ channels:
       verifyToken: ${WHATSAPP_VERIFY_TOKEN}
 ```
 
-- **Inbound**: Webhook events via `feedWebhook()`
+#### Full config (embedded webhook server)
+
+When `appSecret` is set, an HTTP server starts automatically on connector start and handles all inbound webhook requests.
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsapp
+    enabled: true
+    config:
+      phoneNumberId: '123456789'
+      accessToken: ${WHATSAPP_ACCESS_TOKEN}
+      verifyToken: ${WHATSAPP_VERIFY_TOKEN}
+      appSecret: ${WHATSAPP_APP_SECRET}
+      webhookPort: 3000          # TCP port to listen on (default: 3000)
+      webhookHost: '0.0.0.0'    # Network interface (default: 0.0.0.0)
+      webhookPath: '/webhook'   # URL path (default: /webhook)
+```
+
+Point your Meta App Dashboard webhook URL at `http://<your-host>:3000/webhook`.
+
+#### Setup steps
+
+1. In the [Meta App Dashboard](https://developers.facebook.com/apps/), go to **WhatsApp → Configuration**.
+2. Set the **Webhook URL** to your server's public address (e.g. `https://example.com/webhook`).
+3. Set the **Verify Token** to match `verifyToken` in your config.
+4. Copy the **App Secret** (under App Settings → Basic) into `appSecret`.
+5. Subscribe to the `messages` webhook field.
+
+- **Inbound**: Embedded HTTP server validates `X-Hub-Signature-256` and routes payloads to `feedWebhook()`
 - **Outbound**: Cloud API `POST /{phone_number_id}/messages`
 - **Idempotency key**: `message_id`
 - **Format**: WhatsApp-flavored markdown

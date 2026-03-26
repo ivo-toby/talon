@@ -24,16 +24,32 @@ export interface WhatsAppConfig {
    */
   verifyToken: string;
   /**
+   * App secret from the Meta App Dashboard.
+   * Required to validate the HMAC-SHA256 signature on inbound webhook POSTs.
+   * When set alongside `webhookPort`, the inbound webhook server is started.
+   */
+  appSecret?: string;
+  /**
    * WhatsApp Cloud API version, e.g. 'v18.0'.
    * Defaults to 'v18.0' if not set.
    */
   apiVersion?: string;
   /**
-   * Port for the local webhook server.
-   * Defaults to 3000 if not set.
-   * @deprecated The connector is send-only; no server is started.
+   * TCP port for the local webhook HTTP server.
+   * When set alongside `appSecret`, the server is started on connector start().
+   * Defaults to 3000 when `appSecret` is provided and no explicit port is set.
    */
   webhookPort?: number;
+  /**
+   * Network interface to bind the webhook server to.
+   * Defaults to '0.0.0.0' (all interfaces).
+   */
+  webhookHost?: string;
+  /**
+   * URL path to serve webhook requests on.
+   * Defaults to '/webhook'.
+   */
+  webhookPath?: string;
 }
 
 // ---------------------------------------------------------------------------
