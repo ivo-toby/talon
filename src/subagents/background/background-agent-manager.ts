@@ -275,6 +275,8 @@ export class BackgroundAgentManager {
     const managedProcess = this.processes.get(taskId);
     managedProcess?.kill();
     if (managedProcess) {
+      managedProcess.observation?.update({ statusMessage: 'Cancelled by user' });
+      managedProcess.observation?.end();
       this.cleanupPaths(managedProcess.cleanupPaths);
       this.processes.delete(taskId);
     }
@@ -329,6 +331,8 @@ export class BackgroundAgentManager {
   shutdown(): void {
     for (const [taskId, process] of this.processes) {
       process.kill();
+      process.observation?.update({ statusMessage: 'Daemon shutting down' });
+      process.observation?.end();
       this.deps.repository.updateStatus(taskId, 'cancelled', undefined, 'Daemon shutting down');
       this.cleanupPaths(process.cleanupPaths);
     }
