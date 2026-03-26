@@ -85,7 +85,6 @@ export class WhatsAppConnector implements ChannelConnector {
       this.logger.debug({ channelName: this.name }, 'whatsapp connector already running');
       return;
     }
-    this.running = true;
 
     if (this.config.appSecret) {
       const srv = new WhatsAppWebhookServer(
@@ -99,13 +98,18 @@ export class WhatsAppConnector implements ChannelConnector {
       srv.onPayload((payload) => this.feedWebhook(payload));
       const host = this.config.webhookHost ?? '0.0.0.0';
       const port = this.config.webhookPort ?? 3000;
+      // Only mark as running after the server successfully binds — if start()
+      // rejects (e.g. port in use) the connector stays in a stopped state and
+      // can be retried or reconstructed cleanly.
       const boundPort = await srv.start(host, port);
+      this.running = true;
       this.webhookServer = srv;
       this.logger.info(
         { channelName: this.name, host, port: boundPort },
         'whatsapp connector started with webhook server',
       );
     } else {
+      this.running = true;
       this.logger.info(
         { channelName: this.name },
         'whatsapp connector started (send-only; no appSecret configured)',

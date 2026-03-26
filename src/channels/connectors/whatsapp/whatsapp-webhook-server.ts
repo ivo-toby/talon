@@ -92,8 +92,12 @@ export class WhatsAppWebhookServer {
         });
       });
 
-      srv.once('error', reject);
+      const onError = (err: Error) => reject(err);
+      srv.once('error', onError);
       srv.listen(port, host, () => {
+        // Remove the startup error listener — runtime errors after this point
+        // should not reject the (already resolved) start promise.
+        srv.removeListener('error', onError);
         const addr = srv.address();
         const boundPort = typeof addr === 'object' && addr !== null ? addr.port : port;
         this.server = srv;
@@ -108,7 +112,11 @@ export class WhatsAppWebhookServer {
 
   /**
    * Gracefully close the HTTP server.
-   * Resolves once all existing connections have ended.
+   *
+   * Calls `closeAllConnections()` (Node ≥ 18.2) to immediately terminate
+   * keep-alive connections, then waits for `close()` to confirm the server
+   * has stopped accepting new connections.
+   *
    * Idempotent — safe to call multiple times.
    */
   stop(): Promise<void> {
@@ -117,6 +125,11 @@ export class WhatsAppWebhookServer {
     }
     const srv = this.server;
     this.server = null;
+    // Forcibly close any lingering keep-alive connections so that close()
+    // resolves promptly rather than waiting for idle timeouts.
+    if (typeof srv.closeAllConnections === 'function') {
+      srv.closeAllConnections();
+    }
     return new Promise((resolve, reject) => {
       srv.close((err) => {
         if (err) {
@@ -169,7 +182,7 @@ export class WhatsAppWebhookServer {
     }
 
     if (mode !== 'subscribe' || !this.timingSafeStringEqual(token ?? '', this.config.verifyToken)) {
-      this.logger.warn({ mode, tokenMatch: token === this.config.verifyToken }, 'whatsapp-webhook-server: verification failed');
+      this.logger.warn({ mode, tokenPresent: token !== null }, 'whatsapp-webhook-server: verification failed');
       res.writeHead(403).end('Forbidden');
       return;
     }
@@ -266,20 +279,23 @@ export class WhatsAppWebhookServer {
   }
 
   /**
-   * Validate `X-Hub-Signature-256: sha256=<hex>` against the raw body using
-   * a timing-safe comparison to prevent timing attacks.
+   * Validate `X-Hub-Signature-256: sha256=<hex>` against the raw body.
+   *
+   * Uses the double-HMAC pattern: both the expected and actual values are
+   * re-HMAC'd with a random-per-instance key before comparison. This
+   * normalises the output lengths to 32 bytes regardless of the input length,
+   * eliminating the length-leaking early-exit that a plain timingSafeEqual
+   * approach requires.
    */
   private verifySignature(body: Buffer, signatureHeader: string): boolean {
-    const expected = `sha256=${createHmac('sha256', this.config.appSecret).update(body).digest('hex')}`;
-    const actual = signatureHeader;
-
-    // Lengths must match before timingSafeEqual to avoid throwing.
-    if (expected.length !== actual.length) {
-      return false;
-    }
-
     try {
-      return timingSafeEqual(Buffer.from(expected, 'utf-8'), Buffer.from(actual, 'utf-8'));
+      const expected = `sha256=${createHmac('sha256', this.config.appSecret).update(body).digest('hex')}`;
+      // Double-HMAC: re-hash both values with the same throwaway key so that
+      // their lengths are always equal and no length information is leaked.
+      const hmacKey = createHmac('sha256', this.config.appSecret).update('sig-compare').digest();
+      const hashExpected = createHmac('sha256', hmacKey).update(expected).digest();
+      const hashActual = createHmac('sha256', hmacKey).update(signatureHeader).digest();
+      return timingSafeEqual(hashExpected, hashActual);
     } catch {
       return false;
     }
