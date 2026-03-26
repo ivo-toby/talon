@@ -486,6 +486,41 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('reports usageDetails with snake_case keys for LangFuse pricing lookup', async () => {
+      mockQuery.mockReturnValue(
+        makeAgentStream({
+          usage: {
+            input_tokens: 200,
+            output_tokens: 75,
+            cache_read_input_tokens: 1_000,
+            cache_creation_input_tokens: 500,
+          },
+        }),
+      );
+
+      let generationHandle: ReturnType<typeof makeObservationHandle> | undefined;
+      ctx.observability.observe = vi.fn(async (input: { type: string }, fn: (h: ReturnType<typeof makeObservationHandle>) => Promise<unknown>) => {
+        const traceparent = input.type === 'generation' ? GENERATION_TRACEPARENT : null;
+        const handle = makeObservationHandle(traceparent);
+        if (input.type === 'generation') generationHandle = handle;
+        return await fn(handle);
+      });
+      runner = new AgentRunner(ctx);
+
+      await runner.run(makeQueueItem());
+
+      expect(generationHandle?.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          usageDetails: expect.objectContaining({
+            input_tokens: 200,
+            output_tokens: 75,
+            cache_read_input_tokens: 1_000,
+            cache_creation_input_tokens: 500,
+          }),
+        }),
+      );
+    });
+
     it('uses the selected provider recentMessageCount when assembling fresh-session context', async () => {
       await runner.run(makeQueueItem());
 
