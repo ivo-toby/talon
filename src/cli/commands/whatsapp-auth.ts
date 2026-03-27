@@ -70,7 +70,8 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
       reject(new Error('timeout'));
     }, timeoutMs);
 
-    sock.ev.on('connection.update', (update: { connection?: string; lastDisconnect?: { error?: { output?: { statusCode?: number } } }; qr?: string }) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    sock.ev.on('connection.update', (update: any) => {
       const { connection, lastDisconnect } = update;
 
       if (connection === 'open') {
