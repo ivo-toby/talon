@@ -13,7 +13,11 @@ import { join } from 'node:path';
 
 import yaml from 'js-yaml';
 
-import { addPersona, addPersonaCommand } from '../../../src/cli/commands/add-persona.js';
+import {
+  addPersona,
+  addPersonaCommand,
+  buildSystemPromptTemplate,
+} from '../../../src/cli/commands/add-persona.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -47,6 +51,28 @@ function writeYaml(content: string): string {
 
 function readYaml(p: string): Record<string, unknown> {
   return (yaml.load(readFileSync(p, 'utf-8')) ?? {}) as Record<string, unknown>;
+}
+
+async function runCliWithArgs(args: string[]): Promise<ReturnType<typeof vi.fn>> {
+  vi.resetModules();
+
+  const addPersonaCommandMock = vi.fn(async () => undefined);
+  const originalArgv = process.argv;
+
+  vi.doMock('../../../src/cli/commands/add-persona.js', () => ({
+    addPersonaCommand: addPersonaCommandMock,
+  }));
+
+  process.argv = ['node', 'talonctl', ...args];
+
+  try {
+    await import('../../../src/cli/index.ts');
+  } finally {
+    process.argv = originalArgv;
+    vi.doUnmock('../../../src/cli/commands/add-persona.js');
+  }
+
+  return addPersonaCommandMock;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +116,113 @@ describe('addPersona()', () => {
     const personas = doc.personas as Array<Record<string, unknown>>;
     expect(personas).toHaveLength(1);
     expect(personas[0]!.name).toBe('assistant');
+  });
+
+  it('uses the provided model in the YAML entry', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    const result = await addPersona({
+      name: 'assistant',
+      model: 'claude-opus-4-6',
+      configPath: p,
+      personasDir,
+    });
+
+    expect(result.model).toBe('claude-opus-4-6');
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    expect(personas[0]!.model).toBe('claude-opus-4-6');
+  });
+
+  it('stores the provided provider in the YAML entry', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    const result = await addPersona({
+      name: 'assistant',
+      provider: 'claude-code',
+      configPath: p,
+      personasDir,
+    });
+
+    expect(result.provider).toBe('claude-code');
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    expect(personas[0]!.provider).toBe('claude-code');
+  });
+
+  it('stores provided capabilities in capabilities.allow', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    await addPersona({
+      name: 'assistant',
+      capabilities: ['fs.read:*', 'memory.access:*'],
+      configPath: p,
+      personasDir,
+    });
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    const capabilities = personas[0]!.capabilities as Record<string, unknown>;
+    expect(capabilities.allow).toEqual(['fs.read:*', 'memory.access:*']);
+    expect(capabilities.requireApproval).toEqual([]);
+  });
+
+  it('stores provided approval-gated capabilities in capabilities.requireApproval', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    await addPersona({
+      name: 'assistant',
+      requireApproval: ['channel.send:*', 'fs.write:workspace'],
+      configPath: p,
+      personasDir,
+    });
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    const capabilities = personas[0]!.capabilities as Record<string, unknown>;
+    expect(capabilities.allow).toEqual([]);
+    expect(capabilities.requireApproval).toEqual(['channel.send:*', 'fs.write:workspace']);
+  });
+
+  it('stores the provided skills array', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    const result = await addPersona({
+      name: 'assistant',
+      skills: ['code-review', 'memory-grooming'],
+      configPath: p,
+      personasDir,
+    });
+
+    expect(result.skills).toEqual(['code-review', 'memory-grooming']);
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    expect(personas[0]!.skills).toEqual(['code-review', 'memory-grooming']);
+  });
+
+  it('copies system prompt content from the provided file', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+    const systemPromptSource = join(tmpDir, 'custom-system.md');
+    writeFileSync(systemPromptSource, '# Custom prompt\n\nAct like a reviewer.\n');
+
+    await addPersona({
+      name: 'assistant',
+      systemPromptFile: systemPromptSource,
+      configPath: p,
+      personasDir,
+    });
+
+    const content = readFileSync(join(personasDir, 'assistant', 'system.md'), 'utf-8');
+    expect(content).toBe('# Custom prompt\n\nAct like a reviewer.\n');
   });
 
   it('appends to an existing personas list', async () => {
@@ -180,6 +313,62 @@ describe('addPersona()', () => {
     expect(personas).toHaveLength(1);
   });
 
+  it('keeps default output unchanged when called with only name', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+    const defaultTemplatePath = join('templates', 'assistant', 'system.md');
+    const expectedSystemPrompt = existsSync(defaultTemplatePath)
+      ? readFileSync(defaultTemplatePath, 'utf-8')
+      : buildSystemPromptTemplate('assistant');
+
+    const result = await addPersona({ name: 'assistant', configPath: p, personasDir });
+
+    expect(result).toEqual({
+      name: 'assistant',
+      model: 'claude-sonnet-4-6',
+      systemPromptFile: join(personasDir, 'assistant', 'system.md'),
+      skills: [],
+      capabilities: {
+        allow: [],
+        requireApproval: [],
+      },
+    });
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    expect(personas[0]).toEqual({
+      name: 'assistant',
+      model: 'claude-sonnet-4-6',
+      systemPromptFile: join(personasDir, 'assistant', 'system.md'),
+      skills: [],
+      capabilities: {
+        allow: [],
+        requireApproval: [],
+      },
+    });
+    expect(readFileSync(join(personasDir, 'assistant', 'system.md'), 'utf-8'))
+      .toBe(expectedSystemPrompt);
+  });
+
+  it('treats all new options as optional and uses sensible defaults', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    await addPersona({ name: 'assistant', configPath: p, personasDir });
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    expect(personas[0]).not.toHaveProperty('provider');
+
+    const entry = personas[0] as Record<string, unknown>;
+    expect(entry.model).toBe('claude-sonnet-4-6');
+    expect(entry.skills).toEqual([]);
+
+    const capabilities = entry.capabilities as Record<string, unknown>;
+    expect(capabilities.allow).toEqual([]);
+    expect(capabilities.requireApproval).toEqual([]);
+  });
+
   // --- Validation ---
 
   it('rejects a duplicate persona name', async () => {
@@ -253,5 +442,47 @@ describe('addPersonaCommand()', () => {
     expect(errOutput).toContain('invalid');
     consoleSpy.mockRestore();
     exitSpy.mockRestore();
+  });
+});
+
+describe('add-persona CLI registration', () => {
+  it('passes new Commander.js flags through to addPersonaCommand()', async () => {
+    const addPersonaCommandMock = await runCliWithArgs([
+      'add-persona',
+      '--name', 'assistant',
+      '--config', 'custom.yaml',
+      '--templates-dir', 'custom-templates',
+      '--model', 'claude-opus-4-6',
+      '--provider', 'claude-code',
+      '--capabilities', 'fs.read:*,memory.access:*',
+      '--require-approval', 'channel.send:*,fs.write:workspace',
+      '--skills', 'code-review,memory-grooming',
+      '--system-prompt-file', '/tmp/system.md',
+    ]);
+
+    expect(addPersonaCommandMock).toHaveBeenCalledWith({
+      name: 'assistant',
+      configPath: 'custom.yaml',
+      templatesDir: 'custom-templates',
+      model: 'claude-opus-4-6',
+      provider: 'claude-code',
+      capabilities: ['fs.read:*', 'memory.access:*'],
+      requireApproval: ['channel.send:*', 'fs.write:workspace'],
+      skills: ['code-review', 'memory-grooming'],
+      systemPromptFile: '/tmp/system.md',
+    });
+  });
+
+  it('leaves new Commander.js flags optional', async () => {
+    const addPersonaCommandMock = await runCliWithArgs([
+      'add-persona',
+      '--name', 'assistant',
+    ]);
+
+    expect(addPersonaCommandMock).toHaveBeenCalledWith({
+      name: 'assistant',
+      configPath: 'talond.yaml',
+      templatesDir: 'templates',
+    });
   });
 });

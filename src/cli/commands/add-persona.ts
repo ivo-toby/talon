@@ -40,6 +40,12 @@ const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 export interface AddPersonaOptions {
   name: string;
+  model?: string;
+  provider?: string;
+  capabilities?: string[];
+  requireApproval?: string[];
+  skills?: string[];
+  systemPromptFile?: string;
   configPath?: string;
   personasDir?: string;
   templatesDir?: string;
@@ -48,6 +54,7 @@ export interface AddPersonaOptions {
 export interface AddPersonaEntry {
   name: string;
   model: string;
+  provider?: string;
   systemPromptFile: string;
   skills: string[];
   capabilities: { allow: string[]; requireApproval: string[] };
@@ -74,6 +81,24 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   const nameError = validateName(options.name, 'Persona');
   if (nameError) {
     throw new Error(nameError);
+  }
+
+  // Validate optional provider (must be non-empty after trimming, matching Zod schema).
+  if (options.provider !== undefined) {
+    const trimmed = options.provider.trim();
+    if (trimmed === '') {
+      throw new Error('Provider name must not be empty.');
+    }
+    options.provider = trimmed;
+  }
+
+  // Validate optional model (must be non-empty after trimming).
+  if (options.model !== undefined) {
+    const trimmed = options.model.trim();
+    if (trimmed === '') {
+      throw new Error('Model name must not be empty.');
+    }
+    options.model = trimmed;
   }
 
   // Read existing config.
@@ -107,9 +132,11 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   let isNewPersona = false;
   try {
     const templateFile = path.join(options.templatesDir ?? 'templates', options.name, 'system.md');
-    const content = existsSync(templateFile)
-      ? await fs.readFile(templateFile, 'utf-8')
-      : buildSystemPromptTemplate(options.name);
+    const content = options.systemPromptFile
+      ? await fs.readFile(options.systemPromptFile, 'utf-8')
+      : existsSync(templateFile)
+        ? await fs.readFile(templateFile, 'utf-8')
+        : buildSystemPromptTemplate(options.name);
     await fs.writeFile(systemPromptFile, content, { flag: 'wx', encoding: 'utf-8' });
     isNewPersona = true;
   } catch (cause) {
@@ -137,12 +164,13 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   // Build persona entry.
   const entry: AddPersonaEntry = {
     name: options.name,
-    model: DEFAULT_MODEL,
+    model: options.model ?? DEFAULT_MODEL,
+    ...(options.provider ? { provider: options.provider } : {}),
     systemPromptFile,
-    skills: [],
+    skills: options.skills ?? [],
     capabilities: {
-      allow: [],
-      requireApproval: [],
+      allow: options.capabilities ?? [],
+      requireApproval: options.requireApproval ?? [],
     },
   };
 
