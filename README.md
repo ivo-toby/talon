@@ -623,6 +623,20 @@ Default system prompt templates live in `templates/<name>/system.md` and are saf
 
 When creating a persona, `add-persona` checks `templates/<name>/system.md` first. If a named template exists it is copied to `personas/<name>/system.md`; otherwise a generic starter prompt is generated. Existing files are never overwritten — your customisations are safe.
 
+### Importing Claude Code plugins
+
+If you use Claude Code, you can import skills from installed CC plugins into Talon:
+
+```sh
+# See which plugins have importable components
+npx talonctl import-plugin --list
+
+# Import all skills from a plugin
+npx talonctl import-plugin --name backend-development
+```
+
+This copies skill files from `~/.claude/plugins/` into Talon's `skills/` directory. After importing, attach skills to a persona with `talonctl add-skill`. CC-specific components (hooks, commands, agents) are skipped — only skills and MCP server detection are supported.
+
 ### Capability Labels
 
 Tools are gated by scoped capability labels. Capabilities are listed in `allow` or `requireApproval` arrays — anything not listed is denied by default.
@@ -940,6 +954,8 @@ npx talonctl reload
 | `talonctl add-channel --name <n> --type <t>`  | Add a channel connector to config                                                 |
 | `talonctl add-persona --name <n>`             | Scaffold a persona directory and add to config (uses template if available)        |
 | `talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Scaffold a skill (`yaml` or `skillmd` format) and attach to a persona |
+| `talonctl import-plugin --list`               | List Claude Code plugins that can be imported                                     |
+| `talonctl import-plugin --name <n>`           | Import skills from an installed Claude Code plugin                                |
 
 ```bash
 # Full setup flow
@@ -947,6 +963,10 @@ npx talonctl setup --config talond.yaml --data-dir data
 npx talonctl add-channel --name work-slack --type slack
 npx talonctl add-persona --name researcher
 npx talonctl add-skill --name web-search --persona researcher
+
+# Import skills from a Claude Code plugin
+npx talonctl import-plugin --list
+npx talonctl import-plugin --name backend-development
 ```
 
 ### Channel & Persona Management
