@@ -17,11 +17,6 @@ export interface WhatsAppBaileysConfig {
    */
   authDir?: string;
   /**
-   * Whether to print QR code to the terminal on first connect.
-   * Defaults to true.
-   */
-  printQR?: boolean;
-  /**
    * Browser name tuple shown in WhatsApp Web "Linked Devices" list.
    * Format: [clientName, browserName, version].
    * Defaults to Browsers.appropriate('Talon').

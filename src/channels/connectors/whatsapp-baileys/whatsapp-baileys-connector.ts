@@ -6,9 +6,10 @@
  * number — no Meta Business account required.
  *
  * Authentication:
- * - On first start, a QR code is printed to the terminal (or logged if printQR
- *   is false). Scan it with the WhatsApp app under Settings > Linked Devices.
+ * - Run `talonctl whatsapp-auth` before starting the daemon. It prints a QR
+ *   code to the terminal — scan it with the WhatsApp app under Linked Devices.
  * - Credentials are persisted to `authDir` and reused on subsequent starts.
+ * - The daemon itself never prints QR codes; it logs a warning if not authenticated.
  *
  * Inbound messages:
  * - Text messages from individual chats are normalised to InboundEvent and
@@ -102,7 +103,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       auth: state,
       version,
       browser: this.config.browser ?? Browsers.appropriate('Talon'),
-      printQRInTerminal: this.config.printQR ?? true,
+      printQRInTerminal: false,
       logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
         typeof pino
       >,
@@ -120,9 +121,9 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-          this.logger.info(
+          this.logger.warn(
             { channelName: this.name },
-            'whatsapp-baileys: QR code ready — scan with WhatsApp app',
+            'whatsapp-baileys: not authenticated. Run "talonctl whatsapp-auth" to scan a QR code and link this device.',
           );
         }
 
