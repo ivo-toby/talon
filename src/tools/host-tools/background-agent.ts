@@ -118,19 +118,23 @@ export class BackgroundAgentHandler {
       return this.errorResult(requestId, `Persona not found: ${context.personaId}`);
     }
 
+    // Normalize profile name once upfront so lookup, error messages, and
+    // manager input all use the same trimmed value.
+    const profileName = args.profile?.trim();
+
     // When a profile is specified, use that persona instead of the spawning thread's persona
     // for building the runtime context (system prompt, skills, MCP servers, provider).
     // NOTE: no capability check gates which profiles can be used — the operator controls
     // which personas exist in config. A future enhancement could restrict profile access
     // via a capability label like `subagent.background.profile:<name>`.
-    const targetPersonaName = args.profile?.trim() ?? personaRowResult.value.name;
+    const targetPersonaName = profileName ?? personaRowResult.value.name;
     const loadedPersonaResult = this.deps.personaLoader.getByName(targetPersonaName);
     if (loadedPersonaResult.isErr() || !loadedPersonaResult.value) {
-      if (args.profile) {
+      if (profileName) {
         const available = this.deps.personaLoader.listNames().join(', ') || 'none';
         return this.errorResult(
           requestId,
-          `Profile "${args.profile}" not found. Available profiles: ${available}`,
+          `Profile "${profileName}" not found. Available profiles: ${available}`,
         );
       }
       return this.errorResult(requestId, `Loaded persona not found: ${personaRowResult.value.name}`);
@@ -190,7 +194,7 @@ export class BackgroundAgentHandler {
           : typeof loadedPersona.config.provider === 'string' && loadedPersona.config.provider.trim().length > 0
             ? loadedPersona.config.provider.trim()
             : undefined,
-      ...(args.profile ? { profileName: args.profile } : {}),
+      ...(profileName ? { profileName } : {}),
       // Only pass the persona's model when the provider is NOT explicitly overridden.
       // Cross-provider model names (e.g. "claude-opus-4-6" on gemini-cli) would be invalid.
       ...(!args.provider && loadedPersona.config.model ? { model: loadedPersona.config.model } : {}),

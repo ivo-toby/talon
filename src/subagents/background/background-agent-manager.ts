@@ -122,6 +122,10 @@ export class BackgroundAgentManager {
     }
 
     const taskId = randomUUID();
+    this.deps.logger.info(
+      { taskId, personaId: input.personaId, profileName: input.profileName },
+      'background agent spawning',
+    );
     const MIN_TIMEOUT_MINUTES = 15;
     const requested = input.timeoutMinutes ?? this.deps.defaultTimeoutMinutes;
     const timeoutMinutes = Math.max(MIN_TIMEOUT_MINUTES, requested);

@@ -114,6 +114,43 @@ describe('GeminiCliProvider', () => {
     });
   });
 
+  it('uses input.model override when provided, ignoring the configured default', () => {
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Refactor.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 30_000,
+      model: 'gemini-2.5-flash',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+
+    const modelIndex = invocation.args.indexOf('--model');
+    expect(modelIndex).toBeGreaterThan(-1);
+    expect(invocation.args[modelIndex + 1]).toBe('gemini-2.5-flash');
+  });
+
+  it('falls back to configured default model when input.model is not set', () => {
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Refactor.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 30_000,
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+
+    const modelIndex = invocation.args.indexOf('--model');
+    expect(modelIndex).toBeGreaterThan(-1);
+    expect(invocation.args[modelIndex + 1]).toBe('gemini-2.5-pro');
+  });
+
   it('parses Gemini JSON output into normalized usage and text', () => {
     const result = provider.parseBackgroundResult({
       stdout: JSON.stringify({

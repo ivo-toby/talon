@@ -404,6 +404,41 @@ describe('ClaudeCodeProvider', () => {
     expect(invocation.env?.TALOND_TRACEPARENT).toBeUndefined();
   });
 
+  it('includes --model flag when input.model is set', () => {
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Do something.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 30_000,
+      model: 'claude-opus-4-6',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+
+    const modelIndex = invocation.args.indexOf('--model');
+    expect(modelIndex).toBeGreaterThan(-1);
+    expect(invocation.args[modelIndex + 1]).toBe('claude-opus-4-6');
+  });
+
+  it('does not include --model flag when input.model is not set', () => {
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Do something.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 30_000,
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+
+    expect(invocation.args).not.toContain('--model');
+  });
+
   it('prepareBackgroundInvocation with empty mcpServers writes a valid empty JSON config', () => {
     const result = provider.prepareBackgroundInvocation({
       prompt: 'Empty servers test.',
