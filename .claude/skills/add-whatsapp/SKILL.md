@@ -159,21 +159,28 @@ Then edit `talond.yaml` to set the config section:
 ```yaml
 config:
   authDir: './baileys-auth'         # Where session credentials are stored (default: ./baileys-auth)
-  printQR: true                     # Print QR code to terminal (default: true)
   markOnlineOnConnect: false        # Show as online in WhatsApp (default: false)
 ```
 
 No environment variables or secrets needed — authentication is via QR code.
 
-## B.3: First Connection
+## B.3: Authenticate
+
+Run the standalone auth command — it prints a QR code to the terminal and waits for a scan:
+
+```bash
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+```
 
 Tell the user:
 
-> 1. Start talond (or restart it)
-> 2. Watch the terminal — a QR code will appear
-> 3. Open WhatsApp on your phone > Settings > Linked Devices > Link a Device
-> 4. Scan the QR code
-> 5. Once connected, credentials are saved to `authDir` and reused on next start
+> 1. A QR code will appear in the terminal
+> 2. Open WhatsApp on your phone > Settings > Linked Devices > Link a Device
+> 3. Scan the QR code
+> 4. Once authenticated, credentials are saved and the command exits
+> 5. Now start (or restart) talond — no QR code will be needed
+
+The `--auth-dir` must match the `authDir` in the channel config. Default is `./baileys-auth`.
 
 ## B.4: Verify (Baileys)
 
@@ -185,7 +192,7 @@ If it doesn't work:
 journalctl --user -u talond -f
 ```
 
-**If you see "logged out"**: delete the `authDir` folder and restart to re-authenticate.
+**If you see "logged out"**: delete the `authDir` folder, re-run `talonctl whatsapp-auth`, and restart talond.
 
 ---
 

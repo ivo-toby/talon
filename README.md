@@ -541,7 +541,7 @@ Point your Meta App Dashboard webhook URL at `http://<your-host>:3000/webhook`.
 
 ### WhatsApp Baileys
 
-WhatsApp Web bridge using the [Baileys](https://github.com/WhiskeySockets/Baileys) library. Connects as a regular WhatsApp Web client — no Meta Business account, no webhook server, no Cloud API. Authenticate by scanning a QR code on first start.
+WhatsApp Web bridge using the [Baileys](https://github.com/WhiskeySockets/Baileys) library. Connects as a regular WhatsApp Web client — no Meta Business account, no webhook server, no Cloud API.
 
 > **Optional dependency**: `@whiskeysockets/baileys` is not bundled. Install it separately: `npm install @whiskeysockets/baileys`
 
@@ -552,16 +552,29 @@ channels:
     enabled: true
     config:
       authDir: './baileys-auth'         # Session credential storage (default: ./baileys-auth)
-      printQR: true                     # Print QR code to terminal on first connect (default: true)
       markOnlineOnConnect: false        # Show as online in WhatsApp (default: false)
       browser: ['Talon', 'Chrome', '1.0']  # Linked Devices display name (optional)
 ```
+
+#### Authentication
+
+Baileys authenticates by scanning a QR code, like linking a new device in WhatsApp. Use the standalone CLI command to authenticate before starting the daemon:
+
+```bash
+# Authenticate — prints QR code, waits for scan, saves credentials
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+
+# Custom timeout (default: 120s)
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
+```
+
+Once authenticated, the daemon uses the saved credentials — no QR code display needed at runtime. To re-authenticate, delete the `authDir` folder and run the command again.
 
 - **Inbound**: WhatsApp Web socket via Baileys, text messages from individual chats only (group and media messages logged and skipped in v1)
 - **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
 - **Idempotency key**: Baileys message ID
 - **Thread mapping**: Sender JID
-- **Reconnection**: Automatic on disconnect; logged-out sessions require re-authentication (delete `authDir` and restart)
+- **Reconnection**: Automatic on disconnect; logged-out sessions require re-authentication (delete `authDir` and re-run `talonctl whatsapp-auth`)
 
 ### Email
 
