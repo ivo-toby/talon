@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { markdownToWhatsApp } from '../../../../../src/channels/connectors/whatsapp/whatsapp-format.js';
+import { markdownToWhatsApp } from '../../../../../src/channels/connectors/whatsapp-business/whatsapp-format.js';
 
 // ---------------------------------------------------------------------------
 // markdownToWhatsApp

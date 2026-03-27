@@ -51,7 +51,7 @@ const GRAPH_API_BASE = 'https://graph.facebook.com';
  * 5. Call `stop()` to mark the connector as inactive.
  */
 export class WhatsAppConnector implements ChannelConnector {
-  readonly type = 'whatsapp';
+  readonly type = 'whatsappBusiness';
   readonly name: string;
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
@@ -82,7 +82,7 @@ export class WhatsAppConnector implements ChannelConnector {
    */
   async start(): Promise<void> {
     if (this.running) {
-      this.logger.debug({ channelName: this.name }, 'whatsapp connector already running');
+      this.logger.debug({ channelName: this.name }, 'whatsapp-business connector already running');
       return;
     }
 
@@ -106,13 +106,13 @@ export class WhatsAppConnector implements ChannelConnector {
       this.webhookServer = srv;
       this.logger.info(
         { channelName: this.name, host, port: boundPort },
-        'whatsapp connector started with webhook server',
+        'whatsapp-business connector started with webhook server',
       );
     } else {
       this.running = true;
       this.logger.info(
         { channelName: this.name },
-        'whatsapp connector started (send-only; no appSecret configured)',
+        'whatsapp-business connector started (send-only; no appSecret configured)',
       );
     }
   }
@@ -130,7 +130,7 @@ export class WhatsAppConnector implements ChannelConnector {
       await this.webhookServer.stop();
       this.webhookServer = null;
     }
-    this.logger.info({ channelName: this.name }, 'whatsapp connector stopped');
+    this.logger.info({ channelName: this.name }, 'whatsapp-business connector stopped');
   }
 
   /**
@@ -288,7 +288,7 @@ export class WhatsAppConnector implements ChannelConnector {
     if (!this.handler) {
       this.logger.warn(
         { channelName: this.name },
-        'whatsapp connector received message but no handler is registered',
+        'whatsapp-business connector received message but no handler is registered',
       );
       return;
     }
@@ -298,7 +298,7 @@ export class WhatsAppConnector implements ChannelConnector {
     } catch (handlerErr) {
       this.logger.error(
         { channelName: this.name, err: handlerErr },
-        'whatsapp connector handler threw an error',
+        'whatsapp-business connector handler threw an error',
       );
     }
   }

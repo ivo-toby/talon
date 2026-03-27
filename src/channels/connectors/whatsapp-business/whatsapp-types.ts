@@ -26,7 +26,8 @@ export interface WhatsAppConfig {
   /**
    * App secret from the Meta App Dashboard.
    * Required to validate the HMAC-SHA256 signature on inbound webhook POSTs.
-   * When set alongside `webhookPort`, the inbound webhook server is started.
+   * When set, the inbound webhook server is started on connector start(),
+   * using `webhookPort` if provided or a default port otherwise.
    */
   appSecret?: string;
   /**

@@ -8,8 +8,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createHmac } from 'node:crypto';
 import pino from 'pino';
-import { WhatsAppWebhookServer } from '../../../../../src/channels/connectors/whatsapp/whatsapp-webhook-server.js';
-import type { WhatsAppWebhookPayload } from '../../../../../src/channels/connectors/whatsapp/whatsapp-types.js';
+import { WhatsAppWebhookServer } from '../../../../../src/channels/connectors/whatsapp-business/whatsapp-webhook-server.js';
+import type { WhatsAppWebhookPayload } from '../../../../../src/channels/connectors/whatsapp-business/whatsapp-types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -251,7 +251,7 @@ describe('WhatsAppWebhookServer', () => {
       expect(status).toBe(404);
     });
 
-    it('returns 405 for a POST to an unknown path', async () => {
+    it('returns 404 for a POST to an unknown path', async () => {
       const { status } = await httpPost(port, '/other', '{}');
       expect(status).toBe(404);
     });
@@ -332,7 +332,7 @@ describe('WhatsAppWebhookServer', () => {
 describe('WhatsAppConnector with webhook server', () => {
   it('starts the webhook server when webhookPort is set and appSecret is provided', async () => {
     const { WhatsAppConnector } = await import(
-      '../../../../../src/channels/connectors/whatsapp/whatsapp-connector.js'
+      '../../../../../src/channels/connectors/whatsapp-business/whatsapp-connector.js'
     );
     const logger = pino({ level: 'silent' });
 
@@ -356,7 +356,7 @@ describe('WhatsAppConnector with webhook server', () => {
 
   it('does not start a webhook server when appSecret is not provided', async () => {
     const { WhatsAppConnector } = await import(
-      '../../../../../src/channels/connectors/whatsapp/whatsapp-connector.js'
+      '../../../../../src/channels/connectors/whatsapp-business/whatsapp-connector.js'
     );
     const logger = pino({ level: 'silent' });
 

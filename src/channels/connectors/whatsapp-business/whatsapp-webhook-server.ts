@@ -82,6 +82,11 @@ export class WhatsAppWebhookServer {
    * @returns The actual port the server is listening on.
    */
   start(host: string, port: number): Promise<number> {
+    if (this.server) {
+      const addr = this.server.address();
+      const boundPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
+      return Promise.resolve(boundPort);
+    }
     return new Promise((resolve, reject) => {
       const srv = createServer((req, res) => {
         this.handleRequest(req, res).catch((err: unknown) => {
@@ -196,12 +201,18 @@ export class WhatsAppWebhookServer {
   // ---------------------------------------------------------------------------
 
   private async handleEventDelivery(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const rawBody = await this.readBody(req);
-
     const signatureHeader = req.headers['x-hub-signature-256'];
     if (!signatureHeader || typeof signatureHeader !== 'string') {
       this.logger.warn('whatsapp-webhook-server: missing X-Hub-Signature-256 header');
       res.writeHead(401).end('Unauthorized');
+      return;
+    }
+
+    let rawBody: Buffer;
+    try {
+      rawBody = await this.readBody(req);
+    } catch {
+      res.writeHead(413).end('Payload Too Large');
       return;
     }
 
@@ -260,8 +271,9 @@ export class WhatsAppWebhookServer {
 
   /**
    * Timing-safe string equality check.
-   * Pads both strings to the same length before comparison so the time taken
-   * does not reveal how many characters match.
+   * Returns false immediately on length mismatch (after a constant-time
+   * self-compare to avoid early-exit timing signals). Strings of equal length
+   * are compared with timingSafeEqual.
    */
   private timingSafeStringEqual(a: string, b: string): boolean {
     try {
@@ -282,10 +294,9 @@ export class WhatsAppWebhookServer {
    * Validate `X-Hub-Signature-256: sha256=<hex>` against the raw body.
    *
    * Uses the double-HMAC pattern: both the expected and actual values are
-   * re-HMAC'd with a random-per-instance key before comparison. This
-   * normalises the output lengths to 32 bytes regardless of the input length,
-   * eliminating the length-leaking early-exit that a plain timingSafeEqual
-   * approach requires.
+   * re-HMAC'd with a deterministic key derived from appSecret so that
+   * their lengths are always equal (fixed 32-byte digest) and no length
+   * information is leaked via a plain timingSafeEqual.
    */
   private verifySignature(body: Buffer, signatureHeader: string): boolean {
     try {
