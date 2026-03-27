@@ -140,10 +140,10 @@ curl "https://your-server.com/webhook?hub.mode=subscribe&hub.verify_token=YOUR_V
 
 ## B.1: Install Baileys
 
-Baileys is an optional dependency. Install it first:
+Baileys and its QR rendering dependency are optional. Install them first:
 
 ```bash
-npm install @whiskeysockets/baileys
+npm install @whiskeysockets/baileys qrcode-terminal
 ```
 
 ## B.2: Add the Channel

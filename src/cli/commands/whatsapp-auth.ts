@@ -32,7 +32,7 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
   try {
     const fetched = await fetchLatestBaileysVersion();
     version = fetched.version;
-    console.log(`WhatsApp Web version: ${version.join('.')}`);
+    console.log(`WhatsApp Web version: ${fetched.version.join('.')}`);
   } catch {
     console.log('Could not fetch latest version, using bundled default.');
   }
@@ -48,20 +48,33 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
 
   console.log('Waiting for QR code...\n');
 
+  // Build a noop logger that satisfies Baileys' pino interface.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const noop = (): any => {};
+  const noopLogger = new Proxy({} as Record<string, unknown>, {
+    get(_target, prop) {
+      if (prop === 'level') return 'silent';
+      if (prop === 'child') return () => noopLogger;
+      return noop;
+    },
+  });
+
   const sock = makeWASocket({
     auth: state,
     version,
     browser: Browsers.appropriate('Talon'),
-    printQRInTerminal: true,
-    // Silence Baileys' internal logging — CLI output is handled by us.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    logger: { level: 'silent', child: () => ({ level: 'silent' }) } as any,
+    logger: noopLogger as any,
     markOnlineOnConnect: false,
   });
 
   sock.ev.on('creds.update', saveCreds);
 
   const timeoutMs = timeout * 1000;
+
+  // Dynamic import — qrcode-terminal is an optional dependency like Baileys itself.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const qrTerminal: any = await import('qrcode-terminal').catch(() => null);
 
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -72,7 +85,18 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     sock.ev.on('connection.update', (update: any) => {
-      const { connection, lastDisconnect } = update;
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr) {
+        if (qrTerminal) {
+          qrTerminal.generate(qr, { small: true });
+          console.log('Scan the QR code above with WhatsApp > Settings > Linked Devices\n');
+        } else {
+          console.log('QR code ready but qrcode-terminal is not installed.');
+          console.log('Install it: npm install qrcode-terminal');
+          console.log(`Or scan this manually: ${qr}\n`);
+        }
+      }
 
       if (connection === 'open') {
         clearTimeout(timer);

@@ -103,7 +103,6 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       auth: state,
       version,
       browser: this.config.browser ?? Browsers.appropriate('Talon'),
-      printQRInTerminal: false,
       logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
         typeof pino
       >,
