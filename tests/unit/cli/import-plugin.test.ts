@@ -388,6 +388,24 @@ describe('importPlugin', () => {
     expect(existsSync(join(skillsDir, 'test-skill', 'SKILL.md'))).toBe(true);
   });
 
+  it('errors when plugin contains skills with invalid names', async () => {
+    const pluginPath = pluginInstallPath('bad-names-plugin');
+    const skillsDir = join(tmpDir, 'skills');
+    mkdirSync(skillsDir, { recursive: true });
+
+    // Create a skill with a dot in the name (invalid for Talon).
+    mkdirSync(join(pluginPath, 'skills', 'my.skill'), { recursive: true });
+    writeFileSync(join(pluginPath, 'skills', 'my.skill', 'SKILL.md'), '---\nname: my.skill\n---\n');
+
+    const ccDir = writePluginIndex({
+      'bad-names-plugin@market': [{ installPath: pluginPath, version: '1.0.0', lastUpdated: '2026-01-01T00:00:00Z' }],
+    });
+
+    await expect(
+      importPlugin({ name: 'bad-names-plugin', skillsDir, ccPluginsDir: ccDir }),
+    ).rejects.toThrow('invalid names');
+  });
+
   it('errors when name is missing', async () => {
     await expect(importPlugin({})).rejects.toThrow('Plugin name is required');
   });

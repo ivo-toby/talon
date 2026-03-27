@@ -210,8 +210,14 @@ export async function scanPlugin(installPath: string): Promise<PluginScanResult>
     for (const entry of dirEntries) {
       if (entry.isDirectory()) {
         const skillMd = path.join(skillsPath, entry.name, 'SKILL.md');
-        if (existsSync(skillMd) && lstatSync(skillMd).isFile()) {
-          skillDirs.push(entry.name);
+        if (existsSync(skillMd)) {
+          try {
+            if (lstatSync(skillMd).isFile()) {
+              skillDirs.push(entry.name);
+            }
+          } catch {
+            // File removed/replaced between checks — treat as no SKILL.md.
+          }
         }
       }
     }
@@ -330,6 +336,15 @@ export async function importPlugin(
   if (scan.skillDirs.length === 0 && !scan.hasMcpServer) {
     throw new Error(
       `Plugin '${options.name}' has no importable skills or MCP servers.`,
+    );
+  }
+
+  // Validate skill names are compatible with Talon's naming rules.
+  const invalidSkills = scan.skillDirs.filter((name) => validateName(name, 'Skill') !== null);
+  if (invalidSkills.length > 0) {
+    throw new Error(
+      `Plugin '${options.name}' contains skills with invalid names: ${invalidSkills.join(', ')}. ` +
+      'Talon skill names must use only letters, numbers, hyphens, and underscores.',
     );
   }
 
