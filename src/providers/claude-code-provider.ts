@@ -44,20 +44,26 @@ export class ClaudeCodeProvider implements AgentProvider {
         { encoding: 'utf8', mode: 0o600 },
       );
 
+      const args = [
+        '--print',
+        '--output-format',
+        'json',
+        '--append-system-prompt',
+        input.systemPrompt,
+        '--mcp-config',
+        mcpConfigPath,
+        '--strict-mcp-config',
+        '--dangerously-skip-permissions',
+        '--no-session-persistence',
+      ];
+
+      if (input.model) {
+        args.push('--model', input.model);
+      }
+
       return ok({
         command: this.config.command,
-        args: [
-          '--print',
-          '--output-format',
-          'json',
-          '--append-system-prompt',
-          input.systemPrompt,
-          '--mcp-config',
-          mcpConfigPath,
-          '--strict-mcp-config',
-          '--dangerously-skip-permissions',
-          '--no-session-persistence',
-        ],
+        args,
         stdin: input.prompt,
         env: input.traceparent ? { TALOND_TRACEPARENT: input.traceparent } : undefined,
         cwd: input.cwd,

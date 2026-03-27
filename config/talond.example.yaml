@@ -33,6 +33,11 @@ channels:
         - 123456789
       pollIntervalMs: 1000
 
+# Personas can also be used as profiles for background agents.
+# When spawning a background agent with profile="<name>", the named persona's
+# system prompt, model, provider, and skills are used instead of the spawning
+# thread's persona. Example:
+#   background_agent spawn profile="code-reviewer" prompt="Review PR #42"
 personas:
   - name: assistant
     model: claude-sonnet-4-6

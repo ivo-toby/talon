@@ -22,6 +22,10 @@ export interface SpawnBackgroundAgentInput {
   channelId: string;
   channelName: string;
   provider?: string;
+  /** When set, indicates the spawn used a named persona profile instead of the thread's persona. */
+  profileName?: string;
+  /** Model override for the provider (e.g. "claude-opus-4-6"). Passed through to the provider. */
+  model?: string;
   workingDirectory?: string;
   timeoutMinutes?: number;
   traceparent?: string;
@@ -159,6 +163,7 @@ export class BackgroundAgentManager {
       cwd: input.workingDirectory ?? process.cwd(),
       timeoutMs: timeoutMinutes * 60 * 1000,
       traceparent: childTraceparent,
+      ...(input.model ? { model: input.model } : {}),
     });
     if (invocationResult.isErr()) {
       observation?.end();

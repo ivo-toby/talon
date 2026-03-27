@@ -87,6 +87,13 @@ export class PersonaLoader {
   }
 
   /**
+   * Returns the names of all loaded personas.
+   */
+  listNames(): string[] {
+    return [...this.cache.keys()];
+  }
+
+  /**
    * Looks up a previously-loaded persona by its persisted database ID.
    *
    * @param id - Persona primary key.

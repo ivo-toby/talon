@@ -385,6 +385,168 @@ describe('BackgroundAgentHandler', () => {
     expect(backgroundAgentManager.getResult).not.toHaveBeenCalled();
   });
 
+  describe('profile parameter', () => {
+    it('spawns with profile persona when a valid profile name is given', async () => {
+      const profilePersona = {
+        config: { name: 'code-reviewer', skills: [], provider: 'gemini-cli', model: 'gemini-2.5-pro' },
+        systemPromptContent: 'You are a code reviewer.',
+        personalityContent: 'Terse and critical.',
+        resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+      };
+
+      const personaLoader = {
+        getByName: vi.fn().mockImplementation((name: string) => {
+          if (name === 'code-reviewer') return ok(profilePersona);
+          if (name === 'TestBot') {
+            return ok({
+              config: { skills: ['search-skill'], provider: undefined },
+              systemPromptContent: 'Base system prompt.',
+              personalityContent: 'Friendly personality.',
+              resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+            });
+          }
+          return ok(undefined);
+        }),
+        listNames: vi.fn().mockReturnValue(['TestBot', 'code-reviewer']),
+      };
+
+      const { handler, backgroundAgentManager } = createHandler({ personaLoader });
+
+      const result = await handler.execute(
+        {
+          action: 'spawn',
+          prompt: 'Review this PR',
+          profile: 'code-reviewer',
+        },
+        {
+          runId: 'run-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          requestId: 'req-1',
+        },
+      );
+
+      expect(result.status).toBe('success');
+      expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          personaPrompt: expect.stringContaining('You are a code reviewer.'),
+          provider: 'gemini-cli',
+          model: 'gemini-2.5-pro',
+          profileName: 'code-reviewer',
+          personaId: 'persona-1', // task tracking still uses original persona
+        }),
+      );
+      // Should NOT contain the spawning thread's persona prompt
+      expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).not.toContain(
+        'Base system prompt.',
+      );
+    });
+
+    it('returns error with available profiles when profile name is unknown', async () => {
+      const personaLoader = {
+        getByName: vi.fn().mockReturnValue(ok(undefined)),
+        listNames: vi.fn().mockReturnValue(['TestBot', 'code-reviewer']),
+      };
+
+      const { handler, backgroundAgentManager } = createHandler({ personaLoader });
+
+      const result = await handler.execute(
+        {
+          action: 'spawn',
+          prompt: 'Review this PR',
+          profile: 'nonexistent',
+        },
+        {
+          runId: 'run-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          requestId: 'req-1',
+        },
+      );
+
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('nonexistent');
+      expect(result.error).toContain('TestBot');
+      expect(result.error).toContain('code-reviewer');
+      expect(backgroundAgentManager.spawn).not.toHaveBeenCalled();
+    });
+
+    it('does not pass model when provider is explicitly overridden', async () => {
+      const profilePersona = {
+        config: { name: 'code-reviewer', skills: [], provider: 'gemini-cli', model: 'gemini-2.5-pro' },
+        systemPromptContent: 'You are a code reviewer.',
+        personalityContent: null,
+        resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+      };
+
+      const personaLoader = {
+        getByName: vi.fn().mockImplementation((name: string) => {
+          if (name === 'code-reviewer') return ok(profilePersona);
+          if (name === 'TestBot') {
+            return ok({
+              config: { skills: ['search-skill'], provider: undefined },
+              systemPromptContent: 'Base system prompt.',
+              personalityContent: 'Friendly personality.',
+              resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+            });
+          }
+          return ok(undefined);
+        }),
+        listNames: vi.fn().mockReturnValue(['TestBot', 'code-reviewer']),
+      };
+
+      const { handler, backgroundAgentManager } = createHandler({ personaLoader });
+
+      const result = await handler.execute(
+        {
+          action: 'spawn',
+          prompt: 'Review this PR',
+          profile: 'code-reviewer',
+          provider: 'claude-code',
+        },
+        {
+          runId: 'run-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          requestId: 'req-1',
+        },
+      );
+
+      expect(result.status).toBe('success');
+      expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'claude-code',
+        }),
+      );
+      // Model should NOT be passed when provider is explicitly overridden
+      expect(backgroundAgentManager.spawn.mock.calls[0][0].model).toBeUndefined();
+    });
+
+    it('uses spawning persona when no profile is given (existing behavior)', async () => {
+      const { handler, backgroundAgentManager } = createHandler();
+
+      const result = await handler.execute(
+        {
+          action: 'spawn',
+          prompt: 'Refactor the auth module',
+        },
+        {
+          runId: 'run-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          requestId: 'req-1',
+        },
+      );
+
+      expect(result.status).toBe('success');
+      expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          personaPrompt: expect.stringContaining('Base system prompt.'),
+        }),
+      );
+    });
+  });
+
   it('returns validation errors for missing required fields', async () => {
     const { handler } = createHandler();
 

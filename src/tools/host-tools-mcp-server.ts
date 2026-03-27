@@ -359,6 +359,14 @@ const TOOLS = [
           type: 'string' as const,
           description: 'Background task identifier for status/cancel/result actions.',
         },
+        provider: {
+          type: 'string' as const,
+          description: 'Optional provider override for spawn (e.g. "claude-code", "gemini-cli").',
+        },
+        profile: {
+          type: 'string' as const,
+          description: 'Optional persona name to use as the background agent profile. When provided, the named persona\'s system prompt, skills, and model are used instead of the spawning thread\'s persona. Must match a persona name defined in talond.yaml.',
+        },
         workingDirectory: {
           type: 'string' as const,
           description: 'Optional working directory for the spawned worker.',
