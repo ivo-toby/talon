@@ -347,6 +347,47 @@ describe('importPlugin', () => {
     expect(result.skippedComponents.sort()).toEqual(['agents', 'hooks']);
   });
 
+  it('succeeds for MCP-only plugin with zero skills', async () => {
+    const pluginPath = pluginInstallPath('mcp-plugin');
+    const skillsDir = join(tmpDir, 'skills');
+    mkdirSync(skillsDir, { recursive: true });
+
+    scaffoldPlugin(pluginPath, [], { mcpDeps: true });
+
+    const ccDir = writePluginIndex({
+      'mcp-plugin@market': [{ installPath: pluginPath, version: '1.0.0', lastUpdated: '2026-01-01T00:00:00Z' }],
+    });
+
+    const result = await importPlugin({
+      name: 'mcp-plugin',
+      skillsDir,
+      ccPluginsDir: ccDir,
+    });
+
+    expect(result.skillsCopied).toEqual([]);
+    expect(result.hasMcpServer).toBe(true);
+  });
+
+  it('creates skillsDir if it does not exist', async () => {
+    const pluginPath = pluginInstallPath('create-dir-plugin');
+    const skillsDir = join(tmpDir, 'nonexistent-skills');
+
+    scaffoldPlugin(pluginPath, ['test-skill']);
+
+    const ccDir = writePluginIndex({
+      'create-dir-plugin@market': [{ installPath: pluginPath, version: '1.0.0', lastUpdated: '2026-01-01T00:00:00Z' }],
+    });
+
+    const result = await importPlugin({
+      name: 'create-dir-plugin',
+      skillsDir,
+      ccPluginsDir: ccDir,
+    });
+
+    expect(result.skillsCopied).toEqual(['test-skill']);
+    expect(existsSync(join(skillsDir, 'test-skill', 'SKILL.md'))).toBe(true);
+  });
+
   it('errors when name is missing', async () => {
     await expect(importPlugin({})).rejects.toThrow('Plugin name is required');
   });

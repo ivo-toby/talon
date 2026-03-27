@@ -9,7 +9,7 @@
  */
 
 import fs from 'node:fs/promises';
-import { existsSync, type Dirent } from 'node:fs';
+import { existsSync, realpathSync, lstatSync, type Dirent } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -124,11 +124,19 @@ export function extractShortName(fullKey: string): string {
 
 /**
  * Validates that a resolved install path is under the expected CC plugins cache.
- * Prevents a corrupted index from pointing to arbitrary filesystem locations.
+ * Uses fs.realpathSync to resolve symlinks, preventing symlink-based escapes.
  */
 export function validateInstallPath(installPath: string, ccPluginsDir: string): void {
-  const resolvedInstall = path.resolve(installPath);
-  const resolvedCache = path.resolve(ccPluginsDir);
+  let resolvedInstall: string;
+  let resolvedCache: string;
+  try {
+    resolvedInstall = realpathSync(installPath);
+    resolvedCache = realpathSync(ccPluginsDir);
+  } catch {
+    // If either path doesn't exist, fall back to path.resolve for the error message.
+    resolvedInstall = path.resolve(installPath);
+    resolvedCache = path.resolve(ccPluginsDir);
+  }
   if (!resolvedInstall.startsWith(resolvedCache + path.sep)) {
     throw new Error(
       `Plugin install path "${installPath}" is outside the Claude Code plugins directory. The plugins index may be corrupted.`,
@@ -202,7 +210,7 @@ export async function scanPlugin(installPath: string): Promise<PluginScanResult>
     for (const entry of dirEntries) {
       if (entry.isDirectory()) {
         const skillMd = path.join(skillsPath, entry.name, 'SKILL.md');
-        if (existsSync(skillMd)) {
+        if (existsSync(skillMd) && lstatSync(skillMd).isFile()) {
           skillDirs.push(entry.name);
         }
       }
@@ -325,6 +333,13 @@ export async function importPlugin(
     );
   }
 
+  // Ensure skills directory exists.
+  try {
+    await fs.mkdir(skillsDir, { recursive: true });
+  } catch (cause) {
+    throw new Error(`Error creating skills directory "${skillsDir}": ${String(cause)}`);
+  }
+
   // Check for collisions before copying anything.
   for (const skillName of scan.skillDirs) {
     const targetDir = path.join(skillsDir, skillName);
@@ -430,7 +445,7 @@ export async function importPluginCommand(
     // Next steps.
     if (result.skillsCopied.length > 0) {
       console.log('\nTo attach these skills to a persona, use:');
-      console.log('  talonctl add-skill --name <skill-name> --persona <persona-name>');
+      console.log('  talonctl add-skill --name <skill-name> --persona <persona-name> --format skillmd');
     }
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
