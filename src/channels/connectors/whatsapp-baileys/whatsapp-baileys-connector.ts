@@ -76,13 +76,31 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       );
     });
 
-    const { makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = baileys;
+    const { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason, Browsers } = baileys;
 
     const authDir = this.config.authDir ?? './baileys-auth';
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
+    // Fetch the latest WhatsApp Web version to avoid 405 protocol rejections.
+    // Baileys' bundled default goes stale as WhatsApp increments server-side.
+    let version: [number, number, number] | undefined;
+    try {
+      const fetched = await fetchLatestBaileysVersion();
+      version = fetched.version;
+      this.logger.info(
+        { channelName: this.name, version },
+        'whatsapp-baileys: fetched latest WA web version',
+      );
+    } catch {
+      this.logger.warn(
+        { channelName: this.name },
+        'whatsapp-baileys: failed to fetch latest version, using bundled default',
+      );
+    }
+
     const sock = makeWASocket({
       auth: state,
+      version,
       browser: this.config.browser ?? Browsers.appropriate('Talon'),
       printQRInTerminal: this.config.printQR ?? true,
       logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
