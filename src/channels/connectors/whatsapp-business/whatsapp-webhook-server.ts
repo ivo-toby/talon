@@ -52,6 +52,7 @@ const MAX_BODY_BYTES = 5 * 1024 * 1024;
  */
 export class WhatsAppWebhookServer {
   private server: Server | null = null;
+  private startPromise: Promise<number> | null = null;
   private handler?: (payload: WhatsAppWebhookPayload) => void | Promise<void>;
   private readonly webhookPath: string;
 
@@ -87,7 +88,12 @@ export class WhatsAppWebhookServer {
       const boundPort = typeof addr === 'object' && addr !== null ? addr.port : 0;
       return Promise.resolve(boundPort);
     }
-    return new Promise((resolve, reject) => {
+    // Guard against concurrent start() calls — return the same promise if
+    // a bind is already in progress.
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+    this.startPromise = new Promise<number>((resolve, reject) => {
       const srv = createServer((req, res) => {
         this.handleRequest(req, res).catch((err: unknown) => {
           this.logger.error({ err }, 'whatsapp-webhook-server: unhandled error in request handler');
@@ -97,7 +103,14 @@ export class WhatsAppWebhookServer {
         });
       });
 
-      const onError = (err: Error) => reject(err);
+      // Assign immediately so concurrent callers see it before listen() fires.
+      this.server = srv;
+
+      const onError = (err: Error) => {
+        this.server = null;
+        this.startPromise = null;
+        reject(err);
+      };
       srv.once('error', onError);
       srv.listen(port, host, () => {
         // Remove the startup error listener — runtime errors after this point
@@ -105,7 +118,6 @@ export class WhatsAppWebhookServer {
         srv.removeListener('error', onError);
         const addr = srv.address();
         const boundPort = typeof addr === 'object' && addr !== null ? addr.port : port;
-        this.server = srv;
         this.logger.info(
           { host, port: boundPort, path: this.webhookPath },
           'whatsapp-webhook-server: listening',
@@ -113,6 +125,7 @@ export class WhatsAppWebhookServer {
         resolve(boundPort);
       });
     });
+    return this.startPromise;
   }
 
   /**
@@ -130,6 +143,7 @@ export class WhatsAppWebhookServer {
     }
     const srv = this.server;
     this.server = null;
+    this.startPromise = null;
     // Forcibly close any lingering keep-alive connections so that close()
     // resolves promptly rather than waiting for idle timeouts.
     if (typeof srv.closeAllConnections === 'function') {
@@ -204,7 +218,9 @@ export class WhatsAppWebhookServer {
     const signatureHeader = req.headers['x-hub-signature-256'];
     if (!signatureHeader || typeof signatureHeader !== 'string') {
       this.logger.warn('whatsapp-webhook-server: missing X-Hub-Signature-256 header');
+      res.setHeader('Connection', 'close');
       res.writeHead(401).end('Unauthorized');
+      req.resume();
       return;
     }
 
@@ -271,9 +287,9 @@ export class WhatsAppWebhookServer {
 
   /**
    * Timing-safe string equality check.
-   * Returns false immediately on length mismatch (after a constant-time
-   * self-compare to avoid early-exit timing signals). Strings of equal length
-   * are compared with timingSafeEqual.
+   * Uses a self-compare on length mismatch to avoid early-exit timing
+   * signals, then returns false. Equal-length strings are compared with
+   * timingSafeEqual.
    */
   private timingSafeStringEqual(a: string, b: string): boolean {
     try {
@@ -293,10 +309,10 @@ export class WhatsAppWebhookServer {
   /**
    * Validate `X-Hub-Signature-256: sha256=<hex>` against the raw body.
    *
-   * Uses the double-HMAC pattern: both the expected and actual values are
-   * re-HMAC'd with a deterministic key derived from appSecret so that
-   * their lengths are always equal (fixed 32-byte digest) and no length
-   * information is leaked via a plain timingSafeEqual.
+   * Uses the double-HMAC pattern: both the expected and received values
+   * are re-hashed with a key deterministically derived from appSecret,
+   * normalising both to fixed 32-byte digests so timingSafeEqual never
+   * leaks length information.
    */
   private verifySignature(body: Buffer, signatureHeader: string): boolean {
     try {

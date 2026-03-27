@@ -51,22 +51,8 @@ describe('WhatsAppBaileysConnector', () => {
     connector.onMessage(handler);
   });
 
-  it('start() throws if @whiskeysockets/baileys is not installed', async () => {
-    // Create a connector that will fail to import baileys
-    const badConnector = new WhatsAppBaileysConnector({}, 'bad', logger);
-
-    // Mock the dynamic import to simulate missing package
-    const originalImport = globalThis.importOriginal;
-    vi.mock('@whiskeysockets/baileys', () => {
-      throw new Error('Cannot find module');
-    });
-
-    // The connector uses dynamic import() so we need to test differently.
-    // Since we can't easily mock dynamic import() in vitest without module-level mocking,
-    // we verify that the error message is correct by checking the connector's behavior.
-    // The actual dynamic import test is covered by the integration test.
-    expect(badConnector.type).toBe('whatsappBaileys');
-
-    vi.restoreAllMocks();
+  it('exposes correct type on a new instance', () => {
+    const other = new WhatsAppBaileysConnector({}, 'other', logger);
+    expect(other.type).toBe('whatsappBaileys');
   });
 });
