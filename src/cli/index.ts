@@ -42,6 +42,7 @@ import { listProvidersCommand } from './commands/list-providers.js';
 import { addProviderCommand } from './commands/add-provider.js';
 import { setDefaultProviderCommand } from './commands/set-default-provider.js';
 import { testProviderCommand } from './commands/test-provider.js';
+import { importPluginCommand, listPluginsCommand } from './commands/import-plugin.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -180,6 +181,28 @@ program
       format: opts.format,
       configPath: opts.config,
     });
+  });
+
+program
+  .command('import-plugin')
+  .description('Import skills from an installed Claude Code plugin into Talon')
+  .option('--name <name>', 'Short plugin name (e.g. backend-development)')
+  .option('--list', 'List importable Claude Code plugins')
+  .option('--skills-dir <path>', 'Talon skills directory', 'skills')
+  .option('--cc-plugins-dir <path>', 'Claude Code plugins directory')
+  .action(async (opts: { name?: string; list?: boolean; skillsDir: string; ccPluginsDir?: string }) => {
+    if (opts.list) {
+      await listPluginsCommand({ ccPluginsDir: opts.ccPluginsDir });
+    } else if (opts.name) {
+      await importPluginCommand({
+        name: opts.name,
+        skillsDir: opts.skillsDir,
+        ccPluginsDir: opts.ccPluginsDir,
+      });
+    } else {
+      console.error('Error: provide --name <name> to import a plugin or --list to see available plugins.');
+      process.exit(1);
+    }
   });
 
 program
