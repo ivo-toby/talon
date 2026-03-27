@@ -53,7 +53,7 @@ export interface AddPersonaOptions {
 
 export interface AddPersonaEntry {
   name: string;
-  model: string;
+  model?: string;
   provider?: string;
   systemPromptFile: string;
   skills: string[];
@@ -162,9 +162,13 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   }
 
   // Build persona entry.
+  // When a provider is explicitly given but no model, omit model so the config
+  // loader applies the schema default. This avoids writing a Claude model name
+  // for non-Claude providers (e.g. gemini-cli).
+  const model = options.model ?? (options.provider ? undefined : DEFAULT_MODEL);
   const entry: AddPersonaEntry = {
     name: options.name,
-    model: options.model ?? DEFAULT_MODEL,
+    ...(model ? { model } : {}),
     ...(options.provider ? { provider: options.provider } : {}),
     systemPromptFile,
     skills: options.skills ?? [],

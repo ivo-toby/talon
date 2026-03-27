@@ -179,6 +179,24 @@ export class BackgroundAgentHandler {
       );
     }
 
+    // Resolve provider: explicit arg > persona/profile config > undefined (daemon default).
+    const explicitProvider =
+      typeof args.provider === 'string' && args.provider.trim().length > 0
+        ? args.provider.trim()
+        : undefined;
+    const personaProvider =
+      typeof loadedPersona.config.provider === 'string' && loadedPersona.config.provider.trim().length > 0
+        ? loadedPersona.config.provider.trim()
+        : undefined;
+    const resolvedProvider = explicitProvider ?? personaProvider;
+
+    // Only forward the persona's model when no explicit provider override was given.
+    // When the user passes an explicit provider, the persona's model name may be
+    // invalid for that provider (e.g. "claude-opus-4-6" on gemini-cli).
+    // When no explicit override is given the resolved provider comes from the persona
+    // config itself (or daemon default), so the persona's model is expected to match.
+    const shouldForwardModel = !explicitProvider && !!loadedPersona.config.model;
+
     const spawnResult = this.deps.backgroundAgentManager.spawn({
       prompt: args.prompt,
       personaPrompt: runtimeContext.personaPrompt,
@@ -188,16 +206,13 @@ export class BackgroundAgentHandler {
       threadId: context.threadId,
       channelId: threadResult.value.channel_id,
       channelName: channelResult.value.name,
-      provider:
-        typeof args.provider === 'string' && args.provider.trim().length > 0
-          ? args.provider.trim()
-          : typeof loadedPersona.config.provider === 'string' && loadedPersona.config.provider.trim().length > 0
-            ? loadedPersona.config.provider.trim()
-            : undefined,
+      provider: resolvedProvider,
       ...(profileName ? { profileName } : {}),
-      // Only pass the persona's model when the provider is NOT explicitly overridden.
-      // Cross-provider model names (e.g. "claude-opus-4-6" on gemini-cli) would be invalid.
-      ...(!args.provider && loadedPersona.config.model ? { model: loadedPersona.config.model } : {}),
+      // Only pass the persona's model when the resolved provider matches the persona's
+      // configured provider (or when the persona has no provider set). This prevents
+      // cross-provider model mismatches (e.g. "claude-opus-4-6" on gemini-cli) that
+      // occur when the daemon default provider differs from the profile's provider.
+      ...(shouldForwardModel ? { model: loadedPersona.config.model } : {}),
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.timeoutMinutes ? { timeoutMinutes: args.timeoutMinutes } : {}),
       traceparent: context.traceparent,

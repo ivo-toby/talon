@@ -342,7 +342,7 @@ const TOOLS = [
   },
   {
     name: 'background_agent',
-    description: 'Starts or manages a background Claude Code worker for the current thread.',
+    description: 'Starts or manages a background worker for the current thread. Supports multiple providers (claude-code, gemini-cli) via the provider and profile fields.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -365,7 +365,7 @@ const TOOLS = [
         },
         profile: {
           type: 'string' as const,
-          description: 'Optional persona name to use as the background agent profile. When provided, the named persona\'s system prompt, skills, and model are used instead of the spawning thread\'s persona. Must match a persona name defined in talond.yaml.',
+          description: 'Optional persona name to use as the background agent profile. When provided, the named persona\'s system prompt, skills, model, and provider are used instead of the spawning thread\'s persona (unless explicitly overridden via the provider field). Must match a persona name defined in talond.yaml.',
         },
         workingDirectory: {
           type: 'string' as const,
