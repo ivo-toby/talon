@@ -37,7 +37,8 @@ It is built for single-user or small-team deployments where you want persistent,
 - **Slack** — Socket Mode with mrkdwn formatting
 - **Terminal** — WebSocket server with `talonctl chat` client, rendered markdown output, persistent threads
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
-- **WhatsApp** — Cloud API with embedded webhook server (HMAC-SHA256 signature validation)
+- **WhatsApp Business** — Cloud API with embedded webhook server (HMAC-SHA256 signature validation)
+- **WhatsApp Baileys** — WhatsApp Web bridge via Baileys, no Meta Business account required
 - **Email** — IMAP polling + SMTP send, thread tracking via In-Reply-To headers _(not yet tested)_
 
 ### Agent System
@@ -485,7 +486,7 @@ channels:
 - **Thread mapping**: `channel_id:message_id`
 - **Rate limiting**: Automatic retry with `Retry-After` header handling
 
-### WhatsApp
+### WhatsApp Business
 
 Webhook-based connector using the WhatsApp Cloud API. The connector embeds a lightweight HTTP server that handles Meta's webhook verification challenge and validates inbound event payloads using HMAC-SHA256 signatures.
 
@@ -496,7 +497,7 @@ If you prefer to proxy webhook events yourself (e.g. via nginx), omit `appSecret
 ```yaml
 channels:
   - name: my-whatsapp
-    type: whatsapp
+    type: whatsappBusiness
     enabled: true
     config:
       phoneNumberId: '123456789'
@@ -511,7 +512,7 @@ When `appSecret` is set, an HTTP server starts automatically on connector start 
 ```yaml
 channels:
   - name: my-whatsapp
-    type: whatsapp
+    type: whatsappBusiness
     enabled: true
     config:
       phoneNumberId: '123456789'
@@ -537,6 +538,30 @@ Point your Meta App Dashboard webhook URL at `http://<your-host>:3000/webhook`.
 - **Outbound**: Cloud API `POST /{phone_number_id}/messages`
 - **Idempotency key**: `message_id`
 - **Format**: WhatsApp-flavored markdown
+
+### WhatsApp Baileys
+
+WhatsApp Web bridge using the [Baileys](https://github.com/WhiskeySockets/Baileys) library. Connects as a regular WhatsApp Web client — no Meta Business account, no webhook server, no Cloud API. Authenticate by scanning a QR code on first start.
+
+> **Optional dependency**: `@whiskeysockets/baileys` is not bundled. Install it separately: `npm install @whiskeysockets/baileys`
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsappBaileys
+    enabled: true
+    config:
+      authDir: './baileys-auth'         # Session credential storage (default: ./baileys-auth)
+      printQR: true                     # Print QR code to terminal on first connect (default: true)
+      markOnlineOnConnect: false        # Show as online in WhatsApp (default: false)
+      browser: ['Talon', 'Chrome', '1.0']  # Linked Devices display name (optional)
+```
+
+- **Inbound**: WhatsApp Web socket via Baileys, text messages from individual chats only (group and media messages logged and skipped in v1)
+- **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
+- **Idempotency key**: Baileys message ID
+- **Thread mapping**: Sender JID
+- **Reconnection**: Automatic on disconnect; logged-out sessions require re-authentication (delete `authDir` and restart)
 
 ### Email
 
