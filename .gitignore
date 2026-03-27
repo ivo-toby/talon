@@ -47,3 +47,4 @@ talond.yaml
 
 # WhatsApp Baileys auth session
 baileys-auth/
+.claude/settings.json
