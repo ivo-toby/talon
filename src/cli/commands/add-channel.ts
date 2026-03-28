@@ -132,7 +132,7 @@ export function buildPlaceholderConfig(type: string): Record<string, unknown> {
     case 'whatsappBusiness':
       return { phoneNumberId: 'YOUR_PHONE_NUMBER_ID', accessToken: '${WHATSAPP_ACCESS_TOKEN}', verifyToken: '${WHATSAPP_VERIFY_TOKEN}', appSecret: '${WHATSAPP_APP_SECRET}' };
     case 'whatsappBaileys':
-      return { authDir: './baileys-auth' };
+      return { authDir: './baileys-auth', selfChat: false, triggerWords: [] };
     case 'email':
       return {
         imapHost: 'imap.gmail.com', imapPort: 993, imapUser: 'bot@gmail.com', imapPass: '${EMAIL_PASSWORD}', imapSecure: true,

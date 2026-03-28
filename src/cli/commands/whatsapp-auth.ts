@@ -126,15 +126,20 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
       });
     });
 
-    // Clean up this socket before potentially creating a new one.
-    try { sock.end(undefined); } catch { /* already closed */ }
-
     if (result.status === 'open') {
-      console.log('\nAuthenticated successfully!');
+      // Keep the socket alive briefly so WhatsApp can finish the
+      // phone-side handshake. Without this delay the phone may still
+      // show "logging in" even though credentials were saved locally.
+      console.log('\nAuthenticated — waiting for handshake to complete...');
+      await new Promise((r) => setTimeout(r, 3000));
+      try { sock.end(undefined); } catch { /* ignore */ }
       console.log(`Credentials saved to "${authDir}".`);
       console.log('You can now start talond — no QR code will be needed.');
       return;
     }
+
+    // Clean up this socket before potentially creating a new one.
+    try { sock.end(undefined); } catch { /* already closed */ }
 
     if (result.status === 'fatal') {
       console.error(result.message);

@@ -119,6 +119,18 @@ describe('addChannel()', () => {
     expect(config.port).toBe(8089);
   });
 
+  it('adds whatsappBaileys placeholder config with authDir, selfChat, and triggerWords', async () => {
+    const p = writeMinimalConfig();
+    await addChannel({ name: 'wa', type: 'whatsappBaileys', configPath: p });
+
+    const doc = readYaml(p);
+    const channels = doc.channels as Array<Record<string, unknown>>;
+    const config = channels[0]!.config as Record<string, unknown>;
+    expect(config.authDir).toBe('./baileys-auth');
+    expect(config.selfChat).toBe(false);
+    expect(config.triggerWords).toEqual([]);
+  });
+
   // --- Validation ---
 
   it('rejects a duplicate channel name', async () => {

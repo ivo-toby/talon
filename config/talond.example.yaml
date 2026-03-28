@@ -33,31 +33,27 @@ channels:
         - 123456789
       pollIntervalMs: 1000
 
-  # WhatsApp Cloud API connector with embedded webhook server.
-  # Set appSecret + webhookPort to enable the inbound HTTP server.
-  # Omit appSecret to run in send-only mode (proxy payloads to feedWebhook() yourself).
-  # - type: whatsapp
-  #   name: my-whatsapp
-  #   enabled: true
-  #   config:
-  #     phoneNumberId: ${WHATSAPP_PHONE_NUMBER_ID}
-  #     accessToken: ${WHATSAPP_ACCESS_TOKEN}
-  #     verifyToken: ${WHATSAPP_VERIFY_TOKEN}
-  #     appSecret: ${WHATSAPP_APP_SECRET}   # enables the webhook server
-  #     webhookPort: 3000                   # default: 3000
-  #     webhookHost: '0.0.0.0'             # default: 0.0.0.0
-  #     webhookPath: '/webhook'            # default: /webhook
-
   # WhatsApp Web bridge via Baileys — no Meta Business account required.
   # Authenticate first: npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+  # Two modes: dedicated number (default) or self-chat (use your personal WhatsApp).
+  #
+  # Dedicated number:
   # - type: whatsappBaileys
   #   name: my-whatsapp
   #   enabled: true
   #   config:
   #     authDir: './baileys-auth'
-  #     markOnlineOnConnect: false
   #     allowedSenders:                  # Restrict who can message the bot (recommended)
   #       - '96490886312027'            # Use sender ID from logs (phone number or LID)
+  #
+  # Self-chat (personal number):
+  # - type: whatsappBaileys
+  #   name: my-whatsapp
+  #   enabled: true
+  #   config:
+  #     authDir: './baileys-auth'
+  #     selfChat: true                   # Listen only to your "Message Yourself" thread
+  #     triggerWords: ['@Talon']         # Optional — require trigger word to activate
 
 personas:
   - name: assistant

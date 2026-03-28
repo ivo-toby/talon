@@ -56,6 +56,13 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   private running = false;
   private sock: BaileysSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * Set of bare self-identifiers (stripped of @domain and :device).
+   * Baileys exposes the phone-number JID via sock.user.id but self-chat
+   * messages may arrive under the LID JID. We store both so the self-chat
+   * comparison matches either format.
+   */
+  private selfIds = new Set<string>();
 
   constructor(
     private readonly config: WhatsAppBaileysConfig,
@@ -128,11 +135,24 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
 
         if (connection === 'open') {
           this.running = true;
+          // Capture own identifiers for self-chat mode.
+          // sock.user.id is the phone-number JID (e.g. "31612345678:49@s.whatsapp.net").
+          // sock.user.lid is the LID JID (e.g. "96490886312027:49@lid").
+          // Self-chat messages may arrive under either format, so store both.
+          this.selfIds.clear();
+          const userPn = sock.user?.id;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const userLid = (sock.user as any)?.lid as string | undefined;
+          if (userPn) this.selfIds.add(userPn.replace(/@.*$/, '').replace(/:\d+$/, ''));
+          if (userLid) this.selfIds.add(userLid.replace(/@.*$/, '').replace(/:\d+$/, ''));
           const allowedSenders = this.config.allowedSenders;
           this.logger.info(
             {
               channelName: this.name,
               authDir,
+              selfIds: [...this.selfIds],
+              selfChat: this.config.selfChat ?? false,
+              triggerWords: this.config.triggerWords?.length ? this.config.triggerWords : 'none',
               allowedSenders: allowedSenders?.length ? allowedSenders : 'none (open to all)',
             },
             'whatsapp-baileys connector connected',
@@ -232,6 +252,15 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }
   }
 
+  async sendTyping(externalThreadId: string): Promise<void> {
+    if (!this.running || !this.sock) return;
+    try {
+      await this.sock.sendPresenceUpdate('composing', externalThreadId);
+    } catch {
+      // Non-critical — swallow errors silently.
+    }
+  }
+
   format(markdown: string): string {
     return markdownToWhatsApp(markdown);
   }
@@ -241,44 +270,67 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   // ---------------------------------------------------------------------------
 
   private async handleInboundMessage(msg: InboundWAMessage): Promise<void> {
-    if (msg.key.fromMe) return;
     if (!msg.message || !msg.key.remoteJid || !msg.key.id) return;
 
     const jid = msg.key.remoteJid;
+    const fromMe = msg.key.fromMe ?? false;
+    const selfChat = this.config.selfChat ?? false;
 
     this.logger.debug(
-      { channelName: this.name, jid, messageId: msg.key.id },
+      { channelName: this.name, jid, fromMe, messageId: msg.key.id },
       'whatsapp-baileys: inbound message received',
     );
 
-    // Enforce allowedSenders restriction if configured.
-    // Accepts the identifier part of any JID format:
-    //   - Phone-based: "31612345678@s.whatsapp.net" or "31612345678:42@s.whatsapp.net"
-    //   - LID-based:   "96490886312027@lid"
-    // Strip the @domain suffix and any :device suffix to get the bare sender ID.
-    const allowedSenders = this.config.allowedSenders;
-    if (allowedSenders && allowedSenders.length > 0) {
-      const senderId = jid.replace(/@.*$/, '').replace(/:\d+$/, '');
-      if (!allowedSenders.includes(senderId)) {
-        this.logger.warn(
-          { channelName: this.name, jid, senderId },
-          'whatsapp-baileys: message from disallowed sender, dropping',
+    // ── Self-chat mode ────────────────────────────────────────────────
+    // In self-chat mode the bot only listens to the user's own "Message
+    // Yourself" thread. Accept fromMe messages in the self-JID thread;
+    // reject everything else.
+    if (selfChat) {
+      if (this.selfIds.size === 0) return; // not yet connected
+      // Compare bare ID against all known self-identifiers (PN + LID).
+      const bareJid = jid.replace(/@.*$/, '').replace(/:\d+$/, '');
+      if (!this.selfIds.has(bareJid)) {
+        this.logger.debug(
+          { channelName: this.name, jid, bareJid, selfIds: [...this.selfIds] },
+          'whatsapp-baileys: self-chat mode, ignoring non-self JID',
+        );
+        return;
+      }
+      // In self-chat, only accept fromMe (the user typing to themselves).
+      if (!fromMe) return;
+    } else {
+      // ── Normal mode ───────────────────────────────────────────────
+      if (fromMe) return;
+
+      // Enforce allowedSenders restriction if configured.
+      // Accepts the identifier part of any JID format:
+      //   - Phone-based: "31612345678@s.whatsapp.net" or "31612345678:42@s.whatsapp.net"
+      //   - LID-based:   "96490886312027@lid"
+      // Strip the @domain suffix and any :device suffix to get the bare sender ID.
+      const allowedSenders = this.config.allowedSenders;
+      if (allowedSenders && allowedSenders.length > 0) {
+        const senderId = jid.replace(/@.*$/, '').replace(/:\d+$/, '');
+        if (!allowedSenders.includes(senderId)) {
+          this.logger.warn(
+            { channelName: this.name, jid, senderId },
+            'whatsapp-baileys: message from disallowed sender, dropping',
+          );
+          return;
+        }
+      }
+
+      // Skip group messages in normal mode.
+      if (jid.endsWith('@g.us')) {
+        this.logger.debug(
+          { channelName: this.name, jid },
+          'whatsapp-baileys: skipping group message',
         );
         return;
       }
     }
 
-    // Skip group messages
-    if (jid.endsWith('@g.us')) {
-      this.logger.debug(
-        { channelName: this.name, jid },
-        'whatsapp-baileys: skipping group message',
-      );
-      return;
-    }
-
-    // Extract text content
-    const text =
+    // ── Extract text content ──────────────────────────────────────────
+    let text =
       (msg.message['conversation'] as string | undefined) ??
       (msg.message['extendedTextMessage'] as { text?: string } | undefined)?.text;
 
@@ -288,6 +340,23 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         'whatsapp-baileys: skipping non-text message',
       );
       return;
+    }
+
+    // ── Trigger word filter ───────────────────────────────────────────
+    const triggerWords = this.config.triggerWords;
+    if (triggerWords && triggerWords.length > 0) {
+      const lower = text.toLowerCase();
+      const matched = triggerWords.find((tw) => lower.startsWith(tw.toLowerCase()));
+      if (!matched) {
+        this.logger.debug(
+          { channelName: this.name, jid },
+          'whatsapp-baileys: no trigger word matched, dropping',
+        );
+        return;
+      }
+      // Strip the trigger word and any leading whitespace after it.
+      text = text.slice(matched.length).trimStart();
+      if (!text) return; // trigger word only, no actual message
     }
 
     const rawTimestamp = msg.messageTimestamp;

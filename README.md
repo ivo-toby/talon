@@ -37,8 +37,7 @@ It is built for single-user or small-team deployments where you want persistent,
 - **Slack** — Socket Mode with mrkdwn formatting
 - **Terminal** — WebSocket server with `talonctl chat` client, rendered markdown output, persistent threads
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
-- **WhatsApp Business** — Cloud API with embedded webhook server (HMAC-SHA256 signature validation)
-- **WhatsApp Baileys** — WhatsApp Web bridge via Baileys, no Meta Business account required
+- **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send, thread tracking via In-Reply-To headers _(not yet tested)_
 
 ### Agent System
@@ -486,64 +485,15 @@ channels:
 - **Thread mapping**: `channel_id:message_id`
 - **Rate limiting**: Automatic retry with `Retry-After` header handling
 
-### WhatsApp Business
-
-Webhook-based connector using the WhatsApp Cloud API. The connector embeds a lightweight HTTP server that handles Meta's webhook verification challenge and validates inbound event payloads using HMAC-SHA256 signatures.
-
-#### Minimal config (send-only, external proxy)
-
-If you prefer to proxy webhook events yourself (e.g. via nginx), omit `appSecret` and call `feedWebhook()` directly. The embedded server is not started.
-
-```yaml
-channels:
-  - name: my-whatsapp
-    type: whatsappBusiness
-    enabled: true
-    config:
-      phoneNumberId: '123456789'
-      accessToken: ${WHATSAPP_ACCESS_TOKEN}
-      verifyToken: ${WHATSAPP_VERIFY_TOKEN}
-```
-
-#### Full config (embedded webhook server)
-
-When `appSecret` is set, an HTTP server starts automatically on connector start and handles all inbound webhook requests.
-
-```yaml
-channels:
-  - name: my-whatsapp
-    type: whatsappBusiness
-    enabled: true
-    config:
-      phoneNumberId: '123456789'
-      accessToken: ${WHATSAPP_ACCESS_TOKEN}
-      verifyToken: ${WHATSAPP_VERIFY_TOKEN}
-      appSecret: ${WHATSAPP_APP_SECRET}
-      webhookPort: 3000 # TCP port to listen on (default: 3000)
-      webhookHost: '0.0.0.0' # Network interface (default: 0.0.0.0)
-      webhookPath: '/webhook' # URL path (default: /webhook)
-```
-
-Point your Meta App Dashboard webhook URL at `http://<your-host>:3000/webhook`.
-
-#### Setup steps
-
-1. In the [Meta App Dashboard](https://developers.facebook.com/apps/), go to **WhatsApp → Configuration**.
-2. Set the **Webhook URL** to your server's public address (e.g. `https://example.com/webhook`).
-3. Set the **Verify Token** to match `verifyToken` in your config.
-4. Copy the **App Secret** (under App Settings → Basic) into `appSecret`.
-5. Subscribe to the `messages` webhook field.
-
-- **Inbound**: Embedded HTTP server validates `X-Hub-Signature-256` and routes payloads to `feedWebhook()`
-- **Outbound**: Cloud API `POST /{phone_number_id}/messages`
-- **Idempotency key**: `message_id`
-- **Format**: WhatsApp-flavored markdown
-
 ### WhatsApp Baileys
 
 WhatsApp Web bridge using the [Baileys](https://github.com/WhiskeySockets/Baileys) library. Connects as a regular WhatsApp Web client — no Meta Business account, no webhook server, no Cloud API.
 
 > **Optional dependency**: `@whiskeysockets/baileys` is not bundled. Install it separately: `npm install @whiskeysockets/baileys`
+
+Two usage modes: **dedicated number** (default) or **self-chat** (use your personal WhatsApp).
+
+**Dedicated number** — a second WhatsApp account receives messages from others:
 
 ```yaml
 channels:
@@ -551,16 +501,37 @@ channels:
     type: whatsappBaileys
     enabled: true
     config:
-      authDir: './baileys-auth' # Session credential storage (default: ./baileys-auth)
-      markOnlineOnConnect: false # Show as online in WhatsApp (default: false)
-      browser: ['Talon', 'Chrome', '1.0'] # Linked Devices display name (optional)
-      allowedSenders: # Optional — restrict who can message the bot
-        - '8l490286352027'
+      authDir: './baileys-auth'
+      allowedSenders:                         # Restrict who can message the bot
+        - '96490886312027'
 ```
+
+**Self-chat** — the bot listens in your own "Message Yourself" thread. No second phone needed:
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsappBaileys
+    enabled: true
+    config:
+      authDir: './baileys-auth'
+      selfChat: true
+      triggerWords: ['@Talon']                # Optional — filter by trigger word
+```
+
+#### Self-Chat Mode
+
+Set `selfChat: true` to use your personal WhatsApp number. The bot only listens to messages you send in your own "Message Yourself" conversation (WhatsApp's built-in self-chat). All other conversations are ignored. No `allowedSenders` needed — only your own messages are processed.
+
+#### Trigger Words
+
+`triggerWords` filters messages so only those starting with a listed word are processed. The trigger word is stripped before the message reaches the agent — e.g. `@Talon what's the weather?` becomes `what's the weather?`. Case-insensitive.
+
+Useful in self-chat mode (so not every note-to-self triggers the bot) or with a dedicated number in group-like scenarios. When omitted or empty, all messages pass through.
 
 #### Access Control
 
-By default, **anyone who knows the bot's phone number can chat with it**. Use `allowedSenders` to restrict access. When the list is omitted or empty, all senders are accepted.
+For dedicated-number mode, use `allowedSenders` to restrict who can message the bot. When omitted or empty, all senders are accepted.
 
 **Finding sender IDs:** WhatsApp uses opaque "LID" identifiers (e.g. `96490886312027@lid`) rather than phone numbers in many cases. You cannot predict which format a contact will use, so discover IDs from the logs:
 
@@ -570,13 +541,6 @@ By default, **anyone who knows the bot's phone number can chat with it**. Use `a
 4. Find the log line `whatsapp-baileys: inbound message received` — the `jid` field shows the full identifier
 5. Copy the part **before the `@`** (e.g. `96490886312027`) into `allowedSenders`
 6. Set `logLevel` back to `info` and restart
-
-```yaml
-config:
-  authDir: './baileys-auth'
-  allowedSenders:
-    - '96490886312027' # sender ID from logs (part before the @)
-```
 
 #### Authentication
 
@@ -592,7 +556,8 @@ npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
 
 Once authenticated, the daemon uses the saved credentials — no QR code display needed at runtime. To re-authenticate, delete the `authDir` folder and run the command again.
 
-- **Access control**: Optional `allowedSenders` allowlist — messages from unlisted senders are dropped with a warning log
+- **Access control**: Optional `allowedSenders` allowlist (dedicated-number mode) or `selfChat: true` (personal number)
+- **Trigger words**: Optional `triggerWords` filter — trigger is stripped before reaching the agent
 - **Inbound**: WhatsApp Web socket via Baileys, text messages from individual chats only (group and media messages logged and skipped in v1)
 - **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
 - **Idempotency key**: Baileys message ID

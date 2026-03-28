@@ -35,4 +35,19 @@ export interface WhatsAppBaileysConfig {
    * accepted (open mode).
    */
   allowedSenders?: string[];
+  /**
+   * Enable self-chat mode: the bot listens only to messages in your own
+   * "Message Yourself" thread. This lets you use your personal WhatsApp
+   * number without a second phone. `fromMe` messages are accepted and
+   * all other JIDs are ignored. `allowedSenders` is irrelevant in this mode.
+   * Defaults to false.
+   */
+  selfChat?: boolean;
+  /**
+   * Optional list of trigger words that must appear at the start of a message
+   * for it to be processed (case-insensitive). The trigger word is stripped
+   * before the message reaches the agent. Example: ['@Talon', '@Bot'].
+   * When empty or omitted, all messages pass through without filtering.
+   */
+  triggerWords?: string[];
 }
