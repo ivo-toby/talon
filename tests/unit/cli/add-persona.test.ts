@@ -186,7 +186,11 @@ describe('addPersona()', () => {
     const doc = readYaml(p);
     const personas = doc.personas as Array<Record<string, unknown>>;
     const capabilities = personas[0]!.capabilities as Record<string, unknown>;
-    expect(capabilities.allow).toEqual([]);
+    expect(capabilities.allow).toEqual([
+      'memory.access:thread',
+      'net.http:egress',
+      'schedule.manage:own',
+    ]);
     expect(capabilities.requireApproval).toEqual(['channel.send:*', 'fs.write:workspace']);
   });
 
