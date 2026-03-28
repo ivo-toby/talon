@@ -101,4 +101,22 @@ describe('formatToolCall', () => {
       expect(formatToolCall('ping')).toBe('🔧 Using Ping');
     });
   });
+
+  describe('edge cases', () => {
+    it('handles empty string', () => {
+      expect(formatToolCall('')).toBe('🔧 Using ');
+    });
+
+    it('handles mcp__server with no tool part', () => {
+      expect(formatToolCall('mcp__brave-search')).toBe('🌐 Using Brave Search: ');
+    });
+
+    it('handles mcp__server__ with trailing separator but no tool', () => {
+      expect(formatToolCall('mcp__brave-search__')).toBe('🌐 Using Brave Search: ');
+    });
+
+    it('handles host-tools server (internal)', () => {
+      expect(formatToolCall('mcp__host-tools__memory_access')).toBe('🔧 Using Host Tools: memory access');
+    });
+  });
 });
