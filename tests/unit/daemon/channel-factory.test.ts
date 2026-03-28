@@ -24,8 +24,12 @@ vi.mock('../../../src/channels/connectors/discord/discord-connector.js', () => (
   DiscordConnector: vi.fn().mockImplementation(() => ({ type: 'discord' })),
 }));
 
-vi.mock('../../../src/channels/connectors/whatsapp/whatsapp-connector.js', () => ({
-  WhatsAppConnector: vi.fn().mockImplementation(() => ({ type: 'whatsapp' })),
+vi.mock('../../../src/channels/connectors/whatsapp-business/whatsapp-connector.js', () => ({
+  WhatsAppConnector: vi.fn().mockImplementation(() => ({ type: 'whatsappBusiness' })),
+}));
+
+vi.mock('../../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-connector.js', () => ({
+  WhatsAppBaileysConnector: vi.fn().mockImplementation(() => ({ type: 'whatsappBaileys' })),
 }));
 
 vi.mock('../../../src/channels/connectors/email/email-connector.js', () => ({
@@ -44,7 +48,8 @@ import { createConnector } from '../../../src/daemon/channel-factory.js';
 import { TelegramConnector } from '../../../src/channels/connectors/telegram/telegram-connector.js';
 import { SlackConnector } from '../../../src/channels/connectors/slack/slack-connector.js';
 import { DiscordConnector } from '../../../src/channels/connectors/discord/discord-connector.js';
-import { WhatsAppConnector } from '../../../src/channels/connectors/whatsapp/whatsapp-connector.js';
+import { WhatsAppConnector } from '../../../src/channels/connectors/whatsapp-business/whatsapp-connector.js';
+import { WhatsAppBaileysConnector } from '../../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-connector.js';
 import { EmailConnector } from '../../../src/channels/connectors/email/email-connector.js';
 import { TerminalConnector } from '../../../src/channels/connectors/terminal/terminal-connector.js';
 
@@ -96,6 +101,20 @@ describe('createConnector', () => {
 
     expect(connector).not.toBeNull();
     expect(WhatsAppConnector).toHaveBeenCalledWith(config, name, logger);
+  });
+
+  it('creates WhatsAppConnector for type "whatsappBusiness"', () => {
+    const connector = createConnector('whatsappBusiness', name, config, logger);
+
+    expect(connector).not.toBeNull();
+    expect(WhatsAppConnector).toHaveBeenCalledWith(config, name, logger);
+  });
+
+  it('creates WhatsAppBaileysConnector for type "whatsappBaileys"', () => {
+    const connector = createConnector('whatsappBaileys', name, config, logger);
+
+    expect(connector).not.toBeNull();
+    expect(WhatsAppBaileysConnector).toHaveBeenCalledWith(config, name, logger);
   });
 
   it('creates EmailConnector for type "email"', () => {

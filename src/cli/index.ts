@@ -42,6 +42,7 @@ import { listProvidersCommand } from './commands/list-providers.js';
 import { addProviderCommand } from './commands/add-provider.js';
 import { setDefaultProviderCommand } from './commands/set-default-provider.js';
 import { testProviderCommand } from './commands/test-provider.js';
+import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -524,6 +525,34 @@ program
       name: opts.name,
       context: opts.context as 'agent-runner' | 'background',
       configPath: opts.config,
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// WhatsApp Baileys authentication
+// ---------------------------------------------------------------------------
+
+program
+  .command('whatsapp-auth')
+  .description('Authenticate a WhatsApp Baileys channel by scanning a QR code')
+  .option('--auth-dir <path>', 'Directory to store auth credentials', './baileys-auth')
+  .option('--timeout <seconds>', 'Seconds to wait for QR scan', '120')
+  .action(async (opts: { authDir: string; timeout: string }) => {
+    const DEFAULT_TIMEOUT_SECONDS = 120;
+    const parsedTimeout = parseInt(opts.timeout, 10);
+    const timeout =
+      Number.isFinite(parsedTimeout) && parsedTimeout > 0
+        ? parsedTimeout
+        : (() => {
+            console.error(
+              `Invalid --timeout value "${opts.timeout}". Falling back to default of ${DEFAULT_TIMEOUT_SECONDS} seconds.`,
+            );
+            return DEFAULT_TIMEOUT_SECONDS;
+          })();
+
+    await whatsappAuthCommand({
+      authDir: opts.authDir,
+      timeout,
     });
   });
 

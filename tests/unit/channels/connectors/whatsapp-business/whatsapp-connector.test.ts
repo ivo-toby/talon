@@ -7,8 +7,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import pino from 'pino';
-import { WhatsAppConnector } from '../../../../../src/channels/connectors/whatsapp/whatsapp-connector.js';
-import type { WhatsAppConfig, WhatsAppWebhookPayload } from '../../../../../src/channels/connectors/whatsapp/whatsapp-types.js';
+import { WhatsAppConnector } from '../../../../../src/channels/connectors/whatsapp-business/whatsapp-connector.js';
+import type { WhatsAppConfig, WhatsAppWebhookPayload } from '../../../../../src/channels/connectors/whatsapp-business/whatsapp-types.js';
 import type { InboundEvent } from '../../../../../src/channels/channel-types.js';
 
 // ---------------------------------------------------------------------------
@@ -144,8 +144,8 @@ describe('WhatsAppConnector', () => {
   // -------------------------------------------------------------------------
 
   describe('constructor', () => {
-    it('exposes type = "whatsapp"', () => {
-      expect(connector.type).toBe('whatsapp');
+    it('exposes type = "whatsappBusiness"', () => {
+      expect(connector.type).toBe('whatsappBusiness');
     });
 
     it('exposes the channel name', () => {
@@ -200,7 +200,7 @@ describe('WhatsAppConnector', () => {
 
       expect(received).toHaveLength(1);
       const event = received[0];
-      expect(event.channelType).toBe('whatsapp');
+      expect(event.channelType).toBe('whatsappBusiness');
       expect(event.channelName).toBe('test-whatsapp');
       expect(event.externalThreadId).toBe('447700900000');
       expect(event.senderId).toBe('447700900000');

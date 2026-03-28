@@ -38,7 +38,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Module    | Path                       | Purpose                                                             |
 | --------- | -------------------------- | ------------------------------------------------------------------- |
 | Daemon    | `src/daemon/`              | Lifecycle state machine, agent runner, bootstrap, watchdog          |
-| Channels  | `src/channels/connectors/` | 6 adapters: telegram, slack, discord, whatsapp, email, terminal     |
+| Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal |
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                  |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter   |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                               |
@@ -104,6 +104,16 @@ Always make sure you are in a feature or fix branch before getting to work
 
 Before every commit you need to use the codex skill to ask Gpt-5.4 for a review, address the issues, only if there a no critical, high or medium issues are found the work can be committed.
 When dealing with PR reviews, always resolve a comment when it's fixed or deemed invalid, always add a comment what you fixed, which commit, or why the comment was invalid
+
+### Documentation
+
+When adding or changing a feature (new channel, new tool, new config option, changed behavior), you MUST update:
+
+1. **README.md** — update the relevant section (channel list, feature list, config reference, etc.)
+2. **Claude skills** (`.claude/skills/`) — update any affected setup/add skill so the guided walkthrough matches the current implementation
+3. **CLAUDE.md** — if the change affects architecture, module layout, or conventions documented here
+
+Do not consider a feature complete until the docs match the code. PR reviewers should check for doc drift.
 
 ### Offload work
 

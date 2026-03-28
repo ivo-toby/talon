@@ -80,7 +80,7 @@ export const PersonaConfigSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export const ChannelConfigSchema = z.object({
-  type: z.enum(['telegram', 'whatsapp', 'slack', 'email', 'discord', 'terminal']),
+  type: z.enum(['telegram', 'whatsapp', 'whatsappBusiness', 'whatsappBaileys', 'slack', 'email', 'discord', 'terminal']),
   name: z.string().min(1),
   config: z.record(z.string(), z.unknown()).default({}),
   tokenRef: z.string().optional(),
