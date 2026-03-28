@@ -205,6 +205,84 @@ describe('backupCommand()', () => {
     exitSpy.mockRestore();
   });
 
+  it('exits with code 1 when backup output is inside personas directory', async () => {
+    const dbPath = join(dbDir, 'test.sqlite');
+    createTestDatabase(dbPath);
+    const configPath = writeConfig(tmpDir, dbPath, dbDir);
+
+    // Create personas directory, then set backup output inside it.
+    createPersonasDir(tmpDir);
+    const backupDir = join(tmpDir, 'personas', 'inside-backup');
+
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => undefined as never);
+
+    await backupCommand({ configPath, backupPath: backupDir });
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    const errorOutput = errorSpy.mock.calls.map((c) => c[0] as string).join('\n');
+    expect(errorOutput).toContain('inside personas directory');
+
+    consoleSpy.mockRestore();
+    errorSpy.mockRestore();
+    exitSpy.mockRestore();
+  });
+
+  it('backs up skills from dataDir when configDir/skills is absent', async () => {
+    const dbPath = join(dbDir, 'test.sqlite');
+    createTestDatabase(dbPath);
+    // Use a separate dir for config so configDir/skills doesn't exist.
+    const configDir = makeTmpDir();
+    const configPath = writeConfig(configDir, dbPath, dbDir);
+    const backupDir = join(dbDir, 'backup-datadir-skills');
+
+    // Create skills under dataDir (dbDir) instead of configDir.
+    createSkillsDir(dbDir);
+
+    // chdir to tmpDir to avoid cwd/skills picking up the real repo's skills/.
+    const origCwd = process.cwd();
+    process.chdir(tmpDir);
+
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => undefined as never);
+
+    try {
+      await backupCommand({ configPath, backupPath: backupDir });
+      expect(existsSync(join(backupDir, 'skills', 'test-skill', 'SKILL.md'))).toBe(true);
+    } finally {
+      process.chdir(origCwd);
+      consoleSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
+
+  it('skips skills gracefully when no skills directory exists', async () => {
+    const dbPath = join(dbDir, 'test.sqlite');
+    createTestDatabase(dbPath);
+    const configPath = writeConfig(tmpDir, dbPath, dbDir);
+    const backupDir = join(dbDir, 'backup-no-skills');
+
+    // chdir to tmpDir so cwd/skills doesn't resolve to the real repo's skills/.
+    const origCwd = process.cwd();
+    process.chdir(tmpDir);
+
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => undefined as never);
+
+    try {
+      await backupCommand({ configPath, backupPath: backupDir });
+
+      const output = consoleSpy.mock.calls.map((c) => c[0] as string).join('\n');
+      expect(output).toContain('Skills backup:     skipped');
+      expect(existsSync(join(backupDir, 'skills'))).toBe(false);
+    } finally {
+      process.chdir(origCwd);
+      consoleSpy.mockRestore();
+      exitSpy.mockRestore();
+    }
+  });
+
   it('exits with code 1 when config file is missing', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => undefined as never);

@@ -69,6 +69,13 @@ export async function backupCommand(options: {
   const resolvedBackupDir = path.resolve(backupDir);
   const dbBackupPath = path.join(resolvedBackupDir, 'talond.sqlite');
 
+  // Guard against backup overwriting the live database.
+  if (path.resolve(dbPath) === dbBackupPath) {
+    console.error(`Error: Backup database path would overwrite the source database. Choose a different output path.`);
+    process.exit(1);
+    return;
+  }
+
   console.log(`Source database: ${dbPath}`);
   console.log(`Backup directory: ${resolvedBackupDir}`);
 
@@ -127,13 +134,19 @@ export async function backupCommand(options: {
   // --- 2. Config file -------------------------------------------------------
 
   const resolvedConfigPath = path.resolve(configPath);
-  try {
-    await fs.copyFile(resolvedConfigPath, path.join(resolvedBackupDir, 'talond.yaml'));
-    console.log(`Config backup:     talond.yaml`);
-  } catch (cause) {
-    console.error(`Error: Could not backup config file: ${String(cause)}`);
-    process.exit(1);
-    return;
+  const configBackupPath = path.join(resolvedBackupDir, 'talond.yaml');
+
+  if (resolvedConfigPath === configBackupPath) {
+    console.log(`Config backup:     talond.yaml (already in backup directory)`);
+  } else {
+    try {
+      await fs.copyFile(resolvedConfigPath, configBackupPath);
+      console.log(`Config backup:     talond.yaml`);
+    } catch (cause) {
+      console.error(`Error: Could not backup config file: ${String(cause)}`);
+      process.exit(1);
+      return;
+    }
   }
 
   // --- 3. Personas directory ------------------------------------------------
@@ -159,12 +172,12 @@ export async function backupCommand(options: {
   }
 
   // --- 4. Skills directory --------------------------------------------------
-  // The skill loader checks both cwd/skills and dataDir/skills at runtime.
-  // Back up whichever exists (preferring configDir/skills, falling back to
-  // dataDir/skills if the first is not found).
+  // At runtime, the skill loader checks cwd/skills and dataDir/skills.
+  // For backups, also check configDir/skills. Back up the first that exists.
 
   const skillsCandidates = [
     path.resolve(configDir, 'skills'),
+    path.resolve(process.cwd(), 'skills'),
     path.resolve(dataDir, 'skills'),
   ];
   const skillsDir = skillsCandidates.find((d) => existsSync(d));
