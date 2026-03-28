@@ -85,6 +85,7 @@ export const ChannelConfigSchema = z.object({
   config: z.record(z.string(), z.unknown()).default({}),
   tokenRef: z.string().optional(),
   enabled: z.boolean().default(true),
+  showToolCalls: z.boolean().optional(),
 });
 
 // ---------------------------------------------------------------------------
