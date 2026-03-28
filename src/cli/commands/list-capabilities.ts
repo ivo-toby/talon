@@ -37,6 +37,6 @@ export function listCapabilities(): void {
 /**
  * CLI command handler (matches Commander action signature).
  */
-export async function listCapabilitiesCommand(): Promise<void> {
+export function listCapabilitiesCommand(): void {
   listCapabilities();
 }

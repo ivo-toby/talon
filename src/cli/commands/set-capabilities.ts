@@ -60,13 +60,16 @@ export async function setCapabilities(options: SetCapabilitiesOptions): Promise<
   if (!persona.capabilities) {
     persona.capabilities = { allow: [], requireApproval: [] };
   }
-  const caps = persona.capabilities as { allow?: string[]; requireApproval?: string[] };
-  if (!Array.isArray(caps.allow)) caps.allow = [];
-  if (!Array.isArray(caps.requireApproval)) caps.requireApproval = [];
+  if (!persona.capabilities) {
+    persona.capabilities = { allow: [], requireApproval: [] };
+  }
+  const rawCaps = persona.capabilities as { allow?: string[]; requireApproval?: string[] };
+  let allow: string[] = Array.isArray(rawCaps.allow) ? rawCaps.allow : [];
+  let requireApprovalList: string[] = Array.isArray(rawCaps.requireApproval) ? rawCaps.requireApproval : [];
 
   // --show: read-only mode.
   if (options.show) {
-    return { allow: caps.allow, requireApproval: caps.requireApproval };
+    return { allow, requireApproval: requireApprovalList };
   }
 
   // Validate mutual exclusivity.
@@ -76,37 +79,41 @@ export async function setCapabilities(options: SetCapabilitiesOptions): Promise<
 
   // Apply changes.
   if (options.allow !== undefined) {
-    caps.allow = parseLabels(options.allow);
+    allow = parseLabels(options.allow);
   }
 
   if (options.add !== undefined) {
     const toAdd = parseLabels(options.add);
     for (const label of toAdd) {
-      if (!caps.allow!.includes(label)) {
-        caps.allow!.push(label);
+      if (!allow.includes(label)) {
+        allow.push(label);
       }
     }
   }
 
   if (options.remove !== undefined) {
     const toRemove = new Set(parseLabels(options.remove));
-    caps.allow = caps.allow!.filter((l) => !toRemove.has(l));
+    allow = allow.filter((l) => !toRemove.has(l));
   }
 
   if (options.requireApproval !== undefined) {
-    caps.requireApproval = parseLabels(options.requireApproval);
+    requireApprovalList = parseLabels(options.requireApproval);
   }
 
   // Warn on unrecognized labels.
-  const allLabels = [...caps.allow!, ...caps.requireApproval!];
+  const allLabels = [...allow, ...requireApprovalList];
   const unknown = allLabels.filter((l) => !ALL_CAPABILITY_LABELS.includes(l));
   if (unknown.length > 0) {
     console.warn(`Warning: unrecognized capability label(s): ${unknown.join(', ')}`);
   }
 
+  // Write back to the persona object before saving.
+  rawCaps.allow = allow;
+  rawCaps.requireApproval = requireApprovalList;
+
   await writeConfigAtomic(configPath, doc);
 
-  return { allow: caps.allow!, requireApproval: caps.requireApproval! };
+  return { allow, requireApproval: requireApprovalList };
 }
 
 // ---------------------------------------------------------------------------

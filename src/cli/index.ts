@@ -290,8 +290,8 @@ program
 program
   .command('list-capabilities')
   .description('List all available capability labels for persona config')
-  .action(async () => {
-    await listCapabilitiesCommand();
+  .action(() => {
+    listCapabilitiesCommand();
   });
 
 program
