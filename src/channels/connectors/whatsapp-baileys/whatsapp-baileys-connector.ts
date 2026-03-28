@@ -128,8 +128,13 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
 
         if (connection === 'open') {
           this.running = true;
+          const allowedSenders = this.config.allowedSenders;
           this.logger.info(
-            { channelName: this.name, authDir },
+            {
+              channelName: this.name,
+              authDir,
+              allowedSenders: allowedSenders?.length ? allowedSenders : 'none (open to all)',
+            },
             'whatsapp-baileys connector connected',
           );
           if (!settled) {
@@ -240,6 +245,28 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     if (!msg.message || !msg.key.remoteJid || !msg.key.id) return;
 
     const jid = msg.key.remoteJid;
+
+    this.logger.debug(
+      { channelName: this.name, jid, messageId: msg.key.id },
+      'whatsapp-baileys: inbound message received',
+    );
+
+    // Enforce allowedSenders restriction if configured.
+    // Accepts the identifier part of any JID format:
+    //   - Phone-based: "31612345678@s.whatsapp.net" or "31612345678:42@s.whatsapp.net"
+    //   - LID-based:   "96490886312027@lid"
+    // Strip the @domain suffix and any :device suffix to get the bare sender ID.
+    const allowedSenders = this.config.allowedSenders;
+    if (allowedSenders && allowedSenders.length > 0) {
+      const senderId = jid.replace(/@.*$/, '').replace(/:\d+$/, '');
+      if (!allowedSenders.includes(senderId)) {
+        this.logger.warn(
+          { channelName: this.name, jid, senderId },
+          'whatsapp-baileys: message from disallowed sender, dropping',
+        );
+        return;
+      }
+    }
 
     // Skip group messages
     if (jid.endsWith('@g.us')) {

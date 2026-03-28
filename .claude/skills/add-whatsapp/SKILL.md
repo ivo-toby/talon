@@ -182,9 +182,41 @@ Tell the user:
 
 The `--auth-dir` must match the `authDir` in the channel config. Default is `./baileys-auth`.
 
-## B.4: Verify (Baileys)
+## B.4: Security — Restrict Access
 
-> Send a WhatsApp message to the connected number from another phone. You should get a response within a few seconds.
+**Important**: By default, anyone who knows the bot's phone number can chat with it. Walk the user through discovering their sender ID and locking down access:
+
+> ### How to find sender IDs
+>
+> WhatsApp no longer uses phone numbers as identifiers in all cases. Contacts may appear
+> as opaque "LID" numbers (e.g. `96490886312027@lid`) instead of phone-based JIDs
+> (e.g. `31612345678@s.whatsapp.net`). You cannot predict which format you'll get,
+> so the only reliable way to find a sender's ID is from the logs:
+>
+> 1. Temporarily set `logLevel: debug` in `talond.yaml`
+> 2. Start talond (or restart it)
+> 3. Send a test message from each phone that should be allowed
+> 4. In the logs, find the line: `whatsapp-baileys: inbound message received`
+> 5. Copy the `jid` value — the part **before the `@`** is the sender ID
+> 6. Add each sender ID to `allowedSenders` in the channel config
+> 7. Set `logLevel` back to `info` and restart talond
+
+Ask the user to send a test message and share the `jid` from the logs so you can help them configure `allowedSenders`:
+
+```yaml
+config:
+  authDir: './baileys-auth'
+  allowedSenders:
+    - '96490886312027'              # sender ID from logs (before the @)
+```
+
+When the list is omitted or empty, all senders are accepted.
+
+> **Strongly recommended**: Always configure `allowedSenders` for production use. An open WhatsApp bot can be abused by anyone who discovers the number.
+
+## B.5: Verify (Baileys)
+
+> Send a WhatsApp message to the connected number from an **allowed** phone. You should get a response within a few seconds. Then send from a phone that is **not** in `allowedSenders` and confirm the message is dropped (check logs for "message from disallowed sender, dropping").
 
 If it doesn't work:
 
@@ -269,4 +301,6 @@ channels:
       printQR: true                              # Optional (default: true)
       markOnlineOnConnect: false                 # Optional (default: false)
       browser: ['Talon', 'Chrome', '1.0']        # Optional (default: Browsers.appropriate('Talon'))
+      allowedSenders:                            # Optional — restrict who can message the bot
+        - '96490886312027'
 ```

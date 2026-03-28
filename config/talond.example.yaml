@@ -48,6 +48,17 @@ channels:
   #     webhookHost: '0.0.0.0'             # default: 0.0.0.0
   #     webhookPath: '/webhook'            # default: /webhook
 
+  # WhatsApp Web bridge via Baileys — no Meta Business account required.
+  # Authenticate first: npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+  # - type: whatsappBaileys
+  #   name: my-whatsapp
+  #   enabled: true
+  #   config:
+  #     authDir: './baileys-auth'
+  #     markOnlineOnConnect: false
+  #     allowedSenders:                  # Restrict who can message the bot (recommended)
+  #       - '96490886312027'            # Use sender ID from logs (phone number or LID)
+
 personas:
   - name: assistant
     model: claude-sonnet-4-6

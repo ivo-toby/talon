@@ -397,12 +397,12 @@ backgroundAgent:
   claudePath: claude
 ```
 
-| Option | Meaning |
-| --- | --- |
-| `enabled` | Globally enable or disable background workers |
-| `maxConcurrent` | Maximum number of background Claude workers allowed at once |
+| Option                  | Meaning                                                          |
+| ----------------------- | ---------------------------------------------------------------- |
+| `enabled`               | Globally enable or disable background workers                    |
+| `maxConcurrent`         | Maximum number of background Claude workers allowed at once      |
 | `defaultTimeoutMinutes` | Default wall-clock timeout when a tool call does not provide one |
-| `claudePath` | Executable path used to launch the Claude Code CLI |
+| `claudePath`            | Executable path used to launch the Claude Code CLI               |
 
 To let a persona use the feature, grant `subagent.background`:
 
@@ -519,9 +519,9 @@ channels:
       accessToken: ${WHATSAPP_ACCESS_TOKEN}
       verifyToken: ${WHATSAPP_VERIFY_TOKEN}
       appSecret: ${WHATSAPP_APP_SECRET}
-      webhookPort: 3000          # TCP port to listen on (default: 3000)
-      webhookHost: '0.0.0.0'    # Network interface (default: 0.0.0.0)
-      webhookPath: '/webhook'   # URL path (default: /webhook)
+      webhookPort: 3000 # TCP port to listen on (default: 3000)
+      webhookHost: '0.0.0.0' # Network interface (default: 0.0.0.0)
+      webhookPath: '/webhook' # URL path (default: /webhook)
 ```
 
 Point your Meta App Dashboard webhook URL at `http://<your-host>:3000/webhook`.
@@ -551,9 +551,31 @@ channels:
     type: whatsappBaileys
     enabled: true
     config:
-      authDir: './baileys-auth'         # Session credential storage (default: ./baileys-auth)
-      markOnlineOnConnect: false        # Show as online in WhatsApp (default: false)
-      browser: ['Talon', 'Chrome', '1.0']  # Linked Devices display name (optional)
+      authDir: './baileys-auth' # Session credential storage (default: ./baileys-auth)
+      markOnlineOnConnect: false # Show as online in WhatsApp (default: false)
+      browser: ['Talon', 'Chrome', '1.0'] # Linked Devices display name (optional)
+      allowedSenders: # Optional — restrict who can message the bot
+        - '8l490286352027'
+```
+
+#### Access Control
+
+By default, **anyone who knows the bot's phone number can chat with it**. Use `allowedSenders` to restrict access. When the list is omitted or empty, all senders are accepted.
+
+**Finding sender IDs:** WhatsApp uses opaque "LID" identifiers (e.g. `96490886312027@lid`) rather than phone numbers in many cases. You cannot predict which format a contact will use, so discover IDs from the logs:
+
+1. Set `logLevel: debug` in `talond.yaml`
+2. Start (or restart) talond
+3. Send a test message from each phone that should be allowed
+4. Find the log line `whatsapp-baileys: inbound message received` — the `jid` field shows the full identifier
+5. Copy the part **before the `@`** (e.g. `96490886312027`) into `allowedSenders`
+6. Set `logLevel` back to `info` and restart
+
+```yaml
+config:
+  authDir: './baileys-auth'
+  allowedSenders:
+    - '96490886312027' # sender ID from logs (part before the @)
 ```
 
 #### Authentication
@@ -570,6 +592,7 @@ npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
 
 Once authenticated, the daemon uses the saved credentials — no QR code display needed at runtime. To re-authenticate, delete the `authDir` folder and run the command again.
 
+- **Access control**: Optional `allowedSenders` allowlist — messages from unlisted senders are dropped with a warning log
 - **Inbound**: WhatsApp Web socket via Baileys, text messages from individual chats only (group and media messages logged and skipped in v1)
 - **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
 - **Idempotency key**: Baileys message ID
@@ -765,10 +788,10 @@ npx talonctl add-skill --name web-search --persona assistant
 
 Only skill name and description are included in the agent's system prompt per run. When the agent needs a skill's full instructions, it calls `skill_load`. MCP servers from skills still connect eagerly at startup.
 
-| Scenario | Eager (old) | Lazy (current) |
-|---|---|---|
-| 7 skills, using 1 | ~21k tokens | ~3.7k tokens |
-| 20 skills, using 0 | ~60k tokens | ~2k tokens |
+| Scenario           | Eager (old) | Lazy (current) |
+| ------------------ | ----------- | -------------- |
+| 7 skills, using 1  | ~21k tokens | ~3.7k tokens   |
+| 20 skills, using 0 | ~60k tokens | ~2k tokens     |
 
 Background agents use eager loading to ensure full access without calling `skill_load`.
 
@@ -1003,12 +1026,12 @@ npx talonctl reload
 
 ### Setup and Configuration
 
-| Command                                       | Description                                                                       |
-| --------------------------------------------- | --------------------------------------------------------------------------------- |
-| `talonctl setup`                              | First-time interactive setup (checks environment, creates dirs, generates config) |
-| `talonctl add-channel --name <n> --type <t>`  | Add a channel connector to config                                                 |
-| `talonctl add-persona --name <n>`             | Scaffold a persona directory and add to config (uses template if available)        |
-| `talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Scaffold a skill (`yaml` or `skillmd` format) and attach to a persona |
+| Command                                                        | Description                                                                       |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `talonctl setup`                                               | First-time interactive setup (checks environment, creates dirs, generates config) |
+| `talonctl add-channel --name <n> --type <t>`                   | Add a channel connector to config                                                 |
+| `talonctl add-persona --name <n>`                              | Scaffold a persona directory and add to config (uses template if available)       |
+| `talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Scaffold a skill (`yaml` or `skillmd` format) and attach to a persona             |
 
 ```bash
 # Full setup flow
@@ -1188,14 +1211,14 @@ Talon implements defense in depth through capability-based access control, host-
 
 Agents interact with the host through 5 MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
 
-| Tool              | Purpose                             |
-| ----------------- | ----------------------------------- |
+| Tool              | Purpose                                                                  |
+| ----------------- | ------------------------------------------------------------------------ |
 | `schedule_manage` | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`    | Send messages to channel connectors |
-| `memory_access`   | Read/write per-thread memory        |
-| `net_http`        | Fetch external URLs                 |
-| `db_query`        | Read-only database queries          |
-| `subagent_invoke` | Invoke a sub-agent by name          |
+| `channel_send`    | Send messages to channel connectors                                      |
+| `memory_access`   | Read/write per-thread memory                                             |
+| `net_http`        | Fetch external URLs                                                      |
+| `db_query`        | Read-only database queries                                               |
+| `subagent_invoke` | Invoke a sub-agent by name                                               |
 
 ### Capability System
 
@@ -1460,8 +1483,8 @@ langfuse:
   enabled: true
   publicKey: ${LANGFUSE_PUBLIC_KEY}
   secretKey: ${LANGFUSE_SECRET_KEY}
-  baseUrl: https://cloud.langfuse.com   # or your self-hosted URL
-  environment: production                # tags traces by environment
+  baseUrl: https://cloud.langfuse.com # or your self-hosted URL
+  environment: production # tags traces by environment
   # release: v1.2.3                      # optional version tag
   # exportMode: batched                  # batched (default) or immediate
   # flushAt: 20                          # spans buffered before flush
@@ -1472,17 +1495,17 @@ All fields except `enabled`, `publicKey`, and `secretKey` have sensible defaults
 
 ### Configuration reference
 
-| Field                  | Default                         | Description                                         |
-| ---------------------- | ------------------------------- | --------------------------------------------------- |
-| `enabled`              | `false`                         | Master switch for Langfuse integration              |
-| `publicKey`            | `''`                            | Langfuse project public key (required when enabled)  |
-| `secretKey`            | `''`                            | Langfuse project secret key (required when enabled)  |
-| `baseUrl`              | `https://cloud.langfuse.com`    | Langfuse API endpoint                               |
-| `environment`          | `production`                    | Environment tag attached to all traces              |
-| `release`              | —                               | Optional release/version tag                        |
-| `exportMode`           | `batched`                       | `batched` buffers spans; `immediate` sends one by one |
-| `flushAt`              | `20`                            | Number of spans buffered before a flush             |
-| `flushIntervalSeconds` | `5`                             | Maximum seconds between flushes                     |
+| Field                  | Default                      | Description                                           |
+| ---------------------- | ---------------------------- | ----------------------------------------------------- |
+| `enabled`              | `false`                      | Master switch for Langfuse integration                |
+| `publicKey`            | `''`                         | Langfuse project public key (required when enabled)   |
+| `secretKey`            | `''`                         | Langfuse project secret key (required when enabled)   |
+| `baseUrl`              | `https://cloud.langfuse.com` | Langfuse API endpoint                                 |
+| `environment`          | `production`                 | Environment tag attached to all traces                |
+| `release`              | —                            | Optional release/version tag                          |
+| `exportMode`           | `batched`                    | `batched` buffers spans; `immediate` sends one by one |
+| `flushAt`              | `20`                         | Number of spans buffered before a flush               |
+| `flushIntervalSeconds` | `5`                          | Maximum seconds between flushes                       |
 
 ---
 

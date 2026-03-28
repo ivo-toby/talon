@@ -27,4 +27,12 @@ export interface WhatsAppBaileysConfig {
    * Defaults to false.
    */
   markOnlineOnConnect?: boolean;
+  /**
+   * Optional allowlist of sender identifiers permitted to chat with the bot.
+   * Use the bare ID part of the JID visible in logs — either a phone number
+   * (e.g. '31612345678') or a LID (e.g. '96490886312027'), depending on what
+   * WhatsApp sends for your contacts. When empty or omitted, all senders are
+   * accepted (open mode).
+   */
+  allowedSenders?: string[];
 }
