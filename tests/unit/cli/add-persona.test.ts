@@ -329,7 +329,11 @@ describe('addPersona()', () => {
       systemPromptFile: join(personasDir, 'assistant', 'system.md'),
       skills: [],
       capabilities: {
-        allow: [],
+        allow: [
+          'memory.access:thread',
+          'net.http:egress',
+          'schedule.manage:own',
+        ],
         requireApproval: [],
       },
     });
@@ -342,7 +346,11 @@ describe('addPersona()', () => {
       systemPromptFile: join(personasDir, 'assistant', 'system.md'),
       skills: [],
       capabilities: {
-        allow: [],
+        allow: [
+          'memory.access:thread',
+          'net.http:egress',
+          'schedule.manage:own',
+        ],
         requireApproval: [],
       },
     });
@@ -365,8 +373,38 @@ describe('addPersona()', () => {
     expect(entry.skills).toEqual([]);
 
     const capabilities = entry.capabilities as Record<string, unknown>;
-    expect(capabilities.allow).toEqual([]);
+    expect(capabilities.allow).toEqual([
+      'memory.access:thread',
+      'net.http:egress',
+      'schedule.manage:own',
+    ]);
     expect(capabilities.requireApproval).toEqual([]);
+  });
+
+  it('returns sensible default capabilities', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    const result = await addPersona({ name: 'agent', configPath: p, personasDir });
+
+    expect(result.capabilities.allow).toContain('memory.access:thread');
+    expect(result.capabilities.allow).toContain('net.http:egress');
+    expect(result.capabilities.allow).toContain('schedule.manage:own');
+    expect(result.capabilities.allow).toHaveLength(3);
+    expect(result.capabilities.requireApproval).toEqual([]);
+  });
+
+  it('writes default capabilities to config file', async () => {
+    const p = writeMinimalConfig();
+    const personasDir = join(tmpDir, 'personas');
+
+    await addPersona({ name: 'agent', configPath: p, personasDir });
+
+    const doc = readYaml(p);
+    const personas = doc.personas as Array<Record<string, unknown>>;
+    const caps = personas[0]!.capabilities as { allow: string[]; requireApproval: string[] };
+    expect(caps.allow).toContain('memory.access:thread');
+    expect(caps.allow).toHaveLength(3);
   });
 
   // --- Validation ---
