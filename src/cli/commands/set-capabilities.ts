@@ -9,7 +9,7 @@ import {
   readConfig,
   writeConfigAtomic,
 } from '../config-utils.js';
-import { ALL_CAPABILITY_LABELS } from '../../tools/tool-filter.js';
+import { extractCapabilityPrefix, KNOWN_CAPABILITY_PREFIXES } from '../../tools/tool-filter.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,9 +60,6 @@ export async function setCapabilities(options: SetCapabilitiesOptions): Promise<
   if (!persona.capabilities) {
     persona.capabilities = { allow: [], requireApproval: [] };
   }
-  if (!persona.capabilities) {
-    persona.capabilities = { allow: [], requireApproval: [] };
-  }
   const rawCaps = persona.capabilities as { allow?: string[]; requireApproval?: string[] };
   let allow: string[] = Array.isArray(rawCaps.allow) ? rawCaps.allow : [];
   let requireApprovalList: string[] = Array.isArray(rawCaps.requireApproval) ? rawCaps.requireApproval : [];
@@ -100,11 +97,14 @@ export async function setCapabilities(options: SetCapabilitiesOptions): Promise<
     requireApprovalList = parseLabels(options.requireApproval);
   }
 
-  // Warn on unrecognized labels.
+  // Warn on labels whose prefix doesn't match any known host tool.
   const allLabels = [...allow, ...requireApprovalList];
-  const unknown = allLabels.filter((l) => !ALL_CAPABILITY_LABELS.includes(l));
+  const unknown = allLabels.filter((l) => {
+    const prefix = extractCapabilityPrefix(l);
+    return prefix === null || !KNOWN_CAPABILITY_PREFIXES.has(prefix);
+  });
   if (unknown.length > 0) {
-    console.warn(`Warning: unrecognized capability label(s): ${unknown.join(', ')}`);
+    console.warn(`Warning: unrecognized capability prefix in label(s): ${unknown.join(', ')}`);
   }
 
   // Write back to the persona object before saving.

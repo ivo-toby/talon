@@ -130,7 +130,7 @@ export class BindingRepository extends BaseRepository {
   /** Updates the persona_id on an existing binding. */
   updatePersona(bindingId: string, personaId: string): Result<void, DbError> {
     try {
-      this.updatePersonaStmt.run(personaId, Date.now(), bindingId);
+      this.updatePersonaStmt.run(personaId, this.now(), bindingId);
       return ok(undefined);
     } catch (cause) {
       return err(new DbError(`Failed to update binding persona: ${String(cause)}`, cause instanceof Error ? cause : undefined));

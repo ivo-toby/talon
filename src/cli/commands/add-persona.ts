@@ -217,7 +217,8 @@ export async function addPersonaCommand(options: AddPersonaOptions): Promise<voi
     console.log(`Edit "${entry.systemPromptFile}" to customise the system prompt.`);
     console.log(`Add .md files to the personality/ folder to enhance the agent's personality.`);
     console.log(`Add task-specific prompts to the prompts/ folder and reference them with promptFile in schedules.`);
-    console.log(`Capabilities: memory, http, schedule (defaults). Run \`talonctl list-capabilities\` to see all options.`);
+    const allowLabels = entry.capabilities.allow;
+    console.log(`Capabilities (allow): ${allowLabels.length > 0 ? allowLabels.join(', ') : 'none'}. Run \`talonctl list-capabilities\` to see all options.`);
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     process.exit(1);

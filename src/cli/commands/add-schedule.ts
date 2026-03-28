@@ -157,7 +157,7 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
  * don't already exist. This allows CLI commands to work before the daemon
  * has ever booted.
  */
-function seedFromConfig(
+export function seedFromConfig(
   db: import('better-sqlite3').Database,
   config: {
     personas: Array<{
@@ -182,35 +182,49 @@ function seedFromConfig(
 
   // Seed persona if not in DB.
   const personaResult = personaRepo.findByName(personaName);
-  if (personaResult.isOk() && personaResult.value === null) {
+  if (personaResult.isErr()) {
+    throw new Error(`Failed to look up persona "${personaName}" in database: ${personaResult.error.message}`);
+  }
+  if (personaResult.value === null) {
     const personaConfig = config.personas.find((p) => p.name === personaName);
-    if (personaConfig) {
-      personaRepo.insert({
-        id: uuidv4(),
-        name: personaConfig.name,
-        model: personaConfig.model,
-        system_prompt_file: personaConfig.systemPromptFile ?? null,
-        skills: JSON.stringify(personaConfig.skills),
-        capabilities: JSON.stringify(personaConfig.capabilities),
-        mounts: JSON.stringify(personaConfig.mounts ?? []),
-        max_concurrent: null,
-      });
+    if (!personaConfig) {
+      throw new Error(`Persona "${personaName}" is not defined in the configuration file.`);
+    }
+    const insertResult = personaRepo.insert({
+      id: uuidv4(),
+      name: personaConfig.name,
+      model: personaConfig.model,
+      system_prompt_file: personaConfig.systemPromptFile ?? null,
+      skills: JSON.stringify(personaConfig.skills),
+      capabilities: JSON.stringify(personaConfig.capabilities),
+      mounts: JSON.stringify(personaConfig.mounts ?? []),
+      max_concurrent: null,
+    });
+    if (insertResult.isErr()) {
+      throw new Error(`Failed to seed persona "${personaName}" in database: ${insertResult.error.message}`);
     }
   }
 
   // Seed channel if not in DB.
   const channelResult = channelRepo.findByName(channelName);
-  if (channelResult.isOk() && channelResult.value === null) {
+  if (channelResult.isErr()) {
+    throw new Error(`Failed to look up channel "${channelName}" in database: ${channelResult.error.message}`);
+  }
+  if (channelResult.value === null) {
     const channelConfig = config.channels.find((c) => c.name === channelName);
-    if (channelConfig) {
-      channelRepo.insert({
-        id: uuidv4(),
-        type: channelConfig.type,
-        name: channelConfig.name,
-        config: JSON.stringify(channelConfig.config),
-        credentials_ref: null,
-        enabled: 1,
-      });
+    if (!channelConfig) {
+      throw new Error(`Channel "${channelName}" is not defined in the configuration file.`);
+    }
+    const insertResult = channelRepo.insert({
+      id: uuidv4(),
+      type: channelConfig.type,
+      name: channelConfig.name,
+      config: JSON.stringify(channelConfig.config),
+      credentials_ref: null,
+      enabled: 1,
+    });
+    if (insertResult.isErr()) {
+      throw new Error(`Failed to seed channel "${channelName}" in database: ${insertResult.error.message}`);
     }
   }
 }

@@ -64,6 +64,11 @@ export const MCP_TO_INTERNAL = new Map(
 /** All known host tool names (internal format). */
 export const ALL_HOST_TOOLS = HOST_TOOL_REGISTRY.map((e) => e.internalName);
 
+/** Set of all known capability prefixes (domain.action). Used for validation. */
+export const KNOWN_CAPABILITY_PREFIXES = new Set(
+  HOST_TOOL_REGISTRY.map((e) => e.capabilityPrefix),
+);
+
 // ---------------------------------------------------------------------------
 // Capability descriptions (used by CLI tooling)
 // ---------------------------------------------------------------------------

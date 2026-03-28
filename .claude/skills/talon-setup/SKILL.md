@@ -275,7 +275,7 @@ After creating a persona, show what capabilities it has and what's available.
 If yes, help the user decide which to add or remove:
 
 - For agents that should message other channels: `npx talonctl set-capabilities --persona <name> --add "channel.send:*"`
-- For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.read:own"`
+- For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.query:own"`
 - For agents that run background tasks: `npx talonctl set-capabilities --persona <name> --add "subagent.background"`
 - For agents that invoke sub-agents: `npx talonctl set-capabilities --persona <name> --add "subagent.invoke"`
 
