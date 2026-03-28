@@ -74,7 +74,10 @@ export async function whatsappAuthCommand(options: WhatsAppAuthOptions): Promise
 
   // Dynamic import — qrcode-terminal is an optional dependency like Baileys itself.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const qrTerminal: any = await import('qrcode-terminal').catch(() => null);
+  const qrMod = await import('qrcode-terminal').catch(() => null);
+  // CJS module — generate lives on .default when imported via ESM dynamic import.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const qrTerminal: any = qrMod && ('default' in qrMod ? qrMod.default : qrMod);
 
   return new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => {
