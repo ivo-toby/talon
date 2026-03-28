@@ -27,6 +27,7 @@ import { chatCommand } from './commands/chat.js';
 import { listChannelsCommand } from './commands/list-channels.js';
 import { listPersonasCommand } from './commands/list-personas.js';
 import { listSkillsCommand } from './commands/list-skills.js';
+import { listCapabilitiesCommand } from './commands/list-capabilities.js';
 import { bindCommand } from './commands/bind.js';
 import { unbindCommand } from './commands/unbind.js';
 import { addMcpCommand } from './commands/add-mcp.js';
@@ -283,6 +284,13 @@ program
   .option('--persona <name>', 'Filter skills by persona name')
   .action(async (opts: { config: string; persona?: string }) => {
     await listSkillsCommand({ configPath: opts.config, personaName: opts.persona });
+  });
+
+program
+  .command('list-capabilities')
+  .description('List all available capability labels for persona config')
+  .action(async () => {
+    await listCapabilitiesCommand();
   });
 
 program
