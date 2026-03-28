@@ -15,6 +15,7 @@ import type {
   MountConfigSchema,
   PersonaConfigSchema,
   ChannelConfigSchema,
+  BindingConfigSchema,
   IpcConfigSchema,
   QueueConfigSchema,
   SchedulerConfigSchema,
@@ -48,6 +49,9 @@ export type PersonaConfig = z.infer<typeof PersonaConfigSchema>;
 
 /** Channel integration definition. */
 export type ChannelConfig = z.infer<typeof ChannelConfigSchema>;
+
+/** Binding definition linking a persona to a channel. */
+export type BindingConfig = z.infer<typeof BindingConfigSchema>;
 
 /** IPC polling settings. */
 export type IpcConfig = z.infer<typeof IpcConfigSchema>;
