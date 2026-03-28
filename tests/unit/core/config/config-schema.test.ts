@@ -243,7 +243,7 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.capabilities.allow).toEqual([]);
       expect(result.data.mounts).toEqual([]);
       expect(result.data.systemPromptFile).toBeUndefined();
-      expect(result.data.queryTimeoutMinutes).toBeUndefined();
+      expect(result.data.queryTimeoutMinutes).toBe(10);
       expect(result.data.maxConcurrent).toBeUndefined();
     }
   });
