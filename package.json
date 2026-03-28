@@ -44,7 +44,7 @@
     "dockerode": "^4.0.2",
     "gray-matter": "^4.0.3",
     "js-yaml": "^4.1.0",
-    "marked": "^17.0.4",
+    "marked": "^15.0.0",
     "marked-terminal": "^7.3.0",
     "neverthrow": "^8.0.0",
     "ora": "^9.3.0",
