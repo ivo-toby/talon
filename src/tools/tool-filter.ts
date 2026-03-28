@@ -114,7 +114,7 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     toolPrefix: 'db.query',
     mcpName: 'db_query',
     labels: [
-      { label: 'db.read:own', description: 'Query the database (read-only)' },
+      { label: 'db.query:own', description: 'Query the database (read-only)' },
     ],
   },
   {

@@ -150,6 +150,12 @@ export function reconcileBindings(
   const { channelRepo, personaRepo, bindingRepo, logger } = deps;
 
   for (const binding of bindings) {
+    // Only reconcile default bindings; non-default (thread-scoped) bindings
+    // are managed at runtime, not via config reconciliation.
+    if (!binding.isDefault) {
+      continue;
+    }
+
     const channelResult = channelRepo.findByName(binding.channel);
     if (channelResult.isErr() || channelResult.value === null) {
       logger.warn({ channel: binding.channel }, 'reconcileBindings: channel not found, skipping');
@@ -177,20 +183,34 @@ export function reconcileBindings(
         continue;
       }
       // Different persona — update it.
-      bindingRepo.updatePersona(existingDefault.value.id, personaRow.id);
+      const updateResult = bindingRepo.updatePersona(existingDefault.value.id, personaRow.id);
+      if (updateResult.isErr()) {
+        logger.error(
+          { channel: binding.channel, err: updateResult.error.message },
+          'reconcileBindings: failed to update binding',
+        );
+        continue;
+      }
       logger.info(
         { channel: binding.channel, persona: binding.persona },
         'reconcileBindings: updated default binding persona',
       );
     } else {
       // No default binding — create one.
-      bindingRepo.insert({
+      const insertResult = bindingRepo.insert({
         id: uuidv4(),
         channel_id: channelRow.id,
         thread_id: null,
         persona_id: personaRow.id,
         is_default: 1,
       });
+      if (insertResult.isErr()) {
+        logger.error(
+          { channel: binding.channel, err: insertResult.error.message },
+          'reconcileBindings: failed to create binding',
+        );
+        continue;
+      }
       logger.info(
         { channel: binding.channel, persona: binding.persona },
         'reconcileBindings: created default binding from config',

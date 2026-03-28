@@ -110,6 +110,18 @@ describe('reconcileBindings()', () => {
     expect(result._unsafeUnwrap()).not.toBeNull();
   });
 
+  it('skips non-default bindings', () => {
+    const bindings: BindingConfig[] = [
+      { persona: 'bob', channel: 'terminal', isDefault: false },
+    ];
+
+    reconcileBindings(bindings, { channelRepo, personaRepo, bindingRepo, logger });
+
+    // No binding should have been created since isDefault is false.
+    const result = bindingRepo.findDefaultForChannel(channelId);
+    expect(result._unsafeUnwrap()).toBeNull();
+  });
+
   it('skips bindings with unknown persona or channel', () => {
     const bindings: BindingConfig[] = [
       { persona: 'nonexistent', channel: 'terminal', isDefault: true },
