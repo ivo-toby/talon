@@ -9,6 +9,7 @@ import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
+import { formatToolCall } from './tool-name-formatter.js';
 import type {
   AgentUsage,
   CanonicalMcpSdkServer,
@@ -269,6 +270,11 @@ export class AgentRunner {
                 : undefined;
             const externalId =
               threadResult.isOk() && threadResult.value ? threadResult.value.external_id : undefined;
+            const channelConfig =
+              channelRow?.isOk() && channelRow.value
+                ? this.ctx.config.channels?.find((c) => c.name === channelRow!.value!.name)
+                : undefined;
+            const showToolCalls = channelConfig?.showToolCalls ?? false;
 
             // Send typing indicator and keep it alive every 4s while the agent works.
             if (connector?.sendTyping && externalId) {
@@ -552,13 +558,34 @@ export class AgentRunner {
                             event.messageType === 'tool_use' ||
                             event.messageType === 'server_tool_use' ||
                             event.messageType === 'mcp_tool_use';
-                          if (isToolUse && outputText && item.type !== 'schedule' && connector !== undefined && externalId) {
-                            const flushResult = await connector.send(externalId, { body: outputText });
-                            if (flushResult.isErr()) {
-                              throw new Error(`channel send failed: ${flushResult.error.message}`);
+                          if (isToolUse && item.type !== 'schedule' && connector !== undefined && externalId) {
+                            // Flush preceding text first, then show tool description (issue #102 + #108).
+                            if (outputText) {
+                              const flushResult = await connector.send(externalId, { body: outputText });
+                              if (flushResult.isErr()) {
+                                throw new Error(`channel send failed: ${flushResult.error.message}`);
+                              }
+                              outputText = '';
+                              fullOutputText += '\n\n';
                             }
-                            outputText = '';
-                            fullOutputText += '\n\n';
+                            // Optionally send human-readable tool description after preceding text (issue #108).
+                            const isInternalServer =
+                              event.messageType === 'mcp_tool_use' && event.serverName?.startsWith('__talond_');
+                            if (showToolCalls && !isInternalServer) {
+                              const toolCallId =
+                                event.messageType === 'mcp_tool_use' && event.serverName
+                                  ? `mcp__${event.serverName}__${event.tool ?? ''}`
+                                  : (event.tool ?? '');
+                              const toolCallResult = await connector.send(externalId, {
+                                body: formatToolCall(toolCallId),
+                              });
+                              if (toolCallResult.isErr()) {
+                                this.ctx.logger.warn(
+                                  { runId, error: toolCallResult.error.message },
+                                  'agent-runner: tool call message send failed, continuing',
+                                );
+                              }
+                            }
                           }
                           this.handleProviderToolEvent(
                             generationObservation.getTraceparent(),

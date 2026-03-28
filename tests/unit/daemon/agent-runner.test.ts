@@ -2486,4 +2486,206 @@ describe('AgentRunner', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Tool call messages — showToolCalls per channel (issue #108)
+  // -------------------------------------------------------------------------
+
+  describe('showToolCalls', () => {
+    /** Reusable stream: text → native tool_use → text */
+    async function* textToolTextStream() {
+      yield {
+        type: 'assistant',
+        message: {
+          content: [
+            { text: 'Before tool.' },
+            { type: 'tool_use', id: 'tu-001', name: 'memory_access', input: {} },
+          ],
+        },
+      };
+      yield {
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: 'tu-001', content: 'ok' }],
+        },
+      };
+      yield {
+        type: 'assistant',
+        message: { content: [{ text: 'After tool.' }] },
+      };
+      yield {
+        type: 'result',
+        subtype: 'success',
+        result: '',
+        session_id: 'session-abc-123',
+        total_cost_usd: 0.001,
+        usage: { input_tokens: 100, output_tokens: 50 },
+        is_error: false,
+      };
+    }
+
+    it('sends tool call description between preceding text and post-tool text when showToolCalls is true', async () => {
+      ctx.config = {
+        ...ctx.config,
+        channels: [{ name: 'test-channel', showToolCalls: true }],
+      } as any;
+      runner = new AgentRunner(ctx);
+      mockQuery.mockReturnValue(textToolTextStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      await runner.run(makeQueueItem());
+
+      const sendBodies = vi.mocked(connector.send).mock.calls.map(
+        ([, body]) => (body as { body: string }).body,
+      );
+      // preceding text → tool description → post-tool text
+      expect(sendBodies).toContain('💾 Using Memory Access');
+      const toolCallIndex = sendBodies.indexOf('💾 Using Memory Access');
+      const beforeToolIndex = sendBodies.indexOf('Before tool.');
+      const afterToolIndex = sendBodies.indexOf('After tool.');
+      // preceding text flushed first, then tool description, then post-tool text
+      expect(beforeToolIndex).toBeLessThan(toolCallIndex);
+      expect(toolCallIndex).toBeLessThan(afterToolIndex);
+    });
+
+    it('does not send tool call description when showToolCalls is false', async () => {
+      ctx.config = {
+        ...ctx.config,
+        channels: [{ name: 'test-channel', showToolCalls: false }],
+      } as any;
+      runner = new AgentRunner(ctx);
+      mockQuery.mockReturnValue(textToolTextStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      await runner.run(makeQueueItem());
+
+      const sendBodies = vi.mocked(connector.send).mock.calls.map(
+        ([, body]) => (body as { body: string }).body,
+      );
+      expect(sendBodies).not.toContain('💾 Using Memory Access');
+    });
+
+    it('does not send tool call description when showToolCalls is absent (default off)', async () => {
+      // ctx.config has no channels entry — default behaviour
+      mockQuery.mockReturnValue(textToolTextStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      await runner.run(makeQueueItem());
+
+      const sendBodies = vi.mocked(connector.send).mock.calls.map(
+        ([, body]) => (body as { body: string }).body,
+      );
+      expect(sendBodies).not.toContain('💾 Using Memory Access');
+    });
+
+    it('formats MCP tool names correctly with showToolCalls true', async () => {
+      ctx.config = {
+        ...ctx.config,
+        channels: [{ name: 'test-channel', showToolCalls: true }],
+      } as any;
+      runner = new AgentRunner(ctx);
+
+      async function* mcpToolStream() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_use',
+                id: 'tu-002',
+                name: 'brave_web_search',
+                server_name: 'brave-search',
+                input: { query: 'test' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [{ type: 'mcp_tool_result', tool_use_id: 'tu-002', content: 'results' }],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'Found it.' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: '',
+          session_id: 'session-abc-123',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(mcpToolStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      await runner.run(makeQueueItem());
+
+      const sendBodies = vi.mocked(connector.send).mock.calls.map(
+        ([, body]) => (body as { body: string }).body,
+      );
+      expect(sendBodies).toContain('🌐 Using Brave Search: web search');
+    });
+
+    it('skips tool description for internal __talond_ servers even with showToolCalls true', async () => {
+      ctx.config = {
+        ...ctx.config,
+        channels: [{ name: 'test-channel', showToolCalls: true }],
+      } as any;
+      runner = new AgentRunner(ctx);
+
+      async function* internalToolStream() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_use',
+                id: 'tu-003',
+                name: 'memory_access',
+                server_name: '__talond_host_tools',
+                input: {},
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [{ type: 'mcp_tool_result', tool_use_id: 'tu-003', content: 'ok' }],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'Done.' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: '',
+          session_id: 'session-abc-123',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(internalToolStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      await runner.run(makeQueueItem());
+
+      const sendBodies = vi.mocked(connector.send).mock.calls.map(
+        ([, body]) => (body as { body: string }).body,
+      );
+      // Internal tools should NOT produce a tool call description
+      const toolDescriptions = sendBodies.filter((b) => b.startsWith('💾') || b.startsWith('🔧'));
+      expect(toolDescriptions).toHaveLength(0);
+    });
+  });
+
 });
