@@ -2305,4 +2305,173 @@ describe('AgentRunner', () => {
     });
   });
 
+  // -------------------------------------------------------------------------
+  // Text block flushing — one message per text block (issue #102)
+  // -------------------------------------------------------------------------
+
+  describe('text block flushing', () => {
+    it('sends a single message when the stream contains only one text block', async () => {
+      // Default makeAgentStream already has one text block — verify baseline
+      mockQuery.mockReturnValue(makeAgentStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem();
+
+      await runner.run(item);
+
+      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
+        ([, body]) => (body as { body: string }).body !== 'Thinking...',
+      );
+      expect(sendCalls).toHaveLength(1);
+      expect(sendCalls[0]![1]).toEqual({ body: 'Hello from the agent!' });
+    });
+
+    it('sends two separate messages when text precedes and follows a tool_use', async () => {
+      async function* textToolTextStream() {
+        // Turn 1: assistant emits text then invokes a tool
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              { text: 'Before tool.' },
+              { type: 'tool_use', id: 'tu-001', name: 'memory_access', input: {} },
+            ],
+          },
+        };
+        // Turn 1: tool result
+        yield {
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'tu-001', content: 'ok' }],
+          },
+        };
+        // Turn 2: assistant emits text after the tool
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'After tool.' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: '',
+          session_id: 'session-abc-123',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(textToolTextStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem();
+
+      await runner.run(item);
+
+      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
+        ([, body]) => (body as { body: string }).body !== 'Thinking...',
+      );
+      expect(sendCalls).toHaveLength(2);
+      expect(sendCalls[0]![1]).toEqual({ body: 'Before tool.' });
+      expect(sendCalls[1]![1]).toEqual({ body: 'After tool.' });
+    });
+
+    it('sends three separate messages for text → tool → text → tool → text', async () => {
+      async function* threeBlockStream() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              { text: 'Block 1.' },
+              { type: 'tool_use', id: 'tu-001', name: 'memory_access', input: {} },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'tu-001', content: 'result1' }],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              { text: 'Block 2.' },
+              { type: 'tool_use', id: 'tu-002', name: 'memory_access', input: {} },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'tu-002', content: 'result2' }],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'Block 3.' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: '',
+          session_id: 'session-abc-123',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(threeBlockStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem();
+
+      await runner.run(item);
+
+      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
+        ([, body]) => (body as { body: string }).body !== 'Thinking...',
+      );
+      expect(sendCalls).toHaveLength(3);
+      expect(sendCalls[0]![1]).toEqual({ body: 'Block 1.' });
+      expect(sendCalls[1]![1]).toEqual({ body: 'Block 2.' });
+      expect(sendCalls[2]![1]).toEqual({ body: 'Block 3.' });
+    });
+
+    it('concatenates consecutive text events with no tool between them into a single message', async () => {
+      // Multiple text blocks in the same assistant turn (no tool in between)
+      // should be combined into one message.
+      async function* consecutiveTextStream() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              { text: 'Part A. ' },
+              { text: 'Part B.' },
+            ],
+          },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: '',
+          session_id: 'session-abc-123',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(consecutiveTextStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem();
+
+      await runner.run(item);
+
+      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
+        ([, body]) => (body as { body: string }).body !== 'Thinking...',
+      );
+      expect(sendCalls).toHaveLength(1);
+      expect(sendCalls[0]![1]).toEqual({ body: 'Part A. Part B.' });
+    });
+  });
+
 });
