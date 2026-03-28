@@ -44,3 +44,7 @@ talond.yaml
 /personas/
 /skills/
 .worktrees/
+
+# WhatsApp Baileys auth session
+baileys-auth/
+.claude/settings.json

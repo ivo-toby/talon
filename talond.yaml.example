@@ -32,8 +32,8 @@ sandbox:
 
 # ---------------------------------------------------------------------------
 # Channels — inbound/outbound message adapters
-# Working: telegram, slack, terminal
-# Not yet implemented: discord (TASK-043), whatsapp (TASK-067)
+# Working: telegram, slack, terminal, whatsapp
+# Not yet implemented: discord (TASK-043)
 # Not yet tested: email (TASK-049)
 # ---------------------------------------------------------------------------
 channels:
@@ -45,6 +45,20 @@ channels:
       allowedUserIds:                # restrict to these Telegram user IDs
         - 123456789
       pollIntervalMs: 1000           # long-poll interval for updates (ms)
+
+  # WhatsApp Cloud API (with embedded webhook server)
+  # Requires a Meta Business account and a public URL (reverse proxy / ngrok for local dev).
+  # - type: whatsappBusiness
+  #   name: my-whatsapp-business
+  #   enabled: true
+  #   config:
+  #     phoneNumberId: '123456789'
+  #     accessToken: ${WHATSAPP_ACCESS_TOKEN}
+  #     verifyToken: ${WHATSAPP_VERIFY_TOKEN}
+  #     appSecret: ${WHATSAPP_APP_SECRET}    # enables inbound webhook server
+  #     webhookPort: 3000                    # default: 3000
+  #     webhookHost: '0.0.0.0'              # default: 0.0.0.0
+  #     webhookPath: '/webhook'              # default: /webhook
 
   - type: slack                      # Slack via Socket Mode (no public URL needed)
     name: work-slack

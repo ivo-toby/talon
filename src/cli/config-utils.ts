@@ -22,7 +22,7 @@ export const DEFAULT_CONFIG_PATH = 'talond.yaml';
 const NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
 
 /** Valid channel connector types — kept in sync with ChannelConfigSchema. */
-export const VALID_CHANNEL_TYPES = ['telegram', 'whatsapp', 'slack', 'email', 'discord', 'terminal'] as const;
+export const VALID_CHANNEL_TYPES = ['telegram', 'whatsapp', 'whatsappBusiness', 'whatsappBaileys', 'slack', 'email', 'discord', 'terminal'] as const;
 export type ChannelType = (typeof VALID_CHANNEL_TYPES)[number];
 
 // ---------------------------------------------------------------------------

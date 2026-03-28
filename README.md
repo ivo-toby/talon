@@ -37,7 +37,7 @@ It is built for single-user or small-team deployments where you want persistent,
 - **Slack** — Socket Mode with mrkdwn formatting
 - **Terminal** — WebSocket server with `talonctl chat` client, rendered markdown output, persistent threads
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
-- **WhatsApp** — Cloud API with webhook inbound _(inbound not yet implemented)_
+- **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send, thread tracking via In-Reply-To headers _(not yet tested)_
 
 ### Agent System
@@ -396,12 +396,12 @@ backgroundAgent:
   claudePath: claude
 ```
 
-| Option | Meaning |
-| --- | --- |
-| `enabled` | Globally enable or disable background workers |
-| `maxConcurrent` | Maximum number of background Claude workers allowed at once |
+| Option                  | Meaning                                                          |
+| ----------------------- | ---------------------------------------------------------------- |
+| `enabled`               | Globally enable or disable background workers                    |
+| `maxConcurrent`         | Maximum number of background Claude workers allowed at once      |
 | `defaultTimeoutMinutes` | Default wall-clock timeout when a tool call does not provide one |
-| `claudePath` | Executable path used to launch the Claude Code CLI |
+| `claudePath`            | Executable path used to launch the Claude Code CLI               |
 
 To let a persona use the feature, grant `subagent.background`:
 
@@ -485,27 +485,108 @@ channels:
 - **Thread mapping**: `channel_id:message_id`
 - **Rate limiting**: Automatic retry with `Retry-After` header handling
 
-### WhatsApp
+### WhatsApp Business (Cloud API)
 
-> **Not yet implemented**: The connector has send support and a `feedWebhook()` ingestion method, but no HTTP webhook server to receive events from the WhatsApp Cloud API. Needs a webhook endpoint that proxies incoming POST requests to `feedWebhook()`. See TASK-067.
-
-Webhook-based connector using the WhatsApp Cloud API.
+Meta Cloud API connector with an embedded webhook HTTP server for inbound events. Requires a Meta Business account with a WhatsApp-enabled phone number.
 
 ```yaml
 channels:
-  - name: my-whatsapp
-    type: whatsapp
+  - name: my-whatsapp-business
+    type: whatsappBusiness
     enabled: true
     config:
       phoneNumberId: '123456789'
       accessToken: ${WHATSAPP_ACCESS_TOKEN}
       verifyToken: ${WHATSAPP_VERIFY_TOKEN}
+      appSecret: ${WHATSAPP_APP_SECRET}    # enables inbound webhook server
+      webhookPort: 3000                    # default: 3000
+      webhookHost: '0.0.0.0'              # default: 0.0.0.0
+      webhookPath: '/webhook'              # default: /webhook
 ```
 
-- **Inbound**: Webhook events via `feedWebhook()`
-- **Outbound**: Cloud API `POST /{phone_number_id}/messages`
-- **Idempotency key**: `message_id`
-- **Format**: WhatsApp-flavored markdown
+- **Inbound**: Embedded HTTP server handles Meta webhook verification (GET) and signed event delivery (POST with HMAC-SHA256 validation). Requires a public URL — use a reverse proxy (nginx, Caddy) or ngrok for local dev.
+- **Outbound**: REST API `POST /v21.0/{phoneNumberId}/messages`
+- **Idempotency key**: WhatsApp message ID
+- **Thread mapping**: Sender phone number
+
+### WhatsApp Baileys
+
+WhatsApp Web bridge using the [Baileys](https://github.com/WhiskeySockets/Baileys) library. Connects as a regular WhatsApp Web client — no Meta Business account, no webhook server, no Cloud API.
+
+> **Optional dependency**: `@whiskeysockets/baileys` is not bundled. Install it separately: `npm install @whiskeysockets/baileys`
+
+Two usage modes: **dedicated number** (default) or **self-chat** (use your personal WhatsApp).
+
+**Dedicated number** — a second WhatsApp account receives messages from others:
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsappBaileys
+    enabled: true
+    config:
+      authDir: './baileys-auth'
+      allowedSenders:                         # Restrict who can message the bot
+        - '96490886312027'
+```
+
+**Self-chat** — the bot listens in your own "Message Yourself" thread. No second phone needed:
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsappBaileys
+    enabled: true
+    config:
+      authDir: './baileys-auth'
+      selfChat: true
+      triggerWords: ['@Talon']                # Optional — filter by trigger word
+```
+
+#### Self-Chat Mode
+
+Set `selfChat: true` to use your personal WhatsApp number. The bot only listens to messages you send in your own "Message Yourself" conversation (WhatsApp's built-in self-chat). All other conversations are ignored. No `allowedSenders` needed — only your own messages are processed.
+
+#### Trigger Words
+
+`triggerWords` filters messages so only those starting with a listed word are processed. The trigger word is stripped before the message reaches the agent — e.g. `@Talon what's the weather?` becomes `what's the weather?`. Case-insensitive.
+
+Useful in self-chat mode (so not every note-to-self triggers the bot) or with a dedicated number in group-like scenarios. When omitted or empty, all messages pass through.
+
+#### Access Control
+
+For dedicated-number mode, use `allowedSenders` to restrict who can message the bot. When omitted or empty, all senders are accepted.
+
+**Finding sender IDs:** WhatsApp uses opaque "LID" identifiers (e.g. `96490886312027@lid`) rather than phone numbers in many cases. You cannot predict which format a contact will use, so discover IDs from the logs:
+
+1. Set `logLevel: debug` in `talond.yaml`
+2. Start (or restart) talond
+3. Send a test message from each phone that should be allowed
+4. Find the log line `whatsapp-baileys: inbound message received` — the `jid` field shows the full identifier
+5. Copy the part **before the `@`** (e.g. `96490886312027`) into `allowedSenders`
+6. Set `logLevel` back to `info` and restart
+
+#### Authentication
+
+Baileys authenticates by scanning a QR code, like linking a new device in WhatsApp. Use the standalone CLI command to authenticate before starting the daemon:
+
+```bash
+# Authenticate — prints QR code, waits for scan, saves credentials
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+
+# Custom timeout (default: 120s)
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
+```
+
+Once authenticated, the daemon uses the saved credentials — no QR code display needed at runtime. To re-authenticate, delete the `authDir` folder and run the command again.
+
+- **Access control**: Optional `allowedSenders` allowlist (dedicated-number mode) or `selfChat: true` (personal number)
+- **Trigger words**: Optional `triggerWords` filter — trigger is stripped before reaching the agent
+- **Inbound**: WhatsApp Web socket via Baileys, text messages from individual chats only (group and media messages logged and skipped in v1)
+- **Outbound**: Send via Baileys socket using WhatsApp JID (e.g. `447700900000@s.whatsapp.net`)
+- **Idempotency key**: Baileys message ID
+- **Thread mapping**: Sender JID
+- **Reconnection**: Automatic on disconnect; logged-out sessions require re-authentication (delete `authDir` and re-run `talonctl whatsapp-auth`)
 
 ### Email
 
@@ -696,10 +777,10 @@ npx talonctl add-skill --name web-search --persona assistant
 
 Only skill name and description are included in the agent's system prompt per run. When the agent needs a skill's full instructions, it calls `skill_load`. MCP servers from skills still connect eagerly at startup.
 
-| Scenario | Eager (old) | Lazy (current) |
-|---|---|---|
-| 7 skills, using 1 | ~21k tokens | ~3.7k tokens |
-| 20 skills, using 0 | ~60k tokens | ~2k tokens |
+| Scenario           | Eager (old) | Lazy (current) |
+| ------------------ | ----------- | -------------- |
+| 7 skills, using 1  | ~21k tokens | ~3.7k tokens   |
+| 20 skills, using 0 | ~60k tokens | ~2k tokens     |
 
 Background agents use eager loading to ensure full access without calling `skill_load`.
 
@@ -934,12 +1015,12 @@ npx talonctl reload
 
 ### Setup and Configuration
 
-| Command                                       | Description                                                                       |
-| --------------------------------------------- | --------------------------------------------------------------------------------- |
-| `talonctl setup`                              | First-time interactive setup (checks environment, creates dirs, generates config) |
-| `talonctl add-channel --name <n> --type <t>`  | Add a channel connector to config                                                 |
-| `talonctl add-persona --name <n>`             | Scaffold a persona directory and add to config (uses template if available)        |
-| `talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Scaffold a skill (`yaml` or `skillmd` format) and attach to a persona |
+| Command                                                        | Description                                                                       |
+| -------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `talonctl setup`                                               | First-time interactive setup (checks environment, creates dirs, generates config) |
+| `talonctl add-channel --name <n> --type <t>`                   | Add a channel connector to config                                                 |
+| `talonctl add-persona --name <n>`                              | Scaffold a persona directory and add to config (uses template if available)       |
+| `talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Scaffold a skill (`yaml` or `skillmd` format) and attach to a persona             |
 
 ```bash
 # Full setup flow
@@ -1119,14 +1200,14 @@ Talon implements defense in depth through capability-based access control, host-
 
 Agents interact with the host through 5 MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
 
-| Tool              | Purpose                             |
-| ----------------- | ----------------------------------- |
+| Tool              | Purpose                                                                  |
+| ----------------- | ------------------------------------------------------------------------ |
 | `schedule_manage` | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`    | Send messages to channel connectors |
-| `memory_access`   | Read/write per-thread memory        |
-| `net_http`        | Fetch external URLs                 |
-| `db_query`        | Read-only database queries          |
-| `subagent_invoke` | Invoke a sub-agent by name          |
+| `channel_send`    | Send messages to channel connectors                                      |
+| `memory_access`   | Read/write per-thread memory                                             |
+| `net_http`        | Fetch external URLs                                                      |
+| `db_query`        | Read-only database queries                                               |
+| `subagent_invoke` | Invoke a sub-agent by name                                               |
 
 ### Capability System
 
@@ -1391,8 +1472,8 @@ langfuse:
   enabled: true
   publicKey: ${LANGFUSE_PUBLIC_KEY}
   secretKey: ${LANGFUSE_SECRET_KEY}
-  baseUrl: https://cloud.langfuse.com   # or your self-hosted URL
-  environment: production                # tags traces by environment
+  baseUrl: https://cloud.langfuse.com # or your self-hosted URL
+  environment: production # tags traces by environment
   # release: v1.2.3                      # optional version tag
   # exportMode: batched                  # batched (default) or immediate
   # flushAt: 20                          # spans buffered before flush
@@ -1403,17 +1484,17 @@ All fields except `enabled`, `publicKey`, and `secretKey` have sensible defaults
 
 ### Configuration reference
 
-| Field                  | Default                         | Description                                         |
-| ---------------------- | ------------------------------- | --------------------------------------------------- |
-| `enabled`              | `false`                         | Master switch for Langfuse integration              |
-| `publicKey`            | `''`                            | Langfuse project public key (required when enabled)  |
-| `secretKey`            | `''`                            | Langfuse project secret key (required when enabled)  |
-| `baseUrl`              | `https://cloud.langfuse.com`    | Langfuse API endpoint                               |
-| `environment`          | `production`                    | Environment tag attached to all traces              |
-| `release`              | —                               | Optional release/version tag                        |
-| `exportMode`           | `batched`                       | `batched` buffers spans; `immediate` sends one by one |
-| `flushAt`              | `20`                            | Number of spans buffered before a flush             |
-| `flushIntervalSeconds` | `5`                             | Maximum seconds between flushes                     |
+| Field                  | Default                      | Description                                           |
+| ---------------------- | ---------------------------- | ----------------------------------------------------- |
+| `enabled`              | `false`                      | Master switch for Langfuse integration                |
+| `publicKey`            | `''`                         | Langfuse project public key (required when enabled)   |
+| `secretKey`            | `''`                         | Langfuse project secret key (required when enabled)   |
+| `baseUrl`              | `https://cloud.langfuse.com` | Langfuse API endpoint                                 |
+| `environment`          | `production`                 | Environment tag attached to all traces                |
+| `release`              | —                            | Optional release/version tag                          |
+| `exportMode`           | `batched`                    | `batched` buffers spans; `immediate` sends one by one |
+| `flushAt`              | `20`                         | Number of spans buffered before a flush               |
+| `flushIntervalSeconds` | `5`                          | Maximum seconds between flushes                       |
 
 ---
 
@@ -1474,7 +1555,8 @@ talon/
         telegram/                # Telegram Bot API connector
         slack/                   # Slack Events API connector
         discord/                 # Discord Gateway + REST connector
-        whatsapp/                # WhatsApp Cloud API connector
+        whatsapp-business/       # WhatsApp Cloud API connector
+        whatsapp-baileys/        # WhatsApp Web (Baileys) connector
         email/                   # IMAP + SMTP connector
         terminal/                # WebSocket terminal connector
       channel-registry.ts        # Connector lifecycle management

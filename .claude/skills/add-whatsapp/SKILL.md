@@ -1,22 +1,24 @@
 ---
 name: add-whatsapp
 description: |
-  Add WhatsApp as a channel. Use when the user says "add whatsapp",
-  "connect whatsapp", "set up whatsapp", or "whatsapp channel".
+  Add WhatsApp as a channel via Baileys (WhatsApp Web bridge).
+  Use when the user says "add whatsapp", "connect whatsapp",
+  "set up whatsapp", or "whatsapp channel".
 triggers:
   - "add whatsapp"
   - "connect whatsapp"
   - "whatsapp channel"
-  - "whatsapp business"
+  - "whatsapp baileys"
+  - "whatsapp web"
 ---
 
 # Add WhatsApp Channel
 
-Walk the user through adding WhatsApp Business as a channel to Talon. One question at a time.
+Walk the user through adding a WhatsApp channel to Talon via the Baileys connector.
+Baileys connects as a WhatsApp Web client — just scan a QR code. No Meta Business
+account, no webhooks, no public endpoint needed. One question at a time.
 
-**Important:** WhatsApp Business API requires a Meta Business Account and a verified phone number. This is more involved than Telegram or Slack.
-
-## Phase 1: Pre-flight
+## Pre-flight
 
 Check if a whatsapp channel already exists:
 
@@ -24,74 +26,123 @@ Check if a whatsapp channel already exists:
 npx talonctl list-channels
 ```
 
-## Phase 2: Meta Business Setup
+## Step 1: Install Baileys
 
-Ask: **"Do you already have a WhatsApp Business API set up with a phone number ID and access token?"**
+Baileys and its QR rendering dependency are optional. Install them first:
 
-If no, walk them through it:
+```bash
+npm install @whiskeysockets/baileys qrcode-terminal
+```
 
-> ### Prerequisites
->
-> - A Meta (Facebook) Business account
-> - A phone number that can receive SMS or calls for verification
->
-> ### Create the App
->
-> 1. Go to [developers.facebook.com](https://developers.facebook.com)
-> 2. Click **My Apps** > **Create App**
-> 3. Select **Business** as the app type
-> 4. Fill in the app name and select your business account
->
-> ### Set Up WhatsApp
->
-> 1. In the app dashboard, click **Add Product** > **WhatsApp** > **Set Up**
-> 2. Go to **WhatsApp** > **API Setup** in the left sidebar
-> 3. You'll see a test phone number — or add your own business number
-> 4. Copy:
->    - **Phone Number ID** (numeric, under the phone number)
->    - **Temporary Access Token** (for testing — generate a permanent one for production)
->
-> ### Generate a Permanent Token
->
-> 1. Go to **Business Settings** > **System Users**
-> 2. Create a system user with Admin role
-> 3. Generate a token with `whatsapp_business_messaging` permission
-> 4. This token doesn't expire
->
-> ### Set Up Webhook
->
-> 1. Go to **WhatsApp** > **Configuration**
-> 2. Set the webhook URL to your server's endpoint (e.g. `https://your-server.com/webhook/whatsapp`)
-> 3. Set a **Verify Token** (any string you choose — you'll use this in config)
-> 4. Subscribe to the `messages` webhook field
-
-Wait for the user to provide: phone number ID, access token, and verify token.
-
-## Phase 3: Add the Channel
+## Step 2: Add the Channel
 
 Ask for a channel name (suggest `my-whatsapp`), then:
 
 ```bash
-npx talonctl add-channel --name <name> --type whatsapp
+npx talonctl add-channel --name <name> --type whatsappBaileys
 ```
 
-Then edit `talond.yaml` to set the config section:
+Then ask: **"Will you use a dedicated WhatsApp number for the bot, or your own personal number (self-chat mode)?"**
+
+| Option | Config | When to use |
+|--------|--------|-------------|
+| **Dedicated number** | `selfChat: false` (default) | You have a second phone/number for the bot |
+| **Self-chat (personal number)** | `selfChat: true` | You want to use your own WhatsApp — the bot listens in your "Message Yourself" thread |
+
+Then ask: **"Do you want to require a trigger word (e.g. `@Talon`) to activate the bot, or should every message be processed?"**
+
+Trigger words are especially useful in self-chat mode so notes-to-self don't trigger the bot. They also work in dedicated-number mode.
+
+Edit `talond.yaml` to set the config section based on their answers:
+
+**Dedicated number:**
+```yaml
+config:
+  authDir: './baileys-auth'
+```
+
+**Self-chat with trigger word:**
+```yaml
+config:
+  authDir: './baileys-auth'
+  selfChat: true
+  triggerWords: ['@Talon']
+```
+
+**Self-chat without trigger word:**
+```yaml
+config:
+  authDir: './baileys-auth'
+  selfChat: true
+```
+
+No environment variables or secrets needed — authentication is via QR code.
+
+## Step 3: Authenticate
+
+Run the standalone auth command — it prints a QR code to the terminal and waits for a scan:
+
+```bash
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+```
+
+Tell the user:
+
+> 1. A QR code will appear in the terminal
+> 2. Open WhatsApp on your phone > Settings > Linked Devices > Link a Device
+> 3. Scan the QR code
+> 4. Once authenticated, credentials are saved and the command exits
+> 5. Now start (or restart) talond — no QR code will be needed
+
+The `--auth-dir` must match the `authDir` in the channel config. Default is `./baileys-auth`.
+
+## Step 4: Security — Restrict Access
+
+**Important**: By default, anyone who knows the bot's phone number can chat with it. Walk the user through discovering their sender ID and locking down access:
+
+> ### How to find sender IDs
+>
+> WhatsApp no longer uses phone numbers as identifiers in all cases. Contacts may appear
+> as opaque "LID" numbers (e.g. `96490886312027@lid`) instead of phone-based JIDs
+> (e.g. `31612345678@s.whatsapp.net`). You cannot predict which format you'll get,
+> so the only reliable way to find a sender's ID is from the logs:
+>
+> 1. Temporarily set `logLevel: debug` in `talond.yaml`
+> 2. Start talond (or restart it)
+> 3. Send a test message from each phone that should be allowed
+> 4. In the logs, find the line: `whatsapp-baileys: inbound message received`
+> 5. Copy the `jid` value — the part **before the `@`** is the sender ID
+> 6. Add each sender ID to `allowedSenders` in the channel config
+> 7. Set `logLevel` back to `info` and restart talond
+
+Ask the user to send a test message and share the `jid` from the logs so you can help them configure `allowedSenders`:
 
 ```yaml
 config:
-  phoneNumberId: "123456789"
-  accessToken: ${WHATSAPP_ACCESS_TOKEN}
-  verifyToken: ${WHATSAPP_VERIFY_TOKEN}
+  authDir: './baileys-auth'
+  allowedSenders:
+    - '96490886312027'              # sender ID from logs (before the @)
 ```
 
-Tell the user to add to `.env`:
+When the list is omitted or empty, all senders are accepted.
 
-```
-WHATSAPP_ACCESS_TOKEN=your-access-token
-WHATSAPP_VERIFY_TOKEN=your-verify-token
+> **Strongly recommended**: Always configure `allowedSenders` for production use. An open WhatsApp bot can be abused by anyone who discovers the number.
+
+## Step 5: Verify (Baileys)
+
+> Send a WhatsApp message to the connected number from an **allowed** phone. You should get a response within a few seconds. Then send from a phone that is **not** in `allowedSenders` and confirm the message is dropped (check logs for "message from disallowed sender, dropping").
+
+If it doesn't work:
+
+```bash
+journalctl --user -u talond -f
 ```
 
-## Phase 4: Bind a Persona
+**If you see "logged out"**: delete the `authDir` folder, re-run `talonctl whatsapp-auth`, and restart talond.
+
+---
+
+## Bind a Persona
 
 ```bash
 npx talonctl list-personas
@@ -103,59 +154,38 @@ Ask which persona to bind, then:
 npx talonctl bind --persona <name> --channel <channel-name>
 ```
 
-## Phase 5: Validate
+## Validate
 
 ```bash
 npx talonctl env-check
 npx talonctl doctor
 ```
 
-## Phase 6: Verify
-
-Tell the user:
-
-> 1. Make sure talond is running (or restart it)
-> 2. Make sure your webhook endpoint is publicly accessible (use ngrok for testing)
-> 3. Send a WhatsApp message to the business number
-> 4. You should get a response within a few seconds
-
-If it doesn't work:
-
-```bash
-# Check logs
-journalctl --user -u talond -f
-
-# Test webhook verification
-curl "https://your-server.com/webhook/whatsapp?hub.mode=subscribe&hub.verify_token=YOUR_VERIFY_TOKEN&hub.challenge=test"
-```
-
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
-| Webhook verification fails | Check `verifyToken` matches what's in Meta App Dashboard |
-| Messages not arriving | Ensure webhook URL is publicly accessible and subscribed to `messages` |
-| "Invalid OAuth access token" | Token expired — generate a permanent one via System Users |
-| Bot responds but user doesn't see it | Check WhatsApp message template approval (for outbound-first messages) |
+| QR code not appearing | Run `npx talonctl whatsapp-auth` again in a visible terminal window. The QR is printed by `talonctl whatsapp-auth`, not by the connector — there is no `printQR` config option |
+| "logged out" error | Delete `authDir` folder and restart to re-authenticate |
+| Group messages ignored | Expected — Baileys connector only processes individual chats in v1 |
+| Module not found | Run `npm install @whiskeysockets/baileys` — it's an optional dependency |
 | Only text messages work | Normal — Talon v1 supports text only; media messages are logged but skipped |
+| Self-chat not responding | Check `selfChat: true` in config. Verify `selfJid` appears in connect log |
+| Trigger word not matching | Trigger words are case-insensitive. Check spelling. Message must **start** with the trigger word |
+| Bot responds to everything in self-chat | Add `triggerWords` to only process triggered messages |
 
 ## Config Reference
 
 ```yaml
 channels:
   - name: my-whatsapp
-    type: whatsapp
+    type: whatsappBaileys
     config:
-      phoneNumberId: "123456789"               # Required
-      accessToken: ${WHATSAPP_ACCESS_TOKEN}    # Required
-      verifyToken: ${WHATSAPP_VERIFY_TOKEN}    # Required — must match Meta dashboard
-      apiVersion: "v18.0"                      # Optional (default: v18.0)
+      authDir: './baileys-auth'                  # Optional (default: ./baileys-auth)
+      markOnlineOnConnect: false                 # Optional (default: false)
+      browser: ['Talon', 'Chrome', '1.0']        # Optional (default: Browsers.appropriate('Talon'))
+      selfChat: false                            # Optional — self-chat mode (default: false)
+      triggerWords: ['@Talon']                   # Optional — require trigger word to activate
+      allowedSenders:                            # Optional — restrict who can message the bot
+        - '96490886312027'
 ```
-
-## How It Works
-
-- Inbound messages arrive via Meta webhook — your server needs a public HTTPS endpoint
-- Outbound messages use the WhatsApp Cloud API (Graph API)
-- Each sender's phone number maps to one Talon thread
-- Only text messages are processed in v1 (images, audio, etc. are logged and skipped)
-- For testing without a public server, use ngrok: `ngrok http 3000`
