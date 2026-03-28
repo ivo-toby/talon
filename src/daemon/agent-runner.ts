@@ -358,6 +358,7 @@ export class AgentRunner {
 
             const executeAgentQuery = async (resumeSessionId?: string): Promise<{
               outputText: string;
+              fullOutputText: string;
               resultSessionId: string | undefined;
               usage: AgentUsage;
             }> => {
@@ -478,6 +479,7 @@ export class AgentRunner {
                   );
 
                   let outputText = '';
+                  let fullOutputText = '';
                   let resultSessionId: string | undefined;
                   let usage: AgentUsage = {
                     inputTokens: 0,
@@ -527,12 +529,14 @@ export class AgentRunner {
                         sawEvents = true;
                         if (event.type === 'text') {
                           outputText += event.content;
+                          fullOutputText += event.content;
                         } else if (event.type === 'result') {
                           resultSessionId = event.result.sessionId;
                           usage = event.result.usage;
 
-                          if (!outputText && event.result.output) {
+                          if (!fullOutputText && event.result.output) {
                             outputText = event.result.output;
+                            fullOutputText = event.result.output;
                           }
 
                           if (event.result.isError) {
@@ -542,6 +546,20 @@ export class AgentRunner {
                             );
                           }
                         } else if (event.type === 'tool_event') {
+                          // Flush buffered text before tool execution so each text block
+                          // is delivered as a separate channel message (issue #102).
+                          const isToolUse =
+                            event.messageType === 'tool_use' ||
+                            event.messageType === 'server_tool_use' ||
+                            event.messageType === 'mcp_tool_use';
+                          if (isToolUse && outputText && item.type !== 'schedule' && connector !== undefined && externalId) {
+                            const flushResult = await connector.send(externalId, { body: outputText });
+                            if (flushResult.isErr()) {
+                              throw new Error(`channel send failed: ${flushResult.error.message}`);
+                            }
+                            outputText = '';
+                            fullOutputText += '\n\n';
+                          }
                           this.handleProviderToolEvent(
                             generationObservation.getTraceparent(),
                             {
@@ -575,6 +593,7 @@ export class AgentRunner {
                     const result = await strategy.run(queryInput);
                     sawEvents = true;
                     outputText = result.output;
+                    fullOutputText = result.output;
                     resultSessionId = result.sessionId;
                     usage = result.usage;
 
@@ -615,7 +634,7 @@ export class AgentRunner {
                   await Promise.allSettled(pendingProviderToolTasks);
 
                   generationObservation.update({
-                    output: outputText,
+                    output: fullOutputText,
                     metadata: {
                       resultSessionId: resultSessionId ?? null,
                       resumeSessionId: resumeSessionId ?? null,
@@ -636,6 +655,7 @@ export class AgentRunner {
 
                   return {
                     outputText,
+                    fullOutputText: fullOutputText.replace(/\n\n$/, ''),
                     resultSessionId,
                     usage,
                   };
@@ -644,6 +664,7 @@ export class AgentRunner {
             };
 
             let outputText = '';
+            let fullOutputText = '';
             let resultSessionId: string | undefined;
             let usage: AgentUsage = {
               inputTokens: 0,
@@ -653,6 +674,7 @@ export class AgentRunner {
             try {
               ({
                 outputText,
+                fullOutputText,
                 resultSessionId,
                 usage,
               } = await executeAgentQuery(existingSessionId));
@@ -669,6 +691,7 @@ export class AgentRunner {
                 );
                 ({
                   outputText,
+                  fullOutputText,
                   resultSessionId,
                   usage,
                 } = await executeAgentQuery(undefined));
@@ -752,10 +775,12 @@ export class AgentRunner {
 
             if (item.type === 'schedule') {
               this.ctx.logger.info(
-                { runId, outputLength: outputText.length },
+                { runId, outputLength: fullOutputText.length },
                 'agent-sdk: skipping outbound reply for schedule item (agent already sent via channel_send)',
               );
-            } else if (connector !== undefined && externalId) {
+            } else if (connector !== undefined && externalId && outputText) {
+              // Send remaining text (final block). Intermediate blocks were flushed
+              // during the stream when tool_use events were encountered (issue #102).
               const sendResult = await connector.send(externalId, {
                 body: outputText,
               });
@@ -768,7 +793,7 @@ export class AgentRunner {
               id: uuidv4(),
               thread_id: item.threadId,
               direction: 'outbound',
-              content: JSON.stringify({ body: outputText }),
+              content: JSON.stringify({ body: fullOutputText }),
               idempotency_key: `outbound:${runId}`,
               provider_id: null,
               run_id: runId,
@@ -776,13 +801,13 @@ export class AgentRunner {
 
             runObservation.update({
               output: {
-                text: outputText,
+                text: fullOutputText,
               },
               metadata: {
                 resultSessionId: resultSessionId ?? null,
               },
               trace: {
-                output: outputText,
+                output: fullOutputText,
               },
             });
 
