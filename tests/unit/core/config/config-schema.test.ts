@@ -243,6 +243,7 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.capabilities.allow).toEqual([]);
       expect(result.data.mounts).toEqual([]);
       expect(result.data.systemPromptFile).toBeUndefined();
+      expect(result.data.queryTimeoutMinutes).toBeUndefined();
       expect(result.data.maxConcurrent).toBeUndefined();
     }
   });
@@ -253,6 +254,7 @@ describe('PersonaConfigSchema', () => {
       model: 'claude-opus-4-6',
       provider: 'gemini-cli',
       systemPromptFile: '/prompts/researcher.md',
+      queryTimeoutMinutes: 45,
       skills: ['web-search', 'code-runner'],
       capabilities: { allow: ['read_file'], requireApproval: [] },
       mounts: [{ source: '/data', target: '/workspace', mode: 'rw' }],
@@ -262,6 +264,7 @@ describe('PersonaConfigSchema', () => {
     if (result.success) {
       expect(result.data.name).toBe('researcher');
       expect(result.data.provider).toBe('gemini-cli');
+      expect(result.data.queryTimeoutMinutes).toBe(45);
       expect(result.data.maxConcurrent).toBe(2);
       expect(result.data.mounts).toHaveLength(1);
     }
@@ -270,6 +273,15 @@ describe('PersonaConfigSchema', () => {
   it('rejects maxConcurrent below 1', () => {
     const result = PersonaConfigSchema.safeParse({ name: 'bot', maxConcurrent: 0 });
     expect(result.success).toBe(false);
+  });
+
+  it('rejects queryTimeoutMinutes outside the supported range', () => {
+    expect(
+      PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 0 }).success,
+    ).toBe(false);
+    expect(
+      PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 481 }).success,
+    ).toBe(false);
   });
 });
 
