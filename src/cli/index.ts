@@ -66,6 +66,13 @@ function parseBooleanOption(value: string): boolean {
   throw new Error(`Invalid boolean value "${value}". Use true or false.`);
 }
 
+function parseCommaSeparatedOption(value: string): string[] {
+  return value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length > 0);
+}
+
 program
   .name('talonctl')
   .description('CLI for managing the talond daemon')
@@ -155,11 +162,36 @@ program
   .requiredOption('--name <name>', 'Persona name (e.g. assistant)')
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
   .option('--templates-dir <path>', 'Path to templates directory', 'templates')
-  .action(async (opts: { name: string; config: string; templatesDir: string }) => {
+  .option('--model <model>', 'Model name')
+  .option('--provider <provider>', 'Provider name')
+  .option('--capabilities <caps>', 'Comma-separated capabilities allow list', parseCommaSeparatedOption)
+  .option('--require-approval <caps>', 'Comma-separated capabilities requiring approval', parseCommaSeparatedOption)
+  .option('--skills <skills>', 'Comma-separated skill names', parseCommaSeparatedOption)
+  .option('--system-prompt-file <path>', 'Path to a system prompt markdown file')
+  .option('--description <text>', 'Short description of what this persona does (written to system.md frontmatter)')
+  .action(async (opts: {
+    name: string;
+    config: string;
+    templatesDir: string;
+    model?: string;
+    provider?: string;
+    description?: string;
+    capabilities?: string[];
+    requireApproval?: string[];
+    skills?: string[];
+    systemPromptFile?: string;
+  }) => {
     await addPersonaCommand({
       name: opts.name,
+      description: opts.description,
       configPath: opts.config,
       templatesDir: opts.templatesDir,
+      model: opts.model,
+      provider: opts.provider,
+      capabilities: opts.capabilities,
+      requireApproval: opts.requireApproval,
+      skills: opts.skills,
+      systemPromptFile: opts.systemPromptFile,
     });
   });
 

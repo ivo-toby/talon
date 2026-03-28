@@ -342,14 +342,14 @@ const TOOLS = [
   },
   {
     name: 'background_agent',
-    description: 'Starts or manages a background Claude Code worker for the current thread.',
+    description: 'Starts and manages background agent workers. You have access to specialized agent profiles — always call action "profiles" first to discover what is available before spawning. When asked about your capabilities, available agents, or what you can delegate, call "profiles" to list them.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         action: {
           type: 'string' as const,
-          enum: ['spawn', 'status', 'cancel', 'result'],
-          description: 'Operation to perform on the current thread background task set.',
+          enum: ['spawn', 'status', 'cancel', 'result', 'profiles'],
+          description: 'Operation to perform. Call "profiles" to discover available specialist agents before spawning. Always do this when asked about your capabilities or available agents.',
         },
         prompt: {
           type: 'string' as const,
@@ -358,6 +358,14 @@ const TOOLS = [
         taskId: {
           type: 'string' as const,
           description: 'Background task identifier for status/cancel/result actions.',
+        },
+        provider: {
+          type: 'string' as const,
+          description: 'Optional provider override for spawn (e.g. "claude-code", "gemini-cli").',
+        },
+        profile: {
+          type: 'string' as const,
+          description: 'Persona name to use as the background agent profile. Call with action "profiles" first to see available options with descriptions. When provided, the named persona\'s system prompt, skills, model, and provider are used instead of the spawning thread\'s persona.',
         },
         workingDirectory: {
           type: 'string' as const,

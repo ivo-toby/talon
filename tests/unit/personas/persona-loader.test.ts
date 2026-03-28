@@ -194,7 +194,7 @@ describe('PersonaLoader', () => {
       }
     });
 
-    it('reads system prompt content from file', async () => {
+    it('reads system prompt content from file (no frontmatter)', async () => {
       const promptFile = join(tmpDir, 'prompt.txt');
       await writeFile(promptFile, 'You are a helpful assistant.');
       const config = makePersonaConfig({
@@ -204,6 +204,7 @@ describe('PersonaLoader', () => {
       const result = await loader.loadFromConfig([config]);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()[0].systemPromptContent).toBe('You are a helpful assistant.');
+      expect(result._unsafeUnwrap()[0].description).toBeUndefined();
     });
 
     it('logs debug message when prompt file is read', async () => {
@@ -635,6 +636,134 @@ describe('PersonaLoader', () => {
       await loader.loadFromConfig([config]);
       const row = repo.findByName('promptpath')._unsafeUnwrap();
       expect(row?.system_prompt_file).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // loadFromConfig — frontmatter parsing
+  // -------------------------------------------------------------------------
+
+  describe('loadFromConfig — frontmatter parsing', () => {
+    let tmpDir: string;
+
+    beforeEach(async () => {
+      tmpDir = await mkdtemp(join(tmpdir(), 'persona-loader-frontmatter-'));
+    });
+
+    afterEach(async () => {
+      await rm(tmpDir, { recursive: true, force: true });
+    });
+
+    it('parses description from YAML frontmatter', async () => {
+      const promptFile = join(tmpDir, 'system.md');
+      await writeFile(promptFile, [
+        '---',
+        'description: "Deep web research agent"',
+        '---',
+        '',
+        '# researcher',
+        '',
+        'You are a researcher.',
+      ].join('\n'));
+
+      const config = makePersonaConfig({ name: 'researcher', systemPromptFile: promptFile });
+      const result = await loader.loadFromConfig([config]);
+      expect(result.isOk()).toBe(true);
+      const persona = result._unsafeUnwrap()[0];
+      expect(persona.description).toBe('Deep web research agent');
+      expect(persona.systemPromptContent).not.toContain('---');
+      expect(persona.systemPromptContent).toContain('# researcher');
+    });
+
+    it('strips frontmatter from system prompt content', async () => {
+      const promptFile = join(tmpDir, 'system.md');
+      await writeFile(promptFile, [
+        '---',
+        'description: "Butler"',
+        '---',
+        '',
+        'You are James.',
+      ].join('\n'));
+
+      const config = makePersonaConfig({ name: 'james', systemPromptFile: promptFile });
+      const result = await loader.loadFromConfig([config]);
+      const persona = result._unsafeUnwrap()[0];
+      expect(persona.systemPromptContent).toBe('You are James.');
+    });
+
+    it('handles system prompt with no frontmatter', async () => {
+      const promptFile = join(tmpDir, 'system.md');
+      await writeFile(promptFile, '# plain persona\n\nNo frontmatter here.');
+
+      const config = makePersonaConfig({ name: 'plain', systemPromptFile: promptFile });
+      const result = await loader.loadFromConfig([config]);
+      const persona = result._unsafeUnwrap()[0];
+      expect(persona.description).toBeUndefined();
+      expect(persona.systemPromptContent).toContain('# plain persona');
+    });
+
+    it('handles frontmatter with empty description', async () => {
+      const promptFile = join(tmpDir, 'system.md');
+      await writeFile(promptFile, '---\ndescription: ""\n---\n\nBody.');
+
+      const config = makePersonaConfig({ name: 'empty-desc', systemPromptFile: promptFile });
+      const result = await loader.loadFromConfig([config]);
+      const persona = result._unsafeUnwrap()[0];
+      // Empty string fails min(1) validation, so description is undefined
+      expect(persona.description).toBeUndefined();
+    });
+
+    it('warns on invalid frontmatter without blocking loading', async () => {
+      const promptFile = join(tmpDir, 'system.md');
+      await writeFile(promptFile, '---\ndescription: 42\n---\n\nBody.');
+
+      const config = makePersonaConfig({ name: 'bad-fm', systemPromptFile: promptFile });
+      const result = await loader.loadFromConfig([config]);
+      expect(result.isOk()).toBe(true);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ persona: 'bad-fm' }),
+        expect.stringContaining('invalid frontmatter'),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // listProfiles
+  // -------------------------------------------------------------------------
+
+  describe('listProfiles', () => {
+    let tmpDir: string;
+
+    beforeEach(async () => {
+      tmpDir = await mkdtemp(join(tmpdir(), 'persona-loader-profiles-'));
+    });
+
+    afterEach(async () => {
+      await rm(tmpDir, { recursive: true, force: true });
+    });
+
+    it('returns empty array when no personas loaded', () => {
+      expect(loader.listProfiles()).toEqual([]);
+    });
+
+    it('returns name and description for loaded personas', async () => {
+      const promptFile = join(tmpDir, 'system.md');
+      await writeFile(promptFile, '---\ndescription: "A helpful butler"\n---\n\nYou are James.');
+
+      const configs = [
+        makePersonaConfig({ name: 'james', systemPromptFile: promptFile }),
+        makePersonaConfig({ name: 'plain' }),
+      ];
+      await loader.loadFromConfig(configs);
+
+      const profiles = loader.listProfiles();
+      expect(profiles).toHaveLength(2);
+
+      const james = profiles.find((p) => p.name === 'james');
+      expect(james?.description).toBe('A helpful butler');
+
+      const plain = profiles.find((p) => p.name === 'plain');
+      expect(plain?.description).toBeUndefined();
     });
   });
 });

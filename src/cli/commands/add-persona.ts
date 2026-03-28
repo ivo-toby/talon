@@ -40,6 +40,13 @@ const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 export interface AddPersonaOptions {
   name: string;
+  description?: string;
+  model?: string;
+  provider?: string;
+  capabilities?: string[];
+  requireApproval?: string[];
+  skills?: string[];
+  systemPromptFile?: string;
   configPath?: string;
   personasDir?: string;
   templatesDir?: string;
@@ -47,7 +54,8 @@ export interface AddPersonaOptions {
 
 export interface AddPersonaEntry {
   name: string;
-  model: string;
+  model?: string;
+  provider?: string;
   systemPromptFile: string;
   skills: string[];
   capabilities: { allow: string[]; requireApproval: string[] };
@@ -74,6 +82,24 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   const nameError = validateName(options.name, 'Persona');
   if (nameError) {
     throw new Error(nameError);
+  }
+
+  // Validate optional provider (must be non-empty after trimming, matching Zod schema).
+  if (options.provider !== undefined) {
+    const trimmed = options.provider.trim();
+    if (trimmed === '') {
+      throw new Error('Provider name must not be empty.');
+    }
+    options.provider = trimmed;
+  }
+
+  // Validate optional model (must be non-empty after trimming).
+  if (options.model !== undefined) {
+    const trimmed = options.model.trim();
+    if (trimmed === '') {
+      throw new Error('Model name must not be empty.');
+    }
+    options.model = trimmed;
   }
 
   // Read existing config.
@@ -107,9 +133,17 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   let isNewPersona = false;
   try {
     const templateFile = path.join(options.templatesDir ?? 'templates', options.name, 'system.md');
-    const content = existsSync(templateFile)
-      ? await fs.readFile(templateFile, 'utf-8')
-      : buildSystemPromptTemplate(options.name);
+    let content = options.systemPromptFile
+      ? await fs.readFile(options.systemPromptFile, 'utf-8')
+      : existsSync(templateFile)
+        ? await fs.readFile(templateFile, 'utf-8')
+        : buildSystemPromptTemplate(options.name, options.description);
+
+    // If a description was provided but the content has no frontmatter, prepend it.
+    if (options.description && !content.trimStart().startsWith('---')) {
+      const escaped = escapeYamlString(options.description);
+      content = `---\ndescription: "${escaped}"\n---\n\n${content}`;
+    }
     await fs.writeFile(systemPromptFile, content, { flag: 'wx', encoding: 'utf-8' });
     isNewPersona = true;
   } catch (cause) {
@@ -135,14 +169,19 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   }
 
   // Build persona entry.
+  // When a provider is explicitly given but no model, omit model so the config
+  // loader applies the schema default. This avoids writing a Claude model name
+  // for non-Claude providers (e.g. gemini-cli).
+  const model = options.model ?? (options.provider ? undefined : DEFAULT_MODEL);
   const entry: AddPersonaEntry = {
     name: options.name,
-    model: DEFAULT_MODEL,
+    ...(model ? { model } : {}),
+    ...(options.provider ? { provider: options.provider } : {}),
     systemPromptFile,
-    skills: [],
+    skills: options.skills ?? [],
     capabilities: {
-      allow: [],
-      requireApproval: [],
+      allow: options.capabilities ?? [],
+      requireApproval: options.requireApproval ?? [],
     },
   };
 
@@ -238,9 +277,33 @@ function buildMemoryGroomingPrompt(): string {
 
 /**
  * Returns a default system prompt markdown template for the given persona name.
+ *
+ * The `description` field is written into YAML frontmatter. It is parsed by the
+ * persona loader at startup and exposed via the `background_agent profiles`
+ * action so that agents can discover available profiles.
  */
-export function buildSystemPromptTemplate(name: string): string {
+/**
+ * Escapes a string for safe inclusion in a YAML double-quoted value.
+ * Handles backslashes, double quotes, and newlines.
+ */
+function escapeYamlString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n');
+}
+
+export function buildSystemPromptTemplate(name: string, description?: string): string {
+  const trimmed = description?.trim() ?? '';
+  const frontmatterLines: string[] = ['---'];
+  if (trimmed.length > 0) {
+    frontmatterLines.push(`description: "${escapeYamlString(trimmed)}"`);
+  }
+  frontmatterLines.push('---');
+
   return [
+    ...frontmatterLines,
+    '',
     `# ${name} — System Prompt`,
     '',
     `You are ${name}, a helpful AI assistant.`,
@@ -250,6 +313,13 @@ export function buildSystemPromptTemplate(name: string): string {
     '- Be concise and accurate.',
     '- Reply in clear, plain language.',
     '- Ask for clarification when the request is ambiguous.',
+    '',
+    '## Background Agents',
+    '',
+    'You can delegate work to specialized background agents. Use',
+    '`background_agent action="profiles"` to discover what profiles are available.',
+    'When asked about your capabilities or what agents you can use, always check',
+    'profiles first rather than guessing.',
     '',
     '## Constraints',
     '',

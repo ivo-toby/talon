@@ -65,6 +65,8 @@ export interface ProviderSpawnInput {
   cwd: string;
   timeoutMs: number;
   traceparent?: string;
+  /** Optional model override (e.g. "claude-opus-4-6"). Provider-specific — ignored when not applicable. */
+  model?: string;
 }
 
 export interface PreparedProviderInvocation {
