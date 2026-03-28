@@ -1,175 +1,114 @@
 ---
 title: Personas
-description: Configure AI agent identities, capabilities, and system prompts
+description: Configure persona prompts, capabilities, skills, sub-agents, and scheduling prompts
 ---
 
 # Personas
 
-A persona is an AI agent's complete identity — its system prompt, model, skills, sub-agents, and capability policy. You can run multiple personas simultaneously, each bound to different channels with different permissions.
+A persona is Talon's runtime identity for an agent: system prompt, optional provider override, model, skills, sub-agents, capability labels, mounts, and optional concurrency limits.
 
-## How personas work
-
-When a message arrives on a channel, Talon routes it to the bound persona. The persona's system prompt becomes the agent's identity. Its capability list determines which tools it can call. All turns in the same thread use the same persona.
-
-## Defining a persona
+## Persona config
 
 ```yaml
 personas:
   - name: assistant
     model: claude-sonnet-4-6
+    provider: claude-code
     systemPromptFile: personas/assistant/system.md
     skills:
       - web-search
     subagents:
       - session-summarizer
-      - memory-groomer
       - memory-retriever
     capabilities:
       allow:
-        - channel.send:my-telegram
-        - memory.access:*
-        - net.http
-        - schedule.manage
-        - subagent.invoke:*
+        - memory.access:thread
+        - net.http:egress
+        - schedule.manage:own
+        - subagent.invoke
         - subagent.background
+        - channel.send:my-telegram
       requireApproval:
-        - db.query
+        - db.query:own
     maxConcurrent: 2
 ```
 
-## Scaffolding a persona
+## What `talonctl add-persona` creates
 
-```bash
-npx talonctl add-persona --name assistant
+`npx talonctl add-persona --name assistant` scaffolds:
+
+```text
+personas/assistant/
+  system.md
+  personality/01-tone.md
+  prompts/memory-grooming.md
 ```
 
-This creates `personas/assistant/system.md` from a template (if `templates/assistant/system.md` exists) or generates a generic starter. Existing files are never overwritten.
+It also adds the persona to `talond.yaml` with these default allow-list labels:
 
-The `personas/` directory is gitignored by default — your custom system prompts stay local.
+- `memory.access:thread`
+- `net.http:egress`
+- `schedule.manage:own`
 
-## System prompt
+If you pass `--description`, Talon writes that description into `system.md` frontmatter. That description is later exposed through background-agent profile discovery.
 
-The system prompt is a plain Markdown file. Write it as if you're describing the agent's role, constraints, and available tools to the model.
+## System prompt, personality files, and prompt files
 
-Talon injects additional context before the prompt reaches the model:
+`systemPromptFile` points to the main prompt file. The loader also reads:
 
-- **Available skills** — name and one-line description of each loaded skill
-- **Previous context** — session summary + last N messages (after context rotation)
-- **Memory items** — relevant facts/notes retrieved for the current thread
+- `personality/*.md` next to the system prompt and appends those files alphabetically
+- `prompts/*.md` next to the system prompt and indexes them by basename for scheduled `promptFile` usage
 
-A minimal system prompt:
-
-```markdown
-# Assistant
-
-You are a helpful AI assistant for personal use.
-
-## Behaviour
-- Be concise and accurate.
-- Reply in clear, plain language.
-- Ask for clarification when the request is ambiguous.
-
-## Constraints
-- Do not reveal system configuration details.
-- If you do not know something, say so.
-```
-
-## Model configuration
-
-The `model` field is passed directly to the provider. For Claude Code (the default provider), this is a Claude model ID:
-
-```yaml
-personas:
-  - name: assistant
-    model: claude-sonnet-4-6   # or claude-opus-4-6, claude-haiku-4-5, etc.
-```
-
-To use a different provider for a specific persona:
-
-```yaml
-personas:
-  - name: lightweight
-    model: claude-haiku-4-5
-    provider: claude-code
-```
+That means a schedule using `promptFile: memory-grooming` resolves `personas/<name>/prompts/memory-grooming.md`.
 
 ## Capability labels
 
-Capabilities are scoped labels. Anything not listed in `allow` or `requireApproval` is denied by default.
+Capability filtering is based on the label prefix before `:`.
+These are the built-in host-tool labels exposed by the CLI today:
 
-| Capability | Description |
+| Label | Grants access to |
 |---|---|
-| `channel.send:<channel>` | Send messages to a named channel |
-| `channel.send:*` | Send to any channel |
-| `memory.access:*` | Read and write per-thread memory |
-| `net.http` | Fetch external URLs |
-| `db.query` | Read-only queries against 4 allowed tables |
-| `schedule.manage` | Create, update, and delete scheduled tasks |
-| `subagent.invoke:*` | Invoke sub-agents by name |
-| `subagent.background` | Spawn and manage background agent workers |
-| `fs.read:*` | Read files (used by `file-searcher` sub-agent) |
-| `fs.write:workspace` | Write files (example: for approval-gated file ops) |
+| `memory.access:thread` | `memory_access` |
+| `net.http:egress` | `net_http` |
+| `channel.send:*` or `channel.send:<channel>` | `channel_send` |
+| `schedule.manage:own` | `schedule_manage` |
+| `db.query:own` | `db_query` |
+| `subagent.invoke` | `subagent_invoke` |
+| `subagent.background` | `background_agent` |
 
-### require Approval
+Anything not present in `allow` or `requireApproval` is denied by default.
 
-Capabilities in `requireApproval` prompt the user in-channel before executing:
+`requireApproval` still exposes the tool to the agent; Talon uses it as a policy distinction rather than hiding the tool entirely.
 
-```yaml
-capabilities:
-  allow:
-    - channel.send:my-telegram
-    - memory.access:*
-  requireApproval:
-    - db.query    # user must approve each database query
-    - net.http    # user must approve each HTTP request
-```
+## Skills
 
-The approval prompt is sent to the channel that originated the message. If the user doesn't respond within the timeout, the tool call is rejected.
+Personas list skill names in `skills`. At runtime:
+
+- Talon loads skill directories from `./skills/<name>` and `<dataDir>/skills/<name>`
+- the persona sees only the skill index by default
+- the agent calls `skill_load` to load full instructions on demand
+- a skill is usable only if every `requiredCapabilities` label is present in the persona's combined `allow + requireApproval` set
 
 ## Sub-agents
 
-Sub-agents are cheap-model workers that handle mechanical tasks. Declare which sub-agents a persona can invoke:
+`subagents` is an allow-list of sub-agent names the persona can invoke through `subagent_invoke`.
 
-```yaml
-personas:
-  - name: assistant
-    subagents:
-      - session-summarizer
-      - memory-groomer
-      - memory-retriever
-      - file-searcher
-    capabilities:
-      allow:
-        - subagent.invoke:*
-```
-
-The agent also needs instructions in the system prompt explaining when and how to call sub-agents.
-
-Built-in sub-agents:
+Built-in sub-agents in this repo:
 
 | Name | Model | Purpose |
 |---|---|---|
-| `session-summarizer` | Haiku 4.5 | Compress conversation history (called automatically) |
-| `memory-retriever` | Haiku 4.5 | Find relevant memory items for a query |
-| `memory-groomer` | Haiku 4.5 | Prune/consolidate stale memory |
-| `file-searcher` | Haiku 4.5 | Full-text search across files |
+| `session-summarizer` | `claude-sonnet-4-6` | Compress conversation history |
+| `memory-retriever` | `claude-haiku-4-5` | Retrieve relevant memory entries |
+| `memory-groomer` | `claude-haiku-4-5` | Prune and consolidate memory |
+| `file-searcher` | `claude-haiku-4-5` | Search files and return snippets |
+
+## Background-agent profiles
+
+Any loaded persona can also act as a background-agent profile. When a foreground agent calls `background_agent` with `action: "profiles"`, Talon returns persona names plus the optional description parsed from each persona's `system.md` frontmatter.
 
 ## Bindings
 
-Personas connect to channels via bindings. Manage them with `talonctl`:
-
-```bash
-# Bind a persona to a channel
-npx talonctl bind --persona assistant --channel my-telegram
-
-# List all bindings
-npx talonctl list-personas
-
-# Remove a binding
-npx talonctl unbind --persona assistant --channel my-telegram
-```
-
-Or declare them directly in config:
+Personas are routed to channels through `bindings`:
 
 ```yaml
 bindings:
@@ -178,39 +117,26 @@ bindings:
     isDefault: true
 ```
 
-The first binding created for a channel becomes the default. `isDefault: true` explicitly marks a binding as default.
+You can manage them with:
 
-## Multiple personas
+```bash
+npx talonctl bind --persona assistant --channel my-telegram
+npx talonctl unbind --persona assistant --channel my-telegram
+```
 
-Different channels can have different personas with completely different system prompts and capability sets:
+The first binding on a channel becomes the default binding automatically.
+
+## Mounts
+
+If a persona needs sandbox file access, use `mounts`:
 
 ```yaml
 personas:
-  - name: alfred
-    model: claude-sonnet-4-6
-    systemPromptFile: personas/alfred/system.md
-    capabilities:
-      allow:
-        - channel.send:my-telegram
-        - memory.access:*
-        - schedule.manage
-
-  - name: researcher
-    model: claude-opus-4-6
-    systemPromptFile: personas/researcher/system.md
-    skills:
-      - web-search
-    capabilities:
-      allow:
-        - channel.send:my-slack
-        - net.http
-        - subagent.background
-
-bindings:
-  - persona: alfred
-    channel: my-telegram
-    isDefault: true
-  - persona: researcher
-    channel: my-slack
-    isDefault: true
+  - name: coder
+    mounts:
+      - source: /srv/repos/project-a
+        target: /workspace/project-a
+        mode: rw
 ```
+
+`source` and `target` are required. `mode` defaults to `ro`.

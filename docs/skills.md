@@ -1,116 +1,107 @@
 # Skills
 
-Skills are reusable capability bundles that attach to personas. Each skill provides prompt instructions and optionally MCP servers, tool manifests, and database migrations.
+Skills are reusable bundles attached to personas. A skill can contribute:
 
-## Skill Formats
+- prompt instructions
+- MCP server definitions
+- tool manifests
+- migration files
 
-Talon supports two on-disk formats.
+## Supported formats
 
-### SKILL.md (recommended)
+### `SKILL.md`
 
-A single file with YAML frontmatter and a markdown body:
-
-```
+```text
 skills/web-research/
-  SKILL.md              # frontmatter + instructions
-  mcp/                  # optional MCP server definitions
-  tools/                # optional tool manifests
-  migrations/           # optional SQL migrations
+  SKILL.md
+  mcp/
+  tools/
+  migrations/
 ```
 
-Example `SKILL.md`:
+Example:
 
 ```markdown
 ---
 name: web-research
 version: 0.1.0
-description: "Search the web and fetch pages for research tasks"
+description: Search the web and summarize findings
 requiredCapabilities:
-  - net.http:external
+  - net.http:egress
 ---
 
 # Web Research
 
-When the user asks you to research something, use the web search tool...
+Use web tools carefully and include sources.
 ```
 
-### skill.yaml + prompts/ (legacy)
+Supported frontmatter keys are:
 
-A YAML manifest with separate prompt fragment files:
+- `name`
+- `version`
+- `description`
+- `requiredCapabilities`
 
+### `skill.yaml`
+
+```text
+skills/web-research/
+  skill.yaml
+  prompts/main.md
+  mcp/brave.json
 ```
-skills/codex/
-  skill.yaml            # manifest
-  prompts/main.md       # prompt instructions
-  mcp/codex.json        # optional MCP server definitions
+
+Example:
+
+```yaml
+name: web-research
+version: 0.1.0
+description: Search the web and summarize findings
+requiredCapabilities:
+  - net.http:egress
 ```
 
-Both formats produce identical runtime behavior.
+The loader also supports optional arrays named:
 
-## Creating a Skill
+- `promptFragments`
+- `toolManifests`
+- `mcpServers`
+- `migrations`
+
+If those arrays are omitted, the loader auto-discovers files from the matching subdirectories.
+
+## Creating and listing skills
 
 ```bash
-# SKILL.md format (recommended)
 npx talonctl add-skill --name my-skill --persona assistant --format skillmd
+npx talonctl add-skill --name my-skill --persona assistant --format yaml
 
-# Legacy YAML format
-npx talonctl add-skill --name my-skill --persona assistant
-```
-
-## Listing Skills
-
-```bash
 npx talonctl list-skills
 npx talonctl list-skills --persona assistant
 ```
 
-Output shows persona, skill name, and format (yaml/skillmd).
+## Runtime loading
 
-## Lazy Loading
+Foreground agent runs use lazy loading:
 
-Skills use lazy loading by default. Only the skill name and description are included in the agent's system prompt. When the agent needs a skill's full instructions, it calls the `skill_load` tool.
+- the prompt contains only skill names and descriptions
+- the agent calls `skill_load` when it needs the full instructions
 
-This reduces token usage significantly:
+Background agents use eager loading instead and receive merged skill contents up front.
 
-| Scenario | Eager (old) | Lazy (current) |
-|---|---|---|
-| 7 skills, using 1 | ~21k tokens | ~3.7k tokens |
-| 20 skills, using 0 | ~60k tokens | ~2k tokens |
+## Required capabilities
 
-Background agents (spawned via the `background_agent` tool) use eager loading to ensure they have access to all skill instructions without needing to call `skill_load`.
+`requiredCapabilities` must be satisfied by the persona's combined `allow` and `requireApproval` labels.
 
-## MCP Servers in Skills
+Preferred examples:
 
-Skills can declare MCP servers in the `mcp/` subdirectory. These are JSON files:
+- `memory.access:thread`
+- `net.http:egress`
+- `schedule.manage:own`
+- `db.query:own`
 
-```json
-{
-  "name": "my-server",
-  "config": {
-    "transport": "stdio",
-    "command": "npx",
-    "args": ["my-mcp-server"],
-    "env": {
-      "API_KEY": "${MY_API_KEY}"
-    }
-  }
-}
-```
+Scope-less labels like `net.http` are accepted but logged with a warning.
 
-MCP servers from skills are connected eagerly at startup (the tools are available immediately), even though skill prompt instructions load lazily.
+## Reserved MCP server names
 
-## Required Capabilities
-
-Skills can declare `requiredCapabilities` in their manifest. These are capability labels that the persona must have in its `capabilities.allow` or `requireApproval` set for the skill to be usable.
-
-```yaml
-requiredCapabilities:
-  - net.http:external
-  - memory.access:thread
-```
-
-Format: `<domain>.<action>:<scope>` or `<domain>.<action>`.
-
-## Reserved Names
-
-MCP server names starting with `__talond_` are reserved for internal use. Skill-defined MCP servers using this prefix will be rejected at startup.
+Skill-defined MCP servers must not start with `__talond_`. That prefix is reserved for Talon's internal servers.

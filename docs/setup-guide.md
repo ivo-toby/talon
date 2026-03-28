@@ -134,7 +134,7 @@ For the context-management strategies and migration details, see [context-manage
 
 The `command` field needs to resolve on the server. If the binary isn't on PATH, use the full path. Run `which claude` or `which gemini` to find it.
 
-The `options.defaultModel` field is provider-specific. Gemini CLI picks its own model unless you override it here. Claude uses the persona's `model` field from the persona config (that field is ignored by Gemini).
+The `options.defaultModel` field is provider-specific. Gemini CLI uses it when the run does not provide an explicit model. Persona runs still pass the persona's `model` field through to the provider, so keep persona model names compatible with the provider you choose.
 
 Use `talonctl` to manage providers without editing YAML:
 
@@ -187,7 +187,6 @@ channels:
       botToken: ${TELEGRAM_BOT_TOKEN}
       allowedChatIds:
         - "123456789"
-      pollIntervalMs: 1000
 ```
 
 ### Personas
@@ -225,7 +224,7 @@ Task prompts are markdown files in `personas/<name>/prompts/` that the agent exe
 
 ### How schedules work
 
-The agent can create its own schedules using the `schedule.manage` capability. You define the prompt file, and either configure a schedule in `talond.yaml` or let the agent schedule it during conversation.
+The agent can create its own schedules using the `schedule.manage:own` capability. For reusable prompt files, put markdown files in `personas/<name>/prompts/` and reference them by basename through `promptFile`.
 
 To add a schedule via CLI:
 
@@ -301,7 +300,7 @@ npx talonctl add-schedule \
   --prompt "Run the memory-grooming task prompt"
 ```
 
-Running at 3 AM means it doesn't compete with interactive conversations. The agent uses `memory_access` to read, consolidate, and prune entries, then sends a summary of what it cleaned up.
+Running at 3 AM means it doesn't compete with interactive conversations. The agent uses the `memory_access` host tool to read, consolidate, and prune entries, then sends a summary of what it cleaned up.
 
 Every 2-3 days works well. Once a week is the minimum. If you skip this entirely, the agent's memory context gets increasingly noisy and you'll notice degraded recall quality after a few weeks.
 
@@ -313,7 +312,7 @@ Run Talon on its own VM or VPS. It doesn't need much (2 cores, 4GB RAM), but it 
 
 ### Notes in git
 
-Keep work notes, meeting notes, and reference docs in a git-synced folder on the same machine. The agent can read and write to it using the `fs.read` and `fs.write` capabilities, and you get version history for free.
+Keep work notes, meeting notes, and reference docs in a git-synced folder on the same machine. If you want Talon to work with that material, expose it explicitly through sandbox mounts or skill-provided MCP servers rather than assuming file access is available by default. Git still gives you version history for free.
 
 ```
 /home/talon/notes/
@@ -322,7 +321,7 @@ Keep work notes, meeting notes, and reference docs in a git-synced folder on the
   rfcs/          # design documents
 ```
 
-Sync with a private GitHub repo. The agent can commit and push changes when writing notes.
+Sync with a private GitHub repo if you want versioned notes and backups.
 
 ### Systemd service
 

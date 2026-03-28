@@ -49,15 +49,15 @@ bindings:
 
 ## Keep capabilities minimal
 
-The default-deny capability model only works if you treat it as default-deny. Avoid `channel.send:*` unless the persona genuinely needs to send to multiple channels. Grant `db.query` only to personas that explicitly need it, and put it in `requireApproval` by default.
+The default-deny capability model only works if you treat it as default-deny. Avoid `channel.send:*` unless the persona genuinely needs to send to multiple channels. Grant `db.query:own` only to personas that explicitly need it, and put it in `requireApproval` by default.
 
 ```yaml
 capabilities:
   allow:
     - channel.send:my-telegram   # specific, not *
-    - memory.access:*
+    - memory.access:thread
   requireApproval:
-    - db.query                   # user confirms each query
+    - db.query:own               # user confirms each query
 ```
 
 This catches mistakes early and makes the audit log meaningful.
@@ -97,7 +97,7 @@ Check my open tasks and any pending messages. Summarize:
 Keep it to 5 bullets.
 ```
 
-Tell the agent to use `schedule_manage` with `promptFile: prompts/morning-summary.md`. Update the file whenever the format needs to change — the schedule keeps working.
+Tell the agent to use `schedule_manage` with `promptFile: morning-summary`. Update the file `personas/<name>/prompts/morning-summary.md` whenever the format needs to change.
 
 ---
 

@@ -5,109 +5,295 @@ description: Complete reference for all talond.yaml configuration fields
 
 # Config schema reference
 
-Full reference for `talond.yaml`. All top-level sections are optional — defaults apply when omitted. Validated at startup using Zod; the daemon refuses to start with an invalid config.
-
----
+This page tracks the actual schema in `src/core/config/config-schema.ts`.
+Every top-level section is optional. When omitted, Talon applies schema defaults.
 
 ## Root fields
+
+```yaml
+logLevel: info
+dataDir: data
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `logLevel` | `trace \| debug \| info \| warn \| error \| fatal` | `info` | Pino log level |
-| `dataDir` | string | `data` | Root directory for runtime data (DB, IPC sockets, artifacts) |
+| `dataDir` | string | `data` | Root runtime data directory |
 
 ---
 
-## storage
+## `storage`
+
+```yaml
+storage:
+  type: sqlite
+  path: data/talond.sqlite
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `type` | `sqlite` | `sqlite` | Database backend |
-| `path` | string | `data/talond.sqlite` | SQLite file path (relative to cwd) |
+| `path` | string | `data/talond.sqlite` | SQLite file path |
 
 ---
 
-## personas[]
+## `sandbox`
+
+```yaml
+sandbox:
+  runtime: docker
+  image: talon-sandbox:latest
+  maxConcurrent: 3
+  networkDefault: off
+  idleTimeoutMs: 1800000
+  hardTimeoutMs: 3600000
+  resourceLimits:
+    memoryMb: 1024
+    cpus: 1
+    pidsLimit: 256
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | required | Unique persona identifier |
-| `model` | string | `claude-sonnet-4-6` | Model ID passed to the provider |
-| `provider` | string | — | Override the default agent runner provider |
-| `systemPromptFile` | string | — | Path to system prompt Markdown file |
-| `skills` | string[] | `[]` | Skill names to attach |
-| `subagents` | string[] | `[]` | Sub-agent names the persona can invoke |
-| `capabilities.allow` | string[] | `[]` | Granted capability labels |
-| `capabilities.requireApproval` | string[] | `[]` | Capability labels requiring user confirmation |
-| `mounts` | mount[] | `[]` | Filesystem mounts for sandboxed execution |
-| `maxConcurrent` | integer ≥ 1 | — | Max parallel agent runs for this persona |
+| `runtime` | `docker \| apple-container` | `docker` | Sandbox runtime |
+| `image` | string | `talon-sandbox:latest` | Sandbox image |
+| `maxConcurrent` | integer ≥ 1 | `3` | Max concurrent sandboxed runs |
+| `networkDefault` | `off \| on` | `off` | Default network access |
+| `idleTimeoutMs` | integer ≥ 0 | `1800000` | Idle timeout in ms |
+| `hardTimeoutMs` | integer ≥ 0 | `3600000` | Hard timeout in ms |
+| `resourceLimits.memoryMb` | integer | `1024` | Memory limit per sandbox |
+| `resourceLimits.cpus` | number | `1` | CPU limit per sandbox |
+| `resourceLimits.pidsLimit` | integer | `256` | PID limit per sandbox |
 
-### mounts[]
+---
+
+## `personas[]`
+
+```yaml
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    provider: claude-code
+    systemPromptFile: personas/assistant/system.md
+    skills:
+      - web-search
+    subagents:
+      - session-summarizer
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        - schedule.manage:own
+      requireApproval:
+        - db.query:own
+    mounts:
+      - source: /srv/notes
+        target: /workspace/notes
+        mode: ro
+    maxConcurrent: 2
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | Persona name |
+| `model` | string | `claude-sonnet-4-6` | Model identifier |
+| `provider` | string | — | Optional provider override |
+| `systemPromptFile` | string | — | Path to `system.md` |
+| `skills` | string[] | `[]` | Attached skill names |
+| `subagents` | string[] | `[]` | Allowed sub-agent names |
+| `capabilities.allow` | string[] | `[]` | Allowed capability labels |
+| `capabilities.requireApproval` | string[] | `[]` | Approval-gated capability labels |
+| `mounts` | array | `[]` | Sandbox mounts |
+| `maxConcurrent` | integer ≥ 1 | — | Optional per-persona concurrency cap |
+
+### `personas[].mounts[]`
+
+```yaml
+mounts:
+  - source: /srv/notes
+    target: /workspace/notes
+    mode: ro
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `source` | string | required | Host path |
-| `target` | string | required | Mount target path |
+| `target` | string | required | Mount target in the sandbox |
 | `mode` | `ro \| rw` | `ro` | Mount mode |
 
 ---
 
-## channels[]
+## `channels[]`
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    enabled: true
+    showToolCalls: true
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      pollingTimeoutSec: 30
+      allowedChatIds:
+        - "123456789"
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | required | Unique channel identifier |
-| `type` | enum | required | `telegram`, `slack`, `discord`, `whatsappBusiness`, `whatsappBaileys`, `email`, `terminal` |
-| `enabled` | boolean | `true` | Enable/disable at startup |
-| `showToolCalls` | boolean | `false` | Send tool-call status messages to the channel |
+| `type` | `telegram \| whatsappBusiness \| whatsappBaileys \| slack \| email \| discord \| terminal` | required | Channel connector type |
+| `name` | string | required | Channel name |
+| `config` | object | `{}` | Connector-specific config |
 | `tokenRef` | string | — | Optional token reference |
-| `config` | object | `{}` | Connector-specific config (see Channels guide) |
+| `enabled` | boolean | `true` | Enable channel at startup |
+| `showToolCalls` | boolean | — | Optional per-channel tool-call messages |
+
+Notes:
+
+- The config schema accepts `whatsappBusiness`, not the legacy CLI alias `whatsapp`.
+- `showToolCalls` is optional in config; when omitted the runtime behaves as `false`.
 
 ---
 
-## bindings[]
+## `bindings[]`
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `persona` | string | required | Persona name |
 | `channel` | string | required | Channel name |
-| `isDefault` | boolean | `false` | Mark as default binding for this channel |
+| `isDefault` | boolean | `false` | Marks the default binding for the channel |
 
 ---
 
-## queue
+## `ipc`
+
+```yaml
+ipc:
+  pollIntervalMs: 500
+  daemonSocketDir: data/ipc/daemon
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `maxAttempts` | integer ≥ 1 | `3` | Max delivery attempts before dead-letter |
-| `backoffBaseMs` | integer | `1000` | Initial retry delay in ms |
-| `backoffMaxMs` | integer | `60000` | Maximum retry delay in ms |
-| `concurrencyLimit` | integer ≥ 1 | `5` | Max simultaneous message processing |
+| `pollIntervalMs` | integer ≥ 100 | `500` | IPC polling interval |
+| `daemonSocketDir` | string | `data/ipc/daemon` | IPC socket directory |
 
 ---
 
-## agentRunner
+## `queue`
+
+```yaml
+queue:
+  maxAttempts: 3
+  backoffBaseMs: 1000
+  backoffMaxMs: 60000
+  concurrencyLimit: 5
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `defaultProvider` | string | `claude-code` | Default provider name |
-| `providers` | record | see below | Provider configurations |
+| `maxAttempts` | integer ≥ 1 | `3` | Retry attempts before dead-letter |
+| `backoffBaseMs` | integer | `1000` | Initial retry delay |
+| `backoffMaxMs` | integer | `60000` | Maximum retry delay |
+| `concurrencyLimit` | integer ≥ 1 | `5` | Max concurrent queue processing |
 
-### agentRunner.providers.\<name\>
+---
+
+## `scheduler`
+
+```yaml
+scheduler:
+  tickIntervalMs: 5000
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | boolean | `false` | Enable this provider |
-| `command` | string | required | CLI command (e.g. `claude`) |
-| `contextWindowTokens` | integer | `200000` | Context window size |
+| `tickIntervalMs` | integer ≥ 1000 | `5000` | Scheduler tick interval |
+
+---
+
+## `auth`
+
+```yaml
+auth:
+  mode: subscription
+  apiKey: ${TALON_API_KEY}
+  providers:
+    anthropic:
+      apiKey: ${ANTHROPIC_API_KEY}
+    ollama:
+      baseURL: http://localhost:11434/v1
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `subscription \| api_key` | `subscription` | Auth mode |
+| `apiKey` | string | — | Global API key for `api_key` mode |
+| `providers.<name>.apiKey` | string | — | Provider-specific API key |
+| `providers.<name>.baseURL` | string | — | Provider-specific base URL |
+
+---
+
+## `agentRunner`
+
+```yaml
+agentRunner:
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+      contextManagement:
+        enabled: true
+        triggerMetric: cache_read_input_tokens
+        thresholdRatio: 0.5
+        recentMessageCount: 10
+        summarizer: session-summarizer
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `defaultProvider` | string | `claude-code` | Default foreground provider |
+| `providers` | record | built-in `claude-code` entry | Provider configs |
+
+### `agentRunner.providers.<name>`
+
+```yaml
+providers:
+  gemini-cli:
+    enabled: false
+    command: /usr/local/bin/gemini
+    contextWindowTokens: 1000000
+    options:
+      defaultModel: gemini-2.5-pro
+    contextManagement:
+      enabled: true
+      triggerMetric: input_tokens
+      thresholdRatio: 0.8
+      recentMessageCount: 10
+      summarizer: session-summarizer
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enable the provider |
+| `command` | string | required | CLI command |
+| `contextWindowTokens` | integer ≥ 1000 | `200000` | Context window size |
 | `options` | object | — | Provider-specific options |
-| `contextManagement.enabled` | boolean | `false` | Enable session rotation |
-| `contextManagement.triggerMetric` | string | — | Required when enabled. `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, or `cache_total_input_tokens` |
-| `contextManagement.thresholdRatio` | float 0–1 | — | Required when enabled. Fraction of `contextWindowTokens` that triggers rotation |
-| `contextManagement.recentMessageCount` | integer | `10` | Verbatim messages to include after rotation |
-| `contextManagement.summarizer` | string | — | Required when enabled. Sub-agent name for history compression |
+| `contextManagement.enabled` | boolean | `false` | Enable rotation |
+| `contextManagement.triggerMetric` | enum | — | Required when enabled |
+| `contextManagement.thresholdRatio` | number 0-1 | — | Required when enabled |
+| `contextManagement.recentMessageCount` | integer ≥ 0 | `10` | Messages retained after rotation |
+| `contextManagement.summarizer` | string | — | Required when enabled |
 
-Default provider config:
+Built-in schema default:
 
 ```yaml
 agentRunner:
@@ -127,76 +313,59 @@ agentRunner:
 
 ---
 
-## backgroundAgent
+## `backgroundAgent`
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 3
+  defaultTimeoutMinutes: 30
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `enabled` | boolean | `true` | Enable background workers globally |
-| `maxConcurrent` | integer 1–10 | `3` | Max simultaneous workers |
-| `defaultTimeoutMinutes` | integer 15–480 | `30` | Default wall-clock timeout |
-| `defaultProvider` | string | `claude-code` | Provider for workers |
-| `providers` | record | see below | Provider configs (same structure as agentRunner, no contextManagement) |
-| `claudePath` | string | — | Explicit path to Claude Code binary |
+| `enabled` | boolean | `true` | Enable background agents globally |
+| `maxConcurrent` | integer 1-10 | `3` | Max concurrent background tasks |
+| `defaultTimeoutMinutes` | integer 15-480 | `30` | Default timeout |
+| `defaultProvider` | string | `claude-code` | Default background provider |
+| `providers` | record | built-in `claude-code` entry | Provider configs |
+| `claudePath` | string | — | Legacy shortcut for creating a `claude-code` provider when no explicit providers are set |
+
+`backgroundAgent.providers.<name>` uses the same provider shape as `ProviderConfigSchema`: `enabled`, `command`, `contextWindowTokens`, and optional `options`.
 
 ---
 
-## auth
+## `langfuse`
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `subscription \| api_key` | `subscription` | Authentication mode |
-| `apiKey` | string | — | API key for `api_key` mode |
-| `providers.<name>.apiKey` | string | — | Per-provider API key |
-| `providers.<name>.baseURL` | string | — | Per-provider base URL (for Ollama, proxies) |
-
----
-
-## scheduler
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `tickIntervalMs` | integer ≥ 1000 | `5000` | Scheduler tick interval in ms |
-
----
-
-## ipc
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `pollIntervalMs` | integer ≥ 100 | `500` | IPC poll interval in ms |
-| `daemonSocketDir` | string | `data/ipc/daemon` | Unix socket directory |
-
----
-
-## sandbox
-
-Controls agent execution sandboxing (Docker or Apple Container).
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `runtime` | `docker \| apple-container` | `docker` | Container runtime |
-| `image` | string | `talon-sandbox:latest` | Sandbox container image |
-| `maxConcurrent` | integer ≥ 1 | `3` | Max concurrent sandboxed agent processes |
-| `networkDefault` | `off \| on` | `off` | Default network access for sandboxed agents |
-| `idleTimeoutMs` | integer | `1800000` | Idle container timeout (30 min) |
-| `hardTimeoutMs` | integer | `3600000` | Hard container timeout (60 min) |
-| `resourceLimits.memoryMb` | integer | `1024` | Memory limit per container in MB |
-| `resourceLimits.cpus` | float | `1` | CPU limit per container |
-| `resourceLimits.pidsLimit` | integer | `256` | PID limit per container |
-
----
-
-## langfuse
+```yaml
+langfuse:
+  enabled: true
+  publicKey: ${LANGFUSE_PUBLIC_KEY}
+  secretKey: ${LANGFUSE_SECRET_KEY}
+  baseUrl: https://cloud.langfuse.com
+  environment: production
+  release: 1.2.3
+  owner: talon
+  exportMode: batched
+  flushAt: 20
+  flushIntervalSeconds: 5
+```
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | boolean | `false` | Enable Langfuse tracing |
-| `publicKey` | string | — | Required when enabled |
-| `secretKey` | string | — | Required when enabled |
-| `baseUrl` | URL string | `https://cloud.langfuse.com` | Langfuse instance URL |
+| `publicKey` | string | `""` | Required when enabled |
+| `secretKey` | string | `""` | Required when enabled |
+| `baseUrl` | URL string | `https://cloud.langfuse.com` | Langfuse base URL |
 | `environment` | string | `production` | Environment tag |
-| `release` | string | — | Release/version tag |
-| `owner` | string | — | Owner tag for traces |
+| `release` | string | — | Optional release tag |
+| `owner` | string | — | Optional owner tag |
 | `exportMode` | `batched \| immediate` | `batched` | Export strategy |
-| `flushAt` | integer ≥ 1 | `20` | Batch size before flush |
-| `flushIntervalSeconds` | integer ≥ 1 | `5` | Max seconds between flushes |
+| `flushAt` | integer ≥ 1 | `20` | Batch size |
+| `flushIntervalSeconds` | integer ≥ 1 | `5` | Flush interval |

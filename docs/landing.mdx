@@ -47,7 +47,7 @@ Messages survive crashes. SQLite-backed FIFO queue per conversation thread, with
 Package system prompt fragments, MCP server configs, and tool manifests into named skills. Only metadata is loaded into context by default — full content loads on demand, saving thousands of tokens per turn.
 
 **Background agents**
-Spawn long-running Claude Code workers for deep tasks without blocking the conversation. The daemon tracks workers to completion and delivers results back through the normal channel.
+Spawn long-running background provider tasks for deep work without blocking the conversation. The daemon tracks them to completion and delivers results back through the normal channel.
 
 **Built-in sub-agents**
 Offload mechanical tasks — file search, memory retrieval, grooming, session summarization — to cheap Haiku-class models. Keeps foreground inference costs low.
@@ -71,7 +71,7 @@ Change config, personas, and skills without restarting the daemon. `talonctl rel
 Clone the repo, run `npm install && npm run build`. Node 22+ and Claude Code (or Gemini CLI) are the only external requirements. SQLite ships with the package.
 
 **2. Configure**
-Run `npx talonctl setup` for an interactive walkthrough. Add channels with `talonctl add-channel`, create personas with `talonctl add-persona`, bind them together, then validate with `talonctl doctor`.
+Run `npx talonctl setup` for first-run environment checks, starter config generation, migrations, and validation. Add channels with `talonctl add-channel`, create personas with `talonctl add-persona`, bind them together, then validate with `talonctl doctor`.
 
 **3. Connect**
 Start the daemon: `node dist/index.js --config talond.yaml`. Your Telegram bot, Slack app, or WhatsApp number is now backed by a persistent AI agent running on your hardware.
@@ -85,12 +85,12 @@ Start the daemon: `node dist/index.js --config talond.yaml`. Your Telegram bot, 
 | Channel | Status | Notes |
 |---|---|---|
 | Telegram | Stable | Long polling, MarkdownV2, allowedChatIds filter |
-| Slack | Stable | Socket Mode, mrkdwn formatting |
+| Slack | Stable | Socket Mode when `appToken` is set; outbound send always works via Web API |
 | WhatsApp (Baileys) | Stable | WhatsApp Web bridge, self-chat or dedicated number |
 | WhatsApp Business | Stable | Meta Cloud API, requires webhook server |
 | Terminal | Stable | WebSocket + `talonctl chat`, rendered markdown |
-| Discord | Partial | Send implemented, Gateway inbound coming |
-| Email | Beta | IMAP polling + SMTP, not yet tested end-to-end |
+| Discord | Partial | Outbound send works; inbound requires an external Gateway event feed |
+| Email | Partial | Config shape exists, but the stock daemon does not inject real SMTP/IMAP transports |
 
 ---
 

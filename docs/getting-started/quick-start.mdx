@@ -36,7 +36,9 @@ personas:
     systemPromptFile: personas/assistant/system.md
     capabilities:
       allow:
-        - channel.send:my-telegram
+        - memory.access:thread
+        - net.http:egress
+        - schedule.manage:own
 
 channels:
   - name: my-telegram
@@ -45,7 +47,7 @@ channels:
     config:
       botToken: ${TELEGRAM_BOT_TOKEN}
       allowedChatIds:
-        - 123456789  # replace with your Telegram user ID
+        - "123456789"  # replace with your Telegram user ID
 
 bindings:
   - persona: assistant
@@ -59,15 +61,22 @@ logLevel: info
 dataDir: data
 ```
 
-Replace `123456789` with your actual Telegram user ID.
+Replace `"123456789"` with your actual Telegram user ID.
 
-## 3. Scaffold the persona
+## 3. Create the system prompt
+
+Create the file referenced by `systemPromptFile`:
 
 ```bash
-npx talonctl add-persona --name assistant
+mkdir -p personas/assistant
+cat > personas/assistant/system.md <<'EOF'
+# Assistant
+
+You are a concise, helpful assistant.
+EOF
 ```
 
-This creates `personas/assistant/system.md` from the built-in template. Edit it to set the agent's tone, constraints, and any tool instructions.
+If you prefer to scaffold personas with `talonctl add-persona`, do that before writing the persona entry into `talond.yaml`.
 
 ## 4. Run migrations
 
@@ -81,7 +90,7 @@ npx talonctl migrate --config talond.yaml
 npx talonctl doctor --config talond.yaml
 ```
 
-All 7 checks should pass. If any fail, the output tells you what to fix.
+All checks should pass. If any fail, the output tells you what to fix.
 
 ## 6. Start the daemon
 
@@ -121,7 +130,7 @@ channels:
 Add `TERMINAL_TOKEN=your-secret` to `.env`, add a binding, restart the daemon, then connect:
 
 ```bash
-talonctl chat --host localhost --port 7700 --token your-secret
+npx talonctl chat --host 127.0.0.1 --port 7700 --token your-secret
 ```
 
 You get a rendered Markdown terminal client with a typing spinner while the agent works.

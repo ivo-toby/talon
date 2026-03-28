@@ -5,11 +5,12 @@ description: Install Talon on your server
 
 # Installation
 
-Talon runs as a native Node.js daemon. No Docker required to get started (though Docker is used for agent sandboxing when enabled).
+Talon runs as a native Node.js daemon. The current first-run checks also expect Docker to be installed and the daemon to be running.
 
 ## Prerequisites
 
 - **Node.js 22+** — Talon uses `process.loadEnvFile`, which requires Node 22
+- **Docker** — `talonctl setup` and `talonctl doctor` check Docker availability
 - **Claude Code** — the default agent provider. Install and authenticate it: `npm install -g @anthropic-ai/claude-code`
 - **SQLite** — ships with `better-sqlite3`, no separate install needed
 - **Git** — to clone the repo
@@ -41,17 +42,21 @@ You should see the talonctl version string. If you get a module error, confirm N
 
 ## Initial setup
 
-Run the interactive setup wizard. It checks your environment, creates the `data/` directory structure, and generates a starter `talond.yaml`:
+Run the first-run setup command. It checks your environment, creates the `data/` directory structure, generates a starter `talond.yaml`, runs migrations, and validates the result:
 
 ```bash
 npx talonctl setup
 ```
 
-The wizard walks through:
+The setup command runs these steps:
 
-1. Environment check (Node version, Claude Code availability)
-2. Data directory creation
-3. Config file generation with sensible defaults
+1. OS detection
+2. Node version check
+3. Docker availability check
+4. Data directory creation
+5. Config generation
+6. Database migrations
+7. Config validation
 
 After setup, run `talonctl doctor` to validate everything:
 
@@ -59,7 +64,7 @@ After setup, run `talonctl doctor` to validate everything:
 npx talonctl doctor --config talond.yaml
 ```
 
-Seven checks run — OS compatibility, Node version, Docker (if using sandbox), directory structure, config syntax, pending migrations, and deep config validation. Fix any failures before starting the daemon.
+`talonctl doctor` then checks Node.js, Docker, config validity, database access, and data directories. Fix any failures before starting the daemon.
 
 ## Apply database migrations
 

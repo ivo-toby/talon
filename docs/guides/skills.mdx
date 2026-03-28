@@ -1,188 +1,173 @@
 ---
 title: Skills
-description: Package prompt fragments, MCP servers, and tool manifests into reusable bundles
+description: Package prompt instructions, MCP servers, tool manifests, and migrations into reusable bundles
 ---
 
 # Skills
 
-A skill is a named bundle of prompt instructions, MCP server definitions, and tool manifests. Attach skills to personas to extend their capabilities without bloating the system prompt.
+Skills are filesystem bundles attached to personas. Talon supports two on-disk formats:
 
-## How skills work
+- `SKILL.md` with YAML frontmatter
+- legacy `skill.yaml` plus `prompts/`
 
-Talon injects only the skill's name and one-line description into the system prompt. When the agent needs a skill's full instructions, it calls the `skill_load` tool. The full content loads on demand.
+## Runtime behavior
 
-This lazy loading keeps system prompt size low regardless of how many skills are attached. A persona with 7 skills attached uses about 3.7k tokens for skill metadata — compared to ~21k if all content were eager-loaded.
+For foreground agent runs, skills are lazy-loaded:
 
-Background agents are an exception: they load all skills eagerly at startup to ensure full access without needing to call `skill_load`.
+- the persona prompt gets only a skill index with name and description
+- when the agent needs the instructions for one skill, it calls `skill_load`
+- MCP servers from skills are still connected eagerly
 
-### Token comparison
+Background agents are different: they merge full skill prompt contents eagerly when the background task starts.
 
-| Scenario | Eager loading | Lazy loading |
-|---|---|---|
-| 7 skills, using 1 | ~21k tokens | ~3.7k tokens |
-| 20 skills, using 0 | ~60k tokens | ~2k tokens |
+## `SKILL.md` format
 
----
-
-## Skill formats
-
-### SKILL.md (recommended)
-
-Single file with YAML frontmatter:
-
-```
+```text
 skills/web-search/
-  SKILL.md             # YAML frontmatter + markdown instructions
-  mcp/brave.json       # MCP server definition (optional)
+  SKILL.md
+  mcp/brave.json
+  tools/search.yaml
+  migrations/001.sql
 ```
 
-`SKILL.md` structure:
+Example:
 
 ```markdown
 ---
 name: web-search
-description: Search the web using Brave Search
+version: 0.1.0
+description: Search the web and summarize the results
 requiredCapabilities:
-  - net.http
-mcpServers:
-  - brave
+  - net.http:egress
 ---
 
 # Web Search
 
-Use the `brave_web_search` tool to search the web. Prefer specific queries.
-Always include source URLs in your response.
+Prefer precise queries.
+Always include source URLs in the final answer.
 ```
 
-### skill.yaml + prompts/ (legacy)
+Important: the supported `SKILL.md` frontmatter keys are:
 
-```
+- `name`
+- `version`
+- `description`
+- `requiredCapabilities`
+
+MCP servers, tool manifests, and migrations are loaded from sibling directories, not from frontmatter fields.
+
+## Legacy `skill.yaml` format
+
+```text
 skills/web-search/
-  skill.yaml           # metadata and required capabilities
-  prompts/
-    01-instructions.md
-    02-examples.md
+  skill.yaml
+  prompts/01-instructions.md
+  tools/search.yaml
   mcp/brave.json
+  migrations/001.sql
 ```
 
-`skill.yaml`:
+Example:
 
 ```yaml
 name: web-search
-description: Search the web using Brave Search
+version: 0.1.0
+description: Search the web and summarize the results
 requiredCapabilities:
-  - net.http
+  - net.http:egress
 ```
 
-Both formats support the same features. Use SKILL.md for new skills.
+The loader also understands these manifest fields, all defaulting to empty arrays:
 
----
+- `promptFragments`
+- `toolManifests`
+- `mcpServers`
+- `migrations`
 
-## Scaffolding a skill
+If those lists are omitted, the loader auto-discovers:
+
+- `prompts/*.md`
+- `tools/*.yaml`
+- `mcp/*.json`
+- `migrations/*.sql`
+
+## Creating a skill
 
 ```bash
-# SKILL.md format (recommended)
 npx talonctl add-skill --name web-search --persona assistant --format skillmd
-
-# Legacy YAML format
-npx talonctl add-skill --name web-search --persona assistant
+npx talonctl add-skill --name web-search --persona assistant --format yaml
 ```
 
-This creates the skill directory structure and attaches the skill to the persona in `talond.yaml`.
+This command:
 
----
+- scaffolds the skill directory
+- adds the skill name to the target persona's `skills` list in `talond.yaml`
 
-## Attaching MCP servers to a skill
+## MCP server definitions
 
-Skills can bundle MCP server definitions. Place JSON files in the `mcp/` subdirectory:
+`talonctl add-mcp` writes a JSON file into `skills/<skill>/mcp/`.
 
+```bash
+npx talonctl add-mcp --skill web-search --name brave-search \
+  --transport stdio \
+  --command npx \
+  --args @modelcontextprotocol/server-brave-search
 ```
-skills/web-search/mcp/brave.json
-```
+
+The JSON shape on disk is:
 
 ```json
 {
-  "command": "npx",
-  "args": ["@modelcontextprotocol/server-brave-search"],
-  "env": {
-    "BRAVE_API_KEY": "${BRAVE_API_KEY}"
+  "name": "brave-search",
+  "config": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["@modelcontextprotocol/server-brave-search"]
   }
 }
 ```
 
-MCP servers from skills connect at daemon startup — they don't wait for `skill_load`. The environment variable substitution uses the same `${ENV_VAR}` syntax as the main config.
+Supported MCP config fields in JSON are:
 
----
+- `transport`
+- `command`
+- `args`
+- `url`
+- `headers`
+- `env`
+- `allowedTools`
+- `credentialScope`
+- `rateLimit`
 
-## Capability requirements
+## Tool manifests
 
-Skills can declare required capabilities. At startup, Talon intersects the skill's requirements with the persona's capability list:
+Skills can ship additional tool manifests in `tools/*.yaml`.
+Each tool manifest supports:
 
-```
-granted = persona.capabilities.allow ∩ skill.requiredCapabilities
-```
+- `name`
+- `description`
+- `capabilities`
+- optional `parameterSchema`
+- `executionLocation` of `host`, `sandbox`, or `mcp`
 
-If a skill requires a capability the persona doesn't have, a warning is logged at startup and the skill is skipped. The daemon still starts — the skill is just unavailable.
+## Required capabilities
 
----
+A skill is usable only if all of its `requiredCapabilities` labels exist in the persona's combined allow-list and approval-list.
 
-## Adding MCP servers directly
+Examples of built-in capability labels:
 
-You can also add MCP servers to a persona without a skill:
+- `memory.access:thread`
+- `net.http:egress`
+- `schedule.manage:own`
+- `db.query:own`
+- `subagent.invoke`
+- `subagent.background`
 
-```bash
-npx talonctl add-mcp --name brave-search \
-  --persona assistant \
-  --command npx \
-  --args @modelcontextprotocol/server-brave-search \
-  --transport stdio
-```
-
----
-
-## Writing a custom skill
-
-1. Create the directory:
-
-```bash
-mkdir -p skills/my-skill
-```
-
-2. Create `SKILL.md`:
-
-```markdown
----
-name: my-skill
-description: Brief description shown in the system prompt
-requiredCapabilities:
-  - net.http
----
-
-# My Skill
-
-Instructions for the agent. Describe when and how to use the skill's tools.
-Include examples if helpful.
-```
-
-3. Add any MCP servers to `skills/my-skill/mcp/`.
-
-4. Attach to a persona in `talond.yaml`:
-
-```yaml
-personas:
-  - name: assistant
-    skills:
-      - my-skill
-```
-
-5. Reload: `npx talonctl reload`
-
----
+Scope-less labels like `net.http` are accepted by the skill loader, but it logs a warning because the preferred format is `<domain>.<action>:<scope>`.
 
 ## Listing skills
 
 ```bash
 npx talonctl list-skills
+npx talonctl list-skills --persona assistant
 ```
-
-Shows all configured skills across all personas with their attachment status.

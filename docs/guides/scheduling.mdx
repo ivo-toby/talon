@@ -1,118 +1,95 @@
 ---
 title: Scheduling
-description: Create cron, interval, and one-shot scheduled tasks
+description: Create and manage cron schedules from Talon or from the CLI
 ---
 
 # Scheduling
 
-Talon's scheduler lets agents create, manage, and cancel scheduled tasks. A scheduled task sends a prompt to a persona at a defined time or on a recurring schedule. The task runs through the normal message queue — it gets queued, processed by the agent, and the response goes through the bound channel.
+Talon's public scheduling surface is cron-based.
+The scheduler polls for due schedules, enqueues them as normal queue items, and the agent handles them like any other message.
 
-## Schedule types
+## Enable schedule management
 
-| Type | Description | Example |
-|---|---|---|
-| `cron` | Standard cron expression | `0 9 * * 1-5` — weekdays at 9am |
-| `interval` | Repeating interval in milliseconds | `3600000` — every hour |
-| `once` | Single execution at a specific time | ISO 8601 datetime |
-
-## Enabling schedule management
-
-Grant the `schedule.manage` capability to the persona:
+Grant the schedule capability to the persona:
 
 ```yaml
 personas:
   - name: assistant
     capabilities:
       allow:
-        - schedule.manage
-        - channel.send:my-telegram
+        - schedule.manage:own
 ```
 
-## The schedule_manage tool
+## The host tool name
 
-The agent manages schedules via the `schedule_manage` host tool. Parameters:
+The MCP tool exposed to the agent is `schedule_manage`.
+Inside the daemon its internal name is `schedule.manage`.
 
-| Action | Required params | Description |
-|---|---|---|
-| `create` | `type`, `expression`/`runAt`, `prompt`, `persona`, `channel` | Create a schedule |
-| `list` | — | List all active schedules |
-| `update` | `scheduleId`, fields to change | Modify an existing schedule |
-| `delete` | `scheduleId` | Cancel a schedule |
-| `promptFile` | `file` path | Load a reusable prompt from a file |
+Supported actions:
 
-Example prompt to create a schedule (agent-side):
+- `create`
+- `update`
+- `cancel`
+- `delete`
+- `list`
 
-> "Set up a daily summary every morning at 8am. It should ask you to check my tasks and send a summary to Telegram."
+Supported fields:
 
-The agent calls `schedule_manage` with `action: create`, `type: cron`, `expression: 0 8 * * *`, and the prompt text.
+- `action`
+- `scheduleId`
+- `cronExpr`
+- `label`
+- `prompt`
+- `promptFile`
 
-## Managing schedules via CLI
+Important constraints:
+
+- only cron expressions are supported by this tool
+- `prompt` and `promptFile` are mutually exclusive
+- `promptFile` is a prompt alias from the persona's `prompts/` directory, not an arbitrary path
+
+## Using `promptFile`
+
+If a persona has:
+
+```text
+personas/assistant/prompts/morning-summary.md
+```
+
+then the schedule should use:
+
+```yaml
+promptFile: morning-summary
+```
+
+At execution time the scheduler resolves that alias through the persona loader.
+
+## CLI scheduling commands
+
+The CLI command `add-schedule` also creates cron schedules only:
 
 ```bash
-# Add a schedule manually
 npx talonctl add-schedule \
   --persona assistant \
   --channel my-telegram \
-  --type cron \
-  --expression "0 9 * * 1-5" \
-  --prompt "Good morning. Please summarize what I should focus on today."
-
-# List all schedules
-npx talonctl list-schedules
-
-# Remove a schedule
-npx talonctl remove-schedule --id <schedule-id>
+  --cron "0 9 * * 1-5" \
+  --label "Morning summary" \
+  --prompt "Summarize what I should focus on today."
 ```
 
-## Scheduler configuration
+List and remove them with:
 
-The scheduler tick interval controls how often due schedules are checked. Default is 5 seconds.
+```bash
+npx talonctl list-schedules
+npx talonctl list-schedules --persona assistant
+npx talonctl remove-schedule <schedule-id>
+```
+
+## Scheduler config
 
 ```yaml
 scheduler:
   tickIntervalMs: 5000
 ```
 
-Reduce this for near-real-time scheduling. For low-traffic deployments, 30 seconds or more is fine.
-
-## Using prompt files
-
-For recurring prompts, store the prompt text in a file rather than inline in the schedule. The `promptFile` parameter in `schedule_manage` accepts a path relative to the data directory:
-
-```
-data/prompts/daily-summary.md
-```
-
-```markdown
-Check my open tasks and recent messages. Summarize:
-1. What's pending from yesterday
-2. What's due today
-3. Any blockers or things that need my attention
-
-Keep it short — 5 bullet points max.
-```
-
-The agent calls `schedule_manage` with `promptFile: prompts/daily-summary.md`. Talon reads the file at execution time, so you can update the prompt without touching the schedule.
-
-## One-shot schedules
-
-A `once` schedule fires once at the specified time and is then automatically removed:
-
-```bash
-npx talonctl add-schedule \
-  --persona assistant \
-  --channel my-telegram \
-  --type once \
-  --run-at "2026-04-01T09:00:00Z" \
-  --prompt "Remind me to review the Q2 plan today."
-```
-
-## How scheduled tasks run
-
-1. The scheduler tick checks for schedules where `nextRunAt <= now`
-2. Due schedules are enqueued as normal messages in the persona's queue
-3. The agent processes them like any inbound message
-4. For `cron` and `interval` schedules, `nextRunAt` is advanced after execution
-5. For `once` schedules, the record is deleted after execution
-
-Scheduled tasks compete with user messages in the same FIFO queue. They don't preempt active conversations.
+The default tick interval is 5 seconds.

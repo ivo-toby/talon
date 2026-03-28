@@ -1,35 +1,27 @@
 ---
 title: Background agents
-description: Spawn long-running Claude Code workers for deep tasks
+description: Run long-lived background agent tasks without blocking the foreground conversation
 ---
 
 # Background agents
 
-Background agents are long-running Claude Code CLI workers that run out-of-band — they don't block the foreground conversation. Use them for tasks that need the full Claude Code runtime but shouldn't tie up the agent mid-conversation.
+Background agents are long-running tasks started through the `background_agent` host tool.
+They are not limited to Claude Code: the background-agent manager uses whichever enabled background provider you select or inherit.
 
-## When to use background agents
+## What happens on spawn
 
-Good use cases:
-- Repo-wide refactoring or code analysis
-- Large document processing or research
-- Tasks that take 5+ minutes and don't need turn-by-turn interaction
+When a foreground agent calls `background_agent` with `action: "spawn"`:
 
-Not appropriate for:
-- Quick lookups or calculations (use sub-agents instead)
-- Tasks that need access to the conversation history in real time
-- Anything that needs to send multiple incremental messages back
+1. Talon checks the background-agent concurrency limit.
+2. It resolves the provider. Priority is: explicit `provider` argument, otherwise the configured `backgroundAgent.defaultProvider`.
+3. It builds a task-specific system prompt using:
+   - the persona prompt
+   - optional prior thread context
+   - the task prompt
+4. It starts the provider-specific background process and records the task in SQLite.
+5. It returns a `taskId` immediately.
 
-## How it works
-
-The foreground agent calls `background_agent` with a task description. Talon spawns a Claude Code CLI process, tracks it in SQLite, and returns a task ID immediately. The foreground conversation continues normally.
-
-When the background worker finishes (or times out, or fails), Talon delivers a completion message to the originating thread via the normal queue and channel-send path.
-
-Background workers:
-- Inherit the persona's system prompt and MCP servers from assigned skills
-- Do **not** have access to Talon's host-tools MCP server (no channel send, no memory write, no recursive spawning)
-- Are subject to `maxConcurrent` and `defaultTimeoutMinutes` limits
-- Have their state persisted — completion/failure/timeout/cancellation are all recorded
+When the process finishes, Talon enqueues a completion notification back into the originating thread.
 
 ## Configuration
 
@@ -44,19 +36,26 @@ backgroundAgent:
       enabled: true
       command: claude
       contextWindowTokens: 200000
+    gemini-cli:
+      enabled: true
+      command: /usr/local/bin/gemini
+      contextWindowTokens: 1000000
+      options:
+        defaultModel: gemini-2.5-pro
 ```
 
 | Field | Default | Description |
 |---|---|---|
-| `enabled` | `true` | Globally enable background workers |
-| `maxConcurrent` | `3` | Maximum simultaneous workers (1–10) |
-| `defaultTimeoutMinutes` | `30` | Default wall-clock timeout (15–480 min) |
-| `defaultProvider` | `claude-code` | Provider used for workers |
-| `claudePath` | — | Explicit path to the Claude Code binary if not on PATH |
+| `enabled` | `true` | Enable background tasks globally |
+| `maxConcurrent` | `3` | Max concurrent running tasks |
+| `defaultTimeoutMinutes` | `30` | Default timeout for a task |
+| `defaultProvider` | `claude-code` | Default background provider |
+| `providers` | built-in `claude-code` entry | Provider configs for background tasks |
+| `claudePath` | — | Legacy shortcut that is normalized into a `claude-code` provider when no explicit providers are configured |
 
-## Enabling for a persona
+## Persona access
 
-Grant `subagent.background` in the persona's capabilities:
+A persona needs the `subagent.background` capability to use the tool:
 
 ```yaml
 personas:
@@ -64,49 +63,45 @@ personas:
     capabilities:
       allow:
         - subagent.background
-        - channel.send:my-telegram
 ```
 
 ## Profiles
 
-Background agent profiles are named presets that configure what tools and system prompt the worker gets. The agent can call `background_agent action="profiles"` to discover available profiles before spawning.
+A background-agent `profile` is just another loaded persona.
+If the foreground agent passes `profile`, Talon uses that persona's:
 
-To check what profiles are available, instruct the agent to do so in the system prompt:
+- system prompt
+- personality fragments
+- skills
+- provider override
+- model
 
-```markdown
-## Background Agents
+Agents should call `background_agent` with `action: "profiles"` first when they need to discover what profiles are available.
 
-You can delegate work to specialized background agents. Use
-`background_agent action="profiles"` to discover what profiles are available.
-When asked about your capabilities or what agents you can use, always check
-profiles first rather than guessing.
-```
+## Spawn parameters
 
-## Example interaction
+The MCP tool accepts these spawn-related fields:
 
-User sends: *"Analyze all TypeScript files in `/home/user/project` and produce a dependency graph."*
+- `prompt`
+- `provider`
+- `profile`
+- `workingDirectory`
+- `timeoutMinutes`
 
-The foreground agent:
-1. Calls `background_agent action="profiles"` to check available profiles
-2. Selects an appropriate profile
-3. Calls `background_agent action="spawn"` with the task description and timeout
-4. Immediately responds to the user: *"Started analysis. I'll let you know when it's done — this should take about 15 minutes."*
+Notes:
 
-When the worker finishes, the user receives a completion message with results.
+- `timeoutMinutes` is clamped to a minimum effective value of 15 minutes
+- when `provider` is omitted, Talon uses the background default provider
+- when `profile` is omitted, Talon uses the current thread's persona as the background profile
 
-## Limits and constraints
+## Skill loading
 
-- Workers cannot spawn additional background agents
-- Workers cannot send messages directly — results arrive via the daemon after completion
-- If a worker exceeds `defaultTimeoutMinutes`, it's killed and the originating thread is notified
-- The daemon enforces `maxConcurrent` — if the limit is reached, new spawn requests queue until a slot opens
+Foreground agents see the lazy skill index and call `skill_load` on demand.
+Background agents instead receive merged skill prompt contents eagerly at spawn time.
 
-## Monitoring
+## Limits
 
-Check running background workers via daemon status:
-
-```bash
-npx talonctl status
-```
-
-The status output includes active background worker count and any recently completed/failed tasks.
+- background tasks cannot exceed `backgroundAgent.maxConcurrent`
+- the task record is persisted in SQLite
+- a task can be queried later with `status` or `result`
+- completed output is truncated for storage if necessary by the background-agent manager
