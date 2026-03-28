@@ -149,6 +149,73 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
 }
 
 // ---------------------------------------------------------------------------
+// Seeding helper
+// ---------------------------------------------------------------------------
+
+/**
+ * Seeds persona and channel rows from config into the database if they
+ * don't already exist. This allows CLI commands to work before the daemon
+ * has ever booted.
+ */
+function seedFromConfig(
+  db: import('better-sqlite3').Database,
+  config: {
+    personas: Array<{
+      name: string;
+      model: string;
+      systemPromptFile?: string;
+      skills: string[];
+      capabilities: Record<string, unknown>;
+      mounts?: unknown[];
+    }>;
+    channels: Array<{
+      name: string;
+      type: string;
+      config: Record<string, unknown>;
+    }>;
+  },
+  personaName: string,
+  channelName: string,
+): void {
+  const personaRepo = new PersonaRepository(db);
+  const channelRepo = new ChannelRepository(db);
+
+  // Seed persona if not in DB.
+  const personaResult = personaRepo.findByName(personaName);
+  if (personaResult.isOk() && personaResult.value === null) {
+    const personaConfig = config.personas.find((p) => p.name === personaName);
+    if (personaConfig) {
+      personaRepo.insert({
+        id: uuidv4(),
+        name: personaConfig.name,
+        model: personaConfig.model,
+        system_prompt_file: personaConfig.systemPromptFile ?? null,
+        skills: JSON.stringify(personaConfig.skills),
+        capabilities: JSON.stringify(personaConfig.capabilities),
+        mounts: JSON.stringify(personaConfig.mounts ?? []),
+        max_concurrent: null,
+      });
+    }
+  }
+
+  // Seed channel if not in DB.
+  const channelResult = channelRepo.findByName(channelName);
+  if (channelResult.isOk() && channelResult.value === null) {
+    const channelConfig = config.channels.find((c) => c.name === channelName);
+    if (channelConfig) {
+      channelRepo.insert({
+        id: uuidv4(),
+        type: channelConfig.type,
+        name: channelConfig.name,
+        config: JSON.stringify(channelConfig.config),
+        credentials_ref: null,
+        enabled: 1,
+      });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CLI wrapper
 // ---------------------------------------------------------------------------
 
@@ -185,6 +252,10 @@ export async function addScheduleCommand(options: {
   }
 
   const db = dbResult.value;
+
+  // Seed persona/channel from config so the command works before the daemon
+  // has ever booted (the daemon normally seeds these on startup).
+  seedFromConfig(db, configResult.value, options.persona, options.channel);
 
   try {
     const result = addSchedule({

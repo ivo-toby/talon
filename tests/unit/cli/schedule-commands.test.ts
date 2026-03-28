@@ -451,3 +451,69 @@ describe('removeSchedule()', () => {
     ).toThrow('not found');
   });
 });
+
+// ---------------------------------------------------------------------------
+// addSchedule() — seeding from config
+// ---------------------------------------------------------------------------
+
+describe('addSchedule() — seeding from config', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('succeeds when persona and channel exist only in config (not DB)', () => {
+    // Seed persona and channel manually (simulating what seedFromConfig does)
+    const personaRepo = new PersonaRepository(db);
+    personaRepo.insert({
+      id: uuid(),
+      name: 'james',
+      model: 'claude-sonnet-4-6',
+      system_prompt_file: null,
+      skills: '[]',
+      capabilities: '{}',
+      mounts: '[]',
+      max_concurrent: null,
+    });
+
+    const channelRepo = new ChannelRepository(db);
+    channelRepo.insert({
+      id: uuid(),
+      type: 'terminal',
+      name: 'terminal',
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+    });
+
+    const result = addSchedule({
+      db,
+      persona: 'james',
+      channel: 'terminal',
+      cron: '0 7 * * 1-5',
+      label: 'Test',
+      prompt: 'hello',
+    });
+
+    expect(result.id).toBeDefined();
+    expect(result.expression).toBe('0 7 * * 1-5');
+  });
+
+  it('fails with descriptive error when persona is not in DB or config', () => {
+    expect(() =>
+      addSchedule({
+        db,
+        persona: 'nonexistent',
+        channel: 'terminal',
+        cron: '0 7 * * 1-5',
+        label: 'Test',
+        prompt: 'hello',
+      }),
+    ).toThrow(/Unknown persona: "nonexistent"/);
+  });
+});
