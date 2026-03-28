@@ -16,7 +16,7 @@ import { BackgroundAgentError } from '../../core/errors/error-types.js';
 const DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT = 10;
 
 export interface BackgroundAgentArgs {
-  action: 'spawn' | 'status' | 'cancel' | 'result';
+  action: 'spawn' | 'status' | 'cancel' | 'result' | 'profiles';
   prompt?: string;
   taskId?: string;
   provider?: string;
@@ -65,6 +65,8 @@ export class BackgroundAgentHandler {
         return this.cancel(args, context, requestId);
       case 'result':
         return this.result(args, context, requestId);
+      case 'profiles':
+        return this.profiles(requestId);
       default:
         return this.errorResult(
           requestId,
@@ -313,6 +315,16 @@ export class BackgroundAgentHandler {
       tool: BackgroundAgentHandler.manifest.name,
       status: 'success',
       result: result.value,
+    };
+  }
+
+  private profiles(requestId: string): ToolCallResult {
+    const profiles = this.deps.personaLoader.listProfiles();
+    return {
+      requestId,
+      tool: BackgroundAgentHandler.manifest.name,
+      status: 'success',
+      result: { profiles },
     };
   }
 

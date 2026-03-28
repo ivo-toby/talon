@@ -109,9 +109,34 @@ Rules:
 
 Default to no skills unless the user explicitly asks for one.
 
+### Description
+
+Generate a 1-2 sentence description of the persona's purpose and strengths.
+This is written as YAML frontmatter in `system.md` and exposed via the
+`background_agent profiles` action so that agents can discover available
+profiles at runtime.
+
+Good descriptions are specific enough to differentiate profiles:
+
+- "Senior code reviewer — focused security and performance analysis with PR review expertise"
+- "Deep web research — multi-source search, cross-referencing, synthesized answers with citations"
+- "Personal butler — formal, anticipatory, handles daily tasks with understated charm"
+
 ### System prompt
 
-Generate a concise system prompt covering:
+The system prompt file (`system.md`) uses YAML frontmatter for metadata:
+
+```markdown
+---
+description: "<the description from above>"
+---
+
+# <name> — System Prompt
+
+<prompt body>
+```
+
+Generate a concise prompt body covering:
 
 - Role and goals
 - Working style
@@ -124,6 +149,7 @@ Show a readable summary before doing anything:
 
 ```text
 Name:             code-reviewer
+Description:      Senior code reviewer — focused security and performance analysis
 Provider:         claude-code
 Model:            claude-opus-4-6
 Allow:            fs.read:*, memory.access:*
@@ -157,6 +183,7 @@ After approval:
 
 ```bash
 talonctl add-persona --name <name> \
+  --description "<description>" \
   --model <model> \
   --provider <provider> \
   --capabilities "<comma-separated allow>" \

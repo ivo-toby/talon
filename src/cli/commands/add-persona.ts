@@ -40,6 +40,7 @@ const DEFAULT_MODEL = 'claude-sonnet-4-6';
 
 export interface AddPersonaOptions {
   name: string;
+  description?: string;
   model?: string;
   provider?: string;
   capabilities?: string[];
@@ -136,7 +137,7 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
       ? await fs.readFile(options.systemPromptFile, 'utf-8')
       : existsSync(templateFile)
         ? await fs.readFile(templateFile, 'utf-8')
-        : buildSystemPromptTemplate(options.name);
+        : buildSystemPromptTemplate(options.name, options.description);
     await fs.writeFile(systemPromptFile, content, { flag: 'wx', encoding: 'utf-8' });
     isNewPersona = true;
   } catch (cause) {
@@ -270,9 +271,18 @@ function buildMemoryGroomingPrompt(): string {
 
 /**
  * Returns a default system prompt markdown template for the given persona name.
+ *
+ * The `description` field is written into YAML frontmatter. It is parsed by the
+ * persona loader at startup and exposed via the `background_agent profiles`
+ * action so that agents can discover available profiles.
  */
-export function buildSystemPromptTemplate(name: string): string {
+export function buildSystemPromptTemplate(name: string, description?: string): string {
+  const desc = description ?? '';
   return [
+    '---',
+    `description: "${desc}"`,
+    '---',
+    '',
     `# ${name} — System Prompt`,
     '',
     `You are ${name}, a helpful AI assistant.`,
@@ -282,6 +292,13 @@ export function buildSystemPromptTemplate(name: string): string {
     '- Be concise and accurate.',
     '- Reply in clear, plain language.',
     '- Ask for clarification when the request is ambiguous.',
+    '',
+    '## Background Agents',
+    '',
+    'You can delegate work to specialized background agents. Use',
+    '`background_agent action="profiles"` to discover what profiles are available.',
+    'When asked about your capabilities or what agents you can use, always check',
+    'profiles first rather than guessing.',
     '',
     '## Constraints',
     '',

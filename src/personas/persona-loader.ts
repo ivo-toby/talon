@@ -13,11 +13,13 @@ import { readFile, readdir } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import { ok, err, type Result } from 'neverthrow';
+import matter from 'gray-matter';
 import type pino from 'pino';
 import { PersonaError } from '../core/errors/index.js';
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
 import type { PersonaConfig } from '../core/config/config-types.js';
 import { mergeCapabilities, validateCapabilityLabels } from './capability-merger.js';
+import { PersonaFrontmatterSchema } from './persona-schema.js';
 import type { LoadedPersona, ResolvedCapabilities } from './persona-types.js';
 
 // ---------------------------------------------------------------------------
@@ -91,6 +93,17 @@ export class PersonaLoader {
    */
   listNames(): string[] {
     return [...this.cache.keys()];
+  }
+
+  /**
+   * Returns name + description for all loaded personas.
+   * Used by the `background_agent profiles` action.
+   */
+  listProfiles(): Array<{ name: string; description?: string }> {
+    return [...this.cache.entries()].map(([name, loaded]) => ({
+      name,
+      description: loaded.description,
+    }));
   }
 
   /**
@@ -174,14 +187,16 @@ export class PersonaLoader {
    * to DB, and stores in cache.
    */
   private async loadOne(config: PersonaConfig): Promise<Result<LoadedPersona, PersonaError>> {
-    // 1. Read system prompt file if specified.
+    // 1. Read system prompt file if specified, parsing optional frontmatter.
     let systemPromptContent: string | undefined;
+    let description: string | undefined;
     if (config.systemPromptFile) {
       const readResult = await this.readSystemPrompt(config.systemPromptFile, config.name);
       if (readResult.isErr()) {
         return err(readResult.error);
       }
-      systemPromptContent = readResult.value;
+      systemPromptContent = readResult.value.content;
+      description = readResult.value.description;
     }
 
     // 2. Read personality folder if present (sibling to system prompt file).
@@ -215,6 +230,7 @@ export class PersonaLoader {
     // 6. Build the loaded persona and cache it.
     const loadedPersona: LoadedPersona = {
       config,
+      description,
       systemPromptContent,
       personalityContent,
       taskPromptPaths,
@@ -229,7 +245,10 @@ export class PersonaLoader {
   }
 
   /**
-   * Reads a system prompt file from disk.
+   * Reads a system prompt file from disk and parses optional YAML frontmatter.
+   *
+   * Returns the body content (frontmatter stripped) and any parsed frontmatter
+   * fields. If the file has no frontmatter, the full content is returned as-is.
    *
    * @param filePath  - Path to the system prompt file.
    * @param personaName - Persona name (used in error messages).
@@ -237,11 +256,25 @@ export class PersonaLoader {
   private async readSystemPrompt(
     filePath: string,
     personaName: string,
-  ): Promise<Result<string, PersonaError>> {
+  ): Promise<Result<{ content: string; description?: string }, PersonaError>> {
     try {
-      const content = await readFile(filePath, 'utf-8');
+      const raw = await readFile(filePath, 'utf-8');
+      const { data, content } = matter(raw);
+
+      // Validate frontmatter — warn on invalid, never block loading.
+      let description: string | undefined;
+      const parsed = PersonaFrontmatterSchema.safeParse(data);
+      if (parsed.success) {
+        description = parsed.data.description;
+      } else if (Object.keys(data).length > 0) {
+        this.logger.warn(
+          { persona: personaName, errors: parsed.error.issues },
+          'invalid frontmatter in system prompt file — ignoring',
+        );
+      }
+
       this.logger.debug({ persona: personaName, file: filePath }, 'system prompt file read');
-      return ok(content);
+      return ok({ content: content.trim(), description });
     } catch (cause) {
       return err(
         new PersonaError(

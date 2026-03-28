@@ -44,8 +44,15 @@ export interface LoadedPersona {
   /** The original config-file declaration for this persona. */
   config: PersonaConfig;
   /**
+   * Short description from the `system.md` YAML frontmatter.
+   * Used by the `background_agent profiles` action to help the agent
+   * choose the right profile for a task.
+   */
+  description?: string;
+  /**
    * Content of the system prompt file, if `systemPromptFile` was specified
-   * and the file was read successfully. `undefined` otherwise.
+   * and the file was read successfully. Frontmatter is stripped.
+   * `undefined` otherwise.
    */
   systemPromptContent?: string;
   /**

@@ -69,6 +69,11 @@ function createHandler(overrides: Record<string, unknown> = {}) {
           resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
         }),
       ),
+      listNames: vi.fn().mockReturnValue(['TestBot']),
+      listProfiles: vi.fn().mockReturnValue([
+        { name: 'TestBot', description: 'A test bot' },
+        { name: 'researcher', description: 'Deep web research' },
+      ]),
     } as any,
     threadRepository: {
       findById: vi.fn().mockReturnValue(
@@ -573,5 +578,43 @@ describe('BackgroundAgentHandler', () => {
     );
     expect(cancelResult.status).toBe('error');
     expect(cancelResult.error).toContain('taskId');
+  });
+
+  // -------------------------------------------------------------------------
+  // profiles action
+  // -------------------------------------------------------------------------
+
+  it('profiles action returns available profiles with descriptions', async () => {
+    const { handler } = createHandler();
+    const result = await handler.execute(
+      { action: 'profiles' },
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-profiles',
+      },
+    );
+    expect(result.status).toBe('success');
+    expect(result.result).toEqual({
+      profiles: [
+        { name: 'TestBot', description: 'A test bot' },
+        { name: 'researcher', description: 'Deep web research' },
+      ],
+    });
+  });
+
+  it('profiles action does not require prompt or taskId', async () => {
+    const { handler } = createHandler();
+    const result = await handler.execute(
+      { action: 'profiles' },
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-profiles-2',
+      },
+    );
+    expect(result.status).toBe('success');
   });
 });

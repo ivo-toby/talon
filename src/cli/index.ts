@@ -167,12 +167,14 @@ program
   .option('--require-approval <caps>', 'Comma-separated capabilities requiring approval', parseCommaSeparatedOption)
   .option('--skills <skills>', 'Comma-separated skill names', parseCommaSeparatedOption)
   .option('--system-prompt-file <path>', 'Path to a system prompt markdown file')
+  .option('--description <text>', 'Short description of what this persona does (written to system.md frontmatter)')
   .action(async (opts: {
     name: string;
     config: string;
     templatesDir: string;
     model?: string;
     provider?: string;
+    description?: string;
     capabilities?: string[];
     requireApproval?: string[];
     skills?: string[];
@@ -180,6 +182,7 @@ program
   }) => {
     await addPersonaCommand({
       name: opts.name,
+      description: opts.description,
       configPath: opts.config,
       templatesDir: opts.templatesDir,
       model: opts.model,

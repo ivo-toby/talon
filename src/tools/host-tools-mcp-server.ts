@@ -342,14 +342,14 @@ const TOOLS = [
   },
   {
     name: 'background_agent',
-    description: 'Starts or manages a background worker for the current thread. Supports multiple providers (claude-code, gemini-cli) via the provider and profile fields.',
+    description: 'Starts and manages background agent workers. You have access to specialized agent profiles — always call action "profiles" first to discover what is available before spawning. When asked about your capabilities, available agents, or what you can delegate, call "profiles" to list them.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         action: {
           type: 'string' as const,
-          enum: ['spawn', 'status', 'cancel', 'result'],
-          description: 'Operation to perform on the current thread background task set.',
+          enum: ['spawn', 'status', 'cancel', 'result', 'profiles'],
+          description: 'Operation to perform. Call "profiles" to discover available specialist agents before spawning. Always do this when asked about your capabilities or available agents.',
         },
         prompt: {
           type: 'string' as const,
@@ -365,7 +365,7 @@ const TOOLS = [
         },
         profile: {
           type: 'string' as const,
-          description: 'Optional persona name to use as the background agent profile. When provided, the named persona\'s system prompt, skills, model, and provider are used instead of the spawning thread\'s persona (unless explicitly overridden via the provider field). Must match a persona name defined in talond.yaml.',
+          description: 'Persona name to use as the background agent profile. Call with action "profiles" first to see available options with descriptions. When provided, the named persona\'s system prompt, skills, model, and provider are used instead of the spawning thread\'s persona.',
         },
         workingDirectory: {
           type: 'string' as const,
