@@ -53,6 +53,11 @@ All config mutations go through these commands:
 | `npx talonctl list-schedules` | Show scheduled tasks |
 | `npx talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add scheduled task |
 | `npx talonctl remove-schedule <id>` | Remove a scheduled task |
+| `npx talonctl list-capabilities` | Show all available capability labels |
+| `npx talonctl set-capabilities --persona <p> --allow <labels>` | Set persona capabilities |
+| `npx talonctl set-capabilities --persona <p> --add <labels>` | Add capabilities to persona |
+| `npx talonctl set-capabilities --persona <p> --remove <labels>` | Remove capabilities from persona |
+| `npx talonctl set-capabilities --persona <p> --show` | Show persona's current capabilities |
 | `npx talonctl env-check` | Audit env var placeholders |
 | `npx talonctl config-show` | Show effective config (secrets masked) |
 | `npx talonctl remove-channel --name <n>` | Remove a channel |
@@ -256,6 +261,25 @@ Ask: **"Let's create a persona. What should this agent be called?"**
    - For each selected: `npx talonctl bind --persona <name> --channel <channel>`
 
 Ask: **"Add another persona?"** Loop until done.
+
+### Step 5b: Capability configuration
+
+After creating a persona, show what capabilities it has and what's available.
+
+1. Run: `npx talonctl set-capabilities --persona <name> --show`
+2. Run: `npx talonctl list-capabilities`
+3. Explain: "Your persona was created with sensible defaults: memory access, HTTP requests,
+   and schedule management. Here are all available capabilities."
+4. Ask: **"Want to adjust capabilities for {name}?"**
+
+If yes, help the user decide which to add or remove:
+
+- For agents that should message other channels: `npx talonctl set-capabilities --persona <name> --add "channel.send:*"`
+- For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.read:own"`
+- For agents that run background tasks: `npx talonctl set-capabilities --persona <name> --add "subagent.background"`
+- For agents that invoke sub-agents: `npx talonctl set-capabilities --persona <name> --add "subagent.invoke"`
+
+Repeat for each persona.
 
 ### Step 6: Scheduled tasks
 
