@@ -47,9 +47,9 @@ channels:
       pollIntervalMs: 1000           # long-poll interval for updates (ms)
 
   # WhatsApp Cloud API (with embedded webhook server)
-  # Requires a public URL — use a reverse proxy (nginx, Caddy) or ngrok for local dev.
-  # - type: whatsapp
-  #   name: my-whatsapp
+  # Requires a Meta Business account and a public URL (reverse proxy / ngrok for local dev).
+  # - type: whatsappBusiness
+  #   name: my-whatsapp-business
   #   enabled: true
   #   config:
   #     phoneNumberId: '123456789'

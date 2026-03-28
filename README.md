@@ -485,6 +485,30 @@ channels:
 - **Thread mapping**: `channel_id:message_id`
 - **Rate limiting**: Automatic retry with `Retry-After` header handling
 
+### WhatsApp Business (Cloud API)
+
+Meta Cloud API connector with an embedded webhook HTTP server for inbound events. Requires a Meta Business account with a WhatsApp-enabled phone number.
+
+```yaml
+channels:
+  - name: my-whatsapp-business
+    type: whatsappBusiness
+    enabled: true
+    config:
+      phoneNumberId: '123456789'
+      accessToken: ${WHATSAPP_ACCESS_TOKEN}
+      verifyToken: ${WHATSAPP_VERIFY_TOKEN}
+      appSecret: ${WHATSAPP_APP_SECRET}    # enables inbound webhook server
+      webhookPort: 3000                    # default: 3000
+      webhookHost: '0.0.0.0'              # default: 0.0.0.0
+      webhookPath: '/webhook'              # default: /webhook
+```
+
+- **Inbound**: Embedded HTTP server handles Meta webhook verification (GET) and signed event delivery (POST with HMAC-SHA256 validation). Requires a public URL — use a reverse proxy (nginx, Caddy) or ngrok for local dev.
+- **Outbound**: REST API `POST /v21.0/{phoneNumberId}/messages`
+- **Idempotency key**: WhatsApp message ID
+- **Thread mapping**: Sender phone number
+
 ### WhatsApp Baileys
 
 WhatsApp Web bridge using the [Baileys](https://github.com/WhiskeySockets/Baileys) library. Connects as a regular WhatsApp Web client — no Meta Business account, no webhook server, no Cloud API.
@@ -1531,7 +1555,8 @@ talon/
         telegram/                # Telegram Bot API connector
         slack/                   # Slack Events API connector
         discord/                 # Discord Gateway + REST connector
-        whatsapp/                # WhatsApp Cloud API connector
+        whatsapp-business/       # WhatsApp Cloud API connector
+        whatsapp-baileys/        # WhatsApp Web (Baileys) connector
         email/                   # IMAP + SMTP connector
         terminal/                # WebSocket terminal connector
       channel-registry.ts        # Connector lifecycle management

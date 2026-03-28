@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, afterEach, beforeAll } from 'vitest';
 
-// Use a dynamic import so we can mock the Baileys dependency before it loads.
+// Dynamic import to avoid top-level resolution of the Baileys optional dependency.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let whatsappAuthCommand: any;
 

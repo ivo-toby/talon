@@ -506,9 +506,21 @@ program
   .option('--auth-dir <path>', 'Directory to store auth credentials', './baileys-auth')
   .option('--timeout <seconds>', 'Seconds to wait for QR scan', '120')
   .action(async (opts: { authDir: string; timeout: string }) => {
+    const DEFAULT_TIMEOUT_SECONDS = 120;
+    const parsedTimeout = parseInt(opts.timeout, 10);
+    const timeout =
+      Number.isFinite(parsedTimeout) && parsedTimeout > 0
+        ? parsedTimeout
+        : (() => {
+            console.error(
+              `Invalid --timeout value "${opts.timeout}". Falling back to default of ${DEFAULT_TIMEOUT_SECONDS} seconds.`,
+            );
+            return DEFAULT_TIMEOUT_SECONDS;
+          })();
+
     await whatsappAuthCommand({
       authDir: opts.authDir,
-      timeout: parseInt(opts.timeout, 10),
+      timeout,
     });
   });
 

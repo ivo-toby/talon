@@ -34,8 +34,9 @@ import { ChannelError } from '../../../core/errors/error-types.js';
 import { markdownToWhatsApp } from '../whatsapp-business/whatsapp-format.js';
 import type { WhatsAppBaileysConfig } from './whatsapp-baileys-types.js';
 
-/** Baileys socket type — resolved dynamically to avoid hard import-time dependency. */
-type BaileysSocket = ReturnType<typeof import('@whiskeysockets/baileys').makeWASocket>;
+/** Baileys socket type — intentionally loose to keep Baileys as an optional dependency. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type BaileysSocket = any;
 
 /** Loose representation of a Baileys WAMessage for the inbound handler. */
 interface InboundWAMessage {
@@ -360,12 +361,14 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }
 
     const rawTimestamp = msg.messageTimestamp;
-    const epochMs =
-      (typeof rawTimestamp === 'number'
-        ? rawTimestamp
-        : typeof rawTimestamp === 'object' && rawTimestamp !== null
-          ? Number(rawTimestamp)
-          : 0) * 1000;
+    let epochSeconds = 0;
+    if (typeof rawTimestamp === 'number') {
+      epochSeconds = rawTimestamp;
+    } else if (typeof rawTimestamp === 'object' && rawTimestamp !== null && 'low' in rawTimestamp) {
+      // Baileys/Protobuf Long-like object with {low, high, unsigned} fields.
+      epochSeconds = (rawTimestamp.high >>> 0) * 0x100000000 + (rawTimestamp.low >>> 0);
+    }
+    const epochMs = epochSeconds * 1000;
 
     const event: InboundEvent = {
       channelType: this.type,

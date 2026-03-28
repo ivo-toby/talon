@@ -165,7 +165,7 @@ npx talonctl doctor
 
 | Problem | Fix |
 |---------|-----|
-| QR code not appearing | Check `printQR: true` in config and that you can see terminal output |
+| QR code not appearing | Run `npx talonctl whatsapp-auth` again in a visible terminal window. The QR is printed by `talonctl whatsapp-auth`, not by the connector — there is no `printQR` config option |
 | "logged out" error | Delete `authDir` folder and restart to re-authenticate |
 | Group messages ignored | Expected — Baileys connector only processes individual chats in v1 |
 | Module not found | Run `npm install @whiskeysockets/baileys` — it's an optional dependency |
