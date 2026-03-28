@@ -102,9 +102,9 @@ program
 
 program
   .command('backup')
-  .description('Backup database and data directory')
+  .description('Backup database, config, personas, and skills')
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
-  .option('--output <path>', 'Backup output path (overrides default)')
+  .option('--output <path>', 'Backup output directory (overrides default)')
   .action(async (opts: { config: string; output?: string }) => {
     await backupCommand({
       configPath: opts.config,

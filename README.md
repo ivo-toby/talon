@@ -1092,7 +1092,7 @@ npx talonctl run-subagent --name my-agent --input '{}' --subagents-dir ./subagen
 | Command                | Description                                                    |
 | ---------------------- | -------------------------------------------------------------- |
 | `talonctl migrate`     | Apply pending database migrations                              |
-| `talonctl backup`      | Snapshot SQLite database and data directory                    |
+| `talonctl backup`      | Backup database, config, personas, and skills                  |
 | `talonctl doctor`      | Run diagnostic checks on environment, config, and dependencies |
 | `talonctl queue-purge` | Purge queue items by status                                    |
 
@@ -1101,7 +1101,7 @@ npx talonctl run-subagent --name my-agent --input '{}' --subagents-dir ./subagen
 npx talonctl migrate --config talond.yaml
 
 # Create a backup
-npx talonctl backup --config talond.yaml --output /backups/talon-$(date +%Y%m%d).tar.gz
+npx talonctl backup --config talond.yaml --output /backups/talon-$(date +%Y%m%d)
 
 # Check system health
 npx talonctl doctor --config talond.yaml
