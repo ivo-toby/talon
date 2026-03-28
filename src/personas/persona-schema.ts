@@ -11,7 +11,14 @@ import { z } from 'zod';
 
 export const PersonaFrontmatterSchema = z.object({
   /** One-line summary of what this persona does, shown in profile listings. */
-  description: z.string().min(1).optional(),
+  description: z
+    .string()
+    .optional()
+    .transform((value) => {
+      if (typeof value !== 'string') return undefined;
+      const trimmed = value.trim();
+      return trimmed === '' ? undefined : trimmed;
+    }),
 });
 
 export type PersonaFrontmatter = z.infer<typeof PersonaFrontmatterSchema>;

@@ -126,9 +126,11 @@ export class BackgroundAgentHandler {
 
     // When a profile is specified, use that persona instead of the spawning thread's persona
     // for building the runtime context (system prompt, skills, MCP servers, provider).
-    // NOTE: no capability check gates which profiles can be used — the operator controls
-    // which personas exist in config. A future enhancement could restrict profile access
-    // via a capability label like `subagent.background.profile:<name>`.
+    // SECURITY NOTE: any persona with `subagent.background` can use any loaded profile.
+    // This is intentional — the operator controls which personas exist in talond.yaml
+    // and which have the `subagent.background` capability. The spawned background agent
+    // inherits the *profile's* capabilities, not the caller's. A future enhancement
+    // could restrict profile access via `subagent.background.profile:<name>`.
     const targetPersonaName = profileName ?? personaRowResult.value.name;
     const loadedPersonaResult = this.deps.personaLoader.getByName(targetPersonaName);
     if (loadedPersonaResult.isErr() || !loadedPersonaResult.value) {

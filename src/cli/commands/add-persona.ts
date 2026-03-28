@@ -133,11 +133,17 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
   let isNewPersona = false;
   try {
     const templateFile = path.join(options.templatesDir ?? 'templates', options.name, 'system.md');
-    const content = options.systemPromptFile
+    let content = options.systemPromptFile
       ? await fs.readFile(options.systemPromptFile, 'utf-8')
       : existsSync(templateFile)
         ? await fs.readFile(templateFile, 'utf-8')
         : buildSystemPromptTemplate(options.name, options.description);
+
+    // If a description was provided but the content has no frontmatter, prepend it.
+    if (options.description && !content.trimStart().startsWith('---')) {
+      const escaped = escapeYamlString(options.description);
+      content = `---\ndescription: "${escaped}"\n---\n\n${content}`;
+    }
     await fs.writeFile(systemPromptFile, content, { flag: 'wx', encoding: 'utf-8' });
     isNewPersona = true;
   } catch (cause) {
@@ -276,12 +282,27 @@ function buildMemoryGroomingPrompt(): string {
  * persona loader at startup and exposed via the `background_agent profiles`
  * action so that agents can discover available profiles.
  */
+/**
+ * Escapes a string for safe inclusion in a YAML double-quoted value.
+ * Handles backslashes, double quotes, and newlines.
+ */
+function escapeYamlString(value: string): string {
+  return value
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n');
+}
+
 export function buildSystemPromptTemplate(name: string, description?: string): string {
-  const desc = description ?? '';
+  const trimmed = description?.trim() ?? '';
+  const frontmatterLines: string[] = ['---'];
+  if (trimmed.length > 0) {
+    frontmatterLines.push(`description: "${escapeYamlString(trimmed)}"`);
+  }
+  frontmatterLines.push('---');
+
   return [
-    '---',
-    `description: "${desc}"`,
-    '---',
+    ...frontmatterLines,
     '',
     `# ${name} — System Prompt`,
     '',

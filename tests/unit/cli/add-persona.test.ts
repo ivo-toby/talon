@@ -402,6 +402,45 @@ describe('addPersona()', () => {
 });
 
 // ---------------------------------------------------------------------------
+// buildSystemPromptTemplate() — template generation
+// ---------------------------------------------------------------------------
+
+describe('buildSystemPromptTemplate()', () => {
+  it('includes description in YAML frontmatter', () => {
+    const result = buildSystemPromptTemplate('researcher', 'Deep web research agent');
+    expect(result).toContain('---');
+    expect(result).toContain('description: "Deep web research agent"');
+  });
+
+  it('omits description key when none provided', () => {
+    const result = buildSystemPromptTemplate('assistant');
+    expect(result).not.toContain('description:');
+    expect(result).toContain('---');
+  });
+
+  it('escapes double quotes in description', () => {
+    const result = buildSystemPromptTemplate('test', 'Says "hello" often');
+    expect(result).toContain('description: "Says \\"hello\\" often"');
+  });
+
+  it('escapes newlines in description', () => {
+    const result = buildSystemPromptTemplate('test', 'Line one\nLine two');
+    expect(result).toContain('description: "Line one\\nLine two"');
+  });
+
+  it('escapes backslashes in description', () => {
+    const result = buildSystemPromptTemplate('test', 'path\\to\\file');
+    expect(result).toContain('description: "path\\\\to\\\\file"');
+  });
+
+  it('includes Background Agents section', () => {
+    const result = buildSystemPromptTemplate('assistant');
+    expect(result).toContain('## Background Agents');
+    expect(result).toContain('background_agent action="profiles"');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // addPersonaCommand() — CLI wrapper
 // ---------------------------------------------------------------------------
 
@@ -471,6 +510,21 @@ describe('add-persona CLI registration', () => {
       skills: ['code-review', 'memory-grooming'],
       systemPromptFile: '/tmp/system.md',
     });
+  });
+
+  it('passes --description through to addPersonaCommand', async () => {
+    const addPersonaCommandMock = await runCliWithArgs([
+      'add-persona',
+      '--name', 'researcher',
+      '--description', 'Deep web research agent',
+    ]);
+
+    expect(addPersonaCommandMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'researcher',
+        description: 'Deep web research agent',
+      }),
+    );
   });
 
   it('leaves new Commander.js flags optional', async () => {
