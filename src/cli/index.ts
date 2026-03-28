@@ -27,6 +27,7 @@ import { chatCommand } from './commands/chat.js';
 import { listChannelsCommand } from './commands/list-channels.js';
 import { listPersonasCommand } from './commands/list-personas.js';
 import { listSkillsCommand } from './commands/list-skills.js';
+import { listCapabilitiesCommand } from './commands/list-capabilities.js';
 import { bindCommand } from './commands/bind.js';
 import { unbindCommand } from './commands/unbind.js';
 import { addMcpCommand } from './commands/add-mcp.js';
@@ -43,6 +44,7 @@ import { addProviderCommand } from './commands/add-provider.js';
 import { setDefaultProviderCommand } from './commands/set-default-provider.js';
 import { testProviderCommand } from './commands/test-provider.js';
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
+import { setCapabilitiesCommand } from './commands/set-capabilities.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -283,6 +285,43 @@ program
   .option('--persona <name>', 'Filter skills by persona name')
   .action(async (opts: { config: string; persona?: string }) => {
     await listSkillsCommand({ configPath: opts.config, personaName: opts.persona });
+  });
+
+program
+  .command('list-capabilities')
+  .description('List all available capability labels for persona config')
+  .action(() => {
+    listCapabilitiesCommand();
+  });
+
+program
+  .command('set-capabilities')
+  .description('Set capability labels on a persona')
+  .requiredOption('--persona <name>', 'Persona name')
+  .option('--allow <labels>', 'Replace allow list (comma-separated)')
+  .option('--add <labels>', 'Add to allow list (comma-separated)')
+  .option('--remove <labels>', 'Remove from allow list (comma-separated)')
+  .option('--require-approval <labels>', 'Replace requireApproval list (comma-separated)')
+  .option('--show', 'Show current capabilities without modifying')
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .action(async (opts: {
+    persona: string;
+    allow?: string;
+    add?: string;
+    remove?: string;
+    requireApproval?: string;
+    show?: boolean;
+    config: string;
+  }) => {
+    await setCapabilitiesCommand({
+      persona: opts.persona,
+      allow: opts.allow,
+      add: opts.add,
+      remove: opts.remove,
+      requireApproval: opts.requireApproval,
+      show: opts.show,
+      configPath: opts.config,
+    });
   });
 
 program

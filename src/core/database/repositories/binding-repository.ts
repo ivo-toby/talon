@@ -31,6 +31,8 @@ export class BindingRepository extends BaseRepository {
   private readonly findDefaultForChannelStmt: Database.Statement;
   private readonly findByPersonaStmt: Database.Statement;
   private readonly deleteStmt: Database.Statement;
+  private readonly deleteDefaultForChannelStmt: Database.Statement;
+  private readonly updatePersonaStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -53,6 +55,14 @@ export class BindingRepository extends BaseRepository {
     `);
 
     this.deleteStmt = db.prepare(`DELETE FROM bindings WHERE id = ?`);
+
+    this.deleteDefaultForChannelStmt = db.prepare(
+      `DELETE FROM bindings WHERE channel_id = ? AND is_default = 1`,
+    );
+
+    this.updatePersonaStmt = db.prepare(
+      `UPDATE bindings SET persona_id = ?, updated_at = ? WHERE id = ?`,
+    );
   }
 
   /** Inserts a new binding. */
@@ -104,6 +114,26 @@ export class BindingRepository extends BaseRepository {
       return ok(undefined);
     } catch (cause) {
       return err(new DbError(`Failed to delete binding: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /** Deletes the default binding for a channel (is_default = 1). */
+  deleteDefaultForChannel(channelId: string): Result<void, DbError> {
+    try {
+      this.deleteDefaultForChannelStmt.run(channelId);
+      return ok(undefined);
+    } catch (cause) {
+      return err(new DbError(`Failed to delete default binding for channel: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /** Updates the persona_id on an existing binding. */
+  updatePersona(bindingId: string, personaId: string): Result<void, DbError> {
+    try {
+      this.updatePersonaStmt.run(personaId, this.now(), bindingId);
+      return ok(undefined);
+    } catch (cause) {
+      return err(new DbError(`Failed to update binding persona: ${String(cause)}`, cause instanceof Error ? cause : undefined));
     }
   }
 }

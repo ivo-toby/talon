@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
-import { addSchedule } from '../../../src/cli/commands/add-schedule.js';
+import { addSchedule, seedFromConfig } from '../../../src/cli/commands/add-schedule.js';
 import { listSchedules } from '../../../src/cli/commands/list-schedules.js';
 import { removeSchedule } from '../../../src/cli/commands/remove-schedule.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
@@ -449,5 +449,139 @@ describe('removeSchedule()', () => {
     expect(() =>
       removeSchedule({ scheduleId: uuid(), db }),
     ).toThrow('not found');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// addSchedule() — seeding from config
+// ---------------------------------------------------------------------------
+
+describe('addSchedule() — seeding from config', () => {
+  let db: Database.Database;
+
+  beforeEach(() => {
+    db = createTestDb();
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('succeeds when persona and channel exist only in config (not DB)', () => {
+    // Seed persona and channel manually (simulating what seedFromConfig does)
+    const personaRepo = new PersonaRepository(db);
+    personaRepo.insert({
+      id: uuid(),
+      name: 'james',
+      model: 'claude-sonnet-4-6',
+      system_prompt_file: null,
+      skills: '[]',
+      capabilities: '{}',
+      mounts: '[]',
+      max_concurrent: null,
+    });
+
+    const channelRepo = new ChannelRepository(db);
+    channelRepo.insert({
+      id: uuid(),
+      type: 'terminal',
+      name: 'terminal',
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+    });
+
+    const result = addSchedule({
+      db,
+      persona: 'james',
+      channel: 'terminal',
+      cron: '0 7 * * 1-5',
+      label: 'Test',
+      prompt: 'hello',
+    });
+
+    expect(result.id).toBeDefined();
+    expect(result.expression).toBe('0 7 * * 1-5');
+  });
+
+  it('fails with descriptive error when persona is not in DB or config', () => {
+    expect(() =>
+      addSchedule({
+        db,
+        persona: 'nonexistent',
+        channel: 'terminal',
+        cron: '0 7 * * 1-5',
+        label: 'Test',
+        prompt: 'hello',
+      }),
+    ).toThrow(/Unknown persona: "nonexistent"/);
+  });
+
+  it('seedFromConfig seeds persona and channel from config into empty DB', () => {
+    const config = {
+      personas: [{
+        name: 'james',
+        model: 'claude-sonnet-4-6',
+        skills: [] as string[],
+        capabilities: { allow: ['memory.access:thread'], requireApproval: [] as string[] },
+      }],
+      channels: [{
+        name: 'terminal',
+        type: 'terminal',
+        config: {} as Record<string, unknown>,
+      }],
+    };
+
+    // DB starts empty — seedFromConfig should insert rows.
+    seedFromConfig(db, config, 'james', 'terminal');
+
+    const personaRepo = new PersonaRepository(db);
+    const channelRepo = new ChannelRepository(db);
+    expect(personaRepo.findByName('james').isOk()).toBe(true);
+    expect(personaRepo.findByName('james')._unsafeUnwrap()).not.toBeNull();
+    expect(channelRepo.findByName('terminal').isOk()).toBe(true);
+    expect(channelRepo.findByName('terminal')._unsafeUnwrap()).not.toBeNull();
+  });
+
+  it('seedFromConfig throws when persona not in config', () => {
+    const config = {
+      personas: [] as Array<{ name: string; model: string; skills: string[]; capabilities: Record<string, unknown> }>,
+      channels: [{
+        name: 'terminal',
+        type: 'terminal',
+        config: {} as Record<string, unknown>,
+      }],
+    };
+
+    expect(() => seedFromConfig(db, config, 'nonexistent', 'terminal'))
+      .toThrow(/not defined in the configuration/);
+  });
+
+  it('seedFromConfig skips seeding when rows already exist', () => {
+    // Pre-insert persona and channel.
+    const personaRepo = new PersonaRepository(db);
+    const personaId = uuid();
+    personaRepo.insert({
+      id: personaId, name: 'james', model: 'claude-sonnet-4-6',
+      system_prompt_file: null, skills: '[]', capabilities: '{}', mounts: '[]', max_concurrent: null,
+    });
+    const channelRepo = new ChannelRepository(db);
+    channelRepo.insert({
+      id: uuid(), type: 'terminal', name: 'terminal',
+      config: '{}', credentials_ref: null, enabled: 1,
+    });
+
+    const config = {
+      personas: [{ name: 'james', model: 'different-model', skills: [] as string[], capabilities: {} as Record<string, unknown> }],
+      channels: [{ name: 'terminal', type: 'terminal', config: {} as Record<string, unknown> }],
+    };
+
+    // Should not throw or modify existing rows.
+    seedFromConfig(db, config, 'james', 'terminal');
+
+    // Verify original persona row is unchanged (same id, same model).
+    const row = personaRepo.findByName('james')._unsafeUnwrap()!;
+    expect(row.id).toBe(personaId);
+    expect(row.model).toBe('claude-sonnet-4-6');
   });
 });

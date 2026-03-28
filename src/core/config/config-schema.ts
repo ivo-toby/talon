@@ -88,6 +88,16 @@ export const ChannelConfigSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Bindings
+// ---------------------------------------------------------------------------
+
+export const BindingConfigSchema = z.object({
+  persona: z.string().min(1),
+  channel: z.string().min(1),
+  isDefault: z.boolean().default(false),
+});
+
+// ---------------------------------------------------------------------------
 // IPC
 // ---------------------------------------------------------------------------
 
@@ -285,6 +295,7 @@ export const TalondConfigSchema = z.object({
   sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
   channels: z.array(ChannelConfigSchema).default([]),
   personas: z.array(PersonaConfigSchema).default([]),
+  bindings: z.array(BindingConfigSchema).default([]),
   ipc: IpcConfigSchema.default(() => IpcConfigSchema.parse({})),
   queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
   scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),

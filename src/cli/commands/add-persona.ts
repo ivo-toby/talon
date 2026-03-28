@@ -13,7 +13,7 @@
  *   - model (default: claude-sonnet-4-6)
  *   - systemPromptFile pointing to the created system.md
  *   - empty skills list
- *   - empty capabilities
+ *   - sensible default capabilities (memory.access:thread, net.http:egress, schedule.manage:own)
  */
 
 import fs from 'node:fs/promises';
@@ -180,7 +180,11 @@ export async function addPersona(options: AddPersonaOptions): Promise<AddPersona
     systemPromptFile,
     skills: options.skills ?? [],
     capabilities: {
-      allow: options.capabilities ?? [],
+      allow: options.capabilities ?? [
+        'memory.access:thread',
+        'net.http:egress',
+        'schedule.manage:own',
+      ],
       requireApproval: options.requireApproval ?? [],
     },
   };
@@ -213,6 +217,8 @@ export async function addPersonaCommand(options: AddPersonaOptions): Promise<voi
     console.log(`Edit "${entry.systemPromptFile}" to customise the system prompt.`);
     console.log(`Add .md files to the personality/ folder to enhance the agent's personality.`);
     console.log(`Add task-specific prompts to the prompts/ folder and reference them with promptFile in schedules.`);
+    const allowLabels = entry.capabilities.allow;
+    console.log(`Capabilities (allow): ${allowLabels.length > 0 ? allowLabels.join(', ') : 'none'}. Run \`talonctl list-capabilities\` to see all options.`);
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     process.exit(1);

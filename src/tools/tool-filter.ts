@@ -64,6 +64,85 @@ export const MCP_TO_INTERNAL = new Map(
 /** All known host tool names (internal format). */
 export const ALL_HOST_TOOLS = HOST_TOOL_REGISTRY.map((e) => e.internalName);
 
+/** Set of all known capability prefixes (domain.action). Used for validation. */
+export const KNOWN_CAPABILITY_PREFIXES = new Set(
+  HOST_TOOL_REGISTRY.map((e) => e.capabilityPrefix),
+);
+
+// ---------------------------------------------------------------------------
+// Capability descriptions (used by CLI tooling)
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable descriptions of all capability labels, grouped by tool.
+ *
+ * Used by `talonctl list-capabilities` and `set-capabilities` for display
+ * and validation. Add new entries here when adding new host tools.
+ */
+export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
+  /** The tool's capability prefix (matches HOST_TOOL_REGISTRY capabilityPrefix). */
+  toolPrefix: string;
+  /** MCP tool name for display. */
+  mcpName: string;
+  /** Individual capability labels with descriptions. */
+  labels: ReadonlyArray<{ label: string; description: string }>;
+}> = [
+  {
+    toolPrefix: 'memory.access',
+    mcpName: 'memory_access',
+    labels: [
+      { label: 'memory.access:thread', description: 'Read and write per-thread memory items' },
+    ],
+  },
+  {
+    toolPrefix: 'net.http',
+    mcpName: 'net_http',
+    labels: [
+      { label: 'net.http:egress', description: 'Make outbound HTTP requests' },
+    ],
+  },
+  {
+    toolPrefix: 'channel.send',
+    mcpName: 'channel_send',
+    labels: [
+      { label: 'channel.send:*', description: 'Send messages to any channel' },
+    ],
+  },
+  {
+    toolPrefix: 'schedule.manage',
+    mcpName: 'schedule_manage',
+    labels: [
+      { label: 'schedule.manage:own', description: 'Create/update/delete schedules' },
+    ],
+  },
+  {
+    toolPrefix: 'db.query',
+    mcpName: 'db_query',
+    labels: [
+      { label: 'db.query:own', description: 'Query the database (read-only)' },
+    ],
+  },
+  {
+    toolPrefix: 'subagent.invoke',
+    mcpName: 'subagent_invoke',
+    labels: [
+      { label: 'subagent.invoke', description: 'Invoke sub-agents synchronously' },
+    ],
+  },
+  {
+    toolPrefix: 'subagent.background',
+    mcpName: 'background_agent',
+    labels: [
+      { label: 'subagent.background', description: 'Launch background agent tasks' },
+    ],
+  },
+];
+
+/** All known capability labels (flat list). Used for validation. */
+export const ALL_CAPABILITY_LABELS = CAPABILITY_DESCRIPTIONS.flatMap(
+  (tool) => tool.labels.map((l) => l.label),
+);
+
 // ---------------------------------------------------------------------------
 // Parsing
 // ---------------------------------------------------------------------------
