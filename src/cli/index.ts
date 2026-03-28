@@ -44,6 +44,7 @@ import { addProviderCommand } from './commands/add-provider.js';
 import { setDefaultProviderCommand } from './commands/set-default-provider.js';
 import { testProviderCommand } from './commands/test-provider.js';
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
+import { setCapabilitiesCommand } from './commands/set-capabilities.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -291,6 +292,36 @@ program
   .description('List all available capability labels for persona config')
   .action(async () => {
     await listCapabilitiesCommand();
+  });
+
+program
+  .command('set-capabilities')
+  .description('Set capability labels on a persona')
+  .requiredOption('--persona <name>', 'Persona name')
+  .option('--allow <labels>', 'Replace allow list (comma-separated)')
+  .option('--add <labels>', 'Add to allow list (comma-separated)')
+  .option('--remove <labels>', 'Remove from allow list (comma-separated)')
+  .option('--require-approval <labels>', 'Replace requireApproval list (comma-separated)')
+  .option('--show', 'Show current capabilities without modifying')
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .action(async (opts: {
+    persona: string;
+    allow?: string;
+    add?: string;
+    remove?: string;
+    requireApproval?: string;
+    show?: boolean;
+    config: string;
+  }) => {
+    await setCapabilitiesCommand({
+      persona: opts.persona,
+      allow: opts.allow,
+      add: opts.add,
+      remove: opts.remove,
+      requireApproval: opts.requireApproval,
+      show: opts.show,
+      configPath: opts.config,
+    });
   });
 
 program
