@@ -1,0 +1,133 @@
+---
+title: Quick start
+description: Get a Talon agent running in under 10 minutes
+---
+
+# Quick start
+
+This walks through the minimum to get a working Talon agent connected to Telegram. You'll have a daemon running and responding to messages by the end.
+
+## What you need
+
+- Talon installed and built ([installation guide](/docs/getting-started/installation))
+- A Telegram bot token — get one from [@BotFather](https://t.me/BotFather)
+- Your Telegram user ID — send a message to [@userinfobot](https://t.me/userinfobot) to find it
+
+## 1. Set up environment variables
+
+Create a `.env` file in the project root:
+
+```bash
+TELEGRAM_BOT_TOKEN=your-bot-token-here
+```
+
+## 2. Create the config
+
+If you ran `npx talonctl setup`, you already have a `talond.yaml`. Otherwise, create one. Here's the minimal working config:
+
+```yaml
+storage:
+  type: sqlite
+  path: data/talond.sqlite
+
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/assistant/system.md
+    capabilities:
+      allow:
+        - channel.send:my-telegram
+
+channels:
+  - name: my-telegram
+    type: telegram
+    enabled: true
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowedChatIds:
+        - 123456789  # replace with your Telegram user ID
+
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+
+auth:
+  mode: subscription
+
+logLevel: info
+dataDir: data
+```
+
+Replace `123456789` with your actual Telegram user ID.
+
+## 3. Scaffold the persona
+
+```bash
+npx talonctl add-persona --name assistant
+```
+
+This creates `personas/assistant/system.md` from the built-in template. Edit it to set the agent's tone, constraints, and any tool instructions.
+
+## 4. Run migrations
+
+```bash
+npx talonctl migrate --config talond.yaml
+```
+
+## 5. Validate the config
+
+```bash
+npx talonctl doctor --config talond.yaml
+```
+
+All 7 checks should pass. If any fail, the output tells you what to fix.
+
+## 6. Start the daemon
+
+```bash
+node dist/index.js --config talond.yaml
+```
+
+You should see startup logs:
+
+```
+{"level":"info","msg":"daemon starting","version":"..."}
+{"level":"info","msg":"channel started","channel":"my-telegram","type":"telegram"}
+{"level":"info","msg":"daemon ready"}
+```
+
+## 7. Send a message
+
+Open Telegram and send a message to your bot. The agent should respond within a few seconds.
+
+## Connecting via terminal
+
+The terminal channel lets you chat with any persona directly from the CLI — useful for testing without setting up a messaging platform.
+
+Add the terminal channel to your config:
+
+```yaml
+channels:
+  - name: my-terminal
+    type: terminal
+    enabled: true
+    config:
+      port: 7700
+      host: 0.0.0.0
+      token: ${TERMINAL_TOKEN}
+```
+
+Add `TERMINAL_TOKEN=your-secret` to `.env`, add a binding, restart the daemon, then connect:
+
+```bash
+talonctl chat --host localhost --port 7700 --token your-secret
+```
+
+You get a rendered Markdown terminal client with a typing spinner while the agent works.
+
+## Next steps
+
+- [Configuration reference](/docs/getting-started/configuration) — all config options explained
+- [Personas guide](/docs/guides/personas) — system prompts, capabilities, and model config
+- [Channels guide](/docs/guides/channels) — setup for every supported channel

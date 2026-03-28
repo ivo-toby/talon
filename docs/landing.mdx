@@ -1,0 +1,103 @@
+{/* ============================================================
+    LANDING PAGE COPY — talond.dev
+    Structured sections for Astro Starlight or custom layout
+    ============================================================ */}
+
+{/* ---- HERO ---- */}
+
+# Your AI agent. Your server. Your rules.
+
+**Talon** is a self-hosted autonomous agent daemon. Connect it to Telegram, Slack, WhatsApp, Discord, or email. Configure personas with their own system prompts and tool policies. Let it run.
+
+No cloud platform. No vendor lock-in. Your data stays on your hardware.
+
+[Get started](/docs/getting-started/installation) · [View on GitHub](https://github.com/ivo-toby/talon)
+
+---
+
+{/* ---- WHY TALON ---- */}
+
+## Why Talon?
+
+**Self-hosted, fully controlled**
+Talon runs on your own server. Messages, sessions, memory — nothing leaves your infrastructure. You own the data and the runtime.
+
+**Built for resilience**
+A durable SQLite-backed message queue survives crashes and restarts. Messages are processed at-least-once with automatic retry and exponential backoff. Dead-lettered items don't vanish silently.
+
+**Secure by default**
+Every tool call goes through a capability policy engine. Personas only get access to what you explicitly grant. Approval gates require human confirmation for high-risk actions. Every side effect is audit-logged.
+
+**Multi-channel, multi-persona**
+One daemon handles Telegram, Slack, Discord, WhatsApp, email, and terminal simultaneously. Each channel can have a different persona — different system prompt, different tools, different permissions.
+
+---
+
+{/* ---- FEATURES GRID ---- */}
+
+## Features
+
+**Persona-per-channel**
+Assign a distinct AI identity to each channel. Each persona has its own system prompt, model selection, tool access, and capability policy.
+
+**Durable message queue**
+Messages survive crashes. SQLite-backed FIFO queue per conversation thread, with configurable retry, backoff, and dead-letter handling.
+
+**Skills — lazy-loaded prompt bundles**
+Package system prompt fragments, MCP server configs, and tool manifests into named skills. Only metadata is loaded into context by default — full content loads on demand, saving thousands of tokens per turn.
+
+**Background agents**
+Spawn long-running Claude Code workers for deep tasks without blocking the conversation. The daemon tracks workers to completion and delivers results back through the normal channel.
+
+**Built-in sub-agents**
+Offload mechanical tasks — file search, memory retrieval, grooming, session summarization — to cheap Haiku-class models. Keeps foreground inference costs low.
+
+**Per-thread memory**
+Every conversation thread gets structured working memory. Facts, summaries, and notes persist across sessions and are retrieved intelligently via the `memory-retriever` sub-agent.
+
+**Observability via Langfuse**
+Every agent run produces a Langfuse trace with spans for tool calls, LLM generations, and context management events. Self-hosted or cloud, zero overhead when disabled.
+
+**Hot reload**
+Change config, personas, and skills without restarting the daemon. `talonctl reload` applies changes in seconds.
+
+---
+
+{/* ---- HOW IT WORKS ---- */}
+
+## How it works
+
+**1. Install**
+Clone the repo, run `npm install && npm run build`. Node 22+ and Claude Code (or Gemini CLI) are the only external requirements. SQLite ships with the package.
+
+**2. Configure**
+Run `npx talonctl setup` for an interactive walkthrough. Add channels with `talonctl add-channel`, create personas with `talonctl add-persona`, bind them together, then validate with `talonctl doctor`.
+
+**3. Connect**
+Start the daemon: `node dist/index.js --config talond.yaml`. Your Telegram bot, Slack app, or WhatsApp number is now backed by a persistent AI agent running on your hardware.
+
+---
+
+{/* ---- CHANNEL CONNECTORS ---- */}
+
+## Channel connectors
+
+| Channel | Status | Notes |
+|---|---|---|
+| Telegram | Stable | Long polling, MarkdownV2, allowedChatIds filter |
+| Slack | Stable | Socket Mode, mrkdwn formatting |
+| WhatsApp (Baileys) | Stable | WhatsApp Web bridge, self-chat or dedicated number |
+| WhatsApp Business | Stable | Meta Cloud API, requires webhook server |
+| Terminal | Stable | WebSocket + `talonctl chat`, rendered markdown |
+| Discord | Partial | Send implemented, Gateway inbound coming |
+| Email | Beta | IMAP polling + SMTP, not yet tested end-to-end |
+
+---
+
+{/* ---- FOOTER CTA ---- */}
+
+## Ready to run your own agent?
+
+Talon is open source under AGPL-3.0. It runs on any Linux server with Node 22+ and Claude Code. Setup takes under 10 minutes.
+
+[Read the installation guide](/docs/getting-started/installation) · [View on GitHub](https://github.com/ivo-toby/talon)

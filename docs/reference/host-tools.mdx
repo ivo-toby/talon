@@ -1,0 +1,172 @@
+---
+title: Host tools reference
+description: Built-in MCP tools available to Talon agents
+---
+
+# Host tools reference
+
+Talon exposes a set of built-in tools to agents via an internal MCP server (`__talond_host_tools`) over a Unix socket. Every tool call is policy-checked against the persona's capability list and audit-logged.
+
+Agents never interact with channels, the database, or the network directly — all side effects go through these tools.
+
+---
+
+## schedule_manage
+
+Create, list, update, and delete scheduled tasks. Requires `schedule.manage` capability.
+
+**Actions:**
+
+| Action | Description |
+|---|---|
+| `create` | Create a new schedule |
+| `list` | List all active schedules |
+| `update` | Modify an existing schedule |
+| `delete` | Cancel and remove a schedule |
+
+**Parameters for `create`:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `type` | `cron \| interval \| once` | Schedule type |
+| `expression` | string | Cron expression (`0 9 * * *`) or interval in ms (`3600000`) |
+| `runAt` | ISO 8601 string | For `once` type: exact run time |
+| `prompt` | string | Prompt to send when the schedule fires |
+| `promptFile` | string | Path to a prompt file (alternative to inline `prompt`) |
+| `persona` | string | Persona name to run the prompt as |
+| `channel` | string | Channel name to send the result to |
+| `timeoutMs` | integer | Optional execution timeout |
+
+**Parameters for `delete` / `update`:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `scheduleId` | string | ID returned by `create` or `list` |
+
+---
+
+## channel_send
+
+Send a message to a channel connector. Requires `channel.send:<channel>` capability.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `channel` | string | Channel name |
+| `threadId` | string | Thread ID to send to |
+| `content` | string | Message content (Markdown) |
+
+The daemon converts Markdown to the channel's native format automatically (MarkdownV2 for Telegram, mrkdwn for Slack, etc.).
+
+---
+
+## memory_access
+
+Read and write structured per-thread memory items. Requires `memory.access:*` capability.
+
+**Actions:**
+
+| Action | Description |
+|---|---|
+| `read` | Read memory items for the current thread |
+| `write` | Write or update a memory item |
+| `delete` | Delete a memory item by ID |
+| `list` | List all memory items for the current thread |
+
+**Memory item types:** `fact`, `summary`, `note`
+
+| Parameter | Type | Description |
+|---|---|---|
+| `action` | string | `read`, `write`, `delete`, `list` |
+| `type` | string | Memory item type (for write) |
+| `content` | string | Item content (for write) |
+| `itemId` | string | Item ID (for delete) |
+| `query` | string | Search query (for read) |
+
+---
+
+## net_http
+
+Fetch external URLs. Requires `net.http` capability.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `url` | string | URL to fetch |
+| `method` | string | HTTP method (default: `GET`) |
+| `headers` | object | Request headers |
+| `body` | string | Request body (for POST/PUT) |
+| `timeoutMs` | integer | Request timeout in ms |
+
+Returns the response status, headers, and body.
+
+---
+
+## db_query
+
+Read-only database queries against a restricted set of tables. Requires `db.query` capability.
+
+**Allowed tables:**
+
+| Table | Contents |
+|---|---|
+| `memory_items` | Per-thread memory facts, summaries, notes |
+| `schedules` | Scheduled tasks |
+| `messages` | Conversation messages |
+| `threads` | Conversation threads |
+
+**Security restrictions:**
+
+- SELECT-only — write keywords are rejected at the regex pre-check stage
+- Complex patterns rejected: UNION, subqueries, CTEs, INTERSECT, EXCEPT
+- Queries are automatically scoped to the current thread and persona
+- Hard row limit: 1,000 rows per query
+- Uses a separate read-only SQLite connection
+
+| Parameter | Type | Description |
+|---|---|---|
+| `query` | string | SQL SELECT statement |
+| `params` | array | Query parameters (parameterized queries only) |
+
+---
+
+## subagent_invoke
+
+Invoke a sub-agent by name and return its result. Requires `subagent.invoke:*` (or `subagent.invoke:<name>`) capability.
+
+| Parameter | Type | Description |
+|---|---|---|
+| `name` | string | Sub-agent name |
+| `input` | object | Input payload (schema varies by sub-agent) |
+
+Built-in sub-agents:
+
+| Name | Input schema | Returns |
+|---|---|---|
+| `file-searcher` | `{ query, rootPaths?, extensions?, maxFileSize? }` | Ranked file paths with snippets |
+| `memory-retriever` | `{ query, topK?, threshold? }` | Ranked memory items with relevance scores |
+| `memory-groomer` | `{ periodMs? }` | `{ pruned, consolidated, kept }` counts |
+| `session-summarizer` | `{ transcript }` | `{ keyFacts, openThreads, summary }` |
+
+---
+
+## background_agent
+
+Spawn and manage long-running background Claude Code workers. Requires `subagent.background` capability.
+
+**Actions:**
+
+| Action | Description |
+|---|---|
+| `spawn` | Start a new background worker |
+| `status` | Check the status of a running worker |
+| `cancel` | Cancel a running worker |
+| `profiles` | List available background agent profiles |
+
+**Parameters for `spawn`:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `task` | string | Task description / prompt for the worker |
+| `profile` | string | Agent profile name (from `profiles` action) |
+| `timeoutMinutes` | integer | Override `defaultTimeoutMinutes` |
+
+Returns a task ID immediately. The worker runs asynchronously and sends a completion message to the originating thread when done.

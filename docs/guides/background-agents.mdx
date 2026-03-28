@@ -1,0 +1,112 @@
+---
+title: Background agents
+description: Spawn long-running Claude Code workers for deep tasks
+---
+
+# Background agents
+
+Background agents are long-running Claude Code CLI workers that run out-of-band — they don't block the foreground conversation. Use them for tasks that need the full Claude Code runtime but shouldn't tie up the agent mid-conversation.
+
+## When to use background agents
+
+Good use cases:
+- Repo-wide refactoring or code analysis
+- Large document processing or research
+- Tasks that take 5+ minutes and don't need turn-by-turn interaction
+
+Not appropriate for:
+- Quick lookups or calculations (use sub-agents instead)
+- Tasks that need access to the conversation history in real time
+- Anything that needs to send multiple incremental messages back
+
+## How it works
+
+The foreground agent calls `background_agent` with a task description. Talon spawns a Claude Code CLI process, tracks it in SQLite, and returns a task ID immediately. The foreground conversation continues normally.
+
+When the background worker finishes (or times out, or fails), Talon delivers a completion message to the originating thread via the normal queue and channel-send path.
+
+Background workers:
+- Inherit the persona's system prompt and MCP servers from assigned skills
+- Do **not** have access to Talon's host-tools MCP server (no channel send, no memory write, no recursive spawning)
+- Are subject to `maxConcurrent` and `defaultTimeoutMinutes` limits
+- Have their state persisted — completion/failure/timeout/cancellation are all recorded
+
+## Configuration
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 3
+  defaultTimeoutMinutes: 30
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Globally enable background workers |
+| `maxConcurrent` | `3` | Maximum simultaneous workers (1–10) |
+| `defaultTimeoutMinutes` | `30` | Default wall-clock timeout (15–480 min) |
+| `defaultProvider` | `claude-code` | Provider used for workers |
+| `claudePath` | — | Explicit path to the Claude Code binary if not on PATH |
+
+## Enabling for a persona
+
+Grant `subagent.background` in the persona's capabilities:
+
+```yaml
+personas:
+  - name: assistant
+    capabilities:
+      allow:
+        - subagent.background
+        - channel.send:my-telegram
+```
+
+## Profiles
+
+Background agent profiles are named presets that configure what tools and system prompt the worker gets. The agent can call `background_agent action="profiles"` to discover available profiles before spawning.
+
+To check what profiles are available, instruct the agent to do so in the system prompt:
+
+```markdown
+## Background Agents
+
+You can delegate work to specialized background agents. Use
+`background_agent action="profiles"` to discover what profiles are available.
+When asked about your capabilities or what agents you can use, always check
+profiles first rather than guessing.
+```
+
+## Example interaction
+
+User sends: *"Analyze all TypeScript files in `/home/user/project` and produce a dependency graph."*
+
+The foreground agent:
+1. Calls `background_agent action="profiles"` to check available profiles
+2. Selects an appropriate profile
+3. Calls `background_agent action="spawn"` with the task description and timeout
+4. Immediately responds to the user: *"Started analysis. I'll let you know when it's done — this should take about 15 minutes."*
+
+When the worker finishes, the user receives a completion message with results.
+
+## Limits and constraints
+
+- Workers cannot spawn additional background agents
+- Workers cannot send messages directly — results arrive via the daemon after completion
+- If a worker exceeds `defaultTimeoutMinutes`, it's killed and the originating thread is notified
+- The daemon enforces `maxConcurrent` — if the limit is reached, new spawn requests queue until a slot opens
+
+## Monitoring
+
+Check running background workers via daemon status:
+
+```bash
+npx talonctl status
+```
+
+The status output includes active background worker count and any recently completed/failed tasks.

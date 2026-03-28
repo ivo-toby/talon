@@ -1,0 +1,397 @@
+---
+title: talonctl reference
+description: Complete CLI reference for the talonctl management tool
+---
+
+# talonctl reference
+
+`talonctl` is the management CLI for the Talon daemon. All commands are available via `npx talonctl <command>` or `node dist/cli/index.js <command>`.
+
+Most commands read `talond.yaml` from the current directory by default. Override with `--config <path>`.
+
+---
+
+## Daemon management
+
+### status
+
+Show daemon health, active channels, queue depth, and token usage.
+
+```bash
+npx talonctl status
+npx talonctl status --timeout 5000
+```
+
+| Flag | Description |
+|---|---|
+| `--timeout <ms>` | IPC timeout in ms (default: 5000) |
+
+### reload
+
+Hot-reload config, personas, and skills without restarting the daemon.
+
+```bash
+npx talonctl reload
+npx talonctl reload --config talond.yaml
+```
+
+### chat
+
+Connect to a persona via the terminal channel. Requires a running terminal channel connector.
+
+```bash
+npx talonctl chat --host localhost --port 7700
+npx talonctl chat --host 10.0.1.95 --port 7700 --persona researcher
+npx talonctl chat --host localhost --port 7700 --client-id my-laptop --token my-secret
+```
+
+| Flag | Description |
+|---|---|
+| `--host <host>` | Daemon host (default: `localhost`) |
+| `--port <port>` | Terminal channel port (default: `7700`) |
+| `--token <token>` | Auth token (or `TERMINAL_TOKEN` env var) |
+| `--persona <name>` | Persona to connect to |
+| `--client-id <id>` | Stable client ID for thread persistence |
+
+---
+
+## Setup and first-run
+
+### setup
+
+Interactive first-time setup. Checks the environment, creates directories, and generates a starter `talond.yaml`.
+
+```bash
+npx talonctl setup
+npx talonctl setup --config talond.yaml --data-dir data
+```
+
+### doctor
+
+Run 7 diagnostic checks: OS compatibility, Node version, Docker, directories, config syntax, pending migrations, and deep config validation.
+
+```bash
+npx talonctl doctor
+npx talonctl doctor --config talond.yaml
+```
+
+### migrate
+
+Apply pending database schema migrations.
+
+```bash
+npx talonctl migrate
+npx talonctl migrate --config talond.yaml
+```
+
+### env-check
+
+Audit `talond.yaml` for `${ENV_VAR}` placeholders and report any that are missing from the environment.
+
+```bash
+npx talonctl env-check
+npx talonctl env-check --config talond.yaml
+```
+
+### config-show
+
+Display the fully resolved config with all secrets masked.
+
+```bash
+npx talonctl config-show
+npx talonctl config-show --config talond.yaml
+```
+
+---
+
+## Channel management
+
+### add-channel
+
+Add a channel connector to `talond.yaml`. Prompts interactively for connector-specific fields.
+
+```bash
+npx talonctl add-channel --name my-telegram --type telegram
+npx talonctl add-channel --name work-slack --type slack
+```
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | Channel name |
+| `--type <type>` | `telegram`, `slack`, `discord`, `whatsappBusiness`, `whatsappBaileys`, `email`, `terminal` |
+
+### list-channels
+
+List all configured channels with type and enabled status.
+
+```bash
+npx talonctl list-channels
+```
+
+### remove-channel
+
+Remove a channel and cascade-delete its bindings.
+
+```bash
+npx talonctl remove-channel --name old-slack
+```
+
+---
+
+## Persona management
+
+### add-persona
+
+Scaffold a persona directory and add it to `talond.yaml`. Uses `templates/<name>/system.md` if available.
+
+```bash
+npx talonctl add-persona --name assistant
+npx talonctl add-persona --name researcher
+```
+
+### list-personas
+
+List all configured personas with their bound channels.
+
+```bash
+npx talonctl list-personas
+```
+
+### remove-persona
+
+Remove a persona, its directory, and all its bindings.
+
+```bash
+npx talonctl remove-persona --name old-persona
+```
+
+### set-capabilities
+
+Set capability labels for a persona.
+
+```bash
+npx talonctl set-capabilities --persona assistant \
+  --allow "channel.send:my-telegram,memory.access:*,net.http"
+```
+
+### list-capabilities
+
+List capability labels for all personas.
+
+```bash
+npx talonctl list-capabilities
+```
+
+---
+
+## Bindings
+
+### bind
+
+Bind a persona to a channel.
+
+```bash
+npx talonctl bind --persona assistant --channel my-telegram
+```
+
+The first binding for a channel automatically becomes the default.
+
+### unbind
+
+Remove a persona-channel binding.
+
+```bash
+npx talonctl unbind --persona assistant --channel my-telegram
+```
+
+---
+
+## Skills
+
+### add-skill
+
+Scaffold a skill and attach it to a persona.
+
+```bash
+# SKILL.md format (recommended)
+npx talonctl add-skill --name web-search --persona assistant --format skillmd
+
+# Legacy YAML format
+npx talonctl add-skill --name web-search --persona assistant --format yaml
+```
+
+### list-skills
+
+List all configured skills across all personas.
+
+```bash
+npx talonctl list-skills
+```
+
+### add-mcp
+
+Add an MCP server to a persona.
+
+```bash
+npx talonctl add-mcp --name brave-search \
+  --persona assistant \
+  --command npx \
+  --args "@modelcontextprotocol/server-brave-search" \
+  --transport stdio
+```
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | MCP server name |
+| `--persona <name>` | Target persona |
+| `--command <cmd>` | Command to launch the server |
+| `--args <args>` | Command arguments (comma-separated) |
+| `--transport <t>` | `stdio` or `http` |
+
+---
+
+## Scheduling
+
+### add-schedule
+
+Add a scheduled task manually.
+
+```bash
+npx talonctl add-schedule \
+  --persona assistant \
+  --channel my-telegram \
+  --type cron \
+  --expression "0 9 * * 1-5" \
+  --prompt "Good morning. What should I focus on today?"
+```
+
+| Flag | Description |
+|---|---|
+| `--persona <name>` | Persona name |
+| `--channel <name>` | Channel name |
+| `--type <type>` | `cron`, `interval`, `once` |
+| `--expression <expr>` | Cron expression or interval in ms |
+| `--run-at <datetime>` | ISO 8601 datetime for `once` type |
+| `--prompt <text>` | Prompt to execute |
+
+### list-schedules
+
+List all active schedules.
+
+```bash
+npx talonctl list-schedules
+```
+
+### remove-schedule
+
+Cancel and remove a schedule by ID.
+
+```bash
+npx talonctl remove-schedule --id <schedule-id>
+```
+
+---
+
+## Providers
+
+### add-provider
+
+Add or configure an AI provider.
+
+```bash
+npx talonctl add-provider
+```
+
+### list-providers
+
+List configured providers.
+
+```bash
+npx talonctl list-providers
+```
+
+### set-default-provider
+
+Set the default provider for agent execution.
+
+```bash
+npx talonctl set-default-provider --provider claude-code
+```
+
+### test-provider
+
+Test connectivity and authentication for a provider.
+
+```bash
+npx talonctl test-provider --provider claude-code
+```
+
+---
+
+## Sub-agents
+
+### run-subagent
+
+Invoke a sub-agent directly without a running daemon. Useful for testing.
+
+```bash
+# File search
+npx talonctl run-subagent --name file-searcher \
+  --input '{"query": "deployment steps"}'
+
+# Session summarizer
+npx talonctl run-subagent --name session-summarizer \
+  --input '{"transcript": "User: Hi\nAssistant: Hello!"}'
+
+# Custom sub-agents directory
+npx talonctl run-subagent --name my-agent --input '{}' \
+  --subagents-dir ./subagents
+```
+
+Note: `memory-retriever` and `memory-groomer` require a running daemon (they need DB access).
+
+---
+
+## Operations
+
+### backup
+
+Backup the database, config, personas, and skills.
+
+```bash
+npx talonctl backup
+npx talonctl backup --config talond.yaml --output /backups/talon-$(date +%Y%m%d)
+```
+
+### queue-purge
+
+Purge queue items by status.
+
+```bash
+# Purge completed, pending, and failed items (default)
+npx talonctl queue-purge
+
+# Purge specific statuses
+npx talonctl queue-purge --statuses dead_letter,failed
+
+# Purge ALL items including in-flight
+npx talonctl queue-purge --all
+```
+
+---
+
+## WhatsApp authentication
+
+### whatsapp-auth
+
+Authenticate a WhatsApp Baileys connector by scanning a QR code.
+
+```bash
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
+```
+
+| Flag | Description |
+|---|---|
+| `--auth-dir <path>` | Directory to save credentials |
+| `--timeout <seconds>` | QR code timeout in seconds (default: 120) |

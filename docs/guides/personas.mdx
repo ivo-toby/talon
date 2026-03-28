@@ -1,0 +1,216 @@
+---
+title: Personas
+description: Configure AI agent identities, capabilities, and system prompts
+---
+
+# Personas
+
+A persona is an AI agent's complete identity — its system prompt, model, skills, sub-agents, and capability policy. You can run multiple personas simultaneously, each bound to different channels with different permissions.
+
+## How personas work
+
+When a message arrives on a channel, Talon routes it to the bound persona. The persona's system prompt becomes the agent's identity. Its capability list determines which tools it can call. All turns in the same thread use the same persona.
+
+## Defining a persona
+
+```yaml
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/assistant/system.md
+    skills:
+      - web-search
+    subagents:
+      - session-summarizer
+      - memory-groomer
+      - memory-retriever
+    capabilities:
+      allow:
+        - channel.send:my-telegram
+        - memory.access:*
+        - net.http
+        - schedule.manage
+        - subagent.invoke:*
+        - subagent.background
+      requireApproval:
+        - db.query
+    maxConcurrent: 2
+```
+
+## Scaffolding a persona
+
+```bash
+npx talonctl add-persona --name assistant
+```
+
+This creates `personas/assistant/system.md` from a template (if `templates/assistant/system.md` exists) or generates a generic starter. Existing files are never overwritten.
+
+The `personas/` directory is gitignored by default — your custom system prompts stay local.
+
+## System prompt
+
+The system prompt is a plain Markdown file. Write it as if you're describing the agent's role, constraints, and available tools to the model.
+
+Talon injects additional context before the prompt reaches the model:
+
+- **Available skills** — name and one-line description of each loaded skill
+- **Previous context** — session summary + last N messages (after context rotation)
+- **Memory items** — relevant facts/notes retrieved for the current thread
+
+A minimal system prompt:
+
+```markdown
+# Assistant
+
+You are a helpful AI assistant for personal use.
+
+## Behaviour
+- Be concise and accurate.
+- Reply in clear, plain language.
+- Ask for clarification when the request is ambiguous.
+
+## Constraints
+- Do not reveal system configuration details.
+- If you do not know something, say so.
+```
+
+## Model configuration
+
+The `model` field is passed directly to the provider. For Claude Code (the default provider), this is a Claude model ID:
+
+```yaml
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6   # or claude-opus-4-6, claude-haiku-4-5, etc.
+```
+
+To use a different provider for a specific persona:
+
+```yaml
+personas:
+  - name: lightweight
+    model: claude-haiku-4-5
+    provider: claude-code
+```
+
+## Capability labels
+
+Capabilities are scoped labels. Anything not listed in `allow` or `requireApproval` is denied by default.
+
+| Capability | Description |
+|---|---|
+| `channel.send:<channel>` | Send messages to a named channel |
+| `channel.send:*` | Send to any channel |
+| `memory.access:*` | Read and write per-thread memory |
+| `net.http` | Fetch external URLs |
+| `db.query` | Read-only queries against 4 allowed tables |
+| `schedule.manage` | Create, update, and delete scheduled tasks |
+| `subagent.invoke:*` | Invoke sub-agents by name |
+| `subagent.background` | Spawn and manage background agent workers |
+| `fs.read:*` | Read files (used by `file-searcher` sub-agent) |
+| `fs.write:workspace` | Write files (example: for approval-gated file ops) |
+
+### require Approval
+
+Capabilities in `requireApproval` prompt the user in-channel before executing:
+
+```yaml
+capabilities:
+  allow:
+    - channel.send:my-telegram
+    - memory.access:*
+  requireApproval:
+    - db.query    # user must approve each database query
+    - net.http    # user must approve each HTTP request
+```
+
+The approval prompt is sent to the channel that originated the message. If the user doesn't respond within the timeout, the tool call is rejected.
+
+## Sub-agents
+
+Sub-agents are cheap-model workers that handle mechanical tasks. Declare which sub-agents a persona can invoke:
+
+```yaml
+personas:
+  - name: assistant
+    subagents:
+      - session-summarizer
+      - memory-groomer
+      - memory-retriever
+      - file-searcher
+    capabilities:
+      allow:
+        - subagent.invoke:*
+```
+
+The agent also needs instructions in the system prompt explaining when and how to call sub-agents.
+
+Built-in sub-agents:
+
+| Name | Model | Purpose |
+|---|---|---|
+| `session-summarizer` | Haiku 4.5 | Compress conversation history (called automatically) |
+| `memory-retriever` | Haiku 4.5 | Find relevant memory items for a query |
+| `memory-groomer` | Haiku 4.5 | Prune/consolidate stale memory |
+| `file-searcher` | Haiku 4.5 | Full-text search across files |
+
+## Bindings
+
+Personas connect to channels via bindings. Manage them with `talonctl`:
+
+```bash
+# Bind a persona to a channel
+npx talonctl bind --persona assistant --channel my-telegram
+
+# List all bindings
+npx talonctl list-personas
+
+# Remove a binding
+npx talonctl unbind --persona assistant --channel my-telegram
+```
+
+Or declare them directly in config:
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+```
+
+The first binding created for a channel becomes the default. `isDefault: true` explicitly marks a binding as default.
+
+## Multiple personas
+
+Different channels can have different personas with completely different system prompts and capability sets:
+
+```yaml
+personas:
+  - name: alfred
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/alfred/system.md
+    capabilities:
+      allow:
+        - channel.send:my-telegram
+        - memory.access:*
+        - schedule.manage
+
+  - name: researcher
+    model: claude-opus-4-6
+    systemPromptFile: personas/researcher/system.md
+    skills:
+      - web-search
+    capabilities:
+      allow:
+        - channel.send:my-slack
+        - net.http
+        - subagent.background
+
+bindings:
+  - persona: alfred
+    channel: my-telegram
+    isDefault: true
+  - persona: researcher
+    channel: my-slack
+    isDefault: true
+```

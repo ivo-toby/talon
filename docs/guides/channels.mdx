@@ -1,0 +1,290 @@
+---
+title: Channels
+description: Connect Talon to Telegram, Slack, WhatsApp, Discord, email, and terminal
+---
+
+# Channels
+
+A channel is a messaging connector. Talon normalizes inbound messages from every channel into a common format, routes them to the bound persona, and converts responses back to the channel's native formatting.
+
+## Common options
+
+Every channel entry accepts these fields regardless of type:
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | required | Unique identifier — used in bindings and capability labels |
+| `type` | required | Connector type (see below) |
+| `enabled` | `true` | Disable a channel without removing it from config |
+| `showToolCalls` | `false` | Send a status message on each tool call (useful for debugging) |
+
+```yaml
+channels:
+  - name: my-slack
+    type: slack
+    enabled: true
+    showToolCalls: true   # sends "🌐 Using Brave Search: web search" on each tool call
+    config:
+      botToken: ${SLACK_BOT_TOKEN}
+      appToken: ${SLACK_APP_TOKEN}
+```
+
+---
+
+## Telegram
+
+Long-polling connector using the Telegram Bot API. Create a bot with [@BotFather](https://t.me/BotFather) and get a token.
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    enabled: true
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      pollingTimeoutSec: 30
+      allowedChatIds:
+        - 123456789   # your Telegram user ID
+```
+
+| Config field | Description |
+|---|---|
+| `botToken` | Bot token from @BotFather |
+| `pollingTimeoutSec` | Long-poll timeout in seconds (default: 30) |
+| `allowedChatIds` | Whitelist of chat IDs that can message the bot |
+
+**Format:** MarkdownV2. Bold, italic, inline code, and code blocks render natively in Telegram.
+
+**Thread mapping:** Each Telegram `chat_id` is a separate conversation thread with its own memory.
+
+---
+
+## Slack
+
+Event-driven connector using Slack's Socket Mode. Requires a Slack app with the appropriate OAuth scopes.
+
+```yaml
+channels:
+  - name: my-slack
+    type: slack
+    enabled: true
+    config:
+      botToken: ${SLACK_BOT_TOKEN}
+      appToken: ${SLACK_APP_TOKEN}
+      signingSecret: ${SLACK_SIGNING_SECRET}
+```
+
+| Config field | Description |
+|---|---|
+| `botToken` | Bot user OAuth token (`xoxb-...`) — needs `chat:write`, `app_mentions:read` |
+| `appToken` | App-level token (`xapp-...`) — needs `connections:write` for Socket Mode |
+| `signingSecret` | Signing secret for request verification |
+
+**Required Slack app permissions:**
+- OAuth scopes: `app_mentions:read`, `channels:history`, `chat:write`, `im:history`, `im:write`
+- Event subscriptions: `message.im`, `app_mention`
+- Enable Socket Mode in your app settings
+
+**Format:** Slack mrkdwn (`*bold*`, `_italic_`, `` `code` ``).
+
+**Thread mapping:** `channel_id:thread_ts` — threads are preserved as expected in Slack.
+
+---
+
+## WhatsApp Baileys
+
+WhatsApp Web bridge via the [Baileys](https://github.com/WhiskeySockets/Baileys) library. No Meta Business account needed — authenticates like a regular WhatsApp Web client.
+
+Baileys is an optional dependency. Install it before using this connector:
+
+```bash
+npm install @whiskeysockets/baileys
+```
+
+### Dedicated number
+
+Use a second WhatsApp number as the bot account. Others message the bot number directly.
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsappBaileys
+    enabled: true
+    config:
+      authDir: ./baileys-auth
+      allowedSenders:
+        - '96490886312027'   # sender ID from logs (see below)
+```
+
+### Self-chat mode
+
+Use your personal WhatsApp number. The bot only responds in your "Message Yourself" thread.
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsappBaileys
+    enabled: true
+    config:
+      authDir: ./baileys-auth
+      selfChat: true
+      triggerWords:
+        - '@Talon'   # optional — only process messages starting with this word
+```
+
+With `triggerWords`, the trigger is stripped before the message reaches the agent. `@Talon what's the weather?` becomes `what's the weather?`.
+
+### Authentication
+
+Authenticate by scanning a QR code before starting the daemon:
+
+```bash
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+```
+
+Scan the QR code in WhatsApp on your phone. Credentials are saved to `authDir`. The daemon uses them automatically on startup — no QR code at runtime.
+
+To re-authenticate: delete the `authDir` folder and run the command again.
+
+### Finding sender IDs
+
+WhatsApp uses opaque LID identifiers (`96490886312027@lid`) that don't match phone numbers directly. To find them:
+
+1. Set `logLevel: debug` in `talond.yaml`
+2. Restart the daemon
+3. Send a test message from the phone you want to allow
+4. Find the log line `whatsapp-baileys: inbound message received` — the `jid` field shows the full ID
+5. Copy the part before the `@` into `allowedSenders`
+6. Set `logLevel: info` and restart
+
+---
+
+## WhatsApp Business
+
+Meta Cloud API connector. Requires a Meta Business account with a WhatsApp-enabled phone number and a public webhook URL.
+
+```yaml
+channels:
+  - name: my-whatsapp-business
+    type: whatsappBusiness
+    enabled: true
+    config:
+      phoneNumberId: '123456789'
+      accessToken: ${WHATSAPP_ACCESS_TOKEN}
+      verifyToken: ${WHATSAPP_VERIFY_TOKEN}
+      appSecret: ${WHATSAPP_APP_SECRET}
+      webhookPort: 3000
+      webhookHost: '0.0.0.0'
+      webhookPath: '/webhook'
+```
+
+| Config field | Description |
+|---|---|
+| `phoneNumberId` | WhatsApp Business phone number ID from Meta Developer Console |
+| `accessToken` | Permanent system user access token |
+| `verifyToken` | Token you choose — used for webhook verification |
+| `appSecret` | App secret for HMAC-SHA256 webhook signature validation |
+| `webhookPort` | Port for the embedded webhook HTTP server (default: 3000) |
+| `webhookHost` | Bind address (default: `0.0.0.0`) |
+| `webhookPath` | Webhook path (default: `/webhook`) |
+
+The embedded webhook server handles Meta's verification handshake (GET) and signed event delivery (POST). You need a public URL pointing to this server — use nginx, Caddy, or ngrok.
+
+---
+
+## Terminal
+
+WebSocket-based channel for direct CLI access. Connect with `talonctl chat` from any machine.
+
+```yaml
+channels:
+  - name: my-terminal
+    type: terminal
+    enabled: true
+    config:
+      port: 7700
+      host: 0.0.0.0
+      token: ${TERMINAL_TOKEN}
+```
+
+| Config field | Description |
+|---|---|
+| `port` | WebSocket server port (default: 7700) |
+| `host` | Bind address |
+| `token` | Shared secret for authentication |
+
+Connect:
+
+```bash
+export TERMINAL_TOKEN=your-secret-token
+
+talonctl chat --host localhost --port 7700
+talonctl chat --host 10.0.1.95 --port 7700 --persona researcher
+talonctl chat --host localhost --port 7700 --client-id my-laptop
+```
+
+`--persona` switches which persona handles the session. `--client-id` gives your client a stable identity — reconnecting with the same ID resumes the same thread.
+
+The client renders Markdown via `marked-terminal` and shows a spinner while the agent is working.
+
+---
+
+## Discord
+
+Gateway-based connector. Send is implemented; inbound reception from the Discord Gateway is not yet complete (see TASK-043).
+
+```yaml
+channels:
+  - name: my-discord
+    type: discord
+    enabled: true
+    config:
+      botToken: ${DISCORD_BOT_TOKEN}
+      applicationId: '123456789'
+      allowedChannelIds:
+        - '987654321'
+```
+
+---
+
+## Email
+
+IMAP polling + SMTP send. Not yet tested end-to-end — treat as beta.
+
+```yaml
+channels:
+  - name: my-email
+    type: email
+    enabled: true
+    config:
+      imapHost: imap.gmail.com
+      imapPort: 993
+      imapUser: agent@example.com
+      imapPass: ${EMAIL_PASSWORD}
+      imapSecure: true
+      smtpHost: smtp.gmail.com
+      smtpPort: 587
+      smtpUser: agent@example.com
+      smtpPass: ${EMAIL_PASSWORD}
+      smtpSecure: false
+      fromAddress: 'Talon <agent@example.com>'
+```
+
+Thread tracking via `In-Reply-To` / `References` headers. Outbound format is Markdown converted to HTML.
+
+---
+
+## Managing channels
+
+```bash
+# Add a channel (interactive prompts for config fields)
+npx talonctl add-channel --name my-telegram --type telegram
+
+# List all configured channels
+npx talonctl list-channels
+
+# Remove a channel (cascades to bindings)
+npx talonctl remove-channel --name old-slack
+
+# Disable without removing (edit talond.yaml: enabled: false)
+```

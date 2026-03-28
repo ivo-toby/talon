@@ -1,0 +1,310 @@
+---
+title: Configuration
+description: All talond.yaml configuration sections explained
+---
+
+# Configuration
+
+Talon uses a single YAML file (`talond.yaml` by default). All fields are optional — sensible defaults apply when omitted. Credentials use `${ENV_VAR}` substitution.
+
+Pass a custom config path with `--config`:
+
+```bash
+node dist/index.js --config /etc/talon/talond.yaml
+```
+
+## Environment variable substitution
+
+Any config value can reference an environment variable:
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+```
+
+Variables are loaded from `.env` at startup. Use `talonctl env-check` to audit for missing variables.
+
+---
+
+## storage
+
+SQLite database location.
+
+```yaml
+storage:
+  type: sqlite
+  path: data/talond.sqlite
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `type` | `sqlite` | Database backend. Only `sqlite` is supported. |
+| `path` | `data/talond.sqlite` | Path to the SQLite file. Created on first run. |
+
+---
+
+## personas
+
+An array of agent personas. Each persona has its own system prompt, model, skills, and capability policy.
+
+```yaml
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/assistant/system.md
+    skills:
+      - web-search
+    subagents:
+      - session-summarizer
+      - memory-groomer
+      - memory-retriever
+    capabilities:
+      allow:
+        - channel.send:my-telegram
+        - memory.access:*
+        - net.http
+        - schedule.manage
+        - subagent.invoke:*
+      requireApproval:
+        - db.query
+    maxConcurrent: 2
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | required | Unique identifier for this persona |
+| `model` | `claude-sonnet-4-6` | Model ID passed to the provider |
+| `provider` | (default provider) | Override the agent runner provider for this persona |
+| `systemPromptFile` | — | Path to the system prompt Markdown file |
+| `skills` | `[]` | List of skill names to attach |
+| `subagents` | `[]` | List of sub-agent names the persona can invoke |
+| `capabilities.allow` | `[]` | Capability labels the persona can use freely |
+| `capabilities.requireApproval` | `[]` | Capability labels that require user confirmation |
+| `maxConcurrent` | — | Max parallel agent runs for this persona |
+
+See [Personas guide](/docs/guides/personas) and [capability labels](/docs/guides/personas#capability-labels) for the full list.
+
+---
+
+## channels
+
+Channel connectors. Each entry has a `type`, a `name`, and a connector-specific `config` block.
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    enabled: true
+    showToolCalls: true
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowedChatIds:
+        - 123456789
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | required | Unique identifier for this channel |
+| `type` | required | `telegram`, `slack`, `discord`, `whatsappBusiness`, `whatsappBaileys`, `email`, `terminal` |
+| `enabled` | `true` | Enable or disable this channel at startup |
+| `showToolCalls` | `false` | Send a status message to the channel on each tool call |
+| `config` | `{}` | Connector-specific configuration (varies by type) |
+
+See the [Channels guide](/docs/guides/channels) for per-connector config fields.
+
+---
+
+## bindings
+
+Route channels to personas.
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: researcher
+    channel: my-slack
+    isDefault: true
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `persona` | required | Persona name |
+| `channel` | required | Channel name |
+| `isDefault` | `false` | Mark as the default binding for this channel |
+
+---
+
+## queue
+
+Controls the durable message queue.
+
+```yaml
+queue:
+  maxAttempts: 3
+  backoffBaseMs: 1000
+  backoffMaxMs: 60000
+  concurrencyLimit: 5
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `maxAttempts` | `3` | Max delivery attempts before dead-lettering |
+| `backoffBaseMs` | `1000` | Initial retry delay in ms |
+| `backoffMaxMs` | `60000` | Max retry delay in ms (exponential backoff cap) |
+| `concurrencyLimit` | `5` | Max messages processed simultaneously |
+
+---
+
+## agentRunner
+
+Foreground agent execution. Configures which provider runs the main conversation agent and how context rotation works.
+
+```yaml
+agentRunner:
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+      contextManagement:
+        enabled: true
+        triggerMetric: cache_read_input_tokens
+        thresholdRatio: 0.5
+        recentMessageCount: 10
+        summarizer: session-summarizer
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `defaultProvider` | `claude-code` | Provider to use when none is specified per-persona |
+| `providers.<name>.enabled` | `true` | Enable this provider |
+| `providers.<name>.command` | `claude` | CLI command to invoke |
+| `providers.<name>.contextWindowTokens` | `200000` | Context window size for rotation calculations |
+| `contextManagement.enabled` | `true` | Enable automatic session rotation |
+| `contextManagement.triggerMetric` | `cache_read_input_tokens` | Token metric to monitor |
+| `contextManagement.thresholdRatio` | `0.5` | Fraction of `contextWindowTokens` that triggers rotation |
+| `contextManagement.recentMessageCount` | `10` | Verbatim messages to include after rotation |
+| `contextManagement.summarizer` | `session-summarizer` | Sub-agent used to compress history |
+
+---
+
+## backgroundAgent
+
+Long-running Claude Code workers for deep tasks.
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 3
+  defaultTimeoutMinutes: 30
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Globally enable background workers |
+| `maxConcurrent` | `3` | Max simultaneous background workers |
+| `defaultTimeoutMinutes` | `30` | Wall-clock timeout per worker (15–480 min) |
+| `defaultProvider` | `claude-code` | Provider for background workers |
+| `claudePath` | — | Explicit path to the Claude Code binary |
+
+---
+
+## auth
+
+AI provider credentials.
+
+```yaml
+auth:
+  mode: subscription
+  providers:
+    anthropic:
+      apiKey: ${SUBAGENT_ANTHROPIC_API_KEY}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+    ollama:
+      baseURL: http://localhost:11434/v1
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `mode` | `subscription` | `subscription` (Claude Code login) or `api_key` |
+| `apiKey` | — | API key for `api_key` mode |
+| `providers.<name>.apiKey` | — | API key for a specific provider |
+| `providers.<name>.baseURL` | — | Custom base URL (for Ollama or proxies) |
+
+---
+
+## scheduler
+
+Controls how often the scheduler checks for due tasks.
+
+```yaml
+scheduler:
+  tickIntervalMs: 5000
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `tickIntervalMs` | `5000` | Scheduler tick interval in ms (minimum 1000) |
+
+---
+
+## langfuse
+
+Observability tracing. Disabled by default.
+
+```yaml
+langfuse:
+  enabled: true
+  publicKey: ${LANGFUSE_PUBLIC_KEY}
+  secretKey: ${LANGFUSE_SECRET_KEY}
+  baseUrl: https://cloud.langfuse.com
+  environment: production
+  exportMode: batched
+  flushAt: 20
+  flushIntervalSeconds: 5
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Enable Langfuse tracing |
+| `publicKey` | — | Required when enabled |
+| `secretKey` | — | Required when enabled |
+| `baseUrl` | `https://cloud.langfuse.com` | Langfuse instance URL |
+| `environment` | `production` | Environment tag on traces |
+| `exportMode` | `batched` | `batched` or `immediate` |
+| `flushAt` | `20` | Batch size before flush |
+| `flushIntervalSeconds` | `5` | Max seconds between flushes |
+
+---
+
+## ipc
+
+Internal daemon-to-CLI communication. Rarely needs changing.
+
+```yaml
+ipc:
+  pollIntervalMs: 500
+  daemonSocketDir: data/ipc/daemon
+```
+
+---
+
+## logLevel and dataDir
+
+```yaml
+logLevel: info   # trace | debug | info | warn | error | fatal
+dataDir: data    # root directory for all runtime data
+```
