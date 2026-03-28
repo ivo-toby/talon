@@ -558,6 +558,7 @@ export class AgentRunner {
                               throw new Error(`channel send failed: ${flushResult.error.message}`);
                             }
                             outputText = '';
+                            fullOutputText += '\n\n';
                           }
                           this.handleProviderToolEvent(
                             generationObservation.getTraceparent(),
@@ -654,7 +655,7 @@ export class AgentRunner {
 
                   return {
                     outputText,
-                    fullOutputText,
+                    fullOutputText: fullOutputText.replace(/\n\n$/, ''),
                     resultSessionId,
                     usage,
                   };

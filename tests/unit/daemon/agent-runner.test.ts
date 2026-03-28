@@ -2372,6 +2372,12 @@ describe('AgentRunner', () => {
       expect(sendCalls).toHaveLength(2);
       expect(sendCalls[0]![1]).toEqual({ body: 'Before tool.' });
       expect(sendCalls[1]![1]).toEqual({ body: 'After tool.' });
+
+      // Verify DB persistence stores the full transcript with block separators
+      expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
+      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as { content: string };
+      const persisted = JSON.parse(insertCall.content);
+      expect(persisted.body).toBe('Before tool.\n\nAfter tool.');
     });
 
     it('sends three separate messages for text → tool → text → tool → text', async () => {
@@ -2434,6 +2440,12 @@ describe('AgentRunner', () => {
       expect(sendCalls[0]![1]).toEqual({ body: 'Block 1.' });
       expect(sendCalls[1]![1]).toEqual({ body: 'Block 2.' });
       expect(sendCalls[2]![1]).toEqual({ body: 'Block 3.' });
+
+      // Verify DB persistence stores the full transcript with block separators
+      expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
+      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as { content: string };
+      const persisted = JSON.parse(insertCall.content);
+      expect(persisted.body).toBe('Block 1.\n\nBlock 2.\n\nBlock 3.');
     });
 
     it('concatenates consecutive text events with no tool between them into a single message', async () => {
