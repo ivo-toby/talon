@@ -10,6 +10,7 @@ describe('BindingRepository', () => {
   let repo: BindingRepository;
   let channelId: string;
   let personaId: string;
+  let personaIdB: string;
 
   beforeEach(() => {
     db = createTestDb();
@@ -31,6 +32,17 @@ describe('BindingRepository', () => {
     personaId = uuid();
     personas.insert({
       id: personaId,
+      name: `persona-${uuid()}`,
+      model: 'claude-sonnet-4-6',
+      system_prompt_file: null,
+      skills: '[]',
+      capabilities: '{}',
+      mounts: '[]',
+      max_concurrent: null,
+    });
+    personaIdB = uuid();
+    personas.insert({
+      id: personaIdB,
       name: `persona-${uuid()}`,
       model: 'claude-sonnet-4-6',
       system_prompt_file: null,
@@ -122,6 +134,51 @@ describe('BindingRepository', () => {
       repo.insert(input);
       repo.delete(input.id);
       expect(repo.findByChannelAndThread(input.channel_id, input.thread_id!)._unsafeUnwrap()).toBeNull();
+    });
+  });
+
+  describe('deleteDefaultForChannel', () => {
+    it('deletes the default binding for a channel', () => {
+      const bindingId = uuid();
+      repo.insert({
+        id: bindingId,
+        channel_id: channelId,
+        thread_id: null,
+        persona_id: personaId,
+        is_default: 1,
+      });
+
+      const result = repo.deleteDefaultForChannel(channelId);
+      expect(result.isOk()).toBe(true);
+
+      const found = repo.findDefaultForChannel(channelId);
+      expect(found.isOk()).toBe(true);
+      expect(found._unsafeUnwrap()).toBeNull();
+    });
+
+    it('does nothing when no default binding exists', () => {
+      const result = repo.deleteDefaultForChannel(channelId);
+      expect(result.isOk()).toBe(true);
+    });
+  });
+
+  describe('updatePersona', () => {
+    it('updates the persona on an existing binding', () => {
+      const bindingId = uuid();
+      repo.insert({
+        id: bindingId,
+        channel_id: channelId,
+        thread_id: null,
+        persona_id: personaId,
+        is_default: 1,
+      });
+
+      const result = repo.updatePersona(bindingId, personaIdB);
+      expect(result.isOk()).toBe(true);
+
+      const found = repo.findDefaultForChannel(channelId);
+      expect(found.isOk()).toBe(true);
+      expect(found._unsafeUnwrap()!.persona_id).toBe(personaIdB);
     });
   });
 });
