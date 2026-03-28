@@ -8,7 +8,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type pino from 'pino';
-import type { TalondConfig } from '../core/config/config-types.js';
+import type { TalondConfig, BindingConfig } from '../core/config/config-types.js';
 import type { ChannelRepository } from '../core/database/repositories/channel-repository.js';
 import type { BindingRepository } from '../core/database/repositories/binding-repository.js';
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
@@ -111,5 +111,90 @@ export function registerChannels(
     });
 
     channelRegistry.register(connector);
+  }
+
+  // Reconcile explicit bindings from config (YAML is source of truth).
+  if (config.bindings && config.bindings.length > 0) {
+    reconcileBindings(config.bindings, {
+      channelRepo,
+      bindingRepo,
+      personaRepo,
+      logger,
+    });
+  }
+}
+
+/** Dependencies for binding reconciliation. */
+export interface ReconcileBindingsDeps {
+  readonly channelRepo: ChannelRepository;
+  readonly personaRepo: PersonaRepository;
+  readonly bindingRepo: BindingRepository;
+  readonly logger: pino.Logger;
+}
+
+/**
+ * Reconciles DB bindings with the YAML config bindings array.
+ *
+ * For each binding in config:
+ * - If the channel+persona pair already exists as default, leave it.
+ * - If a default binding exists but points to a different persona, update it.
+ * - If no default binding exists, create one.
+ *
+ * Bindings for channels NOT mentioned in config are left alone (the
+ * auto-default-to-first-persona fallback in registerChannels still applies).
+ */
+export function reconcileBindings(
+  bindings: BindingConfig[],
+  deps: ReconcileBindingsDeps,
+): void {
+  const { channelRepo, personaRepo, bindingRepo, logger } = deps;
+
+  for (const binding of bindings) {
+    const channelResult = channelRepo.findByName(binding.channel);
+    if (channelResult.isErr() || channelResult.value === null) {
+      logger.warn({ channel: binding.channel }, 'reconcileBindings: channel not found, skipping');
+      continue;
+    }
+    const channelRow = channelResult.value;
+
+    const personaResult = personaRepo.findByName(binding.persona);
+    if (personaResult.isErr() || personaResult.value === null) {
+      logger.warn({ persona: binding.persona }, 'reconcileBindings: persona not found, skipping');
+      continue;
+    }
+    const personaRow = personaResult.value;
+
+    const existingDefault = bindingRepo.findDefaultForChannel(channelRow.id);
+    if (existingDefault.isErr()) {
+      logger.warn({ channel: binding.channel }, 'reconcileBindings: failed to query existing binding');
+      continue;
+    }
+
+    if (existingDefault.value !== null) {
+      // A default binding exists — check if it matches.
+      if (existingDefault.value.persona_id === personaRow.id) {
+        // Already correct — nothing to do.
+        continue;
+      }
+      // Different persona — update it.
+      bindingRepo.updatePersona(existingDefault.value.id, personaRow.id);
+      logger.info(
+        { channel: binding.channel, persona: binding.persona },
+        'reconcileBindings: updated default binding persona',
+      );
+    } else {
+      // No default binding — create one.
+      bindingRepo.insert({
+        id: uuidv4(),
+        channel_id: channelRow.id,
+        thread_id: null,
+        persona_id: personaRow.id,
+        is_default: 1,
+      });
+      logger.info(
+        { channel: binding.channel, persona: binding.persona },
+        'reconcileBindings: created default binding from config',
+      );
+    }
   }
 }
