@@ -167,7 +167,7 @@ npx talonctl add-provider --name claude-code \
   --command claude \
   --context both \
   --context-window 200000 \
-  --rotation-threshold 0.5 \
+  --threshold-ratio 0.5 \
   --enabled
 
 # Gemini (if selected)
@@ -175,7 +175,7 @@ npx talonctl add-provider --name gemini-cli \
   --command <path-to-gemini> \
   --context both \
   --context-window 1000000 \
-  --rotation-threshold 0.8 \
+  --threshold-ratio 0.8 \
   --enabled
 ```
 
