@@ -419,6 +419,27 @@ personas:
 
 Each connector implements the `ChannelConnector` interface: `start()`, `stop()`, `onMessage()`, `send()`, and `format()`. All connectors convert Markdown output to channel-native formatting automatically.
 
+#### Common Channel Options
+
+Every channel entry supports these optional top-level fields in addition to the connector-specific `config` block:
+
+| Option          | Type    | Default | Description                                                                 |
+| --------------- | ------- | ------- | --------------------------------------------------------------------------- |
+| `enabled`       | boolean | `true`  | Enable or disable the channel                                               |
+| `showToolCalls` | boolean | `false` | Send a human-readable message to the channel each time the agent calls a tool |
+
+When `showToolCalls` is enabled, each tool invocation produces a short status message in the channel (e.g. *"🌐 Using Brave Search: query"*), giving users visibility into what the agent is doing behind the scenes.
+
+```yaml
+channels:
+  - name: my-channel
+    type: slack
+    showToolCalls: true   # sends a message like "🌐 Using Brave Search: web search" on each tool call
+    config:
+      botToken: ${SLACK_BOT_TOKEN}
+      appToken: ${SLACK_APP_TOKEN}
+```
+
 ### Telegram
 
 Long-polling connector using the Telegram Bot API.
