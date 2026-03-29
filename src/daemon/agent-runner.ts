@@ -486,6 +486,7 @@ export class AgentRunner {
                         TALOND_THREAD_ID: item.threadId,
                         TALOND_PERSONA_ID: personaId,
                         TALOND_ALLOWED_TOOLS: allowedMcpTools.join(','),
+                        TALOND_ALLOWED_HOST_ROOTS: JSON.stringify([workspaceResult.value]),
                         TALOND_TRACEPARENT: generationObservation.getTraceparent() ?? '',
                         ...(isA2ATask && a2aTaskId ? {
                           TALOND_A2A_TASK_ID: a2aTaskId,

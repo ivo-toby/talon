@@ -277,7 +277,7 @@ describe('BackgroundAgentManager', () => {
               TALOND_BACKGROUND_TASK_ID: taskId,
               TALOND_PRIMARY_EXECUTION_ENV_ID: 'env-1',
               TALOND_ALLOWED_TOOLS: 'execution_env,channel_send',
-              TALOND_ALLOWED_HOST_ROOTS: '["/tmp/talon-bg-control"]',
+              TALOND_ALLOWED_HOST_ROOTS: '["/workspace/repo","/tmp/talon-bg-control"]',
             }),
           }),
         }),
@@ -295,6 +295,28 @@ describe('BackgroundAgentManager', () => {
     const task = repository.findById(taskId)._unsafeUnwrap();
     expect(task?.sandboxEnabled).toBe(true);
     expect(task?.primaryExecutionEnvId).toBe('env-1');
+  });
+
+  it('exposes the workspace root to host tools for non-sandboxed tasks', async () => {
+    const manager = createManager();
+
+    const result = await manager.spawn({
+      ...spawnInput,
+      allowedMcpTools: ['execution_env'],
+    } as any);
+
+    expect(result.isOk()).toBe(true);
+    expect(prepareBackgroundInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mcpServers: expect.objectContaining({
+          __talond_host_tools: expect.objectContaining({
+            env: expect.objectContaining({
+              TALOND_ALLOWED_HOST_ROOTS: '["/workspace/repo"]',
+            }),
+          }),
+        }),
+      }),
+    );
   });
 
   it('destroys owned execution env when a sandboxed task is cancelled', async () => {

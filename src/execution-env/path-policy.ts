@@ -1,4 +1,4 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import { ExecutionEnvError } from '../core/errors/error-types.js';
@@ -45,11 +45,9 @@ export function resolveAllowedHostPath(
     );
   }
 
-  const resolvedCandidate = canonicalizePath(
-    isAbsolute(candidatePath)
-      ? candidatePath
-      : resolve(normalizedRoots[0], candidatePath),
-  );
+  const resolvedCandidate = isAbsolute(candidatePath)
+    ? canonicalizePath(candidatePath)
+    : resolveRelativeHostPath(candidatePath, normalizedRoots);
 
   if (!normalizedRoots.some((root) => isWithinRoot(resolvedCandidate, root))) {
     return err(
@@ -60,4 +58,20 @@ export function resolveAllowedHostPath(
   }
 
   return ok(resolvedCandidate);
+}
+
+function resolveRelativeHostPath(candidatePath: string, normalizedRoots: string[]): string {
+  const fallback = canonicalizePath(resolve(normalizedRoots[0]!, candidatePath));
+
+  for (const root of normalizedRoots) {
+    const candidate = canonicalizePath(resolve(root, candidatePath));
+    if (!isWithinRoot(candidate, root)) {
+      continue;
+    }
+    if (existsSync(candidate)) {
+      return candidate;
+    }
+  }
+
+  return fallback;
 }

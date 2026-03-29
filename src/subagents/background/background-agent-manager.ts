@@ -192,6 +192,7 @@ export class BackgroundAgentManager {
       threadId: input.threadId,
       workerPersonaId: input.workerPersonaId,
       allowedMcpTools: input.allowedMcpTools,
+      ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
       traceparent: childTraceparent,
       sandboxContext,
     });
@@ -609,6 +610,7 @@ export class BackgroundAgentManager {
     threadId: string;
     workerPersonaId: string;
     allowedMcpTools: string[];
+    workingDirectory?: string;
     traceparent?: string;
     sandboxContext: SandboxContext | null;
   }): Record<string, CanonicalMcpServer> {
@@ -633,16 +635,35 @@ export class BackgroundAgentManager {
         TALOND_ALLOWED_TOOLS: options.allowedMcpTools.join(','),
         TALOND_TRACEPARENT: options.traceparent ?? '',
         TALOND_BACKGROUND_TASK_ID: options.taskId,
+        ...(this.buildAllowedHostRootsEnv({
+          workingDirectory: options.workingDirectory,
+          sandboxContext: options.sandboxContext,
+        })),
         ...(options.sandboxContext
-          ? {
-              TALOND_PRIMARY_EXECUTION_ENV_ID: options.sandboxContext.primaryExecutionEnvId,
-              TALOND_ALLOWED_HOST_ROOTS: JSON.stringify([options.sandboxContext.controlDirectory]),
-            }
+          ? { TALOND_PRIMARY_EXECUTION_ENV_ID: options.sandboxContext.primaryExecutionEnvId }
           : {}),
       },
     };
 
     return mcpServers;
+  }
+
+  private buildAllowedHostRootsEnv(options: {
+    workingDirectory?: string;
+    sandboxContext: SandboxContext | null;
+  }): Record<string, string> {
+    const allowedHostRoots: string[] = [];
+
+    if (options.workingDirectory) {
+      allowedHostRoots.push(options.workingDirectory);
+    }
+    if (options.sandboxContext) {
+      allowedHostRoots.push(options.sandboxContext.controlDirectory);
+    }
+
+    return allowedHostRoots.length > 0
+      ? { TALOND_ALLOWED_HOST_ROOTS: JSON.stringify(allowedHostRoots) }
+      : {};
   }
 
   private buildProviderEnv(

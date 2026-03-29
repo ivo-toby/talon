@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -17,6 +17,31 @@ describe('resolveAllowedHostPath', () => {
     const result = resolveAllowedHostPath('artifacts/output.txt', ['/tmp/task-control']);
     expect(result.isOk()).toBe(true);
     expect(result._unsafeUnwrap()).toBe('/tmp/task-control/artifacts/output.txt');
+  });
+
+  it('resolves a relative path under a later allowed root when that file exists there', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'path-policy-workspace-'));
+    const controlRoot = mkdtempSync(join(tmpdir(), 'path-policy-control-'));
+    tempRoots.push(workspaceRoot, controlRoot);
+
+    mkdirSync(join(controlRoot, 'artifacts'));
+    writeFileSync(join(controlRoot, 'artifacts', 'output.txt'), 'done');
+
+    const result = resolveAllowedHostPath('artifacts/output.txt', [workspaceRoot, controlRoot]);
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toBe(join(controlRoot, 'artifacts', 'output.txt'));
+  });
+
+  it('falls back to the first allowed root for a missing relative path', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'path-policy-workspace-'));
+    const controlRoot = mkdtempSync(join(tmpdir(), 'path-policy-control-'));
+    tempRoots.push(workspaceRoot, controlRoot);
+
+    const result = resolveAllowedHostPath('artifacts/new-file.txt', [workspaceRoot, controlRoot]);
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toBe(join(workspaceRoot, 'artifacts', 'new-file.txt'));
   });
 
   it('accepts an absolute path inside an allowed root', () => {
