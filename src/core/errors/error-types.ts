@@ -123,3 +123,8 @@ export class SubAgentError extends TalonError {
 export class BackgroundAgentError extends TalonError {
   readonly code = 'BACKGROUND_AGENT_ERROR' as const;
 }
+
+/** A2A protocol validation, routing, or task lifecycle error. */
+export class A2AError extends TalonError {
+  readonly code = 'A2A_ERROR' as const;
+}

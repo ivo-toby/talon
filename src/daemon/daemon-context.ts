@@ -24,6 +24,7 @@ import type {
   RunRepository,
   BindingRepository,
   MemoryRepository,
+  A2ATaskRepository,
 } from '../core/database/repositories/index.js';
 import type { ChannelRegistry } from '../channels/channel-registry.js';
 import type { QueueManager } from '../queue/queue-manager.js';
@@ -42,6 +43,7 @@ import type { ProviderRegistry } from '../providers/provider-registry.js';
 import type { ContextRoller } from './context-roller.js';
 import type { ContextAssembler } from './context-assembler.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
+import type { A2AServer } from '../a2a/a2a-server.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -60,6 +62,7 @@ export interface DaemonRepos {
   readonly run: RunRepository;
   readonly binding: BindingRepository;
   readonly memory: MemoryRepository;
+  readonly a2aTask: A2ATaskRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -96,4 +99,5 @@ export interface DaemonContext {
   readonly contextRoller: ContextRoller | null;
   readonly contextAssembler: ContextAssembler;
   readonly logger: pino.Logger;
+  readonly a2aServer: A2AServer | null;
 }

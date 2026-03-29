@@ -61,3 +61,6 @@ export type { ToolResultRow, ToolResultStatus, InsertToolResultInput } from './t
 export { ToolResultRepository } from './tool-result-repository.js';
 
 export { BackgroundTaskRepository } from './background-task-repository.js';
+
+export type { InsertA2ATaskInput } from './a2a-task-repository.js';
+export { A2ATaskRepository } from './a2a-task-repository.js';

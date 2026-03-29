@@ -15,4 +15,10 @@ export abstract class BaseRepository {
   protected now(): number {
     return Date.now();
   }
+
+  /** Wraps a synchronous function in a SQLite transaction. Throws on error (rolls back). */
+  public transaction<T>(fn: () => T): T {
+    const tx = this.db.transaction(fn);
+    return tx();
+  }
 }

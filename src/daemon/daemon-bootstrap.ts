@@ -29,7 +29,9 @@ import {
   RunRepository,
   BindingRepository,
   MemoryRepository,
+  A2ATaskRepository,
 } from '../core/database/repositories/index.js';
+import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
 import { ChannelRegistry } from '../channels/channel-registry.js';
 import { ChannelRouter } from '../channels/channel-router.js';
@@ -134,6 +136,7 @@ export async function bootstrap(
     run: new RunRepository(db),
     binding: new BindingRepository(db),
     memory: new MemoryRepository(db),
+    a2aTask: new A2ATaskRepository(db),
   };
 
   // 5. Audit logger
@@ -429,7 +432,21 @@ export async function bootstrap(
     logger,
   });
 
-  // 16. Host tools bridge (needs a partial context to construct)
+  // 16. A2A server (internal-only, no port binding in M1)
+  const loadedPersonaList = personaLoadResult.value;
+  const a2aCardRegistry = buildAgentCardRegistry(loadedPersonaList);
+  const a2aTaskMapper = new A2ATaskMapper(
+    repos.a2aTask,
+    repos.queue,
+    repos.thread,
+    repos.persona,
+    a2aCardRegistry,
+    logger,
+  );
+  const a2aServer = new A2AServer(a2aCardRegistry, a2aTaskMapper, logger);
+  logger.info({ personas: [...a2aCardRegistry.keys()] }, 'bootstrap: A2A server initialized');
+
+  // 17. Host tools bridge (needs a partial context to construct)
   // We build the context object first, then create the bridge and attach it.
   // Two-phase init: HostToolsBridge needs ctx, but ctx needs hostToolsBridge.
   // Build a partial context first, then fill in the bridge field.
@@ -456,6 +473,7 @@ export async function bootstrap(
     contextRoller,
     contextAssembler,
     logger,
+    a2aServer,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);

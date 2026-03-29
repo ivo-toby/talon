@@ -39,6 +39,7 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   RunRepository: vi.fn().mockImplementation(() => ({})),
   BindingRepository: vi.fn().mockImplementation(() => ({})),
   MemoryRepository: vi.fn().mockImplementation(() => ({})),
+  A2ATaskRepository: vi.fn().mockImplementation(() => ({})),
 }));
 
 vi.mock('../../../src/core/database/repositories/audit-repository.js', () => ({
@@ -129,6 +130,12 @@ vi.mock('../../../src/subagents/background/background-agent-manager.js', () => (
 
 vi.mock('../../../src/daemon/lifecycle.js', () => ({
   recoverFromCrash: vi.fn(),
+}));
+
+vi.mock('../../../src/a2a/index.js', () => ({
+  buildAgentCardRegistry: vi.fn().mockReturnValue(new Map()),
+  A2ATaskMapper: vi.fn().mockImplementation(() => ({})),
+  A2AServer: vi.fn().mockImplementation(() => ({ fetch: vi.fn() })),
 }));
 
 // ---------------------------------------------------------------------------
