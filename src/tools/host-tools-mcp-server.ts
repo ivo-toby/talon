@@ -366,14 +366,14 @@ const TOOLS = [
   },
   {
     name: 'execution_env',
-    description: 'Manage isolated Sprite execution environments.',
+    description: 'Manage isolated Sprite execution environments. Before risky commands or repeated test runs, create a checkpoint so you can restore the same env to a clean baseline.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         action: {
           type: 'string' as const,
           enum: ['create', 'exec', 'upload', 'download', 'checkpoint', 'restore', 'destroy'],
-          description: 'Operation to perform on an execution environment.',
+          description: 'Operation to perform on an execution environment. Use checkpoint before risky changes, then restore to roll the same env back to that checkpoint.',
         },
         envId: {
           type: 'string' as const,
@@ -381,11 +381,11 @@ const TOOLS = [
         },
         checkpointId: {
           type: 'string' as const,
-          description: 'Checkpoint identifier for restore operations.',
+          description: 'Checkpoint identifier for restore operations on the same env.',
         },
         label: {
           type: 'string' as const,
-          description: 'Optional label for checkpoint creation.',
+          description: 'Optional label for checkpoint creation, such as "baseline-before-tests".',
         },
         command: {
           type: 'string' as const,
@@ -452,7 +452,7 @@ const TOOLS = [
               type: 'number' as const,
             },
           },
-          description: 'Optional CPU, memory, and disk overrides for create/restore.',
+          description: 'Optional CPU, memory, and disk overrides for create.',
         },
       },
       required: ['action'],

@@ -212,7 +212,7 @@ describe('ExecutionEnvHandler', () => {
     expect(checkpointResult.error).toContain('SPRITES_CHECKPOINT_FAILED');
 
     const restoreResult = await handler.execute(
-      { action: 'restore', checkpointId: 'ckpt-1' } as any,
+      { action: 'restore', envId: 'env-1', checkpointId: 'ckpt-1' } as any,
       {
         runId: 'run-1',
         threadId: 'thread-1',

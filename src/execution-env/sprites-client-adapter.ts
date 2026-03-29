@@ -43,11 +43,9 @@ export interface SpritesClientAdapter {
   }): Promise<{ remoteRef: string }>;
 
   restore(input: {
+    spriteId: string;
     remoteRef: string;
-    resourceLimits: ExecutionEnvResourceLimits;
-    workingDirectory: string;
-    metadata: Record<string, string>;
-  }): Promise<{ spriteId: string }>;
+  }): Promise<void>;
 
   destroy(spriteId: string): Promise<void>;
 }

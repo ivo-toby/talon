@@ -123,10 +123,8 @@ export interface CheckpointExecutionEnvironmentInput {
 }
 
 export interface RestoreExecutionEnvironmentInput {
+  envId: string;
   checkpointId: string;
-  workingDirectory?: string;
-  autoDestroy?: boolean;
-  resourceLimits?: Partial<ExecutionEnvResourceLimits>;
 }
 
 export interface ExecutionEnvCheckpoint {

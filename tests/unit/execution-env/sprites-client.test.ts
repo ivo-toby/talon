@@ -229,7 +229,14 @@ describe('SpritesClient adapter', () => {
     expect(result).toEqual({ remoteRef: 'v8' });
   });
 
-  it('throws a restore error because create-new-sprite restore is not supported yet', async () => {
+  it('restores a checkpoint in place on an existing sprite', async () => {
+    const restoreCheckpoint = vi.fn().mockResolvedValue(
+      new Response(
+        '{"type":"info","data":"Restoring..."}\n{"type":"complete","data":"Restore complete"}\n',
+        { status: 200 },
+      ),
+    );
+    vi.mocked(createSprite).mockClear();
     const client = new SpritesClient({
       enabled: true,
       token: 'sprites-token',
@@ -241,13 +248,20 @@ describe('SpritesClient adapter', () => {
       resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
     } as any);
 
+    (client as any).client.sprite = vi.fn().mockReturnValue({
+      name: 'sprite-123',
+      execFile,
+      createCheckpoint,
+      listCheckpoints,
+      restoreCheckpoint,
+    });
+
     await expect(
       client.restore({
+        spriteId: 'sprite-123',
         remoteRef: 'v8',
-        resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
-        workingDirectory: '/workspace',
-        metadata: {},
       }),
-    ).rejects.toThrow('SPRITES_RESTORE_FAILED');
+    ).resolves.toBeUndefined();
+    expect(restoreCheckpoint).toHaveBeenCalledWith('v8');
   });
 });

@@ -33,7 +33,7 @@ interface ExecutionEnvHandlerDeps {
 export class ExecutionEnvHandler {
   static readonly manifest: ToolManifest = {
     name: 'execution.env',
-    description: 'Manage isolated Sprite execution environments for background tasks.',
+    description: 'Manage isolated Sprite execution environments. Use checkpoints before risky commands or repeated experiments, then restore the same env back to a known-good snapshot.',
     capabilities: ['execution.env'],
     executionLocation: 'host',
   };
@@ -188,15 +188,13 @@ export class ExecutionEnvHandler {
   }
 
   private async restore(args: ExecutionEnvArgs, requestId: string): Promise<ToolCallResult> {
-    if (!args.checkpointId) {
-      return this.errorResult(requestId, 'restore requires checkpointId');
+    if (!args.envId || !args.checkpointId) {
+      return this.errorResult(requestId, 'restore requires envId and checkpointId');
     }
 
     const result = await this.deps.executionEnvManager.restore({
+      envId: args.envId,
       checkpointId: args.checkpointId,
-      ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
-      ...(args.autoDestroy !== undefined ? { autoDestroy: args.autoDestroy } : {}),
-      ...(args.resourceLimits ? { resourceLimits: args.resourceLimits } : {}),
     });
 
     return result.isOk()

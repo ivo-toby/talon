@@ -456,34 +456,34 @@ Success result:
 
 Purpose:
 
-- Create a new Sprite from a prior checkpoint
+- Restore the same Sprite execution environment to a prior checkpoint
 
 Required input:
 
+- `envId`
 - `action: "restore"`
 - `checkpointId`
-
-Optional input:
-
-- `workingDirectory`
-- `autoDestroy`
-- `resourceLimits`
 
 Success result:
 
 ```json
 {
   "env": {
-    "id": "env_restored_1",
+    "id": "env_123",
     "provider": "sprites",
-    "spriteId": "spr_restored_1",
+    "spriteId": "spr_abc",
     "status": "ready",
     "workingDirectory": "/workspace",
-    "baseSnapshot": "snap_xyz",
+    "baseSnapshot": "node-22-bookworm",
     "autoDestroy": true
   }
 }
 ```
+
+Operational guidance:
+
+- Use `checkpoint` before risky commands or before running repeated test variations with different inputs.
+- Restore the same `envId` back to that checkpoint between runs to get back to a known-good baseline quickly.
 
 #### `destroy`
 

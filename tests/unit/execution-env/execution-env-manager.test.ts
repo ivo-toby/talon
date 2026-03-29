@@ -227,7 +227,7 @@ describe('ExecutionEnvManager', () => {
 
   it('exposes checkpoint and restore actions with not-yet-implemented errors', async () => {
     client.checkpoint.mockResolvedValue({ remoteRef: 'snap-1' });
-    client.restore.mockResolvedValue({ spriteId: 'sprite-restored' });
+    client.restore.mockResolvedValue(undefined);
     const manager = createManager();
     const env = (await manager.create({
       threadId: 'thread-1',
@@ -249,18 +249,21 @@ describe('ExecutionEnvManager', () => {
     );
 
     const restoreResult = await manager.restore({
+      envId: env.id,
       checkpointId: checkpointResult._unsafeUnwrap().id,
     });
     expect(restoreResult.isOk()).toBe(true);
     expect(restoreResult._unsafeUnwrap()).toEqual(
       expect.objectContaining({
-        spriteId: 'sprite-restored',
-        baseSnapshot: 'snap-1',
+        id: env.id,
+        spriteId: 'sprite-123',
+        baseSnapshot: null,
         status: 'ready',
       }),
     );
     expect(client.restore).toHaveBeenCalledWith(
       expect.objectContaining({
+        spriteId: 'sprite-123',
         remoteRef: 'snap-1',
       }),
     );

@@ -249,6 +249,10 @@ export class ExecutionEnvManager {
   async restore(
     input: RestoreExecutionEnvironmentInput,
   ): Promise<Result<ExecutionEnvironment, ExecutionEnvError>> {
+    const env = this.findEnvOrError(input.envId);
+    if (env.isErr()) {
+      return err(env.error);
+    }
     const checkpointResult = this.deps.checkpointRepository.findById(input.checkpointId);
     if (checkpointResult.isErr()) {
       return err(new ExecutionEnvError(checkpointResult.error.message, checkpointResult.error));
@@ -262,41 +266,26 @@ export class ExecutionEnvManager {
     }
 
     try {
-      const resourceLimits = {
-        ...this.deps.defaultResourceLimits,
-        ...(input.resourceLimits ?? {}),
-      };
-      const workingDirectory = input.workingDirectory ?? this.deps.defaultWorkingDirectory;
-      const restored = await this.deps.client.restore({
+      if (checkpointResult.value.envId !== env.value.id) {
+        return err(
+          new ExecutionEnvError(
+            `execution_env: [INVALID_ARGUMENT] checkpoint "${input.checkpointId}" does not belong to env "${input.envId}"`,
+          ),
+        );
+      }
+
+      this.deps.repository.updateStatus(input.envId, 'restoring');
+      await this.deps.client.restore({
+        spriteId: env.value.spriteId,
         remoteRef: checkpointResult.value.remoteRef,
-        resourceLimits,
-        workingDirectory,
-        metadata: {
-          checkpointId: checkpointResult.value.id,
-        },
       });
-
-      const repoResult = this.deps.repository.create({
-        id: randomUUID(),
-        provider: 'sprites',
-        spriteId: restored.spriteId,
-        threadId: 'restored',
-        personaId: 'restored',
-        ownerTaskId: null,
-        status: 'ready',
-        workingDirectory,
-        baseSnapshot: checkpointResult.value.remoteRef,
-        autoDestroy: input.autoDestroy ?? this.deps.defaultAutoDestroy ?? true,
-        resourceLimits,
-        metadata: {
-          checkpointId: checkpointResult.value.id,
-        },
-      });
-
-      return repoResult.isOk()
-        ? ok(repoResult.value)
-        : err(new ExecutionEnvError(repoResult.error.message, repoResult.error));
+      this.deps.repository.updateStatus(input.envId, 'ready');
+      const refreshed = this.deps.repository.findById(input.envId);
+      return refreshed.isOk() && refreshed.value
+        ? ok(refreshed.value)
+        : err(new ExecutionEnvError(`execution_env: [ENV_NOT_FOUND] env "${input.envId}" not found after restore`));
     } catch (cause) {
+      this.deps.repository.updateStatus(input.envId, 'failed');
       return err(this.wrapError('SPRITES_RESTORE_FAILED', 'failed to restore execution environment', cause));
     }
   }

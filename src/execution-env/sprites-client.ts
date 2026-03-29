@@ -168,15 +168,18 @@ export class SpritesClient implements SpritesClientAdapter {
     }
   }
 
-  async restore(_input: {
+  async restore(input: {
+    spriteId: string;
     remoteRef: string;
-    resourceLimits: ExecutionEnvResourceLimits;
-    workingDirectory: string;
-    metadata: Record<string, string>;
-  }): Promise<{ spriteId: string }> {
-    throw new ExecutionEnvError(
-      'execution_env: [SPRITES_RESTORE_FAILED] Sprites restore currently works in-place on an existing sprite; creating a new sprite from a checkpoint is not yet supported',
-    );
+  }): Promise<void> {
+    this.ensureConfigured();
+    try {
+      const sprite = this.client.sprite(input.spriteId);
+      const response = await sprite.restoreCheckpoint(input.remoteRef);
+      await this.consumeNdjsonResponse(response);
+    } catch (cause) {
+      throw this.wrapSpritesError('SPRITES_RESTORE_FAILED', 'failed to restore sprite checkpoint', cause);
+    }
   }
 
   private ensureConfigured(): void {
