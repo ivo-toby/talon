@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import { err } from 'neverthrow';
 import { ExecutionEnvRepository } from '../../../src/core/database/repositories/execution-env-repository.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
+import { DbError } from '../../../src/core/errors/index.js';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -223,5 +225,31 @@ describe('ExecutionEnvManager', () => {
     });
     expect(restoreResult.isErr()).toBe(true);
     expect(restoreResult._unsafeUnwrapErr().message).toContain('SPRITES_RESTORE_FAILED');
+  });
+
+  it('destroys a created sprite if repository persistence fails', async () => {
+    const failingRepository = {
+      create: vi.fn().mockReturnValue(err(new DbError('insert failed'))),
+    };
+    const manager = new ExecutionEnvManager({
+      repository: failingRepository as any,
+      client,
+      defaultWorkingDirectory: '/workspace',
+      defaultExecTimeoutMs: 45_000,
+      defaultResourceLimits: {
+        cpus: 2,
+        memoryMb: 4096,
+        diskGb: 20,
+      },
+      logger: makeLogger(),
+    });
+
+    const result = await manager.create({
+      threadId: 'thread-1',
+      personaId: 'persona-1',
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(client.destroy).toHaveBeenCalledWith('sprite-123');
   });
 });

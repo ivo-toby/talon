@@ -75,6 +75,11 @@ export class ExecutionEnvHandler {
     context: ToolExecutionContext,
     requestId: string,
   ): Promise<ToolCallResult> {
+    const resourceLimits = this.sanitizeResourceLimits(args.resourceLimits);
+    if (!resourceLimits.ok) {
+      return this.errorResult(requestId, resourceLimits.error);
+    }
+
     const result = await this.deps.executionEnvManager.create({
       threadId: context.threadId,
       personaId: context.personaId,
@@ -82,7 +87,7 @@ export class ExecutionEnvHandler {
       ...(args.baseSnapshot ? { baseSnapshot: args.baseSnapshot } : {}),
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.autoDestroy !== undefined ? { autoDestroy: args.autoDestroy } : {}),
-      ...(args.resourceLimits ? { resourceLimits: args.resourceLimits as ExecutionEnvResourceLimits } : {}),
+      ...(resourceLimits.value ? { resourceLimits: resourceLimits.value } : {}),
     });
 
     return result.isOk()
@@ -215,5 +220,59 @@ export class ExecutionEnvHandler {
       status: 'error',
       error: message,
     };
+  }
+
+  private sanitizeResourceLimits(
+    value: unknown,
+  ): { ok: true; value?: Partial<ExecutionEnvResourceLimits> } | { ok: false; error: string } {
+    if (value === undefined) {
+      return { ok: true };
+    }
+
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      return { ok: false, error: 'resourceLimits must be an object when provided' };
+    }
+
+    const record = value as Record<string, unknown>;
+    const sanitized: Partial<ExecutionEnvResourceLimits> = {};
+    const numericFields: Array<{
+      key: keyof ExecutionEnvResourceLimits;
+      min: number;
+      max: number;
+      integer?: boolean;
+    }> = [
+      { key: 'cpus', min: 0.25, max: 64 },
+      { key: 'memoryMb', min: 256, max: 262144, integer: true },
+      { key: 'diskGb', min: 1, max: 2048, integer: true },
+    ];
+
+    for (const field of numericFields) {
+      const raw = record[field.key];
+      if (raw === undefined) {
+        continue;
+      }
+      if (typeof raw !== 'number' || !Number.isFinite(raw)) {
+        return { ok: false, error: `resourceLimits.${field.key} must be a finite number` };
+      }
+      if (field.integer && !Number.isInteger(raw)) {
+        return { ok: false, error: `resourceLimits.${field.key} must be an integer` };
+      }
+      if (raw < field.min || raw > field.max) {
+        return {
+          ok: false,
+          error: `resourceLimits.${field.key} must be between ${field.min} and ${field.max}`,
+        };
+      }
+      sanitized[field.key] = raw;
+    }
+
+    const unknownKeys = Object.keys(record).filter((key) =>
+      !numericFields.some((field) => field.key === key),
+    );
+    if (unknownKeys.length > 0) {
+      return { ok: false, error: `resourceLimits contains unknown keys: ${unknownKeys.join(', ')}` };
+    }
+
+    return { ok: true, value: sanitized };
   }
 }

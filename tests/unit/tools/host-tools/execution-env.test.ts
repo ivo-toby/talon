@@ -223,4 +223,39 @@ describe('ExecutionEnvHandler', () => {
     expect(restoreResult.status).toBe('error');
     expect(restoreResult.error).toContain('SPRITES_RESTORE_FAILED');
   });
+
+  it('rejects invalid resourceLimits before calling the manager', async () => {
+    const manager = {
+      create: vi.fn(),
+      exec: vi.fn(),
+      upload: vi.fn(),
+      download: vi.fn(),
+      checkpoint: vi.fn(),
+      restore: vi.fn(),
+      destroy: vi.fn(),
+    };
+    const handler = new ExecutionEnvHandler({
+      executionEnvManager: manager as any,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      {
+        action: 'create',
+        resourceLimits: {
+          cpus: -1,
+        },
+      } as any,
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-1',
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('resourceLimits');
+    expect(manager.create).not.toHaveBeenCalled();
+  });
 });

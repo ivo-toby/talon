@@ -51,4 +51,16 @@ describe('resolveAllowedHostPath', () => {
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('HOST_PATH_NOT_ALLOWED');
   });
+
+  it('rejects symlink escapes when the final leaf does not exist yet', () => {
+    const root = mkdtempSync(join(tmpdir(), 'path-policy-'));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, 'safe'));
+    symlinkSync('/etc', join(root, 'safe', 'escape'));
+
+    const result = resolveAllowedHostPath(join(root, 'safe', 'escape', 'new-file.txt'), [root]);
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('HOST_PATH_NOT_ALLOWED');
+  });
 });

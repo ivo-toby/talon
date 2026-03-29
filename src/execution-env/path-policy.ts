@@ -1,13 +1,27 @@
 import { realpathSync } from 'node:fs';
-import { isAbsolute, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import { ExecutionEnvError } from '../core/errors/error-types.js';
 
 function canonicalizePath(path: string): string {
-  try {
-    return realpathSync(path);
-  } catch {
-    return resolve(path);
+  const resolvedPath = resolve(path);
+  const missingSegments: string[] = [];
+  let current = resolvedPath;
+
+  while (true) {
+    try {
+      const real = realpathSync(current);
+      return missingSegments.length === 0
+        ? real
+        : resolve(real, ...missingSegments.reverse());
+    } catch {
+      const parent = dirname(current);
+      if (parent === current) {
+        return resolvedPath;
+      }
+      missingSegments.push(basename(current));
+      current = parent;
+    }
   }
 }
 

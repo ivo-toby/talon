@@ -51,8 +51,7 @@ import { SessionTracker } from '../sandbox/session-tracker.js';
 
 import { HostToolsBridge } from '../tools/host-tools-bridge.js';
 import { BackgroundAgentManager } from '../subagents/background/background-agent-manager.js';
-import { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
-import { SpritesClient } from '../execution-env/sprites-client.js';
+import type { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import { SubAgentLoader } from '../subagents/subagent-loader.js';
 import { SubAgentRunner } from '../subagents/subagent-runner.js';
 import { ModelResolver } from '../subagents/model-resolver.js';
@@ -415,17 +414,9 @@ export async function bootstrap(
 
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
-    executionEnvManager = new ExecutionEnvManager({
-      repository: repos.executionEnv,
-      client: new SpritesClient(config.sprites),
-      defaultWorkingDirectory: config.sprites.workingDirectory,
-      defaultBaseSnapshot: config.sprites.defaultBaseSnapshot,
-      defaultAutoDestroy: config.sprites.autoDestroyOnCompletion,
-      defaultExecTimeoutMs: config.sprites.execTimeoutMs,
-      defaultResourceLimits: config.sprites.resourceLimits,
-      logger,
-    });
-    await executionEnvManager.recoverOrphanedEnvironments();
+    logger.warn(
+      'bootstrap: sprites.enabled is set, but SpritesClient is still stubbed; skipping execution environment wiring',
+    );
   }
 
   // 14. Scheduler

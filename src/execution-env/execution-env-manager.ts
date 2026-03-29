@@ -73,9 +73,19 @@ export class ExecutionEnvManager {
         metadata,
       });
 
-      return repoResult.isOk()
-        ? ok(repoResult.value)
-        : err(new ExecutionEnvError(repoResult.error.message, repoResult.error));
+      if (repoResult.isErr()) {
+        try {
+          await this.deps.client.destroy(created.spriteId);
+        } catch (cleanupError) {
+          this.deps.logger.warn(
+            { err: cleanupError, spriteId: created.spriteId },
+            'execution-env: failed to destroy sprite after persistence failure',
+          );
+        }
+        return err(new ExecutionEnvError(repoResult.error.message, repoResult.error));
+      }
+
+      return ok(repoResult.value);
     } catch (cause) {
       return err(this.wrapError('SPRITES_CREATE_FAILED', 'failed to create execution environment', cause));
     }
