@@ -40,9 +40,37 @@ node dist/cli/index.js --version
 
 You should see the talonctl version string. If you get a module error, confirm Node 22 is active.
 
-## Initial setup
+## Guided setup with Claude Code (recommended)
 
-Run the first-run setup command. It checks your environment, creates the `data/` directory structure, generates a starter `talond.yaml`, runs migrations, and validates the result:
+The fastest way to go from a fresh clone to a running daemon is the `talon.setup` skill — an interactive wizard built into Claude Code that walks you through the entire setup conversationally.
+
+**Prerequisites:** Claude Code installed and authenticated (`npm install -g @anthropic-ai/claude-code`, then `claude auth login`).
+
+Open the Talon repository in Claude Code and run:
+
+```
+/talon.setup
+```
+
+The skill detects what is already configured and picks up from where you are. On a fresh clone it walks through:
+
+1. **Prerequisites** — Node version, dependencies, build, AI provider binaries
+2. **Bootstrap** — data directories, `talond.yaml`, database migrations
+3. **Provider configuration** — Claude Code, Gemini CLI, or both; default provider per context
+4. **Channel configuration** — Telegram, Slack, Discord, WhatsApp, email, or terminal
+5. **Persona configuration** — name, purpose, tone, system prompt authoring, channel bindings
+6. **Capability configuration** — review and adjust per-persona capability grants
+7. **Scheduled tasks** — memory grooming, morning briefings, weekly reviews, custom crons
+8. **Validation** — `talonctl doctor`, `talonctl env-check`, `talonctl test-provider`
+9. **Systemd service** — optional Linux service installation
+
+The skill asks one question at a time, runs `talonctl` commands on your behalf, and shows you the output at every step. It never writes secrets — only `${ENV_VAR}` placeholders.
+
+If setup is already partially complete, `/talon.setup` presents a menu to add channels, personas, skills, schedules, or providers without repeating what is already done.
+
+## Initial setup (manual)
+
+If you prefer to configure everything by hand, run the bootstrap command first. It checks your environment, creates the `data/` directory structure, generates a starter `talond.yaml`, runs migrations, and validates the result:
 
 ```bash
 npx talonctl setup
@@ -64,7 +92,7 @@ After setup, run `talonctl doctor` to validate everything:
 npx talonctl doctor --config talond.yaml
 ```
 
-`talonctl doctor` then checks Node.js, Docker, config validity, database access, and data directories. Fix any failures before starting the daemon.
+`talonctl doctor` checks Node.js, Docker, config validity, database access, and data directories. Fix any failures before starting the daemon.
 
 ## Apply database migrations
 
