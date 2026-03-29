@@ -1,0 +1,91 @@
+---
+title: "A2A — Agent-to-Agent Communication in Talon"
+date: 2026-03-28
+description: Talon now has a durable A2A layer. Personas can delegate tasks to each other over an internal queue, with hop enforcement and persistence across restarts.
+---
+
+# A2A — Agent-to-Agent Communication in Talon
+
+Talon 1.x personas were isolated. Each ran in its own context, handled its own queue, had no way to talk to other personas. That worked fine until you wanted to split work — a coordinator that routes, a researcher that fetches, a writer that synthesizes. You'd have to orchestrate that externally.
+
+Not anymore.
+
+## What it is
+
+The A2A layer lets personas delegate tasks to each other over Talon's internal durable queue. A persona calls `persona_send` with a target persona name and a message. That message becomes a queue item for the target. The target processes it like any other message, runs its agent, and either returns a result or fires and forgets.
+
+Everything persists in SQLite. Tasks survive restarts. The queue handles retries. No external orchestration needed.
+
+## How it works
+
+When a persona calls `persona_send`, Talon:
+
+1. Validates the target persona exists and is loaded
+2. Checks the hop count hasn't exceeded `MAX_HOPS` (4)
+3. Inserts a new queue item for the target persona
+4. Either returns the task ID immediately (fire-and-forget) or polls until the task reaches a terminal state
+
+The hop count propagates through the execution context. If persona A delegates to B, and B tries to delegate to C, that's hop 2. Hit 4 and the task is rejected before it enters the queue. Prevents runaway chains.
+
+```
+Coordinator → Researcher (hop 1)
+Researcher  → Summarizer (hop 2)
+Summarizer  → (attempts delegation, hop 3)
+...rejected at hop 4
+```
+
+## Synchronous vs async delegation
+
+`await_reply: false` (the default) is fire-and-forget. The tool returns immediately with the task ID and state `submitted`. The target processes it on its own schedule.
+
+`await_reply: true` blocks the calling agent until the target reaches a terminal state — `completed`, `failed`, `canceled`, or `input-required`. It polls every 2 seconds with a 25-second cap. If the target doesn't finish in time, the tool returns `state: timeout`. The task keeps running; you just don't get the result inline.
+
+The 25-second cap is intentional. It sits just under the MCP bridge's 30-second request timeout, so you always get a clean result before the transport cuts the connection.
+
+## Discovery with persona_list
+
+Before calling `persona_send`, an agent can call `persona_list` to see what's available. It returns the live-loaded personas (not stale DB rows), excluding the caller itself:
+
+```json
+[
+  {
+    "name": "researcher",
+    "description": "Deep research and web search specialist",
+    "skills": ["web-search", "summarize"]
+  },
+  {
+    "name": "writer",
+    "description": "Long-form content and documentation",
+    "skills": ["write", "edit"]
+  }
+]
+```
+
+The description comes from the first line of the persona's system prompt file. Skills come from the persona config. This gives the calling agent enough context to decide who to delegate to.
+
+## Example workflow
+
+A coordinator persona receives a research request. It calls `persona_list`, picks the researcher, and delegates with `await_reply: true`:
+
+```
+User → Coordinator: "Summarize the latest news on WebAssembly runtimes"
+
+Coordinator calls persona_send:
+  target_persona: "researcher"
+  message: "Find and summarize recent news on WebAssembly runtimes. Focus on 2025-2026."
+  await_reply: true
+
+Researcher runs, fetches results, returns summary.
+
+Coordinator receives result, formats it, replies to user.
+```
+
+No infrastructure changes. No external queues. The whole thing runs on the same SQLite database that backs everything else in Talon.
+
+## Why this matters
+
+Multi-agent workflows typically require external orchestration — a separate service coordinating calls between agents, managing state, handling retries. Talon's A2A layer moves that into the daemon itself. Delegation is just a tool call. The queue handles durability. The capability system controls who can delegate to whom.
+
+You get composable agent workflows without adding operational complexity.
+
+See [persona_send and persona_list — A Practical Guide](./2026-03-29-persona-send-list) for configuration and usage details.

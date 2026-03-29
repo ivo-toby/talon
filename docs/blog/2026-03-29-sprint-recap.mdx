@@ -1,0 +1,77 @@
+---
+title: "What We Shipped This Week — 2026-03-28/29"
+date: 2026-03-29
+description: A2A protocol, persona tools, queue fixes, and a full docs site. Quick changelog of everything that landed in the past two days.
+---
+
+# What We Shipped This Week — 2026-03-28/29
+
+Two days, eight merged PRs, ~4000 lines. Here's what landed.
+
+---
+
+## A2A Protocol — Milestone 1 ([#116](https://github.com/ivo-toby/talon/issues/116))
+
+Personas can now delegate tasks to each other over Talon's internal queue. The A2A layer is fully durable — tasks persist in SQLite, survive restarts, and go through the same retry logic as regular messages.
+
+Milestone 1 covers internal routing only: persona-to-persona delegation within a single daemon instance. The Hono HTTP server, Agent Cards, and external A2A endpoints are Milestone 2 ([#124](https://github.com/ivo-toby/talon/issues/124)).
+
+---
+
+## persona_send — MCP Host Tool ([#126](https://github.com/ivo-toby/talon/issues/126))
+
+New host tool: `persona_send`. Agents call it to submit tasks to other personas. Supports fire-and-forget (`await_reply: false`) and synchronous delegation (`await_reply: true`, 25s cap, 2s poll interval).
+
+The capability gate is `persona.send:*` — add it to a persona's allow list to unlock the tool.
+
+---
+
+## persona_list — Discovery Tool ([#130](https://github.com/ivo-toby/talon/issues/130))
+
+Companion to `persona_send`. Returns all live-loaded personas (excluding the caller) with name, description, and skills. Description is extracted from the first line of the persona's system prompt file.
+
+Agents use this to decide who to delegate to before calling `persona_send`.
+
+---
+
+## Queue Inflight Lock Bypass for A2A Collaboration
+
+Fixed a deadlock that occurred under `await_reply: true`. When persona A submits a task to B and waits for the result, A holds its queue item's inflight lock. If the queue processor refused to dequeue B's item while A was running, everything stalled.
+
+The fix: A2A collaboration items bypass the inflight lock check so they can be dequeued and processed while the source task is still in-flight.
+
+---
+
+## Configurable Query Timeout ([#117](https://github.com/ivo-toby/talon/issues/117))
+
+`DEFAULT_QUERY_TIMEOUT_MS` was 3 minutes. That's too short for complex tasks. It's now 10 minutes by default, configurable per persona via `queryTimeoutMinutes` in `talond.yaml`:
+
+```yaml
+personas:
+  - name: researcher
+    queryTimeoutMinutes: 20
+```
+
+The 3-minute default was causing silent failures on longer agent runs.
+
+---
+
+## input-required State in persona_send Polling
+
+When a target persona enters `input-required` state (waiting for human confirmation), that state now surfaces in the `persona_send` polling response. Previously it would just keep polling until timeout.
+
+---
+
+## Hop Count Propagation
+
+Hop count propagates through the tool execution context. Each `persona_send` call increments it. Tasks rejected at `MAX_HOPS` (4) get a clear error message. The counter flows correctly through nested delegation chains.
+
+---
+
+## Full Docs Site ([talond.dev](https://talond.dev))
+
+Docs shipped at talond.dev. Starlight (Astro) site covering installation, configuration, channels, personas, skills, scheduling, background agents, and A2A. Including this blog.
+
+---
+
+That's the week. Next up: A2A Milestone 2 (external HTTP endpoint + authentication) and M3 (runtime monitoring UI).

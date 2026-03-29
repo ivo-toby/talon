@@ -1,0 +1,152 @@
+---
+title: "persona_send and persona_list — A Practical Guide"
+date: 2026-03-29
+description: How to configure and use the two new host tools that enable agent-to-agent delegation. Config examples, call patterns, and what happens when await_reply is true.
+---
+
+# persona_send and persona_list — A Practical Guide
+
+Two new host tools shipped this week: `persona_send` and `persona_list`. Both require the `persona.send:*` capability. Neither requires any infrastructure changes — they run on the same internal queue and SQLite database as everything else.
+
+## Enabling the tools
+
+Add `persona.send:*` to the persona's capability allow list:
+
+```yaml
+personas:
+  - name: coordinator
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/coordinator/system.md
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        - persona.send:*   # enables both persona_send and persona_list
+```
+
+That single capability unlocks both tools. The target persona — the one receiving delegated tasks — doesn't need any special config. It just needs to be loaded.
+
+## persona_list
+
+Call this first. It returns all currently loaded personas except the caller:
+
+```json
+[
+  {
+    "name": "researcher",
+    "description": "Deep research and web search specialist",
+    "skills": ["web-search"]
+  },
+  {
+    "name": "writer",
+    "description": "Technical writer for docs and blog posts",
+    "skills": ["write"]
+  }
+]
+```
+
+`description` is pulled from the first non-blank line of the persona's system prompt file, with the `#` prefix stripped. If no system prompt file exists, `description` is `null`. Skills come from the persona's YAML config.
+
+The list reflects live-loaded personas only. If a persona is in the database but not currently running, it won't appear here.
+
+## persona_send — fire-and-forget
+
+`await_reply: false` is the default. The tool submits the task and returns immediately:
+
+```json
+{
+  "target_persona": "researcher",
+  "message": "Find the latest benchmarks comparing Bun and Node.js for HTTP workloads.",
+  "await_reply": false
+}
+```
+
+Response:
+
+```json
+{
+  "task_id": "01HXYZ...",
+  "state": "submitted"
+}
+```
+
+The task is in the queue. The researcher will process it when it gets there. You don't get the result — useful for background work where the calling persona doesn't need to wait.
+
+## persona_send — synchronous delegation
+
+`await_reply: true` blocks until the target finishes:
+
+```json
+{
+  "target_persona": "researcher",
+  "message": "Summarize the key changes in the Node.js 24 release notes.",
+  "await_reply": true
+}
+```
+
+The tool polls every 2 seconds, up to 25 seconds. If the task completes in time:
+
+```json
+{
+  "task_id": "01HXYZ...",
+  "state": "completed",
+  "result": "Node.js 24 ships with V8 13.6, drops support for..."
+}
+```
+
+If the target doesn't finish within 25 seconds:
+
+```json
+{
+  "task_id": "01HXYZ...",
+  "state": "timeout"
+}
+```
+
+Timeout doesn't cancel the task — it keeps running. You just don't get the result inline. For long-running work, fire-and-forget is the right pattern.
+
+If the target ends up in `input-required` state (it's waiting for human input), that surfaces too:
+
+```json
+{
+  "task_id": "01HXYZ...",
+  "state": "input-required"
+}
+```
+
+## Hop count and cycle prevention
+
+Every `persona_send` call increments the hop counter in the task's execution context. Maximum is 4. If a chain reaches hop 4, the next delegation attempt is rejected before it enters the queue:
+
+```
+A → B (hop 1) → C (hop 2) → D (hop 3) → E (rejected at hop 4)
+```
+
+This applies even if you're not trying to create a cycle — four levels of delegation is the hard limit. Design your workflows accordingly.
+
+## Full config example
+
+```yaml
+personas:
+  - name: coordinator
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/coordinator/system.md
+    capabilities:
+      allow:
+        - memory.access:thread
+        - persona.send:*
+        - channel.send:my-slack
+
+  - name: researcher
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/researcher/system.md
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        # researcher doesn't have persona.send — it can't delegate further
+```
+
+The coordinator can delegate. The researcher receives tasks but can't re-delegate. Clean separation.
+
+For the architecture behind these tools, see [A2A — Agent-to-Agent Communication in Talon](./2026-03-28-a2a-protocol).
