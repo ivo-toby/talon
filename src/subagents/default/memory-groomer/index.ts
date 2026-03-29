@@ -9,24 +9,14 @@ import type { MemoryItemRow, InsertMemoryItemInput } from '../../../core/databas
 
 // Note: no .min() on arrays — Haiku's structured output doesn't support minItems.
 // Empty/insufficient arrays are handled at runtime (validIds check + consolidate guard).
-const GroomActionSchema = z.discriminatedUnion('type', [
-  z.object({
-    type: z.literal('prune'),
-    ids: z.array(z.string()),
-    reason: z.string(),
-  }),
-  z.object({
-    type: z.literal('consolidate'),
-    ids: z.array(z.string()),
-    reason: z.string(),
-    mergedContent: z.string(),
-  }),
-  z.object({
-    type: z.literal('keep'),
-    ids: z.array(z.string()),
-    reason: z.string(),
-  }),
-]);
+// Flat schema instead of discriminatedUnion — Anthropic structured output does not support
+// the `oneOf` keyword that discriminatedUnion generates in JSON Schema.
+const GroomActionSchema = z.object({
+  type: z.enum(['prune', 'consolidate', 'keep']),
+  ids: z.array(z.string()),
+  reason: z.string(),
+  mergedContent: z.string().optional(),
+});
 
 const GroomResponseSchema = z.object({
   actions: z.array(GroomActionSchema),
@@ -129,6 +119,10 @@ export async function run(
         case 'consolidate': {
           if (actionIds.length < 2) {
             logger.warn({ action }, 'Skipping consolidate action with fewer than 2 valid ids');
+            break;
+          }
+          if (!action.mergedContent) {
+            logger.warn({ action }, 'Skipping consolidate action missing mergedContent');
             break;
           }
 
