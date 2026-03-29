@@ -23,6 +23,7 @@
     "migrate": "node dist/cli/index.js migrate"
   },
   "dependencies": {
+    "@a2a-js/sdk": "^0.3.13",
     "@ai-sdk/anthropic": "^3.0.58",
     "@ai-sdk/google": "^3.0.43",
     "@ai-sdk/openai": "^3.0.41",
@@ -37,12 +38,14 @@
     "@opentelemetry/sdk-trace-base": "^2.6.0",
     "@opentelemetry/sdk-trace-node": "^2.6.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "ai": "^6.0.116",
     "better-sqlite3": "^12.6.2",
     "commander": "^12.1.0",
     "cron-parser": "^4.9.0",
     "dockerode": "^4.0.2",
     "gray-matter": "^4.0.3",
+    "hono": "^4.12.9",
     "js-yaml": "^4.1.0",
     "marked": "^15.0.0",
     "marked-terminal": "^7.3.0",
@@ -52,7 +55,6 @@
     "pino-pretty": "^11.2.2",
     "uuid": "^10.0.0",
     "write-file-atomic": "^6.0.0",
-    "@whiskeysockets/baileys": "^7.0.0-rc.9",
     "ws": "^8.19.0",
     "zod": "^4.0.0"
   },
