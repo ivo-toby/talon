@@ -120,6 +120,7 @@ describe('filterAllowedMcpTools', () => {
       allow: [
         'schedule.manage',
         'channel.send:any',
+        'persona.send:*',
         'memory.access',
         'net.http',
         'db.query',
@@ -129,8 +130,9 @@ describe('filterAllowedMcpTools', () => {
       requireApproval: [],
     };
     const result = filterAllowedMcpTools(caps);
-    expect(result).toHaveLength(7);
+    expect(result).toHaveLength(8);
     expect(result).toContain('background_agent');
+    expect(result).toContain('persona_send');
   });
 
   it('maps subagent.background capability to background_agent MCP tool', () => {
@@ -206,10 +208,11 @@ describe('isToolAllowed', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all seven host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(7);
+  it('contains all eight host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(8);
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
+    expect(ALL_HOST_TOOLS).toContain('persona.send');
     expect(ALL_HOST_TOOLS).toContain('memory.access');
     expect(ALL_HOST_TOOLS).toContain('net.http');
     expect(ALL_HOST_TOOLS).toContain('db.query');

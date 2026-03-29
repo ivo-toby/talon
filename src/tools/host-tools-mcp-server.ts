@@ -244,6 +244,28 @@ const TOOLS = [
     },
   },
   {
+    name: 'persona_send',
+    description: 'Send a task to another persona via the A2A layer',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        target_persona: {
+          type: 'string' as const,
+          description: 'Target persona name from talond.yaml',
+        },
+        message: {
+          type: 'string' as const,
+          description: 'Text task to send to the target persona',
+        },
+        await_reply: {
+          type: 'boolean' as const,
+          description: 'Wait for the target persona to finish and return its result',
+        },
+      },
+      required: ['target_persona', 'message'],
+    },
+  },
+  {
     name: 'memory_access',
     description: 'Reads from or writes to the per-thread layered memory store.',
     inputSchema: {

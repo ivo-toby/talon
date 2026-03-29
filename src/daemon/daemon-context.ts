@@ -44,6 +44,7 @@ import type { ContextRoller } from './context-roller.js';
 import type { ContextAssembler } from './context-assembler.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import type { A2AServer } from '../a2a/a2a-server.js';
+import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -100,4 +101,5 @@ export interface DaemonContext {
   readonly contextAssembler: ContextAssembler;
   readonly logger: pino.Logger;
   readonly a2aServer: A2AServer | null;
+  readonly a2aTaskMapper: A2ATaskMapper | null;
 }
