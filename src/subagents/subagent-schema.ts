@@ -70,6 +70,13 @@ export const SubAgentManifestSchema = z.object({
    * Must be at least 1000 ms. Defaults to 30000 (30 seconds).
    */
   timeoutMs: z.number().int().min(1000).default(30000),
+
+  /**
+   * Environment variables that must be set for this sub-agent to load.
+   * If any are missing from `process.env`, the loader skips this sub-agent
+   * with an info-level log. Defaults to [] — no env requirements.
+   */
+  requiresEnv: z.array(z.string().min(1)).default([]),
 });
 
 // ---------------------------------------------------------------------------

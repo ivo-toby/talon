@@ -59,6 +59,8 @@ export interface SubAgentManifest {
   rootPaths: string[];
   /** Maximum wall-clock time (ms) before the sub-agent run is aborted. */
   timeoutMs: number;
+  /** Environment variables that must be set for this sub-agent to load. */
+  requiresEnv: string[];
 }
 
 // ---------------------------------------------------------------------------

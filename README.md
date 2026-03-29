@@ -915,6 +915,23 @@ Uses `generateObject` with a Zod discriminated union schema to ensure the LLM re
 
 This sub-agent is called automatically by the **rolling context window** (see below) — it is not invoked manually by the agent.
 
+#### `spark-coder`
+
+**Problem:** Code generation tasks inside agentic loops are bottlenecked by the main model's speed. The parent agent already knows what code to generate — it just needs a fast model to produce it.
+
+**Solution:** Uses OpenAI's `gpt-5.4-spark` for fast, single-shot code generation. Receives a task description, optional context files, and optional constraints, then returns structured file operations (create or replace) via `generateObject` with a Zod schema. The parent agent handles all filesystem I/O; this sub-agent is pure generation with no tool use or agentic loop.
+
+|                           |                                                        |
+| ------------------------- | ------------------------------------------------------ |
+| **Model**                 | GPT-5.4 Spark (OpenAI)                                 |
+| **Required capabilities** | none                                                   |
+| **Requires env**          | `OPENAI_API_KEY`                                       |
+| **Timeout**               | 60s                                                    |
+| **Input**                 | `{ task, contextFiles?, constraints? }`                |
+| **Output**                | `{ files: [{ path, content, action }], explanation }`  |
+
+This sub-agent is only loaded when `OPENAI_API_KEY` is set in the environment. Pairs well with the `execution_env` host tool for a generate → test → fix loop where the parent agent orchestrates between spark-coder (fast generation) and Sprites (sandboxed execution).
+
 ### Rolling Context Window
 
 Long conversations eventually fill the Agent SDK's context window. Talon monitors provider-specific context metrics after each agent run and automatically rotates the session when the configured threshold is exceeded, keeping conversations seamless without jarring resets. For Claude latency optimization, `cache_total_input_tokens` is the strongest signal because it tracks the total cached session footprint after the run.
@@ -1008,7 +1025,8 @@ npx talonctl run-subagent --name session-summarizer --input '{"transcript": "Use
 2. Write an `index.ts` (dev) or `index.js` (production) with an exported `run(ctx, input)` function returning `Result<SubAgentResult, SubAgentError>`
 3. Add prompt fragments in `prompts/` (numbered for ordering: `01-system.md`, `02-examples.md`)
 4. Declare required capabilities in the manifest — the daemon validates these against the persona at invocation time
-5. Test with `talonctl run-subagent --name your-agent --input '{}'`
+5. Optionally add `requiresEnv` to the manifest — the loader skips the sub-agent if any listed env vars are missing (useful for provider-specific API keys)
+6. Test with `talonctl run-subagent --name your-agent --input '{}'`
 
 Custom sub-agents override built-in ones if they share the same name (dataDir takes precedence over cwd, which takes precedence over built-in).
 

@@ -271,4 +271,69 @@ describe('SubAgentLoader', () => {
     expect(manifest.requiredCapabilities).toEqual([]);
     expect(manifest.rootPaths).toEqual([]);
   });
+
+  it('skips sub-agent when requiresEnv var is missing (info, not warn)', async () => {
+    const agentDir = join(root, 'env-gated');
+    mkdirSync(agentDir, { recursive: true });
+    writeManifest(agentDir, `name: env-gated
+version: "0.1.0"
+description: Needs an env var
+model:
+  provider: openai
+  name: gpt-5.4-spark
+requiresEnv:
+  - TALON_TEST_NONEXISTENT_KEY_12345`);
+    writeEntryPoint(agentDir);
+
+    const infos: unknown[] = [];
+    const warnings: unknown[] = [];
+    const logger = {
+      ...makeLogger(),
+      info: (...args: unknown[]): void => {
+        infos.push(args);
+      },
+      warn: (...args: unknown[]): void => {
+        warnings.push(args);
+      },
+    };
+
+    const loader = new SubAgentLoader(logger as unknown as import('pino').Logger);
+    const result = await loader.loadAll(root);
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toEqual([]);
+    // Should log at info level, not warn
+    expect(infos.some((args) =>
+      JSON.stringify(args).includes('missing required env vars'),
+    )).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  it('loads sub-agent when requiresEnv var is present', async () => {
+    const envKey = 'TALON_TEST_SPARK_CODER_KEY_' + Date.now();
+    process.env[envKey] = 'test-value';
+
+    try {
+      const agentDir = join(root, 'env-present');
+      mkdirSync(agentDir, { recursive: true });
+      writeManifest(agentDir, `name: env-present
+version: "0.1.0"
+description: Has env var
+model:
+  provider: openai
+  name: gpt-5.4-spark
+requiresEnv:
+  - ${envKey}`);
+      writeEntryPoint(agentDir);
+
+      const loader = new SubAgentLoader(makeLogger());
+      const result = await loader.loadAll(root);
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toHaveLength(1);
+      expect(result._unsafeUnwrap()[0].manifest.name).toBe('env-present');
+    } finally {
+      delete process.env[envKey];
+    }
+  });
 });

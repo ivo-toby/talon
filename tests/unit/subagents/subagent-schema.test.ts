@@ -139,4 +139,33 @@ describe('SubAgentManifestSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  // --- requiresEnv ---
+
+  it('defaults requiresEnv to empty array', () => {
+    const result = SubAgentManifestSchema.safeParse(minimal);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.requiresEnv).toEqual([]);
+    }
+  });
+
+  it('accepts requiresEnv with valid env var names', () => {
+    const result = SubAgentManifestSchema.safeParse({
+      ...minimal,
+      requiresEnv: ['OPENAI_API_KEY', 'SOME_SECRET'],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.requiresEnv).toEqual(['OPENAI_API_KEY', 'SOME_SECRET']);
+    }
+  });
+
+  it('rejects empty string in requiresEnv', () => {
+    const result = SubAgentManifestSchema.safeParse({
+      ...minimal,
+      requiresEnv: ['OPENAI_API_KEY', ''],
+    });
+    expect(result.success).toBe(false);
+  });
 });

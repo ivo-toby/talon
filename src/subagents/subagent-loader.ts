@@ -129,7 +129,8 @@ export class SubAgentLoader {
           { agent: result.value.manifest.name, agentDir },
           'subagent-loader: sub-agent loaded',
         );
-      } else {
+      } else if (!result.error.message.includes('requires env vars')) {
+        // Env-gating is expected (already logged at info in loadOne) — don't warn.
         this.logger.warn(
           { agentDir, error: result.error.message },
           'subagent-loader: skipping invalid sub-agent',
@@ -213,7 +214,23 @@ export class SubAgentLoader {
       }
     }
 
-    // 3. Import the entry point.
+    // 3. Check required environment variables.
+    const missingEnv = validated.data.requiresEnv.filter(
+      (v) => !process.env[v],
+    );
+    if (missingEnv.length > 0) {
+      this.logger.info(
+        { agent: validated.data.name, missingEnv },
+        'subagent-loader: skipping sub-agent (missing required env vars)',
+      );
+      return err(
+        new SubAgentError(
+          `Sub-agent "${validated.data.name}" requires env vars: ${missingEnv.join(', ')}`,
+        ),
+      );
+    }
+
+    // 4. Import the entry point.
     const runFn = await this.loadEntryPoint(agentDir);
     if (runFn === null) {
       return err(
@@ -223,7 +240,7 @@ export class SubAgentLoader {
       );
     }
 
-    // 4. Load prompt fragments.
+    // 5. Load prompt fragments.
     const promptResult = await this.loadPrompts(agentDir);
     if (promptResult.isErr()) return err(promptResult.error);
 
