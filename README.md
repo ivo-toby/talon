@@ -1698,6 +1698,89 @@ Talon's data model supports supervisor/worker patterns via `parent_run_id` in th
 
 ---
 
+## Agent-to-Agent Communication (A2A)
+
+Talon implements [Google's A2A protocol](https://google.github.io/A2A/) for internal persona-to-persona task routing. Any persona can delegate a task to another persona without human involvement, enabling supervisor/worker workflows and specialised delegation chains.
+
+### How it works
+
+Each persona is automatically discoverable as an A2A agent with a card describing its capabilities, skills, and endpoint. When persona A needs to delegate work to persona B, it submits a task via the internal A2A server. The task is persisted to the `a2a_tasks` table, enqueued as a `collaboration` queue item, and processed by the daemon exactly like any other message — but against the target persona's full model configuration.
+
+```
+Persona A (source)
+    │
+    │  tasks/send  (JSON-RPC)
+    ▼
+A2A Server  ──►  a2a_tasks (submitted)
+    │
+    ▼
+Collaboration Queue
+    │
+    ▼
+AgentRunner  ──►  Persona B (target)
+    │
+    ▼
+a2a_tasks (completed / failed)
+```
+
+### Task lifecycle states
+
+| State | Meaning |
+|---|---|
+| `submitted` | Task accepted, enqueued for processing |
+| `working` | AgentRunner has started processing |
+| `input-required` | Target persona is waiting for clarification |
+| `completed` | Target persona finished and returned a result |
+| `failed` | Processing failed with an error code |
+| `canceled` | Task was canceled before completion |
+
+### CLI commands
+
+**List tasks:**
+
+```bash
+# List the 20 most recent A2A tasks
+talonctl a2a list
+
+# Filter by state and target persona
+talonctl a2a list --status working --target software-engineer
+
+# Show more results
+talonctl a2a list --limit 50
+```
+
+**Send a task manually (for testing):**
+
+```bash
+# Submit a task to a persona and receive the task ID
+talonctl a2a send software-engineer "Review the latest PR and summarise findings"
+
+# Specify a source persona name (defaults to "cli")
+talonctl a2a send software-engineer "Run the test suite" --source james
+```
+
+`a2a send` inserts a task directly into the database and enqueues it for processing. If the daemon is running, the task will be picked up immediately. If not, it will be processed on next daemon start.
+
+### Milestone 1 scope
+
+The current implementation covers:
+
+- Internal-only task routing (no external HTTP exposure)
+- Single-hop and multi-hop delegation (up to 4 hops, configurable via `MAX_HOPS`)
+- Concurrency admission: at most 1 active task per target persona at a time
+- Full task lifecycle tracking in `a2a_tasks` table
+- Agent card discovery per persona
+- CLI commands for listing and submitting tasks
+
+### Coming in Milestone 2
+
+- External A2A endpoint exposure (authenticated HTTP, for cross-instance routing)
+- Per-task capability grants (fine-grained source/target permissions)
+- A2A task monitoring dashboard
+- Streaming task updates via SSE
+
+---
+
 ## Contributing
 
 1. Fork the repository
