@@ -659,15 +659,11 @@ async function main(): Promise<void> {
         threadId,
         personaId,
         traceparent,
-<<<<<<< HEAD
         ...(a2aTaskId ? { a2aTaskId } : {}),
         ...(a2aHopCount !== undefined ? { a2aHopCount } : {}),
-||||||| parent of 53a8b6d (feat(execution-env): add sprites foundation and host tools)
-=======
         ...(backgroundTaskId ? { backgroundTaskId } : {}),
         ...(primaryExecutionEnvId ? { primaryExecutionEnvId } : {}),
         ...(allowedHostRoots ? { allowedHostRoots } : {}),
->>>>>>> 53a8b6d (feat(execution-env): add sprites foundation and host tools)
       });
 
       if (!result) {
