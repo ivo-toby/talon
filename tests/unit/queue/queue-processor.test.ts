@@ -98,6 +98,37 @@ describe('QueueProcessor', () => {
     });
   });
 
+  describe('processNext — collaboration items bypass inflight check', () => {
+    it('claims and processes a collaboration item on a thread with an inflight non-collaboration item', async () => {
+      const inflightItemId = enqueueItem(repo, threadId);
+      const collaborationItemId = enqueueItem(repo, threadId, { type: 'collaboration' });
+
+      // Keep the first non-collaboration item in-flight.
+      repo.claimNext(threadId);
+
+      const handledIds: string[] = [];
+      const result = await processor.processNext(async (item) => {
+        handledIds.push(item.id);
+        return ok(undefined);
+      });
+
+      expect(result).not.toBeNull();
+      expect(result?.id).toBe(collaborationItemId);
+      expect(result?.type).toBe('collaboration');
+      expect(handledIds).toEqual([collaborationItemId]);
+
+      const inflightRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
+        inflightItemId,
+      ) as { status: string };
+      expect(inflightRow.status).toBe('claimed');
+
+      const collaborationRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
+        collaborationItemId,
+      ) as { status: string };
+      expect(collaborationRow.status).toBe('completed');
+    });
+  });
+
   // -------------------------------------------------------------------------
   // complete
   // -------------------------------------------------------------------------

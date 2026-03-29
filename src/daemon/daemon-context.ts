@@ -44,6 +44,7 @@ import type { ContextRoller } from './context-roller.js';
 import type { ContextAssembler } from './context-assembler.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import type { A2AServer } from '../a2a/a2a-server.js';
+import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -72,8 +73,12 @@ export interface DaemonRepos {
 /**
  * Immutable runtime context populated during bootstrap.
  *
- * Every field is guaranteed non-null. If bootstrap fails, no context
+ * Most fields are guaranteed non-null. If bootstrap fails, no context
  * is created — the daemon never enters 'running' state.
+ *
+ * Exceptions: `a2aServer` and `a2aTaskMapper` are nullable — they are only
+ * populated when the A2A feature is enabled in config. Callers must null-check
+ * these fields before use.
  */
 export interface DaemonContext {
   readonly db: Database.Database;
@@ -100,4 +105,5 @@ export interface DaemonContext {
   readonly contextAssembler: ContextAssembler;
   readonly logger: pino.Logger;
   readonly a2aServer: A2AServer | null;
+  readonly a2aTaskMapper: A2ATaskMapper | null;
 }

@@ -40,6 +40,8 @@ interface BridgeRequest {
     personaId: string;
     requestId: string;
     traceparent?: string;
+    a2aTaskId?: string;
+    a2aHopCount?: number;
   };
 }
 
@@ -136,7 +138,7 @@ class SocketClient {
   async sendRequest(
     tool: string,
     args: Record<string, unknown>,
-    context: { runId: string; threadId: string; personaId: string; traceparent?: string },
+    context: { runId: string; threadId: string; personaId: string; traceparent?: string; a2aTaskId?: string; a2aHopCount?: number },
   ): Promise<BridgeResponse['result']> {
     if (!this.connected) {
       await this.connectedPromise;
@@ -153,6 +155,8 @@ class SocketClient {
         personaId: context.personaId,
         requestId: randomUUID(),
         ...(context.traceparent ? { traceparent: context.traceparent } : {}),
+        ...(context.a2aTaskId ? { a2aTaskId: context.a2aTaskId } : {}),
+        ...(context.a2aHopCount !== undefined ? { a2aHopCount: context.a2aHopCount } : {}),
       },
     };
 
@@ -241,6 +245,28 @@ const TOOLS = [
         },
       },
       required: ['channelId', 'content'],
+    },
+  },
+  {
+    name: 'persona_send',
+    description: 'Send a task to another persona via the A2A layer',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        target_persona: {
+          type: 'string' as const,
+          description: 'Target persona name from talond.yaml',
+        },
+        message: {
+          type: 'string' as const,
+          description: 'Text task to send to the target persona',
+        },
+        await_reply: {
+          type: 'boolean' as const,
+          description: 'Wait for the target persona to finish and return its result',
+        },
+      },
+      required: ['target_persona', 'message'],
     },
   },
   {
@@ -414,6 +440,14 @@ async function main(): Promise<void> {
   const threadId = getEnvRequired('TALOND_THREAD_ID');
   const personaId = getEnvRequired('TALOND_PERSONA_ID');
   const traceparent = process.env.TALOND_TRACEPARENT;
+  const a2aTaskId = process.env.TALOND_A2A_TASK_ID;
+  const rawA2aHopCount = process.env.TALOND_A2A_HOP_COUNT;
+  const parsedA2aHopCount =
+    rawA2aHopCount !== undefined ? Number.parseInt(rawA2aHopCount, 10) : undefined;
+  const a2aHopCount =
+    typeof parsedA2aHopCount === 'number' && Number.isFinite(parsedA2aHopCount)
+      ? parsedA2aHopCount
+      : undefined;
 
   // Determine which tools this persona may use. Only tools whose MCP names
   // appear in TALOND_ALLOWED_TOOLS are listed and callable.
@@ -491,6 +525,8 @@ async function main(): Promise<void> {
         threadId,
         personaId,
         traceparent,
+        ...(a2aTaskId ? { a2aTaskId } : {}),
+        ...(a2aHopCount !== undefined ? { a2aHopCount } : {}),
       });
 
       if (!result) {

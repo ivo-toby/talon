@@ -474,6 +474,7 @@ export async function bootstrap(
     contextAssembler,
     logger,
     a2aServer,
+    a2aTaskMapper,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);

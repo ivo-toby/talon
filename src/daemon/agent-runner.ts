@@ -487,6 +487,12 @@ export class AgentRunner {
                         TALOND_PERSONA_ID: personaId,
                         TALOND_ALLOWED_TOOLS: allowedMcpTools.join(','),
                         TALOND_TRACEPARENT: generationObservation.getTraceparent() ?? '',
+                        ...(isA2ATask && a2aTaskId ? {
+                          TALOND_A2A_TASK_ID: a2aTaskId,
+                          TALOND_A2A_HOP_COUNT: String(
+                            typeof item.payload?.hopCount === 'number' ? item.payload.hopCount : 0
+                          ),
+                        } : {}),
                       },
                     },
                   };
