@@ -57,6 +57,12 @@ export class AgentRunner {
       return this.deliverBackgroundTaskNotification(item.threadId, backgroundTaskNotification);
     }
 
+    // Detect A2A task collaboration items and flag for special handling.
+    const isA2ATask =
+      item.type === 'collaboration' && item.payload.kind === 'a2a_task';
+    const a2aTaskId =
+      isA2ATask && typeof item.payload.taskId === 'string' ? item.payload.taskId : null;
+
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {
       return err(new Error(`queue item ${item.id} is missing payload.personaId`));
@@ -117,6 +123,7 @@ export class AgentRunner {
 
     const runId = uuidv4();
     const now = Date.now();
+
     const runInsert = this.ctx.repos.run.insert({
       id: runId,
       thread_id: item.threadId,
@@ -138,7 +145,20 @@ export class AgentRunner {
     });
 
     if (runInsert.isErr()) {
+      // Mark A2A task as failed — run record creation failed, so the task cannot proceed.
+      if (isA2ATask && a2aTaskId) {
+        this.ctx.repos.a2aTask.markFailed(a2aTaskId, 'RUN_INSERT_ERROR', runInsert.error.message).mapErr((e) => {
+          this.ctx.logger.warn({ a2aTaskId, err: e.message }, 'agent-runner: failed to mark A2A task as failed after run insert error');
+        });
+      }
       return err(new Error(`failed to create run record: ${runInsert.error.message}`));
+    }
+
+    // Mark A2A task as 'working' now that a run record exists.
+    if (isA2ATask && a2aTaskId) {
+      this.ctx.repos.a2aTask.markWorking(a2aTaskId, runId).mapErr((e) => {
+        this.ctx.logger.warn({ a2aTaskId, runId, err: e.message }, 'agent-runner: failed to mark A2A task as working');
+      });
     }
 
     const content = typeof item.payload.content === 'string' ? item.payload.content : '';
@@ -800,7 +820,19 @@ export class AgentRunner {
               }
             }
 
-            if (item.type === 'schedule') {
+            if (isA2ATask && a2aTaskId) {
+              // A2A collaboration task: store result in a2a_tasks, skip channel send.
+              this.ctx.repos.a2aTask.markCompleted(a2aTaskId, fullOutputText).mapErr((e) => {
+                this.ctx.logger.warn(
+                  { a2aTaskId, runId, err: e.message },
+                  'agent-runner: failed to mark A2A task as completed',
+                );
+              });
+              this.ctx.logger.info(
+                { runId, a2aTaskId, outputLength: fullOutputText.length },
+                'agent-sdk: A2A task completed, result stored (no channel send)',
+              );
+            } else if (item.type === 'schedule') {
               this.ctx.logger.info(
                 { runId, outputLength: fullOutputText.length },
                 'agent-sdk: skipping outbound reply for schedule item (agent already sent via channel_send)',
@@ -816,15 +848,19 @@ export class AgentRunner {
               }
             }
 
-            this.ctx.repos.message.insert({
-              id: uuidv4(),
-              thread_id: item.threadId,
-              direction: 'outbound',
-              content: JSON.stringify({ body: fullOutputText }),
-              idempotency_key: `outbound:${runId}`,
-              provider_id: null,
-              run_id: runId,
-            });
+            // Skip persisting A2A delegation output into the source thread's message
+            // history — it would pollute context assembly for the human conversation.
+            if (!isA2ATask) {
+              this.ctx.repos.message.insert({
+                id: uuidv4(),
+                thread_id: item.threadId,
+                direction: 'outbound',
+                content: JSON.stringify({ body: fullOutputText }),
+                idempotency_key: `outbound:${runId}`,
+                provider_id: null,
+                run_id: runId,
+              });
+            }
 
             runObservation.update({
               output: {
@@ -849,6 +885,15 @@ export class AgentRunner {
               ended_at: Date.now(),
               error: error.message,
             });
+            // Mark A2A task as failed on agent execution error.
+            if (isA2ATask && a2aTaskId) {
+              this.ctx.repos.a2aTask.markFailed(a2aTaskId, 'EXECUTION_ERROR', error.message).mapErr((e) => {
+                this.ctx.logger.warn(
+                  { a2aTaskId, runId, err: e.message },
+                  'agent-runner: failed to mark A2A task as failed',
+                );
+              });
+            }
             runFinalized = true;
             throw error;
           }
