@@ -1,0 +1,497 @@
+---
+title: talonctl reference
+description: Complete CLI reference for the talonctl management tool
+---
+
+# talonctl reference
+
+`talonctl` manages a Talon daemon and its config. Commands usually read `talond.yaml` from the current directory unless they are IPC-only commands.
+
+Examples in this file use `npx talonctl ...`, but the same subcommands also work through `node dist/cli/index.js ...`.
+
+---
+
+## Daemon management
+
+### `status`
+
+Shows daemon status through IPC.
+
+```bash
+npx talonctl status
+npx talonctl status --ipc-dir data/ipc/daemon --timeout 5000
+```
+
+| Flag | Description |
+|---|---|
+| `--ipc-dir <path>` | Override the daemon IPC directory |
+| `--timeout <ms>` | Response timeout in milliseconds. Default: `5000` |
+
+### `reload`
+
+Hot-reloads config, personas, and channels through IPC.
+
+```bash
+npx talonctl reload
+npx talonctl reload --ipc-dir data/ipc/daemon --timeout 5000
+```
+
+| Flag | Description |
+|---|---|
+| `--ipc-dir <path>` | Override the daemon IPC directory |
+| `--timeout <ms>` | Response timeout in milliseconds. Default: `5000` |
+
+### `chat`
+
+Connects to a configured terminal channel over WebSocket.
+
+```bash
+npx talonctl chat --token "$TERMINAL_TOKEN"
+npx talonctl chat --host 127.0.0.1 --port 7700 --token "$TERMINAL_TOKEN" --client-id my-laptop
+npx talonctl chat --host 127.0.0.1 --port 7700 --token "$TERMINAL_TOKEN" --persona researcher --tls
+```
+
+| Flag | Description |
+|---|---|
+| `--host <host>` | Terminal connector host. Default: `127.0.0.1` |
+| `--port <port>` | Terminal connector port. Default: `7700` |
+| `--token <token>` | Terminal auth token. If omitted, `TERMINAL_TOKEN` is used |
+| `--client-id <id>` | Stable client identity for persistent threads |
+| `--persona <name>` | Optional persona override for this session |
+| `--tls` | Use `wss://` instead of `ws://` |
+
+---
+
+## Setup and diagnostics
+
+### `setup`
+
+Runs first-time setup steps: OS and Docker checks, data directory creation, starter config generation, migrations, and config validation.
+
+```bash
+npx talonctl setup
+npx talonctl setup --config talond.yaml --data-dir data
+```
+
+| Flag | Description |
+|---|---|
+| `--config <path>` | Path to write `talond.yaml`. Default: `talond.yaml` |
+| `--data-dir <path>` | Data directory path. Default: `data` |
+
+### `doctor`
+
+Checks Node.js, Docker, config validity, database access, and data directories.
+
+```bash
+npx talonctl doctor
+npx talonctl doctor --config talond.yaml
+```
+
+### `migrate`
+
+Applies database migrations without needing a running daemon.
+
+```bash
+npx talonctl migrate
+npx talonctl migrate --config talond.yaml
+```
+
+### `env-check`
+
+Scans `talond.yaml` for `${ENV_VAR}` placeholders and reports which ones are set.
+
+```bash
+npx talonctl env-check
+npx talonctl env-check --config talond.yaml
+```
+
+### `config-show`
+
+Shows the config file after environment-variable substitution. Secrets are masked unless you opt in to showing them.
+
+```bash
+npx talonctl config-show
+npx talonctl config-show --show-secrets
+```
+
+| Flag | Description |
+|---|---|
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+| `--show-secrets` | Print secret values instead of masking them |
+
+---
+
+## Channels
+
+### `add-channel`
+
+Adds a channel entry with a placeholder `config` block.
+
+```bash
+npx talonctl add-channel --name my-telegram --type telegram
+npx talonctl add-channel --name my-terminal --type terminal
+```
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | Required unique channel name |
+| `--type <type>` | Required channel type. Accepted by the CLI: `telegram`, `whatsapp`, `whatsappBusiness`, `whatsappBaileys`, `slack`, `email`, `discord`, `terminal` |
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+
+Note: the validated config schema uses `whatsappBusiness`; prefer that spelling in `talond.yaml`.
+
+### `list-channels`
+
+Lists configured channels.
+
+```bash
+npx talonctl list-channels
+```
+
+### `remove-channel`
+
+Removes a channel from config and also removes any config bindings that reference it.
+
+```bash
+npx talonctl remove-channel --name old-channel
+```
+
+---
+
+## Personas
+
+### `add-persona`
+
+Scaffolds a persona directory, `system.md`, `personality/`, and `prompts/`, then adds the persona to config.
+
+```bash
+npx talonctl add-persona --name assistant
+npx talonctl add-persona --name researcher --provider gemini-cli
+npx talonctl add-persona --name triage --description "Triage and routing persona"
+```
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | Required persona name |
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+| `--templates-dir <path>` | Template directory. Default: `templates` |
+| `--model <model>` | Optional model override |
+| `--provider <provider>` | Optional provider override |
+| `--capabilities <caps>` | Comma-separated allow-list labels |
+| `--require-approval <caps>` | Comma-separated approval-gated labels |
+| `--skills <skills>` | Comma-separated skill names |
+| `--system-prompt-file <path>` | Copy an existing system prompt file instead of generating one |
+| `--description <text>` | Persona description written into `system.md` frontmatter |
+
+Default allow-list for a new persona:
+
+- `memory.access:thread`
+- `net.http:egress`
+- `schedule.manage:own`
+
+### `list-personas`
+
+Lists configured personas.
+
+```bash
+npx talonctl list-personas
+```
+
+### `remove-persona`
+
+Removes a persona from config and removes any config bindings that reference it. The persona directory on disk is not deleted.
+
+```bash
+npx talonctl remove-persona --name old-persona
+```
+
+### `list-capabilities`
+
+Prints the known capability labels grouped by host tool.
+
+```bash
+npx talonctl list-capabilities
+```
+
+### `set-capabilities`
+
+Reads or updates a persona's capability labels.
+
+```bash
+npx talonctl set-capabilities --persona assistant --show
+npx talonctl set-capabilities --persona assistant --add "subagent.background,channel.send:my-telegram"
+npx talonctl set-capabilities --persona assistant --require-approval "db.query:own"
+```
+
+| Flag | Description |
+|---|---|
+| `--persona <name>` | Required persona name |
+| `--allow <labels>` | Replace the entire allow list |
+| `--add <labels>` | Add labels to the allow list |
+| `--remove <labels>` | Remove labels from the allow list |
+| `--require-approval <labels>` | Replace the entire `requireApproval` list |
+| `--show` | Print current capabilities without changing config |
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+
+`--allow` is mutually exclusive with `--add` and `--remove`.
+
+---
+
+## Bindings
+
+### `bind`
+
+Adds a persona-to-channel binding in config.
+
+```bash
+npx talonctl bind --persona assistant --channel my-telegram
+```
+
+The first binding created for a channel becomes its default binding automatically.
+
+### `unbind`
+
+Removes a persona-to-channel binding from config.
+
+```bash
+npx talonctl unbind --persona assistant --channel my-telegram
+```
+
+If the removed binding was the default binding for that channel, Talon promotes the next remaining binding on that channel to default.
+
+---
+
+## Skills
+
+### `add-skill`
+
+Scaffolds a skill directory and attaches the skill name to a persona in config.
+
+```bash
+npx talonctl add-skill --name web-search --persona assistant --format skillmd
+npx talonctl add-skill --name web-search --persona assistant --format yaml
+```
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | Required skill name |
+| `--persona <persona>` | Required target persona |
+| `--format <format>` | `yaml` or `skillmd`. Default: `yaml` |
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+
+### `list-skills`
+
+Lists skills attached to personas. It reports the on-disk format when the skill directory exists.
+
+```bash
+npx talonctl list-skills
+npx talonctl list-skills --persona assistant
+```
+
+### `add-mcp`
+
+Creates `skills/<skill>/mcp/<name>.json`.
+
+```bash
+npx talonctl add-mcp --skill web-search --name brave-search \
+  --transport stdio --command npx --args @modelcontextprotocol/server-brave-search
+
+npx talonctl add-mcp --skill issue-tracker --name jira \
+  --transport http --url https://example.com/mcp
+```
+
+| Flag | Description |
+|---|---|
+| `--skill <name>` | Required skill name |
+| `--name <name>` | Required MCP server name |
+| `--transport <type>` | Required transport: `stdio`, `sse`, or `http` |
+| `--command <cmd>` | Required for `stdio` |
+| `--args <args...>` | Optional arguments for `stdio` |
+| `--url <url>` | Required for `sse` and `http` |
+| `--env <pairs>` | Optional comma-separated `KEY=VAL` pairs |
+| `--skills-dir <path>` | Skills directory. Default: `skills` |
+
+---
+
+## Scheduling
+
+### `add-schedule`
+
+Creates a cron schedule directly in the database. This command only supports cron schedules.
+
+```bash
+npx talonctl add-schedule \
+  --persona assistant \
+  --channel my-telegram \
+  --cron "0 9 * * 1-5" \
+  --label "Morning summary" \
+  --prompt "Good morning. Summarize what I should focus on today."
+```
+
+| Flag | Description |
+|---|---|
+| `--persona <name>` | Required persona name |
+| `--channel <name>` | Required channel name for the schedule thread |
+| `--cron <expr>` | Required 5-field cron expression |
+| `--label <label>` | Required human-readable label |
+| `--prompt <prompt>` | Required inline prompt text |
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+
+### `list-schedules`
+
+Lists schedules from the database.
+
+```bash
+npx talonctl list-schedules
+npx talonctl list-schedules --persona assistant
+```
+
+### `remove-schedule`
+
+Deletes a schedule permanently by ID.
+
+```bash
+npx talonctl remove-schedule 123e4567-e89b-12d3-a456-426614174000
+```
+
+---
+
+## Providers
+
+### `list-providers`
+
+Lists providers from both `agentRunner.providers` and `backgroundAgent.providers`.
+
+```bash
+npx talonctl list-providers
+```
+
+### `add-provider`
+
+Adds a provider to `agentRunner`, `backgroundAgent`, or both.
+
+```bash
+npx talonctl add-provider --name gemini-cli \
+  --command /usr/local/bin/gemini \
+  --context both \
+  --context-window 1000000 \
+  --enabled \
+  --default-model gemini-2.5-pro
+```
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | Required provider name |
+| `--command <cmd>` | Required CLI command or absolute path |
+| `--context <ctx>` | `agent-runner`, `background`, or `both`. Default: `both` |
+| `--context-window <tokens>` | Context window size. Default: `200000` |
+| `--context-enabled <enabled>` | Enable or disable context management for `agent-runner` providers |
+| `--trigger-metric <metric>` | Context trigger metric |
+| `--threshold-ratio <ratio>` | Rotation threshold ratio. Default: `0.5` |
+| `--recent-message-count <count>` | Messages kept after rotation. Default: `10` |
+| `--summarizer <name>` | Summarizer sub-agent. Default: `session-summarizer` |
+| `--enabled` | Enable the provider immediately |
+| `--default-model <model>` | Write `options.defaultModel` |
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+
+Notes:
+
+- Background providers do not get `contextManagement`.
+- If `--context-enabled` is omitted, `agent-runner` and `both` default to enabled context management.
+
+### `set-default-provider`
+
+Switches the default provider for one context.
+
+```bash
+npx talonctl set-default-provider --name claude-code --context agent-runner
+npx talonctl set-default-provider --name gemini-cli --context background
+```
+
+### `test-provider`
+
+Runs `--version` and a minimal test prompt against a configured provider.
+
+```bash
+npx talonctl test-provider --name claude-code
+npx talonctl test-provider --name gemini-cli --context background
+```
+
+---
+
+## Sub-agents
+
+### `run-subagent`
+
+Loads and runs a sub-agent directly for testing.
+
+```bash
+npx talonctl run-subagent --name file-searcher \
+  --input '{"query":"deployment steps"}'
+
+npx talonctl run-subagent --name session-summarizer \
+  --input '{"transcript":"User: Hi\nAssistant: Hello!"}'
+```
+
+| Flag | Description |
+|---|---|
+| `--name <name>` | Required sub-agent name |
+| `--input <json>` | Required JSON object payload |
+| `--config <path>` | Path to `talond.yaml`. Default: `talond.yaml` |
+| `--subagents-dir <path>` | Override the sub-agents directory |
+
+Without `--subagents-dir`, Talon searches:
+
+- the bundled built-in subagents
+- `./subagents`
+- `<dataDir>/subagents`
+
+---
+
+## Operations
+
+### `backup`
+
+Creates a backup directory containing the database, config, personas, and skills.
+
+```bash
+npx talonctl backup
+npx talonctl backup --config talond.yaml --output data/backups/pre-upgrade
+```
+
+### `queue-purge`
+
+Purges queue items through IPC.
+
+```bash
+npx talonctl queue-purge
+npx talonctl queue-purge --statuses dead_letter,failed
+npx talonctl queue-purge --all
+```
+
+| Flag | Description |
+|---|---|
+| `--ipc-dir <path>` | Override the daemon IPC directory |
+| `--timeout <ms>` | Response timeout in milliseconds. Default: `5000` |
+| `--statuses <list>` | Comma-separated statuses to purge |
+| `--all` | Purge all statuses, including in-flight items |
+
+Valid statuses: `pending`, `claimed`, `processing`, `completed`, `failed`, `dead_letter`.
+
+---
+
+## WhatsApp Baileys authentication
+
+### `whatsapp-auth`
+
+Runs the QR-based auth flow for the `whatsappBaileys` connector.
+
+```bash
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
+```
+
+| Flag | Description |
+|---|---|
+| `--auth-dir <path>` | Directory where Baileys session files are stored. Default: `./baileys-auth` |
+| `--timeout <seconds>` | QR scan timeout. Default: `120` |

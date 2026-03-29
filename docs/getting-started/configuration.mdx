@@ -1,0 +1,255 @@
+---
+title: Configuration
+description: Practical overview of the talond.yaml configuration file
+---
+
+# Configuration
+
+Talon uses a single YAML config file, `talond.yaml` by default.
+All top-level sections are optional. The schema in `src/core/config/config-schema.ts` supplies defaults when sections are omitted.
+
+## Environment variables
+
+Config values can reference environment variables:
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+```
+
+The CLI loads `.env` before parsing config. Use `talonctl env-check` to see which placeholders are still missing.
+
+## Minimal useful skeleton
+
+```yaml
+storage:
+  type: sqlite
+  path: data/talond.sqlite
+
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    systemPromptFile: personas/assistant/system.md
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        - schedule.manage:own
+
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowedChatIds:
+        - "123456789"
+
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+
+auth:
+  mode: subscription
+
+logLevel: info
+dataDir: data
+```
+
+## Personas
+
+```yaml
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    provider: claude-code
+    systemPromptFile: personas/assistant/system.md
+    skills:
+      - web-search
+    subagents:
+      - session-summarizer
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        - schedule.manage:own
+        - subagent.invoke
+      requireApproval:
+        - db.query:own
+    mounts:
+      - source: /srv/notes
+        target: /workspace/notes
+        mode: ro
+    maxConcurrent: 2
+```
+
+Key points:
+
+- `model` defaults to `claude-sonnet-4-6`
+- `provider` is optional and overrides the default foreground provider for that persona
+- `skills` and `subagents` default to empty arrays
+- capability labels are default-deny; grant only what the persona needs
+
+## Channels
+
+```yaml
+channels:
+  - name: my-terminal
+    type: terminal
+    enabled: true
+    showToolCalls: true
+    config:
+      port: 7700
+      host: 127.0.0.1
+      token: ${TERMINAL_TOKEN}
+```
+
+Common fields:
+
+| Field | Meaning |
+|---|---|
+| `name` | Unique channel name |
+| `type` | Connector type |
+| `enabled` | Defaults to `true` |
+| `showToolCalls` | Optional per-channel tool-call messages |
+| `config` | Connector-specific config |
+
+Connector-specific config is covered in the [Channels guide](/docs/guides/channels).
+
+## Bindings
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+```
+
+Bindings route a channel to a persona. The first binding created for a channel becomes its default binding automatically.
+
+## Queue
+
+```yaml
+queue:
+  maxAttempts: 3
+  backoffBaseMs: 1000
+  backoffMaxMs: 60000
+  concurrencyLimit: 5
+```
+
+These values control queue retries and foreground processing concurrency.
+
+## Foreground providers: `agentRunner`
+
+```yaml
+agentRunner:
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+      contextManagement:
+        enabled: true
+        triggerMetric: cache_read_input_tokens
+        thresholdRatio: 0.5
+        recentMessageCount: 10
+        summarizer: session-summarizer
+```
+
+Notes:
+
+- the schema default includes an enabled `claude-code` provider
+- `contextManagement` belongs only under `agentRunner.providers.<name>`
+- when `contextManagement.enabled` is `true`, `triggerMetric`, `thresholdRatio`, and `summarizer` are required
+
+## Background providers: `backgroundAgent`
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 3
+  defaultTimeoutMinutes: 30
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+```
+
+Notes:
+
+- background providers do not have `contextManagement`
+- `claudePath` still exists as a legacy shortcut and is normalized into a `claude-code` provider when no explicit `providers` block exists
+
+## Auth
+
+```yaml
+auth:
+  mode: subscription
+  providers:
+    anthropic:
+      apiKey: ${ANTHROPIC_API_KEY}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+    ollama:
+      baseURL: http://localhost:11434/v1
+```
+
+`mode` defaults to `subscription`. `providers.<name>.apiKey` and `providers.<name>.baseURL` are both optional.
+
+## Scheduler
+
+```yaml
+scheduler:
+  tickIntervalMs: 5000
+```
+
+## Sandbox
+
+```yaml
+sandbox:
+  runtime: docker
+  image: talon-sandbox:latest
+  maxConcurrent: 3
+  networkDefault: off
+  idleTimeoutMs: 1800000
+  hardTimeoutMs: 3600000
+  resourceLimits:
+    memoryMb: 1024
+    cpus: 1
+    pidsLimit: 256
+```
+
+## Langfuse
+
+```yaml
+langfuse:
+  enabled: true
+  publicKey: ${LANGFUSE_PUBLIC_KEY}
+  secretKey: ${LANGFUSE_SECRET_KEY}
+  baseUrl: https://cloud.langfuse.com
+  environment: production
+  exportMode: batched
+  flushAt: 20
+  flushIntervalSeconds: 5
+```
+
+## IPC
+
+```yaml
+ipc:
+  pollIntervalMs: 500
+  daemonSocketDir: data/ipc/daemon
+```
+
+## Next references
+
+- [Config schema reference](/docs/reference/config-schema)
+- [Channels guide](/docs/guides/channels)
+- [Personas guide](/docs/guides/personas)
+- [Skills guide](/docs/guides/skills)

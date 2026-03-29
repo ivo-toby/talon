@@ -1,0 +1,276 @@
+---
+title: Channels
+description: Configure Talon channel connectors and their connector-specific config
+---
+
+# Channels
+
+Channels are Talon's inbound and outbound connectors. Every configured channel normalizes inbound messages into Talon's internal event format and renders agent output back into a channel-specific format.
+
+## Common channel fields
+
+Every channel entry supports the same wrapper fields:
+
+```yaml
+channels:
+  - name: my-slack
+    type: slack
+    enabled: true
+    showToolCalls: true
+    config:
+      botToken: ${SLACK_BOT_TOKEN}
+      signingSecret: ${SLACK_SIGNING_SECRET}
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `name` | required | Unique channel name |
+| `type` | required | Connector type |
+| `enabled` | `true` | Enable the connector at startup |
+| `showToolCalls` | runtime default `false` | When enabled, Talon sends human-readable tool-call messages to that channel |
+| `config` | `{}` | Connector-specific config |
+
+`showToolCalls` is optional in config. When omitted, the runtime behaves as `false`.
+
+---
+
+## Telegram
+
+Telegram uses Bot API long polling.
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      pollingTimeoutSec: 30
+      allowedChatIds:
+        - "123456789"
+```
+
+| Config field | Description |
+|---|---|
+| `botToken` | Required bot token from BotFather |
+| `pollingTimeoutSec` | Optional long-poll timeout in seconds. Default: `30` |
+| `allowedChatIds` | Optional allow-list of Telegram chat IDs. Use strings, for example `"123456789"` |
+
+Notes:
+
+- each Telegram `chat_id` becomes its own Talon thread
+- Telegram supports `sendTyping()`, so the daemon shows activity while the agent works
+- non-text inbound updates are ignored
+
+---
+
+## Slack
+
+Slack always sends outbound messages through `chat.postMessage`.
+Inbound delivery works in one of two modes:
+
+- with `appToken`: Talon opens a Socket Mode connection itself
+- without `appToken`: the connector starts, but inbound events must be fed externally via `feedEvent()`
+
+```yaml
+channels:
+  - name: my-slack
+    type: slack
+    config:
+      botToken: ${SLACK_BOT_TOKEN}
+      appToken: ${SLACK_APP_TOKEN}
+      signingSecret: ${SLACK_SIGNING_SECRET}
+      defaultChannel: C01234567
+```
+
+| Config field | Description |
+|---|---|
+| `botToken` | Required bot user token |
+| `appToken` | Optional app-level Socket Mode token |
+| `signingSecret` | Required signing secret |
+| `defaultChannel` | Optional fallback channel ID for outbound sends when the current thread is not already a Slack thread |
+
+Notes:
+
+- thread IDs are encoded as `<channelId>:<thread_ts>`
+- if `appToken` is omitted, the stock daemon does not provide an Events API ingress; inbound Slack requires external event delivery
+
+---
+
+## WhatsApp Baileys
+
+The `whatsappBaileys` connector uses WhatsApp Web through Baileys.
+
+```yaml
+channels:
+  - name: my-whatsapp
+    type: whatsappBaileys
+    config:
+      authDir: ./baileys-auth
+      selfChat: true
+      triggerWords:
+        - "@Talon"
+```
+
+| Config field | Description |
+|---|---|
+| `authDir` | Optional auth directory. Default: `./baileys-auth` |
+| `browser` | Optional browser tuple shown in Linked Devices |
+| `markOnlineOnConnect` | Optional online-presence toggle. Default: `false` |
+| `allowedSenders` | Optional allow-list of bare sender IDs |
+| `selfChat` | Optional self-chat mode. Default: `false` |
+| `triggerWords` | Optional case-insensitive prefixes that must start the message |
+
+Notes:
+
+- in normal mode, group messages are ignored
+- in self-chat mode, Talon accepts only your own "Message Yourself" thread and only `fromMe` messages
+- trigger words are stripped before the prompt reaches the agent
+
+Authenticate before starting the daemon:
+
+```bash
+npx talonctl whatsapp-auth --auth-dir ./baileys-auth
+```
+
+---
+
+## WhatsApp Business
+
+The schema name is `whatsappBusiness`. The channel factory also still recognizes the legacy alias `whatsapp`, but `whatsappBusiness` is the correct config value.
+
+```yaml
+channels:
+  - name: my-whatsapp-business
+    type: whatsappBusiness
+    config:
+      phoneNumberId: "123456789"
+      accessToken: ${WHATSAPP_ACCESS_TOKEN}
+      verifyToken: ${WHATSAPP_VERIFY_TOKEN}
+      appSecret: ${WHATSAPP_APP_SECRET}
+      apiVersion: v18.0
+      webhookPort: 3000
+      webhookHost: 0.0.0.0
+      webhookPath: /webhook
+```
+
+| Config field | Description |
+|---|---|
+| `phoneNumberId` | Required phone number ID |
+| `accessToken` | Required Cloud API token |
+| `verifyToken` | Required webhook verify token |
+| `appSecret` | Optional app secret; when set, Talon validates webhook signatures and starts its embedded webhook server |
+| `apiVersion` | Optional API version. Default: `v18.0` |
+| `webhookPort` | Optional webhook port. Default: `3000` when `appSecret` is set |
+| `webhookHost` | Optional bind host. Default: `0.0.0.0` |
+| `webhookPath` | Optional webhook path. Default: `/webhook` |
+
+---
+
+## Terminal
+
+The terminal connector runs a WebSocket server.
+
+```yaml
+channels:
+  - name: my-terminal
+    type: terminal
+    config:
+      port: 7700
+      host: 127.0.0.1
+      token: ${TERMINAL_TOKEN}
+```
+
+| Config field | Description |
+|---|---|
+| `port` | Required WebSocket port |
+| `host` | Optional bind host. Default: `127.0.0.1` |
+| `token` | Required shared secret |
+
+Notes:
+
+- the connector itself has no port default; you must set `config.port`
+- the CLI client defaults to `127.0.0.1:7700`, so using `7700` is convenient but not required
+- `clientId` controls thread persistence on reconnect
+
+Connect with:
+
+```bash
+npx talonctl chat --host 127.0.0.1 --port 7700 --token "$TERMINAL_TOKEN"
+```
+
+---
+
+## Discord
+
+Discord outbound send is implemented through the REST API.
+Inbound Discord messages require an external Gateway event feed calling `feedEvent()`.
+
+```yaml
+channels:
+  - name: my-discord
+    type: discord
+    config:
+      botToken: ${DISCORD_BOT_TOKEN}
+      applicationId: "123456789"
+      guildId: "555555555"
+      allowedChannelIds:
+        - "987654321"
+      intents: 33280
+```
+
+| Config field | Description |
+|---|---|
+| `botToken` | Required bot token |
+| `applicationId` | Required application ID |
+| `guildId` | Optional guild restriction |
+| `allowedChannelIds` | Optional allow-list of channel IDs |
+| `intents` | Optional Gateway intents bitmask. Default behavior is `33280` (`GUILD_MESSAGES + MESSAGE_CONTENT`) |
+
+In the stock daemon, Discord inbound is not wired up because the connector expects an external Gateway feed.
+
+---
+
+## Email
+
+The email connector normalizes IMAP and SMTP concepts, but the stock daemon does not inject real SMTP or IMAP transports. Outbound email therefore is not fully wired by default, and the built-in IMAP client is a no-op stub.
+
+```yaml
+channels:
+  - name: my-email
+    type: email
+    config:
+      smtpHost: smtp.gmail.com
+      smtpPort: 587
+      smtpUser: agent@example.com
+      smtpPass: ${EMAIL_PASSWORD}
+      smtpSecure: false
+      imapHost: imap.gmail.com
+      imapPort: 993
+      imapUser: agent@example.com
+      imapPass: ${EMAIL_PASSWORD}
+      imapSecure: true
+      fromAddress: "Talon <agent@example.com>"
+      allowedSenders:
+        - user@example.com
+      pollingIntervalMs: 30000
+      mailbox: INBOX
+```
+
+| Config field | Description |
+|---|---|
+| `smtpHost` / `smtpPort` / `smtpUser` / `smtpPass` / `smtpSecure` | SMTP settings |
+| `imapHost` / `imapPort` / `imapUser` / `imapPass` / `imapSecure` | IMAP settings |
+| `fromAddress` | Required outbound From address |
+| `allowedSenders` | Optional inbound sender allow-list |
+| `pollingIntervalMs` | Optional IMAP poll interval. Default: `30000` |
+| `mailbox` | Optional mailbox name. Default: `INBOX` |
+
+---
+
+## Managing channels with `talonctl`
+
+```bash
+npx talonctl add-channel --name my-telegram --type telegram
+npx talonctl list-channels
+npx talonctl remove-channel --name my-telegram
+```

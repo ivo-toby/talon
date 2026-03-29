@@ -1,0 +1,371 @@
+---
+title: Config schema reference
+description: Complete reference for all talond.yaml configuration fields
+---
+
+# Config schema reference
+
+This page tracks the actual schema in `src/core/config/config-schema.ts`.
+Every top-level section is optional. When omitted, Talon applies schema defaults.
+
+## Root fields
+
+```yaml
+logLevel: info
+dataDir: data
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `logLevel` | `trace \| debug \| info \| warn \| error \| fatal` | `info` | Pino log level |
+| `dataDir` | string | `data` | Root runtime data directory |
+
+---
+
+## `storage`
+
+```yaml
+storage:
+  type: sqlite
+  path: data/talond.sqlite
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `type` | `sqlite` | `sqlite` | Database backend |
+| `path` | string | `data/talond.sqlite` | SQLite file path |
+
+---
+
+## `sandbox`
+
+```yaml
+sandbox:
+  runtime: docker
+  image: talon-sandbox:latest
+  maxConcurrent: 3
+  networkDefault: off
+  idleTimeoutMs: 1800000
+  hardTimeoutMs: 3600000
+  resourceLimits:
+    memoryMb: 1024
+    cpus: 1
+    pidsLimit: 256
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `runtime` | `docker \| apple-container` | `docker` | Sandbox runtime |
+| `image` | string | `talon-sandbox:latest` | Sandbox image |
+| `maxConcurrent` | integer ≥ 1 | `3` | Max concurrent sandboxed runs |
+| `networkDefault` | `off \| on` | `off` | Default network access |
+| `idleTimeoutMs` | integer ≥ 0 | `1800000` | Idle timeout in ms |
+| `hardTimeoutMs` | integer ≥ 0 | `3600000` | Hard timeout in ms |
+| `resourceLimits.memoryMb` | integer | `1024` | Memory limit per sandbox |
+| `resourceLimits.cpus` | number | `1` | CPU limit per sandbox |
+| `resourceLimits.pidsLimit` | integer | `256` | PID limit per sandbox |
+
+---
+
+## `personas[]`
+
+```yaml
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    provider: claude-code
+    systemPromptFile: personas/assistant/system.md
+    skills:
+      - web-search
+    subagents:
+      - session-summarizer
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        - schedule.manage:own
+      requireApproval:
+        - db.query:own
+    mounts:
+      - source: /srv/notes
+        target: /workspace/notes
+        mode: ro
+    maxConcurrent: 2
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `name` | string | required | Persona name |
+| `model` | string | `claude-sonnet-4-6` | Model identifier |
+| `provider` | string | — | Optional provider override |
+| `systemPromptFile` | string | — | Path to `system.md` |
+| `skills` | string[] | `[]` | Attached skill names |
+| `subagents` | string[] | `[]` | Allowed sub-agent names |
+| `capabilities.allow` | string[] | `[]` | Allowed capability labels |
+| `capabilities.requireApproval` | string[] | `[]` | Approval-gated capability labels |
+| `mounts` | array | `[]` | Sandbox mounts |
+| `maxConcurrent` | integer ≥ 1 | — | Optional per-persona concurrency cap |
+
+### `personas[].mounts[]`
+
+```yaml
+mounts:
+  - source: /srv/notes
+    target: /workspace/notes
+    mode: ro
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `source` | string | required | Host path |
+| `target` | string | required | Mount target in the sandbox |
+| `mode` | `ro \| rw` | `ro` | Mount mode |
+
+---
+
+## `channels[]`
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    enabled: true
+    showToolCalls: true
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      pollingTimeoutSec: 30
+      allowedChatIds:
+        - "123456789"
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `type` | `telegram \| whatsappBusiness \| whatsappBaileys \| slack \| email \| discord \| terminal` | required | Channel connector type |
+| `name` | string | required | Channel name |
+| `config` | object | `{}` | Connector-specific config |
+| `tokenRef` | string | — | Optional token reference |
+| `enabled` | boolean | `true` | Enable channel at startup |
+| `showToolCalls` | boolean | — | Optional per-channel tool-call messages |
+
+Notes:
+
+- The config schema accepts `whatsappBusiness`, not the legacy CLI alias `whatsapp`.
+- `showToolCalls` is optional in config; when omitted the runtime behaves as `false`.
+
+---
+
+## `bindings[]`
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `persona` | string | required | Persona name |
+| `channel` | string | required | Channel name |
+| `isDefault` | boolean | `false` | Marks the default binding for the channel |
+
+---
+
+## `ipc`
+
+```yaml
+ipc:
+  pollIntervalMs: 500
+  daemonSocketDir: data/ipc/daemon
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `pollIntervalMs` | integer ≥ 100 | `500` | IPC polling interval |
+| `daemonSocketDir` | string | `data/ipc/daemon` | IPC socket directory |
+
+---
+
+## `queue`
+
+```yaml
+queue:
+  maxAttempts: 3
+  backoffBaseMs: 1000
+  backoffMaxMs: 60000
+  concurrencyLimit: 5
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `maxAttempts` | integer ≥ 1 | `3` | Retry attempts before dead-letter |
+| `backoffBaseMs` | integer | `1000` | Initial retry delay |
+| `backoffMaxMs` | integer | `60000` | Maximum retry delay |
+| `concurrencyLimit` | integer ≥ 1 | `5` | Max concurrent queue processing |
+
+---
+
+## `scheduler`
+
+```yaml
+scheduler:
+  tickIntervalMs: 5000
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `tickIntervalMs` | integer ≥ 1000 | `5000` | Scheduler tick interval |
+
+---
+
+## `auth`
+
+```yaml
+auth:
+  mode: subscription
+  apiKey: ${TALON_API_KEY}
+  providers:
+    anthropic:
+      apiKey: ${ANTHROPIC_API_KEY}
+    ollama:
+      baseURL: http://localhost:11434/v1
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `mode` | `subscription \| api_key` | `subscription` | Auth mode |
+| `apiKey` | string | — | Global API key for `api_key` mode |
+| `providers.<name>.apiKey` | string | — | Provider-specific API key |
+| `providers.<name>.baseURL` | string | — | Provider-specific base URL |
+
+---
+
+## `agentRunner`
+
+```yaml
+agentRunner:
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+      contextManagement:
+        enabled: true
+        triggerMetric: cache_read_input_tokens
+        thresholdRatio: 0.5
+        recentMessageCount: 10
+        summarizer: session-summarizer
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `defaultProvider` | string | `claude-code` | Default foreground provider |
+| `providers` | record | built-in `claude-code` entry | Provider configs |
+
+### `agentRunner.providers.<name>`
+
+```yaml
+providers:
+  gemini-cli:
+    enabled: false
+    command: /usr/local/bin/gemini
+    contextWindowTokens: 1000000
+    options:
+      defaultModel: gemini-2.5-pro
+    contextManagement:
+      enabled: true
+      triggerMetric: input_tokens
+      thresholdRatio: 0.8
+      recentMessageCount: 10
+      summarizer: session-summarizer
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enable the provider |
+| `command` | string | required | CLI command |
+| `contextWindowTokens` | integer ≥ 1000 | `200000` | Context window size |
+| `options` | object | — | Provider-specific options |
+| `contextManagement.enabled` | boolean | `false` | Enable rotation |
+| `contextManagement.triggerMetric` | enum | — | Required when enabled |
+| `contextManagement.thresholdRatio` | number 0-1 | — | Required when enabled |
+| `contextManagement.recentMessageCount` | integer ≥ 0 | `10` | Messages retained after rotation |
+| `contextManagement.summarizer` | string | — | Required when enabled |
+
+Built-in schema default:
+
+```yaml
+agentRunner:
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+      contextManagement:
+        enabled: true
+        triggerMetric: cache_read_input_tokens
+        thresholdRatio: 0.5
+        recentMessageCount: 10
+        summarizer: session-summarizer
+```
+
+---
+
+## `backgroundAgent`
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 3
+  defaultTimeoutMinutes: 30
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `true` | Enable background agents globally |
+| `maxConcurrent` | integer 1-10 | `3` | Max concurrent background tasks |
+| `defaultTimeoutMinutes` | integer 15-480 | `30` | Default timeout |
+| `defaultProvider` | string | `claude-code` | Default background provider |
+| `providers` | record | built-in `claude-code` entry | Provider configs |
+| `claudePath` | string | — | Legacy shortcut for creating a `claude-code` provider when no explicit providers are set |
+
+`backgroundAgent.providers.<name>` uses the same provider shape as `ProviderConfigSchema`: `enabled`, `command`, `contextWindowTokens`, and optional `options`.
+
+---
+
+## `langfuse`
+
+```yaml
+langfuse:
+  enabled: true
+  publicKey: ${LANGFUSE_PUBLIC_KEY}
+  secretKey: ${LANGFUSE_SECRET_KEY}
+  baseUrl: https://cloud.langfuse.com
+  environment: production
+  release: 1.2.3
+  owner: talon
+  exportMode: batched
+  flushAt: 20
+  flushIntervalSeconds: 5
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enable Langfuse tracing |
+| `publicKey` | string | `""` | Required when enabled |
+| `secretKey` | string | `""` | Required when enabled |
+| `baseUrl` | URL string | `https://cloud.langfuse.com` | Langfuse base URL |
+| `environment` | string | `production` | Environment tag |
+| `release` | string | — | Optional release tag |
+| `owner` | string | — | Optional owner tag |
+| `exportMode` | `batched \| immediate` | `batched` | Export strategy |
+| `flushAt` | integer ≥ 1 | `20` | Batch size |
+| `flushIntervalSeconds` | integer ≥ 1 | `5` | Flush interval |

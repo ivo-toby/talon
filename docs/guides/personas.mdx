@@ -1,0 +1,142 @@
+---
+title: Personas
+description: Configure persona prompts, capabilities, skills, sub-agents, and scheduling prompts
+---
+
+# Personas
+
+A persona is Talon's runtime identity for an agent: system prompt, optional provider override, model, skills, sub-agents, capability labels, mounts, and optional concurrency limits.
+
+## Persona config
+
+```yaml
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    provider: claude-code
+    systemPromptFile: personas/assistant/system.md
+    skills:
+      - web-search
+    subagents:
+      - session-summarizer
+      - memory-retriever
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        - schedule.manage:own
+        - subagent.invoke
+        - subagent.background
+        - channel.send:my-telegram
+      requireApproval:
+        - db.query:own
+    maxConcurrent: 2
+```
+
+## What `talonctl add-persona` creates
+
+`npx talonctl add-persona --name assistant` scaffolds:
+
+```text
+personas/assistant/
+  system.md
+  personality/01-tone.md
+  prompts/memory-grooming.md
+```
+
+It also adds the persona to `talond.yaml` with these default allow-list labels:
+
+- `memory.access:thread`
+- `net.http:egress`
+- `schedule.manage:own`
+
+If you pass `--description`, Talon writes that description into `system.md` frontmatter. That description is later exposed through background-agent profile discovery.
+
+## System prompt, personality files, and prompt files
+
+`systemPromptFile` points to the main prompt file. The loader also reads:
+
+- `personality/*.md` next to the system prompt and appends those files alphabetically
+- `prompts/*.md` next to the system prompt and indexes them by basename for scheduled `promptFile` usage
+
+That means a schedule using `promptFile: memory-grooming` resolves `personas/<name>/prompts/memory-grooming.md`.
+
+## Capability labels
+
+Capability filtering is based on the label prefix before `:`.
+These are the built-in host-tool labels exposed by the CLI today:
+
+| Label | Grants access to |
+|---|---|
+| `memory.access:thread` | `memory_access` |
+| `net.http:egress` | `net_http` |
+| `channel.send:*` or `channel.send:<channel>` | `channel_send` |
+| `schedule.manage:own` | `schedule_manage` |
+| `db.query:own` | `db_query` |
+| `subagent.invoke` | `subagent_invoke` |
+| `subagent.background` | `background_agent` |
+
+Anything not present in `allow` or `requireApproval` is denied by default.
+
+`requireApproval` still exposes the tool to the agent; Talon uses it as a policy distinction rather than hiding the tool entirely.
+
+## Skills
+
+Personas list skill names in `skills`. At runtime:
+
+- Talon loads skill directories from `./skills/<name>` and `<dataDir>/skills/<name>`
+- the persona sees only the skill index by default
+- the agent calls `skill_load` to load full instructions on demand
+- a skill is usable only if every `requiredCapabilities` label is present in the persona's combined `allow + requireApproval` set
+
+## Sub-agents
+
+`subagents` is an allow-list of sub-agent names the persona can invoke through `subagent_invoke`.
+
+Built-in sub-agents in this repo:
+
+| Name | Model | Purpose |
+|---|---|---|
+| `session-summarizer` | `claude-sonnet-4-6` | Compress conversation history |
+| `memory-retriever` | `claude-haiku-4-5` | Retrieve relevant memory entries |
+| `memory-groomer` | `claude-haiku-4-5` | Prune and consolidate memory |
+| `file-searcher` | `claude-haiku-4-5` | Search files and return snippets |
+
+## Background-agent profiles
+
+Any loaded persona can also act as a background-agent profile. When a foreground agent calls `background_agent` with `action: "profiles"`, Talon returns persona names plus the optional description parsed from each persona's `system.md` frontmatter.
+
+## Bindings
+
+Personas are routed to channels through `bindings`:
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+```
+
+You can manage them with:
+
+```bash
+npx talonctl bind --persona assistant --channel my-telegram
+npx talonctl unbind --persona assistant --channel my-telegram
+```
+
+The first binding on a channel becomes the default binding automatically.
+
+## Mounts
+
+If a persona needs sandbox file access, use `mounts`:
+
+```yaml
+personas:
+  - name: coder
+    mounts:
+      - source: /srv/repos/project-a
+        target: /workspace/project-a
+        mode: rw
+```
+
+`source` and `target` are required. `mode` defaults to `ro`.

@@ -1,0 +1,107 @@
+---
+title: Background agents
+description: Run long-lived background agent tasks without blocking the foreground conversation
+---
+
+# Background agents
+
+Background agents are long-running tasks started through the `background_agent` host tool.
+They are not limited to Claude Code: the background-agent manager uses whichever enabled background provider you select or inherit.
+
+## What happens on spawn
+
+When a foreground agent calls `background_agent` with `action: "spawn"`:
+
+1. Talon checks the background-agent concurrency limit.
+2. It resolves the provider. Priority is: explicit `provider` argument, otherwise the configured `backgroundAgent.defaultProvider`.
+3. It builds a task-specific system prompt using:
+   - the persona prompt
+   - optional prior thread context
+   - the task prompt
+4. It starts the provider-specific background process and records the task in SQLite.
+5. It returns a `taskId` immediately.
+
+When the process finishes, Talon enqueues a completion notification back into the originating thread.
+
+## Configuration
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 3
+  defaultTimeoutMinutes: 30
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+    gemini-cli:
+      enabled: true
+      command: /usr/local/bin/gemini
+      contextWindowTokens: 1000000
+      options:
+        defaultModel: gemini-2.5-pro
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Enable background tasks globally |
+| `maxConcurrent` | `3` | Max concurrent running tasks |
+| `defaultTimeoutMinutes` | `30` | Default timeout for a task |
+| `defaultProvider` | `claude-code` | Default background provider |
+| `providers` | built-in `claude-code` entry | Provider configs for background tasks |
+| `claudePath` | — | Legacy shortcut that is normalized into a `claude-code` provider when no explicit providers are configured |
+
+## Persona access
+
+A persona needs the `subagent.background` capability to use the tool:
+
+```yaml
+personas:
+  - name: assistant
+    capabilities:
+      allow:
+        - subagent.background
+```
+
+## Profiles
+
+A background-agent `profile` is just another loaded persona.
+If the foreground agent passes `profile`, Talon uses that persona's:
+
+- system prompt
+- personality fragments
+- skills
+- provider override
+- model
+
+Agents should call `background_agent` with `action: "profiles"` first when they need to discover what profiles are available.
+
+## Spawn parameters
+
+The MCP tool accepts these spawn-related fields:
+
+- `prompt`
+- `provider`
+- `profile`
+- `workingDirectory`
+- `timeoutMinutes`
+
+Notes:
+
+- `timeoutMinutes` is clamped to a minimum effective value of 15 minutes
+- when `provider` is omitted, Talon uses the background default provider
+- when `profile` is omitted, Talon uses the current thread's persona as the background profile
+
+## Skill loading
+
+Foreground agents see the lazy skill index and call `skill_load` on demand.
+Background agents instead receive merged skill prompt contents eagerly at spawn time.
+
+## Limits
+
+- background tasks cannot exceed `backgroundAgent.maxConcurrent`
+- the task record is persisted in SQLite
+- a task can be queried later with `status` or `result`
+- completed output is truncated for storage if necessary by the background-agent manager

@@ -1,0 +1,173 @@
+---
+title: Skills
+description: Package prompt instructions, MCP servers, tool manifests, and migrations into reusable bundles
+---
+
+# Skills
+
+Skills are filesystem bundles attached to personas. Talon supports two on-disk formats:
+
+- `SKILL.md` with YAML frontmatter
+- legacy `skill.yaml` plus `prompts/`
+
+## Runtime behavior
+
+For foreground agent runs, skills are lazy-loaded:
+
+- the persona prompt gets only a skill index with name and description
+- when the agent needs the instructions for one skill, it calls `skill_load`
+- MCP servers from skills are still connected eagerly
+
+Background agents are different: they merge full skill prompt contents eagerly when the background task starts.
+
+## `SKILL.md` format
+
+```text
+skills/web-search/
+  SKILL.md
+  mcp/brave.json
+  tools/search.yaml
+  migrations/001.sql
+```
+
+Example:
+
+```markdown
+---
+name: web-search
+version: 0.1.0
+description: Search the web and summarize the results
+requiredCapabilities:
+  - net.http:egress
+---
+
+# Web Search
+
+Prefer precise queries.
+Always include source URLs in the final answer.
+```
+
+Important: the supported `SKILL.md` frontmatter keys are:
+
+- `name`
+- `version`
+- `description`
+- `requiredCapabilities`
+
+MCP servers, tool manifests, and migrations are loaded from sibling directories, not from frontmatter fields.
+
+## Legacy `skill.yaml` format
+
+```text
+skills/web-search/
+  skill.yaml
+  prompts/01-instructions.md
+  tools/search.yaml
+  mcp/brave.json
+  migrations/001.sql
+```
+
+Example:
+
+```yaml
+name: web-search
+version: 0.1.0
+description: Search the web and summarize the results
+requiredCapabilities:
+  - net.http:egress
+```
+
+The loader also understands these manifest fields, all defaulting to empty arrays:
+
+- `promptFragments`
+- `toolManifests`
+- `mcpServers`
+- `migrations`
+
+If those lists are omitted, the loader auto-discovers:
+
+- `prompts/*.md`
+- `tools/*.yaml`
+- `mcp/*.json`
+- `migrations/*.sql`
+
+## Creating a skill
+
+```bash
+npx talonctl add-skill --name web-search --persona assistant --format skillmd
+npx talonctl add-skill --name web-search --persona assistant --format yaml
+```
+
+This command:
+
+- scaffolds the skill directory
+- adds the skill name to the target persona's `skills` list in `talond.yaml`
+
+## MCP server definitions
+
+`talonctl add-mcp` writes a JSON file into `skills/<skill>/mcp/`.
+
+```bash
+npx talonctl add-mcp --skill web-search --name brave-search \
+  --transport stdio \
+  --command npx \
+  --args @modelcontextprotocol/server-brave-search
+```
+
+The JSON shape on disk is:
+
+```json
+{
+  "name": "brave-search",
+  "config": {
+    "transport": "stdio",
+    "command": "npx",
+    "args": ["@modelcontextprotocol/server-brave-search"]
+  }
+}
+```
+
+Supported MCP config fields in JSON are:
+
+- `transport`
+- `command`
+- `args`
+- `url`
+- `headers`
+- `env`
+- `allowedTools`
+- `credentialScope`
+- `rateLimit`
+
+## Tool manifests
+
+Skills can ship additional tool manifests in `tools/*.yaml`.
+Each tool manifest supports:
+
+- `name`
+- `description`
+- `capabilities`
+- optional `parameterSchema`
+- `executionLocation` of `host`, `sandbox`, or `mcp`
+
+## Required capabilities
+
+A skill is usable only if all of its `requiredCapabilities` labels exist in the persona's combined allow-list and approval-list.
+
+Examples of built-in capability labels:
+
+- `memory.access:thread`
+- `net.http:egress`
+- `schedule.manage:own`
+- `db.query:own`
+- `subagent.invoke`
+- `subagent.background`
+
+Scope-less labels like `net.http` are accepted by the skill loader, but it logs a warning because the preferred format is `<domain>.<action>:<scope>`.
+
+## Listing skills
+
+```bash
+npx talonctl list-skills
+npx talonctl list-skills --persona assistant
+```

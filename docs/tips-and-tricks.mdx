@@ -1,0 +1,199 @@
+---
+title: Tips and tricks
+description: Practical advice for getting the most out of Talon
+---
+
+# Tips and tricks
+
+Practical patterns from running Talon in production.
+
+---
+
+## Use showToolCalls for debugging
+
+When an agent seems to be doing the wrong thing, it's often hard to tell what tools it's actually calling. Enable `showToolCalls` on the channel to get real-time visibility:
+
+```yaml
+channels:
+  - name: my-telegram
+    type: telegram
+    showToolCalls: true
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+```
+
+Each tool invocation sends a short message like *"🌐 Using Brave Search: weather Amsterdam"*. Disable it once you've diagnosed the problem — it's noisy in normal use.
+
+---
+
+## One persona per use case, not per channel
+
+The persona-per-channel binding is a routing mechanism — you don't need a different persona for every channel. A better pattern is one persona per distinct use case, then bind it to whatever channels make sense:
+
+```yaml
+bindings:
+  - persona: assistant
+    channel: my-telegram
+    isDefault: true
+  - persona: assistant
+    channel: my-terminal
+    isDefault: true
+  - persona: researcher
+    channel: work-slack
+    isDefault: true
+```
+
+`assistant` on both Telegram and terminal, `researcher` only on Slack. Same config, clean separation.
+
+---
+
+## Keep capabilities minimal
+
+The default-deny capability model only works if you treat it as default-deny. Avoid `channel.send:*` unless the persona genuinely needs to send to multiple channels. Grant `db.query:own` only to personas that explicitly need it, and put it in `requireApproval` by default.
+
+```yaml
+capabilities:
+  allow:
+    - channel.send:my-telegram   # specific, not *
+    - memory.access:thread
+  requireApproval:
+    - db.query:own               # user confirms each query
+```
+
+This catches mistakes early and makes the audit log meaningful.
+
+---
+
+## Test sub-agents without a running daemon
+
+Sub-agents run in-process, so `talonctl run-subagent` lets you iterate on them without the full daemon:
+
+```bash
+npx talonctl run-subagent --name file-searcher \
+  --input '{"query": "deployment", "rootPaths": ["/home/user/docs"]}'
+
+npx talonctl run-subagent --name session-summarizer \
+  --input '{"transcript": "User: What are my tasks?\nAssistant: Here are your open tasks..."}'
+```
+
+Useful for checking sub-agent output format before wiring it into the system prompt.
+
+---
+
+## Use prompt files for recurring schedules
+
+Inline prompts in schedules are hard to maintain as your needs evolve. Store them as files:
+
+```bash
+data/prompts/morning-summary.md
+```
+
+```markdown
+Check my open tasks and any pending messages. Summarize:
+- What's carried over from yesterday
+- What's due today
+- Any blockers I should know about
+
+Keep it to 5 bullets.
+```
+
+Tell the agent to use `schedule_manage` with `promptFile: morning-summary`. Update the file `personas/<name>/prompts/morning-summary.md` whenever the format needs to change.
+
+---
+
+## Use talonctl doctor before every deployment
+
+Before starting the daemon on a fresh machine or after a config change:
+
+```bash
+npx talonctl doctor --config talond.yaml
+```
+
+It catches the most common problems: missing directories, invalid config schema, pending migrations, missing environment variables. Takes 2 seconds and saves 20 minutes of puzzled log reading.
+
+---
+
+## Use env-check after config changes
+
+After editing `talond.yaml` to add a new channel:
+
+```bash
+npx talonctl env-check --config talond.yaml
+```
+
+This diffs your config against the current environment and reports any `${ENV_VAR}` references that aren't set. Catches missing credentials before the daemon tries to start the connector and silently fails.
+
+---
+
+## Keep the system prompt focused
+
+The system prompt is injected before every turn. Longer prompts aren't necessarily better — they eat context window space and can dilute the model's focus. Aim for 200–400 words covering:
+
+1. Role and personality
+2. What tools the agent has and when to use them
+3. Constraints (what it should never do)
+4. Formatting preferences
+
+Put extensive examples and edge cases in skills instead, where they're loaded lazily on demand.
+
+---
+
+## Use the terminal channel for development
+
+Before connecting a bot to production Telegram or Slack, develop and test the persona locally:
+
+```yaml
+channels:
+  - name: dev
+    type: terminal
+    enabled: true
+    config:
+      port: 7700
+      token: ${TERMINAL_TOKEN}
+
+bindings:
+  - persona: assistant
+    channel: dev
+    isDefault: true
+```
+
+```bash
+talonctl chat --host localhost --port 7700
+```
+
+Full rendered Markdown, persistent thread, same agent — no bot token needed.
+
+---
+
+## Context rotation keeps long conversations cheap
+
+If you're running long conversations (100+ messages), the rolling context window kicks in automatically when configured. After rotation, the agent resumes with a summary + the last 10 messages. It doesn't know the session was rotated.
+
+Watch for the `context.rotation` log line if you want to see when it happens:
+
+```bash
+journalctl -u talond -f | grep context.rotation
+```
+
+If rotation is happening too aggressively, increase `thresholdRatio`:
+
+```yaml
+agentRunner:
+  providers:
+    claude-code:
+      contextManagement:
+        thresholdRatio: 0.7   # rotate at 70% of context window
+```
+
+---
+
+## Back up before migrations
+
+`talonctl migrate` is non-destructive for the current schema but back up first anyway:
+
+```bash
+npx talonctl backup --output backups/pre-migration-$(date +%Y%m%d)
+npx talonctl migrate
+```
+
+Backups include the database, config, personas, and skills in one archive.

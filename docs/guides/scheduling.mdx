@@ -1,0 +1,95 @@
+---
+title: Scheduling
+description: Create and manage cron schedules from Talon or from the CLI
+---
+
+# Scheduling
+
+Talon's public scheduling surface is cron-based.
+The scheduler polls for due schedules, enqueues them as normal queue items, and the agent handles them like any other message.
+
+## Enable schedule management
+
+Grant the schedule capability to the persona:
+
+```yaml
+personas:
+  - name: assistant
+    capabilities:
+      allow:
+        - schedule.manage:own
+```
+
+## The host tool name
+
+The MCP tool exposed to the agent is `schedule_manage`.
+Inside the daemon its internal name is `schedule.manage`.
+
+Supported actions:
+
+- `create`
+- `update`
+- `cancel`
+- `delete`
+- `list`
+
+Supported fields:
+
+- `action`
+- `scheduleId`
+- `cronExpr`
+- `label`
+- `prompt`
+- `promptFile`
+
+Important constraints:
+
+- only cron expressions are supported by this tool
+- `prompt` and `promptFile` are mutually exclusive
+- `promptFile` is a prompt alias from the persona's `prompts/` directory, not an arbitrary path
+
+## Using `promptFile`
+
+If a persona has:
+
+```text
+personas/assistant/prompts/morning-summary.md
+```
+
+then the schedule should use:
+
+```yaml
+promptFile: morning-summary
+```
+
+At execution time the scheduler resolves that alias through the persona loader.
+
+## CLI scheduling commands
+
+The CLI command `add-schedule` also creates cron schedules only:
+
+```bash
+npx talonctl add-schedule \
+  --persona assistant \
+  --channel my-telegram \
+  --cron "0 9 * * 1-5" \
+  --label "Morning summary" \
+  --prompt "Summarize what I should focus on today."
+```
+
+List and remove them with:
+
+```bash
+npx talonctl list-schedules
+npx talonctl list-schedules --persona assistant
+npx talonctl remove-schedule <schedule-id>
+```
+
+## Scheduler config
+
+```yaml
+scheduler:
+  tickIntervalMs: 5000
+```
+
+The default tick interval is 5 seconds.

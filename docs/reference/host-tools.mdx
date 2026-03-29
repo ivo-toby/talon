@@ -1,0 +1,205 @@
+---
+title: Host tools reference
+description: Built-in MCP tools exposed through Talon's internal host-tools server
+---
+
+# Host tools reference
+
+Talon exposes 7 built-in tools to agents through the internal MCP server `__talond_host_tools`.
+At the MCP layer the tool names use underscores, for example `memory_access`.
+Inside the daemon the corresponding internal names use dots, for example `memory.access`.
+
+Every host-tool call is:
+
+- filtered by the persona's capability labels before the tool is even listed
+- checked again at the bridge before execution
+- executed on the host, not inside the sandbox
+
+---
+
+## `schedule_manage`
+
+Internal tool: `schedule.manage`
+
+Capability labels:
+
+- `schedule.manage:own`
+
+Creates, updates, cancels, deletes, or lists schedules owned by the current persona.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `action` | `create \| update \| cancel \| delete \| list` | Required |
+| `scheduleId` | string | Required for `update`, `cancel`, and `delete` |
+| `cronExpr` | string | Required for `create`; optional for `update`; must be a 5-field cron expression |
+| `label` | string | Optional human-readable label |
+| `prompt` | string | Inline prompt; mutually exclusive with `promptFile` |
+| `promptFile` | string | Prompt alias from the persona's `prompts/` directory; mutually exclusive with `prompt` |
+
+Notes:
+
+- This tool currently manages cron schedules only.
+- `cancel` disables a schedule.
+- `delete` removes it permanently.
+- `promptFile` resolves a basename like `memory-grooming`, not a filesystem path.
+
+---
+
+## `channel_send`
+
+Internal tool: `channel.send`
+
+Capability labels:
+
+- `channel.send:*`
+- `channel.send:<channel-name>`
+
+Sends a Markdown message to another Talon channel.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `channelId` | string | Required; this is the configured channel name |
+| `content` | string | Required Markdown body |
+| `replyTo` | string | Optional channel-specific thread or message ID |
+
+Notes:
+
+- The agent does not pass a thread ID directly; Talon resolves the current thread context for the target channel.
+- Output is converted to the target connector's native format automatically.
+
+---
+
+## `memory_access`
+
+Internal tool: `memory.access`
+
+Capability labels:
+
+- `memory.access:thread`
+
+Reads and writes per-thread memory items.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `operation` | `read \| write \| delete \| list` | Required |
+| `key` | string | Required for `read` and `delete`; optional for `write` |
+| `value` | any | Required for `write`; non-string values are JSON-stringified |
+| `namespace` | string | Optional; maps to the memory item type |
+
+Notes:
+
+- When `write` omits `key`, Talon generates a UUID.
+- Supported namespaces map to `fact`, `summary`, and `note`.
+- Unknown namespaces fall back to `note`.
+
+---
+
+## `net_http`
+
+Internal tool: `net.http`
+
+Capability labels:
+
+- `net.http:egress`
+
+Proxies outbound HTTP and HTTPS requests through the host.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `method` | `GET \| POST \| PUT \| PATCH \| DELETE \| HEAD` | Required |
+| `url` | string | Required |
+| `headers` | object | Optional string header map |
+| `body` | string | Optional request body |
+| `timeoutMs` | number | Optional; defaults to `30000`, capped at `120000` |
+
+Notes:
+
+- Only `http:` and `https:` URLs are allowed.
+- Domain allowlisting is enforced by the host-side handler.
+- An empty allowlist means the capability label is the only gate.
+
+---
+
+## `db_query`
+
+Internal tool: `db.query`
+
+Capability labels:
+
+- `db.query:own`
+
+Runs restricted read-only SQL queries against the Talon SQLite database.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `sql` | string | Required; must be a simple `SELECT` statement |
+| `params` | array | Optional prepared-statement parameters |
+| `limit` | number | Optional; defaults to `100`, maximum `1000` |
+
+Allowed tables:
+
+- `memory_items`
+- `schedules`
+- `messages`
+- `threads`
+
+Restrictions:
+
+- only `SELECT` is allowed
+- `UNION`, `EXCEPT`, `INTERSECT`, CTEs, and subqueries are rejected
+- Talon auto-injects thread and persona scoping where applicable
+- the query runs through a read-only SQLite connection
+
+---
+
+## `subagent_invoke`
+
+Internal tool: `subagent.invoke`
+
+Capability labels:
+
+- `subagent.invoke`
+
+Runs a named sub-agent synchronously and returns its structured result.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `name` | string | Required sub-agent name |
+| `input` | object | Optional JSON object passed through to the sub-agent |
+
+Built-in sub-agents shipped in this repo:
+
+| Name | Model | Purpose |
+|---|---|---|
+| `session-summarizer` | `claude-sonnet-4-6` | Compress long conversation history for session resumption |
+| `memory-retriever` | `claude-haiku-4-5` | Retrieve relevant memory items for a query |
+| `memory-groomer` | `claude-haiku-4-5` | Consolidate and prune memory entries |
+| `file-searcher` | `claude-haiku-4-5` | Search files and return ranked snippets |
+
+---
+
+## `background_agent`
+
+Internal tool: `subagent.background`
+
+Capability labels:
+
+- `subagent.background`
+
+Starts and manages long-running background agent tasks.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `action` | `spawn \| status \| cancel \| result \| profiles` | Required |
+| `prompt` | string | Required for `spawn` |
+| `taskId` | string | Used by `status`, `cancel`, and `result` |
+| `provider` | string | Optional provider override for `spawn` |
+| `profile` | string | Optional persona profile name for `spawn` |
+| `workingDirectory` | string | Optional working directory for `spawn` |
+| `timeoutMinutes` | number | Optional timeout override for `spawn`; minimum effective value is 15 |
+
+Notes:
+
+- Call `action: "profiles"` first if the agent needs to discover which persona profiles are available.
+- A `profile` uses another loaded persona's prompt, skills, model, provider, and capabilities.
+- Background tasks return a task ID immediately and later deliver completion back into the originating thread.
