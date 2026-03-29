@@ -1,0 +1,105 @@
+---
+title: Memory System
+description: Four-layer persistent memory architecture — transcript, working memory, thread notebook, and structured memory
+---
+
+# Memory System
+
+Talon maintains persistent memory across four layers. Each layer has a different durability, mutability, and access pattern. Together they give agents durable context that survives session boundaries, daemon restarts, and context window rotations.
+
+## The four layers
+
+| Layer | Storage | Description |
+|---|---|---|
+| Transcript | `messages` table | Canonical message log, append-only |
+| Working memory | In-prompt context | Recent message window included in agent prompts |
+| Thread notebook | Filesystem | Human-editable per-thread notes |
+| Structured memory | `memory_items` table | Extracted facts and summaries, agent-managed |
+
+### Transcript
+
+Every inbound and outbound message is persisted to the `messages` table. This is the source of truth for what was said. It's append-only — messages are never modified or deleted. The transcript is what `session-summarizer` reads when creating context summaries.
+
+### Working memory
+
+When an agent run starts, Talon assembles the in-context prompt. This includes the most recent N messages from the transcript verbatim. The count is configurable via `context.recentMessageCount`. This is the agent's immediate short-term view of the conversation.
+
+### Thread notebook
+
+Each thread gets a writable directory at `data/threads/<thread_id>/`. The agent can read and write files here via `fs.read` and `fs.write` capabilities. This is useful for structured notes, scratch work, or human-readable summaries that you want to inspect or edit directly.
+
+### Structured memory
+
+The `memory_items` table holds extracted facts, session summaries, and freeform notes. The agent writes to it via `memory_access`. Three types are supported:
+
+| Type | Purpose |
+|---|---|
+| `fact` | Discrete pieces of information ("user prefers JSON output") |
+| `summary` | Session summaries created by `session-summarizer` |
+| `note` | Freeform notes the agent wants to retain |
+
+All items are scoped to a thread. An agent in thread A cannot read or write memory items from thread B.
+
+## Using `memory_access`
+
+The `memory_access` host tool is the agent's interface to structured memory. Required capability: `memory.access:thread`.
+
+```
+# write a fact
+memory_access({
+  operation: "write",
+  key: "user-format-preference",
+  value: "prefers markdown tables",
+  namespace: "fact"
+})
+
+# read it back
+memory_access({
+  operation: "read",
+  key: "user-format-preference"
+})
+
+# list all facts
+memory_access({
+  operation: "list",
+  namespace: "fact"
+})
+```
+
+## Memory retrieval
+
+The `memory-retriever` sub-agent provides semantic search over memory items. It uses keyword matching combined with LLM reranking to surface relevant facts for a given query.
+
+```
+subagent_invoke({
+  name: "memory-retriever",
+  input: { query: "what does the user prefer?" }
+})
+```
+
+Requires `subagent.invoke` capability and `memory-retriever` in the persona's `subagents` list.
+
+## Memory grooming
+
+Over time, `memory_items` accumulates redundant or outdated entries. The `memory-groomer` sub-agent consolidates and prunes them. Call it periodically via a scheduled task:
+
+```yaml
+# In a persona schedule
+- cronExpr: "0 3 * * *"
+  promptFile: memory-grooming
+```
+
+Where `personas/<name>/prompts/memory-grooming.md` contains the instruction to invoke `memory-groomer`.
+
+## Thread workspace
+
+Thread files persist at `data/threads/<thread_id>/`. This path is stable for the lifetime of the thread. Agents can use this for anything that benefits from filesystem persistence: drafts, research notes, generated files.
+
+```
+# example: agent writes a research summary
+fs.write({ path: "data/threads/abc123/research-notes.md", content: "..." })
+```
+
+:::note
+The thread notebook requires `fs.read` and/or `fs.write` capability grants. These are not included in the default persona template — add them explicitly if needed.
+:::

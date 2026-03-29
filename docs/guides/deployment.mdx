@@ -1,0 +1,146 @@
+---
+title: Deployment
+description: systemd service setup, wake-only timer mode, and Docker
+---
+
+# Deployment
+
+Talon is a Node.js daemon. The recommended production setup is a systemd service on a Linux host. A wake-only timer mode is available for low-traffic deployments.
+
+## Prerequisites
+
+- Node.js 22+
+- npm
+- A Linux host with systemd
+
+```bash
+# build
+npm install
+npm run build
+
+# apply migrations
+npx talonctl migrate
+
+# verify the setup
+npx talonctl doctor
+```
+
+## systemd service
+
+The `deploy/install-service.sh` script installs Talon as a systemd service:
+
+```bash
+sudo bash deploy/install-service.sh
+```
+
+This creates `/etc/systemd/system/talond.service` and enables it. The unit includes security hardening:
+
+```ini
+[Service]
+NoNewPrivileges=true
+PrivateTmp=true
+SystemCallFilter=@system-service
+ProtectSystem=strict
+ReadWritePaths=/path/to/talon/data
+```
+
+To manage the service:
+
+```bash
+sudo systemctl start talond
+sudo systemctl stop talond
+sudo systemctl status talond
+
+# view logs
+journalctl -u talond -f
+```
+
+### Auto-restart and watchdog
+
+The service unit configures `Restart=on-failure` and `RestartSec=5s`. If the daemon crashes it restarts automatically. The daemon integrates with systemd's watchdog heartbeat — if the process hangs without sending a heartbeat, systemd kills and restarts it.
+
+### Graceful shutdown
+
+The daemon listens for `SIGTERM` and `SIGINT`. On receipt it stops accepting new messages, waits for in-flight agent runs to complete (up to a configurable drain timeout), then exits cleanly.
+
+## Wake-only timer mode
+
+For low-traffic deployments where you don't want the daemon running 24/7, use a systemd timer:
+
+```ini
+# talond-timer.timer
+[Unit]
+Description=Run Talon daemon periodically
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=talond-oneshot.service
+
+[Install]
+WantedBy=timers.target
+```
+
+```ini
+# talond-oneshot.service
+[Unit]
+Description=Talon daemon (one-shot)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /path/to/talon/dist/index.js --wake-mode
+User=talon
+```
+
+In wake mode the daemon starts, processes the queue until it's empty, then exits. The timer fires it every 5 minutes (configurable). Total idle resource usage is near zero between runs.
+
+:::tip
+Wake-only mode is good for personal deployments with low message volume. Use persistent mode (standard service) for production deployments that need low response latency.
+:::
+
+## Docker
+
+Dockerfiles exist in `deploy/`:
+
+| File | Purpose |
+|---|---|
+| `deploy/Dockerfile` | Main daemon image |
+| `deploy/Dockerfile.sandbox` | Isolated sandbox for agent execution |
+
+Docker deployment is not yet production-ready. The current state provides blast-radius isolation for agent SDK execution — the agent runs inside the sandbox container while the daemon runs on the host and mediates all side effects through the host-tools bridge.
+
+Host-mode execution (no Docker) remains the default and fallback.
+
+```bash
+# build the daemon image
+docker build -f deploy/Dockerfile -t talond .
+
+# run (mount config and data)
+docker run -d \
+  -v /path/to/config:/app/config \
+  -v /path/to/data:/app/data \
+  --env-file .env \
+  talond
+```
+
+:::caution
+Docker support is experimental. The host-tools Unix socket path needs to be accessible from within the container. Review `deploy/Dockerfile` for current mount expectations before using in production.
+:::
+
+## Configuration
+
+All runtime config lives in `talond.yaml`. Point the daemon at it:
+
+```bash
+node dist/index.js --config /path/to/talond.yaml
+```
+
+Or set `TALON_CONFIG` in the environment. The daemon resolves all `${ENV_VAR}` references at startup from the environment and from a `.env` file in the working directory.
+
+Use `talonctl doctor` to verify your deployment before starting:
+
+```bash
+npx talonctl doctor
+```
+
+This checks Node version, required directories, config validity, database connectivity, and external references.

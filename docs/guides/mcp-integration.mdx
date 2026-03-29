@@ -1,0 +1,102 @@
+---
+title: MCP integration
+description: Connect external MCP servers to personas — per-persona binding, rate limiting, and stdio transport
+---
+
+# MCP integration
+
+Talon connects external Model Context Protocol servers to personas. Each persona gets its own set of MCP servers. A server bound to one persona is invisible to another.
+
+## Adding an MCP server
+
+```bash
+npx talonctl add-mcp --persona assistant --name brave-search --command "npx @modelcontextprotocol/server-brave-search"
+```
+
+This adds the server to the persona's config in `talond.yaml`:
+
+```yaml
+personas:
+  - name: assistant
+    mcp:
+      - name: brave-search
+        command: npx @modelcontextprotocol/server-brave-search
+        env:
+          BRAVE_API_KEY: ${BRAVE_API_KEY}
+```
+
+The server starts when the persona's agent runner initialises and stops when it shuts down.
+
+## Transport
+
+All MCP servers use stdio transport. Talon spawns the server process, communicates over stdin/stdout, and manages the lifecycle. There's no network transport or socket configuration needed.
+
+```yaml
+mcp:
+  - name: my-server
+    command: node /path/to/server/index.js
+    args:
+      - --verbose
+    env:
+      API_KEY: ${MY_SERVER_API_KEY}
+```
+
+| Config field | Required | Description |
+|---|---|---|
+| `name` | Yes | Identifier used in logs and capability labels |
+| `command` | Yes | Command to spawn the server process |
+| `args` | No | Additional arguments |
+| `env` | No | Environment variables passed to the server process |
+
+## Per-persona binding
+
+Each persona declares its own `mcp` list. The servers are loaded during persona initialization and are only available to that persona's agents.
+
+```yaml
+personas:
+  - name: researcher
+    mcp:
+      - name: brave-search
+        command: npx @modelcontextprotocol/server-brave-search
+  - name: coder
+    mcp:
+      - name: github
+        command: npx @modelcontextprotocol/server-github
+```
+
+`researcher` sees `brave-search` tools. `coder` sees `github` tools. Neither sees the other's servers.
+
+## Rate limiting
+
+Each MCP server has a token-bucket rate limiter. The daemon checks the bucket before forwarding any tool call. If the bucket is empty, the call is held until tokens are available.
+
+```yaml
+mcp:
+  - name: brave-search
+    command: npx @modelcontextprotocol/server-brave-search
+    rateLimit:
+      requestsPerMinute: 60
+```
+
+This prevents runaway agents from burning through API quotas on expensive external services.
+
+## Internal MCP servers
+
+Talon uses the `__talond_` prefix for its internal MCP servers:
+
+| Server | Purpose |
+|---|---|
+| `__talond_host_tools` | The 7 built-in host tools (schedule, memory, channel, etc.) |
+| `__talond_skill_loader` | Lazy skill loading via `skill_load` |
+
+User-defined servers with the `__talond_` prefix are rejected at startup. Don't use it.
+
+## Capability policies
+
+MCP tool calls pass through the same capability filter as host tools. The persona must have a matching capability grant before an MCP tool is forwarded to the external server.
+
+Skills can declare MCP server definitions in `skills/<name>/mcp/*.json`. When a skill is loaded, its servers are automatically bound to the persona.
+
+:::tip
+Use `talonctl add-mcp` rather than editing `talond.yaml` directly. It validates the config and handles the YAML merge correctly.
+:::

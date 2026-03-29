@@ -1,0 +1,132 @@
+---
+title: Security & Capabilities
+description: Capability-based access control, approval gates, audit logging, and secrets management
+---
+
+# Security & Capabilities
+
+Talon uses a default-deny capability model. Every host-tool call is rejected unless the executing persona has an explicit grant. No capability, no execution — the tool isn't even listed to the agent.
+
+## Capability engine
+
+Capabilities are declared in the persona config under `capabilities.allow` and `capabilities.requireApproval`. Both lists use the same label syntax: `domain.action:scope`.
+
+```yaml
+personas:
+  - name: assistant
+    capabilities:
+      allow:
+        - memory.access:thread
+        - net.http:egress
+        - channel.send:my-telegram
+        - schedule.manage:own
+        - subagent.invoke
+        - subagent.background
+      requireApproval:
+        - db.query:own
+```
+
+The engine enforces this at two points:
+
+1. **Listing** — only tools with a matching capability label are exposed to the agent in the first place
+2. **Execution** — the host-tools bridge re-checks the grant immediately before running the tool
+
+### Built-in capability labels
+
+| Label | Controls |
+|---|---|
+| `channel.send:<channel>` | Send messages to a specific channel |
+| `channel.send:*` | Send to any channel |
+| `schedule.manage:own` | Create/modify/delete schedules owned by this persona |
+| `memory.access:thread` | Read/write per-thread structured memory |
+| `net.http:egress` | Fetch external URLs |
+| `db.query:own` | Execute read-only database queries |
+| `subagent.invoke` | Invoke sub-agents |
+| `subagent.background` | Launch background agent workers |
+| `fs.read` | Read files from the filesystem |
+| `fs.write` | Write files to the filesystem |
+| `persona.send:*` | Send tasks to other personas via A2A and list available personas |
+
+Wildcard scopes (`channel.send:*`) match any suffix. Specific scopes (`channel.send:my-telegram`) match that name only.
+
+## Approval gates
+
+Any capability can be placed in `requireApproval` instead of `allow`. The tool is still visible to the agent, but before execution the daemon sends a confirmation prompt to the originating channel. The agent blocks until the human responds.
+
+```yaml
+capabilities:
+  allow:
+    - memory.access:thread
+  requireApproval:
+    - db.query:own
+    - net.http:egress
+```
+
+Approval requests time out after a configurable duration. If the timeout is reached with no response, the tool call is rejected.
+
+:::tip
+Put `db.query:own` and `net.http:egress` in `requireApproval` for personas that should be able to use these tools only with explicit human sign-off.
+:::
+
+## Audit logging
+
+Every side-effecting operation — tool calls, channel sends, approval grants and rejections — is written to the `audit_log` table. Entries are append-only: there are no `UPDATE` or `DELETE` paths.
+
+Each record contains:
+
+| Field | Description |
+|---|---|
+| `run_id` | The agent run that triggered the action |
+| `thread_id` | The conversation thread |
+| `persona_id` | The executing persona |
+| `action` | e.g., `tool.execute`, `channel.send`, `approval.grant` |
+| `tool` | Tool name (if applicable) |
+| `request_id` | MCP request ID for correlation |
+| `details` | JSON blob with action-specific fields |
+| `created_at` | Unix timestamp |
+
+Query it directly:
+
+```bash
+npx talonctl db-query "SELECT action, tool, created_at FROM audit_log ORDER BY created_at DESC LIMIT 20"
+```
+
+## Database query isolation
+
+When an agent uses `db_query`, the query passes through five independent layers before execution:
+
+1. **Regex pre-check** — only `SELECT` is accepted; write keywords are rejected immediately
+2. **Table whitelist** — only `memory_items`, `schedules`, `messages`, and `threads` are queryable
+3. **Thread/persona scoping** — Talon auto-injects `WHERE thread_id = ?` and `WHERE persona_id = ?` clauses
+4. **Row limit** — results are capped at 1,000 rows regardless of the query
+5. **Read-only connection** — the query runs on a `{ readonly: true }` SQLite connection
+
+`UNION`, `EXCEPT`, `INTERSECT`, CTEs, and subqueries are rejected. This combination makes it practically impossible for a query to leak data from another thread or persona.
+
+## Secrets management
+
+Credentials never go in config files as plaintext. Use environment variable substitution instead.
+
+In `talond.yaml`:
+
+```yaml
+channels:
+  - type: telegram
+    token: ${TELEGRAM_BOT_TOKEN}
+```
+
+At startup Talon loads `.env` from the working directory and substitutes all `${ENV_VAR}` references. Two CLI commands help:
+
+```bash
+# show resolved config with secrets masked
+npx talonctl config-show
+
+# report missing variables before the daemon starts
+npx talonctl env-check
+```
+
+`config-show` replaces secret values with `***` in output. It never writes them to disk.
+
+:::caution
+Don't commit `.env` to version control. Use a secrets manager or CI/CD vault to populate it at deploy time.
+:::

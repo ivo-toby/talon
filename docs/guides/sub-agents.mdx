@@ -1,0 +1,132 @@
+---
+title: Sub-agents
+description: Built-in sub-agents, custom sub-agents, multi-provider model resolution, and CLI testing
+---
+
+# Sub-agents
+
+Sub-agents are specialized LLM workers that the main agent can delegate mechanical tasks to. They run synchronously via `subagent_invoke` and return structured results. The main agent doesn't need to handle the implementation details — it just calls the sub-agent by name.
+
+The idea is to offload cheap, focused tasks (summarize this, find these files, groom this memory) to fast small models rather than burning context and cost on the main agent.
+
+## Built-in sub-agents
+
+Talon ships four built-in sub-agents:
+
+| Name | Model | Purpose |
+|---|---|---|
+| `session-summarizer` | claude-haiku-4-5 | Compress transcripts into structured summaries for session rotation |
+| `memory-groomer` | claude-haiku-4-5 | Consolidate and prune stale memory items |
+| `memory-retriever` | claude-haiku-4-5 | Find relevant memories via keyword + LLM reranking |
+| `file-searcher` | claude-haiku-4-5 | Search files with rg/grep/node cascade, ranked by relevance |
+
+These run automatically as part of Talon's internal operations (rolling context window, memory grooming) but are also available for direct invocation.
+
+## Invoking a sub-agent
+
+The main agent calls `subagent_invoke` with a name and optional input object:
+
+```
+subagent_invoke({
+  name: "memory-retriever",
+  input: { query: "user's preferred response format" }
+})
+```
+
+The daemon handles model resolution, capability validation, and execution. The result is returned synchronously.
+
+Required capability: `subagent.invoke`
+
+The persona's `subagents` list is an explicit allow-list:
+
+```yaml
+personas:
+  - name: assistant
+    subagents:
+      - session-summarizer
+      - memory-retriever
+      - memory-groomer
+      - file-searcher
+    capabilities:
+      allow:
+        - subagent.invoke
+```
+
+## Custom sub-agents
+
+You can write your own sub-agents. They live in three locations, searched in this order:
+
+1. `./subagents/<name>/` — project-level (highest precedence)
+2. `<dataDir>/subagents/<name>/` — data directory
+3. Built-in agents — shipped with Talon
+
+A sub-agent directory needs at minimum a manifest and an entry point:
+
+```text
+subagents/my-agent/
+  subagent.yaml    # manifest
+  index.ts         # entry point exporting a run() function
+  prompts/         # optional prompt fragments
+```
+
+### Manifest (`subagent.yaml`)
+
+```yaml
+name: my-agent
+description: Does a specific mechanical task
+model: claude-haiku-4-5
+requiredCapabilities:
+  - memory.access:thread
+```
+
+The `requiredCapabilities` list is validated against the invoking persona's grants. If any required capability is missing, the sub-agent is rejected at invocation time.
+
+### Entry point (`index.ts`)
+
+```typescript
+import type { SubAgentInput, SubAgentResult } from '@talon/subagents/subagent-types';
+
+export async function run(input: SubAgentInput): Promise<SubAgentResult> {
+  // Your logic here
+  return { output: "result" };
+}
+```
+
+## Multi-provider model resolution
+
+Sub-agents declare a model name in their manifest. Talon resolves this against the available providers at runtime via the Vercel AI SDK.
+
+Supported providers:
+
+| Provider | Model prefix examples |
+|---|---|
+| Anthropic | `claude-haiku-4-5`, `claude-sonnet-4-6` |
+| OpenAI | `gpt-4o`, `gpt-4o-mini` |
+| Google | `gemini-2.0-flash` |
+| Ollama | `ollama/llama3.2`, `ollama/mistral` |
+
+To use a non-Anthropic model, set the relevant API key in your environment and reference the model name in the manifest. The daemon picks the right provider automatically.
+
+```yaml
+name: fast-summarizer
+model: gpt-4o-mini
+```
+
+## CLI testing
+
+Test any sub-agent without a running daemon:
+
+```bash
+npx talonctl run-subagent --name memory-retriever --input '{"query": "user preferences"}'
+```
+
+This loads the sub-agent, resolves its model, and runs it in isolation. Useful for developing and debugging custom sub-agents before wiring them into a live persona.
+
+```bash
+# test with a JSON file for complex inputs
+npx talonctl run-subagent --name my-agent --input-file ./test-input.json
+```
+
+:::tip
+Start with `run-subagent` when building custom sub-agents. It gives you fast iteration without needing to restart the daemon or send messages through a channel.
+:::

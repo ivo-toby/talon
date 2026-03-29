@@ -5,7 +5,7 @@ description: Built-in MCP tools exposed through Talon's internal host-tools serv
 
 # Host tools reference
 
-Talon exposes 7 built-in tools to agents through the internal MCP server `__talond_host_tools`.
+Talon exposes 9 built-in tools to agents through the internal MCP server `__talond_host_tools`.
 At the MCP layer the tool names use underscores, for example `memory_access`.
 Inside the daemon the corresponding internal names use dots, for example `memory.access`.
 
@@ -203,3 +203,63 @@ Notes:
 - Call `action: "profiles"` first if the agent needs to discover which persona profiles are available.
 - A `profile` uses another loaded persona's prompt, skills, model, provider, and capabilities.
 - Background tasks return a task ID immediately and later deliver completion back into the originating thread.
+
+---
+
+## `persona_send`
+
+Internal tool: `persona.send`
+
+Capability labels:
+
+- `persona.send:*`
+
+Sends a task to another persona via the A2A protocol and optionally waits for the reply.
+
+| Parameter | Type | Notes |
+|---|---|---|
+| `target_persona` | string | Required; name of the destination persona |
+| `message` | string | Required; the task or message to send |
+| `await_reply` | boolean | Optional; if `true`, blocks until the target persona responds |
+
+Notes:
+
+- The task is delivered through the durable queue, so the target persona processes it asynchronously by default.
+- Set `await_reply: true` to wait for the response inline. Use with care on slow or long-running personas — it will block the calling agent for the full duration.
+- The calling persona must have the `persona.send:*` capability grant.
+
+---
+
+## `persona_list`
+
+Internal tool: `persona.list`
+
+Capability labels:
+
+- `persona.send:*`
+
+Lists all loaded personas available for A2A task delegation.
+
+Returns an array of persona cards:
+
+```json
+[
+  {
+    "name": "researcher",
+    "description": "Deep research and web search specialist",
+    "skills": ["web-research", "summarize"]
+  }
+]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Persona name, used as `target_persona` in `persona_send` |
+| `description` | string \| null | First line of the persona's system prompt file, `#` stripped |
+| `skills` | string[] | Skills attached to the persona |
+
+Notes:
+
+- The calling persona is excluded from the results.
+- Call this before `persona_send` if you need to discover which personas are available and what they can do.
+- Requires the same `persona.send:*` capability as `persona_send`.

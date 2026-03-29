@@ -1,0 +1,92 @@
+---
+title: Database reference
+description: Schema overview, migrations, repository pattern, and WAL mode configuration
+---
+
+# Database reference
+
+Talon uses SQLite with WAL mode and foreign keys enabled. The entire daemon state — messages, queue, personas, memory, schedules, audit log — lives in a single file. No external database dependency.
+
+## Schema overview
+
+| Table | Purpose |
+|---|---|
+| `channels` | Channel connector configs and credentials |
+| `personas` | Agent profiles with model, capabilities, and skill lists |
+| `bindings` | Channel-to-persona routing (thread-level or channel-default) |
+| `threads` | Conversation threads keyed by channel + external ID |
+| `messages` | Full message history, append-only, inbound and outbound |
+| `queue_items` | Durable work queue with status, retry, and dead-letter |
+| `runs` | Agent execution records with session ID and token usage |
+| `schedules` | Cron/interval/one-shot job definitions |
+| `memory_items` | Per-thread structured memory (facts, summaries, notes) |
+| `artifacts` | Agent output files with path, MIME type, and checksum |
+| `audit_log` | Append-only audit trail of all side-effecting operations |
+| `tool_results` | Idempotent tool result cache keyed by run + request ID |
+
+Schema is defined in `src/core/database/migrations/001-initial-schema.sql` and later migrations.
+
+## WAL mode
+
+SQLite is opened in Write-Ahead Logging mode. This gives:
+
+- **Concurrent readers** — reads don't block writes and vice versa
+- **Crash safety** — WAL file is replayed on restart after an unclean shutdown
+- **Better write throughput** — multiple writes batch into WAL before checkpoint
+
+Foreign keys are enabled on every connection. Cascade deletes are defined where appropriate (e.g., deleting a thread cascades to messages, queue items, and memory items).
+
+## Migrations
+
+Migrations are versioned SQL files in `src/core/database/migrations/`. They're numbered sequentially: `001-initial-schema.sql`, `002-...sql`, etc.
+
+Apply pending migrations:
+
+```bash
+npx talonctl migrate
+```
+
+The daemon also runs `migrate` automatically on startup. It's idempotent — already-applied migrations are skipped. Migration state is tracked in a `_migrations` table.
+
+:::caution
+Never modify an already-applied migration file. Add a new one instead. Changing an existing file will not re-apply it; it will just cause the checksum to mismatch on future installs.
+:::
+
+## Repository pattern
+
+All database access goes through repository classes in `src/core/database/repositories/`. Each table has a typed repository:
+
+| Repository | Table |
+|---|---|
+| `ChannelRepository` | `channels` |
+| `PersonaRepository` | `personas` |
+| `BindingRepository` | `bindings` |
+| `ThreadRepository` | `threads` |
+| `MessageRepository` | `messages` |
+| `QueueRepository` | `queue_items` |
+| `RunRepository` | `runs` |
+| `ScheduleRepository` | `schedules` |
+| `MemoryRepository` | `memory_items` |
+| `ArtifactRepository` | `artifacts` |
+| `AuditRepository` | `audit_log` |
+| `ToolResultRepository` | `tool_results` |
+
+Every repository method returns `Result<T, E>` from `neverthrow`. There are no raw throws across module boundaries. This makes the database layer swap-able in the future — the interface contract is typed, not SQLite-specific.
+
+## Backup
+
+```bash
+npx talonctl backup
+```
+
+This snapshots the SQLite file and the `data/` directory to a timestamped archive. Run it before upgrades or migrations.
+
+## Database location
+
+The database file path is configured in `talond.yaml`:
+
+```yaml
+dataDir: ./data
+```
+
+The database lives at `<dataDir>/talon.db`. WAL and SHM files (`talon.db-wal`, `talon.db-shm`) are co-located and managed automatically by SQLite.

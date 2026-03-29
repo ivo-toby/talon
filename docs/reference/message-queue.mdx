@@ -1,0 +1,94 @@
+---
+title: Message queue
+description: SQLite-backed durable FIFO queue with crash recovery, exponential backoff, and dead-letter handling
+---
+
+# Message queue
+
+Inbound messages don't go directly to an agent. They're written to a durable SQLite queue first. The queue processor picks them up, runs the agent, and handles retries. This means the daemon can restart mid-flight without losing work.
+
+## Queue model
+
+The queue is FIFO per thread with cross-thread parallelism. Two messages in the same thread are processed sequentially. Two messages in different threads can be processed in parallel, up to the configured concurrency limit.
+
+Each item in `queue_items` tracks:
+
+| Column | Description |
+|---|---|
+| `status` | `pending`, `claimed`, `processing`, `completed`, `failed`, `dead_letter` |
+| `attempts` | How many times processing has been attempted |
+| `max_attempts` | Default 3; after this the item moves to dead-letter |
+| `next_retry_at` | When the item becomes eligible for the next attempt |
+| `error` | Last error message |
+
+## Crash recovery
+
+When the daemon starts, it scans for items in `claimed` or `processing` status. These were in-flight when the process died. The daemon resets them to `pending` and requeues them. You don't need to do anything — this happens automatically on startup.
+
+## Retry with exponential backoff
+
+If an agent run fails, the queue item is retried with exponential backoff:
+
+- Base interval: 1 second
+- Multiplier: 2× per attempt
+- Max interval: 60 seconds
+- Jitter: added to avoid thundering herd
+
+For example, with three max attempts: first retry at ~1s, second at ~2s, third at ~4s. After the third failure the item is moved to the dead-letter queue.
+
+## Dead-letter queue
+
+Items that exhaust their retry budget land in `dead_letter` status. They stay in the database but are never retried automatically. This gives you a record of what failed and why.
+
+Inspect dead-letter items:
+
+```bash
+npx talonctl queue-purge --status dead_letter --dry-run
+```
+
+Once you've investigated, purge them:
+
+```bash
+npx talonctl queue-purge --status dead_letter
+```
+
+You can also purge all items regardless of status:
+
+```bash
+npx talonctl queue-purge --all
+```
+
+## Concurrency limits
+
+Two levels of concurrency control:
+
+```yaml
+queue:
+  maxConcurrent: 5       # global limit across all threads and personas
+
+personas:
+  - name: assistant
+    maxConcurrent: 2     # per-persona limit
+```
+
+The effective concurrency for a persona is `min(persona.maxConcurrent, global.maxConcurrent)`. Set `maxConcurrent` on latency-sensitive personas to ensure they aren't starved by a backlog in another persona.
+
+## Queue item types
+
+Not all queue items come from channel messages:
+
+| Type | Source |
+|---|---|
+| `message` | Inbound message from a channel connector |
+| `schedule` | A due scheduled task |
+| `collaboration` | A2A task from another persona |
+
+All types go through the same queue, retry, and dead-letter logic.
+
+## Monitoring queue depth
+
+```bash
+npx talonctl status
+```
+
+This reports queue depth broken down by status. A growing `pending` count with no movement indicates a stuck processor. A growing `dead_letter` count indicates a systemic agent failure worth investigating.

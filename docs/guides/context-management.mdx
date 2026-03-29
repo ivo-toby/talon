@@ -1,0 +1,81 @@
+---
+title: Context management
+description: Rolling context window — session rotation, summarization, and context injection
+---
+
+# Context management
+
+Talon automatically handles context window limits. When the accumulated conversation approaches the provider's limit, the daemon rotates the session: it summarizes what happened, stores the summary, and starts a fresh session with that summary injected. The agent never sees the boundary.
+
+## How session rotation works
+
+After each agent run, Talon checks the token usage. If the context is getting full, it triggers a rotation:
+
+1. `session-summarizer` compresses the current transcript into a structured summary
+2. The summary is written to `memory_items` as a `summary` type entry
+3. The session ID is cleared; the next run starts a fresh session
+4. On the next run, Talon assembles the context:
+   - The latest session summary
+   - The last N messages verbatim (configurable)
+
+From the agent's perspective the conversation is uninterrupted. From the daemon's perspective, there's a new session with a clean context window.
+
+## Configuration
+
+Context management is configured per-persona under the `context` key:
+
+```yaml
+personas:
+  - name: assistant
+    context:
+      thresholdTokens: 150000
+      recentMessageCount: 10
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `thresholdTokens` | provider-dependent | Token count that triggers rotation |
+| `recentMessageCount` | 10 | How many recent messages to inject verbatim after rotation |
+
+:::note
+Talon also uses the provider's rotation ratio signal (`cacheReadTokens`) as a primary trigger. `thresholdTokens` is the legacy fallback and is still supported.
+:::
+
+## Session summarizer
+
+The `session-summarizer` sub-agent does the actual compression. It reads the full transcript and produces a structured summary covering:
+
+- Key topics discussed
+- Decisions made
+- Open questions
+- Relevant facts
+
+The summary is what gets injected into the next session. It's designed to be complete enough that the agent can continue without gaps, compact enough that it doesn't consume much of the new context window.
+
+## Memory grooming
+
+Session summaries accumulate in `memory_items` over time. The `memory-groomer` sub-agent consolidates them: it reads all summaries for a thread, merges redundant ones, and prunes anything no longer relevant. Schedule it to run periodically:
+
+```yaml
+# fires at 3am daily
+- cronExpr: "0 3 * * *"
+  promptFile: memory-grooming
+```
+
+## What the agent sees
+
+The context assembled for each run includes:
+
+```
+[system prompt]
+[personality fragments]
+[session summary — most recent]
+[last N messages verbatim]
+[current message]
+```
+
+The agent never receives explicit notification that a session rotation occurred. The summary is presented as part of the normal context.
+
+:::tip
+If you want longer verbatim message history in the injected context at the cost of a larger prompt, increase `recentMessageCount`. If your conversations are long and complex, also tune `thresholdTokens` to rotate before you hit provider hard limits.
+:::
