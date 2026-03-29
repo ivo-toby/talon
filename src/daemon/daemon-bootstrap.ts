@@ -8,7 +8,7 @@
  * The daemon orchestrator calls start methods after receiving the context.
  */
 
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import { ok, err, type Result } from 'neverthrow';
 import type pino from 'pino';
@@ -396,6 +396,13 @@ export async function bootstrap(
   // 12. Queue manager
   const queueManager = new QueueManager(repos.queue, repos.thread, config.queue, logger);
 
+  let executionEnvManager: ExecutionEnvManager | null = null;
+  if (config.sprites.enabled) {
+    logger.warn(
+      'bootstrap: sprites.enabled is set, but SpritesClient is still stubbed; skipping execution environment wiring',
+    );
+  }
+
   // 13. Background agent manager
   let backgroundAgentManager: BackgroundAgentManager | null = null;
   if (config.backgroundAgent.enabled) {
@@ -406,17 +413,12 @@ export async function bootstrap(
       defaultTimeoutMinutes: config.backgroundAgent.defaultTimeoutMinutes,
       defaultProvider: config.backgroundAgent.defaultProvider,
       providerRegistry: backgroundProviderRegistry,
+      executionEnvManager,
+      hostToolsSocketPath: resolve(join(dataDir, 'host-tools.sock')),
       logger,
       observability,
     });
-    backgroundAgentManager.recoverOrphanedTasks();
-  }
-
-  let executionEnvManager: ExecutionEnvManager | null = null;
-  if (config.sprites.enabled) {
-    logger.warn(
-      'bootstrap: sprites.enabled is set, but SpritesClient is still stubbed; skipping execution environment wiring',
-    );
+    await backgroundAgentManager.recoverOrphanedTasks();
   }
 
   // 14. Scheduler

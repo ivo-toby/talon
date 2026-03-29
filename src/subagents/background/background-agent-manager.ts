@@ -1,8 +1,11 @@
-import { readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import type pino from 'pino';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
+import type { PersonaExecutionEnvConfig } from '../../core/config/config-types.js';
 import type { QueueManager } from '../../queue/queue-manager.js';
 import type { BackgroundTask, BackgroundTaskResult } from './background-agent-types.js';
 import { BackgroundAgentProcess, type BackgroundAgentProcessOptions } from './background-agent-process.js';
@@ -11,6 +14,7 @@ import type { CanonicalMcpServer } from '../../providers/provider-types.js';
 import type { AgentProvider } from '../../providers/provider.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { ObservabilityService, StartedObservationHandle } from '../../observability/langfuse/observability-types.js';
+import type { ExecutionEnvManager } from '../../execution-env/execution-env-manager.js';
 
 export interface SpawnBackgroundAgentInput {
   prompt: string;
@@ -18,6 +22,7 @@ export interface SpawnBackgroundAgentInput {
   threadContext?: string;
   mcpServers: Record<string, CanonicalMcpServer>;
   personaId: string;
+  workerPersonaId: string;
   threadId: string;
   channelId: string;
   channelName: string;
@@ -29,6 +34,10 @@ export interface SpawnBackgroundAgentInput {
   workingDirectory?: string;
   timeoutMinutes?: number;
   traceparent?: string;
+  allowedMcpTools: string[];
+  sandbox?: boolean;
+  controlDirectory?: string;
+  executionEnvDefaults?: PersonaExecutionEnvConfig;
 }
 
 interface BackgroundAgentManagerDeps {
@@ -43,6 +52,8 @@ interface BackgroundAgentManagerDeps {
   isPidAlive?: (pid: number) => boolean;
   readProcessCommandLine?: (pid: number) => string | null;
   observability?: ObservabilityService;
+  executionEnvManager?: Pick<ExecutionEnvManager, 'create' | 'upload' | 'destroyOwnedByTask'> | null;
+  hostToolsSocketPath?: string;
 }
 
 interface ManagedProcess {
@@ -50,6 +61,12 @@ interface ManagedProcess {
   cleanupPaths: string[];
   provider: AgentProvider;
   observation?: StartedObservationHandle;
+}
+
+interface SandboxContext {
+  primaryExecutionEnvId: string;
+  envWorkingDirectory: string;
+  controlDirectory: string;
 }
 
 const MAX_STORED_OUTPUT = 100 * 1024;
@@ -79,7 +96,7 @@ export class BackgroundAgentManager {
     });
   }
 
-  spawn(input: SpawnBackgroundAgentInput): Result<string, BackgroundAgentError> {
+  async spawn(input: SpawnBackgroundAgentInput): Promise<Result<string, BackgroundAgentError>> {
     const countResult = this.deps.repository.countActive();
     if (countResult.isErr()) {
       return err(new BackgroundAgentError(countResult.error.message, countResult.error));
@@ -160,21 +177,43 @@ export class BackgroundAgentManager {
       threadContext: input.threadContext,
     });
 
+    const sandboxContextResult = input.sandbox
+      ? await this.createSandboxContext(taskId, input)
+      : ok<SandboxContext | null, BackgroundAgentError>(null);
+    if (sandboxContextResult.isErr()) {
+      observation?.end();
+      return err(sandboxContextResult.error);
+    }
+    const sandboxContext = sandboxContextResult.value;
+
+    const workerMcpServers = this.buildWorkerMcpServers({
+      baseMcpServers: input.mcpServers,
+      taskId,
+      threadId: input.threadId,
+      workerPersonaId: input.workerPersonaId,
+      allowedMcpTools: input.allowedMcpTools,
+      traceparent: childTraceparent,
+      sandboxContext,
+    });
+
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
       prompt: input.prompt,
       systemPrompt,
-      mcpServers: input.mcpServers,
-      cwd: input.workingDirectory ?? process.cwd(),
+      mcpServers: workerMcpServers,
+      cwd: sandboxContext?.controlDirectory ?? input.workingDirectory ?? process.cwd(),
       timeoutMs: timeoutMinutes * 60 * 1000,
       traceparent: childTraceparent,
       ...(input.model ? { model: input.model } : {}),
     });
     if (invocationResult.isErr()) {
       observation?.end();
+      this.cleanupPaths(this.mergeCleanupPaths([], sandboxContext));
+      await this.destroyOwnedExecutionEnv(taskId);
       return err(invocationResult.error);
     }
 
     const invocation = invocationResult.value;
+    const cleanupPaths = this.mergeCleanupPaths(invocation.cleanupPaths, sandboxContext);
 
     const createResult = this.deps.repository.create({
       id: taskId,
@@ -190,14 +229,32 @@ export class BackgroundAgentManager {
       pid: null,
       timeoutMinutes,
       parentTraceparent: input.traceparent ?? null,
-      sandboxEnabled: false,
-      primaryExecutionEnvId: null,
+      sandboxEnabled: input.sandbox ?? false,
+      primaryExecutionEnvId: sandboxContext?.primaryExecutionEnvId ?? null,
     });
 
     if (createResult.isErr()) {
       observation?.end();
-      this.cleanupPaths(invocation.cleanupPaths);
+      this.cleanupPaths(cleanupPaths);
+      await this.destroyOwnedExecutionEnv(taskId);
       return err(new BackgroundAgentError(createResult.error.message, createResult.error));
+    }
+
+    if (sandboxContext && input.workingDirectory) {
+      const uploadResult = await this.deps.executionEnvManager!.upload({
+        envId: sandboxContext.primaryExecutionEnvId,
+        sourcePath: input.workingDirectory,
+        destinationPath: sandboxContext.envWorkingDirectory,
+        recursive: true,
+        allowedHostRoots: [input.workingDirectory],
+      });
+      if (uploadResult.isErr()) {
+        observation?.end();
+        this.deps.repository.updateStatus(taskId, 'failed', undefined, uploadResult.error.message);
+        this.cleanupPaths(cleanupPaths);
+        await this.destroyOwnedExecutionEnv(taskId);
+        return err(new BackgroundAgentError(uploadResult.error.message, uploadResult.error));
+      }
     }
 
     const processInstance = this.processFactory({
@@ -205,7 +262,7 @@ export class BackgroundAgentManager {
       args: invocation.args,
       cwd: invocation.cwd,
       stdin: invocation.stdin,
-      env: invocation.env,
+      env: this.buildProviderEnv(taskId, invocation.env, sandboxContext),
       timeoutMs: invocation.timeoutMs,
     });
 
@@ -213,7 +270,8 @@ export class BackgroundAgentManager {
     if (startResult.isErr()) {
       observation?.end();
       this.deps.repository.updateStatus(taskId, 'failed', undefined, startResult.error.message);
-      this.cleanupPaths(invocation.cleanupPaths);
+      this.cleanupPaths(cleanupPaths);
+      await this.destroyOwnedExecutionEnv(taskId);
       return err(startResult.error);
     }
 
@@ -224,14 +282,16 @@ export class BackgroundAgentManager {
 
     this.processes.set(taskId, {
       kill: () => processInstance.kill(),
-      cleanupPaths: invocation.cleanupPaths,
+      cleanupPaths,
       provider: providerEntry.provider,
       observation,
     });
 
-    void completion.then((result) => {
-      this.handleCompletion(taskId, result);
-    });
+    void completion
+      .then((result) => this.handleCompletion(taskId, result))
+      .catch((cause) => {
+        this.deps.logger.error({ err: cause, taskId }, 'background-agent: completion handling failed');
+      });
 
     return ok(taskId);
   }
@@ -274,7 +334,7 @@ export class BackgroundAgentManager {
     });
   }
 
-  cancel(taskId: string): Result<boolean, BackgroundAgentError> {
+  async cancel(taskId: string): Promise<Result<boolean, BackgroundAgentError>> {
     const taskResult = this.deps.repository.findById(taskId);
     if (taskResult.isErr()) {
       return err(new BackgroundAgentError(taskResult.error.message, taskResult.error));
@@ -297,13 +357,14 @@ export class BackgroundAgentManager {
       undefined,
       'Cancelled by user',
     );
+    await this.destroyOwnedExecutionEnv(taskId);
 
     return updateResult.isOk()
       ? ok(true)
       : err(new BackgroundAgentError(updateResult.error.message, updateResult.error));
   }
 
-  recoverOrphanedTasks(): void {
+  async recoverOrphanedTasks(): Promise<void> {
     const result = this.deps.repository.findActive();
     if (result.isErr()) {
       this.deps.logger.error({ err: result.error }, 'background-agent: failed to load active tasks');
@@ -313,11 +374,13 @@ export class BackgroundAgentManager {
     for (const task of result.value) {
       if (!task.pid) {
         this.deps.repository.updateStatus(task.id, 'failed', undefined, 'daemon restarted during execution');
+        await this.destroyOwnedExecutionEnv(task.id);
         continue;
       }
 
       if (!this.isPidAlive(task.pid)) {
         this.deps.repository.updateStatus(task.id, 'failed', undefined, 'daemon restarted during execution');
+        await this.destroyOwnedExecutionEnv(task.id);
         continue;
       }
 
@@ -327,6 +390,7 @@ export class BackgroundAgentManager {
         || !this.enabledProviderCommands().some((command) => commandLine.includes(command))
       ) {
         this.deps.repository.updateStatus(task.id, 'failed', undefined, 'daemon restarted during execution (pid reused)');
+        await this.destroyOwnedExecutionEnv(task.id);
         continue;
       }
 
@@ -336,21 +400,23 @@ export class BackgroundAgentManager {
         undefined,
         'daemon restarted during execution (cannot reattach)',
       );
+      await this.destroyOwnedExecutionEnv(task.id);
     }
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     for (const [taskId, process] of this.processes) {
       process.kill();
       process.observation?.update({ statusMessage: 'Daemon shutting down' });
       process.observation?.end();
       this.deps.repository.updateStatus(taskId, 'cancelled', undefined, 'Daemon shutting down');
       this.cleanupPaths(process.cleanupPaths);
+      await this.destroyOwnedExecutionEnv(taskId);
     }
     this.processes.clear();
   }
 
-  private handleCompletion(taskId: string, result: Result<unknown, BackgroundAgentError>): void {
+  private async handleCompletion(taskId: string, result: Result<unknown, BackgroundAgentError>): Promise<void> {
     const currentTaskResult = this.deps.repository.findById(taskId);
     if (currentTaskResult.isErr() || !currentTaskResult.value) {
       this.cleanupTask(taskId);
@@ -369,6 +435,7 @@ export class BackgroundAgentManager {
       failedProcess?.observation?.update({ statusMessage: result.error.message });
       failedProcess?.observation?.end();
       this.cleanupTask(taskId);
+      await this.destroyOwnedExecutionEnv(taskId);
       return;
     }
 
@@ -426,6 +493,7 @@ export class BackgroundAgentManager {
 
     this.enqueueNotification(taskId);
     this.cleanupTask(taskId);
+    await this.destroyOwnedExecutionEnv(taskId);
   }
 
   private enqueueNotification(taskId: string): void {
@@ -489,6 +557,134 @@ export class BackgroundAgentManager {
   private cleanupPaths(paths: string[]): void {
     for (const path of new Set(paths)) {
       rmSync(path, { recursive: true, force: true });
+    }
+  }
+
+  private async createSandboxContext(
+    taskId: string,
+    input: SpawnBackgroundAgentInput,
+  ): Promise<Result<SandboxContext, BackgroundAgentError>> {
+    if (!this.deps.executionEnvManager) {
+      return err(
+        new BackgroundAgentError(
+          'Sandboxed background agents require execution environment support to be enabled',
+        ),
+      );
+    }
+
+    const controlDirectory = input.controlDirectory
+      ?? mkdtempSync(join(tmpdir(), `talon-bg-control-${taskId}-`));
+    mkdirSync(controlDirectory, { recursive: true, mode: 0o700 });
+
+    const envResult = await this.deps.executionEnvManager.create({
+      threadId: input.threadId,
+      personaId: input.workerPersonaId,
+      ownerTaskId: taskId,
+      ...(input.executionEnvDefaults?.baseSnapshot
+        ? { baseSnapshot: input.executionEnvDefaults.baseSnapshot }
+        : {}),
+      ...(input.executionEnvDefaults?.workingDirectory
+        ? { workingDirectory: input.executionEnvDefaults.workingDirectory }
+        : {}),
+      ...(input.executionEnvDefaults?.resourceLimits
+        ? { resourceLimits: input.executionEnvDefaults.resourceLimits }
+        : {}),
+    });
+
+    if (envResult.isErr()) {
+      this.cleanupPaths([controlDirectory]);
+      return err(new BackgroundAgentError(envResult.error.message, envResult.error));
+    }
+
+    return ok({
+      primaryExecutionEnvId: envResult.value.id,
+      envWorkingDirectory: envResult.value.workingDirectory,
+      controlDirectory,
+    });
+  }
+
+  private buildWorkerMcpServers(options: {
+    baseMcpServers: Record<string, CanonicalMcpServer>;
+    taskId: string;
+    threadId: string;
+    workerPersonaId: string;
+    allowedMcpTools: string[];
+    traceparent?: string;
+    sandboxContext: SandboxContext | null;
+  }): Record<string, CanonicalMcpServer> {
+    const mcpServers: Record<string, CanonicalMcpServer> = {
+      ...options.baseMcpServers,
+    };
+
+    if (!this.deps.hostToolsSocketPath || options.allowedMcpTools.length === 0) {
+      return mcpServers;
+    }
+
+    mcpServers.__talond_host_tools = {
+      transport: 'stdio',
+      command: 'node',
+      args: [join(import.meta.dirname, '../../../dist/tools/host-tools-mcp-server.js')],
+      env: {
+        ...process.env,
+        TALOND_SOCKET: this.deps.hostToolsSocketPath,
+        TALOND_RUN_ID: options.taskId,
+        TALOND_THREAD_ID: options.threadId,
+        TALOND_PERSONA_ID: options.workerPersonaId,
+        TALOND_ALLOWED_TOOLS: options.allowedMcpTools.join(','),
+        TALOND_TRACEPARENT: options.traceparent ?? '',
+        TALOND_BACKGROUND_TASK_ID: options.taskId,
+        ...(options.sandboxContext
+          ? {
+              TALOND_PRIMARY_EXECUTION_ENV_ID: options.sandboxContext.primaryExecutionEnvId,
+              TALOND_ALLOWED_HOST_ROOTS: JSON.stringify([options.sandboxContext.controlDirectory]),
+            }
+          : {}),
+      },
+    };
+
+    return mcpServers;
+  }
+
+  private buildProviderEnv(
+    taskId: string,
+    invocationEnv: Record<string, string> | undefined,
+    sandboxContext: SandboxContext | null,
+  ): Record<string, string> | undefined {
+    const env = {
+      ...(invocationEnv ?? {}),
+      TALON_BACKGROUND_TASK_ID: taskId,
+      ...(sandboxContext
+        ? {
+            TALON_PRIMARY_EXECUTION_ENV_ID: sandboxContext.primaryExecutionEnvId,
+            TALON_PRIMARY_EXECUTION_ENV_CWD: sandboxContext.envWorkingDirectory,
+          }
+        : {}),
+    };
+
+    return Object.keys(env).length > 0 ? env : undefined;
+  }
+
+  private mergeCleanupPaths(
+    invocationCleanupPaths: string[],
+    sandboxContext: SandboxContext | null,
+  ): string[] {
+    return sandboxContext
+      ? [...invocationCleanupPaths, sandboxContext.controlDirectory]
+      : invocationCleanupPaths;
+  }
+
+  private async destroyOwnedExecutionEnv(taskId: string): Promise<void> {
+    if (!this.deps.executionEnvManager) {
+      return;
+    }
+
+    try {
+      await this.deps.executionEnvManager.destroyOwnedByTask(taskId);
+    } catch (cause) {
+      this.deps.logger.warn(
+        { err: cause, taskId },
+        'background-agent: failed to destroy owned execution environment',
+      );
     }
   }
 

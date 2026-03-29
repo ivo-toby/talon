@@ -30,6 +30,9 @@ function makeTask(overrides: Partial<BackgroundTask> = {}): BackgroundTask {
     startedAt: 1_000,
     completedAt: null,
     timeoutMinutes: 30,
+    parentTraceparent: null,
+    sandboxEnabled: false,
+    primaryExecutionEnvId: null,
     ...overrides,
   };
 }
@@ -48,10 +51,10 @@ function makeResult(overrides: Partial<BackgroundTaskResult> = {}): BackgroundTa
 
 function createHandler(overrides: Record<string, unknown> = {}) {
   const backgroundAgentManager = {
-    spawn: vi.fn().mockReturnValue(ok('task-1')),
+    spawn: vi.fn().mockResolvedValue(ok('task-1')),
     listTasksForThread: vi.fn().mockReturnValue(ok([makeTask()])),
     getTask: vi.fn().mockReturnValue(ok(makeTask())),
-    cancel: vi.fn().mockReturnValue(ok(true)),
+    cancel: vi.fn().mockResolvedValue(ok(true)),
     getResult: vi.fn().mockReturnValue(ok(makeResult())),
   };
 
@@ -59,6 +62,7 @@ function createHandler(overrides: Record<string, unknown> = {}) {
     backgroundAgentManager: backgroundAgentManager as any,
     personaRepository: {
       findById: vi.fn().mockReturnValue(ok({ id: 'persona-1', name: 'TestBot' })),
+      findByName: vi.fn().mockImplementation((name: string) => ok({ id: `persona-${name}`, name })),
     } as any,
     personaLoader: {
       getByName: vi.fn().mockReturnValue(
@@ -191,6 +195,8 @@ describe('BackgroundAgentHandler', () => {
           },
         },
         personaPrompt: expect.stringContaining('Base system prompt.'),
+        workerPersonaId: 'persona-1',
+        sandbox: false,
       }),
     );
     expect(deps.contextAssembler.assemble).toHaveBeenCalledWith('thread-1', 10);
@@ -439,6 +445,7 @@ describe('BackgroundAgentHandler', () => {
           model: 'gemini-2.5-pro',
           profileName: 'code-reviewer',
           personaId: 'persona-1', // task tracking still uses original persona
+          workerPersonaId: 'persona-code-reviewer',
         }),
       );
       // Should NOT contain the spawning thread's persona prompt
@@ -616,5 +623,134 @@ describe('BackgroundAgentHandler', () => {
       },
     );
     expect(result.status).toBe('success');
+  });
+
+  it('passes sandbox=true and filters out background_agent from worker host tools', async () => {
+    const { handler, backgroundAgentManager } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: ['search-skill'],
+              executionEnv: { sandboxDefault: false },
+            },
+            systemPromptContent: 'Base system prompt.',
+            personalityContent: 'Friendly personality.',
+            resolvedCapabilities: {
+              allow: ['subagent.background', 'execution.env', 'channel.send:*'],
+              requireApproval: [],
+            },
+          }),
+        ),
+        listNames: vi.fn().mockReturnValue(['TestBot']),
+        listProfiles: vi.fn().mockReturnValue([]),
+      } as any,
+    });
+
+    const result = await handler.execute(
+      {
+        action: 'spawn',
+        prompt: 'Run sandboxed',
+        sandbox: true as any,
+      } as any,
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-1',
+      },
+    );
+
+    expect(result.status).toBe('success');
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandbox: true,
+        allowedMcpTools: expect.arrayContaining(['execution_env', 'channel_send']),
+      }),
+    );
+    expect(backgroundAgentManager.spawn.mock.calls[0][0].allowedMcpTools).not.toContain('background_agent');
+  });
+
+  it('uses the profile sandbox default when sandbox is omitted', async () => {
+    const { handler, backgroundAgentManager } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: ['search-skill'],
+              executionEnv: { sandboxDefault: true },
+            },
+            systemPromptContent: 'Base system prompt.',
+            personalityContent: 'Friendly personality.',
+            resolvedCapabilities: {
+              allow: ['subagent.background', 'execution.env'],
+              requireApproval: [],
+            },
+          }),
+        ),
+        listNames: vi.fn().mockReturnValue(['TestBot']),
+        listProfiles: vi.fn().mockReturnValue([]),
+      } as any,
+    });
+
+    const result = await handler.execute(
+      {
+        action: 'spawn',
+        prompt: 'Use default sandbox',
+      },
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-1',
+      },
+    );
+
+    expect(result.status).toBe('success');
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sandbox: true,
+      }),
+    );
+  });
+
+  it('rejects sandboxed spawn when the selected profile lacks execution.env capability', async () => {
+    const { handler, backgroundAgentManager } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: ['search-skill'],
+            },
+            systemPromptContent: 'Base system prompt.',
+            personalityContent: 'Friendly personality.',
+            resolvedCapabilities: {
+              allow: ['subagent.background'],
+              requireApproval: [],
+            },
+          }),
+        ),
+        listNames: vi.fn().mockReturnValue(['TestBot']),
+        listProfiles: vi.fn().mockReturnValue([]),
+      } as any,
+    });
+
+    const result = await handler.execute(
+      {
+        action: 'spawn',
+        prompt: 'Run sandboxed',
+        sandbox: true as any,
+      } as any,
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-1',
+      },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('execution.env');
+    expect(backgroundAgentManager.spawn).not.toHaveBeenCalled();
   });
 });

@@ -27,7 +27,9 @@ function createTestDb(): Database.Database {
       started_at      INTEGER NOT NULL,
       completed_at        INTEGER,
       timeout_minutes     INTEGER NOT NULL DEFAULT 30,
-      parent_traceparent  TEXT
+      parent_traceparent  TEXT,
+      sandbox_enabled     INTEGER NOT NULL DEFAULT 0,
+      primary_execution_env_id TEXT
     );
     CREATE INDEX idx_background_tasks_status ON background_tasks(status);
     CREATE INDEX idx_background_tasks_thread_created ON background_tasks(thread_id, created_at DESC);
@@ -58,6 +60,7 @@ describe('BackgroundAgentManager', () => {
 
   afterEach(() => {
     rmSync('/tmp/talon-bg-test', { recursive: true, force: true });
+    rmSync('/tmp/talon-bg-control', { recursive: true, force: true });
   });
 
   beforeEach(() => {
@@ -99,7 +102,7 @@ describe('BackgroundAgentManager', () => {
     }));
   });
 
-  function createManager() {
+  function createManager(overrides: Record<string, unknown> = {}) {
     const claudeProvider = {
       name: 'claude-code',
       createExecutionStrategy: vi.fn(),
@@ -151,6 +154,8 @@ describe('BackgroundAgentManager', () => {
       processFactory,
       isPidAlive: vi.fn().mockReturnValue(false),
       readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
+      hostToolsSocketPath: '/tmp/test-host-tools.sock',
+      ...overrides,
     });
   }
 
@@ -166,11 +171,13 @@ describe('BackgroundAgentManager', () => {
     provider: undefined,
     workingDirectory: '/workspace/repo',
     timeoutMinutes: 30,
+    workerPersonaId: 'persona-1',
+    allowedMcpTools: [],
   };
 
-  it('creates a running task and returns its id', () => {
+  it('creates a running task and returns its id', async () => {
     const manager = createManager();
-    const result = manager.spawn(spawnInput);
+    const result = await manager.spawn(spawnInput);
     expect(result.isOk()).toBe(true);
 
     const taskId = result._unsafeUnwrap();
@@ -179,10 +186,10 @@ describe('BackgroundAgentManager', () => {
     expect(task?.pid).toBe(4242);
   });
 
-  it('builds the append-system-prompt from persona and task context', () => {
+  it('builds the append-system-prompt from persona and task context', async () => {
     const manager = createManager();
 
-    manager.spawn(spawnInput);
+    await manager.spawn(spawnInput);
 
     expect(prepareBackgroundInvocation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -206,7 +213,133 @@ describe('BackgroundAgentManager', () => {
     expect(options.stdin).toBe('Refactor the auth module');
   });
 
-  it('rejects spawn when concurrency limit is reached', () => {
+  it('provisions a sandbox env, injects host tools, and uses the control directory as cwd', async () => {
+    const executionEnvManager = {
+      create: vi.fn().mockResolvedValue(ok({
+        id: 'env-1',
+        provider: 'sprites',
+        spriteId: 'sprite-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        ownerTaskId: null,
+        status: 'ready',
+        workingDirectory: '/workspace',
+        baseSnapshot: 'node-22-bookworm',
+        autoDestroy: true,
+        resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+        createdAt: 1,
+        updatedAt: 1,
+        destroyedAt: null,
+      })),
+      upload: vi.fn().mockResolvedValue(ok({
+        direction: 'upload',
+        envId: 'env-1',
+        sourcePath: '/workspace/repo',
+        destinationPath: '/workspace',
+        bytes: 123,
+      })),
+      destroyOwnedByTask: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(ok(undefined)),
+    };
+    const manager = createManager({ executionEnvManager });
+
+    const result = await manager.spawn({
+      ...spawnInput,
+      sandbox: true as any,
+      allowedMcpTools: ['execution_env', 'channel_send'],
+      controlDirectory: '/tmp/talon-bg-control',
+    } as any);
+
+    expect(result.isOk()).toBe(true);
+    const taskId = result._unsafeUnwrap();
+    expect(executionEnvManager.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        ownerTaskId: taskId,
+      }),
+    );
+    expect(executionEnvManager.upload).toHaveBeenCalledWith({
+      envId: 'env-1',
+      sourcePath: '/workspace/repo',
+      destinationPath: '/workspace',
+      recursive: true,
+      allowedHostRoots: ['/workspace/repo'],
+    });
+    expect(prepareBackgroundInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: '/tmp/talon-bg-control',
+        mcpServers: expect.objectContaining({
+          __talond_host_tools: expect.objectContaining({
+            transport: 'stdio',
+            env: expect.objectContaining({
+              TALOND_SOCKET: '/tmp/test-host-tools.sock',
+              TALOND_BACKGROUND_TASK_ID: taskId,
+              TALOND_PRIMARY_EXECUTION_ENV_ID: 'env-1',
+              TALOND_ALLOWED_TOOLS: 'execution_env,channel_send',
+              TALOND_ALLOWED_HOST_ROOTS: '["/tmp/talon-bg-control"]',
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(processFactory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({
+          TALON_BACKGROUND_TASK_ID: taskId,
+          TALON_PRIMARY_EXECUTION_ENV_ID: 'env-1',
+          TALON_PRIMARY_EXECUTION_ENV_CWD: '/workspace',
+        }),
+      }),
+    );
+    const task = repository.findById(taskId)._unsafeUnwrap();
+    expect(task?.sandboxEnabled).toBe(true);
+    expect(task?.primaryExecutionEnvId).toBe('env-1');
+  });
+
+  it('destroys owned execution env when a sandboxed task is cancelled', async () => {
+    const executionEnvManager = {
+      create: vi.fn().mockResolvedValue(ok({
+        id: 'env-1',
+        provider: 'sprites',
+        spriteId: 'sprite-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        ownerTaskId: null,
+        status: 'ready',
+        workingDirectory: '/workspace',
+        baseSnapshot: null,
+        autoDestroy: true,
+        resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+        createdAt: 1,
+        updatedAt: 1,
+        destroyedAt: null,
+      })),
+      upload: vi.fn().mockResolvedValue(ok({
+        direction: 'upload',
+        envId: 'env-1',
+        sourcePath: '/workspace/repo',
+        destinationPath: '/workspace',
+        bytes: 123,
+      })),
+      destroyOwnedByTask: vi.fn().mockResolvedValue(undefined),
+      destroy: vi.fn().mockResolvedValue(ok(undefined)),
+    };
+    const manager = createManager({ executionEnvManager });
+    const taskId = (await manager.spawn({
+      ...spawnInput,
+      sandbox: true as any,
+      allowedMcpTools: ['execution_env'],
+      controlDirectory: '/tmp/talon-bg-control',
+    } as any))._unsafeUnwrap();
+
+    const result = await manager.cancel(taskId);
+
+    expect(result.isOk()).toBe(true);
+    expect(executionEnvManager.destroyOwnedByTask).toHaveBeenCalledWith(taskId);
+  });
+
+  it('rejects spawn when concurrency limit is reached', async () => {
     repository.create({
       id: 'existing-1',
       personaId: 'persona-1',
@@ -220,6 +353,8 @@ describe('BackgroundAgentManager', () => {
       error: null,
       pid: 1111,
       timeoutMinutes: 30,
+      sandboxEnabled: false,
+      primaryExecutionEnvId: null,
     });
     repository.create({
       id: 'existing-2',
@@ -234,20 +369,22 @@ describe('BackgroundAgentManager', () => {
       error: null,
       pid: 2222,
       timeoutMinutes: 30,
+      sandboxEnabled: false,
+      primaryExecutionEnvId: null,
     });
 
     const manager = createManager();
-    const result = manager.spawn(spawnInput);
+    const result = await manager.spawn(spawnInput);
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('concurrency');
   });
 
-  it('marks the task failed when process start fails', () => {
+  it('marks the task failed when process start fails', async () => {
     processStart.mockReturnValueOnce(err(new BackgroundAgentError('spawn failed')));
     const manager = createManager();
 
-    const result = manager.spawn(spawnInput);
+    const result = await manager.spawn(spawnInput);
     expect(result.isErr()).toBe(true);
 
     const tasks = repository.findByThread('thread-1')._unsafeUnwrap();
@@ -258,7 +395,7 @@ describe('BackgroundAgentManager', () => {
 
   it('marks the task completed and enqueues both direct and agent notifications when the process resolves', async () => {
     const manager = createManager();
-    const taskId = manager.spawn(spawnInput)._unsafeUnwrap();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
 
     completionResolve?.(
       ok({
@@ -303,28 +440,28 @@ describe('BackgroundAgentManager', () => {
     );
   });
 
-  it('cancels a running task and kills the in-memory process', () => {
+  it('cancels a running task and kills the in-memory process', async () => {
     const manager = createManager();
-    const taskId = manager.spawn(spawnInput)._unsafeUnwrap();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
 
-    const result = manager.cancel(taskId);
+    const result = await manager.cancel(taskId);
     expect(result.isOk()).toBe(true);
     expect(result._unsafeUnwrap()).toBe(true);
     expect(processKill).toHaveBeenCalled();
     expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('cancelled');
   });
 
-  it('cleans up cancelled tasks immediately so shutdown does not clean them twice', () => {
+  it('cleans up cancelled tasks immediately so shutdown does not clean them twice', async () => {
     const manager = createManager();
-    const taskId = manager.spawn(spawnInput)._unsafeUnwrap();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
 
-    manager.cancel(taskId);
-    manager.shutdown();
+    await manager.cancel(taskId);
+    await manager.shutdown();
 
     expect(existsSync('/tmp/talon-bg-test')).toBe(false);
   });
 
-  it('marks orphaned running tasks as failed when their pid is dead', () => {
+  it('marks orphaned running tasks as failed when their pid is dead', async () => {
     repository.create({
       id: 'orphan-1',
       personaId: 'persona-1',
@@ -338,26 +475,28 @@ describe('BackgroundAgentManager', () => {
       error: null,
       pid: 999999,
       timeoutMinutes: 30,
+      sandboxEnabled: false,
+      primaryExecutionEnvId: null,
     });
 
     const manager = createManager();
-    manager.recoverOrphanedTasks();
+    await manager.recoverOrphanedTasks();
 
     expect(repository.findById('orphan-1')._unsafeUnwrap()?.status).toBe('failed');
   });
 
-  it('kills active processes during shutdown', () => {
+  it('kills active processes during shutdown', async () => {
     const manager = createManager();
-    const taskId = manager.spawn(spawnInput)._unsafeUnwrap();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
 
-    manager.shutdown();
+    await manager.shutdown();
 
     expect(processKill).toHaveBeenCalled();
     expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('cancelled');
     expect(existsSync('/tmp/talon-bg-test')).toBe(false);
   });
 
-  it('returns error when providerRegistry.getDefault returns undefined', () => {
+  it('returns error when providerRegistry.getDefault returns undefined', async () => {
     const manager = new BackgroundAgentManager({
       repository,
       queueManager,
@@ -375,7 +514,7 @@ describe('BackgroundAgentManager', () => {
       readProcessCommandLine: vi.fn().mockReturnValue(null),
     });
 
-    const result = manager.spawn(spawnInput);
+    const result = await manager.spawn(spawnInput);
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr()).toBeInstanceOf(BackgroundAgentError);
@@ -384,13 +523,13 @@ describe('BackgroundAgentManager', () => {
     expect(repository.findByThread('thread-1')._unsafeUnwrap()).toHaveLength(0);
   });
 
-  it('returns error when prepareBackgroundInvocation returns err', () => {
+  it('returns error when prepareBackgroundInvocation returns err', async () => {
     prepareBackgroundInvocation.mockReturnValueOnce(
       err(new BackgroundAgentError('invocation prep failed')),
     );
     const manager = createManager();
 
-    const result = manager.spawn(spawnInput);
+    const result = await manager.spawn(spawnInput);
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr()).toBeInstanceOf(BackgroundAgentError);
@@ -401,7 +540,7 @@ describe('BackgroundAgentManager', () => {
 
   it('marks task timed_out and enqueues notification when process times out', async () => {
     const manager = createManager();
-    const taskId = manager.spawn(spawnInput)._unsafeUnwrap();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
 
     completionResolve?.(
       ok({
@@ -430,7 +569,7 @@ describe('BackgroundAgentManager', () => {
 
   it('marks task failed and enqueues notification when process exits with non-zero code', async () => {
     const manager = createManager();
-    const taskId = manager.spawn(spawnInput)._unsafeUnwrap();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
 
     completionResolve?.(
       ok({
@@ -456,7 +595,7 @@ describe('BackgroundAgentManager', () => {
     );
   });
 
-  it('rejects spawn when maxConcurrent limit is exactly reached', () => {
+  it('rejects spawn when maxConcurrent limit is exactly reached', async () => {
     // Fill up to exactly the maxConcurrent limit (2)
     for (let i = 1; i <= 2; i++) {
       repository.create({
@@ -472,11 +611,13 @@ describe('BackgroundAgentManager', () => {
         error: null,
         pid: 1000 + i,
         timeoutMinutes: 30,
+        sandboxEnabled: false,
+        primaryExecutionEnvId: null,
       });
     }
 
     const manager = createManager();
-    const result = manager.spawn(spawnInput);
+    const result = await manager.spawn(spawnInput);
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr()).toBeInstanceOf(BackgroundAgentError);
@@ -545,10 +686,10 @@ describe('BackgroundAgentManager', () => {
     return { manager, observability, observation };
   }
 
-  it('starts a background agent observation span on spawn', () => {
+  it('starts a background agent observation span on spawn', async () => {
     const { manager, observability } = createManagerWithObservability();
 
-    manager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
+    await manager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
 
     expect(observability.startWithTraceparent).toHaveBeenCalledWith(
       '00-aaa-bbb-01',
@@ -566,7 +707,7 @@ describe('BackgroundAgentManager', () => {
     );
   });
 
-  it('passes traceparent from parent observation to prepareBackgroundInvocation', () => {
+  it('passes traceparent from parent observation to prepareBackgroundInvocation', async () => {
     const { manager } = createManagerWithObservability();
 
     // The mock observation returns 'child-traceparent-value' from getTraceparent
@@ -607,7 +748,7 @@ describe('BackgroundAgentManager', () => {
       observability: obs,
     });
 
-    freshManager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
+    await freshManager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
 
     expect(prepareBackgroundInvocation).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -618,7 +759,7 @@ describe('BackgroundAgentManager', () => {
 
   it('ends the observation span on task completion', async () => {
     const { manager, observation } = createManagerWithObservability();
-    manager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
+    await manager.spawn({ ...spawnInput, traceparent: '00-aaa-bbb-01' });
 
     completionResolve?.(
       ok({
@@ -634,17 +775,17 @@ describe('BackgroundAgentManager', () => {
     expect(observation.end).toHaveBeenCalled();
   });
 
-  it('works without observability service (backwards compatible)', () => {
+  it('works without observability service (backwards compatible)', async () => {
     // createManager() does not pass observability — it should spawn fine
     const manager = createManager();
 
-    const result = manager.spawn(spawnInput);
+    const result = await manager.spawn(spawnInput);
 
     expect(result.isOk()).toBe(true);
     expect(prepareBackgroundInvocation).toHaveBeenCalled();
   });
 
-  it('uses an explicit provider override, persists provider_name, and forwards env overrides', () => {
+  it('uses an explicit provider override, persists provider_name, and forwards env overrides', async () => {
     prepareBackgroundInvocation.mockReturnValueOnce(ok({
       command: 'gemini',
       args: ['--approval-mode', 'yolo', '--output-format', 'json', 'Refactor the auth module'],
@@ -658,7 +799,7 @@ describe('BackgroundAgentManager', () => {
     }));
     const manager = createManager();
 
-    const result = manager.spawn({
+    const result = await manager.spawn({
       ...spawnInput,
       provider: 'gemini-cli',
     });
@@ -669,9 +810,10 @@ describe('BackgroundAgentManager', () => {
     expect(processFactory).toHaveBeenCalledWith(
       expect.objectContaining({
         command: 'gemini',
-        env: {
+        env: expect.objectContaining({
           GEMINI_CLI_SYSTEM_SETTINGS_PATH: '/tmp/talon-bg-test/settings.json',
-        },
+          TALON_BACKGROUND_TASK_ID: expect.any(String),
+        }),
       }),
     );
   });
