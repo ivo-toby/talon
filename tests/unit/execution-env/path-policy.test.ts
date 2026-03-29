@@ -1,0 +1,54 @@
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, describe, expect, it } from 'vitest';
+import { resolveAllowedHostPath } from '../../../src/execution-env/path-policy.js';
+
+const tempRoots: string[] = [];
+
+afterEach(() => {
+  for (const root of tempRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe('resolveAllowedHostPath', () => {
+  it('resolves a relative path under the first allowed root', () => {
+    const result = resolveAllowedHostPath('artifacts/output.txt', ['/tmp/task-control']);
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toBe('/tmp/task-control/artifacts/output.txt');
+  });
+
+  it('accepts an absolute path inside an allowed root', () => {
+    const result = resolveAllowedHostPath(
+      '/tmp/task-control/artifacts/output.txt',
+      ['/tmp/task-control'],
+    );
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toBe('/tmp/task-control/artifacts/output.txt');
+  });
+
+  it('rejects a path outside the allowed roots', () => {
+    const result = resolveAllowedHostPath('/etc/passwd', ['/tmp/task-control']);
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('HOST_PATH_NOT_ALLOWED');
+  });
+
+  it('rejects when no allowed roots are configured', () => {
+    const result = resolveAllowedHostPath('artifact.txt', []);
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('HOST_PATH_NOT_ALLOWED');
+  });
+
+  it('rejects symlink escapes outside the allowed root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'path-policy-'));
+    tempRoots.push(root);
+
+    mkdirSync(join(root, 'safe'));
+    symlinkSync('/etc', join(root, 'safe', 'escape'));
+
+    const result = resolveAllowedHostPath(join(root, 'safe', 'escape', 'passwd'), [root]);
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('HOST_PATH_NOT_ALLOWED');
+  });
+});

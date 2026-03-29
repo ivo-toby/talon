@@ -22,6 +22,8 @@ export interface BackgroundTask {
   completedAt: number | null;
   timeoutMinutes: number;
   parentTraceparent: string | null;
+  sandboxEnabled: boolean;
+  primaryExecutionEnvId: string | null;
 }
 
 export interface BackgroundTaskResult {

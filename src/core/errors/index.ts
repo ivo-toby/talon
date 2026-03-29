@@ -28,6 +28,7 @@ export {
   SubAgentError,
   BackgroundAgentError,
   A2AError,
+  ExecutionEnvError,
 } from './error-types.js';
 
 export { ErrorCodes } from './error-codes.js';

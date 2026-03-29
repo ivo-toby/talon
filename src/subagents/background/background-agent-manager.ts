@@ -190,6 +190,8 @@ export class BackgroundAgentManager {
       pid: null,
       timeoutMinutes,
       parentTraceparent: input.traceparent ?? null,
+      sandboxEnabled: false,
+      primaryExecutionEnvId: null,
     });
 
     if (createResult.isErr()) {

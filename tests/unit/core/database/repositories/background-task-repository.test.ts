@@ -22,7 +22,9 @@ function createTestDb(): Database.Database {
       started_at      INTEGER NOT NULL,
       completed_at        INTEGER,
       timeout_minutes     INTEGER NOT NULL DEFAULT 30,
-      parent_traceparent  TEXT
+      parent_traceparent  TEXT,
+      sandbox_enabled     INTEGER NOT NULL DEFAULT 0,
+      primary_execution_env_id TEXT
     );
 
     CREATE INDEX idx_background_tasks_status ON background_tasks(status);
@@ -53,6 +55,8 @@ describe('BackgroundTaskRepository', () => {
     error: null,
     pid: null,
     timeoutMinutes: 30,
+    sandboxEnabled: false,
+    primaryExecutionEnvId: null,
   };
 
   it('creates a task with timestamps', () => {
@@ -66,6 +70,21 @@ describe('BackgroundTaskRepository', () => {
     expect(task.createdAt).toBeGreaterThan(0);
     expect(task.startedAt).toBeGreaterThan(0);
     expect(task.completedAt).toBeNull();
+    expect(task.sandboxEnabled).toBe(false);
+    expect(task.primaryExecutionEnvId).toBeNull();
+  });
+
+  it('persists sandbox metadata for a task', () => {
+    repo.create({
+      ...baseInput,
+      id: 'task-sandboxed',
+      sandboxEnabled: true,
+      primaryExecutionEnvId: 'env-123',
+    });
+
+    const task = repo.findById('task-sandboxed')._unsafeUnwrap();
+    expect(task?.sandboxEnabled).toBe(true);
+    expect(task?.primaryExecutionEnvId).toBe('env-123');
   });
 
   it('updates the pid for a running task', () => {

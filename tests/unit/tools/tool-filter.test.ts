@@ -124,16 +124,18 @@ describe('filterAllowedMcpTools', () => {
         'memory.access',
         'net.http',
         'db.query',
+        'execution.env',
         'subagent.invoke',
         'subagent.background',
       ],
       requireApproval: [],
     };
     const result = filterAllowedMcpTools(caps);
-    expect(result).toHaveLength(9);
+    expect(result).toHaveLength(10);
     expect(result).toContain('background_agent');
     expect(result).toContain('persona_send');
     expect(result).toContain('persona_list');
+    expect(result).toContain('execution_env');
   });
 
   it('maps persona.send capability to both persona_send and persona_list MCP tools', () => {
@@ -155,6 +157,15 @@ describe('filterAllowedMcpTools', () => {
 
     expect(filterAllowedMcpTools(caps)).toEqual(['background_agent']);
   });
+
+  it('maps execution.env capability to execution_env MCP tool', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['execution.env'],
+      requireApproval: [],
+    };
+
+    expect(filterAllowedMcpTools(caps)).toEqual(['execution_env']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -169,13 +180,14 @@ describe('filterAllowedTools', () => {
 
   it('returns dot-notation tool names', () => {
     const caps: ResolvedCapabilities = {
-      allow: ['channel.send:TalonMain', 'net.http'],
+      allow: ['channel.send:TalonMain', 'net.http', 'execution.env'],
       requireApproval: [],
     };
     const result = filterAllowedTools(caps);
     expect(result).toContain('channel.send');
     expect(result).toContain('net.http');
-    expect(result).toHaveLength(2);
+    expect(result).toContain('execution.env');
+    expect(result).toHaveLength(3);
   });
 });
 
@@ -196,6 +208,15 @@ describe('isToolAllowed', () => {
 
   it('returns true for requireApproval tool', () => {
     expect(isToolAllowed('db.query', caps)).toBe(true);
+  });
+
+  it('returns true for execution env tool when granted', () => {
+    const executionCaps: ResolvedCapabilities = {
+      allow: ['execution.env'],
+      requireApproval: [],
+    };
+
+    expect(isToolAllowed('execution.env', executionCaps)).toBe(true);
   });
 
   it('returns false for disallowed tool', () => {
@@ -220,8 +241,8 @@ describe('isToolAllowed', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all nine host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(9);
+  it('contains all ten host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(10);
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('persona.send');
@@ -229,6 +250,7 @@ describe('ALL_HOST_TOOLS', () => {
     expect(ALL_HOST_TOOLS).toContain('memory.access');
     expect(ALL_HOST_TOOLS).toContain('net.http');
     expect(ALL_HOST_TOOLS).toContain('db.query');
+    expect(ALL_HOST_TOOLS).toContain('execution.env');
     expect(ALL_HOST_TOOLS).toContain('subagent.invoke');
     expect(ALL_HOST_TOOLS).toContain('subagent.background');
   });

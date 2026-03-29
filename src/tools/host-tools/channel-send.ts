@@ -38,6 +38,9 @@ export interface ToolExecutionContext {
   a2aTaskId?: string;
   /** Hop depth of the current A2A task (0 for top-level). */
   a2aHopCount?: number;
+  backgroundTaskId?: string;
+  primaryExecutionEnvId?: string;
+  allowedHostRoots?: string[];
 }
 
 /**

@@ -141,6 +141,7 @@ describe('HostToolsBridge', () => {
               'memory.access',
               'net.http',
               'db.query',
+              'execution.env',
               'subagent.background',
             ],
             requireApproval: [],
@@ -173,6 +174,29 @@ describe('HostToolsBridge', () => {
         getTask: vi.fn().mockReturnValue(ok(null)),
         cancel: vi.fn().mockReturnValue(ok(false)),
         getResult: vi.fn().mockReturnValue(ok(null)),
+      } as any,
+      executionEnvManager: {
+        create: vi.fn().mockResolvedValue(ok({
+          id: 'env-1',
+          provider: 'sprites',
+          spriteId: 'sprite-1',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          ownerTaskId: null,
+          status: 'ready',
+          workingDirectory: '/workspace',
+          baseSnapshot: null,
+          autoDestroy: true,
+          resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+          metadata: null,
+          createdAt: 1,
+          updatedAt: 1,
+          destroyedAt: null,
+        })),
+        exec: vi.fn(),
+        upload: vi.fn(),
+        download: vi.fn(),
+        destroy: vi.fn().mockResolvedValue(ok(undefined)),
       } as any,
       contextAssembler: {
         assemble: vi.fn().mockReturnValue({
@@ -291,6 +315,31 @@ describe('HostToolsBridge', () => {
           channelName: 'telegram-main',
         }),
       );
+    });
+
+    it('dispatches execution_env destroy when the manager is present', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'execution_env',
+        args: {
+          action: 'destroy',
+          envId: 'env-1',
+        },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-001',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('success');
+      expect((response.result as any)?.result).toEqual({ destroyed: true, envId: 'env-1' });
+      expect((mockCtx.executionEnvManager as any).destroy).toHaveBeenCalledWith('env-1');
     });
 
     it('returns error for unknown tool', async () => {

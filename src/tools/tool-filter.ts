@@ -44,6 +44,7 @@ const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'memory.access', internalName: 'memory.access', mcpName: 'memory_access' },
   { capabilityPrefix: 'net.http', internalName: 'net.http', mcpName: 'net_http' },
   { capabilityPrefix: 'db.query', internalName: 'db.query', mcpName: 'db_query' },
+  { capabilityPrefix: 'execution.env', internalName: 'execution.env', mcpName: 'execution_env' },
   { capabilityPrefix: 'subagent.invoke', internalName: 'subagent.invoke', mcpName: 'subagent_invoke' },
   { capabilityPrefix: 'subagent.background', internalName: 'subagent.background', mcpName: 'background_agent' },
 ];
@@ -119,6 +120,13 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'db_query',
     labels: [
       { label: 'db.query:own', description: 'Query the database (read-only)' },
+    ],
+  },
+  {
+    toolPrefix: 'execution.env',
+    mcpName: 'execution_env',
+    labels: [
+      { label: 'execution.env', description: 'Manage isolated Sprite execution environments' },
     ],
   },
   {

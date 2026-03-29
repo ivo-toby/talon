@@ -25,6 +25,8 @@ interface BackgroundTaskRow {
   completed_at: number | null;
   timeout_minutes: number;
   parent_traceparent: string | null;
+  sandbox_enabled: number;
+  primary_execution_env_id: string | null;
 }
 
 function rowToTask(row: BackgroundTaskRow): BackgroundTask {
@@ -45,6 +47,8 @@ function rowToTask(row: BackgroundTaskRow): BackgroundTask {
     completedAt: row.completed_at,
     timeoutMinutes: row.timeout_minutes,
     parentTraceparent: row.parent_traceparent,
+    sandboxEnabled: row.sandbox_enabled === 1,
+    primaryExecutionEnvId: row.primary_execution_env_id,
   };
 }
 
@@ -63,9 +67,9 @@ export class BackgroundTaskRepository extends BaseRepository {
 
     this.insertStmt = db.prepare(`
       INSERT INTO background_tasks
-        (id, persona_id, provider_name, thread_id, channel_id, prompt, working_dir, status, output, error, pid, created_at, started_at, completed_at, timeout_minutes, parent_traceparent)
+        (id, persona_id, provider_name, thread_id, channel_id, prompt, working_dir, status, output, error, pid, created_at, started_at, completed_at, timeout_minutes, parent_traceparent, sandbox_enabled, primary_execution_env_id)
       VALUES
-        (@id, @persona_id, @provider_name, @thread_id, @channel_id, @prompt, @working_dir, @status, @output, @error, @pid, @created_at, @started_at, @completed_at, @timeout_minutes, @parent_traceparent)
+        (@id, @persona_id, @provider_name, @thread_id, @channel_id, @prompt, @working_dir, @status, @output, @error, @pid, @created_at, @started_at, @completed_at, @timeout_minutes, @parent_traceparent, @sandbox_enabled, @primary_execution_env_id)
     `);
 
     this.findByIdStmt = db.prepare(`SELECT * FROM background_tasks WHERE id = ?`);
@@ -123,6 +127,8 @@ export class BackgroundTaskRepository extends BaseRepository {
         completed_at: null,
         timeout_minutes: input.timeoutMinutes,
         parent_traceparent: input.parentTraceparent ?? null,
+        sandbox_enabled: input.sandboxEnabled ? 1 : 0,
+        primary_execution_env_id: input.primaryExecutionEnvId ?? null,
       };
 
       this.insertStmt.run(row);

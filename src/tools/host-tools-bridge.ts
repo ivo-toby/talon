@@ -22,6 +22,7 @@ import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
 import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-access.js';
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
 import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/background-agent.js';
+import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
 import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
@@ -59,6 +60,7 @@ export class HostToolsBridge {
   private memoryHandler: MemoryAccessHandler;
   private subagentHandler: SubAgentInvokeHandler | null = null;
   private backgroundAgentHandler: BackgroundAgentHandler | null = null;
+  private executionEnvHandler: ExecutionEnvHandler | null = null;
 
   constructor(private readonly ctx: DaemonContext) {
     this.socketPath = resolve(join(ctx.dataDir, 'host-tools.sock'));
@@ -136,6 +138,13 @@ export class HostToolsBridge {
         skillResolver: ctx.skillResolver,
         contextAssembler: ctx.contextAssembler,
         loadedSkills: ctx.loadedSkills,
+        logger: ctx.logger,
+      });
+    }
+
+    if (ctx.executionEnvManager) {
+      this.executionEnvHandler = new ExecutionEnvHandler({
+        executionEnvManager: ctx.executionEnvManager,
         logger: ctx.logger,
       });
     }
@@ -479,6 +488,17 @@ export class HostToolsBridge {
           args as unknown as BackgroundAgentArgs,
           context,
         );
+
+      case 'execution.env':
+        if (!this.executionEnvHandler) {
+          return {
+            requestId: context.requestId ?? 'unknown',
+            tool,
+            status: 'error',
+            error: 'Execution environment system not initialized',
+          };
+        }
+        return this.executionEnvHandler.execute(args as unknown as ExecutionEnvArgs, context);
 
       default:
         return {

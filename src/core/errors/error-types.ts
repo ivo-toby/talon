@@ -128,3 +128,8 @@ export class BackgroundAgentError extends TalonError {
 export class A2AError extends TalonError {
   readonly code = 'A2A_ERROR' as const;
 }
+
+/** Sprites-backed execution environment lifecycle or policy error. */
+export class ExecutionEnvError extends TalonError {
+  readonly code = 'EXECUTION_ENV_ERROR' as const;
+}

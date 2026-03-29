@@ -23,6 +23,7 @@ import {
   ChannelRepository,
   PersonaRepository,
   BackgroundTaskRepository,
+  ExecutionEnvRepository,
   ScheduleRepository,
   AuditRepository,
   MessageRepository,
@@ -50,6 +51,8 @@ import { SessionTracker } from '../sandbox/session-tracker.js';
 
 import { HostToolsBridge } from '../tools/host-tools-bridge.js';
 import { BackgroundAgentManager } from '../subagents/background/background-agent-manager.js';
+import { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
+import { SpritesClient } from '../execution-env/sprites-client.js';
 import { SubAgentLoader } from '../subagents/subagent-loader.js';
 import { SubAgentRunner } from '../subagents/subagent-runner.js';
 import { ModelResolver } from '../subagents/model-resolver.js';
@@ -130,6 +133,7 @@ export async function bootstrap(
     channel: new ChannelRepository(db),
     persona: new PersonaRepository(db),
     backgroundTask: new BackgroundTaskRepository(db),
+    executionEnv: new ExecutionEnvRepository(db),
     schedule: new ScheduleRepository(db),
     audit: new AuditRepository(db),
     message: new MessageRepository(db),
@@ -409,6 +413,21 @@ export async function bootstrap(
     backgroundAgentManager.recoverOrphanedTasks();
   }
 
+  let executionEnvManager: ExecutionEnvManager | null = null;
+  if (config.sprites.enabled) {
+    executionEnvManager = new ExecutionEnvManager({
+      repository: repos.executionEnv,
+      client: new SpritesClient(config.sprites),
+      defaultWorkingDirectory: config.sprites.workingDirectory,
+      defaultBaseSnapshot: config.sprites.defaultBaseSnapshot,
+      defaultAutoDestroy: config.sprites.autoDestroyOnCompletion,
+      defaultExecTimeoutMs: config.sprites.execTimeoutMs,
+      defaultResourceLimits: config.sprites.resourceLimits,
+      logger,
+    });
+    await executionEnvManager.recoverOrphanedEnvironments();
+  }
+
   // 14. Scheduler
   const scheduler = new Scheduler(repos.schedule, queueManager, personaLoader, config.scheduler, logger);
 
@@ -470,6 +489,7 @@ export async function bootstrap(
     subAgentRunner,
     providerRegistry,
     backgroundAgentManager,
+    executionEnvManager,
     contextRoller,
     contextAssembler,
     logger,

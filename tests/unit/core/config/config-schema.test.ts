@@ -4,9 +4,11 @@ import {
   LangfuseConfigSchema,
   StorageConfigSchema,
   SandboxConfigSchema,
+  ExecutionEnvResourceLimitsSchema,
   CapabilitiesSchema,
   MountConfigSchema,
   PersonaConfigSchema,
+  SpritesConfigSchema,
   ChannelConfigSchema,
   IpcConfigSchema,
   QueueConfigSchema,
@@ -245,6 +247,7 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.systemPromptFile).toBeUndefined();
       expect(result.data.queryTimeoutMinutes).toBe(10);
       expect(result.data.maxConcurrent).toBeUndefined();
+      expect(result.data.executionEnv).toBeUndefined();
     }
   });
 
@@ -259,6 +262,15 @@ describe('PersonaConfigSchema', () => {
       capabilities: { allow: ['read_file'], requireApproval: [] },
       mounts: [{ source: '/data', target: '/workspace', mode: 'rw' }],
       maxConcurrent: 2,
+      executionEnv: {
+        sandboxDefault: true,
+        baseSnapshot: 'node-22-bookworm',
+        workingDirectory: '/workspace',
+        resourceLimits: {
+          cpus: 4,
+          memoryMb: 8192,
+        },
+      },
     });
     expect(result.success).toBe(true);
     if (result.success) {
@@ -267,6 +279,16 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.queryTimeoutMinutes).toBe(45);
       expect(result.data.maxConcurrent).toBe(2);
       expect(result.data.mounts).toHaveLength(1);
+      expect(result.data.executionEnv).toEqual({
+        sandboxDefault: true,
+        baseSnapshot: 'node-22-bookworm',
+        workingDirectory: '/workspace',
+        resourceLimits: {
+          cpus: 4,
+          memoryMb: 8192,
+          diskGb: 20,
+        },
+      });
     }
   });
 
@@ -282,6 +304,30 @@ describe('PersonaConfigSchema', () => {
     expect(
       PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 481 }).success,
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ExecutionEnvResourceLimitsSchema
+// ---------------------------------------------------------------------------
+
+describe('ExecutionEnvResourceLimitsSchema', () => {
+  it('parses an empty object with defaults', () => {
+    const result = ExecutionEnvResourceLimitsSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({
+        cpus: 2,
+        memoryMb: 4096,
+        diskGb: 20,
+      });
+    }
+  });
+
+  it('rejects invalid limits', () => {
+    expect(ExecutionEnvResourceLimitsSchema.safeParse({ cpus: 0 }).success).toBe(false);
+    expect(ExecutionEnvResourceLimitsSchema.safeParse({ memoryMb: 128 }).success).toBe(false);
+    expect(ExecutionEnvResourceLimitsSchema.safeParse({ diskGb: 0 }).success).toBe(false);
   });
 });
 
@@ -496,6 +542,66 @@ describe('BackgroundAgentConfigSchema', () => {
   it('rejects maxConcurrent above 10', () => {
     const result = BackgroundAgentConfigSchema.safeParse({ maxConcurrent: 11 });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SpritesConfigSchema
+// ---------------------------------------------------------------------------
+
+describe('SpritesConfigSchema', () => {
+  it('parses an empty object with defaults', () => {
+    const result = SpritesConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({
+        enabled: false,
+        token: '',
+        apiBaseUrl: 'https://api.sprites.dev',
+        workingDirectory: '/workspace',
+        createTimeoutMs: 60_000,
+        execTimeoutMs: 20 * 60 * 1000,
+        autoDestroyOnCompletion: true,
+        resourceLimits: {
+          cpus: 2,
+          memoryMb: 4096,
+          diskGb: 20,
+        },
+      });
+      expect(result.data.defaultBaseSnapshot).toBeUndefined();
+    }
+  });
+
+  it('requires token when sprites are enabled', () => {
+    const result = SpritesConfigSchema.safeParse({
+      enabled: true,
+      token: '',
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a fully-specified sprites config', () => {
+    const result = SpritesConfigSchema.safeParse({
+      enabled: true,
+      token: 'sprites-token',
+      apiBaseUrl: 'https://sprites.internal',
+      defaultBaseSnapshot: 'node-22-bookworm',
+      workingDirectory: '/workspace/app',
+      createTimeoutMs: 75_000,
+      execTimeoutMs: 42_000,
+      autoDestroyOnCompletion: false,
+      resourceLimits: {
+        cpus: 4,
+        memoryMb: 8192,
+        diskGb: 40,
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.defaultBaseSnapshot).toBe('node-22-bookworm');
+      expect(result.data.resourceLimits.cpus).toBe(4);
+      expect(result.data.autoDestroyOnCompletion).toBe(false);
+    }
   });
 });
 
@@ -763,6 +869,20 @@ describe('TalondConfigSchema', () => {
           },
         },
       });
+      expect(result.data.sprites).toEqual({
+        enabled: false,
+        token: '',
+        apiBaseUrl: 'https://api.sprites.dev',
+        workingDirectory: '/workspace',
+        createTimeoutMs: 60_000,
+        execTimeoutMs: 20 * 60 * 1000,
+        autoDestroyOnCompletion: true,
+        resourceLimits: {
+          cpus: 2,
+          memoryMb: 4096,
+          diskGb: 20,
+        },
+      });
       expect(result.data.langfuse).toEqual({
         enabled: false,
         publicKey: '',
@@ -818,6 +938,17 @@ describe('TalondConfigSchema', () => {
           },
         },
       },
+      sprites: {
+        enabled: true,
+        token: 'sprites-token',
+        defaultBaseSnapshot: 'node-22-bookworm',
+        workingDirectory: '/workspace',
+        resourceLimits: {
+          cpus: 4,
+          memoryMb: 8192,
+          diskGb: 40,
+        },
+      },
       langfuse: {
         enabled: true,
         publicKey: 'pk-lf-prod',
@@ -836,6 +967,8 @@ describe('TalondConfigSchema', () => {
       expect(result.data.channels).toHaveLength(1);
       expect(result.data.personas).toHaveLength(1);
       expect(result.data.backgroundAgent.enabled).toBe(false);
+      expect(result.data.sprites.enabled).toBe(true);
+      expect(result.data.sprites.resourceLimits.diskGb).toBe(40);
       expect(result.data.langfuse.release).toBe('abcdef1234');
     }
   });
