@@ -7,7 +7,7 @@
 **Resilient, secure, extensible autonomous agent daemon.**
 
 [![Tests](https://img.shields.io/badge/tests-2135%20passing-brightgreen)](#testing)
-[![Node](https://img.shields.io/badge/node-%3E%3D22-blue)](https://nodejs.org)
+[![Node](https://img.shields.io/badge/node-%3E%3D24-blue)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-AGPL--3.0-green)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/typescript-strict-blue)](https://www.typescriptlang.org)
 
@@ -94,6 +94,7 @@ backgroundAgent:
 - **Host-tools MCP bridge** — 7 built-in tools (schedule, channel, memory, http, db, subagent, background agent) exposed via Unix socket
 - **Sub-agent system** — Route mechanical LLM tasks (summarization, memory grooming, search) to cheap models via pluggable sub-agents
 - **Background agents** — Launch long-running Claude Code workers for deep tasks without blocking the foreground conversation
+- **Sandboxed execution environments** — Isolate background agent work in persistent Firecracker VMs via [Sprites.dev](https://sprites.dev), with file transfer, checkpointing, and automatic cleanup
 - **Hot reload** — Change config, personas, and skills without restarting the daemon
 - **Systemd integration** — Watchdog heartbeat, graceful shutdown, timer-based wake-only mode
 - **Session persistence** — Agent sessions resume across messages in the same thread
@@ -206,7 +207,7 @@ For the full deployment walkthrough, see the [setup guide](docs/setup-guide.md).
 
 ### Prerequisites
 
-- **Node.js 22+**
+- **Node.js 24+**
 - **Claude Code** and/or **Gemini CLI** installed and authenticated
 - **SQLite** (ships with better-sqlite3, no separate install)
 
@@ -348,6 +349,7 @@ dataDir: data
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
+| `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
 | `logLevel` / `dataDir` | Runtime logging level and data root                                           |
 
 For the context-management strategies and migration details, see [docs/context-management.md](docs/context-management.md).
@@ -384,7 +386,9 @@ The lifecycle is durable:
 - completion, failure, timeout, and cancellation are recorded
 - the originating thread gets a normal completion message through the existing queue and channel-send path
 
-Background workers intentionally do **not** get Talon's own host-tools MCP server. They inherit the persona prompt and external MCP servers from assigned skills, but they cannot recursively spawn more background jobs or directly send messages from the detached process.
+Background workers get a filtered version of Talon's host-tools MCP server based on the persona's capabilities. The `background_agent` tool is always excluded to prevent recursive spawning. When `sandbox=true`, the worker also gets the `execution_env` tool for running commands, transferring files, and checkpointing inside an isolated Sprite VM.
+
+For sandboxed execution environments, see [Execution Environments (Sprites)](#execution-environments-sprites) below.
 
 #### Configuration
 
@@ -738,6 +742,7 @@ Tools are gated by scoped capability labels. Capabilities are listed in `allow` 
 | `db.query`               | Execute read-only database queries      |
 | `subagent.invoke`        | Invoke sub-agents for delegated tasks   |
 | `subagent.background`    | Launch and manage background workers    |
+| `execution.env`          | Manage sandboxed Sprite execution environments |
 
 ### Capability Resolution
 
@@ -1229,6 +1234,7 @@ Agents interact with the host through 5 MCP tools exposed over a Unix socket. Th
 | `net_http`        | Fetch external URLs                                                      |
 | `db_query`        | Read-only database queries                                               |
 | `subagent_invoke` | Invoke a sub-agent by name                                               |
+| `execution_env`   | Create, exec, upload, download, checkpoint, and restore Sprite VMs       |
 
 ### Capability System
 
@@ -1412,6 +1418,137 @@ The tool call uses `promptFile` in place of `prompt` — they are mutually exclu
 ```
 
 Prompt files are read on demand when the schedule fires, so edits to the file take effect on the next execution without restarting the daemon. The `talonctl add-persona` command scaffolds an empty `prompts/` directory alongside the `personality/` folder.
+
+---
+
+## Execution Environments (Sprites)
+
+Background agents can run their work inside isolated [Sprites.dev](https://sprites.dev) Firecracker VMs instead of on the host filesystem. A sandboxed agent gets a dedicated VM where it can install packages, build code, run tests, and start servers — without touching the host.
+
+### Why sandboxed execution
+
+Running agent work directly on the host has risks: a coding agent could accidentally delete files, install conflicting dependencies, or leave orphaned processes. Sprites VMs give each task a clean, isolated environment that is destroyed when the task completes.
+
+Concrete use cases:
+
+- **Code review with live testing** — the agent clones a PR branch into a Sprite, runs the test suite, and reports results without polluting the host with dependencies or build artifacts
+- **Dependency upgrades** — the agent installs updated packages inside a Sprite, runs the full build and test pipeline, and only downloads the updated lockfile if everything passes
+- **Multi-variant experiments** — checkpoint a Sprite after initial setup, then restore repeatedly to test different approaches from the same baseline
+- **Untrusted code execution** — run user-submitted code or scripts in a VM that cannot access the host network or filesystem
+
+### How it works
+
+When a foreground agent spawns a background worker with `sandbox=true`:
+
+1. Talon provisions a Sprite VM via the Sprites.dev API
+2. The source directory is uploaded into the VM
+3. The background worker runs with a per-task control directory as its `cwd` (not the host repo)
+4. The worker uses the `execution_env` tool to run commands, transfer files, and manage checkpoints inside the VM
+5. When the task completes (or fails, times out, or is cancelled), Talon destroys the VM automatically
+
+### Configuration
+
+Enable Sprites in `talond.yaml`:
+
+```yaml
+sprites:
+  enabled: true
+  token: ${SPRITES_TOKEN}
+  defaultBaseSnapshot: node-22-bookworm
+  workingDirectory: /workspace
+  createTimeoutMs: 60000
+  execTimeoutMs: 1200000     # 20 minutes
+  autoDestroyOnCompletion: true
+  resourceLimits:
+    cpus: 2
+    memoryMb: 4096
+    diskGb: 20
+```
+
+| Option                     | Default                    | Description                                                |
+| -------------------------- | -------------------------- | ---------------------------------------------------------- |
+| `enabled`                  | `false`                    | Enable Sprites integration                                 |
+| `token`                    | —                          | Sprites.dev API token (required when enabled)              |
+| `apiBaseUrl`               | `https://api.sprites.dev`  | API endpoint                                               |
+| `defaultBaseSnapshot`      | —                          | Default VM base image (e.g., `node-22-bookworm`)           |
+| `workingDirectory`         | `/workspace`               | Default working directory inside the VM                    |
+| `createTimeoutMs`          | `60000`                    | Timeout for VM creation                                    |
+| `execTimeoutMs`            | `1200000`                  | Default command execution timeout (20 min)                 |
+| `autoDestroyOnCompletion`  | `true`                     | Destroy VMs when the owning task finishes                  |
+| `resourceLimits.cpus`      | `2`                        | CPU cores allocated to each VM                             |
+| `resourceLimits.memoryMb`  | `4096`                     | RAM in MB                                                  |
+| `resourceLimits.diskGb`    | `20`                       | Disk in GB                                                 |
+
+### Persona setup
+
+The persona that spawns sandboxed background agents needs both `subagent.background` and `execution.env` capabilities. You can also set per-persona defaults for sandbox behavior:
+
+```yaml
+personas:
+  - name: software-engineer
+    model: claude-sonnet-4-6
+    capabilities:
+      allow:
+        - subagent.background
+        - execution.env
+        - channel.send:telegram
+    executionEnv:
+      sandboxDefault: true            # sandbox=true unless overridden
+      baseSnapshot: node-22-bookworm
+      workingDirectory: /workspace
+      resourceLimits:
+        cpus: 4
+        memoryMb: 8192
+```
+
+| Persona option             | Description                                                    |
+| -------------------------- | -------------------------------------------------------------- |
+| `executionEnv.sandboxDefault` | When `true`, `background_agent spawn` defaults to sandboxed |
+| `executionEnv.baseSnapshot`   | Override the global default base image for this persona      |
+| `executionEnv.workingDirectory` | Override the VM working directory                          |
+| `executionEnv.resourceLimits`   | Override CPU, memory, and disk limits                      |
+
+### The `execution_env` tool
+
+Background workers interact with their Sprite VM through the `execution_env` host tool. Available actions:
+
+| Action       | Purpose                                                      | Required args              |
+| ------------ | ------------------------------------------------------------ | -------------------------- |
+| `create`     | Provision a new VM (usually handled automatically on spawn)  | —                          |
+| `exec`       | Run a command inside the VM                                  | `envId`, `command`         |
+| `upload`     | Copy files from the host control directory into the VM       | `envId`, `sourcePath`, `destinationPath` |
+| `download`   | Copy files from the VM to the host control directory         | `envId`, `sourcePath`, `destinationPath` |
+| `checkpoint` | Snapshot the current VM state                                | `envId`                    |
+| `restore`    | Roll the VM back to a previous checkpoint                    | `envId`, `checkpointId`    |
+| `destroy`    | Tear down the VM                                             | `envId`                    |
+
+File transfers are restricted to the task's control directory on the host — the worker cannot read or write arbitrary host paths.
+
+### Checkpoint and restore
+
+Checkpoints let agents save and restore VM state. This is useful for iterative workflows where the agent wants to try something, check the result, and roll back if it didn't work:
+
+```
+1. Agent sets up the environment (install deps, build)
+2. Agent calls checkpoint → gets checkpoint ID
+3. Agent runs tests with configuration A
+4. Tests fail → agent calls restore with the checkpoint ID
+5. Agent tries configuration B from the same clean baseline
+```
+
+Restore is in-place: it resets the existing VM to the checkpoint state rather than creating a new VM. The original `envId` stays valid.
+
+### Lifecycle and cleanup
+
+Talon destroys the primary Sprite VM on every terminal path:
+
+- Normal task completion
+- Task failure or timeout
+- Explicit cancellation
+- Daemon shutdown
+- Orphan recovery on daemon restart
+
+If `autoDestroyOnCompletion` is `false`, the VM persists after task completion and must be destroyed manually via the `execution_env destroy` action.
 
 ---
 

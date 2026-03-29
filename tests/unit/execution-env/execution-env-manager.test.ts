@@ -269,6 +269,34 @@ describe('ExecutionEnvManager', () => {
     );
   });
 
+  it('rejects restore when the environment is not ready', async () => {
+    client.restore.mockResolvedValue(undefined);
+    const manager = createManager();
+    const env = (await manager.create({
+      threadId: 'thread-1',
+      personaId: 'persona-1',
+    }))._unsafeUnwrap();
+    repository.updateStatus(env.id, 'busy');
+
+    const checkpoint = checkpointRepository.create({
+      id: 'ckpt-1',
+      envId: env.id,
+      provider: 'sprites',
+      remoteRef: 'snap-1',
+      label: null,
+      status: 'ready',
+    })._unsafeUnwrap();
+
+    const restoreResult = await manager.restore({
+      envId: env.id,
+      checkpointId: checkpoint.id,
+    });
+
+    expect(restoreResult.isErr()).toBe(true);
+    expect(restoreResult._unsafeUnwrapErr().message).toContain('must be ready');
+    expect(client.restore).not.toHaveBeenCalled();
+  });
+
   it('destroys a created sprite if repository persistence fails', async () => {
     const failingRepository = {
       create: vi.fn().mockReturnValue(err(new DbError('insert failed'))),

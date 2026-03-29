@@ -273,6 +273,13 @@ export class ExecutionEnvManager {
           ),
         );
       }
+      if (env.value.status !== 'ready') {
+        return err(
+          new ExecutionEnvError(
+            `execution_env: [INVALID_ARGUMENT] env "${input.envId}" must be ready before restore; current status is "${env.value.status}"`,
+          ),
+        );
+      }
 
       this.deps.repository.updateStatus(input.envId, 'restoring');
       await this.deps.client.restore({
