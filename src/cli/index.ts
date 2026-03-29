@@ -45,6 +45,7 @@ import { setDefaultProviderCommand } from './commands/set-default-provider.js';
 import { testProviderCommand } from './commands/test-provider.js';
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 import { setCapabilitiesCommand } from './commands/set-capabilities.js';
+import { a2aListCommand, a2aSendCommand } from './commands/a2a.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -592,6 +593,44 @@ program
     await whatsappAuthCommand({
       authDir: opts.authDir,
       timeout,
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// A2A commands
+// ---------------------------------------------------------------------------
+
+const a2a = program
+  .command('a2a')
+  .description('Agent-to-agent task management (testing and monitoring)');
+
+a2a
+  .command('list')
+  .description('List A2A tasks with optional filters')
+  .option('--status <state>', 'Filter by task state (submitted, working, completed, failed, canceled)')
+  .option('--target <persona>', 'Filter by target persona name')
+  .option('--limit <n>', 'Maximum number of tasks to show', '20')
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .action(async (opts: { status?: string; target?: string; limit: string; config: string }) => {
+    await a2aListCommand({
+      configPath: opts.config,
+      status: opts.status,
+      target: opts.target,
+      limit: parseInt(opts.limit, 10),
+    });
+  });
+
+a2a
+  .command('send <target-persona> <message>')
+  .description('Submit a manual A2A task to a persona (for testing)')
+  .option('--source <persona>', 'Source persona name (defaults to "cli")', 'cli')
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .action(async (targetPersona: string, message: string, opts: { source: string; config: string }) => {
+    await a2aSendCommand({
+      configPath: opts.config,
+      targetPersona,
+      message,
+      sourcePersona: opts.source,
     });
   });
 

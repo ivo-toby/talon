@@ -33,9 +33,29 @@ export class A2ATaskRepository extends BaseRepository {
   private readonly markFailedStmt: Database.Statement;
   private readonly markCanceledStmt: Database.Statement;
   private readonly countActiveByTargetStmt: Database.Statement;
+  private readonly findAllStmt: Database.Statement;
+  private readonly findAllByStateStmt: Database.Statement;
+  private readonly findAllByTargetStmt: Database.Statement;
+  private readonly findAllByStateAndTargetStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
+
+    this.findAllStmt = db.prepare(`
+      SELECT * FROM a2a_tasks ORDER BY submitted_at DESC LIMIT ?
+    `);
+
+    this.findAllByStateStmt = db.prepare(`
+      SELECT * FROM a2a_tasks WHERE state = ? ORDER BY submitted_at DESC LIMIT ?
+    `);
+
+    this.findAllByTargetStmt = db.prepare(`
+      SELECT * FROM a2a_tasks WHERE target_persona = ? ORDER BY submitted_at DESC LIMIT ?
+    `);
+
+    this.findAllByStateAndTargetStmt = db.prepare(`
+      SELECT * FROM a2a_tasks WHERE state = ? AND target_persona = ? ORDER BY submitted_at DESC LIMIT ?
+    `);
 
     this.insertStmt = db.prepare(`
       INSERT INTO a2a_tasks
@@ -227,6 +247,38 @@ export class A2ATaskRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to find A2A task ${taskId}: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Returns a list of A2A tasks, optionally filtered by state and/or target persona.
+   *
+   * @param options.state - Filter by task lifecycle state.
+   * @param options.targetPersona - Filter by target persona name.
+   * @param options.limit - Max rows to return (default 20).
+   */
+  findAll(options?: { state?: string; targetPersona?: string; limit?: number }): Result<A2ATaskRow[], DbError> {
+    try {
+      const limit = options?.limit ?? 20;
+      const { state, targetPersona } = options ?? {};
+      let rows: A2ATaskRow[];
+      if (state && targetPersona) {
+        rows = this.findAllByStateAndTargetStmt.all(state, targetPersona, limit) as A2ATaskRow[];
+      } else if (state) {
+        rows = this.findAllByStateStmt.all(state, limit) as A2ATaskRow[];
+      } else if (targetPersona) {
+        rows = this.findAllByTargetStmt.all(targetPersona, limit) as A2ATaskRow[];
+      } else {
+        rows = this.findAllStmt.all(limit) as A2ATaskRow[];
+      }
+      return ok(rows);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to list A2A tasks: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );
