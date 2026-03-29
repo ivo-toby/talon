@@ -1,0 +1,17 @@
+name: spark-coder
+version: "0.1.0"
+description: "Fast code generation using gpt-5.4-spark — accepts context files and instructions, returns file operations"
+
+model:
+  provider: openai
+  name: gpt-5.4-spark
+  maxTokens: 16384
+
+requiredCapabilities: []
+
+requiresEnv:
+  - OPENAI_API_KEY
+
+rootPaths: []
+
+timeoutMs: 60000
