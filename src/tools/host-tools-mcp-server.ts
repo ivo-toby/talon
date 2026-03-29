@@ -40,6 +40,8 @@ interface BridgeRequest {
     personaId: string;
     requestId: string;
     traceparent?: string;
+    a2aTaskId?: string;
+    a2aHopCount?: number;
   };
 }
 
@@ -136,7 +138,7 @@ class SocketClient {
   async sendRequest(
     tool: string,
     args: Record<string, unknown>,
-    context: { runId: string; threadId: string; personaId: string; traceparent?: string },
+    context: { runId: string; threadId: string; personaId: string; traceparent?: string; a2aTaskId?: string; a2aHopCount?: number },
   ): Promise<BridgeResponse['result']> {
     if (!this.connected) {
       await this.connectedPromise;
@@ -153,6 +155,8 @@ class SocketClient {
         personaId: context.personaId,
         requestId: randomUUID(),
         ...(context.traceparent ? { traceparent: context.traceparent } : {}),
+        ...(context.a2aTaskId ? { a2aTaskId: context.a2aTaskId } : {}),
+        ...(context.a2aHopCount !== undefined ? { a2aHopCount: context.a2aHopCount } : {}),
       },
     };
 
@@ -436,6 +440,10 @@ async function main(): Promise<void> {
   const threadId = getEnvRequired('TALOND_THREAD_ID');
   const personaId = getEnvRequired('TALOND_PERSONA_ID');
   const traceparent = process.env.TALOND_TRACEPARENT;
+  const a2aTaskId = process.env.TALOND_A2A_TASK_ID;
+  const a2aHopCount = process.env.TALOND_A2A_HOP_COUNT !== undefined
+    ? parseInt(process.env.TALOND_A2A_HOP_COUNT, 10)
+    : undefined;
 
   // Determine which tools this persona may use. Only tools whose MCP names
   // appear in TALOND_ALLOWED_TOOLS are listed and callable.
@@ -513,6 +521,8 @@ async function main(): Promise<void> {
         threadId,
         personaId,
         traceparent,
+        ...(a2aTaskId ? { a2aTaskId } : {}),
+        ...(a2aHopCount !== undefined ? { a2aHopCount } : {}),
       });
 
       if (!result) {

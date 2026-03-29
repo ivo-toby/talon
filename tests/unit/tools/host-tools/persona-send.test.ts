@@ -146,7 +146,7 @@ describe('PersonaSendHandler — success', () => {
       targetPersona: 'researcher',
       sourceThreadId: 'thread-001',
       content: 'Investigate this task',
-      hopCount: 0,
+      hopCount: 1,
     });
     expect(taskRepo.findById).not.toHaveBeenCalled();
   });
@@ -190,6 +190,34 @@ describe('PersonaSendHandler — success', () => {
       result: 'Task complete',
     });
     expect(taskRepo.findById).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('PersonaSendHandler — hop count propagation', () => {
+  it('increments hop count from context.a2aHopCount when set', async () => {
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const personaRepo = makePersonaRepo();
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+
+    await handler.execute(makeArgs(), makeContext({ a2aHopCount: 0 }));
+
+    expect(taskMapper.submitTask).toHaveBeenCalledWith(
+      expect.objectContaining({ hopCount: 1 }),
+    );
+  });
+
+  it('passes parentTaskId when context.a2aTaskId is set', async () => {
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const personaRepo = makePersonaRepo();
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+
+    await handler.execute(makeArgs(), makeContext({ a2aTaskId: 'parent-task-456' }));
+
+    expect(taskMapper.submitTask).toHaveBeenCalledWith(
+      expect.objectContaining({ parentTaskId: 'parent-task-456' }),
+    );
   });
 });
 

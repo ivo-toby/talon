@@ -34,6 +34,10 @@ export interface ToolExecutionContext {
   personaId: string;
   requestId?: string;
   traceparent?: string;
+  /** Set when this run is executing an A2A task. Used for hop-count enforcement. */
+  a2aTaskId?: string;
+  /** Hop depth of the current A2A task (0 for top-level). */
+  a2aHopCount?: number;
 }
 
 /**

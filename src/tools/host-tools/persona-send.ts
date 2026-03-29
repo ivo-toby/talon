@@ -96,7 +96,8 @@ export class PersonaSendHandler {
       targetPersona: validatedArgs.value.target_persona,
       sourceThreadId: context.threadId,
       content: validatedArgs.value.message,
-      hopCount: 0,
+      hopCount: (context.a2aHopCount ?? 0) + 1,
+      ...(context.a2aTaskId ? { parentTaskId: context.a2aTaskId } : {}),
     });
 
     if (submitResult.isErr()) {
@@ -179,6 +180,9 @@ export class PersonaSendHandler {
       }
     }
 
+    // NOTE: We return a timeout result to the caller but do NOT cancel the
+    // background task — it continues executing and will complete/fail on its own.
+    // A future improvement could cancel it here via taskRepo.markCanceled(taskId).
     return ok({
       task_id: taskId,
       state: 'timeout',
