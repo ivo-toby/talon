@@ -63,31 +63,43 @@ export class QueueProcessor {
       return null;
     }
 
-    // Build a deduplicated list of thread IDs preserving FIFO order.
+    // Build a deduplicated list of thread IDs preserving FIFO order, and track
+    // the type of the oldest pending item per thread.
     // findPending orders by created_at ASC, so the first occurrence of each
     // thread ID corresponds to the oldest eligible item for that thread.
     const seenThreads = new Set<string>();
     const threadIds: string[] = [];
+    const oldestPendingTypeByThread = new Map<string, string>();
     for (const row of pending) {
       if (!seenThreads.has(row.thread_id)) {
         seenThreads.add(row.thread_id);
         threadIds.push(row.thread_id);
+        oldestPendingTypeByThread.set(row.thread_id, row.type);
       }
     }
 
     for (const threadId of threadIds) {
-      // Enforce the "no interleaved runs" invariant: skip threads that already
-      // have a claimed or processing item in flight.
-      const inflightResult = this.queueRepo.hasInflightItem(threadId);
-      if (inflightResult.isErr()) {
-        this.logger.error(
-          { err: inflightResult.error, threadId },
-          'processNext: failed to check inflight items',
-        );
-        continue;
-      }
-      if (inflightResult.value) {
-        continue;
+      // Collaboration items are dispatched to a different persona and may be
+      // submitted while the source thread's current run is in-flight (when a
+      // persona calls persona_send with await_reply: true and waits for the
+      // result). To prevent a deadlock, collaboration items bypass the
+      // per-thread single-inflight invariant.
+      const isCollaboration = oldestPendingTypeByThread.get(threadId) === 'collaboration';
+
+      if (!isCollaboration) {
+        // Enforce the "no interleaved runs" invariant: skip threads that already
+        // have a claimed or processing item in flight.
+        const inflightResult = this.queueRepo.hasInflightItem(threadId);
+        if (inflightResult.isErr()) {
+          this.logger.error(
+            { err: inflightResult.error, threadId },
+            'processNext: failed to check inflight items',
+          );
+          continue;
+        }
+        if (inflightResult.value) {
+          continue;
+        }
       }
 
       // Atomically claim the next item for this thread.
