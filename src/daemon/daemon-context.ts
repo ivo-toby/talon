@@ -18,6 +18,8 @@ import type {
   ChannelRepository,
   PersonaRepository,
   BackgroundTaskRepository,
+  ExecutionEnvRepository,
+  ExecutionEnvCheckpointRepository,
   ScheduleRepository,
   AuditRepository,
   MessageRepository,
@@ -39,6 +41,7 @@ import type { MessagePipeline } from '../pipeline/message-pipeline.js';
 import type { HostToolsBridge } from '../tools/host-tools-bridge.js';
 import type { SubAgentRunner } from '../subagents/subagent-runner.js';
 import type { BackgroundAgentManager } from '../subagents/background/background-agent-manager.js';
+import type { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import type { ProviderRegistry } from '../providers/provider-registry.js';
 import type { ContextRoller } from './context-roller.js';
 import type { ContextAssembler } from './context-assembler.js';
@@ -57,6 +60,8 @@ export interface DaemonRepos {
   readonly channel: ChannelRepository;
   readonly persona: PersonaRepository;
   readonly backgroundTask: BackgroundTaskRepository;
+  readonly executionEnv: ExecutionEnvRepository;
+  readonly executionEnvCheckpoint: ExecutionEnvCheckpointRepository;
   readonly schedule: ScheduleRepository;
   readonly audit: AuditRepository;
   readonly message: MessageRepository;
@@ -101,6 +106,7 @@ export interface DaemonContext {
   readonly providerRegistry: ProviderRegistry<AgentRunnerProviderConfig>;
   readonly subAgentRunner: SubAgentRunner | null;
   readonly backgroundAgentManager: BackgroundAgentManager | null;
+  readonly executionEnvManager: ExecutionEnvManager | null;
   readonly contextRoller: ContextRoller | null;
   readonly contextAssembler: ContextAssembler;
   readonly logger: pino.Logger;

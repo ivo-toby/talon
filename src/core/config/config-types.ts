@@ -11,9 +11,11 @@ import type {
   TalondConfigSchema,
   StorageConfigSchema,
   SandboxConfigSchema,
+  ExecutionEnvResourceLimitsSchema,
   CapabilitiesSchema,
   MountConfigSchema,
   PersonaConfigSchema,
+  SpritesConfigSchema,
   ChannelConfigSchema,
   BindingConfigSchema,
   IpcConfigSchema,
@@ -38,6 +40,9 @@ export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;
 /** Resource limits within the sandbox. */
 export type SandboxResourceLimits = SandboxConfig['resourceLimits'];
 
+/** Resource limits for Sprites execution environments. */
+export type ExecutionEnvResourceLimitsConfig = z.infer<typeof ExecutionEnvResourceLimitsSchema>;
+
 /** Per-persona capability grants and approval requirements. */
 export type CapabilitiesConfig = z.infer<typeof CapabilitiesSchema>;
 
@@ -46,6 +51,9 @@ export type MountConfig = z.infer<typeof MountConfigSchema>;
 
 /** Persona definition as declared in the config file. */
 export type PersonaConfig = z.infer<typeof PersonaConfigSchema>;
+
+/** Optional persona-level execution-environment defaults. */
+export type PersonaExecutionEnvConfig = PersonaConfig['executionEnv'];
 
 /** Channel integration definition. */
 export type ChannelConfig = z.infer<typeof ChannelConfigSchema>;
@@ -76,6 +84,9 @@ export type AgentRunnerConfig = z.infer<typeof AgentRunnerConfigSchema>;
 
 /** Background Claude Code worker settings. */
 export type BackgroundAgentConfig = z.infer<typeof BackgroundAgentConfigSchema>;
+
+/** Sprites provider settings. */
+export type SpritesConfig = z.infer<typeof SpritesConfigSchema>;
 
 /** Langfuse Cloud observability settings. */
 export type LangfuseConfig = z.infer<typeof LangfuseConfigSchema>;

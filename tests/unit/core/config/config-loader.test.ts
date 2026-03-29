@@ -641,6 +641,54 @@ personas:
 });
 
 // ---------------------------------------------------------------------------
+// sprites config
+// ---------------------------------------------------------------------------
+
+describe('sprites config', () => {
+  it('loads sprites config with env var substitution', () => {
+    process.env.SPRITES_TOKEN = 'resolved-sprites-token';
+    try {
+      const yaml = `
+sprites:
+  enabled: true
+  token: \${SPRITES_TOKEN}
+  defaultBaseSnapshot: node-22-bookworm
+  resourceLimits:
+    cpus: 4
+    memoryMb: 8192
+`;
+      const result = loadConfigFromString(yaml);
+      expect(result.isOk()).toBe(true);
+      if (result.isOk()) {
+        expect(result.value.sprites.enabled).toBe(true);
+        expect(result.value.sprites.token).toBe('resolved-sprites-token');
+        expect(result.value.sprites.defaultBaseSnapshot).toBe('node-22-bookworm');
+        expect(result.value.sprites.resourceLimits).toEqual({
+          cpus: 4,
+          memoryMb: 8192,
+          diskGb: 20,
+        });
+      }
+    } finally {
+      delete process.env.SPRITES_TOKEN;
+    }
+  });
+
+  it('rejects enabled sprites config without a token', () => {
+    const yaml = `
+sprites:
+  enabled: true
+  token: ""
+`;
+    const result = loadConfigFromString(yaml);
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.message).toMatch(/sprites\.token/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // validateConfig
 // ---------------------------------------------------------------------------
 

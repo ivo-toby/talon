@@ -40,6 +40,12 @@ export const SandboxConfigSchema = z.object({
   resourceLimits: ResourceLimitsSchema.default(() => ResourceLimitsSchema.parse({})),
 });
 
+export const ExecutionEnvResourceLimitsSchema = z.object({
+  cpus: z.number().min(0.25).default(2),
+  memoryMb: z.number().int().min(256).default(4096),
+  diskGb: z.number().int().min(1).default(20),
+});
+
 // ---------------------------------------------------------------------------
 // Capabilities
 // ---------------------------------------------------------------------------
@@ -63,6 +69,13 @@ export const MountConfigSchema = z.object({
 // Persona
 // ---------------------------------------------------------------------------
 
+const PersonaExecutionEnvSchema = z.object({
+  sandboxDefault: z.boolean().default(false),
+  baseSnapshot: z.string().optional(),
+  workingDirectory: z.string().default('/workspace'),
+  resourceLimits: ExecutionEnvResourceLimitsSchema.partial().default({}),
+});
+
 export const PersonaConfigSchema = z.object({
   name: z.string().min(1),
   model: z.string().default('claude-sonnet-4-6'),
@@ -78,6 +91,7 @@ export const PersonaConfigSchema = z.object({
   capabilities: CapabilitiesSchema.default(() => CapabilitiesSchema.parse({})),
   mounts: z.array(MountConfigSchema).default([]),
   maxConcurrent: z.number().int().min(1).optional(),
+  executionEnv: PersonaExecutionEnvSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -253,6 +267,34 @@ export const BackgroundAgentConfigSchema = z.object({
   claudePath: z.string().optional(),
 });
 
+export const SpritesConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    token: z.string().default(''),
+    apiBaseUrl: z.string().url().default('https://api.sprites.dev'),
+    defaultBaseSnapshot: z.string().optional(),
+    workingDirectory: z.string().default('/workspace'),
+    createTimeoutMs: z.number().int().min(1000).default(60_000),
+    execTimeoutMs: z.number().int().min(1000).default(20 * 60 * 1000),
+    autoDestroyOnCompletion: z.boolean().default(true),
+    resourceLimits: ExecutionEnvResourceLimitsSchema.default(() =>
+      ExecutionEnvResourceLimitsSchema.parse({}),
+    ),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.enabled) {
+      return;
+    }
+
+    if (value.token.trim().length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['token'],
+        message: 'token is required when sprites.enabled is true',
+      });
+    }
+  });
+
 // ---------------------------------------------------------------------------
 // Langfuse observability
 // ---------------------------------------------------------------------------
@@ -308,6 +350,7 @@ export const TalondConfigSchema = z.object({
   auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
   agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
   backgroundAgent: BackgroundAgentConfigSchema.default(() => BackgroundAgentConfigSchema.parse({})),
+  sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
   langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
   logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   dataDir: z.string().default('data'),

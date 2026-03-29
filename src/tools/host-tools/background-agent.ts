@@ -12,6 +12,8 @@ import type { LoadedSkill } from '../../skills/skill-types.js';
 import { buildPersonaRuntimeContext } from '../../personas/persona-runtime-context.js';
 import type { BackgroundTask } from '../../subagents/background/background-agent-types.js';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
+import { filterAllowedMcpTools } from '../tool-filter.js';
+import type { PersonaExecutionEnvConfig } from '../../core/config/config-types.js';
 
 const DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT = 10;
 
@@ -23,6 +25,7 @@ export interface BackgroundAgentArgs {
   profile?: string;
   workingDirectory?: string;
   timeoutMinutes?: number;
+  sandbox?: boolean;
 }
 
 interface BackgroundAgentHandlerDeps {
@@ -115,6 +118,10 @@ export class BackgroundAgentHandler {
       return this.errorResult(requestId, 'profile must be a non-empty string when provided');
     }
 
+    if (args.sandbox !== undefined && typeof args.sandbox !== 'boolean') {
+      return this.errorResult(requestId, 'sandbox must be a boolean when provided');
+    }
+
     const personaRowResult = this.deps.personaRepository.findById(context.personaId);
     if (personaRowResult.isErr() || !personaRowResult.value) {
       return this.errorResult(requestId, `Persona not found: ${context.personaId}`);
@@ -155,6 +162,14 @@ export class BackgroundAgentHandler {
     }
 
     const loadedPersona = loadedPersonaResult.value;
+    const workerPersonaRowResult = profileName
+      ? this.deps.personaRepository.findByName(targetPersonaName)
+      : personaRowResult;
+
+    if (workerPersonaRowResult.isErr() || !workerPersonaRowResult.value) {
+      return this.errorResult(requestId, `Worker persona not found: ${targetPersonaName}`);
+    }
+
     const personaSkills = this.deps.loadedSkills.filter((skill) =>
       loadedPersona.config.skills.includes(skill.manifest.name),
     );
@@ -193,6 +208,17 @@ export class BackgroundAgentHandler {
         ? loadedPersona.config.provider.trim()
         : undefined;
     const resolvedProvider = explicitProvider ?? personaProvider;
+    const allowedMcpTools = filterAllowedMcpTools(
+      loadedPersona.resolvedCapabilities ?? { allow: [], requireApproval: [] },
+    ).filter((toolName) => toolName !== 'background_agent');
+    const sandbox = args.sandbox ?? loadedPersona.config.executionEnv?.sandboxDefault ?? false;
+
+    if (sandbox && !allowedMcpTools.includes('execution_env')) {
+      return this.errorResult(
+        requestId,
+        `Profile "${targetPersonaName}" must allow execution.env when sandbox=true`,
+      );
+    }
 
     // Only forward the persona's model when no explicit provider override was given.
     // When the user passes an explicit provider, the persona's model name may be
@@ -201,16 +227,20 @@ export class BackgroundAgentHandler {
     // config itself (or daemon default), so the persona's model is expected to match.
     const shouldForwardModel = !explicitProvider && !!loadedPersona.config.model;
 
-    const spawnResult = this.deps.backgroundAgentManager.spawn({
+    const spawnResult = await this.deps.backgroundAgentManager.spawn({
       prompt: args.prompt,
       personaPrompt: runtimeContext.personaPrompt,
       threadContext: previousContext,
       mcpServers: runtimeContext.mcpServers,
       personaId: context.personaId,
+      workerPersonaId: workerPersonaRowResult.value.id,
       threadId: context.threadId,
       channelId: threadResult.value.channel_id,
       channelName: channelResult.value.name,
       provider: resolvedProvider,
+      allowedMcpTools,
+      sandbox,
+      executionEnvDefaults: loadedPersona.config.executionEnv as PersonaExecutionEnvConfig,
       ...(profileName ? { profileName } : {}),
       // Only pass the persona's model when the resolved provider matches the persona's
       // configured provider (or when the persona has no provider set). This prevents
@@ -280,7 +310,7 @@ export class BackgroundAgentHandler {
       return this.taskOwnershipError(args.taskId, ownership, requestId);
     }
 
-    const cancelResult = this.deps.backgroundAgentManager.cancel(ownership.task.id);
+    const cancelResult = await this.deps.backgroundAgentManager.cancel(ownership.task.id);
     if (cancelResult.isErr()) {
       return this.errorResult(requestId, cancelResult.error.message);
     }

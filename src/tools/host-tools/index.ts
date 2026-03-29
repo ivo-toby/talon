@@ -27,5 +27,8 @@ export { HttpProxyHandler } from './http-proxy.js';
 export type { DbQueryTool, DbQueryArgs } from './db-query.js';
 export { DbQueryHandler } from './db-query.js';
 
+export type { ExecutionEnvArgs } from './execution-env.js';
+export { ExecutionEnvHandler } from './execution-env.js';
+
 // Shared execution context type used by all handlers
 export type { ToolExecutionContext } from './channel-send.js';

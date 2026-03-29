@@ -184,7 +184,7 @@ export class TalondDaemon {
       this.ctx.sessionTracker.clearAll();
       this.ctx.queueManager.stopProcessing();
       this.ctx.hostToolsBridge.stop();
-      this.ctx.backgroundAgentManager?.shutdown();
+      await this.ctx.backgroundAgentManager?.shutdown();
       try {
         await this.ctx.observability.shutdown();
       } catch (cause) {

@@ -118,9 +118,9 @@ describe.skip('deploy/Dockerfile (talond)', () => {
     expect(stages[1]!.name).toBe('production');
   });
 
-  it('both stages use node:22-slim as base', () => {
-    expect(stages[0]!.base).toBe('node:22-slim');
-    expect(stages[1]!.base).toBe('node:22-slim');
+  it('both stages use node:24-slim as base', () => {
+    expect(stages[0]!.base).toBe('node:24-slim');
+    expect(stages[1]!.base).toBe('node:24-slim');
   });
 
   it('production stage copies from builder', () => {
@@ -195,8 +195,8 @@ describe.skip('deploy/Dockerfile.sandbox (agent sandbox)', () => {
     expect(stages).toHaveLength(1);
   });
 
-  it('uses node:22-slim as base', () => {
-    expect(stages[0]!.base).toBe('node:22-slim');
+  it('uses node:24-slim as base', () => {
+    expect(stages[0]!.base).toBe('node:24-slim');
   });
 
   it('creates a non-root agent user', () => {

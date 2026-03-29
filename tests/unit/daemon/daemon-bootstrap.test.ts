@@ -33,6 +33,8 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   ChannelRepository: vi.fn().mockImplementation(() => ({})),
   PersonaRepository: vi.fn().mockImplementation(() => ({})),
   BackgroundTaskRepository: vi.fn().mockImplementation(() => ({})),
+  ExecutionEnvRepository: vi.fn().mockImplementation(() => ({})),
+  ExecutionEnvCheckpointRepository: vi.fn().mockImplementation(() => ({})),
   ScheduleRepository: vi.fn().mockImplementation(() => ({})),
   AuditRepository: vi.fn().mockImplementation(() => ({})),
   MessageRepository: vi.fn().mockImplementation(() => ({})),
@@ -128,6 +130,16 @@ vi.mock('../../../src/subagents/background/background-agent-manager.js', () => (
   })),
 }));
 
+vi.mock('../../../src/execution-env/execution-env-manager.js', () => ({
+  ExecutionEnvManager: vi.fn().mockImplementation(() => ({
+    recoverOrphanedEnvironments: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
+
+vi.mock('../../../src/execution-env/sprites-client.js', () => ({
+  SpritesClient: vi.fn().mockImplementation(() => ({})),
+}));
+
 vi.mock('../../../src/daemon/lifecycle.js', () => ({
   recoverFromCrash: vi.fn(),
 }));
@@ -153,6 +165,7 @@ import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
 import { BackgroundTaskRepository } from '../../../src/core/database/repositories/index.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
+import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
 import { createDiscardLogger } from './helpers.js';
 import { createObservabilityService } from '../../../src/observability/langfuse/index.js';
 
@@ -230,6 +243,16 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
       providers: {
         'claude-code': makeBackgroundProviderConfig(),
       },
+    },
+    sprites: {
+      enabled: false,
+      token: '',
+      apiBaseUrl: 'https://api.sprites.dev',
+      workingDirectory: '/workspace',
+      createTimeoutMs: 60000,
+      execTimeoutMs: 1200000,
+      autoDestroyOnCompletion: true,
+      resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
     },
     langfuse: {
       enabled: false,
@@ -430,6 +453,8 @@ describe('bootstrap', () => {
       expect(ctx.repos.channel).toBeDefined();
       expect(ctx.repos.persona).toBeDefined();
       expect(ctx.repos.backgroundTask).toBeDefined();
+      expect(ctx.repos.executionEnv).toBeDefined();
+      expect(ctx.repos.executionEnvCheckpoint).toBeDefined();
       expect(ctx.repos.schedule).toBeDefined();
       expect(ctx.repos.audit).toBeDefined();
       expect(ctx.repos.message).toBeDefined();
@@ -520,6 +545,37 @@ describe('bootstrap', () => {
       expect(
         (vi.mocked(BackgroundAgentManager).mock.results[0]?.value as any).recoverOrphanedTasks,
       ).toHaveBeenCalledOnce();
+    });
+
+    it('wires ExecutionEnvManager when sprites are enabled', async () => {
+      setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(makeConfig({
+          sprites: {
+            enabled: true,
+            token: 'sprites-token',
+            apiBaseUrl: 'https://api.sprites.dev',
+            workingDirectory: '/workspace',
+            createTimeoutMs: 60000,
+            execTimeoutMs: 1200000,
+            autoDestroyOnCompletion: true,
+            resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+          },
+        }) as any),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().executionEnvManager).toBeDefined();
+      expect(ExecutionEnvManager).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repository: expect.anything(),
+          checkpointRepository: expect.anything(),
+          defaultWorkingDirectory: '/workspace',
+          defaultExecTimeoutMs: 1200000,
+        }),
+      );
     });
 
     it('registers gemini-cli when enabled in provider config', async () => {

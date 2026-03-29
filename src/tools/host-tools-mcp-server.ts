@@ -42,6 +42,9 @@ interface BridgeRequest {
     traceparent?: string;
     a2aTaskId?: string;
     a2aHopCount?: number;
+    backgroundTaskId?: string;
+    primaryExecutionEnvId?: string;
+    allowedHostRoots?: string[];
   };
 }
 
@@ -138,7 +141,17 @@ class SocketClient {
   async sendRequest(
     tool: string,
     args: Record<string, unknown>,
-    context: { runId: string; threadId: string; personaId: string; traceparent?: string; a2aTaskId?: string; a2aHopCount?: number },
+    context: {
+      runId: string;
+      threadId: string;
+      personaId: string;
+      traceparent?: string;
+      a2aTaskId?: string;
+      a2aHopCount?: number;
+      backgroundTaskId?: string;
+      primaryExecutionEnvId?: string;
+      allowedHostRoots?: string[];
+    },
   ): Promise<BridgeResponse['result']> {
     if (!this.connected) {
       await this.connectedPromise;
@@ -157,6 +170,9 @@ class SocketClient {
         ...(context.traceparent ? { traceparent: context.traceparent } : {}),
         ...(context.a2aTaskId ? { a2aTaskId: context.a2aTaskId } : {}),
         ...(context.a2aHopCount !== undefined ? { a2aHopCount: context.a2aHopCount } : {}),
+        ...(context.backgroundTaskId ? { backgroundTaskId: context.backgroundTaskId } : {}),
+        ...(context.primaryExecutionEnvId ? { primaryExecutionEnvId: context.primaryExecutionEnvId } : {}),
+        ...(context.allowedHostRoots ? { allowedHostRoots: context.allowedHostRoots } : {}),
       },
     };
 
@@ -349,6 +365,100 @@ const TOOLS = [
     },
   },
   {
+    name: 'execution_env',
+    description: 'Manage isolated Sprite execution environments. Before risky commands or repeated test runs, create a checkpoint so you can restore the same env to a clean baseline.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        action: {
+          type: 'string' as const,
+          enum: ['create', 'exec', 'upload', 'download', 'checkpoint', 'restore', 'destroy'],
+          description: 'Operation to perform on an execution environment. Use checkpoint before risky changes, then restore to roll the same env back to that checkpoint.',
+        },
+        envId: {
+          type: 'string' as const,
+          description: 'Execution environment identifier.',
+        },
+        checkpointId: {
+          type: 'string' as const,
+          description: 'Checkpoint identifier for restore operations on the same env.',
+        },
+        label: {
+          type: 'string' as const,
+          description: 'Optional label for checkpoint creation, such as "baseline-before-tests".',
+        },
+        command: {
+          type: 'string' as const,
+          description: 'Command to execute inside the environment.',
+        },
+        cwd: {
+          type: 'string' as const,
+          description: 'Optional working directory for command execution.',
+        },
+        timeoutMs: {
+          type: 'number' as const,
+          description: 'Optional command timeout in milliseconds.',
+        },
+        detach: {
+          type: 'boolean' as const,
+          description: 'Whether to start the process in detached mode.',
+        },
+        env: {
+          type: 'object' as const,
+          description: 'Optional environment variables for command execution.',
+        },
+        sourcePath: {
+          type: 'string' as const,
+          description: 'Host or remote source path for transfer operations.',
+        },
+        destinationPath: {
+          type: 'string' as const,
+          description: 'Host or remote destination path for transfer operations.',
+        },
+        recursive: {
+          type: 'boolean' as const,
+          description: 'Whether upload should recurse into directories.',
+        },
+        overwrite: {
+          type: 'boolean' as const,
+          description: 'Whether download may overwrite an existing file.',
+        },
+        baseSnapshot: {
+          type: 'string' as const,
+          description: 'Optional base snapshot for create.',
+        },
+        workingDirectory: {
+          type: 'string' as const,
+          description: 'Optional working directory for create.',
+        },
+        autoDestroy: {
+          type: 'boolean' as const,
+          description: 'Whether the created environment should be auto-destroyed.',
+        },
+        sandboxProfile: {
+          type: 'string' as const,
+          description: 'Optional sandbox profile for future environment selection.',
+        },
+        resourceLimits: {
+          type: 'object' as const,
+          properties: {
+            cpus: {
+              type: 'number' as const,
+            },
+            memoryMb: {
+              type: 'number' as const,
+            },
+            diskGb: {
+              type: 'number' as const,
+            },
+          },
+          description: 'Optional CPU, memory, and disk overrides for create.',
+        },
+      },
+      required: ['action'],
+    },
+  },
+  {
     name: 'subagent_invoke',
     description: 'Delegate a task to a specialized sub-agent that runs a cheap, fast model',
     inputSchema: {
@@ -439,6 +549,22 @@ function parseAllowedTools(): Set<string> {
   return new Set(names);
 }
 
+function parseOptionalJsonStringArray(raw: string | undefined): string[] | undefined {
+  if (!raw) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      return undefined;
+    }
+    return parsed.filter((value): value is string => typeof value === 'string');
+  } catch {
+    return undefined;
+  }
+}
+
 async function main(): Promise<void> {
   const socketPath = getEnvRequired('TALOND_SOCKET');
   const runId = getEnvRequired('TALOND_RUN_ID');
@@ -453,6 +579,9 @@ async function main(): Promise<void> {
     typeof parsedA2aHopCount === 'number' && Number.isFinite(parsedA2aHopCount)
       ? parsedA2aHopCount
       : undefined;
+  const backgroundTaskId = process.env.TALOND_BACKGROUND_TASK_ID;
+  const primaryExecutionEnvId = process.env.TALOND_PRIMARY_EXECUTION_ENV_ID;
+  const allowedHostRoots = parseOptionalJsonStringArray(process.env.TALOND_ALLOWED_HOST_ROOTS);
 
   // Determine which tools this persona may use. Only tools whose MCP names
   // appear in TALOND_ALLOWED_TOOLS are listed and callable.
@@ -532,6 +661,9 @@ async function main(): Promise<void> {
         traceparent,
         ...(a2aTaskId ? { a2aTaskId } : {}),
         ...(a2aHopCount !== undefined ? { a2aHopCount } : {}),
+        ...(backgroundTaskId ? { backgroundTaskId } : {}),
+        ...(primaryExecutionEnvId ? { primaryExecutionEnvId } : {}),
+        ...(allowedHostRoots ? { allowedHostRoots } : {}),
       });
 
       if (!result) {

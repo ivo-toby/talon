@@ -76,17 +76,17 @@ describe('checkNodeVersion()', () => {
     expect(result.message).toContain(process.version);
   });
 
-  it('passes when Node version is >= 22', () => {
+  it('passes when Node version is >= 24', () => {
     const original = process.version;
-    Object.defineProperty(process, 'version', { value: 'v22.0.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v24.0.0', configurable: true });
     const result = checkNodeVersion();
     expect(result.status).toBe('passed');
     Object.defineProperty(process, 'version', { value: original, configurable: true });
   });
 
-  it('fails when Node version is < 22', () => {
+  it('fails when Node version is < 24', () => {
     const original = process.version;
-    Object.defineProperty(process, 'version', { value: 'v18.12.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v22.12.0', configurable: true });
     const result = checkNodeVersion();
     expect(result.status).toBe('failed');
     expect(result.hint).toBeDefined();
@@ -96,7 +96,7 @@ describe('checkNodeVersion()', () => {
 
   it('has no hint on success', () => {
     const original = process.version;
-    Object.defineProperty(process, 'version', { value: 'v23.0.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v24.0.0', configurable: true });
     const result = checkNodeVersion();
     expect(result.hint).toBeUndefined();
     Object.defineProperty(process, 'version', { value: original, configurable: true });

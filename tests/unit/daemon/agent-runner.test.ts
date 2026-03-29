@@ -1685,6 +1685,17 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('injects the workspace root into the host-tools MCP env', async () => {
+      await runner.run(makeQueueItem());
+
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any> };
+      };
+      expect(queryCall.options.mcpServers.__talond_host_tools.env.TALOND_ALLOWED_HOST_ROOTS).toBe(
+        '["/tmp/test-data/workspaces/thread-001"]',
+      );
+    });
+
     it('injects an in-process skill_load MCP server for SDK providers', async () => {
       vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
         config: {
