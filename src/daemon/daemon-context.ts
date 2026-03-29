@@ -73,8 +73,12 @@ export interface DaemonRepos {
 /**
  * Immutable runtime context populated during bootstrap.
  *
- * Every field is guaranteed non-null. If bootstrap fails, no context
+ * Most fields are guaranteed non-null. If bootstrap fails, no context
  * is created — the daemon never enters 'running' state.
+ *
+ * Exceptions: `a2aServer` and `a2aTaskMapper` are nullable — they are only
+ * populated when the A2A feature is enabled in config. Callers must null-check
+ * these fields before use.
  */
 export interface DaemonContext {
   readonly db: Database.Database;

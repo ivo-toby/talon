@@ -441,9 +441,13 @@ async function main(): Promise<void> {
   const personaId = getEnvRequired('TALOND_PERSONA_ID');
   const traceparent = process.env.TALOND_TRACEPARENT;
   const a2aTaskId = process.env.TALOND_A2A_TASK_ID;
-  const a2aHopCount = process.env.TALOND_A2A_HOP_COUNT !== undefined
-    ? parseInt(process.env.TALOND_A2A_HOP_COUNT, 10)
-    : undefined;
+  const rawA2aHopCount = process.env.TALOND_A2A_HOP_COUNT;
+  const parsedA2aHopCount =
+    rawA2aHopCount !== undefined ? Number.parseInt(rawA2aHopCount, 10) : undefined;
+  const a2aHopCount =
+    typeof parsedA2aHopCount === 'number' && Number.isFinite(parsedA2aHopCount)
+      ? parsedA2aHopCount
+      : undefined;
 
   // Determine which tools this persona may use. Only tools whose MCP names
   // appear in TALOND_ALLOWED_TOOLS are listed and callable.

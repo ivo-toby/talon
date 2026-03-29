@@ -134,6 +134,10 @@ export class PersonaSendHandler {
       return err(new ToolError('persona.send: message is required and must be a non-empty string'));
     }
 
+    if (args.await_reply !== undefined && typeof args.await_reply !== 'boolean') {
+      return err(new ToolError('persona.send: await_reply must be a boolean'));
+    }
+
     return ok({
       target_persona: args.target_persona.trim(),
       message: args.message.trim(),
@@ -161,9 +165,7 @@ export class PersonaSendHandler {
     const pollIntervalMs = this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + maxWaitMs;
 
-    while (Date.now() < deadline) {
-      await sleep(pollIntervalMs);
-
+    while (true) {
       const rowResult = this.deps.taskRepo.findById(taskId);
       if (rowResult.isErr()) {
         return err(new ToolError(`persona.send: failed to load task ${taskId}: ${rowResult.error.message}`));
@@ -178,11 +180,17 @@ export class PersonaSendHandler {
       if (TERMINAL_STATES.has(rowResult.value.state)) {
         return ok(this.toOutput(rowResult.value));
       }
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        break;
+      }
+
+      await sleep(Math.min(pollIntervalMs, remaining));
     }
 
-    // NOTE: We return a timeout result to the caller but do NOT cancel the
-    // background task — it continues executing and will complete/fail on its own.
-    // A future improvement could cancel it here via taskRepo.markCanceled(taskId).
+    // TODO: cancel the in-flight task when polling times out to avoid orphaned A2A runs.
+    // Requires a task cancellation API in A2ATaskMapper.
     return ok({
       task_id: taskId,
       state: 'timeout',
