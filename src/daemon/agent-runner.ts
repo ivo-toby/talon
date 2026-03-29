@@ -17,8 +17,8 @@ import type {
 } from '../providers/provider-types.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
 
-/** Default maximum time (ms) an Agent SDK query may run before being aborted. */
-const DEFAULT_QUERY_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes
+/** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
+const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 class AgentQueryAttemptError extends Error {
   constructor(
@@ -84,6 +84,10 @@ export class AgentRunner {
       return err(new Error(`loaded persona not found for ${personaName}`));
     }
     const loadedPersona = loadedPersonaResult.value;
+    const queryTimeoutMs =
+      loadedPersona.config.queryTimeoutMinutes !== undefined
+        ? loadedPersona.config.queryTimeoutMinutes * 60 * 1000
+        : this.queryTimeoutMs;
 
     const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(item.threadId);
     const affinityProviderName =
@@ -537,7 +541,7 @@ export class AgentRunner {
                     cwd: workspaceResult.value,
                     model,
                     maxTurns: 25,
-                    timeoutMs: this.queryTimeoutMs,
+                    timeoutMs: queryTimeoutMs,
                     ...(strategy.type === 'sdk' && resumeSessionId
                       ? { sessionId: resumeSessionId }
                       : {}),
@@ -663,8 +667,8 @@ export class AgentRunner {
                   let timeoutId: ReturnType<typeof setTimeout>;
                   const timeoutPromise = new Promise<never>((_, reject) => {
                     timeoutId = setTimeout(
-                      () => reject(new Error(`agent-sdk query timed out after ${this.queryTimeoutMs / 1000}s`)),
-                      this.queryTimeoutMs,
+                      () => reject(new Error(`Agent query timed out after ${queryTimeoutMs / 1000}s`)),
+                      queryTimeoutMs,
                     );
                   });
 

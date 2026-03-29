@@ -270,6 +270,23 @@ async function* makeAgentStream(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function* makeProviderStream(overrides: Record<string, unknown> = {}) {
+  yield {
+    type: 'text' as const,
+    content: 'Hello from the agent!',
+  };
+  yield {
+    type: 'result' as const,
+    result: {
+      output: 'Hello from the agent!',
+      sessionId: 'session-abc-123',
+      usage: { inputTokens: 100, outputTokens: 50 },
+      isError: false,
+      ...overrides,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1304,6 +1321,95 @@ describe('AgentRunner', () => {
       const result = await runner.run(item);
 
       expect(result.isOk()).toBe(true);
+    });
+
+    it('uses the 10 minute default timeout for queries', async () => {
+      const runSpy = vi.fn(() => makeProviderStream());
+      ctx.config.agentRunner.defaultProvider = 'timeout-sdk';
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'timeout-sdk',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              run: runSpy,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 0,
+              metrics: {
+                input_tokens: 0,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'timeout-sdk',
+            contextWindowTokens: 1000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+            }),
+          }),
+        }),
+      } as any;
+
+      await runner.run(makeQueueItem());
+
+      const queryCall = runSpy.mock.calls[0]![0] as { timeoutMs: number };
+
+      expect(queryCall.timeoutMs).toBe(10 * 60 * 1000);
+    });
+
+    it('uses the persona queryTimeoutMinutes override when provided', async () => {
+      const runSpy = vi.fn(() => makeProviderStream());
+      ctx.config.agentRunner.defaultProvider = 'timeout-sdk';
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'timeout-sdk',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              run: runSpy,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 0,
+              metrics: {
+                input_tokens: 0,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'timeout-sdk',
+            contextWindowTokens: 1000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+            }),
+          }),
+        }),
+      } as any;
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'claude-sonnet-4-20250514',
+          skills: [],
+          capabilities: { allow: [] },
+          queryTimeoutMinutes: 45,
+        },
+        systemPromptContent: 'You are a test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      }));
+
+      await runner.run(makeQueueItem());
+
+      const queryCall = runSpy.mock.calls[0]![0] as { timeoutMs: number };
+
+      expect(queryCall.timeoutMs).toBe(45 * 60 * 1000);
     });
 
     it('calls return() on the active iterator when timeout fires on a slow-resolving stream', async () => {

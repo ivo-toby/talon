@@ -68,6 +68,11 @@ export const PersonaConfigSchema = z.object({
   model: z.string().default('claude-sonnet-4-6'),
   provider: z.string().trim().min(1).optional(),
   systemPromptFile: z.string().optional(),
+  /**
+   * Maximum time in minutes the agent runner will wait for a single query to complete.
+   * Increase for personas that run long Codex tasks or deep research. Defaults to 10.
+   */
+  queryTimeoutMinutes: z.number().int().min(1).max(480).default(10),
   skills: z.array(z.string()).default([]),
   subagents: z.array(z.string()).default([]),
   capabilities: CapabilitiesSchema.default(() => CapabilitiesSchema.parse({})),
