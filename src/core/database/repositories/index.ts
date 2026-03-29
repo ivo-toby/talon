@@ -64,3 +64,4 @@ export { BackgroundTaskRepository } from './background-task-repository.js';
 export type { InsertA2ATaskInput } from './a2a-task-repository.js';
 export { A2ATaskRepository } from './a2a-task-repository.js';
 export { ExecutionEnvRepository } from './execution-env-repository.js';
+export { ExecutionEnvCheckpointRepository } from './execution-env-checkpoint-repository.js';

@@ -34,6 +34,7 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   PersonaRepository: vi.fn().mockImplementation(() => ({})),
   BackgroundTaskRepository: vi.fn().mockImplementation(() => ({})),
   ExecutionEnvRepository: vi.fn().mockImplementation(() => ({})),
+  ExecutionEnvCheckpointRepository: vi.fn().mockImplementation(() => ({})),
   ScheduleRepository: vi.fn().mockImplementation(() => ({})),
   AuditRepository: vi.fn().mockImplementation(() => ({})),
   MessageRepository: vi.fn().mockImplementation(() => ({})),
@@ -452,6 +453,8 @@ describe('bootstrap', () => {
       expect(ctx.repos.channel).toBeDefined();
       expect(ctx.repos.persona).toBeDefined();
       expect(ctx.repos.backgroundTask).toBeDefined();
+      expect(ctx.repos.executionEnv).toBeDefined();
+      expect(ctx.repos.executionEnvCheckpoint).toBeDefined();
       expect(ctx.repos.schedule).toBeDefined();
       expect(ctx.repos.audit).toBeDefined();
       expect(ctx.repos.message).toBeDefined();

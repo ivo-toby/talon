@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { err } from 'neverthrow';
+import { ExecutionEnvCheckpointRepository } from '../../../src/core/database/repositories/execution-env-checkpoint-repository.js';
 import { ExecutionEnvRepository } from '../../../src/core/database/repositories/execution-env-repository.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
 import { DbError } from '../../../src/core/errors/index.js';
@@ -33,6 +34,20 @@ function createTestDb(): Database.Database {
       ON execution_environments(thread_id, created_at DESC);
     CREATE INDEX idx_execution_env_owner_task
       ON execution_environments(owner_task_id);
+
+    CREATE TABLE execution_env_checkpoints (
+      id          TEXT PRIMARY KEY,
+      env_id      TEXT NOT NULL,
+      provider    TEXT NOT NULL DEFAULT 'sprites',
+      remote_ref  TEXT NOT NULL,
+      label       TEXT,
+      status      TEXT NOT NULL
+                  CHECK (status IN ('creating', 'ready', 'failed')),
+      created_at  INTEGER NOT NULL
+    );
+
+    CREATE INDEX idx_execution_env_checkpoints_env_created
+      ON execution_env_checkpoints(env_id, created_at DESC);
   `);
   return db;
 }
@@ -49,6 +64,7 @@ function makeLogger() {
 
 describe('ExecutionEnvManager', () => {
   let repository: ExecutionEnvRepository;
+  let checkpointRepository: ExecutionEnvCheckpointRepository;
   let client: {
     create: ReturnType<typeof vi.fn>;
     exec: ReturnType<typeof vi.fn>;
@@ -60,7 +76,9 @@ describe('ExecutionEnvManager', () => {
   };
 
   beforeEach(() => {
-    repository = new ExecutionEnvRepository(createTestDb());
+    const db = createTestDb();
+    repository = new ExecutionEnvRepository(db);
+    checkpointRepository = new ExecutionEnvCheckpointRepository(db);
     client = {
       create: vi.fn().mockResolvedValue({ spriteId: 'sprite-123' }),
       exec: vi.fn().mockResolvedValue({
@@ -80,6 +98,7 @@ describe('ExecutionEnvManager', () => {
   function createManager() {
     return new ExecutionEnvManager({
       repository,
+      checkpointRepository,
       client,
       defaultWorkingDirectory: '/workspace',
       defaultExecTimeoutMs: 45_000,
@@ -207,6 +226,8 @@ describe('ExecutionEnvManager', () => {
   });
 
   it('exposes checkpoint and restore actions with not-yet-implemented errors', async () => {
+    client.checkpoint.mockResolvedValue({ remoteRef: 'snap-1' });
+    client.restore.mockResolvedValue({ spriteId: 'sprite-restored' });
     const manager = createManager();
     const env = (await manager.create({
       threadId: 'thread-1',
@@ -217,14 +238,32 @@ describe('ExecutionEnvManager', () => {
       envId: env.id,
       label: 'post-install',
     });
-    expect(checkpointResult.isErr()).toBe(true);
-    expect(checkpointResult._unsafeUnwrapErr().message).toContain('SPRITES_CHECKPOINT_FAILED');
+    expect(checkpointResult.isOk()).toBe(true);
+    expect(checkpointResult._unsafeUnwrap()).toEqual(
+      expect.objectContaining({
+        envId: env.id,
+        remoteRef: 'snap-1',
+        label: 'post-install',
+        status: 'ready',
+      }),
+    );
 
     const restoreResult = await manager.restore({
-      checkpointId: 'ckpt-1',
+      checkpointId: checkpointResult._unsafeUnwrap().id,
     });
-    expect(restoreResult.isErr()).toBe(true);
-    expect(restoreResult._unsafeUnwrapErr().message).toContain('SPRITES_RESTORE_FAILED');
+    expect(restoreResult.isOk()).toBe(true);
+    expect(restoreResult._unsafeUnwrap()).toEqual(
+      expect.objectContaining({
+        spriteId: 'sprite-restored',
+        baseSnapshot: 'snap-1',
+        status: 'ready',
+      }),
+    );
+    expect(client.restore).toHaveBeenCalledWith(
+      expect.objectContaining({
+        remoteRef: 'snap-1',
+      }),
+    );
   });
 
   it('destroys a created sprite if repository persistence fails', async () => {

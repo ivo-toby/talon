@@ -19,6 +19,7 @@ import type {
   PersonaRepository,
   BackgroundTaskRepository,
   ExecutionEnvRepository,
+  ExecutionEnvCheckpointRepository,
   ScheduleRepository,
   AuditRepository,
   MessageRepository,
@@ -60,6 +61,7 @@ export interface DaemonRepos {
   readonly persona: PersonaRepository;
   readonly backgroundTask: BackgroundTaskRepository;
   readonly executionEnv: ExecutionEnvRepository;
+  readonly executionEnvCheckpoint: ExecutionEnvCheckpointRepository;
   readonly schedule: ScheduleRepository;
   readonly audit: AuditRepository;
   readonly message: MessageRepository;

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from 'neverthrow';
 import type pino from 'pino';
 import { ExecutionEnvError } from '../core/errors/error-types.js';
+import { ExecutionEnvCheckpointRepository } from '../core/database/repositories/execution-env-checkpoint-repository.js';
 import { ExecutionEnvRepository } from '../core/database/repositories/execution-env-repository.js';
 import { resolveAllowedHostPath } from './path-policy.js';
 import type { SpritesClientAdapter } from './sprites-client-adapter.js';
@@ -21,6 +22,7 @@ import type {
 
 interface ExecutionEnvManagerDeps {
   repository: ExecutionEnvRepository;
+  checkpointRepository: ExecutionEnvCheckpointRepository;
   client: SpritesClientAdapter;
   defaultWorkingDirectory: string;
   defaultBaseSnapshot?: string;
@@ -223,21 +225,80 @@ export class ExecutionEnvManager {
       return err(env.error);
     }
 
-    return err(
-      new ExecutionEnvError(
-        'execution_env: [SPRITES_CHECKPOINT_FAILED] checkpoint is not yet implemented',
-      ),
-    );
+    try {
+      const result = await this.deps.client.checkpoint({
+        spriteId: env.value.spriteId,
+        ...(input.label !== undefined ? { label: input.label } : {}),
+      });
+      const checkpointResult = this.deps.checkpointRepository.create({
+        id: randomUUID(),
+        envId: env.value.id,
+        provider: 'sprites',
+        remoteRef: result.remoteRef,
+        label: input.label ?? null,
+        status: 'ready',
+      });
+      return checkpointResult.isOk()
+        ? ok(checkpointResult.value)
+        : err(new ExecutionEnvError(checkpointResult.error.message, checkpointResult.error));
+    } catch (cause) {
+      return err(this.wrapError('SPRITES_CHECKPOINT_FAILED', 'failed to checkpoint execution environment', cause));
+    }
   }
 
   async restore(
-    _input: RestoreExecutionEnvironmentInput,
+    input: RestoreExecutionEnvironmentInput,
   ): Promise<Result<ExecutionEnvironment, ExecutionEnvError>> {
-    return err(
-      new ExecutionEnvError(
-        'execution_env: [SPRITES_RESTORE_FAILED] restore is not yet implemented',
-      ),
-    );
+    const checkpointResult = this.deps.checkpointRepository.findById(input.checkpointId);
+    if (checkpointResult.isErr()) {
+      return err(new ExecutionEnvError(checkpointResult.error.message, checkpointResult.error));
+    }
+    if (!checkpointResult.value) {
+      return err(
+        new ExecutionEnvError(
+          `execution_env: [CHECKPOINT_NOT_FOUND] checkpoint "${input.checkpointId}" not found`,
+        ),
+      );
+    }
+
+    try {
+      const resourceLimits = {
+        ...this.deps.defaultResourceLimits,
+        ...(input.resourceLimits ?? {}),
+      };
+      const workingDirectory = input.workingDirectory ?? this.deps.defaultWorkingDirectory;
+      const restored = await this.deps.client.restore({
+        remoteRef: checkpointResult.value.remoteRef,
+        resourceLimits,
+        workingDirectory,
+        metadata: {
+          checkpointId: checkpointResult.value.id,
+        },
+      });
+
+      const repoResult = this.deps.repository.create({
+        id: randomUUID(),
+        provider: 'sprites',
+        spriteId: restored.spriteId,
+        threadId: 'restored',
+        personaId: 'restored',
+        ownerTaskId: null,
+        status: 'ready',
+        workingDirectory,
+        baseSnapshot: checkpointResult.value.remoteRef,
+        autoDestroy: input.autoDestroy ?? this.deps.defaultAutoDestroy ?? true,
+        resourceLimits,
+        metadata: {
+          checkpointId: checkpointResult.value.id,
+        },
+      });
+
+      return repoResult.isOk()
+        ? ok(repoResult.value)
+        : err(new ExecutionEnvError(repoResult.error.message, repoResult.error));
+    } catch (cause) {
+      return err(this.wrapError('SPRITES_RESTORE_FAILED', 'failed to restore execution environment', cause));
+    }
   }
 
   async destroyOwnedByTask(taskId: string): Promise<void> {

@@ -138,3 +138,12 @@ export interface ExecutionEnvCheckpoint {
   status: 'creating' | 'ready' | 'failed';
   createdAt: number;
 }
+
+export interface CreateExecutionEnvCheckpointInput {
+  id: string;
+  envId: string;
+  provider: ExecutionEnvProvider;
+  remoteRef: string;
+  label: string | null;
+  status: ExecutionEnvCheckpoint['status'];
+}
