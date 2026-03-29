@@ -22,6 +22,7 @@ import {
   type A2ATaskStatus,
   MAX_HOPS,
   MAX_CONCURRENT_PER_TARGET,
+  DEFAULT_A2A_MAX_ATTEMPTS,
 } from './a2a-types.js';
 
 // ---------------------------------------------------------------------------
@@ -140,24 +141,6 @@ export class A2ATaskMapper {
     const taskId = uuidv4();
     const now = Date.now();
 
-    // 7. Persist the task as 'submitted'
-    const insertResult = this.taskRepo.insertSubmitted({
-      id: taskId,
-      source_persona: sourcePersona,
-      target_persona: targetPersona,
-      thread_id: sourceThreadId,
-      request_payload: JSON.stringify({ content }),
-      hop_count: hopCount,
-      parent_task_id: parentTaskId ?? null,
-      submitted_at: now,
-    });
-
-    if (insertResult.isErr()) {
-      return err(
-        new A2AError(`Failed to persist A2A task: ${insertResult.error.message}`),
-      );
-    }
-
     // 8. Build queue payload
     const payload: A2ATaskPayload = {
       kind: 'a2a_task',
@@ -178,35 +161,56 @@ export class A2ATaskMapper {
       },
     };
 
-    // 9. Enqueue collaboration item
-    const enqueueResult = this.queueRepo.enqueue({
-      id: uuidv4(),
-      thread_id: sourceThreadId,
-      message_id: null,
-      type: 'collaboration',
-      payload: JSON.stringify(payload),
-      max_attempts: 3,
-    });
+    // 7+9+10. Atomically insert the task, enqueue, and attach the queue item.
+    // Wrapping in a transaction ensures no half-persisted state if the process crashes.
+    let queueItemId = '';
+    let txError: A2AError | null = null;
 
-    if (enqueueResult.isErr()) {
-      // Mark task as failed to release the concurrency slot.
-      this.taskRepo.markFailed(taskId, 'ENQUEUE_ERROR', enqueueResult.error.message).mapErr((e) => {
-        this.logger.warn({ taskId, err: e.message }, 'Failed to mark A2A task as failed after enqueue error');
+    try {
+      this.taskRepo.transaction(() => {
+        // 7. Persist the task as 'submitted' with the full request payload for audit.
+        const insertResult = this.taskRepo.insertSubmitted({
+          id: taskId,
+          source_persona: sourcePersona,
+          target_persona: targetPersona,
+          thread_id: sourceThreadId,
+          request_payload: JSON.stringify({ content, sourcePersona, targetPersona, sourceThreadId, hopCount, parentTaskId, traceId }),
+          hop_count: hopCount,
+          parent_task_id: parentTaskId ?? null,
+          submitted_at: now,
+        });
+        if (insertResult.isErr()) {
+          txError = new A2AError(`Failed to persist A2A task: ${insertResult.error.message}`);
+          throw insertResult.error;
+        }
+
+        // 9. Enqueue collaboration item
+        const enqueueResult = this.queueRepo.enqueue({
+          id: uuidv4(),
+          thread_id: sourceThreadId,
+          message_id: null,
+          type: 'collaboration',
+          payload: JSON.stringify(payload),
+          max_attempts: DEFAULT_A2A_MAX_ATTEMPTS,
+        });
+        if (enqueueResult.isErr()) {
+          txError = new A2AError(`Failed to enqueue A2A task ${taskId}: ${enqueueResult.error.message}`);
+          throw enqueueResult.error;
+        }
+        queueItemId = enqueueResult.value.id;
+
+        // 10. Attach queue item to task record (best-effort within the transaction)
+        const attachResult = this.taskRepo.attachQueueItem(taskId, queueItemId);
+        if (attachResult.isErr()) {
+          this.logger.warn(
+            { taskId, queueItemId, err: attachResult.error.message },
+            'Failed to attach queue item to A2A task — task will still run',
+          );
+        }
       });
-      return err(
-        new A2AError(`Failed to enqueue A2A task ${taskId}: ${enqueueResult.error.message}`),
-      );
-    }
-
-    const queueItemId = enqueueResult.value.id;
-
-    // 10. Attach queue item to task record
-    const attachResult = this.taskRepo.attachQueueItem(taskId, queueItemId);
-    if (attachResult.isErr()) {
-      this.logger.warn(
-        { taskId, queueItemId, err: attachResult.error.message },
-        'Failed to attach queue item to A2A task — task will still run',
-      );
+    } catch {
+      if (txError) return err(txError);
+      return err(new A2AError(`Unexpected error during A2A task submission for ${taskId}`));
     }
 
     this.logger.info(

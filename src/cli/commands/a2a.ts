@@ -13,13 +13,15 @@
 
 import type Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
+import pino from 'pino';
 
 import { A2ATaskRepository } from '../../core/database/repositories/a2a-task-repository.js';
 import { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
 import { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
 import { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
 import { QueueRepository } from '../../core/database/repositories/queue-repository.js';
-import type { A2ATaskState } from '../../a2a/a2a-types.js';
+import { A2ATaskMapper } from '../../a2a/a2a-task-mapper.js';
+import type { A2AAgentCard, A2ATaskState } from '../../a2a/a2a-types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -120,7 +122,6 @@ export function sendA2ATask(options: SendA2ATaskOptions): SendA2ATaskResult {
   if (!personaResult.value) {
     throw new Error(`Unknown target persona: "${targetPersona}"`);
   }
-  const personaRow = personaResult.value;
 
   // --- Find or create CLI channel ------------------------------------------
   const channelRepo = new ChannelRepository(db);
@@ -172,89 +173,47 @@ export function sendA2ATask(options: SendA2ATaskOptions): SendA2ATaskResult {
     }
   }
 
-  // --- Concurrency admission check ----------------------------------------
+  // --- Submit via A2ATaskMapper (canonical path, handles atomicity) ---------
   const taskRepo = new A2ATaskRepository(db);
-  const activeResult = taskRepo.countActiveByTarget(targetPersona);
-  if (activeResult.isErr()) {
-    throw new Error(`Failed to check active tasks for "${targetPersona}": ${activeResult.error.message}`);
-  }
-  if (activeResult.value >= 1) {
-    throw new Error(
-      `Target persona "${targetPersona}" already has ${activeResult.value} active A2A task(s). ` +
-      `Wait for it to complete before submitting a new one.`,
-    );
-  }
-
-  // --- Insert A2A task and enqueue -----------------------------------------
   const queueRepo = new QueueRepository(db);
+  const silentLogger = pino({ level: 'silent' });
 
-  const taskId = uuidv4();
-  const now = Date.now();
-
-  const taskPayload = {
-    kind: 'a2a_task',
-    taskId,
-    sourcePersona,
-    targetPersona,
-    sourceThreadId: threadId,
-    personaId: personaRow.id,
-    content: message,
-    hopCount: 0,
-    submittedAt: now,
+  // Build a minimal synthetic agent card so the mapper can register the target.
+  const syntheticCard: A2AAgentCard = {
+    id: targetPersona,
+    name: targetPersona,
+    description: '',
+    url: `/a2a/agents/${targetPersona}`,
+    version: '1.0',
+    skills: [],
+    defaultInputModes: ['text/plain'],
+    defaultOutputModes: ['text/plain'],
     metadata: {
-      agentCardId: targetPersona,
-      maxHops: 4,
-      queueType: 'collaboration',
-      source: 'cli',
+      personaName: targetPersona,
+      model: '',
+      skills: [],
+      capabilities: { allow: [], requireApproval: [] },
+      internalOnly: true,
     },
   };
 
-  const insertResult = taskRepo.insertSubmitted({
-    id: taskId,
-    source_persona: sourcePersona,
-    target_persona: targetPersona,
-    thread_id: threadId,
-    request_payload: JSON.stringify(taskPayload),
-    hop_count: 0,
-    parent_task_id: null,
-    submitted_at: now,
-  });
+  const cardRegistry = new Map<string, A2AAgentCard>([[targetPersona, syntheticCard]]);
+  const mapper = new A2ATaskMapper(taskRepo, queueRepo, threadRepo, personaRepo, cardRegistry, silentLogger);
 
-  if (insertResult.isErr()) {
-    throw new Error(`Failed to create A2A task: ${insertResult.error.message}`);
-  }
-
-  // Enqueue for processing
-  const enqueueResult = queueRepo.enqueue({
-    id: uuidv4(),
-    thread_id: threadId,
-    message_id: null,
-    type: 'collaboration',
-    payload: JSON.stringify(taskPayload),
-    max_attempts: 3,
-  });
-
-  if (enqueueResult.isErr()) {
-    // Roll back: mark the task failed so the concurrency slot is released.
-    taskRepo.markFailed(taskId, 'ENQUEUE_ERROR', enqueueResult.error.message);
-    throw new Error(`Failed to enqueue A2A task: ${enqueueResult.error.message}`);
-  }
-
-  // Attach queue item to task (best-effort — task still runs if this fails)
-  const attachResult = taskRepo.attachQueueItem(taskId, enqueueResult.value.id);
-  if (attachResult.isErr()) {
-    // Non-fatal: warn but don't abort — the task is already queued.
-    process.stderr.write(
-      `warning: failed to link queue item to task ${taskId}: ${attachResult.error.message}\n`,
-    );
-  }
-
-  return {
-    taskId,
-    state: 'submitted',
+  const submitResult = mapper.submitTask({
     sourcePersona,
     targetPersona,
-  };
+    sourceThreadId: threadId,
+    content: message,
+    hopCount: 0,
+  });
+
+  if (submitResult.isErr()) {
+    throw new Error(submitResult.error.message);
+  }
+
+  const { taskId, state } = submitResult.value;
+  return { taskId, state, sourcePersona, targetPersona };
 }
 
 // ---------------------------------------------------------------------------

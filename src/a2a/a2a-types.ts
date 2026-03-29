@@ -156,3 +156,6 @@ export const MAX_HOPS = 4;
 
 /** Maximum number of concurrent active A2A tasks per target persona. */
 export const MAX_CONCURRENT_PER_TARGET = 1;
+
+/** Default max queue retry attempts for A2A collaboration items. */
+export const DEFAULT_A2A_MAX_ATTEMPTS = 3;

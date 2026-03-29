@@ -58,10 +58,12 @@ export class AgentRunner {
     }
 
     // Detect A2A task collaboration items and flag for special handling.
-    const isA2ATask =
-      item.type === 'collaboration' && item.payload.kind === 'a2a_task';
+    // isA2ATask is only true when taskId is a non-empty string, preventing null ID updates.
     const a2aTaskId =
-      isA2ATask && typeof item.payload.taskId === 'string' ? item.payload.taskId : null;
+      item.type === 'collaboration' && item.payload?.kind === 'a2a_task' && item.payload?.taskId
+        ? String(item.payload.taskId)
+        : null;
+    const isA2ATask = a2aTaskId !== null;
 
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {

@@ -192,6 +192,6 @@ describe('sendA2ATask()', () => {
 
     // Second should be rejected
     expect(() => sendA2ATask({ db, targetPersona: 'busy-bot', message: 'Second task' }))
-      .toThrow(/already has .* active A2A task/);
+      .toThrow(/already has .* active task/);
   });
 });

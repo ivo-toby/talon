@@ -164,7 +164,7 @@ export class A2AServer {
       const { personaName } = c.req.param();
       const card = this.cardRegistry.get(personaName);
       if (!card) {
-        return c.json({ error: `Persona not found: ${personaName}` }, 404);
+        return c.json(jsonRpcError(null, JSONRPC_ERRORS.NOT_FOUND, `Persona not found: ${personaName}`), 404);
       }
       return c.json(card);
     });
@@ -174,7 +174,7 @@ export class A2AServer {
       const { personaName } = c.req.param();
 
       if (!this.cardRegistry.has(personaName)) {
-        return c.json({ error: `Persona not found: ${personaName}` }, 404);
+        return c.json(jsonRpcError(null, JSONRPC_ERRORS.NOT_FOUND, `Persona not found: ${personaName}`), 404);
       }
 
       let rawBody: unknown;
@@ -190,6 +190,12 @@ export class A2AServer {
           jsonRpcError(null, JSONRPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC request structure'),
         );
       }
+
+      // JSON-RPC 2.0 spec §4: a notification has no 'id'. The server MUST NOT reply.
+      if (bodyParse.data.id === undefined) {
+        return new Response(null, { status: 204 });
+      }
+
       const body: JsonRpcRequest = bodyParse.data as JsonRpcRequest;
 
       const id = body.id ?? null;

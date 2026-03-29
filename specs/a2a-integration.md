@@ -383,12 +383,12 @@ All repository methods should return `Result<T, DbError>`.
 
 M1 should expose these Hono routes internally:
 
-- `GET /.well-known/agent.json`
+- `GET /.well-known/agent-card.json`
   - returns an index card or directory payload for all loaded personas
-- `GET /a2a/agents/:personaName/.well-known/agent.json`
+- `GET /a2a/agents/:personaName/.well-known/agent-card.json`
   - returns the agent card for one persona
 - `POST /a2a/agents/:personaName`
-  - JSON-RPC entrypoint for A2A task operations routed through `@a2a-js/sdk`
+  - JSON-RPC entrypoint for A2A task operations (note: `@a2a-js/sdk` integration deferred to M2)
 
 ### Internal transport model
 
