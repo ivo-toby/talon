@@ -40,6 +40,7 @@ const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'schedule.manage', internalName: 'schedule.manage', mcpName: 'schedule_manage' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.send', mcpName: 'channel_send' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.send', mcpName: 'persona_send' },
+  { capabilityPrefix: 'persona.list', internalName: 'persona.list', mcpName: 'persona_list' },
   { capabilityPrefix: 'memory.access', internalName: 'memory.access', mcpName: 'memory_access' },
   { capabilityPrefix: 'net.http', internalName: 'net.http', mcpName: 'net_http' },
   { capabilityPrefix: 'db.query', internalName: 'db.query', mcpName: 'db_query' },
@@ -114,6 +115,13 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'persona_send',
     labels: [
       { label: 'persona.send:*', description: 'Send tasks to any persona over the A2A layer' },
+    ],
+  },
+  {
+    toolPrefix: 'persona.list',
+    mcpName: 'persona_list',
+    labels: [
+      { label: 'persona.list:*', description: 'Discover personas available for delegation' },
     ],
   },
   {
