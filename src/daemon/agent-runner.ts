@@ -65,17 +65,20 @@ export class AgentRunner {
 
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {
+      this.failA2ATask(a2aTaskId, 'MISSING_PERSONA_ID', `queue item ${item.id} is missing payload.personaId`);
       return err(new Error(`queue item ${item.id} is missing payload.personaId`));
     }
 
     const personaRowResult = this.ctx.repos.persona.findById(personaId);
     if (personaRowResult.isErr() || personaRowResult.value === null) {
+      this.failA2ATask(a2aTaskId, 'PERSONA_NOT_FOUND', `persona not found for id ${personaId}`);
       return err(new Error(`persona not found for id ${personaId}`));
     }
 
     const personaName = personaRowResult.value.name;
     const loadedPersonaResult = this.ctx.personaLoader.getByName(personaName);
     if (loadedPersonaResult.isErr() || loadedPersonaResult.value === undefined) {
+      this.failA2ATask(a2aTaskId, 'PERSONA_LOAD_FAILED', `loaded persona not found for ${personaName}`);
       return err(new Error(`loaded persona not found for ${personaName}`));
     }
     const loadedPersona = loadedPersonaResult.value;
@@ -98,6 +101,7 @@ export class AgentRunner {
 
     const providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
     if (!providerEntry) {
+      this.failA2ATask(a2aTaskId, 'NO_PROVIDER', 'No enabled agent runner provider is configured');
       return err(new Error('No enabled agent runner provider is configured'));
     }
 
@@ -106,8 +110,13 @@ export class AgentRunner {
     // Resolve session ID only for SDK providers.
     // We do NOT seed the tracker here — only after a successful run
     // to avoid stranding a thread on a stale/expired session ID.
+    //
+    // A2A tasks run on the *source* thread but execute under the *target* persona.
+    // Restoring a session keyed by the source thread would attach the wrong
+    // persona's session history. Skip session restoration for A2A items entirely
+    // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
-    if (strategy.type === 'sdk') {
+    if (strategy.type === 'sdk' && !isA2ATask) {
       resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId);
       if (!resolvedSessionId && !this.ctx.sessionTracker.wasRotated(item.threadId)) {
         const dbSessionResult = this.ctx.repos.run.getLatestSessionId(item.threadId);
@@ -1101,6 +1110,20 @@ export class AgentRunner {
       message.includes('not found') ||
       message.includes('timed out')
     );
+  }
+
+  /**
+   * Marks an A2A task as failed if a task ID is present.
+   * Safe to call even when the task ID is null (non-A2A items).
+   */
+  private failA2ATask(a2aTaskId: string | null, errorCode: string, message: string): void {
+    if (!a2aTaskId) return;
+    this.ctx.repos.a2aTask.markFailed(a2aTaskId, errorCode, message).mapErr((e) => {
+      this.ctx.logger.warn(
+        { a2aTaskId, errorCode, err: e.message },
+        'agent-runner: failed to mark A2A task as failed',
+      );
+    });
   }
 
   private parseBackgroundTaskNotification(item: QueueItem): {

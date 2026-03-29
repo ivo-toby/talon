@@ -16,6 +16,8 @@
  */
 
 import { Hono } from 'hono';
+import type { Context } from 'hono';
+import { z } from 'zod';
 import type pino from 'pino';
 import type { A2AAgentCard, A2ATaskStatus } from './a2a-types.js';
 import type { A2ATaskMapper } from './a2a-task-mapper.js';
@@ -79,26 +81,41 @@ function jsonRpcError(
 }
 
 // ---------------------------------------------------------------------------
-// Task params types
+// Task params types and Zod schemas
 // ---------------------------------------------------------------------------
 
-interface SendMessageParams {
-  message?: {
-    role?: string;
-    parts?: Array<{ kind?: string; text?: string }>;
-  };
-  metadata?: {
-    sourcePersona?: string;
-    sourceThreadId?: string;
-    hopCount?: number;
-    parentTaskId?: string;
-    traceId?: string;
-  };
-}
+const SendMessageParamsSchema = z.object({
+  message: z.object({
+    role: z.string().optional(),
+    parts: z.array(
+      z.object({
+        kind: z.string().optional(),
+        text: z.string().optional(),
+      }),
+    ).optional(),
+  }).optional(),
+  metadata: z.object({
+    sourcePersona: z.string().optional(),
+    sourceThreadId: z.string().optional(),
+    hopCount: z.number().int().nonnegative().optional(),
+    parentTaskId: z.string().optional(),
+    traceId: z.string().optional(),
+  }).optional(),
+});
 
-interface GetTaskParams {
-  id?: string;
-}
+const GetTaskParamsSchema = z.object({
+  id: z.string().optional(),
+});
+
+const JsonRpcRequestSchema = z.object({
+  jsonrpc: z.string(),
+  id: z.union([z.string(), z.number()]).optional(),
+  method: z.string(),
+  params: z.unknown().optional(),
+});
+
+type SendMessageParams = z.infer<typeof SendMessageParamsSchema>;
+type GetTaskParams = z.infer<typeof GetTaskParamsSchema>;
 
 // ---------------------------------------------------------------------------
 // A2AServer
@@ -128,7 +145,7 @@ export class A2AServer {
    * Can be called in-process without a bound socket.
    */
   fetch(request: Request): Promise<Response> {
-    return this.app.fetch(request);
+    return Promise.resolve(this.app.fetch(request));
   }
 
   // ---------------------------------------------------------------------------
@@ -160,20 +177,42 @@ export class A2AServer {
         return c.json({ error: `Persona not found: ${personaName}` }, 404);
       }
 
-      let body: JsonRpcRequest;
+      let rawBody: unknown;
       try {
-        body = await c.req.json<JsonRpcRequest>();
+        rawBody = await c.req.json();
       } catch {
         return c.json(jsonRpcError(null, JSONRPC_ERRORS.PARSE_ERROR, 'Invalid JSON'));
       }
 
+      const bodyParse = JsonRpcRequestSchema.safeParse(rawBody);
+      if (!bodyParse.success) {
+        return c.json(
+          jsonRpcError(null, JSONRPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC request structure'),
+        );
+      }
+      const body: JsonRpcRequest = bodyParse.data as JsonRpcRequest;
+
       const id = body.id ?? null;
 
       switch (body.method) {
-        case 'tasks/send':
-          return this.handleTaskSend(c, id, personaName, body.params as SendMessageParams);
-        case 'tasks/get':
-          return this.handleTaskGet(c, id, body.params as GetTaskParams);
+        case 'tasks/send': {
+          const paramsParse = SendMessageParamsSchema.safeParse(body.params ?? {});
+          if (!paramsParse.success) {
+            return c.json(
+              jsonRpcError(id, JSONRPC_ERRORS.INVALID_PARAMS, 'Invalid params for tasks/send'),
+            );
+          }
+          return this.handleTaskSend(c, id, personaName, paramsParse.data);
+        }
+        case 'tasks/get': {
+          const paramsParse = GetTaskParamsSchema.safeParse(body.params ?? {});
+          if (!paramsParse.success) {
+            return c.json(
+              jsonRpcError(id, JSONRPC_ERRORS.INVALID_PARAMS, 'Invalid params for tasks/get'),
+            );
+          }
+          return this.handleTaskGet(c, id, paramsParse.data);
+        }
         default:
           return c.json(
             jsonRpcError(id, JSONRPC_ERRORS.METHOD_NOT_FOUND, `Method not found: ${body.method}`),
@@ -187,7 +226,7 @@ export class A2AServer {
   // ---------------------------------------------------------------------------
 
   private handleTaskSend(
-    c: ReturnType<Hono['fetch']> extends Promise<Response> ? never : Parameters<Parameters<Hono['fetch']>[0]>[0],
+    c: Context,
     id: string | number | null,
     targetPersona: string,
     params: SendMessageParams,
@@ -197,7 +236,7 @@ export class A2AServer {
     const content = textPart?.text?.trim() ?? '';
 
     if (!content) {
-      return (c as unknown as { json: (body: unknown) => Response }).json(
+      return c.json(
         jsonRpcError(id, JSONRPC_ERRORS.INVALID_PARAMS, 'No text content found in message parts'),
       );
     }
@@ -207,13 +246,13 @@ export class A2AServer {
     const sourceThreadId = metadata?.sourceThreadId;
 
     if (!sourcePersona) {
-      return (c as unknown as { json: (body: unknown) => Response }).json(
+      return c.json(
         jsonRpcError(id, JSONRPC_ERRORS.INVALID_PARAMS, 'metadata.sourcePersona is required'),
       );
     }
 
     if (!sourceThreadId) {
-      return (c as unknown as { json: (body: unknown) => Response }).json(
+      return c.json(
         jsonRpcError(id, JSONRPC_ERRORS.INVALID_PARAMS, 'metadata.sourceThreadId is required'),
       );
     }
@@ -233,46 +272,34 @@ export class A2AServer {
         { targetPersona, sourcePersona, err: result.error.message },
         'A2A task submission failed',
       );
-      return (c as unknown as { json: (body: unknown) => Response }).json(
-        jsonRpcError(id, JSONRPC_ERRORS.A2A_ERROR, result.error.message),
-      );
+      return c.json(jsonRpcError(id, JSONRPC_ERRORS.A2A_ERROR, result.error.message));
     }
 
     const status = result.value;
-    return (c as unknown as { json: (body: unknown) => Response }).json(
-      jsonRpcSuccess(id ?? '0', { id: status.taskId, status: this.statusToProto(status) }),
-    );
+    return c.json(jsonRpcSuccess(id ?? '0', { id: status.taskId, status: this.statusToProto(status) }));
   }
 
   private handleTaskGet(
-    c: unknown,
+    c: Context,
     id: string | number | null,
     params: GetTaskParams,
   ): Response {
     const taskId = params?.id;
     if (!taskId) {
-      return (c as { json: (body: unknown) => Response }).json(
-        jsonRpcError(id, JSONRPC_ERRORS.INVALID_PARAMS, 'params.id is required'),
-      );
+      return c.json(jsonRpcError(id, JSONRPC_ERRORS.INVALID_PARAMS, 'params.id is required'));
     }
 
     const result = this.mapper.getTaskStatus(taskId);
     if (result.isErr()) {
-      return (c as { json: (body: unknown) => Response }).json(
-        jsonRpcError(id, JSONRPC_ERRORS.INTERNAL_ERROR, result.error.message),
-      );
+      return c.json(jsonRpcError(id, JSONRPC_ERRORS.INTERNAL_ERROR, result.error.message));
     }
 
     const status = result.value;
     if (!status) {
-      return (c as { json: (body: unknown) => Response }).json(
-        jsonRpcError(id, JSONRPC_ERRORS.NOT_FOUND, `Task not found: ${taskId}`),
-      );
+      return c.json(jsonRpcError(id, JSONRPC_ERRORS.NOT_FOUND, `Task not found: ${taskId}`));
     }
 
-    return (c as { json: (body: unknown) => Response }).json(
-      jsonRpcSuccess(id ?? '0', { id: status.taskId, status: this.statusToProto(status) }),
-    );
+    return c.json(jsonRpcSuccess(id ?? '0', { id: status.taskId, status: this.statusToProto(status) }));
   }
 
   // ---------------------------------------------------------------------------
