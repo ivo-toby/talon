@@ -48,12 +48,12 @@ function writeInvalidConfig(dir: string): string {
 
 describe('checkNodeVersion()', () => {
   it('passes when current Node version meets minimum', () => {
-    // Node 22+ is required; tests run on a compliant version
+    // Node 24+ is required; tests run on a compliant version
     const result = checkNodeVersion();
-    // The test environment should be running Node >= 22
+    // The test environment should be running Node >= 24
     // If this test runs on an older Node, it would fail — which is expected.
     const major = parseInt(process.version.slice(1).split('.')[0] ?? '0', 10);
-    expect(result.passed).toBe(major >= 22);
+    expect(result.passed).toBe(major >= 24);
   });
 
   it('returns check with name "Node.js version"', () => {
@@ -81,7 +81,7 @@ describe('checkNodeVersion()', () => {
 
   it('has no hint when passing', () => {
     const originalVersion = process.version;
-    Object.defineProperty(process, 'version', { value: 'v22.0.0', configurable: true });
+    Object.defineProperty(process, 'version', { value: 'v24.0.0', configurable: true });
 
     const result = checkNodeVersion();
     expect(result.passed).toBe(true);

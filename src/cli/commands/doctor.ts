@@ -2,7 +2,7 @@
  * `talonctl doctor` command.
  *
  * Standalone command that checks system requirements and configuration:
- *   1. Node.js version >= 22
+ *   1. Node.js version >= 24
  *   2. Docker available and responsive
  *   3. Config file exists and validates
  *   4. Database is accessible
@@ -27,7 +27,7 @@ const execFileAsync = promisify(execFile);
 // ---------------------------------------------------------------------------
 
 /** Minimum required Node.js major version. */
-const MIN_NODE_MAJOR = 22;
+const MIN_NODE_MAJOR = 24;
 
 /** Default path to search for talond.yaml. */
 const DEFAULT_CONFIG_PATH = 'talond.yaml';

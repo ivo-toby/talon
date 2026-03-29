@@ -9,7 +9,7 @@
 # ---------------------------------------------------------------------------
 # Stage 1: builder
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS builder
+FROM node:24-slim AS builder
 
 WORKDIR /build
 
@@ -29,7 +29,7 @@ RUN npm run build
 # ---------------------------------------------------------------------------
 # Stage 2: production
 # ---------------------------------------------------------------------------
-FROM node:22-slim AS production
+FROM node:24-slim AS production
 
 LABEL org.opencontainers.image.title="talond" \
       org.opencontainers.image.description="Talon autonomous agent daemon" \

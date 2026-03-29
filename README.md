@@ -1142,7 +1142,7 @@ npx talonctl queue-purge --all
 `talonctl doctor` runs 7 structured checks:
 
 1. **OS compatibility** — Verifies Linux or macOS
-2. **Node.js version** — Checks for Node 22+
+2. **Node.js version** — Checks for Node 24+
 3. **Docker availability** — Verifies Docker is installed and running
 4. **Directory structure** — Ensures data directories exist
 5. **Config file** — Validates `talond.yaml` syntax and schema
@@ -1205,7 +1205,7 @@ Default: wakes every 5 minutes. Adjust `OnUnitActiveSec` in `talond.timer`.
 | ---------------------------------------------------------- | ------------------------------------------------- |
 | [`deploy/talond.service`](deploy/talond.service)           | systemd service unit template                     |
 | [`deploy/install-service.sh`](deploy/install-service.sh)   | Install script (generates unit, enables service)  |
-| [`deploy/Dockerfile`](deploy/Dockerfile)                   | Multi-stage talond container image (node:22-slim) |
+| [`deploy/Dockerfile`](deploy/Dockerfile)                   | Multi-stage talond container image (node:24-slim) |
 | [`deploy/Dockerfile.sandbox`](deploy/Dockerfile.sandbox)   | Agent sandbox image with SDK runtime              |
 | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml) | Example Compose setup                             |
 | [`deploy/talond.timer`](deploy/talond.timer)               | systemd timer (wake-only mode)                    |

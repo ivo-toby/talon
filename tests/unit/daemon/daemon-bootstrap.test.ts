@@ -547,16 +547,8 @@ describe('bootstrap', () => {
       ).toHaveBeenCalledOnce();
     });
 
-    it('does not wire ExecutionEnvManager while SpritesClient is still stubbed', async () => {
+    it('wires ExecutionEnvManager when sprites are enabled', async () => {
       setupSuccessfulMocks();
-      const stubLogger = {
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
-        child: vi.fn().mockReturnThis(),
-        level: 'info',
-      } as any;
       vi.mocked(loadConfig).mockReturnValue(
         ok(makeConfig({
           sprites: {
@@ -572,13 +564,17 @@ describe('bootstrap', () => {
         }) as any),
       );
 
-      const result = await bootstrap('/config.yaml', stubLogger);
+      const result = await bootstrap('/config.yaml', logger);
 
       expect(result.isOk()).toBe(true);
-      expect(result._unsafeUnwrap().executionEnvManager).toBeNull();
-      expect(ExecutionEnvManager).not.toHaveBeenCalled();
-      expect(stubLogger.warn).toHaveBeenCalledWith(
-        'bootstrap: sprites.enabled is set, but SpritesClient is still stubbed; skipping execution environment wiring',
+      expect(result._unsafeUnwrap().executionEnvManager).toBeDefined();
+      expect(ExecutionEnvManager).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repository: expect.anything(),
+          checkpointRepository: expect.anything(),
+          defaultWorkingDirectory: '/workspace',
+          defaultExecTimeoutMs: 1200000,
+        }),
       );
     });
 

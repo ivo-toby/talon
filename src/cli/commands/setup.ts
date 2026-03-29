@@ -3,7 +3,7 @@
  *
  * Interactive first-time setup that:
  *   1. Detects the OS (Linux / macOS)
- *   2. Checks Node.js version (>= 22 required)
+ *   2. Checks Node.js version (>= 24 required)
  *   3. Checks Docker availability via `docker info`
  *   4. Creates the data/ directory structure
  *   5. Generates a default talond.yaml config if none exists
@@ -56,7 +56,7 @@ export interface SetupCheck {
 // ---------------------------------------------------------------------------
 
 /** Minimum required Node.js major version. */
-const MIN_NODE_MAJOR = 22;
+const MIN_NODE_MAJOR = 24;
 
 /** Default path to write the generated talond.yaml. */
 const DEFAULT_CONFIG_PATH = 'talond.yaml';
