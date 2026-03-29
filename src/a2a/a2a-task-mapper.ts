@@ -123,21 +123,6 @@ export class A2ATaskMapper {
       return err(new A2AError(`Unknown source thread: ${sourceThreadId}`));
     }
 
-    // 6. Concurrency admission: max one active A2A task per target persona
-    const activeResult = this.taskRepo.countActiveByTarget(targetPersona);
-    if (activeResult.isErr()) {
-      return err(
-        new A2AError(`Failed to check concurrency for ${targetPersona}: ${activeResult.error.message}`),
-      );
-    }
-    if (activeResult.value >= MAX_CONCURRENT_PER_TARGET) {
-      return err(
-        new A2AError(
-          `Target persona ${targetPersona} already has ${activeResult.value} active task(s). Max allowed: ${MAX_CONCURRENT_PER_TARGET}`,
-        ),
-      );
-    }
-
     const taskId = uuidv4();
     const now = Date.now();
 
@@ -161,13 +146,28 @@ export class A2ATaskMapper {
       },
     };
 
-    // 7+9+10. Atomically insert the task, enqueue, and attach the queue item.
-    // Wrapping in a transaction ensures no half-persisted state if the process crashes.
+    // 6+7+9+10. Atomically check concurrency, insert the task, enqueue, and attach
+    // the queue item. The concurrency check runs INSIDE the transaction so that two
+    // concurrent submissions cannot both pass the admission gate — SQLite serialises
+    // writes, so the second transaction will see the first insert.
     let queueItemId = '';
     let txError: A2AError | null = null;
 
     try {
       this.taskRepo.transaction(() => {
+        // 6. Concurrency admission inside the transaction (atomic with the insert).
+        const activeResult = this.taskRepo.countActiveByTarget(targetPersona);
+        if (activeResult.isErr()) {
+          txError = new A2AError(`Failed to check concurrency for ${targetPersona}: ${activeResult.error.message}`);
+          throw activeResult.error;
+        }
+        if (activeResult.value >= MAX_CONCURRENT_PER_TARGET) {
+          txError = new A2AError(
+            `Target persona ${targetPersona} already has ${activeResult.value} active task(s). Max allowed: ${MAX_CONCURRENT_PER_TARGET}`,
+          );
+          throw new Error(txError.message);
+        }
+
         // 7. Persist the task as 'submitted' with the full request payload for audit.
         const insertResult = this.taskRepo.insertSubmitted({
           id: taskId,

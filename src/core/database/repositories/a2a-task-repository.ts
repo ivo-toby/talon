@@ -141,11 +141,14 @@ export class A2ATaskRepository extends BaseRepository {
    */
   attachQueueItem(taskId: string, queueItemId: string): Result<void, DbError> {
     try {
-      this.attachQueueItemStmt.run({
+      const result = this.attachQueueItemStmt.run({
         id: taskId,
         queue_item_id: queueItemId,
         updated_at: this.now(),
       });
+      if (result.changes === 0) {
+        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
+      }
       return ok(undefined);
     } catch (cause) {
       return err(
@@ -162,7 +165,10 @@ export class A2ATaskRepository extends BaseRepository {
    */
   markWorking(taskId: string, runId: string): Result<void, DbError> {
     try {
-      this.markWorkingStmt.run({ id: taskId, run_id: runId, updated_at: this.now() });
+      const result = this.markWorkingStmt.run({ id: taskId, run_id: runId, updated_at: this.now() });
+      if (result.changes === 0) {
+        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
+      }
       return ok(undefined);
     } catch (cause) {
       return err(
@@ -180,12 +186,15 @@ export class A2ATaskRepository extends BaseRepository {
   markCompleted(taskId: string, resultText: string): Result<void, DbError> {
     try {
       const now = this.now();
-      this.markCompletedStmt.run({
+      const result = this.markCompletedStmt.run({
         id: taskId,
         result_payload: JSON.stringify({ text: resultText }),
         completed_at: now,
         updated_at: now,
       });
+      if (result.changes === 0) {
+        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
+      }
       return ok(undefined);
     } catch (cause) {
       return err(
@@ -202,12 +211,15 @@ export class A2ATaskRepository extends BaseRepository {
    */
   markFailed(taskId: string, errorCode: string, errorMessage: string): Result<void, DbError> {
     try {
-      this.markFailedStmt.run({
+      const result = this.markFailedStmt.run({
         id: taskId,
         error_code: errorCode,
         error_message: errorMessage,
         updated_at: this.now(),
       });
+      if (result.changes === 0) {
+        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
+      }
       return ok(undefined);
     } catch (cause) {
       return err(
@@ -224,7 +236,10 @@ export class A2ATaskRepository extends BaseRepository {
    */
   markCanceled(taskId: string): Result<void, DbError> {
     try {
-      this.markCanceledStmt.run({ id: taskId, updated_at: this.now() });
+      const result = this.markCanceledStmt.run({ id: taskId, updated_at: this.now() });
+      if (result.changes === 0) {
+        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
+      }
       return ok(undefined);
     } catch (cause) {
       return err(

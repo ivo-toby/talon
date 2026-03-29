@@ -612,11 +612,16 @@ a2a
   .option('--limit <n>', 'Maximum number of tasks to show', '20')
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
   .action(async (opts: { status?: string; target?: string; limit: string; config: string }) => {
+    const limit = parseInt(opts.limit, 10);
+    if (isNaN(limit) || limit < 1) {
+      console.error('--limit must be a positive integer');
+      process.exit(1);
+    }
     await a2aListCommand({
       configPath: opts.config,
       status: opts.status,
       target: opts.target,
-      limit: parseInt(opts.limit, 10),
+      limit,
     });
   });
 

@@ -108,7 +108,7 @@ const GetTaskParamsSchema = z.object({
 });
 
 const JsonRpcRequestSchema = z.object({
-  jsonrpc: z.string(),
+  jsonrpc: z.literal('2.0'),
   id: z.union([z.string(), z.number()]).optional(),
   method: z.string(),
   params: z.unknown().optional(),
@@ -164,7 +164,7 @@ export class A2AServer {
       const { personaName } = c.req.param();
       const card = this.cardRegistry.get(personaName);
       if (!card) {
-        return c.json(jsonRpcError(null, JSONRPC_ERRORS.NOT_FOUND, `Persona not found: ${personaName}`), 404);
+        return c.json({ error: `Persona not found: ${personaName}` }, 404);
       }
       return c.json(card);
     });
@@ -187,7 +187,7 @@ export class A2AServer {
       const bodyParse = JsonRpcRequestSchema.safeParse(rawBody);
       if (!bodyParse.success) {
         return c.json(
-          jsonRpcError(null, JSONRPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC request structure'),
+          jsonRpcError(null, JSONRPC_ERRORS.INVALID_REQUEST, 'Only JSON-RPC 2.0 is supported'),
         );
       }
 
