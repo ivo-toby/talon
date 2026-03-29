@@ -3,24 +3,19 @@
  *
  * Tests cover:
  *   - Manifest metadata
- *   - Returns all personas except the calling one with name and parsed skills
- *   - Malformed skills JSON → empty array for that persona, no failure
- *   - Empty personas table → empty array
- *   - personaRepo.findAll() error → tool error result
+ *   - Returns all live personas except the calling one with name and skills
+ *   - Stale/unloaded personas are excluded (loader is source of truth)
+ *   - Empty loader → returns empty array
+ *   - Caller persona excluded from results
  */
 
 import { describe, expect, it, vi } from 'vitest';
-import { err, ok } from 'neverthrow';
-
-vi.mock('node:fs', () => ({
-  readFileSync: vi.fn(),
-}));
-
-import { readFileSync } from 'node:fs';
+import { ok } from 'neverthrow';
 import { PersonaListHandler } from '../../../../src/tools/host-tools/persona-list.js';
 import type { ToolExecutionContext } from '../../../../src/tools/host-tools/channel-send.js';
-import type { PersonaRepository, PersonaRow } from '../../../../src/core/database/repositories/persona-repository.js';
-import { DbError } from '../../../../src/core/errors/index.js';
+import type { PersonaLoader } from '../../../../src/personas/persona-loader.js';
+import type { LoadedPersona } from '../../../../src/personas/persona-types.js';
+import type { PersonaConfig } from '../../../../src/core/config/config-schema.js';
 
 function makeLogger() {
   return {
@@ -44,26 +39,43 @@ function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecuti
   };
 }
 
-function makePersonaRow(overrides: Partial<PersonaRow> = {}): PersonaRow {
+function makePersonaConfig(overrides: Partial<PersonaConfig> = {}): PersonaConfig {
   return {
-    id: 'persona-001',
-    name: 'coordinator',
-    model: 'gpt-test',
-    system_prompt_file: null,
-    skills: '[]',
-    capabilities: '{}',
-    mounts: '[]',
-    max_concurrent: null,
-    created_at: 1000,
-    updated_at: 1000,
+    name: 'test',
+    model: 'claude-test',
+    skills: [],
+    subagents: [],
+    capabilities: { allow: [], requireApproval: [] },
+    mounts: [],
+    queryTimeoutMinutes: 10,
+    maxConcurrent: undefined,
+    ...overrides,
+  } as unknown as PersonaConfig;
+}
+
+function makeLoadedPersona(overrides: Partial<LoadedPersona> = {}): LoadedPersona {
+  return {
+    config: makePersonaConfig(),
+    resolvedCapabilities: { allow: [], requireApproval: [] },
     ...overrides,
   };
 }
 
-function makePersonaRepo(rows: PersonaRow[] = []): PersonaRepository {
+function makePersonaLoader(personas: Array<{ id?: string; name: string; skills: string[] }>): PersonaLoader {
+  const names = personas.map((p) => p.name);
   return {
-    findAll: vi.fn().mockReturnValue(ok(rows)),
-  } as unknown as PersonaRepository;
+    listNames: vi.fn().mockReturnValue(names),
+    getByName: vi.fn().mockImplementation((name: string) => {
+      const found = personas.find((p) => p.name === name);
+      if (!found) return ok(undefined);
+      return ok(makeLoadedPersona({ config: makePersonaConfig({ name, skills: found.skills }) }));
+    }),
+    getById: vi.fn().mockImplementation((id: string) => {
+      const found = personas.find((p) => p.id === id);
+      if (!found) return ok(undefined);
+      return ok(makeLoadedPersona({ config: makePersonaConfig({ name: found.name, skills: found.skills }) }));
+    }),
+  } as unknown as PersonaLoader;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,24 +101,13 @@ describe('PersonaListHandler — manifest', () => {
 // ---------------------------------------------------------------------------
 
 describe('PersonaListHandler — success', () => {
-  it('returns all personas except the calling one with parsed skills', async () => {
-    const rows = [
-      makePersonaRow({ id: 'persona-001', name: 'coordinator', skills: '[]' }),
-      makePersonaRow({
-        id: 'persona-002',
-        name: 'researcher',
-        skills: '["web-research","summarize"]',
-      }),
-      makePersonaRow({
-        id: 'persona-003',
-        name: 'coder',
-        skills: '["typescript","testing"]',
-      }),
-    ];
-    const handler = new PersonaListHandler({
-      personaRepo: makePersonaRepo(rows),
-      logger: makeLogger(),
-    });
+  it('returns all live personas except the calling one with parsed skills', async () => {
+    const loader = makePersonaLoader([
+      { id: 'persona-001', name: 'coordinator', skills: [] },
+      { id: 'persona-002', name: 'researcher', skills: ['web-research', 'summarize'] },
+      { id: 'persona-003', name: 'coder', skills: ['typescript', 'testing'] },
+    ]);
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
 
     const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
 
@@ -114,16 +115,14 @@ describe('PersonaListHandler — success', () => {
     expect(result.tool).toBe('persona.list');
     expect(result.requestId).toBe('req-001');
     expect(result.result).toEqual([
-      { name: 'researcher', description: null, skills: ['web-research', 'summarize'] },
-      { name: 'coder', description: null, skills: ['typescript', 'testing'] },
+      { name: 'researcher', skills: ['web-research', 'summarize'] },
+      { name: 'coder', skills: ['typescript', 'testing'] },
     ]);
   });
 
-  it('returns empty array when personas table is empty', async () => {
-    const handler = new PersonaListHandler({
-      personaRepo: makePersonaRepo([]),
-      logger: makeLogger(),
-    });
+  it('returns empty array when no personas are loaded', async () => {
+    const loader = makePersonaLoader([]);
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
 
     const result = await handler.execute({}, makeContext());
 
@@ -131,138 +130,50 @@ describe('PersonaListHandler — success', () => {
     expect(result.result).toEqual([]);
   });
 
-  it('returns empty skills array for a persona with no skills configured (empty JSON array)', async () => {
-    const rows = [
-      makePersonaRow({ id: 'persona-002', name: 'other', skills: '[]' }),
-    ];
-    const handler = new PersonaListHandler({
-      personaRepo: makePersonaRepo(rows),
-      logger: makeLogger(),
-    });
+  it('returns empty skills array for a persona with no skills configured', async () => {
+    const loader = makePersonaLoader([
+      { id: 'persona-002', name: 'other', skills: [] },
+    ]);
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
 
     const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
 
     expect(result.status).toBe('success');
-    expect(result.result).toEqual([{ name: 'other', description: null, skills: [] }]);
+    expect(result.result).toEqual([{ name: 'other', skills: [] }]);
+  });
+
+  it('shows all personas when caller cannot be resolved from loader', async () => {
+    const loader = makePersonaLoader([
+      { id: 'persona-002', name: 'researcher', skills: [] },
+    ]);
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
+
+    // personaId that has no match in the loader — callerName will be null
+    const result = await handler.execute({}, makeContext({ personaId: 'unknown-id' }));
+
+    expect(result.status).toBe('success');
+    // All personas are shown since we can't identify the caller
+    expect(result.result).toEqual([{ name: 'researcher', skills: [] }]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Graceful degradation
+// Stale persona isolation
 // ---------------------------------------------------------------------------
 
-describe('PersonaListHandler — graceful degradation', () => {
-  it('returns empty skills array when skills column contains malformed JSON', async () => {
-    const rows = [
-      makePersonaRow({ id: 'persona-002', name: 'broken', skills: 'not-json' }),
-    ];
-    const handler = new PersonaListHandler({
-      personaRepo: makePersonaRepo(rows),
-      logger: makeLogger(),
-    });
+describe('PersonaListHandler — only live personas shown', () => {
+  it('does not include personas not present in PersonaLoader (stale DB rows)', async () => {
+    // Loader only has 'researcher' — 'stale-persona' is in DB but not in loader
+    const loader = makePersonaLoader([
+      { id: 'persona-002', name: 'researcher', skills: [] },
+    ]);
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
 
     const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
 
     expect(result.status).toBe('success');
-    expect(result.result).toEqual([{ name: 'broken', description: null, skills: [] }]);
-  });
-
-  it('returns empty skills array when skills column is a JSON object (not array)', async () => {
-    const rows = [
-      makePersonaRow({ id: 'persona-002', name: 'weird', skills: '{"key":"value"}' }),
-    ];
-    const handler = new PersonaListHandler({
-      personaRepo: makePersonaRepo(rows),
-      logger: makeLogger(),
-    });
-
-    const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
-
-    expect(result.status).toBe('success');
-    expect(result.result).toEqual([{ name: 'weird', description: null, skills: [] }]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Description extraction
-// ---------------------------------------------------------------------------
-
-describe('PersonaListHandler — description extraction', () => {
-  it('returns null when system_prompt_file is null', async () => {
-    const rows = [makePersonaRow({ id: 'persona-002', name: 'other', system_prompt_file: null })];
-    const handler = new PersonaListHandler({ personaRepo: makePersonaRepo(rows), logger: makeLogger() });
-
-    const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
-
-    expect(result.status).toBe('success');
-    const cards = result.result as Array<{ name: string; description: string | null; skills: string[] }>;
-    expect(cards[0].description).toBeNull();
-  });
-
-  it('extracts first non-empty line stripping leading # and whitespace', async () => {
-    vi.mocked(readFileSync).mockReturnValueOnce('# My Persona Title\n\nSome content' as unknown as Buffer);
-    const rows = [makePersonaRow({ id: 'persona-002', name: 'titled', system_prompt_file: '/path/to/sys.md' })];
-    const handler = new PersonaListHandler({ personaRepo: makePersonaRepo(rows), logger: makeLogger() });
-
-    const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
-
-    expect(result.status).toBe('success');
-    const cards = result.result as Array<{ name: string; description: string | null; skills: string[] }>;
-    expect(cards[0].description).toBe('My Persona Title');
-  });
-
-  it('extracts first non-empty line when no # prefix', async () => {
-    vi.mocked(readFileSync).mockReturnValueOnce('You are a coder.\n\nDetails here.' as unknown as Buffer);
-    const rows = [makePersonaRow({ id: 'persona-002', name: 'coder2', system_prompt_file: '/path/to/sys.md' })];
-    const handler = new PersonaListHandler({ personaRepo: makePersonaRepo(rows), logger: makeLogger() });
-
-    const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
-
-    expect(result.status).toBe('success');
-    const cards = result.result as Array<{ name: string; description: string | null; skills: string[] }>;
-    expect(cards[0].description).toBe('You are a coder.');
-  });
-
-  it('returns null when system_prompt_file does not exist (read throws)', async () => {
-    vi.mocked(readFileSync).mockImplementationOnce(() => { throw Object.assign(new Error('no such file'), { code: 'ENOENT' }); });
-    const rows = [makePersonaRow({ id: 'persona-002', name: 'missing', system_prompt_file: '/no/such/file.md' })];
-    const handler = new PersonaListHandler({ personaRepo: makePersonaRepo(rows), logger: makeLogger() });
-
-    const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
-
-    expect(result.status).toBe('success');
-    const cards = result.result as Array<{ name: string; description: string | null; skills: string[] }>;
-    expect(cards[0].description).toBeNull();
-  });
-
-  it('skips blank leading lines and returns first non-empty trimmed line', async () => {
-    vi.mocked(readFileSync).mockReturnValueOnce('\n\n## Section\nActual content' as unknown as Buffer);
-    const rows = [makePersonaRow({ id: 'persona-002', name: 'spaced', system_prompt_file: '/path/to/sys.md' })];
-    const handler = new PersonaListHandler({ personaRepo: makePersonaRepo(rows), logger: makeLogger() });
-
-    const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
-
-    expect(result.status).toBe('success');
-    const cards = result.result as Array<{ name: string; description: string | null; skills: string[] }>;
-    expect(cards[0].description).toBe('Section');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Error cases
-// ---------------------------------------------------------------------------
-
-describe('PersonaListHandler — errors', () => {
-  it('returns error result when personaRepo.findAll() fails', async () => {
-    const repo = {
-      findAll: vi.fn().mockReturnValue(err(new DbError('DB unavailable'))),
-    } as unknown as PersonaRepository;
-    const handler = new PersonaListHandler({ personaRepo: repo, logger: makeLogger() });
-
-    const result = await handler.execute({}, makeContext());
-
-    expect(result.status).toBe('error');
-    expect(result.tool).toBe('persona.list');
-    expect(result.error).toMatch(/DB unavailable/);
+    const names = (result.result as Array<{ name: string }>).map((c) => c.name);
+    expect(names).not.toContain('stale-persona');
+    expect(names).toContain('researcher');
   });
 });

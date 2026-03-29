@@ -84,7 +84,7 @@ export class HostToolsBridge {
     }
 
     this.personaListHandler = new PersonaListHandler({
-      personaRepo: ctx.repos.persona,
+      personaLoader: ctx.personaLoader,
       logger: ctx.logger,
     });
 

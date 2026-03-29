@@ -1,13 +1,15 @@
 /**
  * Host-side tool: persona.list
  *
- * Returns discovery cards for all personas available for delegation via
- * persona_send — excluding the calling persona itself.
+ * Returns discovery cards for all currently-loaded personas available for
+ * delegation via persona_send — excluding the calling persona itself.
+ *
+ * Uses PersonaLoader (the live in-memory cache) rather than the raw DB so
+ * that stale/unloaded personas are never advertised.
  */
 
-import { readFileSync } from 'node:fs';
 import type pino from 'pino';
-import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
+import type { PersonaLoader } from '../../personas/persona-loader.js';
 import type { ToolCallResult, ToolManifest } from '../tool-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
 
@@ -20,7 +22,6 @@ export interface PersonaListArgs {}
 
 export interface PersonaCard {
   name: string;
-  description: string | null;
   skills: string[];
 }
 
@@ -34,7 +35,7 @@ export class PersonaListHandler {
 
   constructor(
     private readonly deps: {
-      personaRepo: PersonaRepository;
+      personaLoader: PersonaLoader;
       logger: pino.Logger;
     },
   ) {}
@@ -47,20 +48,22 @@ export class PersonaListHandler {
       'persona.list: executing',
     );
 
-    const allResult = this.deps.personaRepo.findAll();
-    if (allResult.isErr()) {
-      const msg = `persona.list: failed to load personas — ${allResult.error.message}`;
-      this.deps.logger.error({ requestId, err: allResult.error }, msg);
-      return { requestId, tool: 'persona.list', status: 'error', error: msg };
-    }
+    // Resolve the calling persona's name so we can exclude it from the list.
+    const callerResult = this.deps.personaLoader.getById(context.personaId);
+    const callerName = callerResult.isOk() && callerResult.value
+      ? callerResult.value.config.name
+      : null;
 
-    const cards: PersonaCard[] = allResult.value
-      .filter((row) => row.id !== context.personaId)
-      .map((row) => ({
-        name: row.name,
-        description: this.extractDescription(row.system_prompt_file),
-        skills: this.parseSkills(row.skills),
-      }));
+    // List only live (loaded) personas — stale DB rows are excluded.
+    const cards: PersonaCard[] = this.deps.personaLoader.listNames()
+      .filter((name) => name !== callerName)
+      .map((name) => {
+        const loadedResult = this.deps.personaLoader.getByName(name);
+        const skills = loadedResult.isOk() && loadedResult.value
+          ? loadedResult.value.config.skills
+          : [];
+        return { name, skills };
+      });
 
     this.deps.logger.info(
       { requestId, count: cards.length },
@@ -73,31 +76,5 @@ export class PersonaListHandler {
       status: 'success',
       result: cards,
     };
-  }
-
-  private extractDescription(filePath: string | null): string | null {
-    if (!filePath) return null;
-    try {
-      const content = readFileSync(filePath, 'utf8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.replace(/^#+\s*/, '').trim();
-        if (trimmed) return trimmed;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
-
-  private parseSkills(raw: string): string[] {
-    try {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        return parsed.filter((s): s is string => typeof s === 'string');
-      }
-      return [];
-    } catch {
-      return [];
-    }
   }
 }
