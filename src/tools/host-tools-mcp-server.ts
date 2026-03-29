@@ -367,6 +367,11 @@ const TOOLS = [
     },
   },
   {
+    name: 'persona_list',
+    description: 'List all personas available for delegation via persona_send',
+    inputSchema: { type: 'object' as const, properties: {}, required: [] },
+  },
+  {
     name: 'background_agent',
     description: 'Starts and manages background agent workers. You have access to specialized agent profiles — always call action "profiles" first to discover what is available before spawning. When asked about your capabilities, available agents, or what you can delegate, call "profiles" to list them.',
     inputSchema: {

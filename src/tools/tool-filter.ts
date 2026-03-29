@@ -40,22 +40,13 @@ const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'schedule.manage', internalName: 'schedule.manage', mcpName: 'schedule_manage' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.send', mcpName: 'channel_send' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.send', mcpName: 'persona_send' },
+  { capabilityPrefix: 'persona.send', internalName: 'persona.list', mcpName: 'persona_list' },
   { capabilityPrefix: 'memory.access', internalName: 'memory.access', mcpName: 'memory_access' },
   { capabilityPrefix: 'net.http', internalName: 'net.http', mcpName: 'net_http' },
   { capabilityPrefix: 'db.query', internalName: 'db.query', mcpName: 'db_query' },
   { capabilityPrefix: 'subagent.invoke', internalName: 'subagent.invoke', mcpName: 'subagent_invoke' },
   { capabilityPrefix: 'subagent.background', internalName: 'subagent.background', mcpName: 'background_agent' },
 ];
-
-/** Derived lookup: capability prefix → internal tool name. */
-const CAPABILITY_TO_TOOL = new Map(
-  HOST_TOOL_REGISTRY.map((e) => [e.capabilityPrefix, e.internalName]),
-);
-
-/** Derived lookup: internal tool name → MCP tool name. */
-const TOOL_TO_MCP = new Map(
-  HOST_TOOL_REGISTRY.map((e) => [e.internalName, e.mcpName]),
-);
 
 /** Derived lookup: MCP tool name → internal tool name. Used by bridge and MCP server. */
 export const MCP_TO_INTERNAL = new Map(
@@ -113,7 +104,7 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     toolPrefix: 'persona.send',
     mcpName: 'persona_send',
     labels: [
-      { label: 'persona.send:*', description: 'Send tasks to any persona over the A2A layer' },
+      { label: 'persona.send:*', description: 'Send tasks to any persona and discover available personas for delegation' },
     ],
   },
   {
@@ -201,12 +192,10 @@ export function filterAllowedMcpTools(capabilities: ResolvedCapabilities): strin
     const prefix = extractCapabilityPrefix(label);
     if (prefix === null) continue;
 
-    const toolName = CAPABILITY_TO_TOOL.get(prefix);
-    if (toolName === undefined) continue;
-
-    const mcpName = TOOL_TO_MCP.get(toolName);
-    if (mcpName !== undefined) {
-      allowedMcpNames.add(mcpName);
+    for (const entry of HOST_TOOL_REGISTRY) {
+      if (entry.capabilityPrefix === prefix) {
+        allowedMcpNames.add(entry.mcpName);
+      }
     }
   }
 
@@ -228,9 +217,10 @@ export function filterAllowedTools(capabilities: ResolvedCapabilities): string[]
     const prefix = extractCapabilityPrefix(label);
     if (prefix === null) continue;
 
-    const toolName = CAPABILITY_TO_TOOL.get(prefix);
-    if (toolName !== undefined) {
-      allowedTools.add(toolName);
+    for (const entry of HOST_TOOL_REGISTRY) {
+      if (entry.capabilityPrefix === prefix) {
+        allowedTools.add(entry.internalName);
+      }
     }
   }
 
@@ -249,10 +239,10 @@ export function isToolAllowed(toolName: string, capabilities: ResolvedCapabiliti
     const prefix = extractCapabilityPrefix(label);
     if (prefix === null) continue;
 
-    const mappedToolName = CAPABILITY_TO_TOOL.get(prefix);
-    if (mappedToolName === toolName) {
-      return true;
-    }
+    const hasMatch = HOST_TOOL_REGISTRY.some(
+      (entry) => entry.capabilityPrefix === prefix && entry.internalName === toolName,
+    );
+    if (hasMatch) return true;
   }
 
   return false;

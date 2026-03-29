@@ -12,6 +12,9 @@ export { ChannelSendHandler } from './channel-send.js';
 export type { PersonaSendTool, PersonaSendArgs } from './persona-send.js';
 export { PersonaSendHandler } from './persona-send.js';
 
+export type { PersonaListTool, PersonaListArgs, PersonaCard } from './persona-list.js';
+export { PersonaListHandler } from './persona-list.js';
+
 export type { ScheduleManageTool, ScheduleManageArgs } from './schedule-manage.js';
 export { ScheduleManageHandler } from './schedule-manage.js';
 

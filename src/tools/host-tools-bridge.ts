@@ -16,6 +16,7 @@ import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
 import { ChannelSendHandler, type ChannelSendArgs } from './host-tools/channel-send.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
+import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
 import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-access.js';
@@ -52,6 +53,7 @@ export class HostToolsBridge {
   private scheduleHandler: ScheduleManageHandler;
   private channelHandler: ChannelSendHandler;
   private personaSendHandler: PersonaSendHandler | null = null;
+  private personaListHandler: PersonaListHandler;
   private httpHandler: HttpProxyHandler;
   private dbHandler: DbQueryHandler;
   private memoryHandler: MemoryAccessHandler;
@@ -80,6 +82,11 @@ export class HostToolsBridge {
         logger: ctx.logger,
       });
     }
+
+    this.personaListHandler = new PersonaListHandler({
+      personaLoader: ctx.personaLoader,
+      logger: ctx.logger,
+    });
 
     this.httpHandler = new HttpProxyHandler({
       logger: ctx.logger,
@@ -435,6 +442,9 @@ export class HostToolsBridge {
           };
         }
         return this.personaSendHandler.execute(args as unknown as PersonaSendArgs, context);
+
+      case 'persona.list':
+        return this.personaListHandler.execute({}, context);
 
       case 'memory.access':
         return this.memoryHandler.execute(args as unknown as MemoryAccessArgs, context);
