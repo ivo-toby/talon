@@ -27,6 +27,7 @@ export {
   SkillError,
   SubAgentError,
   BackgroundAgentError,
+  A2AError,
 } from './error-types.js';
 
 export { ErrorCodes } from './error-codes.js';
