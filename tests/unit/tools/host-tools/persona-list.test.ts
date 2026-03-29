@@ -115,8 +115,8 @@ describe('PersonaListHandler — success', () => {
     expect(result.tool).toBe('persona.list');
     expect(result.requestId).toBe('req-001');
     expect(result.result).toEqual([
-      { name: 'researcher', skills: ['web-research', 'summarize'] },
-      { name: 'coder', skills: ['typescript', 'testing'] },
+      { name: 'researcher', description: null, skills: ['web-research', 'summarize'] },
+      { name: 'coder', description: null, skills: ['typescript', 'testing'] },
     ]);
   });
 
@@ -139,7 +139,7 @@ describe('PersonaListHandler — success', () => {
     const result = await handler.execute({}, makeContext({ personaId: 'persona-001' }));
 
     expect(result.status).toBe('success');
-    expect(result.result).toEqual([{ name: 'other', skills: [] }]);
+    expect(result.result).toEqual([{ name: 'other', description: null, skills: [] }]);
   });
 
   it('shows all personas when caller cannot be resolved from loader', async () => {
@@ -153,7 +153,7 @@ describe('PersonaListHandler — success', () => {
 
     expect(result.status).toBe('success');
     // All personas are shown since we can't identify the caller
-    expect(result.result).toEqual([{ name: 'researcher', skills: [] }]);
+    expect(result.result).toEqual([{ name: 'researcher', description: null, skills: [] }]);
   });
 });
 

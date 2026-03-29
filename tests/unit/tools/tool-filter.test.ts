@@ -121,7 +121,6 @@ describe('filterAllowedMcpTools', () => {
         'schedule.manage',
         'channel.send:any',
         'persona.send:*',
-        'persona.list:*',
         'memory.access',
         'net.http',
         'db.query',
@@ -137,12 +136,15 @@ describe('filterAllowedMcpTools', () => {
     expect(result).toContain('persona_list');
   });
 
-  it('maps persona.list capability to persona_list MCP tool', () => {
+  it('maps persona.send capability to both persona_send and persona_list MCP tools', () => {
     const caps: ResolvedCapabilities = {
-      allow: ['persona.list:*'],
+      allow: ['persona.send:*'],
       requireApproval: [],
     };
-    expect(filterAllowedMcpTools(caps)).toEqual(['persona_list']);
+    const result = filterAllowedMcpTools(caps);
+    expect(result).toContain('persona_send');
+    expect(result).toContain('persona_list');
+    expect(result).toHaveLength(2);
   });
 
   it('maps subagent.background capability to background_agent MCP tool', () => {

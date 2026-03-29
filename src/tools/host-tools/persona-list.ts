@@ -8,6 +8,7 @@
  * that stale/unloaded personas are never advertised.
  */
 
+import fs from 'node:fs';
 import type pino from 'pino';
 import type { PersonaLoader } from '../../personas/persona-loader.js';
 import type { ToolCallResult, ToolManifest } from '../tool-types.js';
@@ -22,6 +23,7 @@ export interface PersonaListArgs {}
 
 export interface PersonaCard {
   name: string;
+  description: string | null;
   skills: string[];
 }
 
@@ -39,6 +41,20 @@ export class PersonaListHandler {
       logger: pino.Logger;
     },
   ) {}
+
+  private readDescription(systemPromptFile: string | null | undefined): string | null {
+    if (!systemPromptFile) return null;
+    try {
+      const content = fs.readFileSync(systemPromptFile, 'utf-8');
+      for (const line of content.split('\n')) {
+        const trimmed = line.replace(/^#+\s*/, '').trim();
+        if (trimmed) return trimmed;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
 
   async execute(_args: PersonaListArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
@@ -59,10 +75,10 @@ export class PersonaListHandler {
       .filter((name) => name !== callerName)
       .map((name) => {
         const loadedResult = this.deps.personaLoader.getByName(name);
-        const skills = loadedResult.isOk() && loadedResult.value
-          ? loadedResult.value.config.skills
-          : [];
-        return { name, skills };
+        const loaded = loadedResult.isOk() && loadedResult.value ? loadedResult.value : null;
+        const skills = loaded ? loaded.config.skills : [];
+        const description = this.readDescription(loaded?.config.systemPromptFile);
+        return { name, description, skills };
       });
 
     this.deps.logger.info(
