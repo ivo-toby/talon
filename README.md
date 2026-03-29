@@ -91,7 +91,7 @@ backgroundAgent:
 
 - **Durable queue** — SQLite-backed message queue with crash recovery, retry, and dead-letter
 - **Scheduler** — Agent-managed cron, interval, and one-shot scheduled tasks
-- **Host-tools MCP bridge** — 7 built-in tools (schedule, channel, memory, http, db, subagent, background agent) exposed via Unix socket
+- **Host-tools MCP bridge** — Built-in host tools (schedule, channel, memory, http, db, execution env, subagent, background agent) exposed via Unix socket
 - **Sub-agent system** — Route mechanical LLM tasks (summarization, memory grooming, search) to cheap models via pluggable sub-agents
 - **Background agents** — Launch long-running Claude Code workers for deep tasks without blocking the foreground conversation
 - **Sandboxed execution environments** — Isolate background agent work in persistent Firecracker VMs via [Sprites.dev](https://sprites.dev), with file transfer, checkpointing, and automatic cleanup
@@ -1224,7 +1224,7 @@ Talon implements defense in depth through capability-based access control, host-
 
 ### Host-Tools MCP Bridge
 
-Agents interact with the host through 5 MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
+Agents interact with the host through a small set of MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
 
 | Tool              | Purpose                                                                  |
 | ----------------- | ------------------------------------------------------------------------ |
@@ -1234,6 +1234,7 @@ Agents interact with the host through 5 MCP tools exposed over a Unix socket. Th
 | `net_http`        | Fetch external URLs                                                      |
 | `db_query`        | Read-only database queries                                               |
 | `subagent_invoke` | Invoke a sub-agent by name                                               |
+| `background_agent`| Launch and manage long-running background workers                        |
 | `execution_env`   | Create, exec, upload, download, checkpoint, and restore Sprite VMs       |
 
 ### Capability System
@@ -1434,14 +1435,14 @@ Concrete use cases:
 - **Code review with live testing** — the agent clones a PR branch into a Sprite, runs the test suite, and reports results without polluting the host with dependencies or build artifacts
 - **Dependency upgrades** — the agent installs updated packages inside a Sprite, runs the full build and test pipeline, and only downloads the updated lockfile if everything passes
 - **Multi-variant experiments** — checkpoint a Sprite after initial setup, then restore repeatedly to test different approaches from the same baseline
-- **Untrusted code execution** — run user-submitted code or scripts in a VM that cannot access the host network or filesystem
+- **Host-isolated build/test runs** — run builds, tests, and setup in a VM that does not get direct host filesystem access; use additional egress controls if you need network isolation guarantees
 
 ### How it works
 
 When a foreground agent spawns a background worker with `sandbox=true`:
 
 1. Talon provisions a Sprite VM via the Sprites.dev API
-2. The source directory is uploaded into the VM
+2. If `workingDirectory` is provided, Talon uploads that directory into the VM
 3. The background worker runs with a per-task control directory as its `cwd` (not the host repo)
 4. The worker uses the `execution_env` tool to run commands, transfer files, and manage checkpoints inside the VM
 5. When the task completes (or fails, times out, or is cancelled), Talon destroys the VM automatically
@@ -1454,7 +1455,6 @@ Enable Sprites in `talond.yaml`:
 sprites:
   enabled: true
   token: ${SPRITES_TOKEN}
-  defaultBaseSnapshot: node-22-bookworm
   workingDirectory: /workspace
   createTimeoutMs: 60000
   execTimeoutMs: 1200000     # 20 minutes
@@ -1470,7 +1470,7 @@ sprites:
 | `enabled`                  | `false`                    | Enable Sprites integration                                 |
 | `token`                    | —                          | Sprites.dev API token (required when enabled)              |
 | `apiBaseUrl`               | `https://api.sprites.dev`  | API endpoint                                               |
-| `defaultBaseSnapshot`      | —                          | Default VM base image (e.g., `node-22-bookworm`)           |
+| `defaultBaseSnapshot`      | —                          | Reserved for future snapshot-based creation; currently unsupported by the runtime |
 | `workingDirectory`         | `/workspace`               | Default working directory inside the VM                    |
 | `createTimeoutMs`          | `60000`                    | Timeout for VM creation                                    |
 | `execTimeoutMs`            | `1200000`                  | Default command execution timeout (20 min)                 |
@@ -1494,7 +1494,6 @@ personas:
         - channel.send:telegram
     executionEnv:
       sandboxDefault: true            # sandbox=true unless overridden
-      baseSnapshot: node-22-bookworm
       workingDirectory: /workspace
       resourceLimits:
         cpus: 4
@@ -1504,25 +1503,25 @@ personas:
 | Persona option             | Description                                                    |
 | -------------------------- | -------------------------------------------------------------- |
 | `executionEnv.sandboxDefault` | When `true`, `background_agent spawn` defaults to sandboxed |
-| `executionEnv.baseSnapshot`   | Override the global default base image for this persona      |
+| `executionEnv.baseSnapshot`   | Reserved for future snapshot-based creation; currently unsupported by the runtime |
 | `executionEnv.workingDirectory` | Override the VM working directory                          |
 | `executionEnv.resourceLimits`   | Override CPU, memory, and disk limits                      |
 
 ### The `execution_env` tool
 
-Background workers interact with their Sprite VM through the `execution_env` host tool. Available actions:
+Foreground agents and background workers spawned with `sandbox=true` interact with Sprite VMs through the `execution_env` host tool. Available actions:
 
 | Action       | Purpose                                                      | Required args              |
 | ------------ | ------------------------------------------------------------ | -------------------------- |
 | `create`     | Provision a new VM (usually handled automatically on spawn)  | —                          |
 | `exec`       | Run a command inside the VM                                  | `envId`, `command`         |
-| `upload`     | Copy files from the host control directory into the VM       | `envId`, `sourcePath`, `destinationPath` |
-| `download`   | Copy files from the VM to the host control directory         | `envId`, `sourcePath`, `destinationPath` |
+| `upload`     | Copy files from the host into the VM                         | `envId`, `sourcePath`, `destinationPath` |
+| `download`   | Copy files from the VM back to the host                      | `envId`, `sourcePath`, `destinationPath` |
 | `checkpoint` | Snapshot the current VM state                                | `envId`                    |
 | `restore`    | Roll the VM back to a previous checkpoint                    | `envId`, `checkpointId`    |
 | `destroy`    | Tear down the VM                                             | `envId`                    |
 
-File transfers are restricted to the task's control directory on the host — the worker cannot read or write arbitrary host paths.
+Host file transfers are restricted to Talon's allowed host roots. For foreground agents, that is the thread workspace. For background agents, that is the requested `workingDirectory`, plus the per-task control directory when sandboxed. Directory uploads require `recursive: true`; downloads are file-only.
 
 ### Checkpoint and restore
 
