@@ -51,6 +51,7 @@ export class QueueRepository extends BaseRepository {
   private readonly findDeadLetterStmt: Database.Statement;
   private readonly countByStatusStmt: Database.Statement;
   private readonly hasInflightItemStmt: Database.Statement;
+  private readonly claimNextCollaborationStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -73,6 +74,24 @@ export class QueueRepository extends BaseRepository {
       WHERE id = (
         SELECT id FROM queue_items
         WHERE thread_id = @thread_id
+          AND status IN ('pending', 'failed')
+          AND (next_retry_at IS NULL OR next_retry_at <= @now)
+        ORDER BY created_at ASC
+        LIMIT 1
+      )
+      RETURNING *
+    `);
+
+    // Atomically claim the oldest pending/retryable collaboration item for a
+    // given thread. Used to bypass the per-thread single-inflight invariant
+    // when a collaboration item is pending behind a regular item.
+    this.claimNextCollaborationStmt = db.prepare(`
+      UPDATE queue_items
+      SET status = 'claimed', claimed_at = @now, updated_at = @now
+      WHERE id = (
+        SELECT id FROM queue_items
+        WHERE thread_id = @thread_id
+          AND type = 'collaboration'
           AND status IN ('pending', 'failed')
           AND (next_retry_at IS NULL OR next_retry_at <= @now)
         ORDER BY created_at ASC
@@ -145,6 +164,23 @@ export class QueueRepository extends BaseRepository {
       return ok(row ?? null);
     } catch (cause) {
       return err(new DbError(`Failed to claim queue item: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /**
+   * Atomically claims the oldest pending collaboration item for the given thread.
+   *
+   * Used to bypass the per-thread single-inflight invariant when a collaboration
+   * item is blocked behind a regular pending item. Returns null if no eligible
+   * collaboration item exists.
+   */
+  claimNextCollaboration(threadId: string): Result<QueueItemRow | null, DbError> {
+    try {
+      const now = this.now();
+      const row = this.claimNextCollaborationStmt.get({ thread_id: threadId, now }) as QueueItemRow | undefined;
+      return ok(row ?? null);
+    } catch (cause) {
+      return err(new DbError(`Failed to claim collaboration queue item: ${String(cause)}`, cause instanceof Error ? cause : undefined));
     }
   }
 
