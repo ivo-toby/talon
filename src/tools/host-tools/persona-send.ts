@@ -37,7 +37,7 @@ interface PersonaSendOutput {
 // returns a clean timeout result before the transport layer cuts the connection.
 const DEFAULT_MAX_WAIT_MS = 25_000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
-const TERMINAL_STATES = new Set<A2ATaskState>(['completed', 'failed', 'canceled']);
+const TERMINAL_STATES = new Set<A2ATaskState>(['completed', 'failed', 'canceled', 'input-required']);
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -207,9 +207,10 @@ export class PersonaSendHandler {
       };
     }
 
+    // covers 'canceled' and 'input-required'
     return {
       task_id: row.id,
-      state: 'canceled',
+      state: row.state,
     };
   }
 
