@@ -11,12 +11,26 @@ import type { MemoryItemRow, InsertMemoryItemInput } from '../../../core/databas
 // Empty/insufficient arrays are handled at runtime (validIds check + consolidate guard).
 // Flat schema instead of discriminatedUnion — Anthropic structured output does not support
 // the `oneOf` keyword that discriminatedUnion generates in JSON Schema.
-const GroomActionSchema = z.object({
-  type: z.enum(['prune', 'consolidate', 'keep']),
-  ids: z.array(z.string()),
-  reason: z.string(),
-  mergedContent: z.string().optional(),
-});
+// superRefine enforces the consolidate/mergedContent invariant at parse time without oneOf.
+const GroomActionSchema = z
+  .object({
+    type: z.enum(['prune', 'consolidate', 'keep']),
+    ids: z.array(z.string()),
+    reason: z.string(),
+    mergedContent: z
+      .string()
+      .optional()
+      .describe('Required when type="consolidate".'),
+  })
+  .superRefine((value, ctx) => {
+    if (value.type === 'consolidate' && !value.mergedContent) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mergedContent'],
+        message: 'mergedContent is required when type="consolidate".',
+      });
+    }
+  });
 
 const GroomResponseSchema = z.object({
   actions: z.array(GroomActionSchema),

@@ -276,6 +276,43 @@ describe('memory-groomer', () => {
     expect(result._unsafeUnwrap().data!.kept).toBe(1);
   });
 
+  it('skips consolidate action when mergedContent is missing', async () => {
+    const items = [
+      makeMemoryItem({ id: 'mem-1', content: 'Fact A' }),
+      makeMemoryItem({ id: 'mem-2', content: 'Fact B' }),
+    ];
+    const ctx = makeCtx({
+      findByThread: vi.fn().mockReturnValue(ok(items)),
+    });
+
+    generateObjectMock.mockResolvedValueOnce({
+      object: {
+        actions: [
+          {
+            type: 'consolidate',
+            ids: ['mem-1', 'mem-2'],
+            reason: 'Should be merged but mergedContent is absent',
+            // mergedContent intentionally omitted
+          },
+        ],
+      },
+      usage: { inputTokens: 200, outputTokens: 50 },
+    });
+
+    const result = await run(ctx, {});
+    expect(result.isOk()).toBe(true);
+    const value = result._unsafeUnwrap();
+    // Action must be skipped — no inserts, no deletes, 0 consolidated
+    expect(value.data!.consolidated).toBe(0);
+    expect(ctx.services.memory.insert).not.toHaveBeenCalled();
+    expect(ctx.services.memory.delete).not.toHaveBeenCalled();
+    // Warn should have been logged
+    expect(ctx.services.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ action: expect.anything() }),
+      expect.stringContaining('mergedContent'),
+    );
+  });
+
   it('reviews all items when periodMs is 0', async () => {
     const items = [makeMemoryItem({ id: 'mem-1' })];
     const ctx = makeCtx({
