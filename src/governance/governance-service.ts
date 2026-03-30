@@ -11,7 +11,8 @@ const HOURLY_WINDOW_MS = 3_600_000;
 const DAILY_WINDOW_MS = 86_400_000;
 
 export type GovernanceViolationType = 'rate_limit' | 'spending_cap' | 'loop_detection';
-export type GovernanceErrorCode = 'rate_limit_exceeded' | 'spending_cap_exceeded' | 'loop_detected';
+export type GovernanceActionTaken = 'blocked' | 'warned';
+export type GovernanceErrorCode = 'rate_limit_exceeded' | 'spending_cap_exceeded' | 'loop_detected' | 'query_failed';
 
 export class GovernanceError extends Error {
   constructor(
@@ -73,12 +74,19 @@ export class GovernanceServiceImpl implements GovernanceService {
     this.governanceRepo.pruneOldEvents(RATE_LIMIT_WINDOW_MS);
 
     const channelCountResult = this.governanceRepo.countRecentEvents(channelId, undefined, RATE_LIMIT_EVENT_TYPE, RATE_LIMIT_WINDOW_MS);
+    if (channelCountResult.isErr()) {
+      return err(new GovernanceError('rate_limit_exceeded', 'Unable to verify rate limits (DB error) — fail-closed'));
+    }
+
     const senderCountResult = this.governanceRepo.countRecentEvents(channelId, senderId, RATE_LIMIT_EVENT_TYPE, RATE_LIMIT_WINDOW_MS);
+    if (senderCountResult.isErr()) {
+      return err(new GovernanceError('rate_limit_exceeded', 'Unable to verify rate limits (DB error) — fail-closed'));
+    }
 
     this.governanceRepo.recordRateLimitEvent({ id: randomUUID(), channelId, senderId, eventType: RATE_LIMIT_EVENT_TYPE });
 
-    const channelCount = channelCountResult.isOk() ? channelCountResult.value : 0;
-    const senderCount = senderCountResult.isOk() ? senderCountResult.value : 0;
+    const channelCount = channelCountResult.value;
+    const senderCount = senderCountResult.value;
 
     if (channelCount >= rateLimits.inbound_per_minute) {
       this.governanceRepo.recordViolation({ id: randomUUID(), violation: 'rate_limit', detail: { scope: 'channel', channelId, count: channelCount, limit: rateLimits.inbound_per_minute }, actionTaken: 'blocked' });
@@ -118,7 +126,8 @@ export class GovernanceServiceImpl implements GovernanceService {
 
     if (hourlyCap !== null) {
       const result = this.runRepo.aggregateByPersona(personaId, now - HOURLY_WINDOW_MS, now);
-      if (result.isOk()) hourlyTokens = sumTokens(result.value);
+      if (result.isErr()) return err(new GovernanceError('spending_cap_exceeded', `Failed to query hourly usage for ${personaId} — fail-closed`));
+      hourlyTokens = sumTokens(result.value);
       if (hourlyTokens >= hourlyCap) {
         const status: BudgetStatus = { withinBudget: false, percentUsed: (hourlyTokens / hourlyCap) * 100, warningTriggered: true, tokensUsed: hourlyTokens, cap: hourlyCap };
         this.governanceRepo.recordViolation({ id: randomUUID(), personaId, violation: 'spending_cap', detail: { scope: 'hourly', tokensUsed: hourlyTokens, cap: hourlyCap }, actionTaken: 'blocked' });
@@ -129,7 +138,8 @@ export class GovernanceServiceImpl implements GovernanceService {
 
     if (dailyCap !== null) {
       const result = this.runRepo.aggregateByPersona(personaId, now - DAILY_WINDOW_MS, now);
-      if (result.isOk()) dailyTokens = sumTokens(result.value);
+      if (result.isErr()) return err(new GovernanceError('spending_cap_exceeded', `Failed to query daily usage for ${personaId} — fail-closed`));
+      dailyTokens = sumTokens(result.value);
       if (dailyTokens >= dailyCap) {
         const status: BudgetStatus = { withinBudget: false, percentUsed: (dailyTokens / dailyCap) * 100, warningTriggered: true, tokensUsed: dailyTokens, cap: dailyCap };
         this.governanceRepo.recordViolation({ id: randomUUID(), personaId, violation: 'spending_cap', detail: { scope: 'daily', tokensUsed: dailyTokens, cap: dailyCap }, actionTaken: 'blocked' });
@@ -181,9 +191,9 @@ export class GovernanceServiceImpl implements GovernanceService {
     const now = Date.now();
 
     const hourlyResult = this.runRepo.aggregateByPersona(personaId, now - HOURLY_WINDOW_MS, now);
-    if (hourlyResult.isErr()) return err(new GovernanceError('spending_cap_exceeded', 'Failed to query hourly usage'));
+    if (hourlyResult.isErr()) return err(new GovernanceError('query_failed', 'Failed to query hourly usage'));
     const dailyResult = this.runRepo.aggregateByPersona(personaId, now - DAILY_WINDOW_MS, now);
-    if (dailyResult.isErr()) return err(new GovernanceError('spending_cap_exceeded', 'Failed to query daily usage'));
+    if (dailyResult.isErr()) return err(new GovernanceError('query_failed', 'Failed to query daily usage'));
 
     return ok({ personaId, hourlyTokensUsed: sumTokens(hourlyResult.value), hourlyTokenCap: hourlyCap, dailyTokensUsed: sumTokens(dailyResult.value), dailyTokenCap: dailyCap });
   }

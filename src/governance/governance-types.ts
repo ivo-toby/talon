@@ -3,5 +3,4 @@
  * Core types (GovernanceError, BudgetStatus, ToolCallRecord) live in governance-service.ts.
  */
 
-export type GovernanceViolationType = 'rate_limit' | 'spending_cap' | 'loop_detection';
-export type GovernanceActionTaken = 'blocked' | 'warned';
+export type { GovernanceViolationType, GovernanceActionTaken } from './governance-service.js';

@@ -287,9 +287,9 @@ describe('GovernanceServiceImpl', () => {
     );
 
     const result = service.checkLoopConditions('run-1', 2, [
-      { toolName: 'web_search', args: { q: 'a' } },
-      { toolName: 'web_search', args: { q: 'a' } },
-      { toolName: 'web_search', args: { q: 'a' } },
+      { tool: 'web_search', args: { q: 'a' } },
+      { tool: 'web_search', args: { q: 'a' } },
+      { tool: 'web_search', args: { q: 'a' } },
     ]);
 
     expect(result.isErr()).toBe(true);
@@ -308,8 +308,8 @@ describe('GovernanceServiceImpl', () => {
     );
 
     const result = service.checkLoopConditions('run-1', 3, [
-      { toolName: 'web_search', args: { q: 'a' } },
-      { toolName: 'web_search', args: { q: 'b' } },
+      { tool: 'web_search', args: { q: 'a' } },
+      { tool: 'web_search', args: { q: 'b' } },
     ]);
 
     expect(result.isOk()).toBe(true);

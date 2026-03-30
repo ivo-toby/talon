@@ -410,12 +410,12 @@ export class TalondDaemon {
         // Build governance status if governance is configured.
         let governance: Record<string, unknown> | undefined;
         if (this.ctx?.config.governance) {
+          const govRepo = new GovernanceRepository(this.ctx.db);
           const govService = new GovernanceServiceImpl(
             this.ctx.config.governance,
             this.ctx.repos.run,
-            new GovernanceRepository(this.ctx.db),
+            govRepo,
           );
-          const govRepo = new GovernanceRepository(this.ctx.db);
 
           const perPersonaStatus: Array<Record<string, unknown>> = [];
           const alerts: Array<Record<string, unknown>> = [];
