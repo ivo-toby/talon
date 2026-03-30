@@ -168,7 +168,7 @@ export class QueueRepository extends BaseRepository {
   }
 
   /**
-   * Atomically claims the oldest pending collaboration item for the given thread.
+   * Atomically claims the oldest pending/retryable collaboration item for the given thread.
    *
    * Used to bypass the per-thread single-inflight invariant when a collaboration
    * item is blocked behind a regular pending item. Returns null if no eligible

@@ -21,6 +21,8 @@ import { rowToQueueItem } from './queue-mapper.js';
  * Key invariants:
  * - Items within a thread are processed in FIFO (oldest-first) order.
  * - Only one item per thread may be claimed at a time (no interleaved runs).
+ *   Exception: a collaboration item may be claimed for a thread that already
+ *   has an in-flight item, to prevent persona_send await_reply deadlocks.
  * - Failures increment the attempt counter and schedule the next retry.
  * - Items that exhaust max attempts are moved to the dead-letter queue.
  */
@@ -117,6 +119,24 @@ export class QueueProcessor {
           // Collaboration item is pending behind a regular item. Fall through
           // and use the type-filtered claim.
           claimCollaborationOnly = true;
+        }
+      }
+
+      // Re-check inflight status immediately before the type-filtered claim to
+      // guard against a TOCTOU race: if the thread finished between the initial
+      // check and now, skip the bypass so we don't jump a regular FIFO item.
+      if (claimCollaborationOnly) {
+        const inflightRecheckResult = this.queueRepo.hasInflightItem(threadId);
+        if (inflightRecheckResult.isErr()) {
+          this.logger.error(
+            { err: inflightRecheckResult.error, threadId },
+            'processNext: failed to re-check inflight items before claim',
+          );
+          continue;
+        }
+        if (!inflightRecheckResult.value) {
+          // Thread is no longer in-flight; do not bypass the regular FIFO item.
+          claimCollaborationOnly = false;
         }
       }
 
