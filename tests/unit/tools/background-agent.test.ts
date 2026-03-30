@@ -95,6 +95,11 @@ function createHandler(overrides: Record<string, unknown> = {}) {
           name: 'telegram-main',
         }),
       ),
+      findEnabled: vi.fn().mockReturnValue(
+        ok([
+          { id: 'channel-1', name: 'telegram-main' },
+        ]),
+      ),
     } as any,
     skillResolver: {
       mergePromptFragments: vi.fn().mockReturnValue('Skill instructions.'),

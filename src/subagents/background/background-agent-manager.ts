@@ -20,6 +20,10 @@ export interface SpawnBackgroundAgentInput {
   prompt: string;
   personaPrompt: string;
   threadContext?: string;
+  /** Pre-formatted channel list so the background agent knows which channels are available. */
+  channelContext?: string;
+  /** Pre-formatted timestamp string so the background agent can reason about time. */
+  timeContext?: string;
   mcpServers: Record<string, CanonicalMcpServer>;
   personaId: string;
   workerPersonaId: string;
@@ -175,6 +179,8 @@ export class BackgroundAgentManager {
       threadId: input.threadId,
       channelName: input.channelName,
       threadContext: input.threadContext,
+      channelContext: input.channelContext,
+      timeContext: input.timeContext,
     });
 
     const sandboxContextResult = input.sandbox
@@ -723,9 +729,13 @@ export class BackgroundAgentManager {
     threadId: string;
     channelName: string;
     threadContext?: string;
+    channelContext?: string;
+    timeContext?: string;
   }): string {
     return [
       options.personaPrompt,
+      options.channelContext || '',
+      options.timeContext || '',
       '## Background Task Context',
       `Task ID: ${options.taskId}`,
       `Thread ID: ${options.threadId}`,

@@ -161,6 +161,34 @@ export class BackgroundAgentHandler {
       return this.errorResult(requestId, `Channel not found: ${threadResult.value.channel_id}`);
     }
 
+    // Build channel context so the background agent knows which channels are available.
+    const currentChannelName = channelResult.value.name;
+    const enabledChannelsResult = this.deps.channelRepository.findEnabled();
+    const allChannelNames = enabledChannelsResult.isOk()
+      ? enabledChannelsResult.value.map((c) => c.name)
+      : [currentChannelName];
+    const channelContext = [
+      'Available channels for channel_send tool:',
+      ...allChannelNames.map((name) =>
+        name === currentChannelName ? `  - ${name} (current thread)` : `  - ${name}`,
+      ),
+      `When sending messages, use channelId: "${currentChannelName}".`,
+    ].join('\n');
+
+    // Generate fresh timestamp so the background agent can reason about time.
+    const now_ = new Date();
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const offsetMin = now_.getTimezoneOffset();
+    const offsetSign = offsetMin <= 0 ? '+' : '-';
+    const absOffset = Math.abs(offsetMin);
+    const offsetStr = `${offsetSign}${pad(Math.floor(absOffset / 60))}:${pad(absOffset % 60)}`;
+    const localISO = `${now_.getFullYear()}-${pad(now_.getMonth() + 1)}-${pad(now_.getDate())}T${pad(now_.getHours())}:${pad(now_.getMinutes())}:${pad(now_.getSeconds())}${offsetStr}`;
+    const tzAbbr = Intl.DateTimeFormat('en', { timeZoneName: 'short' })
+      .formatToParts(now_)
+      .find((p) => p.type === 'timeZoneName')?.value ?? 'UTC';
+    const dayName = now_.toLocaleDateString('en', { weekday: 'long' });
+    const timeContext = `Current time: ${localISO} (${tzAbbr}, ${dayName})`;
+
     const loadedPersona = loadedPersonaResult.value;
     const workerPersonaRowResult = profileName
       ? this.deps.personaRepository.findByName(targetPersonaName)
@@ -231,6 +259,8 @@ export class BackgroundAgentHandler {
       prompt: args.prompt,
       personaPrompt: runtimeContext.personaPrompt,
       threadContext: previousContext,
+      channelContext,
+      timeContext,
       mcpServers: runtimeContext.mcpServers,
       personaId: context.personaId,
       workerPersonaId: workerPersonaRowResult.value.id,
