@@ -752,11 +752,11 @@ bindings:
 
 ### Bot-self filtering
 
-When multiple Talon bots coexist in the same workspace, server, or group, supported connectors automatically filter messages from other bots to prevent feedback loops — no configuration needed:
+Connectors automatically filter inbound messages from all bot accounts to prevent feedback loops — no configuration needed:
 
-- **Slack** — drops all inbound messages that carry a `bot_id` field (platform-level).
-- **Discord** — drops all messages from `author.bot` accounts (platform-level).
-- **Telegram** — drops messages from sibling Talon bot user IDs (injected at startup).
+- **Slack** — drops all messages with a `bot_id` field.
+- **Discord** — drops all messages from `author.bot` accounts.
+- **Telegram** — drops all messages where `from.is_bot` is true.
 - **WhatsApp Baileys** — filters via JID-based self-detection.
 
 WhatsApp Business (Cloud API) does not implement bot-self filtering; avoid running multiple Talon bots that share the same WhatsApp Business account.

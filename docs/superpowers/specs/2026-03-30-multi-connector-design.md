@@ -54,11 +54,15 @@ setSiblingBotIds(ids: Set<string>): void;
 | Email | Config `address` field | Direct from config |
 | Terminal | N/A | No filtering needed |
 
+#### Bot message filtering
+
+All connectors that support it (Slack, Discord, Telegram) drop inbound messages from all bot accounts, consistent across platforms. This prevents feedback loops from both Talon bots and third-party bots.
+
 #### Sibling ID injection
 
-After all connectors have started (bot IDs resolved), `channel-setup.ts` groups connectors by type, collects their bot IDs, and calls `setSiblingBotIds()` on each with the full set for that type. Each connector stores this set and uses it to filter inbound events.
+As a secondary layer, `channel-setup.ts` groups connectors by type after startup, collects their bot IDs, and calls `setSiblingBotIds()` on each with the full set for that type. This provides an additional filter for connectors that don't have platform-level bot detection.
 
-#### Filter logic
+#### Filter logic (secondary layer)
 
 In each connector's inbound event handler, before emitting to the pipeline:
 
