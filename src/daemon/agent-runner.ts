@@ -312,7 +312,9 @@ export class AgentRunner {
             const showToolCalls = channelConfig?.showToolCalls ?? false;
 
             // Send typing indicator and keep it alive every 4s while the agent works.
-            if (connector?.sendTyping && externalId) {
+            // A2A tasks must not send typing indicators to the source thread's channel
+            // — the human should not see activity from a delegated persona.
+            if (!isA2ATask && connector?.sendTyping && externalId) {
               connector.sendTyping(externalId).catch((e: unknown) => {
                 this.ctx.logger.debug({ err: e }, 'sendTyping failed');
               });
@@ -388,7 +390,7 @@ export class AgentRunner {
               return previousContext!;
             };
 
-            if (strategy.type === 'cli' && connector && externalId && item.payload.type !== 'schedule') {
+            if (strategy.type === 'cli' && !isA2ATask && connector && externalId && item.payload.type !== 'schedule') {
               const waitingResult = await connector.send(externalId, {
                 body: 'Thinking...',
               });
@@ -600,7 +602,7 @@ export class AgentRunner {
                             event.messageType === 'tool_use' ||
                             event.messageType === 'server_tool_use' ||
                             event.messageType === 'mcp_tool_use';
-                          if (isToolUse && item.type !== 'schedule' && connector !== undefined && externalId) {
+                          if (isToolUse && item.type !== 'schedule' && !isA2ATask && connector !== undefined && externalId) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
                             if (outputText) {
                               const flushResult = await connector.send(externalId, { body: outputText });
