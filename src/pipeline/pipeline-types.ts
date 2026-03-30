@@ -50,7 +50,7 @@ export interface NormalizedMessage {
  * - `'no_persona'` — no persona binding found for the channel+thread pair.
  * - `'error'`      — an unexpected error occurred (details in the Err wrapper).
  */
-export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'error';
+export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'rate_limited' | 'error';
 
 // ---------------------------------------------------------------------------
 // PipelineStats
@@ -67,6 +67,8 @@ export interface PipelineStats {
   duplicates: number;
   /** Number of events that could not be routed to a persona. */
   noPersona: number;
+  /** Number of events rejected by governance rate limits. */
+  rateLimited: number;
   /** Number of events that produced an error result. */
   errors: number;
 }

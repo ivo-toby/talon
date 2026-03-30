@@ -11,6 +11,8 @@ import pino from 'pino';
 import { MessagePipeline } from '../../../src/pipeline/message-pipeline.js';
 import { PipelineError } from '../../../src/core/errors/index.js';
 import { DbError, ChannelError, QueueError } from '../../../src/core/errors/index.js';
+import { GovernanceError } from '../../../src/governance/governance-service.js';
+import type { GovernanceService } from '../../../src/governance/governance-service.js';
 import type { InboundEvent } from '../../../src/channels/channel-types.js';
 import type { MessageRepository } from '../../../src/core/database/repositories/message-repository.js';
 import type { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
@@ -496,6 +498,7 @@ describe('MessagePipeline', () => {
         processed: 0,
         duplicates: 0,
         noPersona: 0,
+        rateLimited: 0,
         errors: 0,
       });
     });
@@ -529,6 +532,111 @@ describe('MessagePipeline', () => {
       const snapshot2 = pipeline.stats();
       expect(snapshot1).not.toBe(snapshot2); // different object references
       expect(snapshot1).toEqual(snapshot2);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Governance rate limiting
+  // -------------------------------------------------------------------------
+
+  describe('governance rate limiting', () => {
+    function makeGovernanceServiceMock(): GovernanceService {
+      return {
+        checkInboundRate: vi.fn().mockReturnValue(ok(undefined)),
+        checkSpendingBudget: vi.fn().mockReturnValue(ok({ withinBudget: true, percentUsed: 0, warningTriggered: false, tokensUsed: 0, cap: 0 })),
+        checkLoopConditions: vi.fn().mockReturnValue(ok(undefined)),
+        recordUsage: vi.fn(),
+        getStatus: vi.fn().mockReturnValue(ok({ personaId: 'p', dailyTokensUsed: 0, hourlyTokensUsed: 0 })),
+      };
+    }
+
+    it('returns Ok("rate_limited") when governance rejects the message', async () => {
+      const govService = makeGovernanceServiceMock();
+      vi.mocked(govService.checkInboundRate).mockReturnValue(
+        err(new GovernanceError('rate_limit_exceeded', 'Channel rate limit reached')),
+      );
+      pipeline.setGovernanceService(govService);
+
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+
+      const result = await pipeline.handleInboundEvent(makeEvent());
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toBe('rate_limited');
+    });
+
+    it('increments the rateLimited counter', async () => {
+      const govService = makeGovernanceServiceMock();
+      vi.mocked(govService.checkInboundRate).mockReturnValue(
+        err(new GovernanceError('rate_limit_exceeded', 'limit reached')),
+      );
+      pipeline.setGovernanceService(govService);
+
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+
+      await pipeline.handleInboundEvent(makeEvent());
+      expect(pipeline.stats().rateLimited).toBe(1);
+    });
+
+    it('does not proceed to thread resolution when rate limited', async () => {
+      const govService = makeGovernanceServiceMock();
+      vi.mocked(govService.checkInboundRate).mockReturnValue(
+        err(new GovernanceError('rate_limit_exceeded', 'limit reached')),
+      );
+      pipeline.setGovernanceService(govService);
+
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+
+      await pipeline.handleInboundEvent(makeEvent());
+      expect(mocks.threadRepo.findByExternalId).not.toHaveBeenCalled();
+      expect(mocks.messageRepo.insert).not.toHaveBeenCalled();
+      expect(mocks.queueManager.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('calls auditLogger when rate limited', async () => {
+      const govService = makeGovernanceServiceMock();
+      vi.mocked(govService.checkInboundRate).mockReturnValue(
+        err(new GovernanceError('rate_limit_exceeded', 'limit reached')),
+      );
+      pipeline.setGovernanceService(govService);
+
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+
+      await pipeline.handleInboundEvent(makeEvent());
+      expect(mocks.auditLogger.logChannelSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'pipeline.message.rate_limited',
+          details: expect.objectContaining({ reason: 'rate_limit_exceeded' }),
+        }),
+      );
+    });
+
+    it('allows the message through when governance check passes', async () => {
+      const govService = makeGovernanceServiceMock();
+      pipeline.setGovernanceService(govService);
+
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+      vi.mocked(mocks.threadRepo.findByExternalId).mockReturnValue(ok(makeThreadRow()));
+      vi.mocked(mocks.messageRepo.existsByIdempotencyKey).mockReturnValue(false);
+      vi.mocked(mocks.messageRepo.insert).mockReturnValue(ok(makeMessageRow()));
+      vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok('persona-uuid-1'));
+      vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
+
+      const result = await pipeline.handleInboundEvent(makeEvent());
+      expect(result._unsafeUnwrap()).toBe('enqueued');
+      expect(govService.checkInboundRate).toHaveBeenCalledWith('chan-uuid-1', 'user-123');
+    });
+
+    it('works without governance service (no rate limiting)', async () => {
+      // No setGovernanceService call — pipeline has no governance
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+      vi.mocked(mocks.threadRepo.findByExternalId).mockReturnValue(ok(makeThreadRow()));
+      vi.mocked(mocks.messageRepo.existsByIdempotencyKey).mockReturnValue(false);
+      vi.mocked(mocks.messageRepo.insert).mockReturnValue(ok(makeMessageRow()));
+      vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok('persona-uuid-1'));
+      vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
+
+      const result = await pipeline.handleInboundEvent(makeEvent());
+      expect(result._unsafeUnwrap()).toBe('enqueued');
     });
   });
 

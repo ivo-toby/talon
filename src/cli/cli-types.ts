@@ -90,6 +90,35 @@ export interface DaemonStatusData {
     /** Estimated cost in USD for the last 24 hours. */
     costUsd: number;
   };
+  /** Governance status — spending caps, rate limits, and recent violations. */
+  governance?: {
+    /** Per-persona spending status. */
+    perPersonaStatus: Array<{
+      personaId: string;
+      personaName: string;
+      dailyTokensUsed: number;
+      dailyTokenCap?: number;
+      hourlyTokensUsed: number;
+      hourlyTokenCap?: number;
+      percentOfDailyBudgetUsed?: number;
+      percentOfHourlyBudgetUsed?: number;
+    }>;
+    /** Recent governance violations (last 24h, max 10). */
+    recentViolations: Array<{
+      id: string;
+      personaId?: string;
+      violation: string;
+      detail: unknown;
+      actionTaken: string;
+      timestamp: number;
+    }>;
+    /** Active alerts (budget warnings and breaches). */
+    alerts: Array<{
+      level: 'warning' | 'critical';
+      message: string;
+      personaId?: string;
+    }>;
+  };
 }
 
 // ---------------------------------------------------------------------------

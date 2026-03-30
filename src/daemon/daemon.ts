@@ -97,6 +97,7 @@ export class TalondDaemon {
 
     // 3. Create the agent runner and start the host-tools bridge.
     this.agentRunner = this.createAgentRunner(this.ctx);
+    this.wireGovernanceToPipeline(this.ctx);
     this.ctx.hostToolsBridge.start();
 
     // 4. Start channel connectors (non-fatal).
@@ -371,6 +372,7 @@ export class TalondDaemon {
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
     this.agentRunner = this.createAgentRunner(this.ctx, newConfig);
+    this.wireGovernanceToPipeline(this.ctx, newConfig);
 
     // Update config snapshot.
     (this.ctx as { config: TalondConfig }).config = newConfig;
@@ -405,6 +407,76 @@ export class TalondDaemon {
                 () => undefined,
               );
 
+        // Build governance status if governance is configured.
+        let governance: Record<string, unknown> | undefined;
+        if (this.ctx?.config.governance) {
+          const govService = new GovernanceServiceImpl(
+            this.ctx.config.governance,
+            this.ctx.repos.run,
+            new GovernanceRepository(this.ctx.db),
+          );
+          const govRepo = new GovernanceRepository(this.ctx.db);
+
+          const perPersonaStatus: Array<Record<string, unknown>> = [];
+          const alerts: Array<Record<string, unknown>> = [];
+          const warnAt = this.ctx.config.governance.spending?.warn_at_percent ?? 80;
+
+          for (const persona of this.ctx.config.personas) {
+            const personaRow = this.ctx.repos.persona.findByName(persona.name);
+            if (personaRow.isErr() || personaRow.value === null) continue;
+            const pid = personaRow.value.id;
+            const statusResult = govService.getStatus(pid);
+            if (statusResult.isErr()) continue;
+            const s = statusResult.value;
+            const dailyPct = s.dailyTokenCap ? (s.dailyTokensUsed / s.dailyTokenCap) * 100 : undefined;
+            const hourlyPct = s.hourlyTokenCap ? (s.hourlyTokensUsed / s.hourlyTokenCap) * 100 : undefined;
+
+            perPersonaStatus.push({
+              personaId: pid,
+              personaName: persona.name,
+              dailyTokensUsed: s.dailyTokensUsed,
+              dailyTokenCap: s.dailyTokenCap,
+              hourlyTokensUsed: s.hourlyTokensUsed,
+              hourlyTokenCap: s.hourlyTokenCap,
+              percentOfDailyBudgetUsed: dailyPct !== undefined ? Math.round(dailyPct * 10) / 10 : undefined,
+              percentOfHourlyBudgetUsed: hourlyPct !== undefined ? Math.round(hourlyPct * 10) / 10 : undefined,
+            });
+
+            if (dailyPct !== undefined && dailyPct >= warnAt) {
+              alerts.push({
+                level: dailyPct >= 100 ? 'critical' : 'warning',
+                message: `${persona.name}: daily budget at ${dailyPct.toFixed(1)}%`,
+                personaId: pid,
+              });
+            }
+            if (hourlyPct !== undefined && hourlyPct >= warnAt) {
+              alerts.push({
+                level: hourlyPct >= 100 ? 'critical' : 'warning',
+                message: `${persona.name}: hourly budget at ${hourlyPct.toFixed(1)}%`,
+                personaId: pid,
+              });
+            }
+          }
+
+          const violationsResult = govRepo.listViolations({ sinceTs: Date.now() - 24 * 60 * 60 * 1000, limit: 10 });
+          const recentViolations = violationsResult.isOk()
+            ? violationsResult.value.map((v) => ({
+                id: v.id,
+                personaId: v.persona_id,
+                violation: v.violation,
+                detail: v.detail,
+                actionTaken: v.action_taken,
+                timestamp: v.ts,
+              }))
+            : [];
+
+          governance = {
+            perPersonaStatus,
+            recentViolations,
+            alerts,
+          };
+        }
+
         return {
           id: responseId,
           commandId: command.id,
@@ -421,6 +493,7 @@ export class TalondDaemon {
               this.ctx?.config.channels.filter((channel) => channel.enabled).length ?? 0,
             deadLetterCount: healthData.queueStats.deadLetter,
             ...(tokenUsage24h !== undefined ? { tokenUsage24h } : {}),
+            ...(governance !== undefined ? { governance } : {}),
           },
         };
       }
@@ -549,6 +622,21 @@ export class TalondDaemon {
       this.logger.info({ removed: removed }, 'daemon: reload — personas removed');
     if (changed.length > 0)
       this.logger.info({ changed: changed }, 'daemon: reload — personas changed');
+  }
+
+  /**
+   * Wires the governance service into the message pipeline for inbound rate limiting.
+   */
+  private wireGovernanceToPipeline(ctx: DaemonContext, configOverride?: TalondConfig): void {
+    const config = configOverride ?? ctx.config;
+    if (config.governance) {
+      const governanceService = new GovernanceServiceImpl(
+        config.governance,
+        ctx.repos.run,
+        new GovernanceRepository(ctx.db),
+      );
+      ctx.messagePipeline.setGovernanceService(governanceService);
+    }
   }
 
   private createAgentRunner(ctx: DaemonContext, configOverride?: TalondConfig): AgentRunner {

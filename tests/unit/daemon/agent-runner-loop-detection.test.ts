@@ -276,6 +276,7 @@ describe('AgentRunner loop detection', () => {
     const runner = new AgentRunner(ctx, {
       governanceService: {
         checkLoopConditions,
+        checkSpendingBudget: vi.fn().mockReturnValue(ok({ allowed: true, warningTriggered: false, tokensUsed: 0, cap: 100000 })),
       } as any,
     });
 

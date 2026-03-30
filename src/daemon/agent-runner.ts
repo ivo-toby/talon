@@ -134,6 +134,31 @@ export class AgentRunner {
 
     const strategy = providerEntry.provider.createExecutionStrategy();
 
+    // Governance — check spending budget before starting the run.
+    if (this.governanceService) {
+      const budgetResult = this.governanceService.checkSpendingBudget(personaId);
+      if (budgetResult.isErr()) {
+        this.ctx.logger.warn(
+          { personaId, personaName, reason: budgetResult.error.message },
+          'agent-runner: spending cap exceeded — run blocked',
+        );
+        this.failA2ATask(a2aTaskId, 'SPENDING_CAP_EXCEEDED', budgetResult.error.message);
+        return err(new Error(`Spending cap exceeded for persona ${personaName}: ${budgetResult.error.message}`));
+      }
+      if (budgetResult.value.warningTriggered) {
+        this.ctx.logger.warn(
+          {
+            personaId,
+            personaName,
+            percentUsed: budgetResult.value.percentUsed.toFixed(1),
+            tokensUsed: budgetResult.value.tokensUsed,
+            cap: budgetResult.value.cap,
+          },
+          'agent-runner: spending budget warning — approaching cap',
+        );
+      }
+    }
+
     // Resolve session ID only for SDK providers.
     // We do NOT seed the tracker here — only after a successful run
     // to avoid stranding a thread on a stale/expired session ID.

@@ -189,6 +189,43 @@ function displayStatus(data: Partial<DaemonStatusData>): void {
     console.log(`Token usage (24h): ${totalInput} in (${inputTokens} new + ${cacheReadTokens} cache-read + ${cacheWriteTokens} cache-write) / ${outputTokens} out`);
     console.log(`Estimated cost (24h): $${costUsd.toFixed(4)}`);
   }
+
+  if (data.governance !== undefined) {
+    console.log('');
+    console.log('Governance');
+    console.log('----------');
+
+    if (data.governance.perPersonaStatus.length > 0) {
+      for (const ps of data.governance.perPersonaStatus) {
+        if (ps.dailyTokenCap !== undefined) {
+          console.log(`  ${ps.personaName} (daily):  ${ps.dailyTokensUsed.toLocaleString()} / ${ps.dailyTokenCap.toLocaleString()} (${ps.percentOfDailyBudgetUsed?.toFixed(1) ?? '?'}%)`);
+        }
+        if (ps.hourlyTokenCap !== undefined) {
+          console.log(`  ${ps.personaName} (hourly): ${ps.hourlyTokensUsed.toLocaleString()} / ${ps.hourlyTokenCap.toLocaleString()} (${ps.percentOfHourlyBudgetUsed?.toFixed(1) ?? '?'}%)`);
+        }
+      }
+    } else {
+      console.log('  No spending caps configured.');
+    }
+
+    if (data.governance.alerts.length > 0) {
+      console.log('');
+      console.log('  Alerts:');
+      for (const alert of data.governance.alerts) {
+        const icon = alert.level === 'critical' ? '[CRITICAL]' : '[WARNING]';
+        console.log(`    ${icon} ${alert.message}`);
+      }
+    }
+
+    if (data.governance.recentViolations.length > 0) {
+      console.log('');
+      console.log('  Recent violations (24h):');
+      for (const v of data.governance.recentViolations) {
+        const time = new Date(v.timestamp).toISOString().slice(11, 19);
+        console.log(`    ${time} ${v.violation} (${v.actionTaken}): ${typeof v.detail === 'string' ? v.detail : JSON.stringify(v.detail)}`);
+      }
+    }
+  }
 }
 
 /** Formats a duration in ms into a human-readable string. */
