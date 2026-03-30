@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ok } from 'neverthrow';
+import { ok, err } from 'neverthrow';
+import { GovernanceError } from '../../../src/governance/governance-service.js';
 
 import { AgentRunner } from '../../../src/daemon/agent-runner.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
@@ -268,8 +269,8 @@ describe('AgentRunner loop detection', () => {
       expect(runId).toEqual(expect.any(String));
       expect(recentCalls).toHaveLength(turnCount);
       return turnCount === 3
-        ? ok({ allowed: false as const, violation: 'loop_detection' as const, reason: 'loop_detection' })
-        : ok({ allowed: true as const });
+        ? err(new GovernanceError('loop_detected', 'loop_detection'))
+        : ok(undefined);
     });
 
     const runner = new AgentRunner(ctx, {

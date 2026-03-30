@@ -1,33 +1,60 @@
 import { randomUUID } from 'node:crypto';
-import { ok, type Result } from 'neverthrow';
+import { ok, err, type Result } from 'neverthrow';
 import type { GovernanceConfig } from '../core/config/config-types.js';
 import type { GovernanceRepository } from '../core/database/repositories/governance-repository.js';
 import type { RunRepository, TokenAggregateRow } from '../core/database/repositories/run-repository.js';
 
 const RATE_LIMIT_EVENT_TYPE = 'message.inbound';
 const RATE_LIMIT_WINDOW_MS = 60_000;
+const BUDGET_CACHE_TTL_MS = 60_000;
 const HOURLY_WINDOW_MS = 3_600_000;
 const DAILY_WINDOW_MS = 86_400_000;
-const CACHE_TTL_MS = 60_000;
 
-export type GovernanceCheckResult =
-  | { allowed: true }
-  | { allowed: false; reason: string; violation: 'rate_limit' | 'spending_cap' | 'loop_detection' };
+export type GovernanceViolationType = 'rate_limit' | 'spending_cap' | 'loop_detection';
+export type GovernanceErrorCode = 'rate_limit_exceeded' | 'spending_cap_exceeded' | 'loop_detected';
+
+export class GovernanceError extends Error {
+  constructor(
+    public readonly code: GovernanceErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'GovernanceError';
+  }
+}
+
+export interface BudgetStatus {
+  withinBudget: boolean;
+  percentUsed: number;
+  warningTriggered: boolean;
+  tokensUsed: number;
+  cap: number;
+}
+
+export interface ToolCall {
+  tool: string;
+  args: unknown;
+}
+
+export interface GovernanceStatus {
+  personaId: string;
+  dailyTokensUsed: number;
+  dailyTokenCap?: number;
+  hourlyTokensUsed: number;
+  hourlyTokenCap?: number;
+}
 
 export interface GovernanceService {
-  checkInboundRate(channelId: string, senderId: string): Result<GovernanceCheckResult, never>;
-  checkSpendingBudget(personaId: string): Result<GovernanceCheckResult, never>;
-  checkLoopConditions(
-    runId: string,
-    turnCount: number,
-    recentCalls: Array<{ tool: string; args: unknown }>,
-  ): Result<GovernanceCheckResult, never>;
+  checkInboundRate(channelId: string, senderId: string): Result<void, GovernanceError>;
+  checkSpendingBudget(personaId: string): Result<BudgetStatus, GovernanceError>;
+  checkLoopConditions(runId: string, turnCount: number, recentCalls: ToolCall[]): Result<void, GovernanceError>;
   recordUsage(personaId: string, usage: { inputTokens: number; outputTokens: number }): void;
+  getStatus(personaId: string): Result<GovernanceStatus, GovernanceError>;
 }
 
 interface CachedBudget {
-  result: Result<GovernanceCheckResult, never>;
-  expiresAt: number;
+  status: BudgetStatus;
+  computedAt: number;
 }
 
 export class GovernanceServiceImpl implements GovernanceService {
@@ -39,168 +66,93 @@ export class GovernanceServiceImpl implements GovernanceService {
     private readonly governanceRepo: GovernanceRepository,
   ) {}
 
-  checkInboundRate(channelId: string, senderId: string): Result<GovernanceCheckResult, never> {
+  checkInboundRate(channelId: string, senderId: string): Result<void, GovernanceError> {
     const rateLimits = this.config?.rate_limits;
-    if (!rateLimits) return ok({ allowed: true });
+    if (!rateLimits) return ok(undefined);
 
-    const pruneResult = this.governanceRepo.pruneOldEvents(RATE_LIMIT_WINDOW_MS);
-    if (pruneResult.isErr()) {
-      console.error('governance: pruneOldEvents failed', pruneResult.error);
-    }
+    this.governanceRepo.pruneOldEvents(RATE_LIMIT_WINDOW_MS);
 
-    // Count channel-level and sender-level events BEFORE recording the new one
-    const channelCountResult = this.governanceRepo.countRecentEvents(
-      channelId,
-      undefined,
-      RATE_LIMIT_EVENT_TYPE,
-      RATE_LIMIT_WINDOW_MS,
-    );
-    const senderCountResult = this.governanceRepo.countRecentEvents(
-      channelId,
-      senderId,
-      RATE_LIMIT_EVENT_TYPE,
-      RATE_LIMIT_WINDOW_MS,
-    );
+    const channelCountResult = this.governanceRepo.countRecentEvents(channelId, undefined, RATE_LIMIT_EVENT_TYPE, RATE_LIMIT_WINDOW_MS);
+    const senderCountResult = this.governanceRepo.countRecentEvents(channelId, senderId, RATE_LIMIT_EVENT_TYPE, RATE_LIMIT_WINDOW_MS);
 
-    // Always record the event (fire-and-forget)
-    const recordResult = this.governanceRepo.recordRateLimitEvent({
-      id: randomUUID(),
-      channelId,
-      senderId,
-      eventType: RATE_LIMIT_EVENT_TYPE,
-    });
-    if (recordResult.isErr()) {
-      console.error('governance: recordRateLimitEvent failed', recordResult.error);
-    }
+    this.governanceRepo.recordRateLimitEvent({ id: randomUUID(), channelId, senderId, eventType: RATE_LIMIT_EVENT_TYPE });
 
     const channelCount = channelCountResult.isOk() ? channelCountResult.value : 0;
     const senderCount = senderCountResult.isOk() ? senderCountResult.value : 0;
 
     if (channelCount >= rateLimits.inbound_per_minute) {
-      this.governanceRepo.recordViolation({
-        id: randomUUID(),
-        violation: 'rate_limit',
-        detail: { scope: 'channel', channelId, count: channelCount, limit: rateLimits.inbound_per_minute },
-        actionTaken: 'blocked',
-      });
-      return ok({
-        allowed: false,
-        reason: `Channel rate limit reached for ${channelId}`,
-        violation: 'rate_limit',
-      });
+      this.governanceRepo.recordViolation({ id: randomUUID(), violation: 'rate_limit', detail: { scope: 'channel', channelId, count: channelCount, limit: rateLimits.inbound_per_minute }, actionTaken: 'blocked' });
+      return err(new GovernanceError('rate_limit_exceeded', `Channel rate limit reached for ${channelId}`));
     }
 
     if (senderCount >= rateLimits.inbound_per_user_per_minute) {
-      this.governanceRepo.recordViolation({
-        id: randomUUID(),
-        violation: 'rate_limit',
-        detail: {
-          scope: 'sender',
-          channelId,
-          senderId,
-          count: senderCount,
-          limit: rateLimits.inbound_per_user_per_minute,
-        },
-        actionTaken: 'blocked',
-      });
-      return ok({
-        allowed: false,
-        reason: `Per-user rate limit reached for ${senderId}`,
-        violation: 'rate_limit',
-      });
+      this.governanceRepo.recordViolation({ id: randomUUID(), violation: 'rate_limit', detail: { scope: 'sender', channelId, senderId, count: senderCount, limit: rateLimits.inbound_per_user_per_minute }, actionTaken: 'blocked' });
+      return err(new GovernanceError('rate_limit_exceeded', `Per-user rate limit reached for ${senderId}`));
     }
 
-    return ok({ allowed: true });
+    return ok(undefined);
   }
 
-  checkSpendingBudget(personaId: string): Result<GovernanceCheckResult, never> {
+  checkSpendingBudget(personaId: string): Result<BudgetStatus, GovernanceError> {
     const spending = this.config?.spending;
-    if (!spending) return ok({ allowed: true });
+    if (!spending) return ok(zeroBudgetStatus());
 
     const now = Date.now();
-
-    // Return cached result if still fresh
     const cached = this.budgetCache.get(personaId);
-    if (cached !== undefined && now < cached.expiresAt) {
-      return cached.result;
+    if (cached && cached.computedAt + BUDGET_CACHE_TTL_MS > now) {
+      if (!cached.status.withinBudget) {
+        return err(new GovernanceError('spending_cap_exceeded', `Spending cap exceeded for ${personaId} (cached)`));
+      }
+      return ok(cached.status);
     }
 
     const perPersona = spending.per_persona?.[personaId];
     const hourlyCap = perPersona?.hourly_token_cap ?? spending.hourly_token_cap ?? null;
     const dailyCap = perPersona?.daily_token_cap ?? spending.daily_token_cap ?? null;
+    const warnAt = spending.warn_at_percent ?? 80;
 
-    if (hourlyCap === null && dailyCap === null) return ok({ allowed: true });
+    if (hourlyCap === null && dailyCap === null) return ok(zeroBudgetStatus());
 
-    // Check hourly cap first
+    let hourlyTokens = 0;
+    let dailyTokens = 0;
+
     if (hourlyCap !== null) {
       const result = this.runRepo.aggregateByPersona(personaId, now - HOURLY_WINDOW_MS, now);
-      if (result.isOk() && sumTokens(result.value) >= hourlyCap) {
-        const tokens = sumTokens(result.value);
-        this.governanceRepo.recordViolation({
-          id: randomUUID(),
-          personaId,
-          violation: 'spending_cap',
-          detail: { scope: 'hourly', tokensUsed: tokens, cap: hourlyCap },
-          actionTaken: 'blocked',
-        });
-        const blocked = ok<GovernanceCheckResult, never>({
-          allowed: false,
-          reason: `Hourly token cap exceeded for ${personaId}`,
-          violation: 'spending_cap',
-        });
-        this.budgetCache.set(personaId, { result: blocked, expiresAt: now + CACHE_TTL_MS });
-        return blocked;
+      if (result.isOk()) hourlyTokens = sumTokens(result.value);
+      if (hourlyTokens >= hourlyCap) {
+        const status: BudgetStatus = { withinBudget: false, percentUsed: (hourlyTokens / hourlyCap) * 100, warningTriggered: true, tokensUsed: hourlyTokens, cap: hourlyCap };
+        this.governanceRepo.recordViolation({ id: randomUUID(), personaId, violation: 'spending_cap', detail: { scope: 'hourly', tokensUsed: hourlyTokens, cap: hourlyCap }, actionTaken: 'blocked' });
+        this.budgetCache.set(personaId, { status, computedAt: now });
+        return err(new GovernanceError('spending_cap_exceeded', `Hourly token cap exceeded for ${personaId}`));
       }
     }
 
-    // Check daily cap
     if (dailyCap !== null) {
       const result = this.runRepo.aggregateByPersona(personaId, now - DAILY_WINDOW_MS, now);
-      if (result.isOk() && sumTokens(result.value) >= dailyCap) {
-        const tokens = sumTokens(result.value);
-        this.governanceRepo.recordViolation({
-          id: randomUUID(),
-          personaId,
-          violation: 'spending_cap',
-          detail: { scope: 'daily', tokensUsed: tokens, cap: dailyCap },
-          actionTaken: 'blocked',
-        });
-        const blocked = ok<GovernanceCheckResult, never>({
-          allowed: false,
-          reason: `Daily token cap exceeded for ${personaId}`,
-          violation: 'spending_cap',
-        });
-        this.budgetCache.set(personaId, { result: blocked, expiresAt: now + CACHE_TTL_MS });
-        return blocked;
+      if (result.isOk()) dailyTokens = sumTokens(result.value);
+      if (dailyTokens >= dailyCap) {
+        const status: BudgetStatus = { withinBudget: false, percentUsed: (dailyTokens / dailyCap) * 100, warningTriggered: true, tokensUsed: dailyTokens, cap: dailyCap };
+        this.governanceRepo.recordViolation({ id: randomUUID(), personaId, violation: 'spending_cap', detail: { scope: 'daily', tokensUsed: dailyTokens, cap: dailyCap }, actionTaken: 'blocked' });
+        this.budgetCache.set(personaId, { status, computedAt: now });
+        return err(new GovernanceError('spending_cap_exceeded', `Daily token cap exceeded for ${personaId}`));
       }
     }
 
-    const allowed = ok<GovernanceCheckResult, never>({ allowed: true });
-    this.budgetCache.set(personaId, { result: allowed, expiresAt: now + CACHE_TTL_MS });
-    return allowed;
+    const candidates: BudgetStatus[] = [];
+    if (hourlyCap !== null) candidates.push({ withinBudget: true, percentUsed: (hourlyTokens / hourlyCap) * 100, warningTriggered: (hourlyTokens / hourlyCap) * 100 >= warnAt, tokensUsed: hourlyTokens, cap: hourlyCap });
+    if (dailyCap !== null) candidates.push({ withinBudget: true, percentUsed: (dailyTokens / dailyCap) * 100, warningTriggered: (dailyTokens / dailyCap) * 100 >= warnAt, tokensUsed: dailyTokens, cap: dailyCap });
+    const status = candidates.sort((a, b) => b.percentUsed - a.percentUsed)[0];
+    this.budgetCache.set(personaId, { status, computedAt: now });
+    return ok(status);
   }
 
-  checkLoopConditions(
-    runId: string,
-    turnCount: number,
-    recentCalls: Array<{ tool: string; args: unknown }>,
-  ): Result<GovernanceCheckResult, never> {
+  checkLoopConditions(runId: string, turnCount: number, recentCalls: ToolCall[]): Result<void, GovernanceError> {
     const loopDetection = this.config?.loop_detection;
-    if (!loopDetection) return ok({ allowed: true });
+    if (!loopDetection) return ok(undefined);
 
     if (turnCount >= loopDetection.max_turns_per_run) {
-      this.governanceRepo.recordViolation({
-        id: randomUUID(),
-        runId,
-        violation: 'loop_detection',
-        detail: { turnCount, maxTurnsPerRun: loopDetection.max_turns_per_run },
-        actionTaken: 'blocked',
-      });
-      return ok({
-        allowed: false,
-        reason: `Max turns exceeded in run ${runId}`,
-        violation: 'loop_detection',
-      });
+      this.governanceRepo.recordViolation({ id: randomUUID(), runId, violation: 'loop_detection', detail: { turnCount, maxTurnsPerRun: loopDetection.max_turns_per_run }, actionTaken: 'blocked' });
+      return err(new GovernanceError('loop_detected', `Max turns exceeded in run ${runId}`));
     }
 
     const counts = new Map<string, number>();
@@ -209,30 +161,38 @@ export class GovernanceServiceImpl implements GovernanceService {
       const count = (counts.get(key) ?? 0) + 1;
       counts.set(key, count);
       if (count >= loopDetection.duplicate_call_threshold) {
-        this.governanceRepo.recordViolation({
-          id: randomUUID(),
-          runId,
-          violation: 'loop_detection',
-          detail: { tool: call.tool, duplicateCount: count, threshold: loopDetection.duplicate_call_threshold },
-          actionTaken: 'blocked',
-        });
-        return ok({
-          allowed: false,
-          reason: `Duplicate tool call loop detected in run ${runId}`,
-          violation: 'loop_detection',
-        });
+        this.governanceRepo.recordViolation({ id: randomUUID(), runId, violation: 'loop_detection', detail: { tool: call.tool, duplicateCount: count, threshold: loopDetection.duplicate_call_threshold }, actionTaken: 'blocked' });
+        return err(new GovernanceError('loop_detected', `Duplicate tool call loop detected in run ${runId}`));
       }
     }
 
-    return ok({ allowed: true });
+    return ok(undefined);
   }
 
   recordUsage(personaId: string, _usage: { inputTokens: number; outputTokens: number }): void {
-    // Invalidate cached budget so next check re-queries fresh data
     this.budgetCache.delete(personaId);
+  }
+
+  getStatus(personaId: string): Result<GovernanceStatus, GovernanceError> {
+    const spending = this.config?.spending;
+    const perPersona = spending?.per_persona?.[personaId];
+    const hourlyCap = perPersona?.hourly_token_cap ?? spending?.hourly_token_cap;
+    const dailyCap = perPersona?.daily_token_cap ?? spending?.daily_token_cap;
+    const now = Date.now();
+
+    const hourlyResult = this.runRepo.aggregateByPersona(personaId, now - HOURLY_WINDOW_MS, now);
+    if (hourlyResult.isErr()) return err(new GovernanceError('spending_cap_exceeded', 'Failed to query hourly usage'));
+    const dailyResult = this.runRepo.aggregateByPersona(personaId, now - DAILY_WINDOW_MS, now);
+    if (dailyResult.isErr()) return err(new GovernanceError('spending_cap_exceeded', 'Failed to query daily usage'));
+
+    return ok({ personaId, hourlyTokensUsed: sumTokens(hourlyResult.value), hourlyTokenCap: hourlyCap, dailyTokensUsed: sumTokens(dailyResult.value), dailyTokenCap: dailyCap });
   }
 }
 
 function sumTokens(row: TokenAggregateRow): number {
   return row.total_input_tokens + row.total_output_tokens;
+}
+
+function zeroBudgetStatus(): BudgetStatus {
+  return { withinBudget: true, percentUsed: 0, warningTriggered: false, tokensUsed: 0, cap: 0 };
 }

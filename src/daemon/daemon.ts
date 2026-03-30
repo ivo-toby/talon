@@ -558,7 +558,6 @@ export class TalondDaemon {
           config.governance,
           ctx.repos.run,
           new GovernanceRepository(ctx.db),
-          this.logger,
         )
       : undefined;
 

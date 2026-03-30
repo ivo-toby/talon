@@ -17,7 +17,7 @@ import type {
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
-import type { GovernanceService, ToolCallRecord as GovernanceToolCall } from '../governance/governance-service.js';
+import type { GovernanceService, ToolCall as GovernanceToolCall } from '../governance/governance-service.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -674,7 +674,7 @@ export class AgentRunner {
                           if (isToolUse) {
                             assistantTurnStartedSinceBoundary = true;
                             const toolCall: GovernanceToolCall = {
-                              toolName: this.getProviderToolObservationName(event),
+                              tool: this.getProviderToolObservationName(event),
                               args: this.normalizeGovernanceToolArgs(event.input),
                             };
                             if (event.toolUseId) {
