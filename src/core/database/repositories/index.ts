@@ -57,6 +57,15 @@ export { ArtifactRepository } from './artifact-repository.js';
 export type { AuditLogRow, InsertAuditLogInput } from './audit-repository.js';
 export { AuditRepository } from './audit-repository.js';
 
+export type {
+  RateLimitEventRow,
+  GovernanceViolationRow,
+  RecordRateLimitEventInput,
+  RecordGovernanceViolationInput,
+  ListGovernanceViolationsFilter,
+} from './governance-repository.js';
+export { GovernanceRepository } from './governance-repository.js';
+
 export type { ToolResultRow, ToolResultStatus, InsertToolResultInput } from './tool-result-repository.js';
 export { ToolResultRepository } from './tool-result-repository.js';
 
