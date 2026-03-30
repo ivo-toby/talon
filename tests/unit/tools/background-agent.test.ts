@@ -139,6 +139,7 @@ function createHandler(overrides: Record<string, unknown> = {}) {
         resolvedMcpServers: [],
       },
     ] as any,
+    toolInstructions: new Map(),
     logger: makeLogger(),
     ...overrides,
   };

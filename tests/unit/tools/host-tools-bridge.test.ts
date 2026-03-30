@@ -156,6 +156,7 @@ describe('HostToolsBridge', () => {
         collectMcpServers: vi.fn().mockReturnValue([]),
       } as any,
       loadedSkills: [],
+      toolInstructions: new Map(),
       messagePipeline: {} as any,
       observability: {
         observe: vi.fn(async (_input, fn) => await fn({

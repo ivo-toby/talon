@@ -8,6 +8,7 @@ import type { DaemonContext } from './daemon-context.js';
 import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
+import { resolveToolInstructions } from '../tools/tool-instructions.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import type {
@@ -405,8 +406,13 @@ export class AgentRunner {
               resultSessionId: string | undefined;
               usage: AgentUsage;
             }> => {
+              const toolInstructionsBlock = resolveToolInstructions(
+                this.ctx.toolInstructions,
+                allowedMcpTools,
+              );
               const systemPromptParts = [
                 personaRuntimeContext.personaPrompt,
+                toolInstructionsBlock,
                 channelContext,
                 timeContext,
               ];

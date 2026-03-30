@@ -29,7 +29,7 @@ import type { ResolvedCapabilities } from '../personas/persona-types.js';
  *
  * Adding a new host tool requires only a single entry here.
  */
-const HOST_TOOL_REGISTRY: ReadonlyArray<{
+export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   /** Capability prefix that grants access to this tool. */
   capabilityPrefix: string;
   /** Internal dot-notation tool name used by the bridge dispatcher. */

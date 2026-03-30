@@ -138,6 +138,7 @@ export class HostToolsBridge {
         skillResolver: ctx.skillResolver,
         contextAssembler: ctx.contextAssembler,
         loadedSkills: ctx.loadedSkills,
+        toolInstructions: ctx.toolInstructions,
         logger: ctx.logger,
       });
     }
