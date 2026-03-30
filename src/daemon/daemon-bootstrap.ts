@@ -199,10 +199,16 @@ export async function bootstrap(
   }
 
   // 8a. Load tool instruction prompts (keyed by capability prefix).
-  const toolInstructionsDir = join(import.meta.dirname, '../templates/tool-instructions');
-  const toolInstructions = loadToolInstructions(toolInstructionsDir);
+  // Try dist path first (dist/templates/), fall back to project root (templates/)
+  // so instructions load in both built and dev (tsx) mode.
+  const distToolInstructionsDir = join(import.meta.dirname, '../templates/tool-instructions');
+  const rootToolInstructionsDir = join(process.cwd(), 'templates/tool-instructions');
+  let toolInstructions = loadToolInstructions(distToolInstructionsDir);
+  if (toolInstructions.size === 0) {
+    toolInstructions = loadToolInstructions(rootToolInstructionsDir);
+  }
   logger.info(
-    { count: toolInstructions.size, dir: toolInstructionsDir },
+    { count: toolInstructions.size },
     'bootstrap: tool instructions loaded',
   );
 

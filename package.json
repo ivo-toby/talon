@@ -11,7 +11,7 @@
     "talonctl": "bin/talonctl.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && cp src/core/database/migrations/*.sql dist/core/database/migrations/ && for d in src/subagents/default/*/; do n=$(basename \"$d\"); mkdir -p dist/subagents/default/$n/prompts; cp \"$d\"subagent.yaml dist/subagents/default/$n/ 2>/dev/null; cp \"$d\"prompts/*.md dist/subagents/default/$n/prompts/ 2>/dev/null; done && mkdir -p dist/templates/tool-instructions && cp templates/tool-instructions/*.md dist/templates/tool-instructions/ 2>/dev/null; true",
+    "build": "tsc -p tsconfig.build.json && cp src/core/database/migrations/*.sql dist/core/database/migrations/ && for d in src/subagents/default/*/; do n=$(basename \"$d\"); mkdir -p dist/subagents/default/$n/prompts; cp \"$d\"subagent.yaml dist/subagents/default/$n/ 2>/dev/null; cp \"$d\"prompts/*.md dist/subagents/default/$n/prompts/ 2>/dev/null; done && mkdir -p dist/templates/tool-instructions && (cp templates/tool-instructions/*.md dist/templates/tool-instructions/ 2>/dev/null || true)",
     "dev": "tsx watch src/index.ts",
     "test": "vitest run",
     "test:watch": "vitest",
