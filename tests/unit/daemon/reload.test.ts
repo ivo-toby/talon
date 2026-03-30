@@ -30,6 +30,7 @@ vi.mock('../../../src/daemon/lifecycle.js', () => ({
 
 vi.mock('../../../src/channels/channel-setup.js', () => ({
   registerChannels: vi.fn(),
+  injectSiblingBotIds: vi.fn(),
 }));
 
 vi.mock('../../../src/skills/skill-loader.js', () => ({
