@@ -30,6 +30,8 @@ import type { DaemonState, DaemonHealth } from './daemon-types.js';
 import { DaemonIpcServer } from '../ipc/daemon-ipc-server.js';
 import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
+import { GovernanceRepository } from '../core/database/repositories/index.js';
+import { GovernanceServiceImpl } from '../governance/index.js';
 
 // ---------------------------------------------------------------------------
 // TalondDaemon
@@ -94,7 +96,7 @@ export class TalondDaemon {
     await this.mcpRegistry.startAll();
 
     // 3. Create the agent runner and start the host-tools bridge.
-    this.agentRunner = new AgentRunner(this.ctx);
+    this.agentRunner = this.createAgentRunner(this.ctx);
     this.ctx.hostToolsBridge.start();
 
     // 4. Start channel connectors (non-fatal).
@@ -368,7 +370,7 @@ export class TalondDaemon {
     }
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
-    this.agentRunner = new AgentRunner(this.ctx);
+    this.agentRunner = this.createAgentRunner(this.ctx, newConfig);
 
     // Update config snapshot.
     (this.ctx as { config: TalondConfig }).config = newConfig;
@@ -547,5 +549,18 @@ export class TalondDaemon {
       this.logger.info({ removed: removed }, 'daemon: reload — personas removed');
     if (changed.length > 0)
       this.logger.info({ changed: changed }, 'daemon: reload — personas changed');
+  }
+
+  private createAgentRunner(ctx: DaemonContext, configOverride?: TalondConfig): AgentRunner {
+    const config = configOverride ?? ctx.config;
+    const governanceService = config.governance
+      ? new GovernanceServiceImpl(
+          config.governance,
+          new GovernanceRepository(ctx.db),
+          ctx.repos.run,
+        )
+      : undefined;
+
+    return new AgentRunner(ctx, { governanceService });
   }
 }
