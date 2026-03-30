@@ -595,9 +595,9 @@ export class AgentRunner {
                       turnCount,
                       recentCalls.map((call) => ({ ...call })),
                     );
-                    if (governanceResult.isOk() && !governanceResult.value.allowed) {
+                    if (governanceResult.isErr()) {
                       throw new LoopDetectedRunError(
-                        governanceResult.value.reason,
+                        governanceResult.error.message,
                         'loop_detected',
                       );
                     }

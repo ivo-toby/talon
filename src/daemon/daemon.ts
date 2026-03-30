@@ -556,8 +556,9 @@ export class TalondDaemon {
     const governanceService = config.governance
       ? new GovernanceServiceImpl(
           config.governance,
-          new GovernanceRepository(ctx.db),
           ctx.repos.run,
+          new GovernanceRepository(ctx.db),
+          this.logger,
         )
       : undefined;
 
