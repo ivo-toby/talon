@@ -199,7 +199,7 @@ export async function bootstrap(
   }
 
   // 8a. Load tool instruction prompts (keyed by capability prefix).
-  const toolInstructionsDir = join(import.meta.dirname, '../../templates/tool-instructions');
+  const toolInstructionsDir = join(import.meta.dirname, '../templates/tool-instructions');
   const toolInstructions = loadToolInstructions(toolInstructionsDir);
   logger.info(
     { count: toolInstructions.size, dir: toolInstructionsDir },

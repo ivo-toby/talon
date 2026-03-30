@@ -475,10 +475,9 @@ describe('buildSystemPromptTemplate()', () => {
     expect(result).toContain('description: "path\\\\to\\\\file"');
   });
 
-  it('includes Background Agents section', () => {
+  it('does not include hardcoded Background Agents section (now capability-gated)', () => {
     const result = buildSystemPromptTemplate('assistant');
-    expect(result).toContain('## Background Agents');
-    expect(result).toContain('background_agent action="profiles"');
+    expect(result).not.toContain('## Background Agents');
   });
 });
 
