@@ -17,9 +17,11 @@ import type {
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
+import type { GovernanceService, ToolCall as GovernanceToolCall } from '../governance/governance-service.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const RECENT_TOOL_CALL_LIMIT = 100;
 
 class AgentQueryAttemptError extends Error {
   constructor(
@@ -32,6 +34,16 @@ class AgentQueryAttemptError extends Error {
   }
 }
 
+class LoopDetectedRunError extends Error {
+  constructor(
+    readonly reason: string,
+    readonly violation: string,
+  ) {
+    super(reason);
+    this.name = 'LoopDetectedRunError';
+  }
+}
+
 /**
  * AgentRunner — executes queue items through the configured agent provider.
  *
@@ -41,10 +53,18 @@ class AgentQueryAttemptError extends Error {
 export class AgentRunner {
   private readonly ctx: DaemonContext;
   private readonly queryTimeoutMs: number;
+  private readonly governanceService?: GovernanceService;
 
-  constructor(ctx: DaemonContext, options?: { queryTimeoutMs?: number }) {
+  constructor(
+    ctx: DaemonContext,
+    options?: {
+      queryTimeoutMs?: number;
+      governanceService?: GovernanceService;
+    },
+  ) {
     this.ctx = ctx;
     this.queryTimeoutMs = options?.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
+    this.governanceService = options?.governanceService;
   }
 
   /**
@@ -113,6 +133,33 @@ export class AgentRunner {
     }
 
     const strategy = providerEntry.provider.createExecutionStrategy();
+
+    // Governance — check spending budget before starting the run.
+    // Budget blocks are terminal policy decisions (not transient failures),
+    // so we return ok() to prevent the queue processor from retrying.
+    if (this.governanceService) {
+      const budgetResult = this.governanceService.checkSpendingBudget(personaId, personaName);
+      if (budgetResult.isErr()) {
+        this.ctx.logger.warn(
+          { personaId, personaName, reason: budgetResult.error.message },
+          'agent-runner: spending cap exceeded — run blocked',
+        );
+        this.failA2ATask(a2aTaskId, 'SPENDING_CAP_EXCEEDED', budgetResult.error.message);
+        return ok(undefined);
+      }
+      if (budgetResult.value.warningTriggered) {
+        this.ctx.logger.warn(
+          {
+            personaId,
+            personaName,
+            percentUsed: budgetResult.value.percentUsed.toFixed(1),
+            tokensUsed: budgetResult.value.tokensUsed,
+            cap: budgetResult.value.cap,
+          },
+          'agent-runner: spending budget warning — approaching cap',
+        );
+      }
+    }
 
     // Resolve session ID only for SDK providers.
     // We do NOT seed the tracker here — only after a successful run
@@ -548,6 +595,40 @@ export class AgentRunner {
                   // FIFO queue for tool events that lack a toolUseId (e.g. claude-code tool_use/tool_result
                   // streaming events). Events are sequential so FIFO order correctly pairs starts with ends.
                   const pendingNoIdToolObservations: StartedObservationHandle[] = [];
+                  const finalizeTurn = (): void => {
+                    const shouldFinalizeCurrentTurn =
+                      currentTurnCalls.length > 0 || assistantTurnStartedSinceBoundary || turnCount === 0;
+                    if (!shouldFinalizeCurrentTurn) {
+                      return;
+                    }
+
+                    turnCount += 1;
+                    if (currentTurnCalls.length > 0) {
+                      recentCalls.push(...currentTurnCalls);
+                      if (recentCalls.length > RECENT_TOOL_CALL_LIMIT) {
+                        recentCalls.splice(0, recentCalls.length - RECENT_TOOL_CALL_LIMIT);
+                      }
+                    }
+
+                    assistantTurnStartedSinceBoundary = false;
+                    currentTurnCalls = [];
+
+                    if (!this.governanceService) {
+                      return;
+                    }
+
+                    const governanceResult = this.governanceService.checkLoopConditions(
+                      runId,
+                      turnCount,
+                      recentCalls.map((call) => ({ ...call })),
+                    );
+                    if (governanceResult.isErr()) {
+                      throw new LoopDetectedRunError(
+                        governanceResult.error.message,
+                        'loop_detected',
+                      );
+                    }
+                  };
 
                   const queryInput = {
                     prompt: content,
@@ -584,9 +665,14 @@ export class AgentRunner {
                         const event = value;
                         sawEvents = true;
                         if (event.type === 'text') {
+                          if (currentTurnCalls.length > 0) {
+                            finalizeTurn();
+                          }
+                          assistantTurnStartedSinceBoundary = true;
                           outputText += event.content;
                           fullOutputText += event.content;
                         } else if (event.type === 'result') {
+                          finalizeTurn();
                           resultSessionId = event.result.sessionId;
                           usage = event.result.usage;
 
@@ -608,6 +694,32 @@ export class AgentRunner {
                             event.messageType === 'tool_use' ||
                             event.messageType === 'server_tool_use' ||
                             event.messageType === 'mcp_tool_use';
+                          const isToolResult = this.isProviderToolResultEvent(event.messageType);
+                          if (isToolUse && currentTurnCalls.length > 0) {
+                            finalizeTurn();
+                          }
+                          if (isToolUse) {
+                            assistantTurnStartedSinceBoundary = true;
+                            const toolCall: GovernanceToolCall = {
+                              tool: this.getProviderToolObservationName(event),
+                              args: this.normalizeGovernanceToolArgs(event.input),
+                            };
+                            if (event.toolUseId) {
+                              activeGovernanceToolCalls.set(event.toolUseId, toolCall);
+                            } else {
+                              pendingNoIdGovernanceToolCalls.push(toolCall);
+                            }
+                          } else if (isToolResult) {
+                            const resolvedCall = event.toolUseId
+                              ? activeGovernanceToolCalls.get(event.toolUseId)
+                              : pendingNoIdGovernanceToolCalls.shift();
+                            if (event.toolUseId) {
+                              activeGovernanceToolCalls.delete(event.toolUseId);
+                            }
+                            if (resolvedCall) {
+                              currentTurnCalls.push(resolvedCall);
+                            }
+                          }
                           if (isToolUse && item.type !== 'schedule' && !isA2ATask && connector !== undefined && externalId) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
                             if (outputText) {
@@ -700,6 +812,9 @@ export class AgentRunner {
                     });
                     ignoredProviderToolUseIds.clear();
                     await Promise.allSettled(pendingProviderToolTasks);
+                    if (cause instanceof LoopDetectedRunError) {
+                      throw cause;
+                    }
                     const message = cause instanceof Error ? cause.message : String(cause);
                     throw new AgentQueryAttemptError(message, resumeSessionId, sawEvents);
                   } finally {
@@ -747,6 +862,12 @@ export class AgentRunner {
               inputTokens: 0,
               outputTokens: 0,
             };
+            let turnCount = 0;
+            const recentCalls: GovernanceToolCall[] = [];
+            const activeGovernanceToolCalls = new Map<string, GovernanceToolCall>();
+            const pendingNoIdGovernanceToolCalls: GovernanceToolCall[] = [];
+            let currentTurnCalls: GovernanceToolCall[] = [];
+            let assistantTurnStartedSinceBoundary = false;
 
             try {
               ({
@@ -756,6 +877,43 @@ export class AgentRunner {
                 usage,
               } = await executeAgentQuery(existingSessionId));
             } catch (cause) {
+              if (cause instanceof LoopDetectedRunError) {
+                if (typingInterval) clearInterval(typingInterval);
+
+                this.ctx.logger.warn(
+                  {
+                    runId,
+                    threadId: item.threadId,
+                    violation: cause.violation,
+                    reason: cause.reason,
+                    turnCount,
+                  },
+                  'agent-runner: governance loop detection blocked run',
+                );
+                this.ctx.repos.run.updateStatus(runId, 'cancelled', {
+                  ended_at: Date.now(),
+                  error: 'loop_detected',
+                });
+                if (isA2ATask && a2aTaskId) {
+                  this.ctx.repos.a2aTask.markFailed(a2aTaskId, 'LOOP_DETECTED', cause.reason).mapErr((e) => {
+                    this.ctx.logger.warn(
+                      { a2aTaskId, runId, err: e.message },
+                      'agent-runner: failed to mark A2A task as failed after loop detection',
+                    );
+                  });
+                }
+                runObservation.update({
+                  level: 'WARNING',
+                  statusMessage: cause.reason,
+                  metadata: {
+                    governanceViolation: cause.violation,
+                    turnCount,
+                  },
+                });
+                runFinalized = true;
+                return;
+              }
+
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
                 this.ctx.sessionTracker.rotateSession(item.threadId);
                 this.ctx.logger.warn(
@@ -809,6 +967,14 @@ export class AgentRunner {
             });
             if (tokenResult.isErr()) {
               this.ctx.logger.error({ runId, err: tokenResult.error }, 'agent-runner: failed to persist token usage');
+            }
+
+            // Invalidate cached budget so the next run re-queries actual DB totals.
+            if (this.governanceService) {
+              this.governanceService.recordUsage(personaId, {
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+              });
             }
 
             // Check if context needs rotation (rolling window).
@@ -1113,6 +1279,14 @@ export class AgentRunner {
     }
 
     return event.tool ?? event.messageType;
+  }
+
+  private normalizeGovernanceToolArgs(args: unknown): Record<string, unknown> {
+    if (args && typeof args === 'object' && !Array.isArray(args)) {
+      return args as Record<string, unknown>;
+    }
+
+    return args === undefined ? {} : { value: args };
   }
 
   private shouldRetryFreshSession(cause: unknown): cause is AgentQueryAttemptError {

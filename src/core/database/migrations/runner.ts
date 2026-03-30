@@ -1,24 +1,26 @@
 /**
  * Database migration runner.
  *
- * Discovers numbered SQL files in a directory and applies any that have not
- * yet been applied, tracking progress via SQLite's built-in PRAGMA user_version.
+ * Applies SQL migration files and tracks progress via SQLite's built-in
+ * PRAGMA user_version. Bundled Talon migrations use an explicit manifest
+ * order; ad-hoc directories fall back to lexicographic filename order.
  * Each migration runs inside a BEGIN IMMEDIATE transaction so it is atomic.
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type Database from 'better-sqlite3';
 import { ok, err, type Result } from 'neverthrow';
 import { MigrationError } from '../../errors/index.js';
+import { REGISTERED_MIGRATIONS } from './manifest.js';
 
 /**
  * Applies all pending migrations from `migrationsDir` to `db`.
  *
- * Migration files must be named `NNN-description.sql` where NNN is a
- * zero-padded integer version number (e.g. `001-initial-schema.sql`).
- * Files are applied in lexicographic order. The current schema version is
- * read from and written to `PRAGMA user_version` after each successful file.
+ * Migration files in arbitrary directories must be named
+ * `NNN-description.sql` where NNN is a zero-padded integer version number
+ * (e.g. `001-initial-schema.sql`). Bundled Talon migrations are applied in
+ * the explicit order declared in `REGISTERED_MIGRATIONS`.
  *
  * @param db            - Open better-sqlite3 Database instance.
  * @param migrationsDir - Absolute path to the directory containing .sql files.
@@ -45,20 +47,24 @@ export function runMigrations(
     );
   }
 
+  const bundledMigrationsDir = resolve(import.meta.dirname);
+  const isBundledMigrationsDir = resolve(migrationsDir) === bundledMigrationsDir;
+
+  const orderedFiles = isBundledMigrationsDir
+    ? validateBundledMigrations(files)
+    : validateAdHocMigrations(files);
+
+  if (orderedFiles.isErr()) {
+    return err(orderedFiles.error);
+  }
+
   let applied = 0;
 
-  for (const file of files) {
-    // Extract the numeric version prefix from the filename.
-    const versionStr = file.split('-')[0];
-    const version = parseInt(versionStr, 10);
-
-    if (isNaN(version)) {
-      return err(
-        new MigrationError(
-          `Migration file "${file}" does not start with a numeric version prefix.`,
-        ),
-      );
-    }
+  for (const entry of orderedFiles.value) {
+    const file = typeof entry === 'string' ? entry : entry.file;
+    const version = typeof entry === 'string'
+      ? parseInt(entry.split('-')[0], 10)
+      : entry.version;
 
     // Skip migrations that have already been applied.
     if (version <= currentVersion) {
@@ -102,4 +108,46 @@ export function runMigrations(
   }
 
   return ok(applied);
+}
+
+function validateBundledMigrations(files: string[]): Result<Array<{ file: string; version: number }>, MigrationError> {
+  const registeredFiles = REGISTERED_MIGRATIONS.map((m) => m.file);
+  const missing = registeredFiles.filter((file) => !files.includes(file));
+  if (missing.length > 0) {
+    return err(
+      new MigrationError(
+        `Bundled migrations directory is missing registered files: ${missing.join(', ')}`,
+      ),
+    );
+  }
+
+  const extras = files.filter((file) => !registeredFiles.includes(file));
+  if (extras.length > 0) {
+    return err(
+      new MigrationError(
+        `Bundled migrations directory contains unregistered files: ${extras.join(', ')}`,
+      ),
+    );
+  }
+
+  return ok([...REGISTERED_MIGRATIONS]);
+}
+
+function validateAdHocMigrations(files: string[]): Result<string[], MigrationError> {
+  const orderedFiles = [...files].sort();
+
+  for (const file of orderedFiles) {
+    const versionStr = file.split('-')[0];
+    const version = parseInt(versionStr, 10);
+
+    if (isNaN(version)) {
+      return err(
+        new MigrationError(
+          `Migration file "${file}" does not start with a numeric version prefix.`,
+        ),
+      );
+    }
+  }
+
+  return ok(orderedFiles);
 }

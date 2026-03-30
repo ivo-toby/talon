@@ -25,6 +25,7 @@ import type {
   AgentRunnerConfigSchema,
   BackgroundAgentConfigSchema,
   LangfuseConfigSchema,
+  GovernanceConfigSchema,
   ProviderConfigSchema,
 } from './config-schema.js';
 
@@ -90,3 +91,6 @@ export type SpritesConfig = z.infer<typeof SpritesConfigSchema>;
 
 /** Langfuse Cloud observability settings. */
 export type LangfuseConfig = z.infer<typeof LangfuseConfigSchema>;
+
+/** Runtime governance settings. */
+export type GovernanceConfig = z.infer<typeof GovernanceConfigSchema>;

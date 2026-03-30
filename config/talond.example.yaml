@@ -171,5 +171,32 @@ langfuse:
   # flushAt: 20                   # spans buffered before flush
   # flushIntervalSeconds: 5       # max seconds between flushes
 
+# Runtime governance — spending caps, rate limiting, and loop detection.
+# All sub-sections are optional. Omit the entire block to disable governance.
+governance:
+  # Token spending caps. Blocks agent runs when a cap is exceeded.
+  # Both daily and hourly are optional; omit either to skip that window.
+  spending:
+    daily_token_cap: 5000000        # Max tokens per persona per 24h rolling window
+    hourly_token_cap: 1000000       # Max tokens per persona per 1h rolling window
+    warn_at_percent: 80             # Emit a warning log when usage exceeds this % (1–100)
+    # Per-persona overrides — keys are persona names from the personas[] array.
+    # per_persona:
+    #   researcher:
+    #     daily_token_cap: 2000000
+    #     hourly_token_cap: 500000
+
+  # Inbound message rate limits. Blocks messages that exceed the sliding-window counts.
+  rate_limits:
+    inbound_per_minute: 30          # Max inbound messages per channel per minute
+    inbound_per_user_per_minute: 10 # Max inbound messages per sender per minute
+    api_calls_per_minute: 60        # Reserved for future API rate limiting
+
+  # Loop detection. Catches runaway agents that spin on the same tool calls.
+  loop_detection:
+    max_turns_per_run: 50           # Hard turn limit per agent run
+    duplicate_call_threshold: 5     # Consecutive identical tool calls before blocking
+    max_queue_depth_per_thread: 100 # Max queued messages per thread before rejecting
+
 logLevel: info
 dataDir: data

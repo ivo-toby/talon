@@ -20,6 +20,7 @@ import type { ChannelRouter } from '../channels/channel-router.js';
 import type { QueueManager } from '../queue/queue-manager.js';
 import type { AuditLogger } from '../core/logging/audit-logger.js';
 import type { InboundEvent } from '../channels/channel-types.js';
+import type { GovernanceService } from '../governance/governance-service.js';
 import { MessageNormalizer } from './message-normalizer.js';
 import type { PipelineResult, PipelineStats } from './pipeline-types.js';
 
@@ -37,8 +38,11 @@ export class MessagePipeline {
     processed: 0,
     duplicates: 0,
     noPersona: 0,
+    rateLimited: 0,
     errors: 0,
   };
+
+  private governanceService?: GovernanceService;
 
   constructor(
     private readonly messageRepo: MessageRepository,
@@ -49,6 +53,14 @@ export class MessagePipeline {
     private readonly auditLogger: AuditLogger,
     private readonly logger: pino.Logger,
   ) {}
+
+  /**
+   * Sets the governance service for inbound rate limiting.
+   * Called after bootstrap when governance config is present.
+   */
+  setGovernanceService(service: GovernanceService | undefined): void {
+    this.governanceService = service;
+  }
 
   /**
    * Processes a single InboundEvent through the full pipeline.
@@ -88,6 +100,31 @@ export class MessagePipeline {
         return err(new PipelineError(`Channel not found: ${event.channelName}`));
       }
       const channelId = channel.id;
+
+      // ------------------------------------------------------------------
+      // Step 1b: Governance — inbound rate limiting.
+      // ------------------------------------------------------------------
+      if (this.governanceService) {
+        const rateResult = this.governanceService.checkInboundRate(channelId, event.senderId);
+        if (rateResult.isErr()) {
+          this.statsCounters.rateLimited++;
+          this.logger.warn(
+            { channelId, senderId: event.senderId, reason: rateResult.error.message },
+            'pipeline: inbound rate limit exceeded — message dropped',
+          );
+          this.auditLogger.logChannelSend({
+            threadId: undefined,
+            action: 'pipeline.message.rate_limited',
+            details: {
+              channelId,
+              channelName: event.channelName,
+              senderId: event.senderId,
+              reason: rateResult.error.code,
+            },
+          });
+          return ok('rate_limited');
+        }
+      }
 
       // ------------------------------------------------------------------
       // Step 2: Resolve or create thread.

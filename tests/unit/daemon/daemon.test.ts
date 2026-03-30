@@ -137,7 +137,7 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
     auditLogger: {} as any,
     skillResolver: {} as any,
     loadedSkills: [],
-    messagePipeline: {} as any,
+    messagePipeline: { setGovernanceService: vi.fn() } as any,
     backgroundAgentManager: {
       shutdown: vi.fn(),
     } as any,
