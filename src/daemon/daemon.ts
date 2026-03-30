@@ -462,7 +462,7 @@ export class TalondDaemon {
           const recentViolations = violationsResult.isOk()
             ? violationsResult.value.map((v) => ({
                 id: v.id,
-                personaId: v.persona_id,
+                personaId: v.persona_id ?? undefined,
                 violation: v.violation,
                 detail: v.detail,
                 actionTaken: v.action_taken,

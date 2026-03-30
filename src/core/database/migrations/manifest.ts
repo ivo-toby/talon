@@ -5,10 +5,10 @@
  * without being constrained by historical filename version prefixes.
  *
  * Each entry maps a migration file to its **user_version** integer.
- * The version MUST match the prefix in the filename for files that existed
- * before the manifest was introduced, so that in-place upgrades from older
- * databases (which derived version from the filename prefix) continue to
- * work correctly.
+ * For files that existed before the manifest was introduced, the version
+ * matches the filename prefix. Later entries may diverge from the prefix
+ * (e.g., 007-execution-environments.sql → version 8) because the manifest
+ * is now the source of truth for ordering.
  */
 
 export const REGISTERED_MIGRATIONS: ReadonlyArray<{ file: string; version: number }> = [

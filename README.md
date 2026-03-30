@@ -115,7 +115,7 @@ Runtime guardrails to keep autonomous agents in check — spending caps, rate li
 - **Rate limiting** — Per-channel and per-user inbound message limits to prevent abuse or accidental floods.
 - **Loop detection** — Catches runaway agents: max turns per run, duplicate tool-call detection, and queue depth limits per thread.
 - **Violation audit trail** — Every blocked or warned action is recorded in the database with full context (persona, thread, run, timestamps).
-- **Status dashboard** — Query live governance status per persona (daily/hourly usage, caps, violations) via the `/governance/status` API endpoint.
+- **Status dashboard** — Query live governance status per persona (daily/hourly usage, caps, violations) via `talonctl status`.
 
 ```yaml
 governance:

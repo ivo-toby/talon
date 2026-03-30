@@ -71,7 +71,12 @@ export class GovernanceServiceImpl implements GovernanceService {
     const rateLimits = this.config?.rate_limits;
     if (!rateLimits) return ok(undefined);
 
-    this.governanceRepo.pruneOldEvents(RATE_LIMIT_WINDOW_MS);
+    // Best-effort prune — fail-closed if it errors (stale rows are harmless,
+    // but a locked DB likely means counts will also fail below).
+    const pruneResult = this.governanceRepo.pruneOldEvents(RATE_LIMIT_WINDOW_MS);
+    if (pruneResult.isErr()) {
+      return err(new GovernanceError('rate_limit_exceeded', 'Unable to prune rate limit events (DB error) — fail-closed'));
+    }
 
     const channelCountResult = this.governanceRepo.countRecentEvents(channelId, undefined, RATE_LIMIT_EVENT_TYPE, RATE_LIMIT_WINDOW_MS);
     if (channelCountResult.isErr()) {
@@ -83,7 +88,10 @@ export class GovernanceServiceImpl implements GovernanceService {
       return err(new GovernanceError('rate_limit_exceeded', 'Unable to verify rate limits (DB error) — fail-closed'));
     }
 
-    this.governanceRepo.recordRateLimitEvent({ id: randomUUID(), channelId, senderId, eventType: RATE_LIMIT_EVENT_TYPE });
+    const recordResult = this.governanceRepo.recordRateLimitEvent({ id: randomUUID(), channelId, senderId, eventType: RATE_LIMIT_EVENT_TYPE });
+    if (recordResult.isErr()) {
+      return err(new GovernanceError('rate_limit_exceeded', 'Unable to record rate limit event (DB error) — fail-closed'));
+    }
 
     const channelCount = channelCountResult.value;
     const senderCount = senderCountResult.value;
