@@ -219,6 +219,7 @@ function makeMockContext(): DaemonContext {
       mergePromptFragments: vi.fn().mockReturnValue(''),
     } as any,
     loadedSkills: [],
+    toolInstructions: new Map(),
     messagePipeline: {} as any,
     observability: {
       observe: vi.fn(async (input, fn) => {

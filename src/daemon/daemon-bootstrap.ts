@@ -64,6 +64,7 @@ import { recoverFromCrash } from './lifecycle.js';
 import { ContextRoller } from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
+import { loadToolInstructions } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
@@ -196,6 +197,20 @@ export async function bootstrap(
       ),
     );
   }
+
+  // 8a. Load tool instruction prompts (keyed by capability prefix).
+  // Try dist path first (dist/templates/), fall back to project root (templates/)
+  // so instructions load in both built and dev (tsx) mode.
+  const distToolInstructionsDir = join(import.meta.dirname, '../templates/tool-instructions');
+  const rootToolInstructionsDir = join(process.cwd(), 'templates/tool-instructions');
+  let toolInstructions = loadToolInstructions(distToolInstructionsDir);
+  if (toolInstructions.size === 0) {
+    toolInstructions = loadToolInstructions(rootToolInstructionsDir);
+  }
+  logger.info(
+    { count: toolInstructions.size },
+    'bootstrap: tool instructions loaded',
+  );
 
   // 8b. Load sub-agents (optional — if the directory does not exist, skip)
   //     Load from three sources in priority order (later overrides earlier):
@@ -489,6 +504,7 @@ export async function bootstrap(
     auditLogger,
     skillResolver,
     loadedSkills: loadedSkills.value,
+    toolInstructions,
     messagePipeline,
     observability,
     subAgentRunner,

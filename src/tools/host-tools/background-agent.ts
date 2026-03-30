@@ -13,6 +13,7 @@ import { buildPersonaRuntimeContext } from '../../personas/persona-runtime-conte
 import type { BackgroundTask } from '../../subagents/background/background-agent-types.js';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
 import { filterAllowedMcpTools } from '../tool-filter.js';
+import { resolveToolInstructions } from '../tool-instructions.js';
 import type { PersonaExecutionEnvConfig } from '../../core/config/config-types.js';
 
 const DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT = 10;
@@ -37,6 +38,7 @@ interface BackgroundAgentHandlerDeps {
   skillResolver: SkillResolver;
   contextAssembler: ContextAssembler;
   loadedSkills: LoadedSkill[];
+  toolInstructions: Map<string, string>;
   logger: pino.Logger;
 }
 
@@ -255,12 +257,18 @@ export class BackgroundAgentHandler {
     // config itself (or daemon default), so the persona's model is expected to match.
     const shouldForwardModel = !explicitProvider && !!loadedPersona.config.model;
 
+    const toolInstructionsBlock = resolveToolInstructions(
+      this.deps.toolInstructions,
+      allowedMcpTools,
+    );
+
     const spawnResult = await this.deps.backgroundAgentManager.spawn({
       prompt: args.prompt,
       personaPrompt: runtimeContext.personaPrompt,
       threadContext: previousContext,
       channelContext,
       timeContext,
+      toolInstructions: toolInstructionsBlock || undefined,
       mcpServers: runtimeContext.mcpServers,
       personaId: context.personaId,
       workerPersonaId: workerPersonaRowResult.value.id,

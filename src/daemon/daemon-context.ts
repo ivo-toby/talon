@@ -110,6 +110,7 @@ export interface DaemonContext {
   readonly contextRoller: ContextRoller | null;
   readonly contextAssembler: ContextAssembler;
   readonly logger: pino.Logger;
+  readonly toolInstructions: Map<string, string>;
   readonly a2aServer: A2AServer | null;
   readonly a2aTaskMapper: A2ATaskMapper | null;
 }
