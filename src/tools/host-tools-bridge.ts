@@ -422,7 +422,7 @@ export class HostToolsBridge {
           requestId: context.requestId ?? 'unknown',
           tool,
           status: 'error',
-          error: `Skill "${name}" not found. Available: ${available.join(', ')}`,
+          error: `Skill "${name}" not found. Available skills: ${available.join(', ')}`,
         };
       }
       this.ctx.logger.info({ skill: name, runId: context.runId }, 'skill.loaded via bridge');

@@ -290,7 +290,6 @@ async function main(): Promise<void> {
               text: result.error ?? 'Unknown error',
             },
           ],
-          isError: true,
         };
       }
 

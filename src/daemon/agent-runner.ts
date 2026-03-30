@@ -451,10 +451,9 @@ export class AgentRunner {
                                 content: [
                                   {
                                     type: 'text' as const,
-                                    text: `Error: skill "${args.name}" not found. Available: ${[...skillContentMap.keys()].join(', ')}`,
+                                    text: `Skill "${args.name}" not found. Available skills: ${[...skillContentMap.keys()].join(', ')}`,
                                   },
                                 ],
-                                isError: true,
                               };
                             }
 

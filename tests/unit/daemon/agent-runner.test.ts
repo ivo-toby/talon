@@ -1764,10 +1764,9 @@ describe('AgentRunner', () => {
         content: [
           {
             type: 'text',
-            text: 'Error: skill "missing" not found. Available: brainstorming, empty',
+            text: 'Skill "missing" not found. Available skills: brainstorming, empty',
           },
         ],
-        isError: true,
       });
     });
 
