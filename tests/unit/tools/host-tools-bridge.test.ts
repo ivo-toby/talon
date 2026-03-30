@@ -221,6 +221,10 @@ describe('HostToolsBridge', () => {
     } as any;
     mockCtx.repos.channel = {
       findById: vi.fn().mockReturnValue(ok({ id: 'channel-001', name: 'telegram-main' })),
+      findEnabled: vi.fn().mockReturnValue(ok([
+        { id: 'channel-001', name: 'telegram-main' },
+        { id: 'channel-002', name: 'slack-general' },
+      ])),
     } as any;
   });
 

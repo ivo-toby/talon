@@ -213,6 +213,42 @@ describe('BackgroundAgentManager', () => {
     expect(options.stdin).toBe('Refactor the auth module');
   });
 
+  it('includes channelContext in the system prompt when provided', async () => {
+    const manager = createManager();
+
+    await manager.spawn({
+      ...spawnInput,
+      channelContext: 'Available channels for channel_send tool:\n  - telegram-main (current thread)\n  - slack-general\nWhen sending messages, use channelId: "telegram-main".',
+    });
+
+    const systemPrompt = prepareBackgroundInvocation.mock.calls[0]?.[0]?.systemPrompt as string;
+    expect(systemPrompt).toContain('Available channels for channel_send tool:');
+    expect(systemPrompt).toContain('telegram-main (current thread)');
+    expect(systemPrompt).toContain('slack-general');
+  });
+
+  it('includes timeContext in the system prompt when provided', async () => {
+    const manager = createManager();
+
+    await manager.spawn({
+      ...spawnInput,
+      timeContext: 'Current time: 2026-03-30T15:04:13+02:00 (CEST, Monday)',
+    });
+
+    const systemPrompt = prepareBackgroundInvocation.mock.calls[0]?.[0]?.systemPrompt as string;
+    expect(systemPrompt).toContain('Current time: 2026-03-30T15:04:13+02:00 (CEST, Monday)');
+  });
+
+  it('omits channelContext and timeContext sections when not provided', async () => {
+    const manager = createManager();
+
+    await manager.spawn(spawnInput);
+
+    const systemPrompt = prepareBackgroundInvocation.mock.calls[0]?.[0]?.systemPrompt as string;
+    expect(systemPrompt).not.toContain('Available channels for channel_send tool:');
+    expect(systemPrompt).not.toContain('Current time:');
+  });
+
   it('provisions a sandbox env, injects host tools, and uses the control directory as cwd', async () => {
     const executionEnvManager = {
       create: vi.fn().mockResolvedValue(ok({
