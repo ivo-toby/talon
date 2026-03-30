@@ -302,6 +302,14 @@ export class EmailConnector implements ChannelConnector {
     return markdownToHtml(markdown);
   }
 
+  get botUserId(): string | undefined {
+    return this.config.fromAddress;
+  }
+
+  setSiblingBotIds(_ids: Set<string>): void {
+    // No-op: email connector does not receive messages from other Talon bots.
+  }
+
   // ---------------------------------------------------------------------------
   // Webhook / feedInbound
   // ---------------------------------------------------------------------------
