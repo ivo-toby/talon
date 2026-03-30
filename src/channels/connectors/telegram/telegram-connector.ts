@@ -14,6 +14,7 @@ import { ChannelError } from '../../../core/errors/error-types.js';
 import type {
   TelegramConfig,
   TelegramUpdate,
+  TelegramUser,
   TelegramSendResult,
   TelegramUpdatesResult,
 } from './telegram-types.js';
@@ -28,6 +29,8 @@ const DEFAULT_POLLING_TIMEOUT_SEC = 30;
 const INITIAL_BACKOFF_MS = 1_000;
 /** Maximum backoff after repeated poll errors, in milliseconds. */
 const MAX_BACKOFF_MS = 60_000;
+/** Timeout for the getMe identity resolution call, in milliseconds. */
+const GET_ME_TIMEOUT_MS = 10_000;
 
 // ---------------------------------------------------------------------------
 // TelegramConnector
@@ -46,6 +49,9 @@ export class TelegramConnector implements ChannelConnector {
   readonly type = 'telegram';
   readonly name: string;
 
+  private _botUserId: string | undefined;
+  private siblingBotIds: Set<string> = new Set();
+
   private handler?: (event: InboundEvent) => void | Promise<void>;
   private running = false;
   /** Offset for getUpdates: last seen update_id + 1. */
@@ -62,23 +68,62 @@ export class TelegramConnector implements ChannelConnector {
     this.name = channelName;
   }
 
+  /** The bot's own Telegram user ID, resolved during start() via getMe. */
+  get botUserId(): string | undefined {
+    return this._botUserId;
+  }
+
+  /**
+   * Register sibling bot user IDs to filter from inbound messages.
+   * Called by channel-setup after all connectors have started.
+   */
+  setSiblingBotIds(ids: Set<string>): void {
+    this.siblingBotIds = ids;
+  }
+
   // ---------------------------------------------------------------------------
   // ChannelConnector lifecycle
   // ---------------------------------------------------------------------------
 
   /**
    * Start long polling. Idempotent — no-op if already running.
+   * Resolves the bot's own user ID via getMe before entering the poll loop.
    */
-  start(): Promise<void> {
+  async start(): Promise<void> {
     if (this.running) {
       this.logger.debug({ channelName: this.name }, 'telegram connector already running');
-      return Promise.resolve();
+      return;
     }
     this.running = true;
     this.logger.info({ channelName: this.name }, 'telegram connector starting');
+
+    // Resolve bot identity so we can filter our own messages.
+    try {
+      const response = await fetch(this.apiUrl('getMe'), {
+        signal: AbortSignal.timeout(GET_ME_TIMEOUT_MS),
+      });
+      const data = (await response.json()) as { ok: boolean; result?: TelegramUser };
+      if (data.ok && data.result) {
+        this._botUserId = String(data.result.id);
+        this.logger.info(
+          { channelName: this.name, botUserId: this._botUserId },
+          'telegram bot identity resolved',
+        );
+      } else {
+        this.logger.warn(
+          { channelName: this.name },
+          'telegram getMe returned ok=false, bot identity unknown',
+        );
+      }
+    } catch (getMeErr) {
+      this.logger.warn(
+        { channelName: this.name, err: getMeErr },
+        'telegram getMe failed, bot identity unknown',
+      );
+    }
+
     // Launch the poll loop in the background; store the promise for stop().
     this.pollLoopPromise = this.pollLoop();
-    return Promise.resolve();
   }
 
   /**
@@ -289,6 +334,25 @@ export class TelegramConnector implements ChannelConnector {
       return;
     }
 
+    // Drop messages from bots to prevent feedback loops.
+    if (message.from?.is_bot) {
+      this.logger.debug(
+        { channelName: this.name, fromId: message.from.id },
+        'telegram message from bot, dropping',
+      );
+      return;
+    }
+
+    // Drop messages from sibling bot user IDs.
+    const fromId = message.from ? String(message.from.id) : undefined;
+    if (fromId && this.siblingBotIds.has(fromId)) {
+      this.logger.debug(
+        { channelName: this.name, fromId },
+        'telegram message from sibling bot, dropping',
+      );
+      return;
+    }
+
     const senderId = message.from ? String(message.from.id) : chatId;
 
     const event: InboundEvent = {
@@ -318,6 +382,14 @@ export class TelegramConnector implements ChannelConnector {
         'telegram connector handler threw an error',
       );
     }
+  }
+
+  /**
+   * Public wrapper around handleUpdate for testing purposes.
+   * Accepts an unknown payload and casts it to TelegramUpdate.
+   */
+  async handleUpdatePublic(update: unknown): Promise<void> {
+    await this.handleUpdate(update as TelegramUpdate);
   }
 
   // ---------------------------------------------------------------------------

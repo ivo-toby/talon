@@ -27,14 +27,31 @@ function defaultConfig(overrides?: Partial<TelegramConfig>): TelegramConfig {
   };
 }
 
+/** Default getMe response used by makeMockFetch. */
+const GET_ME_RESPONSE = {
+  ok: true,
+  result: { id: 12345, is_bot: true, first_name: 'TestBot', username: 'test_bot' },
+};
+
 /**
  * Build a fake fetch function that returns the given JSON bodies in order.
+ * Calls to the `getMe` endpoint are intercepted and always return a
+ * standard bot identity response, without consuming from the responses queue.
  * If there are more calls than responses, subsequent calls hang until the
  * AbortSignal fires.
  */
 function makeMockFetch(responses: Array<unknown>): ReturnType<typeof vi.fn> {
   let callIndex = 0;
-  return vi.fn().mockImplementation((_url: string, opts?: RequestInit) => {
+  return vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+    // Auto-respond to getMe calls without consuming queued responses.
+    if (typeof url === 'string' && url.endsWith('/getMe')) {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(GET_ME_RESPONSE),
+      } as Response);
+    }
+
     const idx = callIndex++;
     if (idx < responses.length) {
       return Promise.resolve({
@@ -530,14 +547,40 @@ describe('TelegramConnector', () => {
     it('continues polling after a getUpdates error', async () => {
       const received: InboundEvent[] = [];
 
-      // First call: network error; second call: valid update.
-      const mockFetch = vi.fn()
-        .mockRejectedValueOnce(new Error('network blip'))
-        .mockResolvedValueOnce({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve(updatesResponse([makeUpdate(900, 1, 'after error')])),
-        } as unknown as Response);
+      // getMe succeeds, then first getUpdates errors, then second succeeds,
+      // then subsequent calls hang until aborted.
+      let getUpdatesCallCount = 0;
+      const mockFetch = vi.fn().mockImplementation((url: string, opts?: RequestInit) => {
+        if (typeof url === 'string' && url.endsWith('/getMe')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(GET_ME_RESPONSE),
+          } as Response);
+        }
+        getUpdatesCallCount++;
+        if (getUpdatesCallCount === 1) {
+          return Promise.reject(new Error('network blip'));
+        }
+        if (getUpdatesCallCount === 2) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.resolve(updatesResponse([makeUpdate(900, 1, 'after error')])),
+          } as unknown as Response);
+        }
+        // Hang until aborted.
+        return new Promise((_resolve, reject) => {
+          if (opts?.signal) {
+            opts.signal.addEventListener('abort', () => {
+              reject(new DOMException('The operation was aborted.', 'AbortError'));
+            });
+            if (opts.signal.aborted) {
+              reject(new DOMException('The operation was aborted.', 'AbortError'));
+            }
+          }
+        });
+      });
       vi.stubGlobal('fetch', mockFetch);
 
       // Use a very short polling timeout + short backoff for the test.
