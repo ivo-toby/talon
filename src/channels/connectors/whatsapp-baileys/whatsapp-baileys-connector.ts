@@ -267,7 +267,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   }
 
   get botUserId(): string | undefined {
-    return [...this.selfIds][0]; // First self-JID, if resolved
+    return this.selfIds.values().next().value; // First self-JID, if resolved
   }
 
   setSiblingBotIds(_ids: Set<string>): void {

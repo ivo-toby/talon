@@ -78,7 +78,7 @@ export class TelegramConnector implements ChannelConnector {
    * Called by channel-setup after all connectors have started.
    */
   setSiblingBotIds(ids: Set<string>): void {
-    this.siblingBotIds = ids;
+    this.siblingBotIds = new Set(ids);
   }
 
   // ---------------------------------------------------------------------------
@@ -95,12 +95,17 @@ export class TelegramConnector implements ChannelConnector {
       return;
     }
     this.running = true;
+    this._botUserId = undefined; // Clear stale value from previous start cycle.
+    this.abortController = new AbortController();
     this.logger.info({ channelName: this.name }, 'telegram connector starting');
 
     // Resolve bot identity so we can filter our own messages.
     try {
       const response = await fetch(this.apiUrl('getMe'), {
-        signal: AbortSignal.timeout(GET_ME_TIMEOUT_MS),
+        signal: AbortSignal.any([
+          this.abortController.signal,
+          AbortSignal.timeout(GET_ME_TIMEOUT_MS),
+        ]),
       });
       const data = (await response.json()) as { ok: boolean; result?: TelegramUser };
       if (data.ok && data.result) {
