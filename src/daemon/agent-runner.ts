@@ -138,7 +138,7 @@ export class AgentRunner {
     // Budget blocks are terminal policy decisions (not transient failures),
     // so we return ok() to prevent the queue processor from retrying.
     if (this.governanceService) {
-      const budgetResult = this.governanceService.checkSpendingBudget(personaId);
+      const budgetResult = this.governanceService.checkSpendingBudget(personaId, personaName);
       if (budgetResult.isErr()) {
         this.ctx.logger.warn(
           { personaId, personaName, reason: budgetResult.error.message },

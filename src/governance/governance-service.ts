@@ -47,10 +47,10 @@ export interface GovernanceStatus {
 
 export interface GovernanceService {
   checkInboundRate(channelId: string, senderId: string): Result<void, GovernanceError>;
-  checkSpendingBudget(personaId: string): Result<BudgetStatus, GovernanceError>;
+  checkSpendingBudget(personaId: string, personaName: string): Result<BudgetStatus, GovernanceError>;
   checkLoopConditions(runId: string, turnCount: number, recentCalls: ToolCall[]): Result<void, GovernanceError>;
   recordUsage(personaId: string, usage: { inputTokens: number; outputTokens: number }): void;
-  getStatus(personaId: string): Result<GovernanceStatus, GovernanceError>;
+  getStatus(personaId: string, personaName: string): Result<GovernanceStatus, GovernanceError>;
 }
 
 interface CachedBudget {
@@ -101,7 +101,7 @@ export class GovernanceServiceImpl implements GovernanceService {
     return ok(undefined);
   }
 
-  checkSpendingBudget(personaId: string): Result<BudgetStatus, GovernanceError> {
+  checkSpendingBudget(personaId: string, personaName: string): Result<BudgetStatus, GovernanceError> {
     const spending = this.config?.spending;
     if (!spending) return ok(zeroBudgetStatus());
 
@@ -109,12 +109,13 @@ export class GovernanceServiceImpl implements GovernanceService {
     const cached = this.budgetCache.get(personaId);
     if (cached && cached.computedAt + BUDGET_CACHE_TTL_MS > now) {
       if (!cached.status.withinBudget) {
-        return err(new GovernanceError('spending_cap_exceeded', `Spending cap exceeded for ${personaId} (cached)`));
+        return err(new GovernanceError('spending_cap_exceeded', `Spending cap exceeded for ${personaName} (cached)`));
       }
       return ok(cached.status);
     }
 
-    const perPersona = spending.per_persona?.[personaId];
+    // Config keys per_persona by persona name (not UUID).
+    const perPersona = spending.per_persona?.[personaName];
     const hourlyCap = perPersona?.hourly_token_cap ?? spending.hourly_token_cap ?? null;
     const dailyCap = perPersona?.daily_token_cap ?? spending.daily_token_cap ?? null;
     const warnAt = spending.warn_at_percent ?? 80;
@@ -152,7 +153,9 @@ export class GovernanceServiceImpl implements GovernanceService {
     if (hourlyCap !== null) candidates.push({ withinBudget: true, percentUsed: (hourlyTokens / hourlyCap) * 100, warningTriggered: (hourlyTokens / hourlyCap) * 100 >= warnAt, tokensUsed: hourlyTokens, cap: hourlyCap });
     if (dailyCap !== null) candidates.push({ withinBudget: true, percentUsed: (dailyTokens / dailyCap) * 100, warningTriggered: (dailyTokens / dailyCap) * 100 >= warnAt, tokensUsed: dailyTokens, cap: dailyCap });
     const status = candidates.sort((a, b) => b.percentUsed - a.percentUsed)[0];
-    this.budgetCache.set(personaId, { status, computedAt: now });
+    // Do NOT cache successful checks — forces re-query on the next concurrent
+    // call, shrinking the race window where parallel runs could all pass the
+    // preflight check and collectively exceed the cap.
     return ok(status);
   }
 
@@ -183,9 +186,10 @@ export class GovernanceServiceImpl implements GovernanceService {
     this.budgetCache.delete(personaId);
   }
 
-  getStatus(personaId: string): Result<GovernanceStatus, GovernanceError> {
+  getStatus(personaId: string, personaName: string): Result<GovernanceStatus, GovernanceError> {
     const spending = this.config?.spending;
-    const perPersona = spending?.per_persona?.[personaId];
+    // Config keys per_persona by persona name (not UUID).
+    const perPersona = spending?.per_persona?.[personaName];
     const hourlyCap = perPersona?.hourly_token_cap ?? spending?.hourly_token_cap;
     const dailyCap = perPersona?.daily_token_cap ?? spending?.daily_token_cap;
     const now = Date.now();

@@ -249,7 +249,7 @@ export class RunRepository extends BaseRepository {
     until?: number;
   }): Result<TokenAggregateRow, DbError> {
     try {
-      const conditions: string[] = [`status = 'completed'`];
+      const conditions: string[] = [`status IN ('completed', 'running')`];
       const params: (string | number)[] = [];
 
       if (filters.personaId !== undefined) {

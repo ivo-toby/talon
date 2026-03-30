@@ -58,7 +58,7 @@ describe('GovernanceServiceImpl', () => {
     );
 
     expect(service.checkInboundRate('ch', 'snd')._unsafeUnwrap()).toBeUndefined();
-    expect(service.checkSpendingBudget('p1')._unsafeUnwrap()).toEqual({
+    expect(service.checkSpendingBudget('p1', 'p1')._unsafeUnwrap()).toEqual({
       withinBudget: true,
       percentUsed: 0,
       warningTriggered: false,
@@ -184,7 +184,7 @@ describe('GovernanceServiceImpl', () => {
       governanceRepo as unknown as GovernanceRepository,
     );
 
-    const result = service.checkSpendingBudget('persona-1');
+    const result = service.checkSpendingBudget('persona-1', 'persona-1');
 
     expect(result.isOk()).toBe(true);
     expect(result._unsafeUnwrap()).toEqual({
@@ -209,7 +209,7 @@ describe('GovernanceServiceImpl', () => {
       governanceRepo as unknown as GovernanceRepository,
     );
 
-    const result = service.checkSpendingBudget('persona-1');
+    const result = service.checkSpendingBudget('persona-1', 'persona-1');
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr()).toBeInstanceOf(GovernanceError);
@@ -230,7 +230,7 @@ describe('GovernanceServiceImpl', () => {
       governanceRepo as unknown as GovernanceRepository,
     );
 
-    const result = service.checkSpendingBudget('persona-1');
+    const result = service.checkSpendingBudget('persona-1', 'persona-1');
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr()).toBeInstanceOf(GovernanceError);
@@ -240,10 +240,10 @@ describe('GovernanceServiceImpl', () => {
     );
   });
 
-  it('checkSpendingBudget caches results for 60 seconds', () => {
-    runRepo.aggregateByPersona
-      .mockReturnValueOnce(ok(makeAggregateRow({ total_input_tokens: 10, total_output_tokens: 10 })))
-      .mockReturnValueOnce(ok(makeAggregateRow({ total_input_tokens: 20, total_output_tokens: 20 })));
+  it('checkSpendingBudget does not cache successful checks (race protection)', () => {
+    runRepo.aggregateByPersona.mockReturnValue(
+      ok(makeAggregateRow({ total_input_tokens: 10, total_output_tokens: 10 })),
+    );
 
     const service = new GovernanceServiceImpl(
       { spending: { daily_token_cap: 200, hourly_token_cap: 100, warn_at_percent: 80 } } satisfies GovernanceConfig,
@@ -251,14 +251,10 @@ describe('GovernanceServiceImpl', () => {
       governanceRepo as unknown as GovernanceRepository,
     );
 
-    service.checkSpendingBudget('persona-1');
-    service.checkSpendingBudget('persona-1');
+    service.checkSpendingBudget('persona-1', 'persona-1');
+    service.checkSpendingBudget('persona-1', 'persona-1');
 
-    expect(runRepo.aggregateByPersona).toHaveBeenCalledTimes(2);
-
-    service.recordUsage('persona-1', { inputTokens: 1, outputTokens: 1 });
-    service.checkSpendingBudget('persona-1');
-
+    // Each call queries both hourly and daily — no caching on success.
     expect(runRepo.aggregateByPersona).toHaveBeenCalledTimes(4);
   });
 

@@ -425,7 +425,7 @@ export class TalondDaemon {
             const personaRow = this.ctx.repos.persona.findByName(persona.name);
             if (personaRow.isErr() || personaRow.value === null) continue;
             const pid = personaRow.value.id;
-            const statusResult = govService.getStatus(pid);
+            const statusResult = govService.getStatus(pid, persona.name);
             if (statusResult.isErr()) continue;
             const s = statusResult.value;
             const dailyPct = s.dailyTokenCap ? (s.dailyTokensUsed / s.dailyTokenCap) * 100 : undefined;
