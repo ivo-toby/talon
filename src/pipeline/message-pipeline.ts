@@ -58,7 +58,7 @@ export class MessagePipeline {
    * Sets the governance service for inbound rate limiting.
    * Called after bootstrap when governance config is present.
    */
-  setGovernanceService(service: GovernanceService): void {
+  setGovernanceService(service: GovernanceService | undefined): void {
     this.governanceService = service;
   }
 

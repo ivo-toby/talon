@@ -125,7 +125,7 @@ function makeMockContext(configOverrides: Record<string, unknown> = {}): DaemonC
     auditLogger: {} as any,
     skillResolver: {} as any,
     loadedSkills: [],
-    messagePipeline: {} as any,
+    messagePipeline: { setGovernanceService: vi.fn() } as any,
     backgroundAgentManager: { shutdown: vi.fn() } as any,
     contextAssembler: {} as any,
     hostToolsBridge: { path: '/tmp/host-tools.sock', start: vi.fn(), stop: vi.fn() } as any,

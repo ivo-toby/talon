@@ -636,6 +636,9 @@ export class TalondDaemon {
         new GovernanceRepository(ctx.db),
       );
       ctx.messagePipeline.setGovernanceService(governanceService);
+    } else {
+      // Config no longer has governance — clear any previously wired service.
+      ctx.messagePipeline.setGovernanceService(undefined);
     }
   }
 

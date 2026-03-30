@@ -135,6 +135,8 @@ export class AgentRunner {
     const strategy = providerEntry.provider.createExecutionStrategy();
 
     // Governance — check spending budget before starting the run.
+    // Budget blocks are terminal policy decisions (not transient failures),
+    // so we return ok() to prevent the queue processor from retrying.
     if (this.governanceService) {
       const budgetResult = this.governanceService.checkSpendingBudget(personaId);
       if (budgetResult.isErr()) {
@@ -143,7 +145,7 @@ export class AgentRunner {
           'agent-runner: spending cap exceeded — run blocked',
         );
         this.failA2ATask(a2aTaskId, 'SPENDING_CAP_EXCEEDED', budgetResult.error.message);
-        return err(new Error(`Spending cap exceeded for persona ${personaName}: ${budgetResult.error.message}`));
+        return ok(undefined);
       }
       if (budgetResult.value.warningTriggered) {
         this.ctx.logger.warn(
@@ -965,6 +967,14 @@ export class AgentRunner {
             });
             if (tokenResult.isErr()) {
               this.ctx.logger.error({ runId, err: tokenResult.error }, 'agent-runner: failed to persist token usage');
+            }
+
+            // Invalidate cached budget so the next run re-queries actual DB totals.
+            if (this.governanceService) {
+              this.governanceService.recordUsage(personaId, {
+                inputTokens: usage.inputTokens,
+                outputTokens: usage.outputTokens,
+              });
             }
 
             // Check if context needs rotation (rolling window).

@@ -60,10 +60,11 @@ export function runMigrations(
 
   let applied = 0;
 
-  for (const [index, file] of orderedFiles.value.entries()) {
-    const version = isBundledMigrationsDir
-      ? index + 1
-      : parseInt(file.split('-')[0], 10);
+  for (const entry of orderedFiles.value) {
+    const file = typeof entry === 'string' ? entry : entry.file;
+    const version = typeof entry === 'string'
+      ? parseInt(entry.split('-')[0], 10)
+      : entry.version;
 
     // Skip migrations that have already been applied.
     if (version <= currentVersion) {
@@ -109,8 +110,9 @@ export function runMigrations(
   return ok(applied);
 }
 
-function validateBundledMigrations(files: string[]): Result<string[], MigrationError> {
-  const missing = REGISTERED_MIGRATIONS.filter((file) => !files.includes(file));
+function validateBundledMigrations(files: string[]): Result<Array<{ file: string; version: number }>, MigrationError> {
+  const registeredFiles = REGISTERED_MIGRATIONS.map((m) => m.file);
+  const missing = registeredFiles.filter((file) => !files.includes(file));
   if (missing.length > 0) {
     return err(
       new MigrationError(
@@ -119,7 +121,7 @@ function validateBundledMigrations(files: string[]): Result<string[], MigrationE
     );
   }
 
-  const extras = files.filter((file) => !REGISTERED_MIGRATIONS.includes(file as (typeof REGISTERED_MIGRATIONS)[number]));
+  const extras = files.filter((file) => !registeredFiles.includes(file));
   if (extras.length > 0) {
     return err(
       new MigrationError(
