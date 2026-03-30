@@ -16,5 +16,5 @@ export const REGISTERED_MIGRATIONS = [
   '007-execution-environments.sql',
   '008-background-task-sandbox-columns.sql',
   '009-execution-env-checkpoints.sql',
-  '002-governance.sql',
+  '010-governance.sql',
 ] as const;
