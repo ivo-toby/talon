@@ -34,8 +34,10 @@ describe('listSkills()', () => {
     const result = await listSkills({ configPath: p });
 
     expect(result).toHaveLength(2);
-    expect(result[0]).toEqual({ personaName: 'assistant', skillName: 'web-search' });
-    expect(result[1]).toEqual({ personaName: 'coder', skillName: 'code-runner' });
+    expect(result[0]).toMatchObject({ personaName: 'assistant', skillName: 'web-search' });
+    expect(result[1]).toMatchObject({ personaName: 'coder', skillName: 'code-runner' });
+    expect(['unknown', 'yaml', 'skillmd']).toContain(result[0].format);
+    expect(['unknown', 'yaml', 'skillmd']).toContain(result[1].format);
   });
 
   it('filters by persona name', async () => {
