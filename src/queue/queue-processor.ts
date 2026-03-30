@@ -21,6 +21,8 @@ import { rowToQueueItem } from './queue-mapper.js';
  * Key invariants:
  * - Items within a thread are processed in FIFO (oldest-first) order.
  * - Only one item per thread may be claimed at a time (no interleaved runs).
+ *   Exception: a collaboration item may be claimed for a thread that already
+ *   has an in-flight item, to prevent persona_send await_reply deadlocks.
  * - Failures increment the attempt counter and schedule the next retry.
  * - Items that exhaust max attempts are moved to the dead-letter queue.
  */
@@ -64,17 +66,21 @@ export class QueueProcessor {
     }
 
     // Build a deduplicated list of thread IDs preserving FIFO order, and track
-    // the type of the oldest pending item per thread.
+    // per-thread pending item characteristics.
     // findPending orders by created_at ASC, so the first occurrence of each
     // thread ID corresponds to the oldest eligible item for that thread.
     const seenThreads = new Set<string>();
     const threadIds: string[] = [];
     const oldestPendingTypeByThread = new Map<string, string>();
+    const threadsWithPendingCollaboration = new Set<string>();
     for (const row of pending) {
       if (!seenThreads.has(row.thread_id)) {
         seenThreads.add(row.thread_id);
         threadIds.push(row.thread_id);
         oldestPendingTypeByThread.set(row.thread_id, row.type);
+      }
+      if (row.type === 'collaboration') {
+        threadsWithPendingCollaboration.add(row.thread_id);
       }
     }
 
@@ -84,11 +90,16 @@ export class QueueProcessor {
       // persona calls persona_send with await_reply: true and waits for the
       // result). To prevent a deadlock, collaboration items bypass the
       // per-thread single-inflight invariant.
-      const isCollaboration = oldestPendingTypeByThread.get(threadId) === 'collaboration';
+      const oldestIsCollaboration = oldestPendingTypeByThread.get(threadId) === 'collaboration';
 
-      if (!isCollaboration) {
+      // Whether to claim only a collaboration item — determined below only
+      // when the thread is confirmed to be in-flight.
+      let claimCollaborationOnly = false;
+
+      if (!oldestIsCollaboration) {
         // Enforce the "no interleaved runs" invariant: skip threads that already
-        // have a claimed or processing item in flight.
+        // have a claimed or processing item in flight — unless we can bypass by
+        // claiming a collaboration item specifically.
         const inflightResult = this.queueRepo.hasInflightItem(threadId);
         if (inflightResult.isErr()) {
           this.logger.error(
@@ -98,12 +109,44 @@ export class QueueProcessor {
           continue;
         }
         if (inflightResult.value) {
+          // Thread is busy. Check whether a collaboration item is pending
+          // further back in the queue — if so we can bypass the block and claim
+          // just the collaboration item to avoid deadlock.
+          if (!threadsWithPendingCollaboration.has(threadId)) {
+            // No collaboration item waiting — skip the thread entirely.
+            continue;
+          }
+          // Collaboration item is pending behind a regular item. Fall through
+          // and use the type-filtered claim.
+          claimCollaborationOnly = true;
+        }
+      }
+
+      // Re-check inflight status immediately before the type-filtered claim to
+      // guard against a TOCTOU race: if the thread finished between the initial
+      // check and now, skip the bypass so we don't jump a regular FIFO item.
+      if (claimCollaborationOnly) {
+        const inflightRecheckResult = this.queueRepo.hasInflightItem(threadId);
+        if (inflightRecheckResult.isErr()) {
+          this.logger.error(
+            { err: inflightRecheckResult.error, threadId },
+            'processNext: failed to re-check inflight items before claim',
+          );
           continue;
+        }
+        if (!inflightRecheckResult.value) {
+          // Thread is no longer in-flight; do not bypass the regular FIFO item.
+          claimCollaborationOnly = false;
         }
       }
 
       // Atomically claim the next item for this thread.
-      const claimResult = this.queueRepo.claimNext(threadId);
+      // When the thread is in-flight and we must unblock a collaboration item,
+      // use the type-filtered claim so we don't accidentally claim the regular
+      // pending item that is blocked behind the in-flight one.
+      const claimResult = claimCollaborationOnly
+        ? this.queueRepo.claimNextCollaboration(threadId)
+        : this.queueRepo.claimNext(threadId);
       if (claimResult.isErr()) {
         this.logger.error(
           { err: claimResult.error, threadId },

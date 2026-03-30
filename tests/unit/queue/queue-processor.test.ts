@@ -127,6 +127,69 @@ describe('QueueProcessor', () => {
       ) as { status: string };
       expect(collaborationRow.status).toBe('completed');
     });
+
+    it('claims collaboration item even when a regular item is pending ahead of it (deadlock scenario)', async () => {
+      // Simulate the deadlock: an item is in-flight, then a regular item is
+      // enqueued, then a collaboration item is enqueued. Without the fix,
+      // the oldest-pending check sees a regular type and skips the whole thread.
+      const inflightItemId = enqueueItem(repo, threadId);
+      // Manually put inflightItem into claimed state (simulates an in-flight run).
+      db.prepare("UPDATE queue_items SET status = 'claimed' WHERE id = ?").run(inflightItemId);
+
+      // Enqueue a regular item followed by a collaboration item.
+      await new Promise((r) => setTimeout(r, 5));
+      const regularPendingId = enqueueItem(repo, threadId);
+      await new Promise((r) => setTimeout(r, 5));
+      const collaborationItemId = enqueueItem(repo, threadId, { type: 'collaboration' });
+
+      const handledIds: string[] = [];
+      const result = await processor.processNext(async (item) => {
+        handledIds.push(item.id);
+        return ok(undefined);
+      });
+
+      // The collaboration item must be claimed and processed despite the regular
+      // item sitting ahead of it in the queue.
+      expect(result).not.toBeNull();
+      expect(result?.id).toBe(collaborationItemId);
+      expect(result?.type).toBe('collaboration');
+      expect(handledIds).toEqual([collaborationItemId]);
+
+      // Inflight and regular items must remain untouched.
+      const inflightRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
+        inflightItemId,
+      ) as { status: string };
+      expect(inflightRow.status).toBe('claimed');
+
+      const regularRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
+        regularPendingId,
+      ) as { status: string };
+      expect(regularRow.status).toBe('pending');
+
+      const collaborationRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
+        collaborationItemId,
+      ) as { status: string };
+      expect(collaborationRow.status).toBe('completed');
+    });
+
+    it('still claims regular item first (FIFO) when thread is idle even if collaboration item is also pending', async () => {
+      // Idle thread — no inflight item. Regular item is older and must come first.
+      await new Promise((r) => setTimeout(r, 5));
+      const regularId = enqueueItem(repo, threadId);
+      await new Promise((r) => setTimeout(r, 5));
+      const collaborationId = enqueueItem(repo, threadId, { type: 'collaboration' });
+
+      const result = await processor.processNext(async () => ok(undefined));
+
+      // FIFO must be preserved — regular item is claimed first.
+      expect(result?.id).toBe(regularId);
+
+      const regularRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(regularId) as { status: string };
+      expect(regularRow.status).toBe('completed');
+
+      const collabRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(collaborationId) as { status: string };
+      expect(collabRow.status).toBe('pending');
+    });
   });
 
   // -------------------------------------------------------------------------
