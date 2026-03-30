@@ -107,6 +107,35 @@ backgroundAgent:
 - **No overhead when disabled** — A noop service replaces the real one; no Langfuse initialization or network traffic
 - **Self-hosted or cloud** — Point `baseUrl` at your own Langfuse instance or use Langfuse Cloud
 
+### Governance
+
+Runtime guardrails to keep autonomous agents in check — spending caps, rate limiting, and loop detection. All optional, all hot-reloadable.
+
+- **Spending caps** — Daily and hourly token budgets (global or per-persona). Soft warnings at a configurable threshold, hard block when the cap is exceeded.
+- **Rate limiting** — Per-channel and per-user inbound message limits to prevent abuse or accidental floods.
+- **Loop detection** — Catches runaway agents: max turns per run, duplicate tool-call detection, and queue depth limits per thread.
+- **Violation audit trail** — Every blocked or warned action is recorded in the database with full context (persona, thread, run, timestamps).
+- **Status dashboard** — Query live governance status per persona (daily/hourly usage, caps, violations) via the `/governance/status` API endpoint.
+
+```yaml
+governance:
+  spending:
+    daily_token_cap: 5000000
+    hourly_token_cap: 1000000
+    warn_at_percent: 80
+    per_persona:
+      researcher:
+        daily_token_cap: 2000000
+  rate_limits:
+    inbound_per_minute: 30
+    inbound_per_user_per_minute: 10
+    api_calls_per_minute: 60
+  loop_detection:
+    max_turns_per_run: 50
+    duplicate_call_threshold: 5
+    max_queue_depth_per_thread: 100
+```
+
 ### Security
 
 - **Default-deny capabilities** — Tools are gated by capability labels (`channel.send`, `schedule.manage`, etc.)
