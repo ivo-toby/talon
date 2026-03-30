@@ -335,6 +335,53 @@ export const LangfuseConfigSchema = z
   });
 
 // ---------------------------------------------------------------------------
+// Governance
+// ---------------------------------------------------------------------------
+
+const GovernanceSpendingSchema = z
+  .object({
+    daily_token_cap: z.number().int().positive().optional(),
+    hourly_token_cap: z.number().int().positive().optional(),
+    warn_at_percent: z.number().min(1).max(100).default(80),
+    per_persona: z
+      .record(
+        z.string(),
+        z.object({
+          daily_token_cap: z.number().int().positive().optional(),
+          hourly_token_cap: z.number().int().positive().optional(),
+        }),
+      )
+      .optional(),
+  })
+  .optional();
+
+const GovernanceRateLimitsSchema = z
+  .object({
+    inbound_per_minute: z.number().int().positive().default(30),
+    inbound_per_user_per_minute: z.number().int().positive().default(10),
+    api_calls_per_minute: z.number().int().positive().default(60),
+  })
+  .optional();
+
+const GovernanceLoopDetectionSchema = z
+  .object({
+    max_turns_per_run: z.number().int().positive().default(50),
+    duplicate_call_threshold: z.number().int().positive().default(5),
+    max_queue_depth_per_thread: z.number().int().positive().default(100),
+  })
+  .optional();
+
+export const GovernanceConfigSchema = z
+  .object({
+    spending: GovernanceSpendingSchema,
+    rate_limits: GovernanceRateLimitsSchema,
+    loop_detection: GovernanceLoopDetectionSchema,
+  })
+  .optional();
+
+export type GovernanceConfig = z.infer<typeof GovernanceConfigSchema>;
+
+// ---------------------------------------------------------------------------
 // Root config
 // ---------------------------------------------------------------------------
 
@@ -352,6 +399,7 @@ export const TalondConfigSchema = z.object({
   backgroundAgent: BackgroundAgentConfigSchema.default(() => BackgroundAgentConfigSchema.parse({})),
   sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
   langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
+  governance: GovernanceConfigSchema,
   logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   dataDir: z.string().default('data'),
 });

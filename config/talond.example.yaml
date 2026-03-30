@@ -171,5 +171,19 @@ langfuse:
   # flushAt: 20                   # spans buffered before flush
   # flushIntervalSeconds: 5       # max seconds between flushes
 
+# governance:
+#   spending:
+#     daily_token_cap: 5000000
+#     hourly_token_cap: 1000000
+#     warn_at_percent: 80
+#   rate_limits:
+#     inbound_per_minute: 30
+#     inbound_per_user_per_minute: 10
+#     api_calls_per_minute: 60
+#   loop_detection:
+#     max_turns_per_run: 50
+#     duplicate_call_threshold: 5
+#     max_queue_depth_per_thread: 100
+
 logLevel: info
 dataDir: data
