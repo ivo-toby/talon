@@ -582,6 +582,7 @@ describe('BackgroundAgentManager', () => {
 
     const task = repository.findById(taskId)._unsafeUnwrap();
     expect(task?.status).toBe('failed');
+    expect(task?.output).toContain('Done!');
     expect(task?.error).toContain('failed to parse provider result file');
     expect(queueManager.enqueue as any).toHaveBeenCalledWith(
       'thread-1',

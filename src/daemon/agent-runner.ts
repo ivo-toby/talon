@@ -131,7 +131,7 @@ export class AgentRunner {
           resolvedSessionId = dbSessionResult.value;
           this.ctx.logger.info(
             { threadId: item.threadId, sessionId: resolvedSessionId },
-            'agent-sdk: restored session from DB after restart',
+            'agent-runner: restored session from DB after restart',
           );
         }
       }

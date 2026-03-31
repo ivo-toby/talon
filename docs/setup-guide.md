@@ -34,7 +34,7 @@ claude --version
 claude --print -p "say hello"
 ```
 
-Claude uses the Anthropic API. You need a valid API key or a Max subscription with Claude SDK access.
+Claude uses the Anthropic API. You need a valid API key or a Max subscription with Agent SDK access.
 
 ### Gemini CLI
 

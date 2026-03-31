@@ -58,10 +58,11 @@ function runProcess(
   options?: { cwd?: string; env?: NodeJS.ProcessEnv },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
+    const env = options?.env ? { ...process.env, ...options.env } : process.env;
     const child = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
       cwd: options?.cwd,
-      env: options?.env,
+      env,
     });
 
     let stdout = '';

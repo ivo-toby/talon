@@ -479,7 +479,15 @@ export class BackgroundAgentManager {
           };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      this.deps.repository.updateStatus(taskId, 'failed', undefined, this.truncate(message));
+      const debugOutput = processResult.stderr.trim().length > 0
+        ? `${processResult.stdout}\n\nstderr:\n${processResult.stderr}`
+        : processResult.stdout;
+      this.deps.repository.updateStatus(
+        taskId,
+        'failed',
+        this.truncate(debugOutput),
+        this.truncate(message),
+      );
       this.enqueueNotification(taskId);
       managedProcess?.observation?.update({ statusMessage: message });
       managedProcess?.observation?.end();
