@@ -38,7 +38,10 @@ afterEach(() => {
   rmSync(operatorHome, { recursive: true, force: true });
 });
 
-function writeConfig(providerName: string, command: string): string {
+function writeConfig(providerName: string, command: string, defaultModel?: string): string {
+  const optionsLines = defaultModel
+    ? ['      options:', `        defaultModel: ${JSON.stringify(defaultModel)}`]
+    : [];
   const configPath = join(testDir, 'talond.yaml');
   writeFileSync(
     configPath,
@@ -49,6 +52,7 @@ function writeConfig(providerName: string, command: string): string {
       `    ${providerName}:`,
       '      enabled: true',
       `      command: ${JSON.stringify(command)}`,
+      ...optionsLines,
       '',
     ].join('\n'),
     'utf8',
@@ -268,5 +272,26 @@ describe('testProvider() Codex smoke branch', () => {
     expect(result.inputTokens).toBeNull();
     expect(result.outputTokens).toBeNull();
     expect(result.error).toBeNull();
+  });
+
+  it('passes --model when provider options.defaultModel is configured', async () => {
+    const fakeCli = writeFakeExecutable('codex-default-model');
+    const configPath = writeConfig('codex-smoke', fakeCli, 'gpt-5.4-mini');
+    const logPath = join(testDir, 'invoke-default-model.json');
+    process.env.FAKE_CODEX_LOG = logPath;
+
+    const result = await testProvider({
+      name: 'codex-smoke',
+      configPath,
+    });
+
+    expect(result.binaryFound).toBe(true);
+    expect(result.response).toBe('hello');
+    expect(result.error).toBeNull();
+
+    const invocation = JSON.parse(readFileSync(logPath, 'utf8')) as { args: string[] };
+    const modelFlagIndex = invocation.args.indexOf('--model');
+    expect(modelFlagIndex).toBeGreaterThan(-1);
+    expect(invocation.args[modelFlagIndex + 1]).toBe('gpt-5.4-mini');
   });
 });

@@ -23,6 +23,8 @@ interface CodexCliProviderRuntime {
 }
 
 interface CodexParsedOutput {
+  hasThreadStarted: boolean;
+  hasTurnCompleted: boolean;
   threadId?: string;
   usage?: AgentUsage;
 }
@@ -203,7 +205,6 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private buildCodexArgs(
-    prompt: string,
     resultFiles: { lastMessagePath: string },
     options: {
       model?: string;
@@ -213,9 +214,9 @@ export class CodexCliProvider implements AgentProvider {
   ): string[] {
     const args = ['exec'];
     if (options.sessionId) {
-      args.push('resume', options.sessionId, prompt);
+      args.push('resume', options.sessionId, '-');
     } else {
-      args.push(prompt);
+      args.push('-');
     }
 
     args.push(
@@ -237,6 +238,10 @@ export class CodexCliProvider implements AgentProvider {
     return args;
   }
 
+  private composePromptStdin(systemPrompt: string, prompt: string): string {
+    return ['System prompt:', systemPrompt, '', 'User prompt:', prompt, ''].join('\n');
+  }
+
   private async runForeground(input: AgentRunInput) {
     const homeDir = this.buildForegroundHome(input.threadId);
     const lastMessagePath = join(homeDir, 'last-message.txt');
@@ -251,12 +256,12 @@ export class CodexCliProvider implements AgentProvider {
 
     const invocation: PreparedProviderInvocation = {
       command: this.config.command,
-      args: this.buildCodexArgs(input.prompt, resultFiles, {
+      args: this.buildCodexArgs(resultFiles, {
         model,
         sessionId: input.sessionId,
         ephemeral: false,
       }),
-      stdin: '',
+      stdin: this.composePromptStdin(input.systemPrompt, input.prompt),
       env: {
         HOME: homeDir,
         ...seedResult.value.configEnv,
@@ -268,7 +273,10 @@ export class CodexCliProvider implements AgentProvider {
     };
 
     const raw = await this.executeInvocation(invocation);
-    const parsed = this.parseCodexResult(raw, resultFiles);
+    const parsed = this.parseCodexResult(raw, resultFiles, {
+      failOnSuccessfulInvalidJsonl: true,
+      requireThreadId: true,
+    });
     const parsedJsonl = this.parseCodexJsonl(raw.stdout);
     return {
       output: parsed.output,
@@ -292,11 +300,11 @@ export class CodexCliProvider implements AgentProvider {
 
     return ok({
       command: this.config.command,
-      args: this.buildCodexArgs(input.prompt, resultFiles, {
+      args: this.buildCodexArgs(resultFiles, {
         model,
         ephemeral: true,
       }),
-      stdin: '',
+      stdin: this.composePromptStdin(input.systemPrompt, input.prompt),
       env: {
         HOME: homeDir,
         ...seedResult.value.configEnv,
@@ -317,6 +325,7 @@ export class CodexCliProvider implements AgentProvider {
       timedOut: boolean;
     },
     resultFiles?: PreparedProviderResultFiles,
+    options?: { failOnSuccessfulInvalidJsonl?: boolean; requireThreadId?: boolean },
   ): ProviderResult {
     const parsed = this.parseCodexJsonl(raw.stdout);
     let output = raw.stdout;
@@ -330,6 +339,23 @@ export class CodexCliProvider implements AgentProvider {
       }
     }
 
+    const validationError = this.buildValidationError(parsed, {
+      requireThreadId: options?.requireThreadId ?? false,
+    });
+    if (raw.exitCode === 0 && !raw.timedOut && validationError) {
+      if (options?.failOnSuccessfulInvalidJsonl) {
+        throw new BackgroundAgentError(validationError);
+      }
+
+      return {
+        output,
+        stderr: this.appendStderr(raw.stderr, validationError),
+        exitCode: 1,
+        timedOut: raw.timedOut,
+        usage: parsed.usage,
+      };
+    }
+
     return {
       output,
       stderr: raw.stderr,
@@ -340,7 +366,10 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private parseCodexJsonl(stdout: string): CodexParsedOutput {
-    const result: CodexParsedOutput = {};
+    const result: CodexParsedOutput = {
+      hasThreadStarted: false,
+      hasTurnCompleted: false,
+    };
     const lines = stdout.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
 
     for (const line of lines) {
@@ -352,19 +381,52 @@ export class CodexCliProvider implements AgentProvider {
       }
 
       if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+        result.hasThreadStarted = true;
         result.threadId = event.thread_id;
+      } else if (event.type === 'thread.started') {
+        result.hasThreadStarted = true;
       }
 
-      if (event.type === 'turn.completed' && typeof event.usage === 'object' && event.usage !== null) {
-        const usage = event.usage as { input_tokens?: unknown; output_tokens?: unknown };
-        result.usage = {
-          inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
-          outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
-        };
+      if (event.type === 'turn.completed') {
+        result.hasTurnCompleted = true;
+        if (typeof event.usage === 'object' && event.usage !== null) {
+          const usage = event.usage as { input_tokens?: unknown; output_tokens?: unknown };
+          result.usage = {
+            inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
+            outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
+          };
+        }
       }
     }
 
     return result;
+  }
+
+  private buildValidationError(
+    parsed: CodexParsedOutput,
+    options: { requireThreadId: boolean },
+  ): string | null {
+    const missingEvents: string[] = [];
+    if (!parsed.hasThreadStarted) {
+      missingEvents.push('thread.started');
+    }
+    if (!parsed.hasTurnCompleted) {
+      missingEvents.push('turn.completed');
+    }
+    if (options.requireThreadId && parsed.hasThreadStarted && typeof parsed.threadId !== 'string') {
+      missingEvents.push('thread.started.thread_id (string)');
+    }
+
+    if (missingEvents.length === 0) {
+      return null;
+    }
+
+    return `Codex CLI returned invalid JSONL output (expected ${missingEvents.join(' and ')}).`;
+  }
+
+  private appendStderr(stderr: string, message: string): string {
+    const trimmed = stderr.trim();
+    return trimmed.length > 0 ? `${trimmed}\n${message}` : message;
   }
 
   private readDefaultModel(): string | undefined {

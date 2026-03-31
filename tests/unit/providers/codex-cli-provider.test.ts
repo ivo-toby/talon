@@ -106,12 +106,14 @@ describe('CodexCliProvider', () => {
       );
       expect(invocation.env.HOME).toBe(expectedHome);
       expect(invocation.args[0]).toBe('exec');
-      expect(invocation.args[1]).toBe('Continue this conversation.');
+      expect(invocation.args[1]).toBe('-');
       expect(invocation.args).toContain('--json');
       expect(invocation.args).toContain('--skip-git-repo-check');
       expect(invocation.args).toContain('--dangerously-bypass-approvals-and-sandbox');
       expect(invocation.args).not.toContain('--ephemeral');
       expect(invocation.args).toContain('-o');
+      expect(invocation.stdin).toContain('You are helpful.');
+      expect(invocation.stdin).toContain('Continue this conversation.');
       const outputFlagIndex = invocation.args.indexOf('-o');
       const expectedLastMessagePath = join(expectedHome, 'last-message.txt');
       expect(outputFlagIndex).toBeGreaterThan(-1);
@@ -157,7 +159,10 @@ describe('CodexCliProvider', () => {
       .mockImplementationOnce(async (prepared) => {
         writeFileSync(prepared.resultFiles.lastMessagePath, 'first-output', 'utf8');
         return {
-          stdout: '{"type":"thread.started","thread_id":"codex-thread-123"}',
+          stdout: [
+            '{"type":"thread.started","thread_id":"codex-thread-123"}',
+            '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":2}}',
+          ].join('\n'),
           stderr: '',
           exitCode: 0,
           timedOut: false,
@@ -239,8 +244,10 @@ describe('CodexCliProvider', () => {
         'exec',
         'resume',
         'codex-thread-001',
-        'Continue',
+        '-',
       ]);
+      expect(invocation.stdin).toContain('You are helpful.');
+      expect(invocation.stdin).toContain('Continue');
       expect(result.sessionId).toBe('codex-thread-001');
     } finally {
       executeInvocation.mockRestore();
@@ -287,11 +294,14 @@ describe('CodexCliProvider', () => {
     expect(invocation.env?.HOME.startsWith(tmpdir())).toBe(true);
     expect(invocation.cleanupPaths).toContain(invocation.env!.HOME);
     expect(invocation.resultFiles?.lastMessagePath).toBeDefined();
+    expect(invocation.args[1]).toBe('-');
     expect(invocation.args).toContain('--ephemeral');
     expect(invocation.args).toContain('--json');
     expect(invocation.args).toContain('--skip-git-repo-check');
     expect(invocation.args).toContain('--dangerously-bypass-approvals-and-sandbox');
     expect(invocation.args).toContain('-o');
+    expect(invocation.stdin).toContain('You are helpful.');
+    expect(invocation.stdin).toContain('Refactor the auth module.');
     const outputFlagIndex = invocation.args.indexOf('-o');
     expect(outputFlagIndex).toBeGreaterThan(-1);
     expect(invocation.args[outputFlagIndex + 1]).toBe(invocation.resultFiles?.lastMessagePath);
@@ -421,6 +431,146 @@ describe('CodexCliProvider', () => {
         outputTokens: 16,
       },
     });
+  });
+
+  it('throws when successful foreground output is missing thread.started', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'foreground-output', 'utf8');
+        return {
+          stdout: '{"type":"turn.completed","usage":{"input_tokens":111,"output_tokens":7}}',
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      await expect(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      ).rejects.toThrow('thread.started');
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('throws when successful foreground output is missing turn.completed', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'foreground-output', 'utf8');
+        return {
+          stdout: '{"type":"thread.started","thread_id":"codex-thread-123"}',
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      await expect(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      ).rejects.toThrow('turn.completed');
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('throws when successful foreground output has thread.started without a string thread_id', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'foreground-output', 'utf8');
+        return {
+          stdout: [
+            '{"type":"thread.started","thread_id":123}',
+            '{"type":"turn.completed","usage":{"input_tokens":111,"output_tokens":7}}',
+          ].join('\n'),
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      await expect(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      ).rejects.toThrow('thread_id');
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('marks successful background output without thread.started as failed', () => {
+    const provider = makeProvider();
+    const lastMessagePath = join(runtimeDir, 'last-message.txt');
+    writeFileSync(lastMessagePath, 'isolated-final-output', 'utf8');
+
+    const result = provider.parseBackgroundResult(
+      {
+        stdout: '{"type":"turn.completed","usage":{"input_tokens":14813,"output_tokens":16}}',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      { lastMessagePath },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('thread.started');
+  });
+
+  it('marks successful background output without turn.completed as failed', () => {
+    const provider = makeProvider();
+    const lastMessagePath = join(runtimeDir, 'last-message.txt');
+    writeFileSync(lastMessagePath, 'isolated-final-output', 'utf8');
+
+    const result = provider.parseBackgroundResult(
+      {
+        stdout: '{"type":"thread.started","thread_id":"codex-thread-009"}',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      { lastMessagePath },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('turn.completed');
   });
 
   it('estimates context usage from input_tokens only', () => {

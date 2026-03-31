@@ -302,6 +302,15 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
   const isGemini = normalizedName.includes('gemini')
     || normalizedCommandBase.includes('gemini')
     || normalizedCommandFull.includes('gemini');
+  const providerOptions = (
+    typeof providerEntry.options === 'object' && providerEntry.options !== null
+      ? providerEntry.options
+      : undefined
+  ) as Record<string, unknown> | undefined;
+  const defaultModel = typeof providerOptions?.defaultModel === 'string'
+    && providerOptions.defaultModel.trim().length > 0
+    ? providerOptions.defaultModel.trim()
+    : undefined;
 
   if (isCodex) {
     let tempHome: string | null = null;
@@ -330,8 +339,11 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
         tempHome,
         '-o',
         lastMessagePath,
-        prompt,
       ];
+      if (defaultModel) {
+        codexArgs.push('--model', defaultModel);
+      }
+      codexArgs.push(prompt);
 
       const testOutput = await runProcess(command, codexArgs, undefined, {
         env: {
