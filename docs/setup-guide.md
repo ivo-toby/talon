@@ -1,6 +1,6 @@
 # Setting up Talon
 
-Talon runs on a dedicated VM or server, receives messages from your chat channels, processes them through an AI provider (Claude or Gemini), and sends responses back. This guide gets you from zero to a working deployment.
+Talon runs on a dedicated VM or server, receives messages from your chat channels, processes them through an AI provider (Claude Code, Gemini CLI, or Codex CLI), and sends responses back. This guide gets you from zero to a working deployment.
 
 ## What you need
 
@@ -9,9 +9,10 @@ A Linux server with at least 2 cores, 4GB RAM, and a stable internet connection.
 Software:
 - Node.js 22+ (Talon uses `process.loadEnvFile`)
 - Git
-- One or both AI providers installed and authenticated:
+- One or more AI providers installed and authenticated:
   - **Claude Code** (`claude` CLI from Anthropic)
   - **Gemini CLI** (`gemini` from Google)
+  - **Codex CLI** (`codex` from OpenAI)
 
 ## Provider setup
 
@@ -33,7 +34,7 @@ claude --version
 claude --print -p "say hello"
 ```
 
-Claude uses the Anthropic API. You need a valid API key or a Max subscription with Agent SDK access.
+Claude uses the Anthropic API. You need a valid API key or a Max subscription with Claude SDK access.
 
 ### Gemini CLI
 
@@ -57,6 +58,22 @@ gemini --approval-mode yolo --output-format json "say hello"
 You should get a JSON response with a `response` field and `stats.models` usage data.
 
 If you're running on a headless VM without a browser, do the initial OAuth from a machine with a browser, then copy `~/.gemini/` to the server.
+
+### Codex CLI
+
+Install and authenticate:
+
+```bash
+npm install -g @openai/codex
+codex login
+```
+
+Verify:
+
+```bash
+codex --version
+codex exec --json --skip-git-repo-check --dangerously-bypass-approvals-and-sandbox -C /tmp -o /tmp/codex-last.txt "say hello"
+```
 
 ## Installation
 
@@ -85,7 +102,7 @@ This is the part that matters. You configure which AI providers are available an
 
 ```yaml
 agentRunner:
-  defaultProvider: claude-code      # or gemini-cli
+  defaultProvider: claude-code      # alternatives: gemini-cli, codex-cli
   providers:
     claude-code:
       enabled: true
@@ -109,6 +126,18 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gemini-3.1-pro-preview
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.8
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        defaultModel: gpt-5.4
 
 backgroundAgent:
   enabled: true
@@ -126,13 +155,19 @@ backgroundAgent:
       contextWindowTokens: 1000000
       options:
         defaultModel: gemini-3.1-pro-preview
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      options:
+        defaultModel: gpt-5.4
 ```
 
-You can run different providers for interactive vs background work. Claude for conversations, Gemini for batch research tasks, or the other way around. Only `agentRunner` providers use `contextManagement`; background agents do not need rolling session state.
+You can run different providers for interactive vs background work. For example: Claude for conversations, Gemini for batch research, Codex for coding-heavy prompts, or any mix that fits your workflow. Only `agentRunner` providers use `contextManagement`; background agents do not need rolling session state.
 
 For the context-management strategies and migration details, see [context-management.md](context-management.md).
 
-The `command` field needs to resolve on the server. If the binary isn't on PATH, use the full path. Run `which claude` or `which gemini` to find it.
+The `command` field needs to resolve on the server. If the binary isn't on PATH, use the full path. Run `which codex` (or the equivalent `which` command for your selected provider CLI) to find it.
 
 The `options.defaultModel` field is provider-specific. Gemini CLI uses it when the run does not provide an explicit model. Persona runs still pass the persona's `model` field through to the provider, so keep persona model names compatible with the provider you choose.
 
@@ -159,13 +194,24 @@ npx talonctl set-default-provider --name gemini-cli --context agent-runner
 
 # test it
 npx talonctl test-provider --name gemini-cli
+npx talonctl add-provider --name codex-cli \
+  --command /usr/local/bin/codex \
+  --context both \
+  --context-window 400000 \
+  --trigger-metric input_tokens \
+  --threshold-ratio 0.8 \
+  --recent-message-count 10 \
+  --summarizer session-summarizer \
+  --enabled \
+  --default-model gpt-5.4
+npx talonctl test-provider --name codex-cli
 ```
 
 The test command checks the binary, runs a version check, sends a test prompt, and verifies JSON output parsing. Run it after any provider change.
 
 ### Provider affinity
 
-When a thread starts on one provider, it stays on that provider for the rest of the conversation. This prevents mid-conversation switches that would break session continuity (Claude uses session IDs, Gemini doesn't). New threads pick up the current `defaultProvider`.
+When a thread starts on one provider, it stays on that provider for the rest of the conversation. This prevents mid-conversation switches that would break session continuity (Claude Code and Codex CLI keep session continuity; Gemini CLI is stateless). New threads pick up the current `defaultProvider`.
 
 ### Channels
 
@@ -381,9 +427,9 @@ npx talonctl doctor
 # check env vars are set
 npx talonctl env-check
 
-# test your providers
-npx talonctl test-provider --name claude-code
-npx talonctl test-provider --name gemini-cli
+# test each enabled provider in the context you actually use
+# use `--context background` when testing a provider configured only for background runs
+npx talonctl test-provider --name <provider>
 
 # list what's configured
 npx talonctl list-providers

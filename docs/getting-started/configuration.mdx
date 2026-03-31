@@ -158,6 +158,18 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.8
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        defaultModel: gpt-5.4
 ```
 
 Notes:
@@ -179,6 +191,12 @@ backgroundAgent:
       enabled: true
       command: claude
       contextWindowTokens: 200000
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      options:
+        defaultModel: gpt-5.4
 ```
 
 Notes:

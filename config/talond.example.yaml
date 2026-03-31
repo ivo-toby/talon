@@ -124,6 +124,18 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gemini-2.5-pro
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.8
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        defaultModel: gpt-5.4
 
 backgroundAgent:
   enabled: true
@@ -141,6 +153,12 @@ backgroundAgent:
       contextWindowTokens: 1000000
       options:
         defaultModel: gemini-2.5-pro
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      options:
+        defaultModel: gpt-5.4
 
 scheduler:
   tickIntervalMs: 5000

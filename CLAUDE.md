@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What is Talon?
 
-Talon (`talond`) is a self-hosted autonomous AI agent daemon (~22K lines TypeScript). It receives messages from humans across multiple channels (Telegram, Slack, Discord, WhatsApp, Email, Terminal), processes them through a durable queue, runs Claude via the Agent SDK, executes tools through capability-gated host-tools, and sends responses back. All data stays on the operator's hardware.
+Talon (`talond`) is a self-hosted autonomous AI agent daemon (~22K lines TypeScript). It receives messages from humans across multiple channels (Telegram, Slack, Discord, WhatsApp, Email, Terminal), processes them through a durable queue, runs agents through a provider layer (Claude Code default, with Gemini CLI and Codex CLI supported), executes tools through capability-gated host-tools, and sends responses back. All data stays on the operator's hardware.
 
 ## Build & Development Commands
 
@@ -28,7 +28,7 @@ Entry points: `node dist/index.js` (daemon), `node dist/cli/index.js` (CLI/talon
 Channel Connector → MessagePipeline (normalize, dedup, route, persist)
   → Durable Queue (SQLite-backed FIFO per thread)
   → QueueProcessor (concurrency-limited dequeue)
-  → AgentRunner (Agent SDK with session persistence)
+  → AgentRunner (provider runtime with provider-specific session handling)
   → Host-Tools Bridge (Unix socket MCP server, capability-filtered)
   → Channel Connector (format + send response)
 ```
@@ -57,10 +57,10 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 - **neverthrow `Result<T, E>`** everywhere — expected errors are typed, no raw throws across module boundaries. All repository methods return `Result`.
 - **SQLite (better-sqlite3)** with WAL mode — single-file, no external DB dependency. Repository pattern allows future migration.
-- **Agent SDK runs on host** (not in container) — session persistence via `sessionId` tracked in DB + in-memory cache.
+- **Provider runtime runs on host** (not in container) — AgentRunner executes the configured provider strategy. Claude uses the SDK path with `sessionId` persistence; Gemini and Codex use CLI strategies.
 - **Capability-based security** — default-deny. Persona `capabilities.allow` lists what tools/channels are accessible. `requireApproval` triggers human confirmation.
 - **Skills are declarative** — two formats: `skill.yaml` + `prompts/*.md` (legacy) or single `SKILL.md` with YAML frontmatter (preferred). No executable code in skills.
-- **Lazy skill loading** — only skill name + description injected into system prompts. Full content loaded on demand via `skill_load` tool (in-process MCP server for Claude SDK, external MCP server for Gemini CLI). Background agents use eager loading.
+- **Lazy skill loading** — only skill name + description injected into system prompts. Full content loaded on demand via `skill_load` tool (in-process MCP server for Claude SDK, external MCP server for Gemini CLI and Codex CLI). Background agents use eager loading.
 - **Internal MCP server prefix** — `__talond_` prefix is reserved for internal MCP servers (`__talond_host_tools`, `__talond_skill_loader`). User-defined servers with this prefix are rejected.
 
 ### Database

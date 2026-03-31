@@ -15,7 +15,7 @@
 
 ## What is Talon?
 
-Talon is a self-hosted daemon that orchestrates autonomous AI agents across multiple communication channels. You configure personas — each with their own system prompt, tools, and security policy — and bind them to channels like Telegram, Slack, Discord, WhatsApp, or email. Messages flow in, get routed to the right persona, processed by the Claude Agent SDK, and responses flow back out.
+Talon is a self-hosted daemon that orchestrates autonomous AI agents across multiple communication channels. You configure personas — each with their own system prompt, tools, and security policy — and bind them to channels like Telegram, Slack, Discord, WhatsApp, or email. Messages flow in, get routed to the right persona, executed by the configured provider runtime, and responses flow back out.
 
 It is built for single-user or small-team deployments where you want persistent, always-on AI agents that you fully control — no cloud platform, no vendor lock-in, just a daemon on your server.
 
@@ -43,7 +43,7 @@ It is built for single-user or small-team deployments where you want persistent,
 ### Agent System
 
 - **Persona-per-channel** — Each channel gets its own agent with a dedicated system prompt, model, tools, and capabilities
-- **Claude Agent SDK** — Agents run via the Anthropic Agent SDK with session persistence and multi-turn support
+- **Provider-based execution** — Agents run through the configured provider runtime (Claude uses the Anthropic SDK path; Gemini and Codex use CLI strategies)
 - **Per-thread memory** — Each conversation thread gets its own workspace with transcript, working memory, and artifacts
 - **Skills** — Modular prompt and tool bundles with lazy loading (metadata-only in system prompt, full content on demand)
 - **MCP integration** — Connect external MCP tool servers via stdio, policy-enforced through host-tools bridge
@@ -52,7 +52,7 @@ It is built for single-user or small-team deployments where you want persistent,
 
 Agent execution is decoupled from any specific SDK or CLI. A provider layer sits between the daemon core and the actual model runtime, so swapping or adding providers doesn't require changes to the runner, queue, or context management.
 
-Each provider implements a small interface: prepare a background CLI invocation, parse its output, estimate context usage, and create an SDK execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code ships as the default (and currently only) provider.
+Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI plus Codex CLI are supported.
 
 This matters because it means you can:
 
@@ -75,6 +75,18 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.8
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        defaultModel: gpt-5.4
 
 backgroundAgent:
   enabled: true
@@ -85,6 +97,12 @@ backgroundAgent:
       enabled: true
       command: claude
       contextWindowTokens: 200000
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      options:
+        defaultModel: gpt-5.4
 ```
 
 ### Infrastructure
@@ -93,7 +111,7 @@ backgroundAgent:
 - **Scheduler** — Agent-managed cron, interval, and one-shot scheduled tasks
 - **Host-tools MCP bridge** — Built-in host tools (schedule, channel, memory, http, db, execution env, subagent, background agent) exposed via Unix socket
 - **Sub-agent system** — Route mechanical LLM tasks (summarization, memory grooming, search) to cheap models via pluggable sub-agents
-- **Background agents** — Launch long-running Claude Code workers for deep tasks without blocking the foreground conversation
+- **Background agents** — Launch long-running provider workers for deep tasks without blocking the foreground conversation
 - **Sandboxed execution environments** — Isolate background agent work in persistent Firecracker VMs via [Sprites.dev](https://sprites.dev), with file transfer, checkpointing, and automatic cleanup
 - **Hot reload** — Change config, personas, and skills without restarting the daemon
 - **Systemd integration** — Watchdog heartbeat, graceful shutdown, timer-based wake-only mode
@@ -145,7 +163,8 @@ graph TB
 
     subgraph "Provider Layer"
         P1[Claude Code Provider]
-        P2[Future Provider...]
+        P2[Gemini CLI Provider]
+        P3[Codex CLI Provider]
     end
 
     subgraph "Execution"
@@ -159,7 +178,7 @@ graph TB
     CR --> NP --> RT --> Q
     Q --> AR
     AR --> PR
-    PR --> P1 & P2
+    PR --> P1 & P2 & P3
     P1 --> SDK
     P1 --> BG
     SDK & BG -->|"MCP: schedule, channel,<br/>memory, http, db, subagent,<br/>background agent"| HT
@@ -208,7 +227,7 @@ For the full deployment walkthrough, see the [setup guide](docs/setup-guide.md).
 ### Prerequisites
 
 - **Node.js 24+**
-- **Claude Code** and/or **Gemini CLI** installed and authenticated
+- **Claude Code** (default provider), and optionally **Gemini CLI** and/or **Codex CLI** installed and authenticated
 - **SQLite** (ships with better-sqlite3, no separate install)
 
 ### Install
@@ -272,7 +291,7 @@ backgroundAgent:
   enabled: true
   maxConcurrent: 3
   defaultTimeoutMinutes: 30
-  claudePath: claude
+  claudePath: claude # legacy shortcut for claude-code; prefer defaultProvider + providers
 
 personas:
   - name: assistant
@@ -341,7 +360,7 @@ dataDir: data
 | `storage`              | Database backend and SQLite path                                              |
 | `queue`                | Retry/backoff/concurrency controls for durable queue processing               |
 | `agentRunner`          | Foreground provider config, including provider-scoped context management      |
-| `backgroundAgent`      | Enable and tune long-running background Claude Code workers                   |
+| `backgroundAgent`      | Enable and tune long-running background provider workers                      |
 | `personas`             | Persona profiles: model, system prompt, skills, capabilities                  |
 | `channels`             | Channel connector entries with `type`, `name`, and connector `config` payload |
 | `bindings`             | Channel-to-persona routing with default persona per channel                   |
@@ -377,7 +396,7 @@ This was added because Talon already had two extremes:
 - the normal foreground agent turn, which is interactive and should stay responsive
 - short synchronous sub-agents, which are useful for mechanical delegation but intentionally limited
 
-Some tasks need the full Claude Code CLI runtime and the persona's prompt + external MCP context, but they should still run out-of-band. Background agents fill that gap: the foreground agent starts a worker, gets a task ID immediately, and Talon tracks the worker to completion in SQLite.
+Some tasks need the full provider CLI runtime and the persona's prompt + external MCP context, but they should still run out-of-band. Background agents fill that gap: the foreground agent starts a worker, gets a task ID immediately, and Talon tracks the worker to completion in SQLite.
 
 The lifecycle is durable:
 
@@ -397,15 +416,15 @@ backgroundAgent:
   enabled: true
   maxConcurrent: 3
   defaultTimeoutMinutes: 30
-  claudePath: claude
+  claudePath: claude # legacy shortcut for claude-code; prefer defaultProvider + providers
 ```
 
 | Option                  | Meaning                                                          |
 | ----------------------- | ---------------------------------------------------------------- |
 | `enabled`               | Globally enable or disable background workers                    |
-| `maxConcurrent`         | Maximum number of background Claude workers allowed at once      |
+| `maxConcurrent`         | Maximum number of background provider workers allowed at once    |
 | `defaultTimeoutMinutes` | Default wall-clock timeout when a tool call does not provide one |
-| `claudePath`            | Executable path used to launch the Claude Code CLI               |
+| `claudePath`            | Legacy shortcut for the `claude-code` provider command path      |
 
 To let a persona use the feature, grant `subagent.background`:
 
@@ -939,7 +958,7 @@ This sub-agent is only loaded when `OPENAI_API_KEY` is set in the environment. P
 
 ### Rolling Context Window
 
-Long conversations eventually fill the Agent SDK's context window. Talon monitors provider-specific context metrics after each agent run and automatically rotates the session when the configured threshold is exceeded, keeping conversations seamless without jarring resets. For Claude latency optimization, `cache_total_input_tokens` is the strongest signal because it tracks the total cached session footprint after the run.
+Long conversations eventually fill a provider's context window. Talon monitors provider-specific context metrics after each agent run and automatically rotates the session when the configured threshold is exceeded, keeping conversations seamless without jarring resets. For Claude latency optimization, `cache_total_input_tokens` is the strongest signal because it tracks the total cached session footprint after the run.
 
 **How it works:**
 
@@ -1205,7 +1224,7 @@ The service includes security hardening: `NoNewPrivileges`, `PrivateTmp`, `Prote
 
 ### 2. Containerized Daemon (Docker)
 
-> **Coming soon** — Docker deployment is under active development. The goal is to run the Agent SDK inside Docker containers for blast-radius isolation against prompt injection from untrusted input (repos, emails, messages). The host-mode path will remain as fallback. Dockerfiles and Compose config exist in `deploy/` and will be updated for the current architecture.
+> **Coming soon** — Docker deployment is under active development. The goal is to run provider runtimes inside Docker containers for blast-radius isolation against prompt injection from untrusted input (repos, emails, messages). The host-mode path will remain as fallback. Dockerfiles and Compose config exist in `deploy/` and will be updated for the current architecture.
 
 ### 3. Wake-Only Mode (Timer)
 
@@ -1238,7 +1257,7 @@ Default: wakes every 5 minutes. Adjust `OnUnitActiveSec` in `talond.timer`.
 
 ## Security Model
 
-Talon implements defense in depth through capability-based access control, host-mediated side effects, and audit logging. Docker container isolation for agent sandboxing is coming soon — wrapping Agent SDK execution in containers with network access limited to `api.anthropic.com` for defense-in-depth against prompt injection.
+Talon implements defense in depth through capability-based access control, host-mediated side effects, and audit logging. Docker container isolation for agent sandboxing is coming soon — wrapping provider execution in containers with provider-specific network policies for defense-in-depth against prompt injection.
 
 ### Host-Tools MCP Bridge
 
@@ -1259,7 +1278,7 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 
 ```mermaid
 flowchart TB
-    subgraph "Agent SDK (host process)"
+    subgraph "Provider Runtime (host process)"
         Agent["Agent calls MCP tool"]
     end
 
@@ -1595,16 +1614,16 @@ personas:
         transport: stdio
 ```
 
-MCP servers are passed through to the Agent SDK at runtime. Each persona gets its own set of MCP servers.
+MCP servers are passed through to the provider runtime at execution time. Each persona gets its own set of MCP servers.
 
 ---
 
 ## Token Usage Tracking
 
-When using Anthropic API keys, Talon records token usage from Agent SDK results in the `runs` table:
+When using Anthropic API keys, Talon records token usage from Claude runtime results in the `runs` table:
 
 - Input tokens, output tokens, cache read/write tokens per run
-- `total_cost_usd` from Agent SDK results
+- `total_cost_usd` from Claude runtime results
 
 Per-persona budget limits and a `talonctl usage` report command are planned (TASK-047).
 
@@ -1782,7 +1801,7 @@ talon/
       dead-letter.ts             # Dead-letter queue management
     sandbox/
       sandbox-manager.ts         # Agent lifecycle management
-      agent-runner.ts            # Agent SDK query dispatch
+      agent-runner.ts            # Provider query dispatch
       session-tracker.ts         # Session resume tracking
     scheduler/
       scheduler.ts               # Tick-based schedule processor
@@ -1848,7 +1867,7 @@ Talon uses SQLite with WAL mode and foreign keys. All persistence goes through t
 
 ## Multi-Agent Collaboration
 
-Talon's data model supports supervisor/worker patterns via `parent_run_id` in the `runs` table. Full multi-agent collaboration (Agent SDK subagent/Task tool support) is planned in TASK-054.
+Talon's data model supports supervisor/worker patterns via `parent_run_id` in the `runs` table. Full multi-agent collaboration (provider runtime subagent/Task tool support) is planned in TASK-054.
 
 ---
 

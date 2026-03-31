@@ -377,6 +377,16 @@ npx talonctl add-provider --name gemini-cli \
   --context-window 1000000 \
   --enabled \
   --default-model gemini-2.5-pro
+npx talonctl add-provider --name codex-cli \
+  --command /usr/local/bin/codex \
+  --context both \
+  --context-window 400000 \
+  --trigger-metric input_tokens \
+  --threshold-ratio 0.8 \
+  --recent-message-count 10 \
+  --summarizer session-summarizer \
+  --enabled \
+  --default-model gpt-5.4
 ```
 
 | Flag | Description |
@@ -406,6 +416,7 @@ Switches the default provider for one context.
 ```bash
 npx talonctl set-default-provider --name claude-code --context agent-runner
 npx talonctl set-default-provider --name gemini-cli --context background
+npx talonctl set-default-provider --name codex-cli --context agent-runner
 ```
 
 ### `test-provider`
@@ -415,6 +426,7 @@ Runs `--version` and a minimal test prompt against a configured provider.
 ```bash
 npx talonctl test-provider --name claude-code
 npx talonctl test-provider --name gemini-cli --context background
+npx talonctl test-provider --name codex-cli
 ```
 
 ---
