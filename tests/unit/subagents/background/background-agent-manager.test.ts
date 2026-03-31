@@ -1,7 +1,7 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { ok, err } from 'neverthrow';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import type { QueueManager } from '../../../../src/queue/queue-manager.js';
 import { BackgroundTaskRepository } from '../../../../src/core/database/repositories/background-task-repository.js';
 import { BackgroundAgentManager } from '../../../../src/subagents/background/background-agent-manager.js';
@@ -472,7 +472,7 @@ describe('BackgroundAgentManager', () => {
       stderr: '',
       exitCode: 0,
       timedOut: false,
-    });
+    }, undefined);
     expect(task?.status).toBe('completed');
     expect(task?.output).toBe('Done!');
     expect((queueManager.enqueue as any)).toHaveBeenNthCalledWith(
@@ -496,6 +496,101 @@ describe('BackgroundAgentManager', () => {
         content: expect.stringContaining('Background Task Complete'),
       }),
     );
+  });
+
+  it('passes resultFiles metadata into parseBackgroundResult before cleanup', async () => {
+    const lastMessagePath = '/tmp/talon-bg-test/last-message.json';
+    prepareBackgroundInvocation.mockReturnValueOnce(ok({
+      command: 'claude',
+      args: ['--print', '--output-format', 'json'],
+      stdin: 'Refactor the auth module',
+      cwd: '/workspace/repo',
+      timeoutMs: 30 * 60 * 1000,
+      cleanupPaths: ['/tmp/talon-bg-test'],
+      resultFiles: { lastMessagePath },
+    }));
+    parseBackgroundResult.mockImplementationOnce((_raw, resultFiles) => {
+      expect(resultFiles).toEqual({ lastMessagePath });
+      expect(existsSync(lastMessagePath)).toBe(true);
+      return {
+        output: 'Parsed output',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      };
+    });
+
+    const manager = createManager();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
+    writeFileSync(lastMessagePath, '{"message":"done"}', 'utf8');
+
+    completionResolve?.(
+      ok({
+        stdout: 'Done!',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(parseBackgroundResult).toHaveBeenCalledWith(
+      {
+        stdout: 'Done!',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      { lastMessagePath },
+    );
+    expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('completed');
+    expect(existsSync('/tmp/talon-bg-test')).toBe(false);
+  });
+
+  it('marks task failed and cleans up when parseBackgroundResult throws after receiving resultFiles', async () => {
+    const lastMessagePath = '/tmp/talon-bg-test/last-message.json';
+    prepareBackgroundInvocation.mockReturnValueOnce(ok({
+      command: 'claude',
+      args: ['--print', '--output-format', 'json'],
+      stdin: 'Refactor the auth module',
+      cwd: '/workspace/repo',
+      timeoutMs: 30 * 60 * 1000,
+      cleanupPaths: ['/tmp/talon-bg-test'],
+      resultFiles: { lastMessagePath },
+    }));
+    parseBackgroundResult.mockImplementationOnce((_raw, resultFiles) => {
+      expect(resultFiles).toEqual({ lastMessagePath });
+      expect(existsSync(lastMessagePath)).toBe(true);
+      throw new Error('failed to parse provider result file');
+    });
+
+    const manager = createManager();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
+    writeFileSync(lastMessagePath, '{"message":"done"}', 'utf8');
+
+    completionResolve?.(
+      ok({
+        stdout: 'Done!',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const task = repository.findById(taskId)._unsafeUnwrap();
+    expect(task?.status).toBe('failed');
+    expect(task?.error).toContain('failed to parse provider result file');
+    expect(queueManager.enqueue as any).toHaveBeenCalledWith(
+      'thread-1',
+      'collaboration',
+      expect.objectContaining({
+        status: 'failed',
+      }),
+    );
+    expect(existsSync('/tmp/talon-bg-test')).toBe(false);
   });
 
   it('cancels a running task and kills the in-memory process', async () => {

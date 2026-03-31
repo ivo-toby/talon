@@ -114,7 +114,7 @@ export class AgentRunner {
 
     const strategy = providerEntry.provider.createExecutionStrategy();
 
-    // Resolve session ID only for SDK providers.
+    // Resolve session ID only for providers that support session resumption.
     // We do NOT seed the tracker here — only after a successful run
     // to avoid stranding a thread on a stale/expired session ID.
     //
@@ -123,7 +123,7 @@ export class AgentRunner {
     // persona's session history. Skip session restoration for A2A items entirely
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
-    if (strategy.type === 'sdk' && !isA2ATask) {
+    if (strategy.supportsSessionResumption && !isA2ATask) {
       resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId);
       if (!resolvedSessionId && !this.ctx.sessionTracker.wasRotated(item.threadId)) {
         const dbSessionResult = this.ctx.repos.run.getLatestSessionId(item.threadId);
@@ -275,7 +275,7 @@ export class AgentRunner {
             const tzAbbr = Intl.DateTimeFormat('en', { timeZoneName: 'short' }).formatToParts(now_).find((p) => p.type === 'timeZoneName')?.value ?? 'UTC';
             const dayName = now_.toLocaleDateString('en', { weekday: 'long' });
             const timeContext = `Current time: ${localISO} (${tzAbbr}, ${dayName})`;
-            const existingSessionId = strategy.type === 'sdk' ? resolvedSessionId : undefined;
+            const existingSessionId = strategy.supportsSessionResumption ? resolvedSessionId : undefined;
 
             const baseMcpServers: Record<string, CanonicalMcpServer> = {
               ...personaRuntimeContext.mcpServers,
@@ -416,7 +416,7 @@ export class AgentRunner {
                 channelContext,
                 timeContext,
               ];
-              if (!(strategy.type === 'sdk' && resumeSessionId)) {
+              if (!resumeSessionId) {
                 const previous = await getPreviousContext();
                 if (previous.text) {
                   systemPromptParts.push(previous.text);
@@ -550,6 +550,7 @@ export class AgentRunner {
                   const pendingNoIdToolObservations: StartedObservationHandle[] = [];
 
                   const queryInput = {
+                    threadId: item.threadId,
                     prompt: content,
                     systemPrompt,
                     mcpServers,
@@ -557,7 +558,7 @@ export class AgentRunner {
                     model,
                     maxTurns: 25,
                     timeoutMs: queryTimeoutMs,
-                    ...(strategy.type === 'sdk' && resumeSessionId
+                    ...(resumeSessionId
                       ? { sessionId: resumeSessionId }
                       : {}),
                   };
@@ -778,7 +779,9 @@ export class AgentRunner {
             }
 
             // Store session ID for future conversation resumption (memory + DB).
-            if (resultSessionId) {
+            // A2A items execute for a different persona on the source thread, so
+            // persisting their session ID would contaminate the source thread state.
+            if (resultSessionId && !isA2ATask) {
               this.ctx.sessionTracker.setSessionId(item.threadId, resultSessionId);
               this.ctx.repos.run.updateSessionId(runId, resultSessionId);
             }

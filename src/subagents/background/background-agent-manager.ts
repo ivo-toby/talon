@@ -10,7 +10,11 @@ import type { QueueManager } from '../../queue/queue-manager.js';
 import type { BackgroundTask, BackgroundTaskResult } from './background-agent-types.js';
 import { BackgroundAgentProcess, type BackgroundAgentProcessOptions } from './background-agent-process.js';
 import type { BackgroundTaskRepository } from '../../core/database/repositories/background-task-repository.js';
-import type { CanonicalMcpServer } from '../../providers/provider-types.js';
+import type {
+  CanonicalMcpServer,
+  PreparedProviderResultFiles,
+  ProviderResult,
+} from '../../providers/provider-types.js';
 import type { AgentProvider } from '../../providers/provider.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { ObservabilityService, StartedObservationHandle } from '../../observability/langfuse/observability-types.js';
@@ -66,6 +70,7 @@ interface ManagedProcess {
   kill: () => void;
   cleanupPaths: string[];
   provider: AgentProvider;
+  resultFiles?: PreparedProviderResultFiles;
   observation?: StartedObservationHandle;
 }
 
@@ -294,6 +299,7 @@ export class BackgroundAgentManager {
       kill: () => processInstance.kill(),
       cleanupPaths,
       provider: providerEntry.provider,
+      resultFiles: invocation.resultFiles,
       observation,
     });
 
@@ -456,19 +462,31 @@ export class BackgroundAgentManager {
       timedOut: boolean;
     };
     const managedProcess = this.processes.get(taskId);
-    const parsedResult = managedProcess
-      ? managedProcess.provider.parseBackgroundResult({
-          stdout: processResult.stdout,
-          stderr: processResult.stderr,
-          exitCode: processResult.exitCode,
-          timedOut: processResult.timedOut,
-        })
-      : {
-          output: processResult.stdout,
-          stderr: processResult.stderr,
-          exitCode: processResult.exitCode,
-          timedOut: processResult.timedOut,
-        };
+    let parsedResult: ProviderResult;
+    try {
+      parsedResult = managedProcess
+        ? managedProcess.provider.parseBackgroundResult({
+            stdout: processResult.stdout,
+            stderr: processResult.stderr,
+            exitCode: processResult.exitCode,
+            timedOut: processResult.timedOut,
+          }, managedProcess.resultFiles)
+        : {
+            output: processResult.stdout,
+            stderr: processResult.stderr,
+            exitCode: processResult.exitCode,
+            timedOut: processResult.timedOut,
+          };
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : String(cause);
+      this.deps.repository.updateStatus(taskId, 'failed', undefined, this.truncate(message));
+      this.enqueueNotification(taskId);
+      managedProcess?.observation?.update({ statusMessage: message });
+      managedProcess?.observation?.end();
+      this.cleanupTask(taskId);
+      await this.destroyOwnedExecutionEnv(taskId);
+      return;
+    }
 
     let finalStatus: string;
     let finalStatusMessage: string | undefined;

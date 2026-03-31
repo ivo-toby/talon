@@ -5,12 +5,14 @@ import type {
   CanonicalMcpServer,
   ContextUsage,
   PreparedProviderInvocation,
+  PreparedProviderResultFiles,
   ProviderName,
   ProviderResult,
   ProviderSpawnInput,
 } from './provider-types.js';
 
 export interface AgentRunInput {
+  threadId: string;
   prompt: string;
   systemPrompt: string;
   mcpServers: Record<string, CanonicalMcpServer>;
@@ -52,11 +54,17 @@ export interface SDKExecutionStrategy {
 
 export interface CLIExecutionStrategy {
   readonly type: 'cli';
+  readonly supportsSessionResumption: true;
+  run(input: AgentRunInput): Promise<AgentRunResult>;
+}
+
+export interface StatelessCLIExecutionStrategy {
+  readonly type: 'cli';
   readonly supportsSessionResumption: false;
   run(input: AgentRunInput): Promise<AgentRunResult>;
 }
 
-export type ExecutionStrategy = SDKExecutionStrategy | CLIExecutionStrategy;
+export type ExecutionStrategy = SDKExecutionStrategy | CLIExecutionStrategy | StatelessCLIExecutionStrategy;
 
 export interface AgentProvider {
   readonly name: ProviderName;
@@ -67,6 +75,6 @@ export interface AgentProvider {
     stderr: string;
     exitCode: number | null;
     timedOut: boolean;
-  }): ProviderResult;
+  }, resultFiles?: PreparedProviderResultFiles): ProviderResult;
   estimateContextUsage(usage: AgentUsage): ContextUsage;
 }
