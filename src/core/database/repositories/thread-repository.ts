@@ -31,6 +31,7 @@ export class ThreadRepository extends BaseRepository {
   private readonly insertStmt: Database.Statement;
   private readonly findByIdStmt: Database.Statement;
   private readonly findByExternalIdStmt: Database.Statement;
+  private readonly findByChannelIdStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -44,6 +45,10 @@ export class ThreadRepository extends BaseRepository {
 
     this.findByExternalIdStmt = db.prepare(`
       SELECT * FROM threads WHERE channel_id = ? AND external_id = ?
+    `);
+
+    this.findByChannelIdStmt = db.prepare(`
+      SELECT * FROM threads WHERE channel_id = ? ORDER BY updated_at DESC, created_at DESC
     `);
   }
 
@@ -76,6 +81,16 @@ export class ThreadRepository extends BaseRepository {
       return ok(row ?? null);
     } catch (cause) {
       return err(new DbError(`Failed to find thread by external id: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /** Returns all threads for a channel in descending update order. */
+  findByChannelId(channelId: string): Result<ThreadRow[], DbError> {
+    try {
+      const rows = this.findByChannelIdStmt.all(channelId) as ThreadRow[];
+      return ok(rows);
+    } catch (cause) {
+      return err(new DbError(`Failed to find threads by channel id: ${String(cause)}`, cause instanceof Error ? cause : undefined));
     }
   }
 

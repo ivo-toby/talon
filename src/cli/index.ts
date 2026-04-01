@@ -43,6 +43,8 @@ import { listProvidersCommand } from './commands/list-providers.js';
 import { addProviderCommand } from './commands/add-provider.js';
 import { setDefaultProviderCommand } from './commands/set-default-provider.js';
 import { testProviderCommand } from './commands/test-provider.js';
+import { listThreadsCommand } from './commands/list-threads.js';
+import { resetProviderAffinityCommand } from './commands/reset-provider-affinity.js';
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 import { setCapabilitiesCommand } from './commands/set-capabilities.js';
 import { a2aListCommand, a2aSendCommand } from './commands/a2a.js';
@@ -564,6 +566,34 @@ program
     await testProviderCommand({
       name: opts.name,
       context: opts.context as 'agent-runner' | 'background',
+      configPath: opts.config,
+    });
+  });
+
+program
+  .command('list-threads')
+  .description('List persisted threads for a channel, including external IDs and latest provider info')
+  .requiredOption('--channel <name>', 'Channel name')
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .action(async (opts: { channel: string; config: string }) => {
+    await listThreadsCommand({
+      channel: opts.channel,
+      configPath: opts.config,
+    });
+  });
+
+program
+  .command('reset-provider-affinity')
+  .description('Reset provider affinity for one channel thread. Use `talonctl list-threads --channel <name>` to discover external IDs.')
+  .requiredOption('--channel <name>', 'Channel name')
+  .requiredOption('--external-id <id>', 'Thread external ID. Use `talonctl list-threads --channel <name>` to discover values.')
+  .option('--yes', 'Bypass the confirmation prompt')
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .action(async (opts: { channel: string; externalId: string; yes?: boolean; config: string }) => {
+    await resetProviderAffinityCommand({
+      channel: opts.channel,
+      externalId: opts.externalId,
+      yes: opts.yes,
       configPath: opts.config,
     });
   });

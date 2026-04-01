@@ -1104,6 +1104,8 @@ npx talonctl add-skill --name web-search --persona researcher
 | `talonctl unbind --persona <p> --channel <c>` | Remove a persona-channel binding                                       |
 | `talonctl remove-channel --name <n>`          | Remove a channel and its bindings                                      |
 | `talonctl remove-persona --name <n>`          | Remove a persona, its directory, and bindings                          |
+| `talonctl list-threads --channel <c>`         | List persisted threads for a channel, including external IDs and provider affinity |
+| `talonctl reset-provider-affinity ...`        | Reset provider affinity for one thread after a warning prompt          |
 | `talonctl add-mcp --name <n> --command <cmd>` | Add an MCP server to a persona                                         |
 | `talonctl env-check`                          | Audit config for `${ENV_VAR}` placeholders and report missing env vars |
 | `talonctl config-show`                        | Display resolved config with secrets masked                            |
@@ -1120,6 +1122,15 @@ npx talonctl bind --persona assistant --channel my-telegram
 # Remove a channel (cascades to bindings)
 npx talonctl remove-channel --name old-slack
 
+# List channel threads and inspect their current provider affinity
+npx talonctl list-threads --channel my-telegram
+
+# Reset provider affinity for one thread (prompts for confirmation)
+npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789
+
+# Skip the warning prompt for automation
+npx talonctl reset-provider-affinity --channel my-telegram --external-id 123456789 --yes
+
 # Add an MCP server to a persona
 npx talonctl add-mcp --name web-search --persona assistant \
   --command npx --args @anthropic-ai/mcp-web-search --transport stdio
@@ -1130,6 +1141,30 @@ npx talonctl env-check
 # Show resolved config (secrets masked)
 npx talonctl config-show
 ```
+
+### Thread & Provider Affinity
+
+Foreground conversations are sticky by default: once a thread has run on one provider, Talon keeps using that provider for subsequent messages on the same thread. This preserves session continuity for resumable providers like Claude Code and Codex CLI.
+
+Use these commands when you need to inspect or reset that affinity:
+
+```bash
+# Discover thread IDs for a channel
+npx talonctl list-threads --channel TalonMain
+
+# Reset one thread so the next message uses persona/default provider selection
+npx talonctl reset-provider-affinity --channel TalonMain --external-id 74575531
+```
+
+`reset-provider-affinity` does not rewrite run history. It stores a reset marker on the thread and prompts for confirmation before changing anything, unless you pass `--yes`.
+
+The `external-id` value is connector-specific because it comes from the channel's own thread identifier:
+
+- Telegram: the `chat_id`
+- Slack: `<channelId>:<thread_ts>` or just `<channelId>`
+- Terminal: the `clientId`
+- WhatsApp Business: the sender `wa_id`
+- Email: `<address>:<messageId>`
 
 ### Sub-Agent Testing
 

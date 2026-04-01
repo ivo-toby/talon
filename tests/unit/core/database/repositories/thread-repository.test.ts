@@ -84,6 +84,22 @@ describe('ThreadRepository', () => {
     });
   });
 
+  describe('findByChannelId', () => {
+    it('returns threads for the channel in descending updated order', () => {
+      const older = makeThread({ external_id: 'chat-1' });
+      const newer = makeThread({ external_id: 'chat-2' });
+      repo.insert(older);
+      repo.insert(newer);
+
+      db.prepare('UPDATE threads SET updated_at = ? WHERE id = ?').run(100, older.id);
+      db.prepare('UPDATE threads SET updated_at = ? WHERE id = ?').run(200, newer.id);
+
+      const rows = repo.findByChannelId(channelId)._unsafeUnwrap();
+
+      expect(rows.map((row) => row.external_id)).toEqual(['chat-2', 'chat-1']);
+    });
+  });
+
   describe('update', () => {
     it('updates metadata', () => {
       const input = makeThread();
