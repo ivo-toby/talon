@@ -1418,6 +1418,117 @@ describe('AgentRunner', () => {
       expect(ctx.repos.run.updateSessionId).not.toHaveBeenCalled();
       expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith('a2a-task-1', 'A2A worker output');
     });
+
+    it('ignores source-thread provider affinity for A2A tasks and uses the delegated persona provider', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'Wrong provider output',
+        sessionId: undefined,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        isError: false,
+      });
+      (ctx.repos as any).a2aTask = {
+        markWorking: vi.fn().mockReturnValue(ok(undefined)),
+        markCompleted: vi.fn().mockReturnValue(ok(undefined)),
+        markFailed: vi.fn().mockReturnValue(ok(undefined)),
+      };
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'claude-sonnet-4-6',
+          provider: 'claude-code',
+          skills: [],
+          capabilities: { allow: [] },
+        },
+        systemPromptContent: 'You are a delegated Claude worker.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      } as any));
+      vi.mocked(ctx.repos.run.getLatestProviderName).mockReturnValue(ok('codex-cli'));
+      const getProvider = vi.fn().mockImplementation((name: string) => {
+        if (name === 'codex-cli') {
+          return {
+            provider: {
+              name: 'codex-cli',
+              createExecutionStrategy: () => ({
+                type: 'cli' as const,
+                supportsSessionResumption: true as const,
+                run: cliRun,
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({
+                inputTokens: 10,
+                metrics: {
+                  input_tokens: 10,
+                },
+              }),
+            },
+            config: makeAgentRunnerProviderConfig({
+              command: 'codex',
+              contextWindowTokens: 400_000,
+              contextManagement: makeContextManagement({
+                triggerMetric: 'input_tokens',
+                thresholdRatio: 0.8,
+              }),
+            }),
+          };
+        }
+        return {
+          provider: {
+            name: 'claude-code',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              run: () => makeProviderStream(),
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 0,
+              metrics: {
+                cache_read_input_tokens: 0,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig(),
+        };
+      });
+      ctx.providerRegistry = {
+        get: getProvider,
+        getDefault: vi.fn().mockImplementation((preferred: string[]) => {
+          for (const name of preferred) {
+            const entry = getProvider(name);
+            if (entry) return entry;
+          }
+          return undefined;
+        }),
+      } as any;
+
+      const item = makeQueueItem({
+        type: 'collaboration',
+        payload: {
+          personaId: 'persona-001',
+          kind: 'a2a_task',
+          taskId: 'a2a-task-2',
+          content: 'Fetch Jira and Confluence context',
+        },
+      });
+
+      const result = await runner.run(item);
+
+      expect(result.isOk()).toBe(true);
+      expect(cliRun).not.toHaveBeenCalled();
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider_name: 'claude-code',
+        }),
+      );
+      expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith('a2a-task-2', 'Hello from the agent!');
+    });
   });
 
   // -------------------------------------------------------------------------

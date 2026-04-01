@@ -114,11 +114,21 @@ export class AgentRunner {
         ? loadedPersona.config.provider
         : null;
     const configuredDefaultProvider = this.ctx.config.agentRunner?.defaultProvider ?? 'claude-code';
-    const preferredProviderOrder = [
-      affinityProviderName,
-      personaProviderName,
-      configuredDefaultProvider,
-    ].filter((name): name is string => typeof name === 'string' && name.length > 0);
+    const preferredProviderOrder = (
+      isA2ATask
+        ? [
+            // A2A tasks execute under the target persona on the source thread.
+            // Source-thread provider affinity must not override the delegated
+            // persona's provider selection.
+            personaProviderName,
+            configuredDefaultProvider,
+          ]
+        : [
+            affinityProviderName,
+            personaProviderName,
+            configuredDefaultProvider,
+          ]
+    ).filter((name): name is string => typeof name === 'string' && name.length > 0);
 
     const providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
     if (!providerEntry) {
