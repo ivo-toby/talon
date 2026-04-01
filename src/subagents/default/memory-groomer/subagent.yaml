@@ -5,11 +5,11 @@ description: "Reviews memory entries, consolidates duplicates, prunes stale item
 model:
   provider: anthropic
   name: claude-haiku-4-5
-  maxTokens: 8192
+  maxTokens: 24576
 
 requiredCapabilities:
   - memory.access:*
 
 rootPaths: []
 
-timeoutMs: 30000
+timeoutMs: 90000
