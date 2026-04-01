@@ -81,7 +81,7 @@ agentRunner:
       contextWindowTokens: 400000
       contextManagement:
         enabled: true
-        triggerMetric: input_tokens
+        triggerMetric: cache_read_input_tokens
         thresholdRatio: 0.8
         recentMessageCount: 10
         summarizer: session-summarizer
@@ -958,7 +958,7 @@ This sub-agent is only loaded when `OPENAI_API_KEY` is set in the environment. P
 
 ### Rolling Context Window
 
-Long conversations eventually fill a provider's context window. Talon monitors provider-specific context metrics after each agent run and automatically rotates the session when the configured threshold is exceeded, keeping conversations seamless without jarring resets. For Claude latency optimization, `cache_total_input_tokens` is the strongest signal because it tracks the total cached session footprint after the run.
+Long conversations eventually fill a provider's context window. Talon monitors provider-specific context metrics after each agent run and automatically rotates the session when the configured threshold is exceeded, keeping conversations seamless without jarring resets. For Claude latency optimization, `cache_total_input_tokens` is the strongest signal because it tracks the total cached session footprint after the run. For Codex, `cache_read_input_tokens` is the best latency-oriented signal because the CLI reports cached prompt reuse as `cached_input_tokens`, which Talon normalizes into `cache_read_input_tokens`.
 
 **How it works:**
 

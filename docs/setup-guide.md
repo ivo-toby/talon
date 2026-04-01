@@ -132,7 +132,7 @@ agentRunner:
       contextWindowTokens: 400000
       contextManagement:
         enabled: true
-        triggerMetric: input_tokens
+        triggerMetric: cache_read_input_tokens
         thresholdRatio: 0.8
         recentMessageCount: 10
         summarizer: session-summarizer
@@ -198,7 +198,7 @@ npx talonctl add-provider --name codex-cli \
   --command /usr/local/bin/codex \
   --context both \
   --context-window 400000 \
-  --trigger-metric input_tokens \
+  --trigger-metric cache_read_input_tokens \
   --threshold-ratio 0.8 \
   --recent-message-count 10 \
   --summarizer session-summarizer \

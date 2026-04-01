@@ -79,10 +79,29 @@ contextManagement:
 Use this when you care more about token cost behavior than latency, especially
 for providers where cached-context cost is low or unavailable.
 
+### Codex Latency Optimization
+
+Rotate based on Codex cached prompt reuse:
+
+```yaml
+contextManagement:
+  enabled: true
+  triggerMetric: cache_read_input_tokens
+  thresholdRatio: 0.8
+  recentMessageCount: 10
+  summarizer: session-summarizer
+```
+
+Codex CLI reports cached prompt reuse as `cached_input_tokens`. Talon
+normalizes that into `cache_read_input_tokens`, which makes it the best signal
+when you want to rotate before resumed Codex requests get slow.
+
 ## Choosing `triggerMetric`
 
 - `cache_read_input_tokens`:
   Best for latency control on Claude Code. It tracks resumed-session growth.
+  Codex CLI also exposes this metric via its `cached_input_tokens` usage field,
+  normalized by Talon as `cache_read_input_tokens`.
 - `cache_creation_input_tokens`:
   Tracks the new cache written by the current Claude run.
 - `cache_total_input_tokens`:
