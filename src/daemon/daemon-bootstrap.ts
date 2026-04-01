@@ -99,7 +99,6 @@ export async function bootstrap(
   }
   const config = configResult.value;
   const dataDir = resolve(config.dataDir);
-  config.dataDir = dataDir;
 
   if (logger.level !== config.logLevel) {
     logger.level = config.logLevel;
