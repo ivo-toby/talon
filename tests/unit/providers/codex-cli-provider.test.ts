@@ -65,7 +65,7 @@ describe('CodexCliProvider', () => {
         return {
           stdout: [
             '{"type":"thread.started","thread_id":"codex-thread-123"}',
-            '{"type":"turn.completed","usage":{"input_tokens":111,"output_tokens":7}}',
+            '{"type":"turn.completed","usage":{"input_tokens":111,"cached_input_tokens":42,"output_tokens":7}}',
           ].join('\n'),
           stderr: '',
           exitCode: 0,
@@ -110,6 +110,7 @@ describe('CodexCliProvider', () => {
         'home',
       );
       expect(invocation.env.HOME).toBe(expectedHome);
+      expect(invocation.env.HOME.startsWith('/')).toBe(true);
       expect(invocation.args[0]).toBe('exec');
       expect(invocation.args[invocation.args.length - 1]).toBe('-');
       expect(invocation.args).toContain('--json');
@@ -153,6 +154,7 @@ describe('CodexCliProvider', () => {
         sessionId: 'codex-thread-123',
         usage: {
           inputTokens: 111,
+          cacheReadTokens: 42,
           outputTokens: 7,
         },
         isError: false,
@@ -425,7 +427,7 @@ describe('CodexCliProvider', () => {
       {
         stdout: [
           '{"type":"thread.started","thread_id":"codex-thread-009"}',
-          '{"type":"turn.completed","usage":{"input_tokens":14813,"output_tokens":16}}',
+          '{"type":"turn.completed","usage":{"input_tokens":14813,"cached_input_tokens":9000,"output_tokens":16}}',
         ].join('\n'),
         stderr: '',
         exitCode: 0,
@@ -441,6 +443,7 @@ describe('CodexCliProvider', () => {
       timedOut: false,
       usage: {
         inputTokens: 14813,
+        cacheReadTokens: 9000,
         outputTokens: 16,
       },
     });
@@ -592,12 +595,14 @@ describe('CodexCliProvider', () => {
     expect(
       provider.estimateContextUsage({
         inputTokens: 12_345,
+        cacheReadTokens: 6_789,
         outputTokens: 100,
       }),
     ).toEqual({
       inputTokens: 12_345,
       metrics: {
         input_tokens: 12_345,
+        cache_read_input_tokens: 6_789,
       },
     });
   });

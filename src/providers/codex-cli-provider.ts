@@ -73,6 +73,7 @@ export class CodexCliProvider implements AgentProvider {
       inputTokens: usage.inputTokens ?? 0,
       metrics: {
         input_tokens: usage.inputTokens ?? 0,
+        cache_read_input_tokens: usage.cacheReadTokens ?? 0,
       },
     };
   }
@@ -415,9 +416,16 @@ export class CodexCliProvider implements AgentProvider {
       if (event.type === 'turn.completed') {
         result.hasTurnCompleted = true;
         if (typeof event.usage === 'object' && event.usage !== null) {
-          const usage = event.usage as { input_tokens?: unknown; output_tokens?: unknown };
+          const usage = event.usage as {
+            input_tokens?: unknown;
+            cached_input_tokens?: unknown;
+            output_tokens?: unknown;
+          };
           result.usage = {
             inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
+            cacheReadTokens: typeof usage.cached_input_tokens === 'number'
+              ? usage.cached_input_tokens
+              : undefined,
             outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
           };
         }
