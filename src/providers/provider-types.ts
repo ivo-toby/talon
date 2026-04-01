@@ -77,4 +77,9 @@ export interface PreparedProviderInvocation {
   cwd: string;
   timeoutMs: number;
   cleanupPaths: string[];
+  resultFiles?: PreparedProviderResultFiles;
+}
+
+export interface PreparedProviderResultFiles {
+  lastMessagePath?: string;
 }

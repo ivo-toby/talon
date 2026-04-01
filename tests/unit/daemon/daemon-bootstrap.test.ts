@@ -477,6 +477,60 @@ describe('bootstrap', () => {
       expect(ctx.logger).toBeDefined();
     });
 
+    it('normalizes dataDir to an absolute path before wiring runtime dependencies', async () => {
+      setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            dataDir: 'data',
+            agentRunner: {
+              defaultProvider: 'codex-cli',
+              providers: {
+                'codex-cli': {
+                  ...makeAgentRunnerProviderConfig({
+                    command: 'codex',
+                    contextWindowTokens: 400000,
+                    contextManagement: makeContextManagementConfig({
+                      triggerMetric: 'input_tokens',
+                      thresholdRatio: 0.8,
+                    }),
+                  }),
+                  options: {
+                    defaultModel: 'gpt-5.4',
+                  },
+                },
+              },
+            },
+            backgroundAgent: {
+              enabled: true,
+              maxConcurrent: 3,
+              defaultTimeoutMinutes: 30,
+              defaultProvider: 'codex-cli',
+              providers: {
+                'codex-cli': {
+                  ...makeBackgroundProviderConfig({
+                    command: 'codex',
+                    contextWindowTokens: 400000,
+                  }),
+                  options: {
+                    defaultModel: 'gpt-5.4',
+                  },
+                },
+              },
+            },
+          }) as any,
+        ),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      expect(ctx.dataDir.startsWith('/')).toBe(true);
+      expect(ctx.dataDir.endsWith('/data')).toBe(true);
+      expect(ctx.threadWorkspace.ensureDirectories('thread-abs')._unsafeUnwrap().startsWith('/')).toBe(true);
+    });
+
     it('applies the configured log level during bootstrap', async () => {
       setupSuccessfulMocks();
       const configuredLogger = createDiscardLogger('info');
@@ -637,6 +691,74 @@ describe('bootstrap', () => {
       expect(BackgroundAgentManager).toHaveBeenCalledWith(
         expect.objectContaining({
           defaultProvider: 'gemini-cli',
+        }),
+      );
+    });
+
+    it('registers codex-cli when enabled as the default provider in both registries', async () => {
+      setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            agentRunner: {
+              defaultProvider: 'codex-cli',
+              providers: {
+                'claude-code': {
+                  ...makeAgentRunnerProviderConfig(),
+                },
+                'codex-cli': {
+                  ...makeAgentRunnerProviderConfig({
+                    command: 'codex',
+                    contextWindowTokens: 200000,
+                    contextManagement: makeContextManagementConfig({
+                      triggerMetric: 'input_tokens',
+                      thresholdRatio: 0.6,
+                    }),
+                  }),
+                  options: {
+                    defaultModel: 'gpt-5-codex',
+                  },
+                },
+              },
+            },
+            backgroundAgent: {
+              enabled: true,
+              maxConcurrent: 3,
+              defaultTimeoutMinutes: 30,
+              defaultProvider: 'codex-cli',
+              providers: {
+                'claude-code': {
+                  ...makeBackgroundProviderConfig(),
+                },
+                'codex-cli': {
+                  ...makeBackgroundProviderConfig({
+                    command: 'codex',
+                    contextWindowTokens: 200000,
+                  }),
+                  options: {
+                    defaultModel: 'gpt-5-codex',
+                  },
+                },
+              },
+            },
+          }) as any,
+        ),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      expect(ctx.providerRegistry.get('codex-cli')?.provider.name).toBe('codex-cli');
+      expect(ctx.providerRegistry.getDefault(['codex-cli'])?.provider.name).toBe('codex-cli');
+
+      const backgroundProviderRegistry = vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0]
+        .providerRegistry;
+      expect(backgroundProviderRegistry.get('codex-cli')?.provider.name).toBe('codex-cli');
+      expect(backgroundProviderRegistry.getDefault(['codex-cli'])?.provider.name).toBe('codex-cli');
+      expect(BackgroundAgentManager).toHaveBeenCalledWith(
+        expect.objectContaining({
+          defaultProvider: 'codex-cli',
         }),
       );
     });

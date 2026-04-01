@@ -9,6 +9,9 @@
  */
 
 import { spawn } from 'node:child_process';
+import { basename, join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import {
   DEFAULT_CONFIG_PATH,
   readConfig,
@@ -48,10 +51,18 @@ const SPAWN_TIMEOUT_MS = 30_000;
  * @returns stdout string on success.
  * @throws Error if the process fails, exits non-zero, or times out.
  */
-function runProcess(command: string, args: string[], input?: string): Promise<string> {
+function runProcess(
+  command: string,
+  args: string[],
+  input?: string,
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    const env = options?.env ? { ...process.env, ...options.env } : process.env;
     const child = spawn(command, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: options?.cwd,
+      env,
     });
 
     let stdout = '';
@@ -173,6 +184,47 @@ function parseJsonResponse(raw: string): { text: string; inputTokens: number | n
   return null;
 }
 
+function parseCodexJsonl(raw: string): {
+  hasThreadStarted: boolean;
+  hasTurnCompleted: boolean;
+  inputTokens: number | null;
+  outputTokens: number | null;
+} {
+  let hasThreadStarted = false;
+  let hasTurnCompleted = false;
+  let inputTokens: number | null = null;
+  let outputTokens: number | null = null;
+
+  const lines = raw
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      continue;
+    }
+
+    if (event.type === 'thread.started') {
+      hasThreadStarted = true;
+    }
+
+    if (event.type === 'turn.completed') {
+      hasTurnCompleted = true;
+      if (typeof event.usage === 'object' && event.usage !== null) {
+        const usage = event.usage as Record<string, unknown>;
+        inputTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : null;
+        outputTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : null;
+      }
+    }
+  }
+
+  return { hasThreadStarted, hasTurnCompleted, inputTokens, outputTokens };
+}
+
 // ---------------------------------------------------------------------------
 // Core logic (importable)
 // ---------------------------------------------------------------------------
@@ -240,7 +292,98 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
 
   // Step 2: real test — determine flags based on provider name/command.
   const prompt = 'Say hello in one word';
-  const isGemini = options.name.includes('gemini') || command.includes('gemini');
+  const normalizedCommandFull = command.trim().toLowerCase();
+  const normalizedCommandBase = basename(command.trim())
+    .toLowerCase()
+    .replace(/\.(cmd|exe|bat)$/u, '');
+  const normalizedName = options.name.trim().toLowerCase();
+  const isCodex = normalizedName.includes('codex')
+    || normalizedCommandBase.includes('codex')
+    || normalizedCommandFull.includes('codex');
+  const isGemini = normalizedName.includes('gemini')
+    || normalizedCommandBase.includes('gemini')
+    || normalizedCommandFull.includes('gemini');
+  const providerOptions = (
+    typeof providerEntry.options === 'object' && providerEntry.options !== null
+      ? providerEntry.options
+      : undefined
+  ) as Record<string, unknown> | undefined;
+  const defaultModel = typeof providerOptions?.defaultModel === 'string'
+    && providerOptions.defaultModel.trim().length > 0
+    ? providerOptions.defaultModel.trim()
+    : undefined;
+
+  if (isCodex) {
+    let tempHome: string | null = null;
+    try {
+      tempHome = await mkdtemp(join(tmpdir(), 'talonctl-test-provider-codex-'));
+      const codexDir = join(tempHome, '.codex');
+      await mkdir(codexDir, { recursive: true, mode: 0o700 });
+
+      const operatorHome = process.env.HOME ?? homedir();
+      const authSrc = join(operatorHome, '.codex', 'auth.json');
+      const authDest = join(codexDir, 'auth.json');
+      const authJson = await readFile(authSrc, 'utf8');
+      await writeFile(authDest, authJson, { encoding: 'utf8', mode: 0o600 });
+
+      const configPath = join(codexDir, 'config.toml');
+      const configToml = `[projects.${JSON.stringify(tempHome)}]\ntrust_level = "trusted"\n`;
+      await writeFile(configPath, configToml, { encoding: 'utf8', mode: 0o600 });
+
+      const lastMessagePath = join(tempHome, 'last-message.txt');
+      const codexArgs = [
+        'exec',
+        '--json',
+        '--skip-git-repo-check',
+        '--dangerously-bypass-approvals-and-sandbox',
+        '-C',
+        tempHome,
+        '-o',
+        lastMessagePath,
+      ];
+      if (defaultModel) {
+        codexArgs.push('--model', defaultModel);
+      }
+      codexArgs.push(prompt);
+
+      const testOutput = await runProcess(command, codexArgs, undefined, {
+        env: {
+          ...process.env,
+          HOME: tempHome,
+        },
+      });
+
+      const parsed = parseCodexJsonl(testOutput);
+      result.jsonValid = parsed.hasThreadStarted && parsed.hasTurnCompleted;
+      result.inputTokens = parsed.inputTokens;
+      result.outputTokens = parsed.outputTokens;
+
+      try {
+        const message = (await readFile(lastMessagePath, 'utf8')).trim();
+        result.response = message.length > 0 ? message : null;
+      } catch {
+        result.response = null;
+      }
+
+      if (!result.jsonValid) {
+        result.error = 'Codex CLI returned invalid JSONL output (expected thread.started and turn.completed).';
+      }
+      if (!result.response) {
+        result.error = result.error
+          ? `${result.error} Missing final assistant output file content.`
+          : 'Codex CLI did not produce a final assistant output file.';
+      }
+    } catch (err) {
+      result.error = `Test query failed: ${(err as Error).message}`;
+    } finally {
+      if (tempHome) {
+        await rm(tempHome, { recursive: true, force: true });
+      }
+    }
+
+    return result;
+  }
+
   const testArgs = isGemini
     ? ['--approval-mode', 'yolo', '--output-format', 'json', prompt]
     : ['--print', '--output-format', 'json', '-p', prompt];

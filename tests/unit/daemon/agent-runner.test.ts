@@ -396,6 +396,7 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
         'thread-001',
         'session-abc-123',
+        'claude-code',
       );
       expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
         expect.any(String),
@@ -648,7 +649,7 @@ describe('AgentRunner', () => {
       );
     });
 
-    it('runs Gemini through the existing CLI branch, persists provider_name, and sends a waiting message', async () => {
+    it('runs Gemini through the existing CLI branch without sending a waiting message', async () => {
       const cliRun = vi.fn().mockResolvedValue({
         output: 'Gemini result',
         sessionId: undefined,
@@ -752,9 +753,6 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).not.toHaveBeenCalled();
       expect(ctx.repos.run.updateSessionId).not.toHaveBeenCalled();
       expect(connector.send).toHaveBeenNthCalledWith(1, 'ext-001', {
-        body: 'Thinking...',
-      });
-      expect(connector.send).toHaveBeenNthCalledWith(2, 'ext-001', {
         body: 'Gemini result',
       });
       expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
@@ -841,9 +839,6 @@ describe('AgentRunner', () => {
 
       expect(result.isOk()).toBe(true);
       expect(connector.send).toHaveBeenNthCalledWith(1, 'ext-001', {
-        body: 'Thinking...',
-      });
-      expect(connector.send).toHaveBeenNthCalledWith(2, 'ext-001', {
         body: 'Gemini result',
       });
       expect(ctx.contextRoller.checkAndRotate).not.toHaveBeenCalled();
@@ -910,6 +905,7 @@ describe('AgentRunner', () => {
       // Should have passed the DB session to the agent SDK
       const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
       expect(queryCall.options.resume).toBe('session-from-db');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'claude-code');
       expect(ctx.observability.observe).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
         expect.any(Function),
@@ -929,6 +925,7 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
         'thread-001',
         'session-abc-123',
+        'claude-code',
       );
     });
 
@@ -1135,6 +1132,267 @@ describe('AgentRunner', () => {
       expect(result.isOk()).toBe(true);
       expect(getDefault).toHaveBeenCalledWith(['gemini-cli']);
     });
+
+    it('restores sessions scoped to the selected provider', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'Codex fresh result',
+        sessionId: 'codex-thread-001',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        isError: false,
+      });
+
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'gpt-5.4',
+          provider: 'codex-cli',
+          skills: [],
+          capabilities: { allow: [] },
+        },
+        systemPromptContent: 'You are a Codex test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      } as any));
+      vi.mocked(ctx.sessionTracker.getSessionId).mockImplementation((_threadId: string, providerName?: string) => (
+        providerName === 'claude-code' ? 'claude-session-uuid' : undefined
+      ));
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(null));
+      ctx.providerRegistry = {
+        get: vi.fn().mockReturnValue(undefined),
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'codex-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: true as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10,
+              metrics: {
+                input_tokens: 10,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'codex',
+            contextWindowTokens: 400_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.8,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
+      expect(cliRun).toHaveBeenCalledWith(expect.not.objectContaining({
+        sessionId: expect.anything(),
+      }));
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      expect(vi.mocked(connector.send).mock.calls).toEqual([
+        ['ext-001', { body: 'Codex fresh result' }],
+      ]);
+    });
+
+    it('restores sessions for resumable CLI providers and skips previous-context stuffing on resumed turns', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'Resumed CLI output',
+        sessionId: 'resumable-cli-session-new',
+        usage: {
+          inputTokens: 100,
+          outputTokens: 50,
+        },
+        isError: false,
+      });
+
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok('resumable-cli-session-old'));
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'resumable-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: true as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 100,
+              metrics: {
+                input_tokens: 100,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'resumable-cli',
+            contextWindowTokens: 1_000_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.8,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
+      expect(cliRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: 'thread-001',
+          sessionId: 'resumable-cli-session-old',
+        }),
+      );
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          session_id: 'resumable-cli-session-old',
+        }),
+      );
+      expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+      expect(ctx.observability.observe).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
+        expect.any(Function),
+      );
+    });
+
+    it('persists returned session ids from resumable CLI providers', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'CLI output',
+        sessionId: 'resumable-cli-session-123',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        isError: false,
+      });
+
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'resumable-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: true as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10,
+              metrics: {
+                input_tokens: 10,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'resumable-cli',
+            contextWindowTokens: 1_000_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.8,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'resumable-cli-session-123',
+        'resumable-cli',
+      );
+      expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
+        expect.any(String),
+        'resumable-cli-session-123',
+      );
+    });
+
+    it('does not persist resumable CLI session ids for A2A tasks', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'A2A worker output',
+        sessionId: 'resumable-cli-a2a-session',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        isError: false,
+      });
+      (ctx.repos as any).a2aTask = {
+        markWorking: vi.fn().mockReturnValue(ok(undefined)),
+        markCompleted: vi.fn().mockReturnValue(ok(undefined)),
+        markFailed: vi.fn().mockReturnValue(ok(undefined)),
+      };
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('source-thread-session');
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok('db-source-thread-session'));
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'resumable-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: true as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10,
+              metrics: {
+                input_tokens: 10,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'resumable-cli',
+            contextWindowTokens: 1_000_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.8,
+            }),
+          }),
+        }),
+      } as any;
+
+      const item = makeQueueItem({
+        type: 'collaboration',
+        payload: {
+          personaId: 'persona-001',
+          kind: 'a2a_task',
+          taskId: 'a2a-task-1',
+          content: 'Run delegated work',
+        },
+      });
+
+      const result = await runner.run(item);
+
+      expect(result.isOk()).toBe(true);
+      expect(cliRun).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          sessionId: expect.anything(),
+        }),
+      );
+      expect(ctx.repos.run.getLatestSessionId).not.toHaveBeenCalled();
+      expect(ctx.sessionTracker.setSessionId).not.toHaveBeenCalled();
+      expect(ctx.repos.run.updateSessionId).not.toHaveBeenCalled();
+      expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith('a2a-task-1', 'A2A worker output');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -1180,6 +1438,7 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
         'thread-001',
         'session-abc-123',
+        'claude-code',
       );
       expect(
         vi.mocked(ctx.observability.observe).mock.calls.filter(
@@ -1204,6 +1463,46 @@ describe('AgentRunner', () => {
         'failed',
         expect.objectContaining({ error: 'Agent SDK crash' }),
       );
+    });
+
+    it('does not use sdk stale-session retry path for resumable CLI failures', async () => {
+      const cliRun = vi.fn().mockRejectedValue(new Error('Session not found'));
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resumable-cli-session-old');
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'resumable-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: true as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10,
+              metrics: {
+                input_tokens: 10,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'resumable-cli',
+            contextWindowTokens: 1_000_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.8,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('Session not found');
+      expect(cliRun).toHaveBeenCalledTimes(1);
+      expect(ctx.sessionTracker.rotateSession).not.toHaveBeenCalled();
     });
 
     it('returns error when channel send fails', async () => {
@@ -1737,7 +2036,7 @@ describe('AgentRunner', () => {
       };
       expect(mockSdkTool).toHaveBeenCalledWith(
         'skill_load',
-        expect.stringContaining('Load the full instructions for a skill'),
+        expect.stringContaining('Load the full instructions for a Talon persona skill'),
         expect.any(Object),
         expect.any(Function),
       );
@@ -1765,7 +2064,7 @@ describe('AgentRunner', () => {
         content: [
           {
             type: 'text',
-            text: 'Error: skill "missing" not found. Available: brainstorming, empty',
+            text: 'Error: Talon persona skill "missing" not found. Available Talon persona skills: brainstorming, empty',
           },
         ],
         isError: true,

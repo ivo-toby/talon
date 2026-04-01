@@ -497,6 +497,53 @@ describe('HostToolsBridge', () => {
       expect(mockCtx.observability.observeWithTraceparent).not.toHaveBeenCalled();
     });
 
+    it('reports only loadable Talon persona skills when skill.load lookup fails', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          skills: ['brainstorming', 'missing-from-disk'],
+        },
+        resolvedCapabilities: {
+          allow: [],
+          requireApproval: [],
+        },
+      } as any));
+      mockCtx.loadedSkills = [
+        {
+          manifest: { name: 'brainstorming' },
+          promptContents: ['Line 1', 'Line 2'],
+        },
+      ] as any;
+
+      bridge = new HostToolsBridge(mockCtx);
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-001',
+          tool: 'skill.load',
+          args: {
+            name: 'missing-from-disk',
+          },
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-001',
+          },
+        }),
+        socket,
+      );
+
+      const response = JSON.parse((socket.write as any).mock.calls[0]?.[0] as string) as {
+        result: { status: string; error: string };
+      };
+
+      expect(response.result.status).toBe('error');
+      expect(response.result.error).toBe(
+        'Talon persona skill "missing-from-disk" not found. Available Talon persona skills: brainstorming',
+      );
+    });
+
     it('traces rejected tool calls as failed tool observations', async () => {
       const update = vi.fn();
       mockCtx.observability.observeWithTraceparent = vi.fn(async (_traceparent, _input, fn) =>

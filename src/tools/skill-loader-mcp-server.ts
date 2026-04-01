@@ -22,6 +22,7 @@ import { createConnection } from 'node:net';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { TALON_SKILL_LOAD_TOOL_DESCRIPTION } from '../skills/skill-runtime-text.js';
 
 /** NDJSON request to bridge. */
 interface BridgeRequest {
@@ -180,7 +181,7 @@ class SocketClient {
 const TOOLS = [
   {
     name: 'skill_load',
-    description: 'Load the full instructions for a skill by name.',
+    description: TALON_SKILL_LOAD_TOOL_DESCRIPTION,
     inputSchema: {
       type: 'object' as const,
       properties: {

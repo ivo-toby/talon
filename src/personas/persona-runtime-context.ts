@@ -2,6 +2,12 @@ import type { LoadedPersona } from './persona-types.js';
 import type { LoadedSkill } from '../skills/skill-types.js';
 import type { SkillResolver } from '../skills/skill-resolver.js';
 import type { CanonicalMcpServer } from '../providers/provider-types.js';
+import {
+  TALON_SKILL_INDEX_GUIDANCE,
+  TALON_SKILL_INDEX_HEADING,
+  TALON_SKILL_INDEX_INTRO,
+  normalizeSkillDescription,
+} from '../skills/skill-runtime-text.js';
 
 export interface PersonaRuntimeContext {
   personaPrompt: string;
@@ -24,15 +30,19 @@ export function buildSkillIndex(resolvedSkills: LoadedSkill[]): string {
     return '';
   }
 
-  const lines = resolvedSkills.map(
-    (skill) => `- **${skill.manifest.name}**: ${skill.manifest.description}`,
-  );
+  const lines = resolvedSkills.map((skill) => {
+    const description = normalizeSkillDescription(skill.manifest.description ?? '');
+    return description.length > 0
+      ? `- **${skill.manifest.name}**: ${description}`
+      : `- **${skill.manifest.name}**`;
+  });
 
   return [
-    '## Available Skills',
+    TALON_SKILL_INDEX_HEADING,
+    TALON_SKILL_INDEX_INTRO,
     ...lines,
     '',
-    'To use a skill, call the `skill_load` tool with the skill name. The tool returns the full instructions for that skill.',
+    TALON_SKILL_INDEX_GUIDANCE,
   ].join('\n');
 }
 

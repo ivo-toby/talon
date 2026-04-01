@@ -26,6 +26,7 @@ import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/executi
 import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
+import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
 
 /** NDJSON request shape from MCP server. */
 interface BridgeRequest {
@@ -366,7 +367,8 @@ export class HostToolsBridge {
     if (personaRow.isErr() || !personaRow.value) return [];
     const loadedPersona = this.ctx.personaLoader.getByName(personaRow.value.name);
     if (loadedPersona.isErr() || !loadedPersona.value) return [];
-    return loadedPersona.value.config.skills;
+    const loadedSkillNames = new Set(this.ctx.loadedSkills.map((skill) => skill.manifest.name));
+    return loadedPersona.value.config.skills.filter((skillName) => loadedSkillNames.has(skillName));
   }
 
   /**
@@ -423,7 +425,7 @@ export class HostToolsBridge {
           requestId: context.requestId ?? 'unknown',
           tool,
           status: 'error',
-          error: `Skill "${name}" not found. Available: ${available.join(', ')}`,
+          error: formatMissingTalonSkillError(name, available),
         };
       }
       this.ctx.logger.info({ skill: name, runId: context.runId }, 'skill.loaded via bridge');

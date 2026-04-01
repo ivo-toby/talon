@@ -50,12 +50,29 @@ describe('buildPersonaRuntimeContext', () => {
 
       const index = buildSkillIndex(resolvedSkills);
 
-      expect(index).toContain('## Available Skills');
+      expect(index).toContain('## Talon Persona Skills');
+      expect(index).toContain(
+        'These skills belong to the current Talon persona. They are separate from any built-in provider or host skills.',
+      );
       expect(index).toContain('- **search**: search description');
       expect(index).toContain('- **browser**: browser description');
-      expect(index).toContain('call the `skill_load` tool with the skill name');
+      expect(index).toContain(
+        'For Talon skills, `skill_load` is authoritative. If a skill is listed here, call `skill_load` before claiming it is unavailable.',
+      );
+      expect(index).toContain('A listed skill may not already be loaded into context.');
       expect(index).not.toContain('prompt:search');
       expect(index).not.toContain('prompt:browser');
+    });
+
+    it('normalizes multiline descriptions into a single bullet line', () => {
+      const skill = makeLoadedSkill('ivonizer', []);
+      skill.manifest.description = 'Rewrite text.\nStrip AI patterns.\nKeep the same meaning.';
+
+      const index = buildSkillIndex([skill]);
+
+      expect(index).toContain(
+        '- **ivonizer**: Rewrite text. Strip AI patterns. Keep the same meaning.',
+      );
     });
 
     it('returns empty string when no skills', () => {
@@ -77,7 +94,7 @@ describe('buildPersonaRuntimeContext', () => {
         skillResolver: skillResolver as any,
       });
 
-      expect(result.personaPrompt).toContain('## Available Skills');
+      expect(result.personaPrompt).toContain('## Talon Persona Skills');
       expect(result.personaPrompt).toContain('- **search**: search description');
       expect(result.personaPrompt).not.toContain('FULL PROMPT CONTENT');
     });

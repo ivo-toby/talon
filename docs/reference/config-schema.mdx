@@ -256,6 +256,18 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      contextManagement:
+        enabled: true
+        triggerMetric: cache_read_input_tokens
+        thresholdRatio: 0.8
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        defaultModel: gpt-5.4
 ```
 
 | Field | Type | Default | Description |
@@ -267,15 +279,15 @@ agentRunner:
 
 ```yaml
 providers:
-  gemini-cli:
+  codex-cli:
     enabled: false
-    command: /usr/local/bin/gemini
-    contextWindowTokens: 1000000
+    command: codex
+    contextWindowTokens: 400000
     options:
-      defaultModel: gemini-2.5-pro
+      defaultModel: gpt-5.4
     contextManagement:
       enabled: true
-      triggerMetric: input_tokens
+      triggerMetric: cache_read_input_tokens
       thresholdRatio: 0.8
       recentMessageCount: 10
       summarizer: session-summarizer
@@ -326,6 +338,12 @@ backgroundAgent:
       enabled: true
       command: claude
       contextWindowTokens: 200000
+    codex-cli:
+      enabled: false
+      command: codex
+      contextWindowTokens: 400000
+      options:
+        defaultModel: gpt-5.4
 ```
 
 | Field | Type | Default | Description |
