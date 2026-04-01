@@ -14,6 +14,11 @@ describe('CodexCliProvider', () => {
     operatorHome = mkdtempSync(join(tmpdir(), 'talon-codex-operator-'));
     mkdirSync(join(operatorHome, '.codex'), { recursive: true });
     writeFileSync(join(operatorHome, '.codex', 'auth.json'), '{"access_token":"test"}');
+    writeFileSync(join(operatorHome, '.codex', 'state_5.sqlite'), 'state-db', 'utf8');
+    writeFileSync(join(operatorHome, '.codex', 'state_5.sqlite-wal'), 'state-wal', 'utf8');
+    writeFileSync(join(operatorHome, '.codex', 'logs_1.sqlite'), 'logs-db', 'utf8');
+    writeFileSync(join(operatorHome, '.codex', 'models_cache.json'), '{"models":[]}', 'utf8');
+    writeFileSync(join(operatorHome, '.codex', 'version.json'), '{"version":"0.118.0"}', 'utf8');
   });
 
   afterEach(() => {
@@ -123,6 +128,11 @@ describe('CodexCliProvider', () => {
       const authPath = join(expectedHome, '.codex', 'auth.json');
       expect(existsSync(authPath)).toBe(true);
       expect(readFileSync(authPath, 'utf8')).toBe('{"access_token":"test"}');
+      expect(readFileSync(join(expectedHome, '.codex', 'state_5.sqlite'), 'utf8')).toBe('state-db');
+      expect(readFileSync(join(expectedHome, '.codex', 'state_5.sqlite-wal'), 'utf8')).toBe('state-wal');
+      expect(readFileSync(join(expectedHome, '.codex', 'logs_1.sqlite'), 'utf8')).toBe('logs-db');
+      expect(readFileSync(join(expectedHome, '.codex', 'models_cache.json'), 'utf8')).toContain('"models"');
+      expect(readFileSync(join(expectedHome, '.codex', 'version.json'), 'utf8')).toContain('0.118.0');
 
       const configPath = join(expectedHome, '.codex', 'config.toml');
       expect(existsSync(configPath)).toBe(true);

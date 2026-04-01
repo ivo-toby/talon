@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
@@ -99,9 +99,19 @@ export class CodexCliProvider implements AgentProvider {
       const codexDir = join(homeDir, '.codex');
       mkdirSync(codexDir, { recursive: true, mode: 0o700 });
 
-      const sourceAuthPath = join(this.operatorCodexDir(), 'auth.json');
-      const authJson = readFileSync(sourceAuthPath, 'utf8');
-      writeFileSync(join(codexDir, 'auth.json'), authJson, { encoding: 'utf8', mode: 0o600 });
+      const sourceCodexDir = this.operatorCodexDir();
+      for (const entry of readdirSync(sourceCodexDir)) {
+        if (!this.shouldCopyCodexStateFile(entry)) {
+          continue;
+        }
+
+        const sourcePath = join(sourceCodexDir, entry);
+        if (!existsSync(sourcePath) || !statSync(sourcePath).isFile()) {
+          continue;
+        }
+
+        copyFileSync(sourcePath, join(codexDir, entry));
+      }
 
       const renderedConfig = this.renderConfigToml({ cwd, model, mcpServers });
       writeFileSync(join(codexDir, 'config.toml'), renderedConfig.toml, {
@@ -118,6 +128,17 @@ export class CodexCliProvider implements AgentProvider {
         ),
       );
     }
+  }
+
+  private shouldCopyCodexStateFile(name: string): boolean {
+    return (
+      name === 'auth.json'
+      || name === 'models_cache.json'
+      || name === 'cloud-requirements-cache.json'
+      || name === 'version.json'
+      || /^state_\d+\.sqlite(?:-(?:wal|shm))?$/u.test(name)
+      || /^logs_\d+\.sqlite(?:-(?:wal|shm))?$/u.test(name)
+    );
   }
 
   private renderConfigToml(input: {
