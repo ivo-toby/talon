@@ -649,7 +649,7 @@ describe('AgentRunner', () => {
       );
     });
 
-    it('runs Gemini through the existing CLI branch, persists provider_name, and sends a waiting message', async () => {
+    it('runs Gemini through the existing CLI branch without sending a waiting message', async () => {
       const cliRun = vi.fn().mockResolvedValue({
         output: 'Gemini result',
         sessionId: undefined,
@@ -753,9 +753,6 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).not.toHaveBeenCalled();
       expect(ctx.repos.run.updateSessionId).not.toHaveBeenCalled();
       expect(connector.send).toHaveBeenNthCalledWith(1, 'ext-001', {
-        body: 'Thinking...',
-      });
-      expect(connector.send).toHaveBeenNthCalledWith(2, 'ext-001', {
         body: 'Gemini result',
       });
       expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
@@ -842,9 +839,6 @@ describe('AgentRunner', () => {
 
       expect(result.isOk()).toBe(true);
       expect(connector.send).toHaveBeenNthCalledWith(1, 'ext-001', {
-        body: 'Thinking...',
-      });
-      expect(connector.send).toHaveBeenNthCalledWith(2, 'ext-001', {
         body: 'Gemini result',
       });
       expect(ctx.contextRoller.checkAndRotate).not.toHaveBeenCalled();
@@ -1205,6 +1199,10 @@ describe('AgentRunner', () => {
       expect(cliRun).toHaveBeenCalledWith(expect.not.objectContaining({
         sessionId: expect.anything(),
       }));
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      expect(vi.mocked(connector.send).mock.calls).toEqual([
+        ['ext-001', { body: 'Codex fresh result' }],
+      ]);
     });
 
     it('restores sessions for resumable CLI providers and skips previous-context stuffing on resumed turns', async () => {

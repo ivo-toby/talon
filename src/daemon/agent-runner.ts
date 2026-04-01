@@ -392,7 +392,18 @@ export class AgentRunner {
               return previousContext!;
             };
 
-            if (strategy.type === 'cli' && !isA2ATask && connector && externalId && item.payload.type !== 'schedule') {
+            const suppressCliWaitingMessage =
+              providerEntry.provider.name === 'gemini-cli'
+              || providerEntry.provider.name === 'codex-cli';
+
+            if (
+              strategy.type === 'cli'
+              && !suppressCliWaitingMessage
+              && !isA2ATask
+              && connector
+              && externalId
+              && item.payload.type !== 'schedule'
+            ) {
               const waitingResult = await connector.send(externalId, {
                 body: 'Thinking...',
               });
