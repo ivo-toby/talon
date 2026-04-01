@@ -125,7 +125,10 @@ describe('Lazy skill loading integration', () => {
       });
 
       // Metadata index present
-      expect(context.personaPrompt).toContain('## Available Skills');
+      expect(context.personaPrompt).toContain('## Talon Persona Skills');
+      expect(context.personaPrompt).toContain(
+        'These skills belong to the current Talon persona. They are separate from any built-in provider or host skills.',
+      );
       expect(context.personaPrompt).toContain('**web-research**: Search the web');
       expect(context.personaPrompt).toContain('skill_load');
 
@@ -205,6 +208,7 @@ describe('Lazy skill loading integration', () => {
 
       // Lazy index works the same
       const index = buildSkillIndex([skill]);
+      expect(index).toContain('## Talon Persona Skills');
       expect(index).toContain('**codex**: Run Codex CLI for code analysis');
       expect(index).not.toContain('Use the Codex CLI to analyze');
     });
@@ -328,12 +332,12 @@ describe('Lazy skill loading integration', () => {
       expect(lazyContext.personaPrompt.length).toBeLessThan(eagerContext.personaPrompt.length / 2);
 
       // Lazy has metadata, eager has full content
-      expect(lazyContext.personaPrompt).toContain('## Available Skills');
+      expect(lazyContext.personaPrompt).toContain('## Talon Persona Skills');
       expect(lazyContext.personaPrompt).not.toContain('detailed instructions for skill A');
 
       expect(eagerContext.personaPrompt).toContain('detailed instructions for skill A');
       expect(eagerContext.personaPrompt).toContain('detailed instructions for skill B');
-      expect(eagerContext.personaPrompt).not.toContain('## Available Skills');
+      expect(eagerContext.personaPrompt).not.toContain('## Talon Persona Skills');
     });
 
     it('default mode is lazy', () => {
@@ -345,7 +349,7 @@ describe('Lazy skill loading integration', () => {
         skillResolver: resolver,
       });
 
-      expect(context.personaPrompt).toContain('## Available Skills');
+      expect(context.personaPrompt).toContain('## Talon Persona Skills');
       expect(context.personaPrompt).not.toContain('detailed instructions');
     });
   });

@@ -2036,7 +2036,7 @@ describe('AgentRunner', () => {
       };
       expect(mockSdkTool).toHaveBeenCalledWith(
         'skill_load',
-        expect.stringContaining('Load the full instructions for a skill'),
+        expect.stringContaining('Load the full instructions for a Talon persona skill'),
         expect.any(Object),
         expect.any(Function),
       );
@@ -2064,7 +2064,7 @@ describe('AgentRunner', () => {
         content: [
           {
             type: 'text',
-            text: 'Error: skill "missing" not found. Available: brainstorming, empty',
+            text: 'Error: Talon persona skill "missing" not found. Available Talon persona skills: brainstorming, empty',
           },
         ],
         isError: true,

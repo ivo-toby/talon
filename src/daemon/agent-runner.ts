@@ -10,6 +10,10 @@ import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
+import {
+  TALON_SKILL_LOAD_TOOL_DESCRIPTION,
+  formatMissingTalonSkillError,
+} from '../skills/skill-runtime-text.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import type {
   AgentUsage,
@@ -462,7 +466,7 @@ export class AgentRunner {
                       tools: [
                         tool(
                           'skill_load',
-                          'Load the full instructions for a skill. Pass the skill name exactly as shown in Available Skills.',
+                          TALON_SKILL_LOAD_TOOL_DESCRIPTION,
                           { name: z.string().describe('Skill name') },
                           async (args) => {
                             const content = skillContentMap.get(args.name);
@@ -471,7 +475,7 @@ export class AgentRunner {
                                 content: [
                                   {
                                     type: 'text' as const,
-                                    text: `Error: skill "${args.name}" not found. Available: ${[...skillContentMap.keys()].join(', ')}`,
+                                    text: `Error: ${formatMissingTalonSkillError(args.name, [...skillContentMap.keys()])}`,
                                   },
                                 ],
                                 isError: true,
