@@ -113,6 +113,7 @@ export class AgentRunner {
     }
 
     const strategy = providerEntry.provider.createExecutionStrategy();
+    const sessionProviderName = providerEntry.provider.name;
 
     // Resolve session ID only for providers that support session resumption.
     // We do NOT seed the tracker here — only after a successful run
@@ -124,9 +125,9 @@ export class AgentRunner {
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
     if (strategy.supportsSessionResumption && !isA2ATask) {
-      resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId);
+      resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName);
       if (!resolvedSessionId && !this.ctx.sessionTracker.wasRotated(item.threadId)) {
-        const dbSessionResult = this.ctx.repos.run.getLatestSessionId(item.threadId);
+        const dbSessionResult = this.ctx.repos.run.getLatestSessionId(item.threadId, sessionProviderName);
         if (dbSessionResult.isOk() && dbSessionResult.value) {
           resolvedSessionId = dbSessionResult.value;
           this.ctx.logger.info(
@@ -782,7 +783,7 @@ export class AgentRunner {
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
             if (resultSessionId && !isA2ATask) {
-              this.ctx.sessionTracker.setSessionId(item.threadId, resultSessionId);
+              this.ctx.sessionTracker.setSessionId(item.threadId, resultSessionId, sessionProviderName);
               this.ctx.repos.run.updateSessionId(runId, resultSessionId);
             }
 

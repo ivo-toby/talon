@@ -47,6 +47,10 @@ export class SessionTracker {
     this.ttlMs = ttlMs;
   }
 
+  private makeKey(threadId: string, providerName?: string): string {
+    return providerName ? `${threadId}::${providerName}` : threadId;
+  }
+
   /**
    * Retrieve the session ID for a thread, if one has been recorded.
    *
@@ -57,12 +61,12 @@ export class SessionTracker {
    * @param threadId - The thread identifier.
    * @returns The stored session ID, or `undefined`.
    */
-  getSessionId(threadId: string): string | undefined {
-    const entry = this.sessions.get(threadId);
+  getSessionId(threadId: string, providerName?: string): string | undefined {
+    const entry = this.sessions.get(this.makeKey(threadId, providerName));
     if (!entry) return undefined;
 
     if (this.isExpired(entry)) {
-      this.sessions.delete(threadId);
+      this.sessions.delete(this.makeKey(threadId, providerName));
       return undefined;
     }
 
@@ -80,8 +84,8 @@ export class SessionTracker {
    * @param threadId  - The thread identifier.
    * @param sessionId - The SDK session ID returned by the completed run.
    */
-  setSessionId(threadId: string, sessionId: string): void {
-    this.sessions.set(threadId, { sessionId, lastUsedAt: Date.now() });
+  setSessionId(threadId: string, sessionId: string, providerName?: string): void {
+    this.sessions.set(this.makeKey(threadId, providerName), { sessionId, lastUsedAt: Date.now() });
   }
 
   /**
@@ -96,8 +100,17 @@ export class SessionTracker {
    *
    * @param threadId - The thread whose session should be cleared.
    */
-  clearSession(threadId: string): void {
-    this.sessions.delete(threadId);
+  clearSession(threadId: string, providerName?: string): void {
+    if (providerName) {
+      this.sessions.delete(this.makeKey(threadId, providerName));
+      return;
+    }
+
+    for (const key of this.sessions.keys()) {
+      if (key === threadId || key.startsWith(`${threadId}::`)) {
+        this.sessions.delete(key);
+      }
+    }
   }
 
   /**
@@ -114,7 +127,7 @@ export class SessionTracker {
    * @param threadId - The thread whose session was rotated.
    */
   rotateSession(threadId: string): void {
-    this.sessions.delete(threadId);
+    this.clearSession(threadId);
     this.rotated.add(threadId);
   }
 
@@ -157,12 +170,13 @@ export class SessionTracker {
    * @param threadId - The thread to check.
    * @returns `true` if a non-expired session ID is present.
    */
-  hasSession(threadId: string): boolean {
-    const entry = this.sessions.get(threadId);
+  hasSession(threadId: string, providerName?: string): boolean {
+    const key = this.makeKey(threadId, providerName);
+    const entry = this.sessions.get(key);
     if (!entry) return false;
 
     if (this.isExpired(entry)) {
-      this.sessions.delete(threadId);
+      this.sessions.delete(key);
       return false;
     }
 

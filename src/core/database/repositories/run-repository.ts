@@ -172,14 +172,22 @@ export class RunRepository extends BaseRepository {
   }
 
   /** Returns the most recent session_id for a thread from completed runs. */
-  getLatestSessionId(threadId: string): Result<string | null, DbError> {
+  getLatestSessionId(threadId: string, providerName?: string): Result<string | null, DbError> {
     try {
-      const stmt = this.db.prepare(`
-        SELECT session_id FROM runs
-        WHERE thread_id = ? AND session_id IS NOT NULL AND status = 'completed'
-        ORDER BY created_at DESC LIMIT 1
-      `);
-      const row = stmt.get(threadId) as { session_id: string } | undefined;
+      const stmt = providerName
+        ? this.db.prepare(`
+            SELECT session_id FROM runs
+            WHERE thread_id = ? AND provider_name = ? AND session_id IS NOT NULL AND status = 'completed'
+            ORDER BY created_at DESC LIMIT 1
+          `)
+        : this.db.prepare(`
+            SELECT session_id FROM runs
+            WHERE thread_id = ? AND session_id IS NOT NULL AND status = 'completed'
+            ORDER BY created_at DESC LIMIT 1
+          `);
+      const row = (providerName
+        ? stmt.get(threadId, providerName)
+        : stmt.get(threadId)) as { session_id: string } | undefined;
       return ok(row?.session_id ?? null);
     } catch (cause) {
       return err(new DbError(`Failed to get latest session_id: ${String(cause)}`, cause instanceof Error ? cause : undefined));

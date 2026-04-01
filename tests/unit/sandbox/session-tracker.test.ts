@@ -61,6 +61,15 @@ describe('SessionTracker', () => {
       expect(tracker.getSessionId('thread-2')).toBeUndefined();
     });
 
+    it('scopes sessions by provider when a provider name is supplied', () => {
+      tracker.setSessionId('thread-1', 'claude-session', 'claude-code');
+      tracker.setSessionId('thread-1', 'codex-session', 'codex-cli');
+
+      expect(tracker.getSessionId('thread-1', 'claude-code')).toBe('claude-session');
+      expect(tracker.getSessionId('thread-1', 'codex-cli')).toBe('codex-session');
+      expect(tracker.getSessionId('thread-1')).toBeUndefined();
+    });
+
     it('returns undefined for an expired session', () => {
       tracker.setSessionId('thread-1', 'ses-abc');
       // Advance past the default 24h TTL.
@@ -102,6 +111,14 @@ describe('SessionTracker', () => {
       expect(tracker.getSessionId('t-1')).toBe('ses-t1');
       expect(tracker.getSessionId('t-2')).toBe('ses-t2');
       expect(tracker.getSessionId('t-3')).toBe('ses-t3');
+    });
+
+    it('stores separate sessions per provider on the same thread', () => {
+      tracker.setSessionId('thread-1', 'claude-session', 'claude-code');
+      tracker.setSessionId('thread-1', 'codex-session', 'codex-cli');
+
+      expect(tracker.getSessionId('thread-1', 'claude-code')).toBe('claude-session');
+      expect(tracker.getSessionId('thread-1', 'codex-cli')).toBe('codex-session');
     });
   });
 

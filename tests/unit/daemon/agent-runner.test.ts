@@ -396,6 +396,7 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
         'thread-001',
         'session-abc-123',
+        'claude-code',
       );
       expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
         expect.any(String),
@@ -910,6 +911,7 @@ describe('AgentRunner', () => {
       // Should have passed the DB session to the agent SDK
       const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
       expect(queryCall.options.resume).toBe('session-from-db');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'claude-code');
       expect(ctx.observability.observe).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
         expect.any(Function),
@@ -929,6 +931,7 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
         'thread-001',
         'session-abc-123',
+        'claude-code',
       );
     });
 
@@ -1136,6 +1139,74 @@ describe('AgentRunner', () => {
       expect(getDefault).toHaveBeenCalledWith(['gemini-cli']);
     });
 
+    it('restores sessions scoped to the selected provider', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'Codex fresh result',
+        sessionId: 'codex-thread-001',
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        isError: false,
+      });
+
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'gpt-5.4',
+          provider: 'codex-cli',
+          skills: [],
+          capabilities: { allow: [] },
+        },
+        systemPromptContent: 'You are a Codex test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      } as any));
+      vi.mocked(ctx.sessionTracker.getSessionId).mockImplementation((_threadId: string, providerName?: string) => (
+        providerName === 'claude-code' ? 'claude-session-uuid' : undefined
+      ));
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(null));
+      ctx.providerRegistry = {
+        get: vi.fn().mockReturnValue(undefined),
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'codex-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: true as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10,
+              metrics: {
+                input_tokens: 10,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'codex',
+            contextWindowTokens: 400_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.8,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
+      expect(cliRun).toHaveBeenCalledWith(expect.not.objectContaining({
+        sessionId: expect.anything(),
+      }));
+    });
+
     it('restores sessions for resumable CLI providers and skips previous-context stuffing on resumed turns', async () => {
       const cliRun = vi.fn().mockResolvedValue({
         output: 'Resumed CLI output',
@@ -1181,6 +1252,8 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
       expect(cliRun).toHaveBeenCalledWith(
         expect.objectContaining({
           threadId: 'thread-001',
@@ -1245,6 +1318,7 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
         'thread-001',
         'resumable-cli-session-123',
+        'resumable-cli',
       );
       expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
         expect.any(String),
@@ -1366,6 +1440,7 @@ describe('AgentRunner', () => {
       expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
         'thread-001',
         'session-abc-123',
+        'claude-code',
       );
       expect(
         vi.mocked(ctx.observability.observe).mock.calls.filter(

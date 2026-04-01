@@ -149,6 +149,49 @@ describe('RunRepository', () => {
     });
   });
 
+  describe('getLatestSessionId', () => {
+    it('returns the most recent session_id for a specific provider when requested', () => {
+      repo.insert(makeRun({
+        provider_name: 'claude-code',
+        session_id: 'claude-session-1',
+        status: 'completed',
+      }));
+      repo.insert(makeRun({
+        provider_name: 'codex-cli',
+        session_id: 'codex-session-1',
+        status: 'completed',
+      }));
+      repo.insert(makeRun({
+        provider_name: 'claude-code',
+        session_id: 'claude-session-2',
+        status: 'completed',
+      }));
+
+      const result = repo.getLatestSessionId(threadId, 'codex-cli');
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toBe('codex-session-1');
+    });
+
+    it('falls back to thread-wide lookup when provider is omitted', () => {
+      repo.insert(makeRun({
+        provider_name: 'claude-code',
+        session_id: 'claude-session-1',
+        status: 'completed',
+      }));
+      repo.insert(makeRun({
+        provider_name: 'codex-cli',
+        session_id: 'codex-session-1',
+        status: 'completed',
+      }));
+
+      const result = repo.getLatestSessionId(threadId);
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toBe('codex-session-1');
+    });
+  });
+
   describe('updateStatus', () => {
     it('updates status to running with started_at', () => {
       const input = makeRun();
