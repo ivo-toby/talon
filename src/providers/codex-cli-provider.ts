@@ -214,9 +214,7 @@ export class CodexCliProvider implements AgentProvider {
   ): string[] {
     const args = ['exec'];
     if (options.sessionId) {
-      args.push('resume', options.sessionId, '-');
-    } else {
-      args.push('-');
+      args.push('resume');
     }
 
     args.push(
@@ -233,6 +231,12 @@ export class CodexCliProvider implements AgentProvider {
 
     if (options.model) {
       args.push('--model', options.model);
+    }
+
+    if (options.sessionId) {
+      args.push(options.sessionId, '-');
+    } else {
+      args.push('-');
     }
 
     return args;

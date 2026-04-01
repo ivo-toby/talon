@@ -106,7 +106,7 @@ describe('CodexCliProvider', () => {
       );
       expect(invocation.env.HOME).toBe(expectedHome);
       expect(invocation.args[0]).toBe('exec');
-      expect(invocation.args[1]).toBe('-');
+      expect(invocation.args[invocation.args.length - 1]).toBe('-');
       expect(invocation.args).toContain('--json');
       expect(invocation.args).toContain('--skip-git-repo-check');
       expect(invocation.args).toContain('--dangerously-bypass-approvals-and-sandbox');
@@ -240,12 +240,15 @@ describe('CodexCliProvider', () => {
       });
 
       const invocation = executeInvocation.mock.calls[0]?.[0];
-      expect(invocation.args.slice(0, 4)).toEqual([
+      expect(invocation.args.slice(0, 2)).toEqual([
         'exec',
         'resume',
-        'codex-thread-001',
-        '-',
       ]);
+      expect(invocation.args).toContain('--json');
+      expect(invocation.args).toContain('--skip-git-repo-check');
+      expect(invocation.args).toContain('--dangerously-bypass-approvals-and-sandbox');
+      expect(invocation.args).toContain('-o');
+      expect(invocation.args.slice(-2)).toEqual(['codex-thread-001', '-']);
       expect(invocation.stdin).toContain('You are helpful.');
       expect(invocation.stdin).toContain('Continue');
       expect(result.sessionId).toBe('codex-thread-001');
@@ -294,7 +297,7 @@ describe('CodexCliProvider', () => {
     expect(invocation.env?.HOME.startsWith(tmpdir())).toBe(true);
     expect(invocation.cleanupPaths).toContain(invocation.env!.HOME);
     expect(invocation.resultFiles?.lastMessagePath).toBeDefined();
-    expect(invocation.args[1]).toBe('-');
+    expect(invocation.args[invocation.args.length - 1]).toBe('-');
     expect(invocation.args).toContain('--ephemeral');
     expect(invocation.args).toContain('--json');
     expect(invocation.args).toContain('--skip-git-repo-check');
