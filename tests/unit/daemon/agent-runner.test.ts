@@ -199,6 +199,7 @@ function makeMockContext(): DaemonContext {
     sessionTracker: {
       getSessionId: vi.fn().mockReturnValue(undefined),
       setSessionId: vi.fn(),
+      clearSession: vi.fn(),
       wasRotated: vi.fn().mockReturnValue(false),
       rotateSession: vi.fn(),
     } as any,
@@ -1070,6 +1071,30 @@ describe('AgentRunner', () => {
           provider_name: 'gemini-cli',
         }),
       );
+    });
+
+    it('ignores pre-reset affinity and stale in-memory sessions', async () => {
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(ok({
+        id: 'thread-001',
+        channel_id: 'chan-001',
+        external_id: 'ext-001',
+        metadata: '{"providerAffinityResetAt":500}',
+      }) as any);
+      vi.mocked(ctx.repos.run.getLatestProviderName).mockReturnValue(ok(null));
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(null));
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-session');
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.repos.run.getLatestProviderName).toHaveBeenCalledWith(
+        'thread-001',
+        { sinceCreatedAt: 500 },
+      );
+      expect(ctx.sessionTracker.clearSession).toHaveBeenCalledWith('thread-001', 'claude-code');
+      expect(ctx.sessionTracker.getSessionId).not.toHaveBeenCalled();
+      const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
+      expect(queryCall.options.resume).toBeUndefined();
     });
 
     it('passes only configured provider preferences into registry fallback resolution', async () => {

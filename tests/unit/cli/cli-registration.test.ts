@@ -36,6 +36,16 @@ describe('CLI command modules', () => {
     const mod = await import('../../../src/cli/commands/doctor.js');
     expect(typeof mod.doctorCommand).toBe('function');
   });
+
+  it('list-threads command exports listThreadsCommand function', async () => {
+    const mod = await import('../../../src/cli/commands/list-threads.js');
+    expect(typeof mod.listThreadsCommand).toBe('function');
+  });
+
+  it('reset-provider-affinity command exports resetProviderAffinityCommand function', async () => {
+    const mod = await import('../../../src/cli/commands/reset-provider-affinity.js');
+    expect(typeof mod.resetProviderAffinityCommand).toBe('function');
+  });
 });
 
 // ---------------------------------------------------------------------------

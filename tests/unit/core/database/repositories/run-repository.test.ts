@@ -139,13 +139,27 @@ describe('RunRepository', () => {
 
   describe('getLatestProviderName', () => {
     it('returns the most recent provider_name for the thread', () => {
-      repo.insert(makeRun({ provider_name: 'claude-code' }));
-      repo.insert(makeRun({ provider_name: 'gemini-cli' }));
+      const older = repo.insert(makeRun({ provider_name: 'claude-code' }))._unsafeUnwrap();
+      const newer = repo.insert(makeRun({ provider_name: 'gemini-cli' }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
 
       const result = repo.getLatestProviderName(threadId);
 
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toBe('gemini-cli');
+    });
+
+    it('ignores affinity older than the provided lower bound', () => {
+      const older = repo.insert(makeRun({ provider_name: 'claude-code' }))._unsafeUnwrap();
+      const newer = repo.insert(makeRun({ provider_name: 'gemini-cli' }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
+
+      const result = repo.getLatestProviderName(threadId, { sinceCreatedAt: 201 });
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toBeNull();
     });
   });
 
@@ -173,6 +187,26 @@ describe('RunRepository', () => {
       expect(result._unsafeUnwrap()).toBe('codex-session-1');
     });
 
+    it('ignores sessions older than the provided lower bound', () => {
+      const older = repo.insert(makeRun({
+        provider_name: 'claude-code',
+        session_id: 'claude-session-1',
+        status: 'completed',
+      }))._unsafeUnwrap();
+      const newer = repo.insert(makeRun({
+        provider_name: 'claude-code',
+        session_id: 'claude-session-2',
+        status: 'completed',
+      }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
+
+      const result = repo.getLatestSessionId(threadId, 'claude-code', { sinceCreatedAt: 201 });
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toBeNull();
+    });
+
     it('falls back to thread-wide lookup when provider is omitted', () => {
       repo.insert(makeRun({
         provider_name: 'claude-code',
@@ -189,6 +223,21 @@ describe('RunRepository', () => {
 
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toBe('codex-session-1');
+    });
+  });
+
+  describe('findLatestByThread', () => {
+    it('returns the most recent run row for the thread', () => {
+      const older = repo.insert(makeRun({ provider_name: 'claude-code', status: 'completed' }))._unsafeUnwrap();
+      const newer = repo.insert(makeRun({ provider_name: 'codex-cli', status: 'failed' }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
+
+      const result = repo.findLatestByThread(threadId);
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()?.id).toBe(newer.id);
+      expect(result._unsafeUnwrap()?.provider_name).toBe('codex-cli');
     });
   });
 

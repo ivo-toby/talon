@@ -14,6 +14,7 @@ import {
   TALON_SKILL_LOAD_TOOL_DESCRIPTION,
   formatMissingTalonSkillError,
 } from '../skills/skill-runtime-text.js';
+import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import type {
   AgentUsage,
@@ -94,7 +95,16 @@ export class AgentRunner {
         ? loadedPersona.config.queryTimeoutMinutes * 60 * 1000
         : this.queryTimeoutMs;
 
-    const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(item.threadId);
+    const threadResult = this.ctx.repos.thread.findById(item.threadId);
+    const providerAffinityResetAt =
+      threadResult.isOk() && threadResult.value
+        ? getProviderAffinityResetAt(threadResult.value.metadata)
+        : undefined;
+
+    const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(
+      item.threadId,
+      providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : undefined,
+    );
     const affinityProviderName =
       affinityProviderResult.isOk() && affinityProviderResult.value
         ? affinityProviderResult.value
@@ -129,9 +139,34 @@ export class AgentRunner {
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
     if (strategy.supportsSessionResumption && !isA2ATask) {
-      resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName);
+      const sessionLookupOptions =
+        providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : undefined;
+
+      if (providerAffinityResetAt !== undefined) {
+        const latestPostResetSessionResult = this.ctx.repos.run.getLatestSessionId(
+          item.threadId,
+          sessionProviderName,
+          sessionLookupOptions,
+        );
+        const hasPostResetSession = latestPostResetSessionResult.isOk()
+          && latestPostResetSessionResult.value !== null;
+
+        if (!hasPostResetSession) {
+          this.ctx.sessionTracker.clearSession(item.threadId, sessionProviderName);
+        } else {
+          resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName);
+        }
+      } else {
+        resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName);
+      }
       if (!resolvedSessionId && !this.ctx.sessionTracker.wasRotated(item.threadId)) {
-        const dbSessionResult = this.ctx.repos.run.getLatestSessionId(item.threadId, sessionProviderName);
+        const dbSessionResult = sessionLookupOptions
+          ? this.ctx.repos.run.getLatestSessionId(
+              item.threadId,
+              sessionProviderName,
+              sessionLookupOptions,
+            )
+          : this.ctx.repos.run.getLatestSessionId(item.threadId, sessionProviderName);
         if (dbSessionResult.isOk() && dbSessionResult.value) {
           resolvedSessionId = dbSessionResult.value;
           this.ctx.logger.info(

@@ -63,6 +63,7 @@ export class RunRepository extends BaseRepository {
   private readonly findByIdStmt: Database.Statement;
   private readonly findByThreadStmt: Database.Statement;
   private readonly findByParentStmt: Database.Statement;
+  private readonly findLatestByThreadStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -88,6 +89,10 @@ export class RunRepository extends BaseRepository {
 
     this.findByParentStmt = db.prepare(`
       SELECT * FROM runs WHERE parent_run_id = ? ORDER BY created_at ASC
+    `);
+
+    this.findLatestByThreadStmt = db.prepare(`
+      SELECT * FROM runs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1
     `);
   }
 
@@ -132,6 +137,16 @@ export class RunRepository extends BaseRepository {
     }
   }
 
+  /** Returns the most recent run for a thread, if any. */
+  findLatestByThread(threadId: string): Result<RunRow | null, DbError> {
+    try {
+      const row = this.findLatestByThreadStmt.get(threadId) as RunRow | undefined;
+      return ok(row ?? null);
+    } catch (cause) {
+      return err(new DbError(`Failed to find latest run by thread: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
   /** Updates the status (and optional started_at / ended_at) of a run. */
   updateStatus(
     id: string,
@@ -172,22 +187,43 @@ export class RunRepository extends BaseRepository {
   }
 
   /** Returns the most recent session_id for a thread from completed runs. */
-  getLatestSessionId(threadId: string, providerName?: string): Result<string | null, DbError> {
+  getLatestSessionId(
+    threadId: string,
+    providerName?: string,
+    options?: { sinceCreatedAt?: number },
+  ): Result<string | null, DbError> {
     try {
+      const sinceCreatedAt = options?.sinceCreatedAt;
       const stmt = providerName
-        ? this.db.prepare(`
-            SELECT session_id FROM runs
-            WHERE thread_id = ? AND provider_name = ? AND session_id IS NOT NULL AND status = 'completed'
-            ORDER BY created_at DESC LIMIT 1
-          `)
-        : this.db.prepare(`
-            SELECT session_id FROM runs
-            WHERE thread_id = ? AND session_id IS NOT NULL AND status = 'completed'
-            ORDER BY created_at DESC LIMIT 1
-          `);
+        ? sinceCreatedAt !== undefined
+          ? this.db.prepare(`
+              SELECT session_id FROM runs
+              WHERE thread_id = ? AND provider_name = ? AND session_id IS NOT NULL AND status = 'completed' AND created_at >= ?
+              ORDER BY created_at DESC LIMIT 1
+            `)
+          : this.db.prepare(`
+              SELECT session_id FROM runs
+              WHERE thread_id = ? AND provider_name = ? AND session_id IS NOT NULL AND status = 'completed'
+              ORDER BY created_at DESC LIMIT 1
+            `)
+        : sinceCreatedAt !== undefined
+          ? this.db.prepare(`
+              SELECT session_id FROM runs
+              WHERE thread_id = ? AND session_id IS NOT NULL AND status = 'completed' AND created_at >= ?
+              ORDER BY created_at DESC LIMIT 1
+            `)
+          : this.db.prepare(`
+              SELECT session_id FROM runs
+              WHERE thread_id = ? AND session_id IS NOT NULL AND status = 'completed'
+              ORDER BY created_at DESC LIMIT 1
+            `);
       const row = (providerName
-        ? stmt.get(threadId, providerName)
-        : stmt.get(threadId)) as { session_id: string } | undefined;
+        ? sinceCreatedAt !== undefined
+          ? stmt.get(threadId, providerName, sinceCreatedAt)
+          : stmt.get(threadId, providerName)
+        : sinceCreatedAt !== undefined
+          ? stmt.get(threadId, sinceCreatedAt)
+          : stmt.get(threadId)) as { session_id: string } | undefined;
       return ok(row?.session_id ?? null);
     } catch (cause) {
       return err(new DbError(`Failed to get latest session_id: ${String(cause)}`, cause instanceof Error ? cause : undefined));
@@ -195,14 +231,26 @@ export class RunRepository extends BaseRepository {
   }
 
   /** Returns the most recent provider_name for a thread. */
-  getLatestProviderName(threadId: string): Result<string | null, DbError> {
+  getLatestProviderName(
+    threadId: string,
+    options?: { sinceCreatedAt?: number },
+  ): Result<string | null, DbError> {
     try {
-      const stmt = this.db.prepare(`
-        SELECT provider_name FROM runs
-        WHERE thread_id = ? AND provider_name IS NOT NULL
-        ORDER BY created_at DESC LIMIT 1
-      `);
-      const row = stmt.get(threadId) as { provider_name: string } | undefined;
+      const sinceCreatedAt = options?.sinceCreatedAt;
+      const stmt = sinceCreatedAt !== undefined
+        ? this.db.prepare(`
+            SELECT provider_name FROM runs
+            WHERE thread_id = ? AND provider_name IS NOT NULL AND created_at >= ?
+            ORDER BY created_at DESC LIMIT 1
+          `)
+        : this.db.prepare(`
+            SELECT provider_name FROM runs
+            WHERE thread_id = ? AND provider_name IS NOT NULL
+            ORDER BY created_at DESC LIMIT 1
+          `);
+      const row = (sinceCreatedAt !== undefined
+        ? stmt.get(threadId, sinceCreatedAt)
+        : stmt.get(threadId)) as { provider_name: string } | undefined;
       return ok(row?.provider_name ?? null);
     } catch (cause) {
       return err(new DbError(`Failed to get latest provider_name: ${String(cause)}`, cause instanceof Error ? cause : undefined));
