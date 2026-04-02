@@ -57,6 +57,11 @@ export interface UpdateTokensInput {
   cost_usd?: number;
 }
 
+interface RunLookupOptions {
+  sinceCreatedAt?: number;
+  excludeCollaboration?: boolean;
+}
+
 /** Repository for reading and writing run records. */
 export class RunRepository extends BaseRepository {
   private readonly insertStmt: Database.Statement;
@@ -138,8 +143,20 @@ export class RunRepository extends BaseRepository {
   }
 
   /** Returns the most recent run for a thread, if any. */
-  findLatestByThread(threadId: string): Result<RunRow | null, DbError> {
+  findLatestByThread(threadId: string, options?: RunLookupOptions): Result<RunRow | null, DbError> {
     try {
+      if (options?.excludeCollaboration) {
+        const stmt = this.db.prepare(`
+          SELECT runs.* FROM runs
+          LEFT JOIN queue_items qi ON qi.id = runs.queue_item_id
+          WHERE runs.thread_id = ?
+            AND (qi.type IS NULL OR qi.type != 'collaboration')
+          ORDER BY runs.created_at DESC LIMIT 1
+        `);
+        const row = stmt.get(threadId) as RunRow | undefined;
+        return ok(row ?? null);
+      }
+
       const row = this.findLatestByThreadStmt.get(threadId) as RunRow | undefined;
       return ok(row ?? null);
     } catch (cause) {
@@ -190,32 +207,47 @@ export class RunRepository extends BaseRepository {
   getLatestSessionId(
     threadId: string,
     providerName?: string,
-    options?: { sinceCreatedAt?: number },
+    options?: RunLookupOptions,
   ): Result<string | null, DbError> {
     try {
       const sinceCreatedAt = options?.sinceCreatedAt;
+      const excludeCollaboration = options?.excludeCollaboration === true;
+      const joinClause = excludeCollaboration
+        ? 'LEFT JOIN queue_items qi ON qi.id = runs.queue_item_id'
+        : '';
+      const collaborationClause = excludeCollaboration
+        ? "AND (qi.type IS NULL OR qi.type != 'collaboration')"
+        : '';
       const stmt = providerName
         ? sinceCreatedAt !== undefined
           ? this.db.prepare(`
-              SELECT session_id FROM runs
-              WHERE thread_id = ? AND provider_name = ? AND session_id IS NOT NULL AND status = 'completed' AND created_at >= ?
-              ORDER BY created_at DESC LIMIT 1
+              SELECT runs.session_id FROM runs
+              ${joinClause}
+              WHERE runs.thread_id = ? AND runs.provider_name = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed' AND runs.created_at >= ?
+              ${collaborationClause}
+              ORDER BY runs.created_at DESC LIMIT 1
             `)
           : this.db.prepare(`
-              SELECT session_id FROM runs
-              WHERE thread_id = ? AND provider_name = ? AND session_id IS NOT NULL AND status = 'completed'
-              ORDER BY created_at DESC LIMIT 1
+              SELECT runs.session_id FROM runs
+              ${joinClause}
+              WHERE runs.thread_id = ? AND runs.provider_name = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed'
+              ${collaborationClause}
+              ORDER BY runs.created_at DESC LIMIT 1
             `)
         : sinceCreatedAt !== undefined
           ? this.db.prepare(`
-              SELECT session_id FROM runs
-              WHERE thread_id = ? AND session_id IS NOT NULL AND status = 'completed' AND created_at >= ?
-              ORDER BY created_at DESC LIMIT 1
+              SELECT runs.session_id FROM runs
+              ${joinClause}
+              WHERE runs.thread_id = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed' AND runs.created_at >= ?
+              ${collaborationClause}
+              ORDER BY runs.created_at DESC LIMIT 1
             `)
           : this.db.prepare(`
-              SELECT session_id FROM runs
-              WHERE thread_id = ? AND session_id IS NOT NULL AND status = 'completed'
-              ORDER BY created_at DESC LIMIT 1
+              SELECT runs.session_id FROM runs
+              ${joinClause}
+              WHERE runs.thread_id = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed'
+              ${collaborationClause}
+              ORDER BY runs.created_at DESC LIMIT 1
             `);
       const row = (providerName
         ? sinceCreatedAt !== undefined
@@ -233,20 +265,31 @@ export class RunRepository extends BaseRepository {
   /** Returns the most recent provider_name for a thread. */
   getLatestProviderName(
     threadId: string,
-    options?: { sinceCreatedAt?: number },
+    options?: RunLookupOptions,
   ): Result<string | null, DbError> {
     try {
       const sinceCreatedAt = options?.sinceCreatedAt;
+      const excludeCollaboration = options?.excludeCollaboration === true;
+      const joinClause = excludeCollaboration
+        ? 'LEFT JOIN queue_items qi ON qi.id = runs.queue_item_id'
+        : '';
+      const collaborationClause = excludeCollaboration
+        ? "AND (qi.type IS NULL OR qi.type != 'collaboration')"
+        : '';
       const stmt = sinceCreatedAt !== undefined
         ? this.db.prepare(`
-            SELECT provider_name FROM runs
-            WHERE thread_id = ? AND provider_name IS NOT NULL AND created_at >= ?
-            ORDER BY created_at DESC LIMIT 1
+            SELECT runs.provider_name FROM runs
+            ${joinClause}
+            WHERE runs.thread_id = ? AND runs.provider_name IS NOT NULL AND runs.created_at >= ?
+            ${collaborationClause}
+            ORDER BY runs.created_at DESC LIMIT 1
           `)
         : this.db.prepare(`
-            SELECT provider_name FROM runs
-            WHERE thread_id = ? AND provider_name IS NOT NULL
-            ORDER BY created_at DESC LIMIT 1
+            SELECT runs.provider_name FROM runs
+            ${joinClause}
+            WHERE runs.thread_id = ? AND runs.provider_name IS NOT NULL
+            ${collaborationClause}
+            ORDER BY runs.created_at DESC LIMIT 1
           `);
       const row = (sinceCreatedAt !== undefined
         ? stmt.get(threadId, sinceCreatedAt)

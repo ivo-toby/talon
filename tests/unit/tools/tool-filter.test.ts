@@ -131,22 +131,24 @@ describe('filterAllowedMcpTools', () => {
       requireApproval: [],
     };
     const result = filterAllowedMcpTools(caps);
-    expect(result).toHaveLength(10);
+    expect(result).toHaveLength(11);
     expect(result).toContain('background_agent');
     expect(result).toContain('persona_send');
+    expect(result).toContain('persona_task_status');
     expect(result).toContain('persona_list');
     expect(result).toContain('execution_env');
   });
 
-  it('maps persona.send capability to both persona_send and persona_list MCP tools', () => {
+  it('maps persona.send capability to persona_send, persona_task_status, and persona_list MCP tools', () => {
     const caps: ResolvedCapabilities = {
       allow: ['persona.send:*'],
       requireApproval: [],
     };
     const result = filterAllowedMcpTools(caps);
     expect(result).toContain('persona_send');
+    expect(result).toContain('persona_task_status');
     expect(result).toContain('persona_list');
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(3);
   });
 
   it('maps subagent.background capability to background_agent MCP tool', () => {
@@ -241,11 +243,12 @@ describe('isToolAllowed', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all ten host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(10);
+  it('contains all eleven host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(11);
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('persona.send');
+    expect(ALL_HOST_TOOLS).toContain('persona.task_status');
     expect(ALL_HOST_TOOLS).toContain('persona.list');
     expect(ALL_HOST_TOOLS).toContain('memory.access');
     expect(ALL_HOST_TOOLS).toContain('net.http');

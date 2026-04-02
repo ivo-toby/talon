@@ -43,7 +43,7 @@ export function listThreads(options: ListThreadsOptions): ThreadSummary[] {
 
   const runRepo = new RunRepository(options.db);
   const summaries = threads.value.map((thread) => {
-    const latestRun = runRepo.findLatestByThread(thread.id);
+    const latestRun = runRepo.findLatestByThread(thread.id, { excludeCollaboration: true });
     if (latestRun.isErr()) {
       throw new Error(`Database error looking up latest run for thread "${thread.id}": ${latestRun.error.message}`);
     }

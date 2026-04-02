@@ -626,7 +626,7 @@ describe('HostToolsBridge', () => {
           socket,
         );
 
-        await vi.advanceTimersByTimeAsync(30_000);
+        await vi.advanceTimersByTimeAsync(300_000);
 
         expect((socket.write as any).mock.calls[0]?.[0]).toContain('"error":"Request timeout"');
 

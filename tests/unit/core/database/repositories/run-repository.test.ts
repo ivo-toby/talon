@@ -4,6 +4,7 @@ import { RunRepository } from '../../../../../src/core/database/repositories/run
 import { ThreadRepository } from '../../../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../../../src/core/database/repositories/channel-repository.js';
 import { PersonaRepository } from '../../../../../src/core/database/repositories/persona-repository.js';
+import { QueueRepository } from '../../../../../src/core/database/repositories/queue-repository.js';
 import { createTestDb, uuid } from './helpers.js';
 
 describe('RunRepository', () => {
@@ -75,6 +76,18 @@ describe('RunRepository', () => {
       ended_at: null,
       ...overrides,
     };
+  }
+
+  function makeQueueItem(type: 'message' | 'schedule' | 'collaboration') {
+    const queue = new QueueRepository(db);
+    return queue.enqueue({
+      id: uuid(),
+      thread_id: threadId,
+      message_id: null,
+      type,
+      payload: '{}',
+      max_attempts: 3,
+    })._unsafeUnwrap();
   }
 
   describe('insert', () => {
@@ -161,6 +174,26 @@ describe('RunRepository', () => {
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toBeNull();
     });
+
+    it('can exclude collaboration runs from provider affinity lookup', () => {
+      const messageQueue = makeQueueItem('message');
+      const collaborationQueue = makeQueueItem('collaboration');
+      const messageRun = repo.insert(makeRun({
+        provider_name: 'claude-code',
+        queue_item_id: messageQueue.id,
+      }))._unsafeUnwrap();
+      const collaborationRun = repo.insert(makeRun({
+        provider_name: 'codex-cli',
+        queue_item_id: collaborationQueue.id,
+      }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, messageRun.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, collaborationRun.id);
+
+      const result = repo.getLatestProviderName(threadId, { excludeCollaboration: true });
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toBe('claude-code');
+    });
   });
 
   describe('getLatestSessionId', () => {
@@ -207,6 +240,30 @@ describe('RunRepository', () => {
       expect(result._unsafeUnwrap()).toBeNull();
     });
 
+    it('can exclude collaboration runs from session lookup', () => {
+      const messageQueue = makeQueueItem('message');
+      const collaborationQueue = makeQueueItem('collaboration');
+      const messageRun = repo.insert(makeRun({
+        provider_name: 'claude-code',
+        session_id: 'claude-session-1',
+        status: 'completed',
+        queue_item_id: messageQueue.id,
+      }))._unsafeUnwrap();
+      const collaborationRun = repo.insert(makeRun({
+        provider_name: 'claude-code',
+        session_id: 'claude-session-2',
+        status: 'completed',
+        queue_item_id: collaborationQueue.id,
+      }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, messageRun.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, collaborationRun.id);
+
+      const result = repo.getLatestSessionId(threadId, 'claude-code', { excludeCollaboration: true });
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()).toBe('claude-session-1');
+    });
+
     it('falls back to thread-wide lookup when provider is omitted', () => {
       repo.insert(makeRun({
         provider_name: 'claude-code',
@@ -238,6 +295,29 @@ describe('RunRepository', () => {
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()?.id).toBe(newer.id);
       expect(result._unsafeUnwrap()?.provider_name).toBe('codex-cli');
+    });
+
+    it('can exclude collaboration runs when selecting the latest run', () => {
+      const messageQueue = makeQueueItem('message');
+      const collaborationQueue = makeQueueItem('collaboration');
+      const messageRun = repo.insert(makeRun({
+        provider_name: 'claude-code',
+        status: 'completed',
+        queue_item_id: messageQueue.id,
+      }))._unsafeUnwrap();
+      const collaborationRun = repo.insert(makeRun({
+        provider_name: 'codex-cli',
+        status: 'completed',
+        queue_item_id: collaborationQueue.id,
+      }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, messageRun.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, collaborationRun.id);
+
+      const result = repo.findLatestByThread(threadId, { excludeCollaboration: true });
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()?.id).toBe(messageRun.id);
+      expect(result._unsafeUnwrap()?.provider_name).toBe('claude-code');
     });
   });
 

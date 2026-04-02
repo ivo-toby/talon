@@ -103,7 +103,10 @@ export class AgentRunner {
 
     const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(
       item.threadId,
-      providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : undefined,
+      {
+        excludeCollaboration: true,
+        ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
+      },
     );
     const affinityProviderName =
       affinityProviderResult.isOk() && affinityProviderResult.value
@@ -114,11 +117,21 @@ export class AgentRunner {
         ? loadedPersona.config.provider
         : null;
     const configuredDefaultProvider = this.ctx.config.agentRunner?.defaultProvider ?? 'claude-code';
-    const preferredProviderOrder = [
-      affinityProviderName,
-      personaProviderName,
-      configuredDefaultProvider,
-    ].filter((name): name is string => typeof name === 'string' && name.length > 0);
+    const preferredProviderOrder = (
+      isA2ATask
+        ? [
+            // A2A tasks execute under the target persona on the source thread.
+            // Source-thread provider affinity must not override the delegated
+            // persona's provider selection.
+            personaProviderName,
+            configuredDefaultProvider,
+          ]
+        : [
+            affinityProviderName,
+            personaProviderName,
+            configuredDefaultProvider,
+          ]
+    ).filter((name): name is string => typeof name === 'string' && name.length > 0);
 
     const providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
     if (!providerEntry) {
@@ -140,7 +153,10 @@ export class AgentRunner {
     let resolvedSessionId: string | undefined;
     if (strategy.supportsSessionResumption && !isA2ATask) {
       const sessionLookupOptions =
-        providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : undefined;
+        {
+          excludeCollaboration: true,
+          ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
+        };
 
       if (providerAffinityResetAt !== undefined) {
         const latestPostResetSessionResult = this.ctx.repos.run.getLatestSessionId(
@@ -160,13 +176,11 @@ export class AgentRunner {
         resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName);
       }
       if (!resolvedSessionId && !this.ctx.sessionTracker.wasRotated(item.threadId)) {
-        const dbSessionResult = sessionLookupOptions
-          ? this.ctx.repos.run.getLatestSessionId(
-              item.threadId,
-              sessionProviderName,
-              sessionLookupOptions,
-            )
-          : this.ctx.repos.run.getLatestSessionId(item.threadId, sessionProviderName);
+        const dbSessionResult = this.ctx.repos.run.getLatestSessionId(
+          item.threadId,
+          sessionProviderName,
+          sessionLookupOptions,
+        );
         if (dbSessionResult.isOk() && dbSessionResult.value) {
           resolvedSessionId = dbSessionResult.value;
           this.ctx.logger.info(
