@@ -72,16 +72,19 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
   const resolver = new ModelResolver(providers);
   const overrideConfig = options.subagentOverrides?.[name];
   let resolvedModel;
+  let resolvedMaxTokens = agent.manifest.model.maxTokens;
 
   if (overrideConfig) {
     for (const entry of overrideConfig.model) {
+      const entryMaxTokens = entry.maxTokens ?? agent.manifest.model.maxTokens;
       const result = await resolver.resolve({
         provider: entry.provider,
         name: entry.name,
-        maxTokens: entry.maxTokens ?? agent.manifest.model.maxTokens,
+        maxTokens: entryMaxTokens,
       });
       if (result.isOk()) {
         resolvedModel = result.value;
+        resolvedMaxTokens = entryMaxTokens;
         break;
       }
       logger.warn(`Model ${entry.provider}/${entry.name} failed, trying next`);
@@ -104,7 +107,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
       personaId: 'cli-test',
       systemPrompt,
       model: resolvedModel,
-      maxOutputTokens: agent.manifest.model.maxTokens,
+      maxOutputTokens: resolvedMaxTokens,
       rootPaths: agent.manifest.rootPaths,
       services: {
         memory: {} as any,

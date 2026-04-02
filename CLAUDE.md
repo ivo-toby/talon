@@ -47,7 +47,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |
 | Personas  | `src/personas/`            | Persona config loading + capability merging                         |
 | Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool) |
-| SubAgents | `src/subagents/`           | Loader, model resolver, runner for cheap-model sub-agent tasks      |
+| SubAgents | `src/subagents/`           | Loader, model resolver, runner with per-subagent model overrides and failover |
 | Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema) |
 | Database  | `src/core/database/`       | better-sqlite3 wrapper, 14 repositories, SQL migrations             |
 | IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                |

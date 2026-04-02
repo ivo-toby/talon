@@ -116,7 +116,7 @@ export interface SubAgentContext {
   systemPrompt: string;
   /** Resolved AI SDK model instance ready for generation. */
   model: LanguageModel;
-  /** Maximum output tokens per generation, from the manifest's model.maxTokens. */
+  /** Maximum output tokens per generation (from config override or manifest's model.maxTokens). */
   maxOutputTokens: number;
   /** Filesystem paths the sub-agent is allowed to access, from the manifest. */
   rootPaths: string[];
