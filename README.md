@@ -755,6 +755,7 @@ Tools are gated by scoped capability labels. Capabilities are listed in `allow` 
 | Capability               | Description                             |
 | ------------------------ | --------------------------------------- |
 | `channel.send:<channel>` | Send messages to a specific channel     |
+| `persona.send:*`         | Delegate to another persona, list personas, and fetch delegated task status |
 | `schedule.manage`        | Create/modify/delete scheduled tasks    |
 | `memory.access`          | Read/write per-thread structured memory |
 | `net.http`               | Fetch external URLs                     |
@@ -1302,6 +1303,9 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 | ----------------- | ------------------------------------------------------------------------ |
 | `schedule_manage` | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
 | `channel_send`    | Send messages to channel connectors                                      |
+| `persona_send`    | Submit a delegated A2A task to another persona                           |
+| `persona_task_status` | Fetch the status or result of a delegated A2A task                  |
+| `persona_list`    | List personas available for delegation                                   |
 | `memory_access`   | Read/write per-thread memory                                             |
 | `net_http`        | Fetch external URLs                                                      |
 | `db_query`        | Read-only database queries                                               |
@@ -1914,6 +1918,14 @@ Talon implements [Google's A2A protocol](https://google.github.io/A2A/) for inte
 
 Each persona is automatically discoverable as an A2A agent with a card describing its capabilities, skills, and endpoint. When persona A needs to delegate work to persona B, it submits a task via the internal A2A server. The task is persisted to the `a2a_tasks` table, enqueued as a `collaboration` queue item, and processed by the daemon exactly like any other message — but against the target persona's full model configuration.
 
+For agent-facing delegation, Talon exposes three host tools behind the same capability family:
+
+- `persona_send` submits a delegated task
+- `persona_task_status` fetches the current status or final result later
+- `persona_list` lists available target personas
+
+All three are granted by the same capability label: `persona.send:*`. No separate capability is needed for task status lookups.
+
 ```
 Persona A (source)
     │
@@ -1941,6 +1953,35 @@ a2a_tasks (completed / failed)
 | `completed` | Target persona finished and returned a result |
 | `failed` | Processing failed with an error code |
 | `canceled` | Task was canceled before completion |
+
+### Agent-facing flow
+
+The normal synchronous pattern is:
+
+1. Call `persona_send` with `await_reply: true`
+2. If the delegated task finishes quickly, the caller receives the final result directly
+3. If the sync wait expires, the caller receives a structured timeout response with the `task_id`
+4. The caller can then use `persona_task_status` to poll or wait for the final result without querying the raw database
+
+`persona_send` now waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms`. `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state.
+
+Examples:
+
+```json
+{
+  "target_persona": "work-context-manager",
+  "message": "Fetch the latest Jira and Confluence updates",
+  "await_reply": true,
+  "timeout_ms": 300000
+}
+```
+
+```json
+{
+  "task_id": "2b004602-b6ac-4dec-bd7b-f88e0565a16a",
+  "wait_ms": 300000
+}
+```
 
 ### CLI commands
 
