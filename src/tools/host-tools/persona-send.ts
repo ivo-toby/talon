@@ -13,7 +13,11 @@ import type { PersonaRepository } from '../../core/database/repositories/persona
 import { ToolError } from '../../core/errors/error-types.js';
 import type { ToolCallResult, ToolManifest } from '../tool-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
-import { PERSONA_SEND_DEFAULT_MAX_WAIT_MS } from '../tool-timeouts.js';
+import {
+  PERSONA_SEND_DEFAULT_MAX_WAIT_MS,
+  PERSONA_TASK_WAIT_MAX_MS,
+  resolvePersonaTaskWaitMs,
+} from '../tool-timeouts.js';
 
 export interface PersonaSendTool {
   readonly manifest: ToolManifest;
@@ -23,6 +27,7 @@ export interface PersonaSendArgs {
   target_persona: string;
   message: string;
   await_reply?: boolean;
+  timeout_ms?: number;
 }
 
 type PersonaSendState = A2ATaskState | 'timeout';
@@ -34,8 +39,6 @@ interface PersonaSendOutput {
   error?: string;
 }
 
-// Must be less than the bridge REQUEST_TIMEOUT_MS (30_000) so polling always
-// returns a clean timeout result before the transport layer cuts the connection.
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const TERMINAL_STATES = new Set<A2ATaskState>(['completed', 'failed', 'canceled', 'input-required']);
 
@@ -116,7 +119,10 @@ export class PersonaSendHandler {
       });
     }
 
-    const awaitedResult = await this.pollUntilTerminal(submitResult.value.taskId);
+    const awaitedResult = await this.pollUntilTerminal(
+      submitResult.value.taskId,
+      resolvePersonaTaskWaitMs(validatedArgs.value.timeout_ms, this.deps.maxWaitMs),
+    );
     if (awaitedResult.isErr()) {
       this.deps.logger.error({ requestId, taskId: submitResult.value.taskId }, awaitedResult.error.message);
       return this.errorResult(requestId, awaitedResult.error.message);
@@ -138,10 +144,22 @@ export class PersonaSendHandler {
       return err(new ToolError('persona.send: await_reply must be a boolean'));
     }
 
+    if (
+      args.timeout_ms !== undefined
+      && (!Number.isInteger(args.timeout_ms) || args.timeout_ms <= 0 || args.timeout_ms > PERSONA_TASK_WAIT_MAX_MS)
+    ) {
+      return err(
+        new ToolError(
+          `persona.send: timeout_ms must be a positive integer no greater than ${PERSONA_TASK_WAIT_MAX_MS}`,
+        ),
+      );
+    }
+
     return ok({
       target_persona: args.target_persona.trim(),
       message: args.message.trim(),
       await_reply: args.await_reply ?? false,
+      ...(args.timeout_ms !== undefined ? { timeout_ms: args.timeout_ms } : {}),
     });
   }
 
@@ -160,8 +178,10 @@ export class PersonaSendHandler {
     return ok(personaResult.value.name);
   }
 
-  private async pollUntilTerminal(taskId: string): Promise<Result<PersonaSendOutput, ToolError>> {
-    const maxWaitMs = this.deps.maxWaitMs ?? PERSONA_SEND_DEFAULT_MAX_WAIT_MS;
+  private async pollUntilTerminal(
+    taskId: string,
+    maxWaitMs: number = PERSONA_SEND_DEFAULT_MAX_WAIT_MS,
+  ): Promise<Result<PersonaSendOutput, ToolError>> {
     const pollIntervalMs = this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + maxWaitMs;
 
@@ -194,7 +214,7 @@ export class PersonaSendHandler {
     return ok({
       task_id: taskId,
       state: 'timeout',
-      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously.',
+      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
     });
   }
 

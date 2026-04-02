@@ -25,7 +25,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { MCP_TO_INTERNAL } from './tool-filter.js';
-import { HOST_TOOLS_REQUEST_TIMEOUT_MS } from './tool-timeouts.js';
+import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
 
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
@@ -61,8 +61,6 @@ interface BridgeResponse {
   };
   error?: string;
 }
-
-const REQUEST_TIMEOUT_MS = HOST_TOOLS_REQUEST_TIMEOUT_MS;
 
 /** Socket client that maintains a persistent connection to the bridge. */
 class SocketClient {
@@ -153,6 +151,7 @@ class SocketClient {
       primaryExecutionEnvId?: string;
       allowedHostRoots?: string[];
     },
+    timeoutMs: number,
   ): Promise<BridgeResponse['result']> {
     if (!this.connected) {
       await this.connectedPromise;
@@ -181,7 +180,7 @@ class SocketClient {
       const timeout = setTimeout(() => {
         this.pendingRequests.delete(id);
         reject(new Error('Request timeout'));
-      }, REQUEST_TIMEOUT_MS);
+      }, timeoutMs);
 
       this.pendingRequests.set(id, {
         resolve: (response: BridgeResponse) => {
@@ -282,8 +281,30 @@ const TOOLS = [
           type: 'boolean' as const,
           description: 'Wait for the target persona to finish and return its result',
         },
+        timeout_ms: {
+          type: 'integer' as const,
+          description: 'Optional synchronous wait timeout in milliseconds. Default: 300000 (5 minutes).',
+        },
       },
       required: ['target_persona', 'message'],
+    },
+  },
+  {
+    name: 'persona_task_status',
+    description: 'Fetch the status or final result of a delegated task created via persona_send',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        task_id: {
+          type: 'string' as const,
+          description: 'Task ID returned by persona_send',
+        },
+        wait_ms: {
+          type: 'integer' as const,
+          description: 'Optional wait time in milliseconds for the task to reach a terminal state. Default: 0.',
+        },
+      },
+      required: ['task_id'],
     },
   },
   {
@@ -623,6 +644,7 @@ async function main(): Promise<void> {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    const normalizedTool = TOOL_NAME_MAP[name] || name;
 
     // Enforce tool restrictions: reject calls to tools not in the allowed set.
     if (!allowedSet.has(name)) {
@@ -665,7 +687,7 @@ async function main(): Promise<void> {
         ...(backgroundTaskId ? { backgroundTaskId } : {}),
         ...(primaryExecutionEnvId ? { primaryExecutionEnvId } : {}),
         ...(allowedHostRoots ? { allowedHostRoots } : {}),
-      });
+      }, getHostToolRequestTimeoutMs(normalizedTool, args as Record<string, unknown>));
 
       if (!result) {
         return {

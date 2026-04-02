@@ -16,6 +16,7 @@ import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
 import { ChannelSendHandler, type ChannelSendArgs } from './host-tools/channel-send.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
+import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
@@ -27,7 +28,7 @@ import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
-import { HOST_TOOLS_REQUEST_TIMEOUT_MS } from './tool-timeouts.js';
+import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
 
 /** NDJSON request shape from MCP server. */
 interface BridgeRequest {
@@ -47,8 +48,6 @@ interface BridgeResponse {
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
 
-const REQUEST_TIMEOUT_MS = HOST_TOOLS_REQUEST_TIMEOUT_MS;
-
 export class HostToolsBridge {
   private server: net.Server | null = null;
   private readonly socketPath: string;
@@ -56,6 +55,7 @@ export class HostToolsBridge {
   private scheduleHandler: ScheduleManageHandler;
   private channelHandler: ChannelSendHandler;
   private personaSendHandler: PersonaSendHandler | null = null;
+  private personaTaskStatusHandler: PersonaTaskStatusHandler | null = null;
   private personaListHandler: PersonaListHandler;
   private httpHandler: HttpProxyHandler;
   private dbHandler: DbQueryHandler;
@@ -83,6 +83,10 @@ export class HostToolsBridge {
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
         personaRepo: ctx.repos.persona,
+        logger: ctx.logger,
+      });
+      this.personaTaskStatusHandler = new PersonaTaskStatusHandler({
+        taskMapper: ctx.a2aTaskMapper,
         logger: ctx.logger,
       });
     }
@@ -303,6 +307,7 @@ export class HostToolsBridge {
           }
 
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const requestTimeoutMs = getHostToolRequestTimeoutMs(normalizedTool, args);
 
           try {
             const toolResult = await Promise.race([
@@ -314,7 +319,7 @@ export class HostToolsBridge {
                     'host-tools-bridge: request timed out',
                   );
                   reject(new Error('Request timeout'));
-                }, REQUEST_TIMEOUT_MS);
+                }, requestTimeoutMs);
               }),
             ]);
 
@@ -455,6 +460,17 @@ export class HostToolsBridge {
           };
         }
         return this.personaSendHandler.execute(args as unknown as PersonaSendArgs, context);
+
+      case 'persona.task_status':
+        if (!this.personaTaskStatusHandler) {
+          return {
+            requestId: context.requestId ?? 'unknown',
+            tool,
+            status: 'error',
+            error: 'A2A task mapper not initialized',
+          };
+        }
+        return this.personaTaskStatusHandler.execute(args as unknown as PersonaTaskStatusArgs, context);
 
       case 'persona.list':
         return this.personaListHandler.execute({}, context);

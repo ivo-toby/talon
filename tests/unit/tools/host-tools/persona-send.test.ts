@@ -191,6 +191,43 @@ describe('PersonaSendHandler — success', () => {
     });
     expect(taskRepo.findById).toHaveBeenCalledTimes(2);
   });
+
+  it('passes timeout_ms through to the sync wait budget', async () => {
+    vi.useFakeTimers();
+
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const personaRepo = makePersonaRepo();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'working' })),
+    );
+
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      logger: makeLogger(),
+      maxWaitMs: 100,
+      pollIntervalMs: 10,
+    });
+
+    const resultPromise = handler.execute(
+      makeArgs({ await_reply: true, timeout_ms: 250 }),
+      makeContext(),
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    expect(taskRepo.findById).toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(150);
+    const result = await resultPromise;
+
+    expect(result.status).toBe('success');
+    expect(result.result).toEqual({
+      task_id: 'task-123',
+      state: 'timeout',
+      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
+    });
+  });
 });
 
 describe('PersonaSendHandler — hop count propagation', () => {
@@ -249,7 +286,7 @@ describe('PersonaSendHandler — timeout and errors', () => {
     expect(result.result).toEqual({
       task_id: 'task-123',
       state: 'timeout',
-      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously.',
+      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
     });
   });
 
@@ -279,6 +316,22 @@ describe('PersonaSendHandler — timeout and errors', () => {
 
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/message is required/);
+    expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid timeout_ms values', async () => {
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const personaRepo = makePersonaRepo();
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+
+    const result = await handler.execute(
+      makeArgs({ await_reply: true, timeout_ms: 0 }),
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/timeout_ms must be a positive integer/);
     expect(taskMapper.submitTask).not.toHaveBeenCalled();
   });
 });
