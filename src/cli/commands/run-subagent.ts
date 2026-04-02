@@ -23,6 +23,7 @@ export interface RunSubAgentOptions {
   input: string;          // JSON string
   subagentsDir: string;
   providers: Record<string, { apiKey?: string; baseURL?: string }>;
+  subagentOverrides?: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number }> }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,11 +68,32 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
     throw new Error(`Sub-agent "${name}" not found. Available: ${available}`);
   }
 
-  // Resolve model.
+  // Resolve model — try overrides first, then manifest fallback.
   const resolver = new ModelResolver(providers);
-  const modelResult = await resolver.resolve(agent.manifest.model);
-  if (modelResult.isErr()) {
-    throw new Error(`Model resolution failed: ${modelResult.error.message}`);
+  const overrideConfig = options.subagentOverrides?.[name];
+  let resolvedModel;
+
+  if (overrideConfig) {
+    for (const entry of overrideConfig.model) {
+      const result = await resolver.resolve({
+        provider: entry.provider,
+        name: entry.name,
+        maxTokens: entry.maxTokens ?? agent.manifest.model.maxTokens,
+      });
+      if (result.isOk()) {
+        resolvedModel = result.value;
+        break;
+      }
+      logger.warn(`Model ${entry.provider}/${entry.name} failed, trying next`);
+    }
+  }
+
+  if (!resolvedModel) {
+    const modelResult = await resolver.resolve(agent.manifest.model);
+    if (modelResult.isErr()) {
+      throw new Error(`Model resolution failed: ${modelResult.error.message}`);
+    }
+    resolvedModel = modelResult.value;
   }
 
   // Execute with manifest timeout.
@@ -81,7 +103,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
       threadId: 'cli-test',
       personaId: 'cli-test',
       systemPrompt,
-      model: modelResult.value,
+      model: resolvedModel,
       maxOutputTokens: agent.manifest.model.maxTokens,
       rootPaths: agent.manifest.rootPaths,
       services: {
@@ -164,6 +186,7 @@ export async function runSubAgentCommand(options: {
           input: options.input,
           subagentsDir: dir,
           providers: config.auth.providers ?? {},
+          subagentOverrides: config.subagents ?? {},
         });
         console.log(JSON.stringify(result, null, 2));
         return;

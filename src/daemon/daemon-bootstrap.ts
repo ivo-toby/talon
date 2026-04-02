@@ -287,6 +287,7 @@ export async function bootstrap(
       },
       logger,
       observability,
+      config.subagents ?? {},
     );
     logger.info({ subagents: [...agentMap.keys()] }, 'bootstrap: loaded sub-agents');
   } else {
