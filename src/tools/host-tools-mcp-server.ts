@@ -208,7 +208,7 @@ class SocketClient {
 const TOOLS = [
   {
     name: 'schedule_manage',
-    description: 'Creates, updates, cancels, or lists scheduled tasks on behalf of a persona.',
+    description: 'Creates, updates, cancels, or lists scheduled tasks on behalf of a persona. Schedules are durable — persisted in SQLite and survive session resets and daemon restarts. Use this instead of CronCreate/CronDelete, which are session-bound and disappear when the conversation ends.',
     inputSchema: {
       type: 'object' as const,
       properties: {
