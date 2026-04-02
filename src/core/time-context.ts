@@ -41,18 +41,17 @@ export function buildTimeContext(now: Date = new Date()): string {
   // When start and end fall on different days, show both dates.
   const startDate = formatDate(start);
   const endDate = formatDate(end);
-  const dateStr = startDate === endDate
-    ? `on ${startDate}`
-    : `from ${startDate} to ${endDate}`;
+  const dateStr = startDate === endDate ? `on ${startDate}` : `from ${startDate} to ${endDate}`;
 
   // Timezone.
   const offsetMin = now.getTimezoneOffset();
   const offsetSign = offsetMin <= 0 ? '+' : '-';
   const absOffset = Math.abs(offsetMin);
   const utcOffset = `UTC${offsetSign}${pad(Math.floor(absOffset / 60))}:${pad(absOffset % 60)}`;
-  const tzAbbr = Intl.DateTimeFormat('en', { timeZoneName: 'short' })
-    .formatToParts(now)
-    .find((p) => p.type === 'timeZoneName')?.value ?? 'UTC';
+  const tzAbbr =
+    Intl.DateTimeFormat('en', { timeZoneName: 'short' })
+      .formatToParts(now)
+      .find((p) => p.type === 'timeZoneName')?.value ?? 'UTC';
 
-  return `Current time: between ${rangeStart} and ${rangeEnd} ${dateStr} (${tzAbbr}, ${utcOffset})`;
+  return `Current time: between ${rangeStart} and ${rangeEnd} ${dateStr} (${tzAbbr}, ${utcOffset}). If you need precise time you can use the bash-tool.`;
 }
