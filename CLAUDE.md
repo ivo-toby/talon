@@ -43,7 +43,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter   |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                               |
 | Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly             |
-| Tools     | `src/tools/`               | 6 host-tools + capability-based filtering via `tool-filter.ts`      |
+| Tools     | `src/tools/`               | 11 host-tools + capability-based filtering via `tool-filter.ts`     |
 | MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |
 | Personas  | `src/personas/`            | Persona config loading + capability merging                         |
 | Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool) |
