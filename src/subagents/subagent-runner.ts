@@ -25,6 +25,20 @@ import type { ObservabilityService } from '../observability/langfuse/observabili
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 
 // ---------------------------------------------------------------------------
+// Model override types
+// ---------------------------------------------------------------------------
+
+interface ModelOverrideEntry {
+  provider: string;
+  name: string;
+  maxTokens?: number;
+}
+
+interface SubAgentOverrides {
+  model: ModelOverrideEntry[];
+}
+
+// ---------------------------------------------------------------------------
 // Invoke context
 // ---------------------------------------------------------------------------
 
@@ -56,6 +70,7 @@ export class SubAgentRunner {
     services: SubAgentServices,
     logger: pino.Logger,
     observability: ObservabilityService = new NoopObservabilityService(),
+    private readonly subagentOverrides: Record<string, SubAgentOverrides> = {},
   ) {
     this.agents = agents;
     this.modelResolver = modelResolver;
@@ -142,69 +157,111 @@ export class SubAgentRunner {
       );
     }
 
-    try {
-      // 4. Resolve the model
-      const modelResult = await this.modelResolver.resolve(agent.manifest.model);
-      if (modelResult.isErr()) {
-        return err(
-          new ToolError(
-            `Failed to resolve model for sub-agent "${name}": ${modelResult.error.message}`,
-          ),
-        );
+    // 4. Build model chain: config overrides (if any) + manifest fallback
+    const overrideConfig = this.subagentOverrides[name];
+    const modelChain: Array<{ provider: string; name: string; maxTokens: number; source: string }> = [];
+
+    if (overrideConfig) {
+      for (const entry of overrideConfig.model) {
+        modelChain.push({
+          provider: entry.provider,
+          name: entry.name,
+          maxTokens: entry.maxTokens ?? agent.manifest.model.maxTokens,
+          source: 'override',
+        });
       }
+    }
+
+    // Always append manifest model as final fallback
+    modelChain.push({
+      provider: agent.manifest.model.provider,
+      name: agent.manifest.model.name,
+      maxTokens: agent.manifest.model.maxTokens,
+      source: 'manifest',
+    });
+
+    const failures: string[] = [];
+
+    for (const modelEntry of modelChain) {
+      // Resolve model
+      const modelResult = await this.modelResolver.resolve({
+        provider: modelEntry.provider,
+        name: modelEntry.name,
+        maxTokens: modelEntry.maxTokens,
+      });
+
+      if (modelResult.isErr()) {
+        const failMsg = `${modelEntry.provider}/${modelEntry.name} (${modelEntry.source}): ${modelResult.error.message}`;
+        failures.push(failMsg);
+        this.logger.warn(
+          { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}`, source: modelEntry.source },
+          `Model resolution failed, trying next: ${modelResult.error.message}`,
+        );
+        continue;
+      }
+
       const model: LanguageModel = modelResult.value;
-
-      // 5. Build system prompt from prompt fragments
       const systemPrompt = agent.promptContents.join('\n\n');
-
-      // 6. Create a scoped logger for this sub-agent run
       const childLogger = createChildLogger(this.logger, {
         tool: `subagent:${name}`,
         threadId: ctx.threadId,
         persona: ctx.personaId,
       });
 
-      // 7. Call agent.run() with timeout
       const agentContext = {
         threadId: ctx.threadId,
         personaId: ctx.personaId,
         systemPrompt,
         model,
-        maxOutputTokens: agent.manifest.model.maxTokens,
+        maxOutputTokens: modelEntry.maxTokens,
         rootPaths: agent.manifest.rootPaths,
         services: { ...this.services, logger: childLogger },
-        // Enable OTEL telemetry on AI SDK calls so sub-agent LLM generations
-        // appear as child spans under the parent subagent:<name> observation.
-        // The ambient OTEL context (set by observability.observe()) propagates
-        // automatically via AsyncLocalStorage — no traceparent threading needed.
         telemetry: { isEnabled: !(this.observability instanceof NoopObservabilityService) },
       };
 
-      const runResult = await this.runWithTimeout(
-        agent.run(agentContext, input),
-        agent.manifest.timeoutMs,
-        name,
-      );
-
-      // Unwrap the Result from the sub-agent's run function
-      if (runResult.isErr()) {
-        return err(
-          new ToolError(
-            `Sub-agent "${name}" failed: ${runResult.error.message}`,
-            runResult.error,
-          ),
+      try {
+        const runResult = await this.runWithTimeout(
+          agent.run(agentContext, input),
+          agent.manifest.timeoutMs,
+          name,
         );
-      }
 
-      return ok(runResult.value);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return err(
-        error instanceof ToolError
-          ? error
-          : new ToolError(message, error instanceof Error ? error : undefined),
-      );
+        if (runResult.isErr()) {
+          const failMsg = `${modelEntry.provider}/${modelEntry.name} (${modelEntry.source}): ${runResult.error.message}`;
+          failures.push(failMsg);
+          this.logger.warn(
+            { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}` },
+            `Sub-agent run failed, trying next: ${runResult.error.message}`,
+          );
+          continue;
+        }
+
+        if (failures.length > 0) {
+          this.logger.info(
+            { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}`, failedAttempts: failures.length },
+            'Sub-agent succeeded after failover',
+          );
+        }
+
+        return ok(runResult.value);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const failMsg = `${modelEntry.provider}/${modelEntry.name} (${modelEntry.source}): ${message}`;
+        failures.push(failMsg);
+        this.logger.warn(
+          { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}` },
+          `Sub-agent execution threw, trying next: ${message}`,
+        );
+        continue;
+      }
     }
+
+    // All models exhausted
+    return err(
+      new ToolError(
+        `All models failed for sub-agent "${name}":\n  ${failures.map((f, i) => `${i + 1}. ${f}`).join('\n  ')}`,
+      ),
+    );
   }
 
   /**
