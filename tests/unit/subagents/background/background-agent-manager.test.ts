@@ -186,6 +186,42 @@ describe('BackgroundAgentManager', () => {
     expect(task?.pid).toBe(4242);
   });
 
+  it('includes __talond_skill_loader in MCP servers when hasSkills is true', async () => {
+    const manager = createManager();
+
+    await manager.spawn({ ...spawnInput, hasSkills: true, allowedMcpTools: ['channel_send'] });
+
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    expect(mcpServers['__talond_skill_loader']).toBeDefined();
+    expect(mcpServers['__talond_skill_loader']).toMatchObject({
+      transport: 'stdio',
+      command: 'node',
+      env: expect.objectContaining({
+        TALOND_SOCKET: '/tmp/test-host-tools.sock',
+        TALOND_THREAD_ID: 'thread-1',
+        TALOND_PERSONA_ID: 'persona-1',
+      }),
+    });
+  });
+
+  it('does not include __talond_skill_loader when hasSkills is false', async () => {
+    const manager = createManager();
+
+    await manager.spawn({ ...spawnInput, hasSkills: false, allowedMcpTools: ['channel_send'] });
+
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    expect(mcpServers['__talond_skill_loader']).toBeUndefined();
+  });
+
+  it('does not include __talond_skill_loader when hasSkills is omitted', async () => {
+    const manager = createManager();
+
+    await manager.spawn({ ...spawnInput, allowedMcpTools: ['channel_send'] });
+
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    expect(mcpServers['__talond_skill_loader']).toBeUndefined();
+  });
+
   it('builds the append-system-prompt from persona and task context', async () => {
     const manager = createManager();
 

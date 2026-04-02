@@ -30,6 +30,8 @@ export interface SpawnBackgroundAgentInput {
   timeContext?: string;
   /** Resolved tool instruction blocks for the persona's allowed tools. */
   toolInstructions?: string;
+  /** When true, __talond_skill_loader MCP server is added so the agent can lazy-load skills. */
+  hasSkills?: boolean;
   mcpServers: Record<string, CanonicalMcpServer>;
   personaId: string;
   workerPersonaId: string;
@@ -209,6 +211,7 @@ export class BackgroundAgentManager {
       ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
       traceparent: childTraceparent,
       sandboxContext,
+      hasSkills: input.hasSkills ?? false,
     });
 
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
@@ -648,6 +651,7 @@ export class BackgroundAgentManager {
     workingDirectory?: string;
     traceparent?: string;
     sandboxContext: SandboxContext | null;
+    hasSkills: boolean;
   }): Record<string, CanonicalMcpServer> {
     const mcpServers: Record<string, CanonicalMcpServer> = {
       ...options.baseMcpServers,
@@ -679,6 +683,22 @@ export class BackgroundAgentManager {
           : {}),
       },
     };
+
+    if (options.hasSkills) {
+      mcpServers.__talond_skill_loader = {
+        transport: 'stdio',
+        command: 'node',
+        args: [join(import.meta.dirname, '../../../dist/tools/skill-loader-mcp-server.js')],
+        env: {
+          ...process.env,
+          TALOND_SOCKET: this.deps.hostToolsSocketPath,
+          TALOND_RUN_ID: options.taskId,
+          TALOND_THREAD_ID: options.threadId,
+          TALOND_PERSONA_ID: options.workerPersonaId,
+          TALOND_TRACEPARENT: options.traceparent ?? '',
+        },
+      };
+    }
 
     return mcpServers;
   }
