@@ -540,6 +540,59 @@ describe('BackgroundAgentHandler', () => {
       expect(backgroundAgentManager.spawn.mock.calls[0][0].model).toBeUndefined();
     });
 
+    it('does not pass model when persona has model but no explicit provider', async () => {
+      // Scenario: persona has model: "gpt-5.4" (for codex-cli via agentRunner.defaultProvider)
+      // but no explicit provider field. The backgroundAgent.defaultProvider (e.g. claude-code)
+      // would receive the codex model, causing a cross-provider mismatch.
+      const { handler, backgroundAgentManager, deps } = createHandler();
+
+      // Override personaLoader to return a persona with model but NO provider
+      deps.personaLoader.getByName = vi.fn().mockReturnValue(
+        ok({
+          config: { name: 'assistant', skills: [], model: 'gpt-5.4' },
+          systemPromptContent: 'You are an assistant.',
+          personalityContent: null,
+          resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+        }),
+      );
+
+      await handler.execute(
+        { action: 'spawn', prompt: 'Do something' },
+        { runId: 'run-1', threadId: 'thread-1', personaId: 'persona-1', requestId: 'req-1' },
+      );
+
+      expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+        expect.objectContaining({ prompt: 'Do something' }),
+      );
+      // Model must NOT be forwarded — the background default provider may differ
+      expect(backgroundAgentManager.spawn.mock.calls[0][0].model).toBeUndefined();
+    });
+
+    it('passes model when persona has both model and explicit provider', async () => {
+      const { handler, backgroundAgentManager, deps } = createHandler();
+
+      deps.personaLoader.getByName = vi.fn().mockReturnValue(
+        ok({
+          config: { name: 'software-engineer', skills: [], provider: 'codex-cli', model: 'gpt-5.4' },
+          systemPromptContent: 'You are an engineer.',
+          personalityContent: null,
+          resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+        }),
+      );
+
+      await handler.execute(
+        { action: 'spawn', prompt: 'Build a feature' },
+        { runId: 'run-1', threadId: 'thread-1', personaId: 'persona-1', requestId: 'req-1' },
+      );
+
+      expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: 'codex-cli',
+          model: 'gpt-5.4',
+        }),
+      );
+    });
+
     it('uses spawning persona when no profile is given (existing behavior)', async () => {
       const { handler, backgroundAgentManager } = createHandler();
 
