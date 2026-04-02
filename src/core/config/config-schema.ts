@@ -335,6 +335,22 @@ export const LangfuseConfigSchema = z
   });
 
 // ---------------------------------------------------------------------------
+// Sub-agent overrides
+// ---------------------------------------------------------------------------
+
+export const SubAgentModelOverrideSchema = z.object({
+  provider: z.string().min(1),
+  name: z.string().min(1),
+  maxTokens: z.number().int().positive().optional(),
+});
+
+export const SubAgentOverrideSchema = z.object({
+  model: z.array(SubAgentModelOverrideSchema).min(1),
+});
+
+export const SubAgentsConfigSchema = z.record(z.string(), SubAgentOverrideSchema);
+
+// ---------------------------------------------------------------------------
 // Root config
 // ---------------------------------------------------------------------------
 
@@ -352,6 +368,7 @@ export const TalondConfigSchema = z.object({
   backgroundAgent: BackgroundAgentConfigSchema.default(() => BackgroundAgentConfigSchema.parse({})),
   sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
   langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
+  subagents: SubAgentsConfigSchema.default({}),
   logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   dataDir: z.string().default('data'),
 });

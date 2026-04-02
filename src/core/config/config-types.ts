@@ -26,6 +26,8 @@ import type {
   BackgroundAgentConfigSchema,
   LangfuseConfigSchema,
   ProviderConfigSchema,
+  SubAgentsConfigSchema,
+  SubAgentModelOverrideSchema,
 } from './config-schema.js';
 
 /** The full daemon configuration, validated and frozen at startup. */
@@ -90,3 +92,9 @@ export type SpritesConfig = z.infer<typeof SpritesConfigSchema>;
 
 /** Langfuse Cloud observability settings. */
 export type LangfuseConfig = z.infer<typeof LangfuseConfigSchema>;
+
+/** Per-subagent model override configuration. */
+export type SubAgentsConfig = z.infer<typeof SubAgentsConfigSchema>;
+
+/** A single model entry in a subagent override chain. */
+export type SubAgentModelOverride = z.infer<typeof SubAgentModelOverrideSchema>;
