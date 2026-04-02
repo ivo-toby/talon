@@ -250,12 +250,16 @@ export class BackgroundAgentHandler {
       );
     }
 
-    // Only forward the persona's model when no explicit provider override was given.
-    // When the user passes an explicit provider, the persona's model name may be
-    // invalid for that provider (e.g. "claude-opus-4-6" on gemini-cli).
-    // When no explicit override is given the resolved provider comes from the persona
-    // config itself (or daemon default), so the persona's model is expected to match.
-    const shouldForwardModel = !explicitProvider && !!loadedPersona.config.model;
+    // Only forward the persona's model when:
+    // 1. No explicit provider override was given in the tool args, AND
+    // 2. The persona itself has an explicit provider configured.
+    //
+    // When the persona has no provider, the background agent falls back to
+    // backgroundAgent.defaultProvider, which may differ from the agentRunner's
+    // default. Forwarding the persona's model (configured for the agent-runner
+    // provider) to a different background provider causes cross-provider model
+    // mismatches (e.g. "gpt-5.4" sent to claude-code).
+    const shouldForwardModel = !explicitProvider && !!personaProvider && !!loadedPersona.config.model;
 
     const toolInstructionsBlock = resolveToolInstructions(
       this.deps.toolInstructions,
