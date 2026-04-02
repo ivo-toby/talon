@@ -222,6 +222,14 @@ export class SlackConnector implements ChannelConnector {
     return markdownToSlackMrkdwn(markdown);
   }
 
+  get botUserId(): string | undefined {
+    return undefined; // Slack already filters all bot messages via bot_id field
+  }
+
+  setSiblingBotIds(_ids: Set<string>): void {
+    // No-op: Slack connector already drops all messages with bot_id set.
+  }
+
   // ---------------------------------------------------------------------------
   // Inbound event ingestion
   // ---------------------------------------------------------------------------

@@ -203,6 +203,14 @@ export class DiscordConnector implements ChannelConnector {
     return markdownToDiscord(markdown);
   }
 
+  get botUserId(): string | undefined {
+    return undefined; // Discord already filters all bot messages via author.bot
+  }
+
+  setSiblingBotIds(_ids: Set<string>): void {
+    // No-op: Discord connector already drops all messages from bot authors.
+  }
+
   // ---------------------------------------------------------------------------
   // Internal — message handling
   // ---------------------------------------------------------------------------

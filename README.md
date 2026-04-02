@@ -710,6 +710,67 @@ The client provides:
 
 ---
 
+## Multi-Connector Setup
+
+You can run N connector instances of the same channel type — for example, multiple Slack bots — each with its own credentials and default persona binding. Channels are identified by `name` (unique), not by `type`.
+
+### Use cases
+
+- **Virtual team** — deploy per-persona bots in a single Slack workspace: PM-bot, Dev-bot, Content-bot, each responding in character.
+- **Per-persona Telegram bots** — multiple bots in a shared group, each bound to a different persona.
+
+### Configuration
+
+Add multiple entries of the same `type` under `channels:`, give each a unique `name`, and create a `bindings:` entry for each:
+
+```yaml
+channels:
+  - name: slack-pm
+    type: slack
+    enabled: true
+    config:
+      botToken: ${SLACK_PM_BOT_TOKEN}
+      appToken: ${SLACK_PM_APP_TOKEN}
+      signingSecret: ${SLACK_PM_SIGNING_SECRET}
+
+  - name: slack-dev
+    type: slack
+    enabled: true
+    config:
+      botToken: ${SLACK_DEV_BOT_TOKEN}
+      appToken: ${SLACK_DEV_APP_TOKEN}
+      signingSecret: ${SLACK_DEV_SIGNING_SECRET}
+
+bindings:
+  - persona: product-manager
+    channel: slack-pm
+    isDefault: true
+  - persona: developer
+    channel: slack-dev
+    isDefault: true
+```
+
+### Bot-self filtering
+
+Connectors automatically filter inbound messages from all bot accounts to prevent feedback loops — no configuration needed:
+
+- **Slack** — drops all messages with a `bot_id` field.
+- **Discord** — drops all messages from `author.bot` accounts.
+- **Telegram** — drops all messages where `from.is_bot` is true.
+- **WhatsApp Baileys** — filters via JID-based self-detection.
+
+WhatsApp Business (Cloud API) does not implement bot-self filtering; avoid running multiple Talon bots that share the same WhatsApp Business account.
+
+### Channel routing
+
+The `channel_send` tool routes by channel `name`, so a persona bound to `slack-pm` posts through the PM bot identity and a persona bound to `slack-dev` posts through the Dev bot identity.
+
+### WhatsApp note
+
+If you run multiple WhatsApp Business connectors with inbound webhooks, each must use a unique `webhookPort`.
+
+---
+
 ## Personas
 
 A persona defines an AI agent's identity, capabilities, and channel bindings. Bindings are managed separately via `talonctl bind`.

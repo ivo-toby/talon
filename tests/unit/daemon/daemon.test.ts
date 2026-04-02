@@ -30,6 +30,7 @@ vi.mock('../../../src/daemon/lifecycle.js', () => ({
 
 vi.mock('../../../src/channels/channel-setup.js', () => ({
   registerChannels: vi.fn(),
+  injectSiblingBotIds: vi.fn(),
 }));
 
 vi.mock('../../../src/skills/skill-loader.js', () => ({
@@ -46,6 +47,7 @@ import { TalondDaemon } from '../../../src/daemon/daemon.js';
 import { bootstrap } from '../../../src/daemon/daemon-bootstrap.js';
 import { loadConfig } from '../../../src/core/config/config-loader.js';
 import { writePidFile, removePidFile } from '../../../src/daemon/lifecycle.js';
+import { injectSiblingBotIds } from '../../../src/channels/channel-setup.js';
 import { DaemonError } from '../../../src/core/errors/index.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { createDiscardLogger } from './helpers.js';
@@ -240,6 +242,14 @@ describe('TalondDaemon', () => {
       await daemon.start('/config.yaml');
 
       expect(ctx.channelRegistry.startAll).toHaveBeenCalledOnce();
+    });
+
+    it('injects sibling bot IDs after starting channel connectors', async () => {
+      setupSuccessfulBootstrap();
+
+      await daemon.start('/config.yaml');
+
+      expect(injectSiblingBotIds).toHaveBeenCalledOnce();
     });
 
     it('starts queue processing after bootstrap', async () => {
@@ -569,6 +579,17 @@ describe('TalondDaemon', () => {
 
       expect(result.isOk()).toBe(true);
       expect(daemon.state).toBe('running');
+    });
+
+    it('injects sibling bot IDs after restarting channel connectors on reload', async () => {
+      const ctx = setupSuccessfulBootstrap();
+      await daemon.start('/config.yaml');
+      vi.mocked(injectSiblingBotIds).mockClear();
+
+      vi.mocked(loadConfig).mockReturnValue(ok(ctx.config as any));
+      await daemon.reload();
+
+      expect(injectSiblingBotIds).toHaveBeenCalledOnce();
     });
   });
 

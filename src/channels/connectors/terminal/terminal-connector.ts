@@ -179,6 +179,14 @@ export class TerminalConnector implements ChannelConnector {
     return markdown;
   }
 
+  get botUserId(): string | undefined {
+    return undefined;
+  }
+
+  setSiblingBotIds(_ids: Set<string>): void {
+    // No-op: terminal connector is single-user.
+  }
+
   // -------------------------------------------------------------------------
   // Connection handling
   // -------------------------------------------------------------------------

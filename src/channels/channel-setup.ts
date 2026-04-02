@@ -13,7 +13,7 @@ import type { ChannelRepository } from '../core/database/repositories/channel-re
 import type { BindingRepository } from '../core/database/repositories/binding-repository.js';
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
 import type { ChannelRegistry } from './channel-registry.js';
-import type { InboundEvent } from './channel-types.js';
+import type { ChannelConnector, InboundEvent } from './channel-types.js';
 import type { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { createConnector } from '../daemon/channel-factory.js';
 
@@ -121,6 +121,40 @@ export function registerChannels(
       personaRepo,
       logger,
     });
+  }
+}
+
+/**
+ * After all connectors have started and resolved their bot identities,
+ * inject sibling bot ID sets so each connector can filter messages from
+ * other Talon bots of the same type in the same workspace.
+ */
+export function injectSiblingBotIds(registry: ChannelRegistry, logger: pino.Logger): void {
+  const byType = new Map<string, ChannelConnector[]>();
+  for (const connector of registry.listAll()) {
+    const group = byType.get(connector.type) ?? [];
+    group.push(connector);
+    byType.set(connector.type, group);
+  }
+
+  for (const [type, connectors] of byType) {
+    if (connectors.length < 2) continue;
+
+    const botIds = new Set<string>();
+    for (const c of connectors) {
+      if (c.botUserId) botIds.add(c.botUserId);
+    }
+
+    if (botIds.size === 0) continue;
+
+    for (const c of connectors) {
+      c.setSiblingBotIds?.(botIds);
+    }
+
+    logger.info(
+      { type, connectorCount: connectors.length, botIdCount: botIds.size },
+      'channel-setup: injected sibling bot IDs',
+    );
   }
 }
 

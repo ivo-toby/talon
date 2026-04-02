@@ -23,7 +23,7 @@ import { bootstrap } from './daemon-bootstrap.js';
 import { AgentRunner } from './agent-runner.js';
 import { writePidFile, removePidFile } from './lifecycle.js';
 import { WatchdogNotifier } from './watchdog.js';
-import { registerChannels } from '../channels/channel-setup.js';
+import { registerChannels, injectSiblingBotIds } from '../channels/channel-setup.js';
 
 import type { DaemonContext } from './daemon-context.js';
 import type { DaemonState, DaemonHealth } from './daemon-types.js';
@@ -107,6 +107,9 @@ export class TalondDaemon {
         'daemon: one or more channel connectors failed to start — continuing without them',
       );
     }
+
+    // Inject sibling bot IDs for multi-connector self-filtering.
+    injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
     // 5. Start queue processing.
     this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
@@ -366,6 +369,7 @@ export class TalondDaemon {
         'daemon: one or more channel connectors failed to start — continuing without them',
       );
     }
+    injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
     this.agentRunner = new AgentRunner(this.ctx);

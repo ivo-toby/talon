@@ -55,6 +55,27 @@ channels:
   #     selfChat: true                   # Listen only to your "Message Yourself" thread
   #     triggerWords: ['@Talon']         # Optional — require trigger word to activate
 
+  # --- Multi-connector example (multiple Slack bots in one workspace) ---
+  # Each entry creates an independent bot with its own credentials.
+  # Messages between Talon bots in the same workspace are automatically
+  # filtered to prevent feedback loops.
+  #
+  # - name: slack-pm
+  #   type: slack
+  #   enabled: true
+  #   config:
+  #     botToken: ${SLACK_PM_BOT_TOKEN}
+  #     appToken: ${SLACK_PM_APP_TOKEN}
+  #     signingSecret: ${SLACK_PM_SIGNING_SECRET}
+  #
+  # - name: slack-dev
+  #   type: slack
+  #   enabled: true
+  #   config:
+  #     botToken: ${SLACK_DEV_BOT_TOKEN}
+  #     appToken: ${SLACK_DEV_APP_TOKEN}
+  #     signingSecret: ${SLACK_DEV_SIGNING_SECRET}
+
 # Personas can also be used as profiles for background agents.
 # When spawning a background agent with profile="<name>", the named persona's
 # system prompt, model, provider, and skills are used instead of the spawning

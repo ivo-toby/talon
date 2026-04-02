@@ -266,6 +266,14 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     return markdownToWhatsApp(markdown);
   }
 
+  get botUserId(): string | undefined {
+    return this.selfIds.values().next().value; // First self-JID, if resolved
+  }
+
+  setSiblingBotIds(_ids: Set<string>): void {
+    // No-op: WhatsApp Baileys uses JID-based self-filtering via selfIds set.
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------

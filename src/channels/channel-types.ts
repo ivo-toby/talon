@@ -109,6 +109,22 @@ export interface ChannelConnector {
   readonly name: string;
 
   /**
+   * The resolved bot/service user ID for this connector instance.
+   * Set during start() by connectors that can resolve their own identity
+   * (e.g. Slack auth.test, Telegram getMe). Undefined if not yet started
+   * or if the connector type has no bot identity concept.
+   */
+  readonly botUserId?: string;
+
+  /**
+   * Provides the set of sibling bot user IDs (same connector type) to
+   * filter out from inbound messages. Called by channel-setup after all
+   * connectors have started. Connectors that don't need filtering can
+   * implement this as a no-op.
+   */
+  setSiblingBotIds?(ids: Set<string>): void;
+
+  /**
    * Start the connector — open webhooks, begin polling, etc.
    * Must be idempotent (safe to call when already started).
    */
