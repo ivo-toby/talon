@@ -15,6 +15,7 @@ import {
   formatMissingTalonSkillError,
 } from '../skills/skill-runtime-text.js';
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
+import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import type {
   AgentUsage,
@@ -318,17 +319,8 @@ export class AgentRunner {
               .filter(Boolean)
               .join('\n');
 
-            // Generate fresh timestamp per run so the agent can reason about time.
-            const now_ = new Date();
-            const pad = (n: number): string => String(n).padStart(2, '0');
-            const offsetMin = now_.getTimezoneOffset();
-            const offsetSign = offsetMin <= 0 ? '+' : '-';
-            const absOffset = Math.abs(offsetMin);
-            const offsetStr = `${offsetSign}${pad(Math.floor(absOffset / 60))}:${pad(absOffset % 60)}`;
-            const localISO = `${now_.getFullYear()}-${pad(now_.getMonth() + 1)}-${pad(now_.getDate())}T${pad(now_.getHours())}:${pad(now_.getMinutes())}:${pad(now_.getSeconds())}${offsetStr}`;
-            const tzAbbr = Intl.DateTimeFormat('en', { timeZoneName: 'short' }).formatToParts(now_).find((p) => p.type === 'timeZoneName')?.value ?? 'UTC';
-            const dayName = now_.toLocaleDateString('en', { weekday: 'long' });
-            const timeContext = `Current time: ${localISO} (${tzAbbr}, ${dayName})`;
+            // Generate a cache-friendly time context (10-min window instead of exact timestamp).
+            const timeContext = buildTimeContext();
             const existingSessionId = strategy.supportsSessionResumption ? resolvedSessionId : undefined;
 
             const baseMcpServers: Record<string, CanonicalMcpServer> = {
