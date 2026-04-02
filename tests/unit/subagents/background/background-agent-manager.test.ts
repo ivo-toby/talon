@@ -222,6 +222,18 @@ describe('BackgroundAgentManager', () => {
     expect(mcpServers['__talond_skill_loader']).toBeUndefined();
   });
 
+  it('includes __talond_skill_loader even when allowedMcpTools is empty', async () => {
+    // A persona may have skills but no host-tool capabilities — the skill loader
+    // must still be mounted so lazy skill_load calls succeed.
+    const manager = createManager();
+
+    await manager.spawn({ ...spawnInput, hasSkills: true, allowedMcpTools: [] });
+
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    expect(mcpServers['__talond_skill_loader']).toBeDefined();
+    expect(mcpServers['__talond_host_tools']).toBeUndefined();
+  });
+
   it('builds the append-system-prompt from persona and task context', async () => {
     const manager = createManager();
 
