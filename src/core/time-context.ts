@@ -8,6 +8,9 @@
  *
  * The window is stable for 10 minutes, allowing provider-side prompt caching
  * to work effectively while still giving the agent useful time awareness.
+ *
+ * When the window crosses midnight, the end date advances to the next day so
+ * the agent gets consistent today/tomorrow reasoning.
  */
 
 const WINDOW_MINUTES = 10;
@@ -17,21 +20,30 @@ export function buildTimeContext(now: Date = new Date()): string {
 
   // Round down to nearest WINDOW_MINUTES boundary.
   const floorMinutes = Math.floor(now.getMinutes() / WINDOW_MINUTES) * WINDOW_MINUTES;
-  const ceilMinutes = floorMinutes + WINDOW_MINUTES;
 
-  const hours = now.getHours();
-  const rangeStart = `${pad(hours)}:${pad(floorMinutes)}`;
+  // Build start of window from `now` with minutes floored and seconds zeroed.
+  const start = new Date(now);
+  start.setMinutes(floorMinutes, 0, 0);
 
-  // Handle hour rollover (e.g. 17:50 → 18:00).
-  const endHours = ceilMinutes >= 60 ? hours + 1 : hours;
-  const endMinutes = ceilMinutes >= 60 ? 0 : ceilMinutes;
-  const rangeEnd = `${pad(endHours % 24)}:${pad(endMinutes)}`;
+  // Build end of window by adding WINDOW_MINUTES. This correctly handles
+  // hour rollover AND midnight crossing (the Date object advances the day).
+  const end = new Date(start);
+  end.setMinutes(start.getMinutes() + WINDOW_MINUTES);
 
-  // Date parts.
-  const year = now.getFullYear();
-  const month = pad(now.getMonth() + 1);
-  const day = pad(now.getDate());
-  const dayName = now.toLocaleDateString('en', { weekday: 'long' });
+  const rangeStart = `${pad(start.getHours())}:${pad(start.getMinutes())}`;
+  const rangeEnd = `${pad(end.getHours())}:${pad(end.getMinutes())}`;
+
+  const formatDate = (d: Date): string => {
+    const dayName = d.toLocaleDateString('en', { weekday: 'long' });
+    return `${dayName} ${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  // When start and end fall on different days, show both dates.
+  const startDate = formatDate(start);
+  const endDate = formatDate(end);
+  const dateStr = startDate === endDate
+    ? `on ${startDate}`
+    : `from ${startDate} to ${endDate}`;
 
   // Timezone.
   const offsetMin = now.getTimezoneOffset();
@@ -42,5 +54,5 @@ export function buildTimeContext(now: Date = new Date()): string {
     .formatToParts(now)
     .find((p) => p.type === 'timeZoneName')?.value ?? 'UTC';
 
-  return `Current time: between ${rangeStart} and ${rangeEnd} on ${dayName} ${year}-${month}-${day} (${tzAbbr}, ${utcOffset})`;
+  return `Current time: between ${rangeStart} and ${rangeEnd} ${dateStr} (${tzAbbr}, ${utcOffset})`;
 }
