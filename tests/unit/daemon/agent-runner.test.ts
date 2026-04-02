@@ -906,7 +906,11 @@ describe('AgentRunner', () => {
       // Should have passed the DB session to the agent SDK
       const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
       expect(queryCall.options.resume).toBe('session-from-db');
-      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'claude-code');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'claude-code',
+        { excludeCollaboration: true },
+      );
       expect(ctx.observability.observe).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
         expect.any(Function),
@@ -1089,7 +1093,7 @@ describe('AgentRunner', () => {
       expect(result.isOk()).toBe(true);
       expect(ctx.repos.run.getLatestProviderName).toHaveBeenCalledWith(
         'thread-001',
-        { sinceCreatedAt: 500 },
+        { sinceCreatedAt: 500, excludeCollaboration: true },
       );
       expect(ctx.sessionTracker.clearSession).toHaveBeenCalledWith('thread-001', 'claude-code');
       expect(ctx.sessionTracker.getSessionId).not.toHaveBeenCalled();
@@ -1220,7 +1224,11 @@ describe('AgentRunner', () => {
 
       expect(result.isOk()).toBe(true);
       expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
-      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'codex-cli',
+        { excludeCollaboration: true },
+      );
       expect(cliRun).toHaveBeenCalledWith(expect.not.objectContaining({
         sessionId: expect.anything(),
       }));
@@ -1276,7 +1284,11 @@ describe('AgentRunner', () => {
 
       expect(result.isOk()).toBe(true);
       expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
-      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'resumable-cli',
+        { excludeCollaboration: true },
+      );
       expect(cliRun).toHaveBeenCalledWith(
         expect.objectContaining({
           threadId: 'thread-001',
@@ -1528,6 +1540,45 @@ describe('AgentRunner', () => {
         }),
       );
       expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith('a2a-task-2', 'Hello from the agent!');
+    });
+
+    it('ignores collaboration runs when selecting provider affinity for normal messages', async () => {
+      vi.mocked(ctx.repos.run.getLatestProviderName).mockImplementation(
+        (_threadId: string, options?: { excludeCollaboration?: boolean }) =>
+          ok(options?.excludeCollaboration ? null : 'codex-cli'),
+      );
+      const getDefault = vi.fn().mockReturnValue({
+        provider: {
+          name: 'claude-code',
+          createExecutionStrategy: () => ({
+            type: 'sdk' as const,
+            supportsSessionResumption: true as const,
+            run: () => makeProviderStream(),
+          }),
+          prepareBackgroundInvocation: vi.fn(),
+          parseBackgroundResult: vi.fn(),
+          estimateContextUsage: vi.fn().mockReturnValue({
+            inputTokens: 0,
+            metrics: {
+              cache_read_input_tokens: 0,
+            },
+          }),
+        },
+        config: makeAgentRunnerProviderConfig(),
+      });
+      ctx.providerRegistry = {
+        get: vi.fn().mockReturnValue(undefined),
+        getDefault,
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.repos.run.getLatestProviderName).toHaveBeenCalledWith(
+        'thread-001',
+        { excludeCollaboration: true },
+      );
+      expect(getDefault).toHaveBeenCalledWith(['claude-code']);
     });
   });
 

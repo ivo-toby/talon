@@ -13,6 +13,7 @@ import type { PersonaRepository } from '../../core/database/repositories/persona
 import { ToolError } from '../../core/errors/error-types.js';
 import type { ToolCallResult, ToolManifest } from '../tool-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
+import { PERSONA_SEND_DEFAULT_MAX_WAIT_MS } from '../tool-timeouts.js';
 
 export interface PersonaSendTool {
   readonly manifest: ToolManifest;
@@ -35,7 +36,6 @@ interface PersonaSendOutput {
 
 // Must be less than the bridge REQUEST_TIMEOUT_MS (30_000) so polling always
 // returns a clean timeout result before the transport layer cuts the connection.
-const DEFAULT_MAX_WAIT_MS = 25_000;
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const TERMINAL_STATES = new Set<A2ATaskState>(['completed', 'failed', 'canceled', 'input-required']);
 
@@ -161,7 +161,7 @@ export class PersonaSendHandler {
   }
 
   private async pollUntilTerminal(taskId: string): Promise<Result<PersonaSendOutput, ToolError>> {
-    const maxWaitMs = this.deps.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
+    const maxWaitMs = this.deps.maxWaitMs ?? PERSONA_SEND_DEFAULT_MAX_WAIT_MS;
     const pollIntervalMs = this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + maxWaitMs;
 
@@ -194,6 +194,7 @@ export class PersonaSendHandler {
     return ok({
       task_id: taskId,
       state: 'timeout',
+      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously.',
     });
   }
 

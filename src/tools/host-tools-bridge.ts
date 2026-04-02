@@ -27,6 +27,7 @@ import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
+import { HOST_TOOLS_REQUEST_TIMEOUT_MS } from './tool-timeouts.js';
 
 /** NDJSON request shape from MCP server. */
 interface BridgeRequest {
@@ -46,7 +47,7 @@ interface BridgeResponse {
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
 
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = HOST_TOOLS_REQUEST_TIMEOUT_MS;
 
 export class HostToolsBridge {
   private server: net.Server | null = null;

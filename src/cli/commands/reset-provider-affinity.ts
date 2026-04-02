@@ -89,7 +89,7 @@ export async function resetProviderAffinity(
   }
 
   const runRepo = new RunRepository(options.db);
-  const latestRun = runRepo.findLatestByThread(thread.value.id);
+  const latestRun = runRepo.findLatestByThread(thread.value.id, { excludeCollaboration: true });
   if (latestRun.isErr()) {
     throw new Error(`Database error looking up latest run: ${latestRun.error.message}`);
   }

@@ -136,4 +136,72 @@ describe('resetProviderAffinity()', () => {
     expect(warning).toContain('This keeps run history intact');
     expect(warning).toContain('list-threads');
   });
+
+  it('builds the preview from non-collaboration thread history', async () => {
+    const queue = db.prepare(`
+      INSERT INTO queue_items
+        (id, thread_id, message_id, type, status, attempts, max_attempts, next_retry_at, error, payload, claimed_at, created_at, updated_at)
+      VALUES
+        (?, ?, NULL, ?, 'completed', 0, 3, NULL, NULL, '{}', NULL, ?, ?)
+    `);
+    const messageQueueId = uuid();
+    const collaborationQueueId = uuid();
+    queue.run(messageQueueId, threadId, 'message', 10, 10);
+    queue.run(collaborationQueueId, threadId, 'collaboration', 20, 20);
+
+    const runs = new RunRepository(db);
+    const messageRun = runs.insert({
+      id: uuid(),
+      thread_id: threadId,
+      persona_id: personaId,
+      provider_name: 'claude-code',
+      sandbox_id: null,
+      session_id: null,
+      status: 'completed',
+      parent_run_id: null,
+      queue_item_id: messageQueueId,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      error: null,
+      started_at: null,
+      ended_at: null,
+    })._unsafeUnwrap();
+    const collaborationRun = runs.insert({
+      id: uuid(),
+      thread_id: threadId,
+      persona_id: personaId,
+      provider_name: 'codex-cli',
+      sandbox_id: null,
+      session_id: null,
+      status: 'failed',
+      parent_run_id: null,
+      queue_item_id: collaborationQueueId,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      error: null,
+      started_at: null,
+      ended_at: null,
+    })._unsafeUnwrap();
+    db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, messageRun.id);
+    db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, collaborationRun.id);
+
+    const result = await resetProviderAffinity({
+      channel: 'tg',
+      externalId: 'chat-123',
+      db,
+      now: () => 999,
+      confirm: vi.fn().mockResolvedValue(false),
+    });
+
+    expect(result.aborted).toBe(true);
+    expect(result.lastProviderName).toBe('claude-code');
+    expect(result.lastRunStatus).toBe('completed');
+    expect(result.lastActivityAt).toBe(100);
+  });
 });

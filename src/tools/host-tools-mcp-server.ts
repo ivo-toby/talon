@@ -25,6 +25,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 import { MCP_TO_INTERNAL } from './tool-filter.js';
+import { HOST_TOOLS_REQUEST_TIMEOUT_MS } from './tool-timeouts.js';
 
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
@@ -61,7 +62,7 @@ interface BridgeResponse {
   error?: string;
 }
 
-const REQUEST_TIMEOUT_MS = 30_000;
+const REQUEST_TIMEOUT_MS = HOST_TOOLS_REQUEST_TIMEOUT_MS;
 
 /** Socket client that maintains a persistent connection to the bridge. */
 class SocketClient {

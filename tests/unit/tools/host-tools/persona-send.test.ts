@@ -246,7 +246,11 @@ describe('PersonaSendHandler — timeout and errors', () => {
     const result = await resultPromise;
 
     expect(result.status).toBe('success');
-    expect(result.result).toEqual({ task_id: 'task-123', state: 'timeout' });
+    expect(result.result).toEqual({
+      task_id: 'task-123',
+      state: 'timeout',
+      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously.',
+    });
   });
 
   it('unknown target persona (submitTask returns err) returns error result', async () => {
