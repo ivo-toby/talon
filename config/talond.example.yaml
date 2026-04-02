@@ -210,5 +210,23 @@ langfuse:
   # flushAt: 20                   # spans buffered before flush
   # flushIntervalSeconds: 5       # max seconds between flushes
 
+# Sub-agent model overrides — override which model a sub-agent uses without
+# editing its subagent.yaml manifest. Each entry is an ordered failover chain:
+# if the first model is unavailable, the next is tried, then the manifest
+# default as final fallback.
+#
+# subagents:
+#   memory-groomer:
+#     model:
+#       - provider: ollama
+#         name: qwen3-30b
+#         # maxTokens: 4096     # optional — falls back to subagent.yaml default
+#       - provider: anthropic
+#         name: claude-haiku-4-5
+#   session-summarizer:
+#     model:
+#       - provider: openai
+#         name: gpt-5.4-spark
+
 logLevel: info
 dataDir: data

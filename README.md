@@ -919,6 +919,34 @@ Sub-agents solve this by offloading specific, well-scoped tasks to cheap models.
 4. The sub-agent's `run()` function executes with a system prompt, model, and injected services
 5. Results flow back to the main agent as structured data
 
+### Model Overrides and Failover
+
+By default, each sub-agent uses the model declared in its `subagent.yaml` manifest. Operators can override this in `talond.yaml` without editing manifests, and configure an ordered failover chain so if the primary model is unavailable, the next is tried automatically.
+
+```yaml
+subagents:
+  memory-groomer:
+    model:
+      - provider: ollama
+        name: qwen3-30b
+        # maxTokens: 4096   # optional — falls back to subagent.yaml default
+      - provider: anthropic
+        name: claude-haiku-4-5
+  session-summarizer:
+    model:
+      - provider: openai
+        name: gpt-5.4-spark
+```
+
+**How failover works:**
+
+1. The runner tries each model in the `model` array in order
+2. If a model fails (missing credentials, provider down, runtime error), it logs a warning and tries the next
+3. After exhausting the override list, the manifest's `model` is tried as a final fallback
+4. If all models fail, the error includes a summary of each attempt and why it failed
+
+Sub-agents with no entry in `subagents:` use their manifest model unchanged. The `maxTokens` field is optional per override entry — when omitted, the manifest's `maxTokens` is used.
+
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
 1. **Built-in** (`dist/subagents/default/`) — ships with the daemon
