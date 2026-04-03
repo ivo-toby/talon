@@ -120,16 +120,10 @@ export class SlackConnector implements ChannelConnector {
       const data = (await response.json()) as { ok: boolean; user_id?: string };
       if (data.ok && data.user_id) {
         if (this.config.botUserId && this.config.botUserId !== data.user_id) {
-          this.logger.error(
-            {
-              channelName: this.name,
-              configured: this.config.botUserId,
-              actual: data.user_id,
-            },
-            'slack botUserId mismatch — configured ID does not match auth.test result; check that the correct botToken is paired with the correct botUserId',
-          );
           this.running = false;
-          return;
+          throw new ChannelError(
+            `Slack botUserId mismatch on channel "${this.name}": configured ${this.config.botUserId} but auth.test returned ${data.user_id}. Check that the correct botToken is paired with the correct botUserId.`,
+          );
         }
         this._botUserId = data.user_id;
         this.logger.info(
@@ -152,6 +146,9 @@ export class SlackConnector implements ChannelConnector {
         }
       }
     } catch (authErr) {
+      // Re-throw intentional errors (e.g. botUserId mismatch).
+      if (authErr instanceof ChannelError) throw authErr;
+
       if (this.config.botUserId) {
         this._botUserId = this.config.botUserId;
         this.logger.warn(
@@ -366,8 +363,12 @@ export class SlackConnector implements ChannelConnector {
     // --- @mention filtering for shared channels ---
     // When the bot identity is known, enforce mention-based routing in
     // channels and groups (C/G prefixed IDs). DMs (D prefix) always pass.
+    // Thread replies (thread_ts present) also pass — once a bot is engaged
+    // in a thread via @mention, follow-up replies should not require
+    // re-mentioning on every message.
     const channelId = message.channel;
-    if (this._botUserId && channelId && !channelId.startsWith('D')) {
+    const threadTs = message.thread_ts;
+    if (this._botUserId && channelId && !channelId.startsWith('D') && !threadTs) {
       const mentions = extractMentionedUserIds(message.text);
       if (mentions.size > 0 && !mentions.has(this._botUserId)) {
         // Message @mentions one or more bots, but not this one — skip.
@@ -387,7 +388,6 @@ export class SlackConnector implements ChannelConnector {
         return;
       }
     }
-    const threadTs = message.thread_ts;
 
     // Build a compound external thread ID that encodes both channel and thread.
     const externalThreadId = threadTs ? encodeThreadId(channelId, threadTs) : channelId;
