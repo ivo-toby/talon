@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import pino from 'pino';
-import { SlackConnector, encodeThreadId, decodeThreadId } from '../../../../../src/channels/connectors/slack/slack-connector.js';
+import { SlackConnector, encodeThreadId, decodeThreadId, extractMentionedUserIds } from '../../../../../src/channels/connectors/slack/slack-connector.js';
 import type { SlackConfig } from '../../../../../src/channels/connectors/slack/slack-types.js';
 import type { InboundEvent } from '../../../../../src/channels/channel-types.js';
 
@@ -561,6 +561,236 @@ describe('decodeThreadId', () => {
 });
 
 // ---------------------------------------------------------------------------
+// extractMentionedUserIds
+// ---------------------------------------------------------------------------
+
+describe('extractMentionedUserIds', () => {
+  it('returns empty set for text with no mentions', () => {
+    expect(extractMentionedUserIds('hello world')).toEqual(new Set());
+  });
+
+  it('extracts a single mention', () => {
+    expect(extractMentionedUserIds('hey <@U111> do this')).toEqual(new Set(['U111']));
+  });
+
+  it('extracts multiple mentions', () => {
+    expect(extractMentionedUserIds('<@U111> and <@U222> check this')).toEqual(
+      new Set(['U111', 'U222']),
+    );
+  });
+
+  it('deduplicates repeated mentions', () => {
+    expect(extractMentionedUserIds('<@U111> <@U111>')).toEqual(new Set(['U111']));
+  });
+
+  it('does not match channel or group mentions', () => {
+    expect(extractMentionedUserIds('<!channel> <!here>')).toEqual(new Set());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// @mention filtering in feedEvent
+// ---------------------------------------------------------------------------
+
+describe('SlackConnector — @mention filtering', () => {
+  /**
+   * Helper: create a connector with a pre-set bot user ID by reaching into
+   * the private field. This avoids needing to mock auth.test for every test.
+   */
+  function connectorWithBotId(botUserId: string): SlackConnector {
+    const c = new SlackConnector(defaultConfig(), 'test-mentions', silentLogger());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (c as any)._botUserId = botUserId;
+    return c;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('processes DMs regardless of mentions', async () => {
+    const connector = connectorWithBotId('UBOT12345');
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    // DM channels start with 'D'.
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'D01234567',
+      text: 'hey, no mention here',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(1);
+  });
+
+  it('processes channel messages that @mention this bot', async () => {
+    const connector = connectorWithBotId('UBOT12345');
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: '<@UBOT12345> fix the build',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(1);
+  });
+
+  it('drops channel messages that @mention a different bot', async () => {
+    const connector = connectorWithBotId('UBOT12345');
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: '<@UOTHER6789> fix the build',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(0);
+  });
+
+  it('drops channel messages with no @mentions at all', async () => {
+    const connector = connectorWithBotId('UBOT12345');
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: 'hey everyone',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(0);
+  });
+
+  it('processes messages that mention multiple bots including this one', async () => {
+    const connector = connectorWithBotId('UBOT12345');
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: '<@UBOT12345> and <@UOTHER6789> review this',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(1);
+  });
+
+  it('skips mention filtering when bot identity is unknown', async () => {
+    // No bot user ID set — filtering disabled, all messages pass through.
+    const connector = new SlackConnector(defaultConfig(), 'test-no-id', silentLogger());
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: 'no mentions, no bot id',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(1);
+  });
+
+  it('processes group messages (G prefix) with correct @mention', async () => {
+    const connector = connectorWithBotId('UBOT12345');
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'G01234567',
+      text: '<@UBOT12345> check this private channel',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// botUserId config validation
+// ---------------------------------------------------------------------------
+
+describe('SlackConnector — botUserId config validation', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('refuses to start when configured botUserId does not match auth.test', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true, user_id: 'UACTUAL999' }),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', mockFetch);
+
+    const connector = new SlackConnector(
+      defaultConfig({ botUserId: 'UWRONG1234' }),
+      'test-mismatch',
+      silentLogger(),
+    );
+    connector.onMessage(async () => {});
+    await connector.start();
+
+    // Connector should not be running after mismatch — botUserId stays undefined.
+    expect(connector.botUserId).toBeUndefined();
+
+    await connector.stop();
+  });
+
+  it('starts successfully when configured botUserId matches auth.test', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true, user_id: 'UBOT12345' }),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', mockFetch);
+
+    const connector = new SlackConnector(
+      defaultConfig({ botUserId: 'UBOT12345' }),
+      'test-match',
+      silentLogger(),
+    );
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+    await connector.start();
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'D01234567',
+      text: 'hello',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+    expect(received).toHaveLength(1);
+
+    await connector.stop();
+  });
+
+  it('falls back to configured botUserId when auth.test fails', async () => {
+    const mockFetch = vi.fn().mockRejectedValue(new Error('network down'));
+    vi.stubGlobal('fetch', mockFetch);
+
+    const connector = new SlackConnector(
+      defaultConfig({ botUserId: 'UBOT12345' }),
+      'test-fallback',
+      silentLogger(),
+    );
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+    await connector.start();
+
+    // Should use the configured ID for mention filtering.
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: '<@UBOT12345> do this',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+    expect(received).toHaveLength(1);
+
+    // Should drop messages mentioning a different bot.
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: '<@UOTHER6789> do that',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+    expect(received).toHaveLength(1); // still 1, not 2
+
+    await connector.stop();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Socket Mode
 // ---------------------------------------------------------------------------
 
@@ -580,7 +810,11 @@ describe('SlackConnector — Socket Mode', () => {
 
   it('does not call apps.connections.open when appToken is absent', async () => {
     const connector = new SlackConnector(defaultConfig(), 'test-no-socket', silentLogger());
-    const mockFetch = vi.fn();
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({ ok: true, user_id: 'UTEST00001' }),
+    } as unknown as Response);
     vi.stubGlobal('fetch', mockFetch);
 
     await connector.start();
@@ -588,16 +822,27 @@ describe('SlackConnector — Socket Mode', () => {
     await new Promise((r) => setTimeout(r, 50));
     await connector.stop();
 
-    expect(mockFetch).not.toHaveBeenCalled();
+    // Only auth.test should have been called, not apps.connections.open.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0][0]).toContain('auth.test');
   });
 
   it('calls apps.connections.open with the appToken on start', async () => {
-    // Return a valid URL but fail the WebSocket connection so the loop exits.
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      json: () => Promise.resolve({ ok: true, url: 'wss://fake.slack.com/link' }),
-    } as unknown as Response);
+    const mockFetch = vi.fn().mockImplementation((url: string) => {
+      if (String(url).includes('auth.test')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ ok: true, user_id: 'UTEST00001' }),
+        } as unknown as Response);
+      }
+      // Return a valid URL but fail the WebSocket connection so the loop exits.
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ ok: true, url: 'wss://fake.slack.com/link' }),
+      } as unknown as Response);
+    });
     vi.stubGlobal('fetch', mockFetch);
 
     const connector = new SlackConnector(configWithAppToken(), 'test-socket', silentLogger());
@@ -608,7 +853,8 @@ describe('SlackConnector — Socket Mode', () => {
     await new Promise((r) => setTimeout(r, 100));
 
     expect(mockFetch).toHaveBeenCalled();
-    const [url, opts] = mockFetch.mock.calls[0];
+    // First call is auth.test, second is apps.connections.open.
+    const [url, opts] = mockFetch.mock.calls[1];
     expect(url).toContain('apps.connections.open');
     expect((opts?.headers as Record<string, string>)['Authorization']).toBe(
       'Bearer xapp-test-app-token',
