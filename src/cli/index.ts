@@ -584,15 +584,27 @@ program
 
 program
   .command('reset-provider-affinity')
-  .description('Reset provider affinity for one channel thread. Use `talonctl list-threads --channel <name>` to discover external IDs.')
+  .description('Reset provider affinity for channel threads. Use --all for all threads or --external-id for one.')
   .requiredOption('--channel <name>', 'Channel name')
-  .requiredOption('--external-id <id>', 'Thread external ID. Use `talonctl list-threads --channel <name>` to discover values.')
+  .option('--external-id <id>', 'Thread external ID. Use `talonctl list-threads --channel <name>` to discover values.')
+  .option('--all', 'Reset affinity for all threads on this channel')
   .option('--yes', 'Bypass the confirmation prompt')
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
-  .action(async (opts: { channel: string; externalId: string; yes?: boolean; config: string }) => {
+  .action(async (opts: { channel: string; externalId?: string; all?: boolean; yes?: boolean; config: string }) => {
+    if (!opts.all && !opts.externalId) {
+      console.error('Error: specify --external-id <id> or --all');
+      process.exit(1);
+      return;
+    }
+    if (opts.all && opts.externalId) {
+      console.error('Error: --all and --external-id are mutually exclusive');
+      process.exit(1);
+      return;
+    }
     await resetProviderAffinityCommand({
       channel: opts.channel,
       externalId: opts.externalId,
+      all: opts.all,
       yes: opts.yes,
       configPath: opts.config,
     });
