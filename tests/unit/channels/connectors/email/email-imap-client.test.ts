@@ -92,6 +92,10 @@ describe('createImapFlowClient', () => {
     mockMessageFlagsAdd.mockResolvedValue(undefined);
   });
 
+  // ---------------------------------------------------------------------------
+  // fetchUnseen
+  // ---------------------------------------------------------------------------
+
   it('constructs ImapFlow with correct IMAP config', async () => {
     mockSearch.mockResolvedValue([]);
 
@@ -122,7 +126,7 @@ describe('createImapFlowClient', () => {
     expect(result).toEqual([]);
   });
 
-  it('returns parsed emails for unseen messages', async () => {
+  it('returns FetchedEmail[] with email and uid for unseen messages', async () => {
     const uid = 42;
     mockSearch.mockResolvedValue([uid]);
     mockFetchOne.mockResolvedValue({ source: Buffer.from('raw mime source') });
@@ -132,7 +136,8 @@ describe('createImapFlowClient', () => {
     const result = await client.fetchUnseen('INBOX');
 
     expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
+    expect(result[0].uid).toBe(String(uid));
+    expect(result[0].email).toMatchObject({
       messageId: '<msg-001@example.com>',
       from: 'Alice <alice@example.com>',
       to: 'bot@example.com',
@@ -142,23 +147,19 @@ describe('createImapFlowClient', () => {
     });
   });
 
-  it('marks messages as seen after fetching', async () => {
-    const uid = 42;
-    mockSearch.mockResolvedValue([uid]);
+  it('does NOT mark messages as seen inside fetchUnseen', async () => {
+    mockSearch.mockResolvedValue([42]);
     mockFetchOne.mockResolvedValue({ source: Buffer.from('raw mime') });
     mockSimpleParser.mockResolvedValue(makeParsedMail());
 
     const client = createImapFlowClient(makeConfig());
     await client.fetchUnseen('INBOX');
 
-    expect(mockMessageFlagsAdd).toHaveBeenCalledWith(
-      String(uid),
-      ['\\Seen'],
-      { uid: true },
-    );
+    // fetchUnseen should NOT call messageFlagsAdd — that is markSeen's job
+    expect(mockMessageFlagsAdd).not.toHaveBeenCalled();
   });
 
-  it('handles parse errors gracefully — logs, skips, and marks seen', async () => {
+  it('handles parse errors — logs, skips, does NOT mark as seen (leaves for retry)', async () => {
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     mockSearch.mockResolvedValue([1, 2]);
     mockFetchOne
@@ -171,15 +172,15 @@ describe('createImapFlowClient', () => {
     const client = createImapFlowClient(makeConfig());
     const result = await client.fetchUnseen('INBOX');
 
-    // Only the successfully parsed message should be returned
+    // Only the successfully parsed message is returned.
     expect(result).toHaveLength(1);
-    expect(result[0].messageId).toBe('<msg-1@example.com>');
+    expect(result[0].email.messageId).toBe('<msg-1@example.com>');
+    // The parse failure message is NOT marked seen — operator retries or cleans up.
+    expect(mockMessageFlagsAdd).not.toHaveBeenCalled();
     expect(consoleErrorSpy).toHaveBeenCalledWith(
       expect.stringContaining('failed to parse message'),
       expect.any(Error),
     );
-    // The failing message should also be marked as seen to avoid re-fetch loop
-    expect(mockMessageFlagsAdd).toHaveBeenCalledTimes(2); // once for good, once for bad
 
     consoleErrorSpy.mockRestore();
   });
@@ -195,7 +196,7 @@ describe('createImapFlowClient', () => {
     expect(mockFetchOne).not.toHaveBeenCalled();
   });
 
-  it('handles false returned by fetchOne (message disappeared)', async () => {
+  it('skips silently when fetchOne returns false (message disappeared)', async () => {
     mockSearch.mockResolvedValue([99]);
     mockFetchOne.mockResolvedValue(false);
 
@@ -203,8 +204,28 @@ describe('createImapFlowClient', () => {
     const result = await client.fetchUnseen('INBOX');
 
     expect(result).toEqual([]);
-    // Should mark as seen to avoid re-fetching
-    expect(mockMessageFlagsAdd).toHaveBeenCalledWith('99', ['\\Seen'], { uid: true });
+    // No markSeen call — message is already gone on the server.
+    expect(mockMessageFlagsAdd).not.toHaveBeenCalled();
+  });
+
+  it('skips messages that exceed the size limit', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockSearch.mockResolvedValue([1]);
+    // Create a buffer slightly larger than 10 MiB
+    const oversized = Buffer.alloc(10 * 1024 * 1024 + 1);
+    mockFetchOne.mockResolvedValue({ source: oversized });
+
+    const client = createImapFlowClient(makeConfig());
+    const result = await client.fetchUnseen('INBOX');
+
+    expect(result).toHaveLength(0);
+    expect(mockSimpleParser).not.toHaveBeenCalled();
+    expect(mockMessageFlagsAdd).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('exceeds size limit'),
+    );
+
+    consoleErrorSpy.mockRestore();
   });
 
   it('releases the mailbox lock in a finally block', async () => {
@@ -237,7 +258,7 @@ describe('createImapFlowClient', () => {
     const client = createImapFlowClient(makeConfig());
     const result = await client.fetchUnseen('INBOX');
 
-    expect(result[0].messageId).toBe('<no-brackets@example.com>');
+    expect(result[0].email.messageId).toBe('<no-brackets@example.com>');
   });
 
   it('uses current date when mail.date is missing', async () => {
@@ -250,8 +271,8 @@ describe('createImapFlowClient', () => {
     const result = await client.fetchUnseen('INBOX');
     const after = Date.now();
 
-    expect(result[0].timestamp).toBeGreaterThanOrEqual(before);
-    expect(result[0].timestamp).toBeLessThanOrEqual(after);
+    expect(result[0].email.timestamp).toBeGreaterThanOrEqual(before);
+    expect(result[0].email.timestamp).toBeLessThanOrEqual(after);
   });
 
   it('skips messages with no source', async () => {
@@ -287,8 +308,8 @@ describe('createImapFlowClient', () => {
     const client = createImapFlowClient(makeConfig());
     const result = await client.fetchUnseen('INBOX');
 
-    expect(result[0].inReplyTo).toBe('<parent@example.com>');
-    expect(result[0].references).toBe('<root@example.com> <parent@example.com>');
+    expect(result[0].email.inReplyTo).toBe('<parent@example.com>');
+    expect(result[0].email.references).toBe('<root@example.com> <parent@example.com>');
   });
 
   it('normalises references string[] to space-separated string', async () => {
@@ -303,7 +324,7 @@ describe('createImapFlowClient', () => {
     const client = createImapFlowClient(makeConfig());
     const result = await client.fetchUnseen('INBOX');
 
-    expect(result[0].references).toBe('<root@example.com> <parent@example.com>');
+    expect(result[0].email.references).toBe('<root@example.com> <parent@example.com>');
   });
 
   it('calls logout even when connect() throws', async () => {
@@ -312,6 +333,57 @@ describe('createImapFlowClient', () => {
     const client = createImapFlowClient(makeConfig());
     await expect(client.fetchUnseen('INBOX')).rejects.toThrow('Auth failed');
 
+    expect(mockLogout).toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------------
+  // markSeen
+  // ---------------------------------------------------------------------------
+
+  it('markSeen calls messageFlagsAdd with \\Seen for each UID', async () => {
+    const client = createImapFlowClient(makeConfig());
+    await client.markSeen('INBOX', ['10', '11', '12']);
+
+    expect(mockMessageFlagsAdd).toHaveBeenCalledTimes(3);
+    expect(mockMessageFlagsAdd).toHaveBeenCalledWith('10', ['\\Seen'], { uid: true });
+    expect(mockMessageFlagsAdd).toHaveBeenCalledWith('11', ['\\Seen'], { uid: true });
+    expect(mockMessageFlagsAdd).toHaveBeenCalledWith('12', ['\\Seen'], { uid: true });
+  });
+
+  it('markSeen is a no-op when uid list is empty', async () => {
+    const client = createImapFlowClient(makeConfig());
+    await client.markSeen('INBOX', []);
+
+    // No ImapFlow connection should be opened at all.
+    expect(ImapFlowMock).not.toHaveBeenCalled();
+    expect(mockMessageFlagsAdd).not.toHaveBeenCalled();
+  });
+
+  it('markSeen logs and continues if one flag operation fails', async () => {
+    const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mockMessageFlagsAdd
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('flag error'))
+      .mockResolvedValueOnce(undefined);
+
+    const client = createImapFlowClient(makeConfig());
+    // Should not throw even though uid 11 fails.
+    await expect(client.markSeen('INBOX', ['10', '11', '12'])).resolves.toBeUndefined();
+
+    expect(mockMessageFlagsAdd).toHaveBeenCalledTimes(3);
+    expect(consoleErrorSpy).toHaveBeenCalledWith(
+      expect.stringContaining('failed to mark uid=11 as seen'),
+      expect.any(Error),
+    );
+
+    consoleErrorSpy.mockRestore();
+  });
+
+  it('markSeen releases lock and logs out after marking', async () => {
+    const client = createImapFlowClient(makeConfig());
+    await client.markSeen('INBOX', ['5']);
+
+    expect(mockLockRelease).toHaveBeenCalled();
     expect(mockLogout).toHaveBeenCalled();
   });
 });

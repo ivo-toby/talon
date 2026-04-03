@@ -98,14 +98,33 @@ export interface SmtpTransport {
  * Injected into the connector so unit tests can replace it without a real
  * IMAP connection.
  */
+/** A fetched email paired with its IMAP UID for post-processing acknowledgement. */
+export interface FetchedEmail {
+  email: ParsedEmail;
+  /** IMAP UID as a string — passed back to `markSeen` after successful handling. */
+  uid: string;
+}
+
 export interface ImapClient {
   /**
-   * Fetch unseen messages from the mailbox.
+   * Fetch unseen messages from the mailbox WITHOUT marking them as seen.
+   * The caller is responsible for calling `markSeen` after successful handling
+   * so that transient pipeline failures leave the message available for retry.
    *
    * @param mailbox - The mailbox to poll (e.g. "INBOX").
-   * @returns An array of parsed emails.
+   * @returns An array of fetched emails with their UIDs.
    */
-  fetchUnseen(mailbox: string): Promise<ParsedEmail[]>;
+  fetchUnseen(mailbox: string): Promise<FetchedEmail[]>;
+
+  /**
+   * Mark the given UIDs as seen (\\Seen flag) in the mailbox.
+   * Called by the polling loop after the inbound handler has successfully
+   * processed each message.
+   *
+   * @param mailbox - The mailbox containing the messages.
+   * @param uids    - UIDs to mark as seen.
+   */
+  markSeen(mailbox: string, uids: string[]): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -322,12 +341,27 @@ export class EmailConnector implements ChannelConnector {
 
     while (this.running) {
       try {
-        const messages = await this.imapClient.fetchUnseen(mailbox);
+        const fetched = await this.imapClient.fetchUnseen(mailbox);
         // Reset backoff after a successful fetch.
         backoffMs = INITIAL_BACKOFF_MS;
 
-        for (const email of messages) {
-          await this.handleEmail(email);
+        // Process each email and collect the UIDs of those that were handled
+        // successfully. Only those are marked as seen — failures stay unseen
+        // so the next poll can retry them.
+        const seenUids: string[] = [];
+        for (const { email, uid } of fetched) {
+          try {
+            await this.handleEmail(email);
+            seenUids.push(uid);
+          } catch (handlerErr) {
+            this.logger.error(
+              { channelName: this.name, uid, err: handlerErr },
+              'email handler failed — message left unseen for retry',
+            );
+          }
+        }
+        if (seenUids.length > 0) {
+          await this.imapClient.markSeen(mailbox, seenUids);
         }
 
         // Wait for the configured interval before polling again.
