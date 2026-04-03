@@ -19,6 +19,8 @@ import { err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
 import type { EmailConfig, ParsedEmail, SmtpSendOptions } from './email-types.js';
 import { markdownToHtml } from './email-format.js';
+import { createNodemailerSmtpTransport } from './email-smtp-transport.js';
+import { createImapFlowClient } from './email-imap-client.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -111,44 +113,23 @@ export interface ImapClient {
 // ---------------------------------------------------------------------------
 
 /**
- * Build a production SMTP transport that sends email via an SMTP-over-HTTP
- * relay endpoint.
+ * Build a production SMTP transport using nodemailer.
  *
- * In a real deployment this would use nodemailer or a similar library.
- * Here we provide a minimal HTTP-based implementation that calls out to a
- * configurable HTTP SMTP relay so that the connector remains dependency-free.
- * The connector itself delegates to the injected `SmtpTransport`, so callers
- * can inject a nodemailer-based transport in production.
+ * Creates a real SMTP transport backed by nodemailer that sends email using
+ * the SMTP credentials from the provided config.
  */
-export function createDefaultSmtpTransport(_config: EmailConfig): SmtpTransport {
-  // Default implementation: minimal stub that always fails with a clear message
-  // indicating that a real transport must be injected.  This avoids a hard
-  // dependency on nodemailer while still providing a usable interface.
-  return {
-    send(_from: string, _options: SmtpSendOptions): Promise<Result<void, ChannelError>> {
-      return Promise.resolve(
-        err(
-          new ChannelError(
-            'EmailConnector: no SMTP transport provided — inject a SmtpTransport via options.smtpTransport',
-          ),
-        ),
-      );
-    },
-  };
+export function createDefaultSmtpTransport(config: EmailConfig): SmtpTransport {
+  return createNodemailerSmtpTransport(config);
 }
 
 /**
- * Build a production IMAP client.
+ * Build a production IMAP client using imapflow + mailparser.
  *
- * Same rationale as the SMTP transport — provides a stub that callers replace
- * with a real IMAP implementation in production.
+ * Creates a real IMAP client that connects to the IMAP server, fetches unseen
+ * messages, parses them, and marks them as seen.
  */
-export function createDefaultImapClient(_config: EmailConfig): ImapClient {
-  return {
-    fetchUnseen(_mailbox: string): Promise<ParsedEmail[]> {
-      return Promise.resolve([]);
-    },
-  };
+export function createDefaultImapClient(config: EmailConfig): ImapClient {
+  return createImapFlowClient(config);
 }
 
 // ---------------------------------------------------------------------------
