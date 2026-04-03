@@ -30,6 +30,14 @@ const SLACK_API_BASE = 'https://slack.com/api';
 const INITIAL_BACKOFF_MS = 1_000;
 /** Maximum backoff after repeated connection errors, in milliseconds. */
 const MAX_BACKOFF_MS = 60_000;
+/** Timeout for the auth.test identity resolution call, in milliseconds. */
+const AUTH_TEST_TIMEOUT_MS = 10_000;
+
+/**
+ * Regex matching a Slack user mention: `<@U12345678>`.
+ * Used to detect whether a channel message is directed at a specific bot.
+ */
+const MENTION_RE = /<@(U[A-Z0-9]+)>/g;
 
 // ---------------------------------------------------------------------------
 // SlackConnector
@@ -57,6 +65,9 @@ export class SlackConnector implements ChannelConnector {
   private handler?: (event: InboundEvent) => void | Promise<void>;
   private running = false;
 
+  /** This bot's Slack user ID, resolved during start() via auth.test. */
+  private _botUserId: string | undefined;
+
   /** Active Socket Mode WebSocket, if connected. */
   private ws?: WebSocket;
   /** Promise tracking the Socket Mode reconnect loop. */
@@ -83,12 +94,77 @@ export class SlackConnector implements ChannelConnector {
    *
    * Idempotent — no-op if already running.
    */
-  start(): Promise<void> {
+  async start(): Promise<void> {
     if (this.running) {
       this.logger.debug({ channelName: this.name }, 'slack connector already running');
-      return Promise.resolve();
+      return;
     }
     this.running = true;
+    this._botUserId = undefined; // Clear stale value from previous start cycle.
+    this.abortController = new AbortController();
+
+    // Resolve bot identity so we can filter @mentions in shared channels.
+    // When botUserId is configured, validate it against the API response.
+    try {
+      const response = await fetch(`${SLACK_API_BASE}/auth.test`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Bearer ${this.config.botToken}`,
+        },
+        signal: AbortSignal.any([
+          this.abortController.signal,
+          AbortSignal.timeout(AUTH_TEST_TIMEOUT_MS),
+        ]),
+      });
+      const data = (await response.json()) as { ok: boolean; user_id?: string };
+      if (data.ok && data.user_id) {
+        if (this.config.botUserId && this.config.botUserId !== data.user_id) {
+          this.logger.error(
+            {
+              channelName: this.name,
+              configured: this.config.botUserId,
+              actual: data.user_id,
+            },
+            'slack botUserId mismatch — configured ID does not match auth.test result; check that the correct botToken is paired with the correct botUserId',
+          );
+          this.running = false;
+          return;
+        }
+        this._botUserId = data.user_id;
+        this.logger.info(
+          { channelName: this.name, botUserId: this._botUserId },
+          'slack bot identity resolved',
+        );
+      } else {
+        if (this.config.botUserId) {
+          // Config provides an ID but we can't verify it — trust the config.
+          this._botUserId = this.config.botUserId;
+          this.logger.warn(
+            { channelName: this.name, botUserId: this._botUserId },
+            'slack auth.test returned ok=false, using configured botUserId',
+          );
+        } else {
+          this.logger.warn(
+            { channelName: this.name },
+            'slack auth.test returned ok=false, bot identity unknown — mention filtering disabled',
+          );
+        }
+      }
+    } catch (authErr) {
+      if (this.config.botUserId) {
+        this._botUserId = this.config.botUserId;
+        this.logger.warn(
+          { channelName: this.name, botUserId: this._botUserId, err: authErr },
+          'slack auth.test failed, using configured botUserId',
+        );
+      } else {
+        this.logger.warn(
+          { channelName: this.name, err: authErr },
+          'slack auth.test failed, bot identity unknown — mention filtering disabled',
+        );
+      }
+    }
 
     if (this.config.appToken) {
       this.logger.info({ channelName: this.name }, 'slack connector starting (socket mode)');
@@ -99,8 +175,6 @@ export class SlackConnector implements ChannelConnector {
         'slack connector started (no appToken — external event delivery only)',
       );
     }
-
-    return Promise.resolve();
   }
 
   /**
@@ -223,7 +297,7 @@ export class SlackConnector implements ChannelConnector {
   }
 
   get botUserId(): string | undefined {
-    return undefined; // Slack already filters all bot messages via bot_id field
+    return this._botUserId;
   }
 
   setSiblingBotIds(_ids: Set<string>): void {
@@ -289,7 +363,30 @@ export class SlackConnector implements ChannelConnector {
       return;
     }
 
+    // --- @mention filtering for shared channels ---
+    // When the bot identity is known, enforce mention-based routing in
+    // channels and groups (C/G prefixed IDs). DMs (D prefix) always pass.
     const channelId = message.channel;
+    if (this._botUserId && channelId && !channelId.startsWith('D')) {
+      const mentions = extractMentionedUserIds(message.text);
+      if (mentions.size > 0 && !mentions.has(this._botUserId)) {
+        // Message @mentions one or more bots, but not this one — skip.
+        this.logger.debug(
+          { channelName: this.name, mentions: [...mentions], botUserId: this._botUserId },
+          'slack message mentions other bot(s), not this one — skipping',
+        );
+        return;
+      }
+      if (mentions.size === 0) {
+        // No @mentions at all in a channel message — skip to avoid
+        // multiple bots all responding to undirected messages.
+        this.logger.debug(
+          { channelName: this.name, botUserId: this._botUserId },
+          'slack channel message has no @mentions — skipping',
+        );
+        return;
+      }
+    }
     const threadTs = message.thread_ts;
 
     // Build a compound external thread ID that encodes both channel and thread.
@@ -565,4 +662,21 @@ export function decodeThreadId(externalThreadId: string): {
 function parseSlackTimestamp(ts: string): number {
   const seconds = parseFloat(ts);
   return Math.round(seconds * 1000);
+}
+
+/**
+ * Extract all Slack user IDs mentioned in a message text.
+ *
+ * Slack encodes mentions as `<@U12345678>` in the raw message text.
+ * Returns a Set of user IDs (e.g. `U12345678`).
+ */
+export function extractMentionedUserIds(text: string): Set<string> {
+  const ids = new Set<string>();
+  let match: RegExpExecArray | null;
+  // Reset lastIndex since MENTION_RE has the global flag.
+  MENTION_RE.lastIndex = 0;
+  while ((match = MENTION_RE.exec(text)) !== null) {
+    ids.add(match[1]);
+  }
+  return ids;
 }
