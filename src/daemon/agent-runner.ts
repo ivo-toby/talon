@@ -871,8 +871,56 @@ export class AgentRunner {
               this.ctx.logger.error({ runId, err: tokenResult.error }, 'agent-runner: failed to persist token usage');
             }
 
+            if (isA2ATask && a2aTaskId) {
+              // A2A collaboration task: store result in a2a_tasks, skip channel send.
+              this.ctx.repos.a2aTask.markCompleted(a2aTaskId, fullOutputText).mapErr((e) => {
+                this.ctx.logger.warn(
+                  { a2aTaskId, runId, err: e.message },
+                  'agent-runner: failed to mark A2A task as completed',
+                );
+              });
+              this.ctx.logger.info(
+                { runId, a2aTaskId, outputLength: fullOutputText.length },
+                'agent-sdk: A2A task completed, result stored (no channel send)',
+              );
+            } else if (item.type === 'schedule') {
+              this.ctx.logger.info(
+                { runId, outputLength: fullOutputText.length },
+                'agent-sdk: skipping outbound reply for schedule item (agent already sent via channel_send)',
+              );
+            } else if (connector !== undefined && externalId && outputText) {
+              // Send remaining text (final block). Intermediate blocks were flushed
+              // during the stream when tool_use events were encountered (issue #102).
+              const sendResult = await connector.send(externalId, {
+                body: outputText,
+              });
+              if (sendResult.isErr()) {
+                throw new Error(`channel send failed: ${sendResult.error.message}`);
+              }
+            }
+
+            // Persist the outbound message BEFORE context rotation so that a fast
+            // user reply cannot be inserted ahead of the assistant turn in the DB.
+            // The message is stored immediately after delivery (issue #164).
+            if (!isA2ATask) {
+              this.ctx.repos.message.insert({
+                id: uuidv4(),
+                thread_id: item.threadId,
+                direction: 'outbound',
+                content: JSON.stringify({ body: fullOutputText }),
+                idempotency_key: `outbound:${runId}`,
+                provider_id: null,
+                run_id: runId,
+              });
+            }
+
             // Check if context needs rotation (rolling window).
-            // Awaited to prevent race with next queue item for the same thread.
+            // Runs AFTER connector.send() and message.insert() so the user receives
+            // their response immediately — context rotation may invoke a summarizer
+            // LLM call that takes 5-15 s. The queue item stays in-flight (claimed)
+            // until run() returns, so the next item for this thread cannot be
+            // picked up until rotation completes, preserving per-thread ordering.
+            // (issue #164)
             if (this.ctx.contextRoller && enabledContextManagement) {
               const contextUsage = providerEntry.provider.estimateContextUsage(usage);
               const selectedMetricValue = contextUsage.metrics[enabledContextManagement.triggerMetric];
@@ -908,48 +956,6 @@ export class AgentRunner {
                   );
                 }
               }
-            }
-
-            if (isA2ATask && a2aTaskId) {
-              // A2A collaboration task: store result in a2a_tasks, skip channel send.
-              this.ctx.repos.a2aTask.markCompleted(a2aTaskId, fullOutputText).mapErr((e) => {
-                this.ctx.logger.warn(
-                  { a2aTaskId, runId, err: e.message },
-                  'agent-runner: failed to mark A2A task as completed',
-                );
-              });
-              this.ctx.logger.info(
-                { runId, a2aTaskId, outputLength: fullOutputText.length },
-                'agent-sdk: A2A task completed, result stored (no channel send)',
-              );
-            } else if (item.type === 'schedule') {
-              this.ctx.logger.info(
-                { runId, outputLength: fullOutputText.length },
-                'agent-sdk: skipping outbound reply for schedule item (agent already sent via channel_send)',
-              );
-            } else if (connector !== undefined && externalId && outputText) {
-              // Send remaining text (final block). Intermediate blocks were flushed
-              // during the stream when tool_use events were encountered (issue #102).
-              const sendResult = await connector.send(externalId, {
-                body: outputText,
-              });
-              if (sendResult.isErr()) {
-                throw new Error(`channel send failed: ${sendResult.error.message}`);
-              }
-            }
-
-            // Skip persisting A2A delegation output into the source thread's message
-            // history — it would pollute context assembly for the human conversation.
-            if (!isA2ATask) {
-              this.ctx.repos.message.insert({
-                id: uuidv4(),
-                thread_id: item.threadId,
-                direction: 'outbound',
-                content: JSON.stringify({ body: fullOutputText }),
-                idempotency_key: `outbound:${runId}`,
-                provider_id: null,
-                run_id: runId,
-              });
             }
 
             runObservation.update({
