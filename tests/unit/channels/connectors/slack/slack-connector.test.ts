@@ -674,6 +674,20 @@ describe('SlackConnector — @mention filtering', () => {
     expect(received).toHaveLength(1);
   });
 
+  it('processes thread replies without requiring @mention', async () => {
+    const connector = connectorWithBotId('UBOT12345');
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (event) => { received.push(event); });
+
+    await connector.feedEvent(makeSlackEvent({
+      channelId: 'C01234567',
+      text: 'follow-up reply without mention',
+      thread_ts: '1700000000.000000',
+    }) as Parameters<typeof connector.feedEvent>[0]);
+
+    expect(received).toHaveLength(1);
+  });
+
   it('skips mention filtering when bot identity is unknown', async () => {
     // No bot user ID set — filtering disabled, all messages pass through.
     const connector = new SlackConnector(defaultConfig(), 'test-no-id', silentLogger());
@@ -711,7 +725,7 @@ describe('SlackConnector — botUserId config validation', () => {
     vi.restoreAllMocks();
   });
 
-  it('refuses to start when configured botUserId does not match auth.test', async () => {
+  it('throws on start when configured botUserId does not match auth.test', async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
@@ -725,10 +739,8 @@ describe('SlackConnector — botUserId config validation', () => {
       silentLogger(),
     );
     connector.onMessage(async () => {});
-    await connector.start();
 
-    // Connector should not be running after mismatch — botUserId stays undefined.
-    expect(connector.botUserId).toBeUndefined();
+    await expect(connector.start()).rejects.toThrow('botUserId mismatch');
 
     await connector.stop();
   });

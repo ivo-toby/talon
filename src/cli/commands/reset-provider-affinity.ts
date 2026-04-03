@@ -172,6 +172,9 @@ export async function resetProviderAffinityCommand(options: {
       }
 
       if (!options.yes) {
+        if (!input.isTTY || !output.isTTY) {
+          throw new Error('Confirmation requires an interactive terminal. Re-run with --yes to bypass the prompt.');
+        }
         const rl = createInterface({ input, output });
         try {
           const answer = await rl.question(
