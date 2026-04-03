@@ -51,7 +51,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema) |
 | Database  | `src/core/database/`       | better-sqlite3 wrapper, 14 repositories, SQL migrations             |
 | IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                |
-| CLI       | `src/cli/`                 | 25 talonctl commands (Commander.js)                                 |
+| CLI       | `src/cli/`                 | 36 talonctl commands (Commander.js)                                 |
 
 ### Key Architectural Decisions
 
