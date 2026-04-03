@@ -75,18 +75,26 @@ function throwingSmtpTransport(): SmtpTransport {
 }
 
 /**
+ * Wrap a ParsedEmail array as FetchedEmail[] (with synthetic UIDs).
+ * uid is assigned as the 1-based index within the batch.
+ */
+function toFetched(emails: ParsedEmail[]): { email: ParsedEmail; uid: string }[] {
+  return emails.map((email, i) => ({ email, uid: String(i + 1) }));
+}
+
+/**
  * Build an IMAP client that emits the given batches of emails then hangs.
- * Each call to fetchUnseen() returns the next batch.
+ * Each call to fetchUnseen() returns the next batch as FetchedEmail[].
  */
 function makeImapClient(batches: ParsedEmail[][]): ImapClient {
   let callIndex = 0;
   return {
     fetchUnseen: vi.fn().mockImplementation(async () => {
       const idx = callIndex++;
-      if (idx < batches.length) return batches[idx];
-      // Subsequent calls return empty (connector keeps polling at interval).
+      if (idx < batches.length) return toFetched(batches[idx]);
       return [];
     }),
+    markSeen: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -97,9 +105,10 @@ function flakyImapClient(email: ParsedEmail): ImapClient {
     fetchUnseen: vi.fn().mockImplementation(async () => {
       callCount++;
       if (callCount === 1) throw new Error('imap connection reset');
-      if (callCount === 2) return [email];
+      if (callCount === 2) return toFetched([email]);
       return [];
     }),
+    markSeen: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -459,6 +468,7 @@ describe('EmailConnector IMAP polling', () => {
         fetchCallCount++;
         return [];
       }),
+      markSeen: vi.fn().mockResolvedValue(undefined),
     };
 
     const connector = makeConnector(
@@ -476,7 +486,7 @@ describe('EmailConnector IMAP polling', () => {
 
   it('uses the configured mailbox when polling', async () => {
     const fetchMock = vi.fn().mockResolvedValue([]);
-    const imapClient: ImapClient = { fetchUnseen: fetchMock };
+    const imapClient: ImapClient = { fetchUnseen: fetchMock, markSeen: vi.fn().mockResolvedValue(undefined) };
 
     const connector = makeConnector(
       { pollingIntervalMs: 10, mailbox: 'Sent' },
@@ -492,7 +502,7 @@ describe('EmailConnector IMAP polling', () => {
 
   it('defaults to INBOX mailbox when mailbox is not configured', async () => {
     const fetchMock = vi.fn().mockResolvedValue([]);
-    const imapClient: ImapClient = { fetchUnseen: fetchMock };
+    const imapClient: ImapClient = { fetchUnseen: fetchMock, markSeen: vi.fn().mockResolvedValue(undefined) };
 
     const connector = makeConnector({ pollingIntervalMs: 10 }, { imapClient });
 
