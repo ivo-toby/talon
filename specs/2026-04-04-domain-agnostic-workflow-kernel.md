@@ -461,15 +461,122 @@ Success criteria:
 
 The mitigation is to start narrow, keep the kernel sidecar-only at first, and introduce authoritative transitions only after the observed model is stable.
 
-## 16. Open Questions
+## 16. Review Decisions
 
-1. Should workflow items be created explicitly by personas, implicitly by scheduler rules, or both?
-2. What is the smallest claim/evidence schema that still improves reliability?
-3. Should policy packs live in code, config, plugins, or a hybrid model?
-4. How should claim/evidence capture integrate with MCP tool outputs and background-agent results?
-5. Which existing Talon workflow should be the first authoritative rollout candidate?
+### 16.1 Workflow item creation
 
-## 17. Recommendation
+Initially, workflow items should be created explicitly by personas, not implicitly by scheduler rules. The personas are the domain experts when prompted correctly, and they are in the best position to decide when work should become a first-class tracked item.
+
+Scheduler-created workflow items may be introduced later for narrowly defined system concerns such as stale-work intervention, automatic retries, or lease-based escalation, but they should not be the starting point for the model.
+
+### 16.2 Smallest useful claim and evidence schema
+
+The smallest useful schema is not fixed by domain semantics alone. Simple tasks such as creating a calendar appointment have a much smaller claim and evidence surface than complex workflows such as shipping a software feature.
+
+The kernel should therefore require a minimal core schema and allow domain packs to extend it:
+
+- claim core: `actor`, `action`, `target`, `asserted_outcome`, `timestamp`
+- evidence core: `type`, `source`, `locator`, `captured_at`, `provenance`
+
+This keeps the kernel generic while allowing policy packs to demand richer structured evidence where the domain requires it.
+
+### 16.3 Policy-pack placement
+
+Policy packs should use a hybrid placement model:
+
+- code owns the kernel contract, state machine enforcement, leases, watchdog rules, and transition validation
+- config owns pack selection, thresholds, rollout flags, and default bindings
+- plugins own domain-specific schemas, prompts, helper logic, and extension points
+
+This keeps the control plane deterministic without forcing every domain-specific behavior into Talon's core.
+
+### 16.4 MCP tools and background agents
+
+Claim and evidence capture should remain the responsibility of the agent that invokes MCP tools or spawns background agents. That agent is responsible for proving that the work is complete and for attaching the relevant evidence to the workflow item.
+
+If a background agent cannot complete the work, or if the calling agent lacks the tools or permissions to complete or verify the task itself, the kernel should record that as failed or blocked work. The watchdog layer should treat that as an intervention condition rather than allowing the work to remain in an ambiguous state.
+
+### 16.5 First authoritative rollout candidate
+
+The first authoritative rollout should be the orchestrator task lifecycle rather than the software engineering workflow.
+
+The orchestrator path already has the right shape:
+
+- explicit tasks
+- ownership
+- blocked and failed states
+- human review and approval
+- clear transitions between draft, ready, in progress, review, and done
+
+That makes it a better proving ground for authoritative workflow state than software delivery, which has a larger and more failure-prone surface area.
+
+## 17. Deeper Integration
+
+The workflow kernel starts as a sidecar. Deeper integration begins when Talon stops treating workflow state as an observational layer and starts using it as the canonical substrate for coordination.
+
+At that point:
+
+- personas emit claims against workflow items rather than only sending conversational status updates
+- MCP calls and background-agent runs produce evidence records with provenance that can be attached to claims
+- scheduler and heartbeat logic evaluate workflow state and policy rather than inferring progress from transcript text alone
+- human approvals, rejections, and escalations operate on workflow items directly
+- queueing, retries, and watchdog interventions become visible consequences of workflow state instead of separate hidden mechanisms
+
+The important boundary is that deeper integration should not require every tool or persona to understand the full kernel model. Helper APIs or host tools should make it easy to create claims, attach evidence, and transition state without forcing repeated boilerplate into prompts.
+
+## 18. End-User Visibility
+
+If this system becomes a real control plane, its state and transitions must be visible to the user without requiring transcript archaeology.
+
+Two visibility surfaces are required:
+
+### 18.1 Real-time operational view
+
+This view should show:
+
+- active workflow items
+- current state
+- assigned persona or owner
+- latest claim
+- latest evidence
+- current blocker or failure reason
+- lease expiry or stale-work deadline
+- next expected transition
+
+This is the view that answers, "What is happening right now?"
+
+### 18.2 Audit view
+
+This view should be append-only and reconstructable. It should show:
+
+- workflow item creation
+- every claim
+- every evidence attachment
+- every accepted or rejected transition
+- policy decisions
+- watchdog interventions
+- human approvals and rejections
+
+This is the view that answers, "Why did the system believe this work advanced, stall, or finish?"
+
+The dashboard should eventually expose both views in a way that supports drill-down from high-level company operations into a single item's full history.
+
+## 19. Relationship To Force
+
+This workflow kernel is a foundational building block for the Force concept.
+
+If Force is a digital representation of a company running on agents, then it needs more than message routing and persona prompts. It needs:
+
+- durable goals and work items
+- delegated ownership
+- explicit claims of progress
+- evidence attached to those claims
+- policy-based approval and escalation
+- end-user visibility into state, flow, and history
+
+Without those pieces, Force risks becoming an impressive chat surface without a reliable operating model. With them, it can evolve into a company-level control plane where goals, work, agents, approvals, and outcomes are all durable and inspectable.
+
+## 20. Recommendation
 
 Build this as a bolt-on sidecar, not as a rewrite. The smallest useful version is:
 
@@ -482,3 +589,15 @@ Build this as a bolt-on sidecar, not as a rewrite. The smallest useful version i
 - heartbeat prompts driven by workflow state
 
 That is enough to prove the architecture before Talon makes the kernel authoritative.
+
+The next artifact after this spec should be a technical design, not an implementation plan.
+
+The spec now defines the problem, the concepts, and the product direction. A technical design should narrow that into:
+
+- concrete database changes
+- host-tool or API surfaces for claim and evidence capture
+- dashboard data model and event stream shape
+- rollout boundaries for the first authoritative orchestrator workflow
+- migration strategy from observational sidecar to authoritative control
+
+After that design exists, an implementation plan can break the work into phases, tasks, and checkpoints. If you intend to implement this yourself in Claude Code to build intuition, that is the right sequence. It gives you a stronger mental model before you start making irreversible schema and orchestration decisions.
