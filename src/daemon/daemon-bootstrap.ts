@@ -41,7 +41,7 @@ import { registerChannels } from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
-import { DaemonError } from '../core/errors/error-types.js';
+import { DaemonError, SubAgentError } from '../core/errors/error-types.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
 import { PersonaLoader } from '../personas/persona-loader.js';
@@ -331,6 +331,8 @@ export async function bootstrap(
   } else if (modelResolver) {
     const boundSummarizers = new Map<string, import('./context-roller.js').SummarizerRunFn>();
 
+    const subagentOverrides = config.subagents ?? {};
+
     for (const summarizerName of requestedSummarizers) {
       const summarizerAgent = mergedAgentMap.get(summarizerName);
       if (!summarizerAgent) {
@@ -341,43 +343,105 @@ export async function bootstrap(
         continue;
       }
 
-      const summarizerModelResult = await modelResolver.resolve(summarizerAgent.manifest.model);
-      if (summarizerModelResult.isErr()) {
+      // Verify at least one model in the chain can resolve at boot time.
+      const overrideConfig = subagentOverrides[summarizerName];
+      const bootModelChain = [
+        ...(overrideConfig?.model ?? []).map((e) => ({
+          provider: e.provider,
+          name: e.name,
+          maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
+          source: 'override' as const,
+        })),
+        { ...summarizerAgent.manifest.model, source: 'manifest' as const },
+      ];
+
+      const anyResolvable = await Promise.any(
+        bootModelChain.map(async (m) => {
+          const r = await modelResolver.resolve(m);
+          if (!r.isOk()) throw new Error('not resolvable');
+          return true;
+        }),
+      ).catch(() => false);
+
+      if (!anyResolvable) {
         logger.warn(
-          { summarizer: summarizerName, error: summarizerModelResult.error.message },
-          'bootstrap: failed to resolve model for configured summarizer, skipping',
+          { summarizer: summarizerName },
+          'bootstrap: no model in override chain could resolve for summarizer, skipping',
         );
         continue;
       }
 
-      const summarizerModel = summarizerModelResult.value;
       const summarizerPrompt = summarizerAgent.promptContents.join('\n\n');
-      const boundSummarizer: import('./context-roller.js').SummarizerRunFn = (
+
+      // Resolve model at call time so config overrides and failover apply.
+      const boundSummarizer: import('./context-roller.js').SummarizerRunFn = async (
         threadId, personaId, input,
-      ) =>
-        summarizerAgent.run(
-          {
-            threadId,
-            personaId,
-            model: summarizerModel,
-            systemPrompt: summarizerPrompt,
-            maxOutputTokens: summarizerAgent.manifest.model.maxTokens,
-            rootPaths: [],
-            services: {
-              memory: repos.memory,
-              schedules: repos.schedule,
-              personas: repos.persona,
-              channels: repos.channel,
-              threads: repos.thread,
-              messages: repos.message,
-              runs: repos.run,
-              queue: repos.queue,
-              logger,
-            },
-            telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
-          },
-          input,
-        );
+      ) => {
+        const modelChain = [
+          ...(overrideConfig?.model ?? []).map((e) => ({
+            provider: e.provider,
+            name: e.name,
+            maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
+            source: 'override' as const,
+          })),
+          { ...summarizerAgent.manifest.model, source: 'manifest' as const },
+        ];
+
+        for (const entry of modelChain) {
+          const modelResult = await modelResolver.resolve(entry);
+          if (modelResult.isErr()) {
+            logger.warn(
+              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source },
+              `bootstrap: summarizer model resolution failed, trying next: ${modelResult.error.message}`,
+            );
+            continue;
+          }
+
+          try {
+            const result = await summarizerAgent.run(
+              {
+                threadId,
+                personaId,
+                model: modelResult.value,
+                systemPrompt: summarizerPrompt,
+                maxOutputTokens: entry.maxTokens,
+                rootPaths: [],
+                services: {
+                  memory: repos.memory,
+                  schedules: repos.schedule,
+                  personas: repos.persona,
+                  channels: repos.channel,
+                  threads: repos.thread,
+                  messages: repos.message,
+                  runs: repos.run,
+                  queue: repos.queue,
+                  logger,
+                },
+                telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
+              },
+              input,
+            );
+
+            if (result.isOk()) {
+              return result;
+            }
+
+            logger.warn(
+              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source },
+              `bootstrap: summarizer run failed, trying next: ${result.error.message}`,
+            );
+          } catch (runError) {
+            const msg = runError instanceof Error ? runError.message : String(runError);
+            logger.warn(
+              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source },
+              `bootstrap: summarizer threw, trying next: ${msg}`,
+            );
+          }
+        }
+
+        // All models exhausted
+        return err(new SubAgentError(`All models failed for summarizer "${summarizerName}"`));
+      };
 
       boundSummarizers.set(summarizerName, boundSummarizer);
     }
