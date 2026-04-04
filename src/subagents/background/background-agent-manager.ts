@@ -30,6 +30,8 @@ export interface SpawnBackgroundAgentInput {
   timeContext?: string;
   /** Resolved tool instruction blocks for the persona's allowed tools. */
   toolInstructions?: string;
+  /** When true, __talond_skill_loader MCP server is added so the agent can lazy-load skills. */
+  hasSkills?: boolean;
   mcpServers: Record<string, CanonicalMcpServer>;
   personaId: string;
   workerPersonaId: string;
@@ -209,6 +211,7 @@ export class BackgroundAgentManager {
       ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
       traceparent: childTraceparent,
       sandboxContext,
+      hasSkills: input.hasSkills ?? false,
     });
 
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
@@ -648,37 +651,59 @@ export class BackgroundAgentManager {
     workingDirectory?: string;
     traceparent?: string;
     sandboxContext: SandboxContext | null;
+    hasSkills: boolean;
   }): Record<string, CanonicalMcpServer> {
     const mcpServers: Record<string, CanonicalMcpServer> = {
       ...options.baseMcpServers,
     };
 
-    if (!this.deps.hostToolsSocketPath || options.allowedMcpTools.length === 0) {
+    if (!this.deps.hostToolsSocketPath) {
       return mcpServers;
     }
 
-    mcpServers.__talond_host_tools = {
-      transport: 'stdio',
-      command: 'node',
-      args: [join(import.meta.dirname, '../../../dist/tools/host-tools-mcp-server.js')],
-      env: {
-        ...process.env,
-        TALOND_SOCKET: this.deps.hostToolsSocketPath,
-        TALOND_RUN_ID: options.taskId,
-        TALOND_THREAD_ID: options.threadId,
-        TALOND_PERSONA_ID: options.workerPersonaId,
-        TALOND_ALLOWED_TOOLS: options.allowedMcpTools.join(','),
-        TALOND_TRACEPARENT: options.traceparent ?? '',
-        TALOND_BACKGROUND_TASK_ID: options.taskId,
-        ...(this.buildAllowedHostRootsEnv({
-          workingDirectory: options.workingDirectory,
-          sandboxContext: options.sandboxContext,
-        })),
-        ...(options.sandboxContext
-          ? { TALOND_PRIMARY_EXECUTION_ENV_ID: options.sandboxContext.primaryExecutionEnvId }
-          : {}),
-      },
-    };
+    // Host tools are only mounted when the persona has allowed tool capabilities.
+    if (options.allowedMcpTools.length > 0) {
+      mcpServers.__talond_host_tools = {
+        transport: 'stdio',
+        command: 'node',
+        args: [join(import.meta.dirname, '../../../dist/tools/host-tools-mcp-server.js')],
+        env: {
+          ...process.env,
+          TALOND_SOCKET: this.deps.hostToolsSocketPath,
+          TALOND_RUN_ID: options.taskId,
+          TALOND_THREAD_ID: options.threadId,
+          TALOND_PERSONA_ID: options.workerPersonaId,
+          TALOND_ALLOWED_TOOLS: options.allowedMcpTools.join(','),
+          TALOND_TRACEPARENT: options.traceparent ?? '',
+          TALOND_BACKGROUND_TASK_ID: options.taskId,
+          ...(this.buildAllowedHostRootsEnv({
+            workingDirectory: options.workingDirectory,
+            sandboxContext: options.sandboxContext,
+          })),
+          ...(options.sandboxContext
+            ? { TALOND_PRIMARY_EXECUTION_ENV_ID: options.sandboxContext.primaryExecutionEnvId }
+            : {}),
+        },
+      };
+    }
+
+    // Skill loader is mounted independently of host tools — a persona may have
+    // skills but no other host-tool capabilities, and lazy loading must still work.
+    if (options.hasSkills) {
+      mcpServers.__talond_skill_loader = {
+        transport: 'stdio',
+        command: 'node',
+        args: [join(import.meta.dirname, '../../../dist/tools/skill-loader-mcp-server.js')],
+        env: {
+          ...process.env,
+          TALOND_SOCKET: this.deps.hostToolsSocketPath,
+          TALOND_RUN_ID: options.taskId,
+          TALOND_THREAD_ID: options.threadId,
+          TALOND_PERSONA_ID: options.workerPersonaId,
+          TALOND_TRACEPARENT: options.traceparent ?? '',
+        },
+      };
+    }
 
     return mcpServers;
   }
