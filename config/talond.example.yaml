@@ -215,6 +215,21 @@ langfuse:
 # if the first model is unavailable, the next is tried, then the manifest
 # default as final fallback.
 #
+# Per-model fields:
+#   maxTokens       — optional; defaults to the subagent.yaml value
+#   timeoutMs       — optional per-model wall-clock timeout (min 1000).
+#                     On timeout the runner aborts the in-flight call and
+#                     fails over to the next model in the chain.
+#   providerOptions — optional free-form record of request body fields
+#                     forwarded verbatim to the AI SDK call. Use this to
+#                     pass vendor-specific knobs. Only effective on the
+#                     `ollama` provider slot (which is Talon's
+#                     OpenAI-compatible passthrough — point it at any
+#                     compatible endpoint via auth.providers.ollama.baseURL).
+#                     Typed providers (anthropic/openai/google) silently
+#                     drop unknown fields, so keep providerOptions on the
+#                     ollama entry of your chain.
+#
 # subagents:
 #   memory-groomer:
 #     model:
@@ -227,6 +242,26 @@ langfuse:
 #     model:
 #       - provider: openai
 #         name: gpt-5.4-spark
+#
+# Example: route session-summarizer to Qwen3 via a local llama.cpp endpoint
+# with reasoning/thinking disabled, falling back to Claude on failure.
+# Configure auth.providers.ollama.baseURL to point at your llama.cpp server.
+#
+# subagents:
+#   session-summarizer:
+#     model:
+#       - provider: ollama
+#         name: Qwen3.5-35B-A3B-UD-Q4_K_XL
+#         timeoutMs: 180000
+#         maxTokens: 32768
+#         providerOptions:
+#           chat_template_kwargs:
+#             enable_thinking: false
+#       - provider: anthropic
+#         name: claude-sonnet-4-6
+#         timeoutMs: 60000
+#         # No providerOptions on the fallback — Claude does not accept
+#         # chat_template_kwargs and would silently drop them.
 
 logLevel: info
 dataDir: data
