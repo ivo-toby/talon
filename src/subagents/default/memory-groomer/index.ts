@@ -87,6 +87,7 @@ export async function run(
       maxOutputTokens: ctx.maxOutputTokens,
       experimental_telemetry: ctx.telemetry,
       abortSignal: ctx.abortSignal,
+      providerOptions: ctx.providerOptions,
     });
 
     // 3. Check if any actions were returned.

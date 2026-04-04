@@ -9,6 +9,7 @@
 
 import { ok, err, type Result } from 'neverthrow';
 import type { LanguageModel } from 'ai';
+import type { JSONObject } from '@ai-sdk/provider';
 import type {
   LoadedSubAgent,
   SubAgentInput,
@@ -218,7 +219,7 @@ export class SubAgentRunner {
       const abortController = new AbortController();
 
       const wrappedProviderOptions = modelEntry.providerOptions
-        ? { [modelEntry.provider]: modelEntry.providerOptions }
+        ? { [modelEntry.provider]: modelEntry.providerOptions as JSONObject }
         : undefined;
 
       const agentContext = {

@@ -12,6 +12,7 @@
 
 import type { Result } from 'neverthrow';
 import type { LanguageModel } from 'ai';
+import type { JSONObject } from '@ai-sdk/provider';
 import type pino from 'pino';
 import type { SubAgentError } from '../core/errors/error-types.js';
 import type { MemoryRepository } from '../core/database/repositories/memory-repository.js';
@@ -143,7 +144,7 @@ export interface SubAgentContext {
    *   { ollama: { chat_template_kwargs: { enable_thinking: false } } }
    * Subagents should forward this verbatim to generateText / generateObject.
    */
-  providerOptions?: Record<string, Record<string, unknown>>;
+  providerOptions?: Record<string, JSONObject>;
 }
 
 // ---------------------------------------------------------------------------
