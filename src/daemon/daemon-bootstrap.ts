@@ -384,9 +384,10 @@ export async function bootstrap(
             name: e.name,
             maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
             timeoutMs: e.timeoutMs ?? summarizerAgent.manifest.timeoutMs,
+            providerOptions: e.providerOptions as Record<string, unknown> | undefined,
             source: 'override' as const,
           })),
-          { ...summarizerAgent.manifest.model, timeoutMs: summarizerAgent.manifest.timeoutMs, source: 'manifest' as const },
+          { ...summarizerAgent.manifest.model, timeoutMs: summarizerAgent.manifest.timeoutMs, providerOptions: undefined as Record<string, unknown> | undefined, source: 'manifest' as const },
         ];
 
         for (const entry of modelChain) {
@@ -411,6 +412,10 @@ export async function bootstrap(
             );
           });
 
+          const wrappedProviderOptions = entry.providerOptions
+            ? { [entry.provider]: entry.providerOptions }
+            : undefined;
+
           try {
             const runPromise = summarizerAgent.run(
               {
@@ -433,6 +438,7 @@ export async function bootstrap(
                 },
                 telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
                 abortSignal: abortController.signal,
+                providerOptions: wrappedProviderOptions as Record<string, import('@ai-sdk/provider').JSONObject> | undefined,
               },
               input,
             );
