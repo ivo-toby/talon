@@ -160,7 +160,7 @@ export class SubAgentRunner {
 
     // 4. Build model chain: config overrides (if any) + manifest fallback
     const overrideConfig = this.subagentOverrides[name];
-    const modelChain: Array<{ provider: string; name: string; maxTokens: number; timeoutMs: number; source: string }> = [];
+    const modelChain: Array<{ provider: string; name: string; maxTokens: number; timeoutMs: number; providerOptions?: Record<string, unknown>; source: string }> = [];
 
     if (overrideConfig) {
       for (const entry of overrideConfig.model) {
@@ -169,6 +169,7 @@ export class SubAgentRunner {
           name: entry.name,
           maxTokens: entry.maxTokens ?? agent.manifest.model.maxTokens,
           timeoutMs: entry.timeoutMs ?? agent.manifest.timeoutMs,
+          providerOptions: entry.providerOptions,
           source: 'override',
         });
       }
@@ -216,6 +217,10 @@ export class SubAgentRunner {
       // Per-model AbortController for timeout cancellation
       const abortController = new AbortController();
 
+      const wrappedProviderOptions = modelEntry.providerOptions
+        ? { [modelEntry.provider]: modelEntry.providerOptions }
+        : undefined;
+
       const agentContext = {
         threadId: ctx.threadId,
         personaId: ctx.personaId,
@@ -226,6 +231,7 @@ export class SubAgentRunner {
         services: { ...this.services, logger: childLogger },
         telemetry: { isEnabled: !(this.observability instanceof NoopObservabilityService) },
         abortSignal: abortController.signal,
+        providerOptions: wrappedProviderOptions,
       };
 
       try {

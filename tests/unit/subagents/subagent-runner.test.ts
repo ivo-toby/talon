@@ -72,7 +72,7 @@ function makeRunner(
   agents: Map<string, LoadedSubAgent> = new Map(),
   resolver: ModelResolver = mockResolver,
   observability: ObservabilityService | undefined = undefined,
-  subagentOverrides: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number }> }> = {},
+  subagentOverrides: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number; providerOptions?: Record<string, unknown> }> }> = {},
 ): SubAgentRunner {
   return new SubAgentRunner(agents, resolver, mockServices, mockLogger, observability, subagentOverrides);
 }
@@ -580,6 +580,93 @@ describe('SubAgentRunner', () => {
       await runner.execute('test-agent', {}, makeContext());
       expect(capturedSignal).toBeInstanceOf(AbortSignal);
       expect(capturedSignal!.aborted).toBe(true);
+    });
+
+    it('wraps providerOptions under the active model entry provider name', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{
+            provider: 'ollama',
+            name: 'qwen',
+            providerOptions: {
+              chat_template_kwargs: { enable_thinking: false },
+            },
+          }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.providerOptions).toEqual({
+        ollama: { chat_template_kwargs: { enable_thinking: false } },
+      });
+    });
+
+    it('leaves providerOptions undefined when override has none', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen' }],
+        },
+      });
+
+      await runner.execute('test-agent', {}, makeContext());
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.providerOptions).toBeUndefined();
+    });
+
+    it('does not leak providerOptions across chain entries on failover', async () => {
+      const agent = makeAgent({
+        run: vi.fn()
+          .mockRejectedValueOnce(new Error('first model blew up'))
+          .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(ok({} as any))
+          .mockResolvedValueOnce(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            {
+              provider: 'ollama',
+              name: 'qwen',
+              providerOptions: { chat_template_kwargs: { enable_thinking: false } },
+            },
+            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+          ],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const calls = (agent.run as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect(calls[0][0].providerOptions).toEqual({
+        ollama: { chat_template_kwargs: { enable_thinking: false } },
+      });
+      expect(calls[1][0].providerOptions).toBeUndefined();
     });
   });
 });
