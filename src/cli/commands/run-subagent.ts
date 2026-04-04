@@ -23,7 +23,7 @@ export interface RunSubAgentOptions {
   input: string;          // JSON string
   subagentsDir: string;
   providers: Record<string, { apiKey?: string; baseURL?: string }>;
-  subagentOverrides?: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number }> }>;
+  subagentOverrides?: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number; providerOptions?: Record<string, unknown> }> }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -74,6 +74,8 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
   let resolvedModel;
   let resolvedMaxTokens = agent.manifest.model.maxTokens;
   let resolvedTimeoutMs = agent.manifest.timeoutMs;
+  let resolvedProviderOptions: Record<string, unknown> | undefined;
+  let resolvedProviderName = agent.manifest.model.provider;
 
   if (overrideConfig) {
     for (const entry of overrideConfig.model) {
@@ -87,6 +89,8 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
         resolvedModel = result.value;
         resolvedMaxTokens = entryMaxTokens;
         resolvedTimeoutMs = entry.timeoutMs ?? agent.manifest.timeoutMs;
+        resolvedProviderOptions = entry.providerOptions;
+        resolvedProviderName = entry.provider;
         logger.info(`Resolved model: ${entry.provider}/${entry.name}`);
         break;
       }
@@ -105,6 +109,9 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
   // Execute with resolved timeout (from override or manifest).
   const systemPrompt = agent.promptContents.join('\n\n');
   const abortController = new AbortController();
+  const wrappedProviderOptions = resolvedProviderOptions
+    ? { [resolvedProviderName]: resolvedProviderOptions }
+    : undefined;
   const runPromise = agent.run(
     {
       threadId: 'cli-test',
@@ -126,6 +133,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
       },
       telemetry: { isEnabled: false },
       abortSignal: abortController.signal,
+      providerOptions: wrappedProviderOptions as Record<string, import('@ai-sdk/provider').JSONObject> | undefined,
     },
     input,
   );
