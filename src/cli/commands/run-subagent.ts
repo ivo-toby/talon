@@ -23,7 +23,7 @@ export interface RunSubAgentOptions {
   input: string;          // JSON string
   subagentsDir: string;
   providers: Record<string, { apiKey?: string; baseURL?: string }>;
-  subagentOverrides?: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number }> }>;
+  subagentOverrides?: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number }> }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -73,6 +73,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
   const overrideConfig = options.subagentOverrides?.[name];
   let resolvedModel;
   let resolvedMaxTokens = agent.manifest.model.maxTokens;
+  let resolvedTimeoutMs = agent.manifest.timeoutMs;
 
   if (overrideConfig) {
     for (const entry of overrideConfig.model) {
@@ -85,6 +86,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
       if (result.isOk()) {
         resolvedModel = result.value;
         resolvedMaxTokens = entryMaxTokens;
+        resolvedTimeoutMs = entry.timeoutMs ?? agent.manifest.timeoutMs;
         logger.info(`Resolved model: ${entry.provider}/${entry.name}`);
         break;
       }
@@ -100,8 +102,9 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
     resolvedModel = modelResult.value;
   }
 
-  // Execute with manifest timeout.
+  // Execute with resolved timeout (from override or manifest).
   const systemPrompt = agent.promptContents.join('\n\n');
+  const abortController = new AbortController();
   const runPromise = agent.run(
     {
       threadId: 'cli-test',
@@ -122,15 +125,19 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
         logger,
       },
       telemetry: { isEnabled: false },
+      abortSignal: abortController.signal,
     },
     input,
   );
 
-  const timeoutMs = agent.manifest.timeoutMs;
+  const timeoutMs = resolvedTimeoutMs;
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(
-      () => reject(new Error(`Sub-agent "${name}" timed out after ${timeoutMs}ms`)),
+      () => {
+        abortController.abort();
+        reject(new Error(`Sub-agent "${name}" timed out after ${timeoutMs}ms`));
+      },
       timeoutMs,
     );
   });
