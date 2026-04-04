@@ -966,7 +966,7 @@ describe('CodexCliProvider', () => {
     expect(result.stderr).toContain('turn.completed');
   });
 
-  it('estimates context usage from input_tokens only', () => {
+  it('estimates context usage with derived cache_creation_input_tokens', () => {
     const provider = makeProvider();
 
     expect(
@@ -980,6 +980,27 @@ describe('CodexCliProvider', () => {
       metrics: {
         input_tokens: 12_345,
         cache_read_input_tokens: 6_789,
+        cache_creation_input_tokens: 5_556,
+        cache_total_input_tokens: 12_345,
+      },
+    });
+  });
+
+  it('estimates context usage when no cache tokens are reported', () => {
+    const provider = makeProvider();
+
+    expect(
+      provider.estimateContextUsage({
+        inputTokens: 10_000,
+        outputTokens: 500,
+      }),
+    ).toEqual({
+      inputTokens: 10_000,
+      metrics: {
+        input_tokens: 10_000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 10_000,
+        cache_total_input_tokens: 10_000,
       },
     });
   });

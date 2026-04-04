@@ -148,11 +148,11 @@ agentRunner:
     codex-cli:
       enabled: false
       command: codex
-      contextWindowTokens: 400000
+      contextWindowTokens: 1048576
       contextManagement:
         enabled: true
-        triggerMetric: cache_read_input_tokens
-        thresholdRatio: 0.8
+        triggerMetric: input_tokens          # OpenAI input_tokens = total context; use this, not cache metrics
+        thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
       options:
