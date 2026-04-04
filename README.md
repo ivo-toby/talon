@@ -929,7 +929,8 @@ subagents:
     model:
       - provider: ollama
         name: qwen3-30b
-        # maxTokens: 4096   # optional — falls back to subagent.yaml default
+        # maxTokens: 4096     # optional — falls back to subagent.yaml default
+        # timeoutMs: 120000   # optional per-model wall-clock timeout (min 1000)
       - provider: anthropic
         name: claude-haiku-4-5
   session-summarizer:
@@ -938,17 +939,59 @@ subagents:
         name: gpt-5.4-spark
 ```
 
+**Per-model fields:**
+
+| Field             | Purpose                                                                                                                |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `provider`        | Provider slot: `anthropic`, `openai`, `google`, or `ollama` (required)                                                 |
+| `name`            | Model name as the provider expects it (required)                                                                       |
+| `maxTokens`       | Max output tokens; falls back to the manifest value                                                                    |
+| `timeoutMs`       | Per-model wall-clock timeout. On expiry the runner aborts the in-flight AI SDK call and fails over to the next model   |
+| `providerOptions` | Free-form record forwarded verbatim to the AI SDK call. Use this for vendor-specific knobs (see `providerOptions` below) |
+
 **How failover works:**
 
 1. The runner tries each model in the `model` array in order
 2. If a model fails (missing credentials, provider down, runtime error), it logs a warning and tries the next
-3. After exhausting the override list, the manifest's `model` is tried as a final fallback
-4. If all models fail, the error includes a summary of each attempt and why it failed
-5. Timeout errors are terminal — failover stops to prevent concurrent execution
+3. On timeout, the runner aborts the in-flight call via `AbortController` and fails over — timeouts are not terminal
+4. After exhausting the override list, the manifest's `model` is tried as a final fallback
+5. If all models fail, the error includes a summary of each attempt and why it failed
 
-Overrides apply everywhere a sub-agent runs, including the context roller's summarizer path.
+Overrides apply everywhere a sub-agent runs, including the context roller's summarizer path. Each attempt gets its own `timeoutMs` and `providerOptions` — settings do not leak across chain entries.
 
-Sub-agents with no entry in `subagents:` use their manifest model unchanged. The `maxTokens` field is optional per override entry — when omitted, the manifest's `maxTokens` is used.
+Sub-agents with no entry in `subagents:` use their manifest model unchanged. All per-model fields except `provider` and `name` are optional.
+
+#### `providerOptions` — vendor knob passthrough
+
+`providerOptions` is a free-form record of fields forwarded verbatim to the AI SDK call (`generateText` / `generateObject`). Use it to pass vendor-specific knobs like sampling parameters or custom chat template arguments.
+
+**Effective only on the `ollama` slot.** The `ollama` provider is Talon's OpenAI-compatible passthrough entry point — point it at any OpenAI-compatible endpoint (real Ollama, llama.cpp, vLLM, a Cloudflare-tunneled node) via `auth.providers.ollama.baseURL`. Typed providers (`anthropic`, `openai`, `google`) silently drop unknown fields, so keep `providerOptions` on the `ollama` entry of your chain.
+
+**Example — route `session-summarizer` to Qwen3 on llama.cpp with thinking mode disabled, fall back to Claude:**
+
+```yaml
+auth:
+  providers:
+    ollama:
+      baseURL: http://localhost:8080/v1   # llama.cpp OpenAI-compatible endpoint
+
+subagents:
+  session-summarizer:
+    model:
+      - provider: ollama
+        name: Qwen3.5-35B-A3B-UD-Q4_K_XL
+        timeoutMs: 180000
+        maxTokens: 32768
+        providerOptions:
+          chat_template_kwargs:
+            enable_thinking: false
+      - provider: anthropic
+        name: claude-sonnet-4-6
+        timeoutMs: 60000
+        # no providerOptions on the fallback — Claude would drop them anyway
+```
+
+The runner wraps `providerOptions` under the active model entry's provider name internally (the user-facing YAML shape is flat). On failover to the Anthropic entry, `providerOptions` is not carried over — the Qwen-specific `chat_template_kwargs` never reaches Claude.
 
 **Built-in sub-agent names** (use these as keys under `subagents:` in `talond.yaml`):
 
