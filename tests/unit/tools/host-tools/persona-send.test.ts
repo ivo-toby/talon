@@ -118,6 +118,42 @@ function makePersonaRepo(): PersonaRepository {
   } as unknown as PersonaRepository;
 }
 
+function makeWorkflowService() {
+  return {
+    createItem: vi.fn().mockReturnValue(
+      ok({
+        id: 'workflow-123',
+        workflowType: 'orchestrator_task',
+        domain: 'operations',
+        title: 'Delegate to researcher',
+        goal: { targetPersona: 'researcher' },
+        state: 'intake',
+        statusReason: null,
+        rolloutMode: 'authoritative',
+        policyPack: 'orchestrator-task',
+        policyVersion: '1',
+        ownerActorId: 'persona-001',
+        sourceThreadId: 'thread-001',
+        sourceMessageId: null,
+        sourceRunId: 'run-001',
+        priority: 0,
+        createdAt: 1_000,
+        updatedAt: 1_000,
+        completedAt: null,
+      }),
+    ),
+    attachEvidence: vi.fn().mockReturnValue(ok({})),
+    requestTransition: vi.fn().mockReturnValue(
+      ok({
+        decision: 'accepted',
+        reasonCodes: ['transition_recorded'],
+        missingEvidence: [],
+        recommendedIntervention: null,
+      }),
+    ),
+  };
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -228,6 +264,112 @@ describe('PersonaSendHandler — success', () => {
       error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
     });
   });
+
+  it('creates an authoritative orchestrator workflow item when workflow_type is requested', async () => {
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const personaRepo = makePersonaRepo();
+    const workflowService = makeWorkflowService();
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      workflowService,
+      logger: makeLogger(),
+    } as any);
+
+    const result = await handler.execute(
+      makeArgs({ workflow_type: 'orchestrator_task' } as Partial<PersonaSendArgs>),
+      makeContext(),
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.result).toEqual({
+      task_id: 'task-123',
+      state: 'submitted',
+      workflow_item_id: 'workflow-123',
+    });
+    expect(workflowService.createItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowType: 'orchestrator_task',
+        sourceThreadId: 'thread-001',
+        sourceRunId: 'run-001',
+        ownerActorId: 'persona-001',
+      }),
+    );
+    expect(taskMapper.submitTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowItemId: 'workflow-123',
+      }),
+    );
+    expect(workflowService.attachEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowItemId: 'workflow-123',
+        evidenceType: 'a2a_task_submitted',
+      }),
+    );
+    expect(workflowService.requestTransition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowItemId: 'workflow-123',
+        requestedState: 'ready',
+      }),
+    );
+  });
+
+  it('maps polled A2A states into workflow transitions for orchestrator tasks', async () => {
+    vi.useFakeTimers();
+
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const personaRepo = makePersonaRepo();
+    const workflowService = makeWorkflowService();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(ok(makeTaskRow({ state: 'working' })))
+      .mockReturnValueOnce(
+        ok(
+          makeTaskRow({
+            state: 'completed',
+            result_payload: JSON.stringify({ text: 'Task complete' }),
+            completed_at: 1020,
+            updated_at: 1020,
+          }),
+        ),
+      );
+
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      workflowService,
+      logger: makeLogger(),
+      maxWaitMs: 100,
+      pollIntervalMs: 10,
+    } as any);
+
+    const resultPromise = handler.execute(
+      makeArgs({ workflow_type: 'orchestrator_task', await_reply: true } as Partial<PersonaSendArgs>),
+      makeContext(),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    const result = await resultPromise;
+
+    expect(result.status).toBe('success');
+    expect(workflowService.requestTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowItemId: 'workflow-123', requestedState: 'in_progress' }),
+    );
+    expect(workflowService.attachEvidence).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowItemId: 'workflow-123', evidenceType: 'a2a_task_completed' }),
+    );
+    expect(workflowService.requestTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowItemId: 'workflow-123', requestedState: 'done' }),
+    );
+    expect(result.result).toEqual({
+      task_id: 'task-123',
+      state: 'completed',
+      result: 'Task complete',
+      workflow_item_id: 'workflow-123',
+    });
+  });
 });
 
 describe('PersonaSendHandler — hop count propagation', () => {
@@ -317,6 +459,43 @@ describe('PersonaSendHandler — timeout and errors', () => {
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/message is required/);
     expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('maps input-required A2A state to a blocked workflow outcome', async () => {
+    vi.useFakeTimers();
+
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const personaRepo = makePersonaRepo();
+    const workflowService = makeWorkflowService();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskRow({ state: 'input-required' })),
+    );
+
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo,
+      personaRepo,
+      workflowService,
+      logger: makeLogger(),
+      maxWaitMs: 100,
+      pollIntervalMs: 10,
+    } as any);
+
+    const result = await handler.execute(
+      makeArgs({ workflow_type: 'orchestrator_task', await_reply: true } as Partial<PersonaSendArgs>),
+      makeContext(),
+    );
+
+    expect(result.status).toBe('success');
+    expect(workflowService.requestTransition).toHaveBeenCalledWith(
+      expect.objectContaining({ workflowItemId: 'workflow-123', requestedState: 'blocked' }),
+    );
+    expect(result.result).toEqual({
+      task_id: 'task-123',
+      state: 'input-required',
+      workflow_item_id: 'workflow-123',
+    });
   });
 
   it('rejects invalid timeout_ms values', async () => {

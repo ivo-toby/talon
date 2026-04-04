@@ -10,7 +10,7 @@ import type { SkillResolver } from '../../skills/skill-resolver.js';
 import type { ContextAssembler } from '../../daemon/context-assembler.js';
 import type { LoadedSkill } from '../../skills/skill-types.js';
 import { buildPersonaRuntimeContext } from '../../personas/persona-runtime-context.js';
-import type { BackgroundTask } from '../../subagents/background/background-agent-types.js';
+import type { BackgroundTask, BackgroundTaskResult } from '../../subagents/background/background-agent-types.js';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
 import { filterAllowedMcpTools } from '../tool-filter.js';
 import { resolveToolInstructions } from '../tool-instructions.js';
@@ -294,6 +294,28 @@ export class BackgroundAgentHandler {
       tool: BackgroundAgentHandler.manifest.name,
       status: 'success',
       result: { taskId: spawnResult.value },
+      workflowMetadata: {
+        evidence: {
+          evidenceType: 'background_task_spawned',
+          source: 'background_task',
+          locator: `task:${spawnResult.value}`,
+          capturedAt: Date.now(),
+          provenance: {
+            tool: BackgroundAgentHandler.manifest.name,
+            requestId,
+            runId: context.runId,
+            threadId: context.threadId,
+            personaId: context.personaId,
+          },
+          payload: {
+            status: 'running',
+            provider: resolvedProvider ?? null,
+            workingDirectory: args.workingDirectory ?? null,
+            timeoutMinutes: args.timeoutMinutes ?? null,
+            sandbox,
+          },
+        },
+      },
     };
   }
 
@@ -380,6 +402,7 @@ export class BackgroundAgentHandler {
       tool: BackgroundAgentHandler.manifest.name,
       status: 'success',
       result: result.value,
+      workflowMetadata: this.workflowMetadataForTask(ownership.task, result.value),
     };
   }
 
@@ -445,5 +468,51 @@ export class BackgroundAgentHandler {
       status: 'error',
       error,
     };
+  }
+
+  private workflowMetadataForTask(
+    task: BackgroundTask,
+    taskResult: BackgroundTaskResult | null,
+  ): ToolCallResult['workflowMetadata'] {
+    const status = taskResult?.status ?? task.status;
+    const evidenceType = this.backgroundTaskEvidenceType(status);
+
+    return {
+      evidence: {
+        evidenceType,
+        source: 'background_task',
+        locator: `task:${task.id}`,
+        capturedAt: task.completedAt ?? task.createdAt,
+        provenance: {
+          tool: BackgroundAgentHandler.manifest.name,
+          taskId: task.id,
+          providerName: task.providerName,
+          threadId: task.threadId,
+          personaId: task.personaId,
+        },
+        payload: {
+          status,
+          output: taskResult?.output ?? task.output,
+          error: taskResult?.error ?? task.error,
+          durationSeconds: taskResult?.durationSeconds ?? null,
+          workingDirectory: task.workingDirectory,
+          sandboxEnabled: task.sandboxEnabled,
+          primaryExecutionEnvId: task.primaryExecutionEnvId,
+        },
+      },
+    };
+  }
+
+  private backgroundTaskEvidenceType(status: BackgroundTask['status']): string {
+    switch (status) {
+      case 'completed':
+        return 'background_task_completed';
+      case 'timed_out':
+        return 'background_task_timed_out';
+      case 'failed':
+        return 'background_task_failed';
+      default:
+        return 'background_task_spawned';
+    }
   }
 }

@@ -42,6 +42,12 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   BindingRepository: vi.fn().mockImplementation(() => ({})),
   MemoryRepository: vi.fn().mockImplementation(() => ({})),
   A2ATaskRepository: vi.fn().mockImplementation(() => ({})),
+  WorkflowItemRepository: vi.fn().mockImplementation(() => ({})),
+  WorkflowClaimRepository: vi.fn().mockImplementation(() => ({})),
+  WorkflowEvidenceRepository: vi.fn().mockImplementation(() => ({})),
+  WorkflowEventRepository: vi.fn().mockImplementation(() => ({})),
+  WorkflowLeaseRepository: vi.fn().mockImplementation(() => ({})),
+  WorkflowInterventionRepository: vi.fn().mockImplementation(() => ({})),
 }));
 
 vi.mock('../../../src/core/database/repositories/audit-repository.js', () => ({
@@ -242,6 +248,18 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
       defaultProvider: 'claude-code',
       providers: {
         'claude-code': makeBackgroundProviderConfig(),
+      },
+    },
+    workflow: {
+      enabled: false,
+      defaultRolloutMode: 'observe',
+      defaultPolicyPack: 'observe-only',
+      bindings: [],
+      watchdog: {
+        enabled: true,
+        evaluationIntervalMs: 30000,
+        freshnessThresholdMs: 15 * 60 * 1000,
+        claimRejectionThreshold: 2,
       },
     },
     sprites: {
@@ -461,6 +479,12 @@ describe('bootstrap', () => {
       expect(ctx.repos.run).toBeDefined();
       expect(ctx.repos.binding).toBeDefined();
       expect(ctx.repos.memory).toBeDefined();
+      expect(ctx.repos.workflowItem).toBeDefined();
+      expect(ctx.repos.workflowClaim).toBeDefined();
+      expect(ctx.repos.workflowEvidence).toBeDefined();
+      expect(ctx.repos.workflowEvent).toBeDefined();
+      expect(ctx.repos.workflowLease).toBeDefined();
+      expect(ctx.repos.workflowIntervention).toBeDefined();
       expect(ctx.channelRegistry).toBeDefined();
       expect(ctx.queueManager).toBeDefined();
       expect(ctx.scheduler).toBeDefined();
@@ -474,6 +498,7 @@ describe('bootstrap', () => {
       expect(ctx.backgroundAgentManager).toBeDefined();
       expect(ctx.providerRegistry).toBeDefined();
       expect(ctx.observability).toBeDefined();
+      expect(ctx.workflowService).toBeDefined();
       expect(ctx.logger).toBeDefined();
     });
 

@@ -27,6 +27,12 @@ import type {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  WorkflowItemRepository,
+  WorkflowClaimRepository,
+  WorkflowEvidenceRepository,
+  WorkflowEventRepository,
+  WorkflowLeaseRepository,
+  WorkflowInterventionRepository,
 } from '../core/database/repositories/index.js';
 import type { ChannelRegistry } from '../channels/channel-registry.js';
 import type { QueueManager } from '../queue/queue-manager.js';
@@ -48,6 +54,8 @@ import type { ContextAssembler } from './context-assembler.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
+import type { WorkflowKernelService } from '../workflow/workflow-service.js';
+import type { WorkflowReadModel } from '../workflow/workflow-read-model.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -69,6 +77,12 @@ export interface DaemonRepos {
   readonly binding: BindingRepository;
   readonly memory: MemoryRepository;
   readonly a2aTask: A2ATaskRepository;
+  readonly workflowItem: WorkflowItemRepository;
+  readonly workflowClaim: WorkflowClaimRepository;
+  readonly workflowEvidence: WorkflowEvidenceRepository;
+  readonly workflowEvent: WorkflowEventRepository;
+  readonly workflowLease: WorkflowLeaseRepository;
+  readonly workflowIntervention: WorkflowInterventionRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -102,6 +116,8 @@ export interface DaemonContext {
   readonly loadedSkills: LoadedSkill[];
   readonly messagePipeline: MessagePipeline;
   readonly observability: ObservabilityService;
+  readonly workflowService: WorkflowKernelService;
+  readonly workflowReadModel: WorkflowReadModel;
   readonly hostToolsBridge: HostToolsBridge;
   readonly providerRegistry: ProviderRegistry<AgentRunnerProviderConfig>;
   readonly subAgentRunner: SubAgentRunner | null;

@@ -4,6 +4,7 @@
  * Submits a task to another persona over Talon's internal A2A layer.
  */
 
+import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from 'neverthrow';
 import type pino from 'pino';
 import type { A2ATaskMapper } from '../../a2a/a2a-task-mapper.js';
@@ -18,6 +19,12 @@ import {
   PERSONA_TASK_WAIT_MAX_MS,
   resolvePersonaTaskWaitMs,
 } from '../tool-timeouts.js';
+import type { WorkflowKernelService } from '../../workflow/workflow-service.js';
+import {
+  mapA2ATaskStateToWorkflowState,
+  ORCHESTRATOR_TASK_WORKFLOW_TYPE,
+  orchestratorTaskDefaults,
+} from '../../workflow/packs/orchestrator-task-pack.js';
 
 export interface PersonaSendTool {
   readonly manifest: ToolManifest;
@@ -28,6 +35,7 @@ export interface PersonaSendArgs {
   message: string;
   await_reply?: boolean;
   timeout_ms?: number;
+  workflow_type?: string;
 }
 
 type PersonaSendState = A2ATaskState | 'timeout';
@@ -35,6 +43,7 @@ type PersonaSendState = A2ATaskState | 'timeout';
 interface PersonaSendOutput {
   task_id: string;
   state: PersonaSendState;
+  workflow_item_id?: string;
   result?: string;
   error?: string;
 }
@@ -61,6 +70,7 @@ export class PersonaSendHandler {
       taskMapper: A2ATaskMapper;
       taskRepo: A2ATaskRepository;
       personaRepo: PersonaRepository;
+      workflowService?: WorkflowKernelService;
       logger: pino.Logger;
       maxWaitMs?: number;
       pollIntervalMs?: number;
@@ -94,12 +104,19 @@ export class PersonaSendHandler {
       return this.errorResult(requestId, sourcePersona.error.message);
     }
 
+    const workflowItemIdResult = this.maybeCreateWorkflowItem(validatedArgs.value, context);
+    if (workflowItemIdResult.isErr()) {
+      return this.errorResult(requestId, workflowItemIdResult.error.message);
+    }
+    const workflowItemId = workflowItemIdResult.value;
+
     const submitResult = this.deps.taskMapper.submitTask({
       sourcePersona: sourcePersona.value,
       targetPersona: validatedArgs.value.target_persona,
       sourceThreadId: context.threadId,
       content: validatedArgs.value.message,
       hopCount: (context.a2aHopCount ?? 0) + 1,
+      ...(workflowItemId ? { workflowItemId } : {}),
       ...(context.a2aTaskId ? { parentTaskId: context.a2aTaskId } : {}),
     });
 
@@ -112,16 +129,20 @@ export class PersonaSendHandler {
       return this.errorResult(requestId, message);
     }
 
+    this.recordWorkflowSubmission(workflowItemId, submitResult.value.taskId, context);
+
     if (!validatedArgs.value.await_reply) {
       return this.successResult(requestId, {
         task_id: submitResult.value.taskId,
         state: 'submitted',
+        ...(workflowItemId ? { workflow_item_id: workflowItemId } : {}),
       });
     }
 
     const awaitedResult = await this.pollUntilTerminal(
       submitResult.value.taskId,
       resolvePersonaTaskWaitMs(validatedArgs.value.timeout_ms, this.deps.maxWaitMs),
+      workflowItemId,
     );
     if (awaitedResult.isErr()) {
       this.deps.logger.error({ requestId, taskId: submitResult.value.taskId }, awaitedResult.error.message);
@@ -155,11 +176,21 @@ export class PersonaSendHandler {
       );
     }
 
+    if (
+      args.workflow_type !== undefined &&
+      args.workflow_type !== ORCHESTRATOR_TASK_WORKFLOW_TYPE
+    ) {
+      return err(
+        new ToolError(`persona.send: workflow_type must be "${ORCHESTRATOR_TASK_WORKFLOW_TYPE}" when provided`),
+      );
+    }
+
     return ok({
       target_persona: args.target_persona.trim(),
       message: args.message.trim(),
       await_reply: args.await_reply ?? false,
       ...(args.timeout_ms !== undefined ? { timeout_ms: args.timeout_ms } : {}),
+      ...(args.workflow_type !== undefined ? { workflow_type: args.workflow_type } : {}),
     });
   }
 
@@ -181,9 +212,11 @@ export class PersonaSendHandler {
   private async pollUntilTerminal(
     taskId: string,
     maxWaitMs: number = PERSONA_SEND_DEFAULT_MAX_WAIT_MS,
+    workflowItemId?: string,
   ): Promise<Result<PersonaSendOutput, ToolError>> {
     const pollIntervalMs = this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + maxWaitMs;
+    let lastObservedState: A2ATaskState | null = null;
 
     while (true) {
       const rowResult = this.deps.taskRepo.findById(taskId);
@@ -197,8 +230,13 @@ export class PersonaSendHandler {
 
       this.deps.logger.debug({ taskId, state: rowResult.value.state }, 'persona.send: polled task state');
 
+      if (workflowItemId && rowResult.value.state !== lastObservedState) {
+        this.recordWorkflowTaskState(workflowItemId, rowResult.value);
+        lastObservedState = rowResult.value.state;
+      }
+
       if (TERMINAL_STATES.has(rowResult.value.state)) {
-        return ok(this.toOutput(rowResult.value));
+        return ok(this.toOutput(rowResult.value, workflowItemId));
       }
 
       const remaining = deadline - Date.now();
@@ -214,16 +252,18 @@ export class PersonaSendHandler {
     return ok({
       task_id: taskId,
       state: 'timeout',
+      ...(workflowItemId ? { workflow_item_id: workflowItemId } : {}),
       error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
     });
   }
 
-  private toOutput(row: A2ATaskRow): PersonaSendOutput {
+  private toOutput(row: A2ATaskRow, workflowItemId?: string): PersonaSendOutput {
     if (row.state === 'completed') {
       const result = this.parseResultPayload(row.result_payload);
       return {
         task_id: row.id,
         state: 'completed',
+        ...(workflowItemId ? { workflow_item_id: workflowItemId } : {}),
         ...(result ? { result } : {}),
       };
     }
@@ -232,6 +272,7 @@ export class PersonaSendHandler {
       return {
         task_id: row.id,
         state: 'failed',
+        ...(workflowItemId ? { workflow_item_id: workflowItemId } : {}),
         error: row.error_message ?? row.error_code ?? 'Task failed',
       };
     }
@@ -240,6 +281,7 @@ export class PersonaSendHandler {
     return {
       task_id: row.id,
       state: row.state,
+      ...(workflowItemId ? { workflow_item_id: workflowItemId } : {}),
     };
   }
 
@@ -272,5 +314,111 @@ export class PersonaSendHandler {
       status: 'error',
       error,
     };
+  }
+
+  private maybeCreateWorkflowItem(
+    args: PersonaSendArgs,
+    context: ToolExecutionContext,
+  ): Result<string | undefined, ToolError> {
+    if (args.workflow_type !== ORCHESTRATOR_TASK_WORKFLOW_TYPE) {
+      return ok(undefined);
+    }
+
+    if (!this.deps.workflowService) {
+      return err(new ToolError('persona.send: workflow service is not available'));
+    }
+
+    const defaults = orchestratorTaskDefaults();
+    const createItem = this.deps.workflowService.createItem({
+      id: randomUUID(),
+      workflowType: defaults.workflowType,
+      domain: 'operations',
+      title: `Delegate to ${args.target_persona}`,
+      goal: {
+        targetPersona: args.target_persona,
+        message: args.message,
+      },
+      priority: 0,
+      ownerActorId: context.personaId,
+      sourceThreadId: context.threadId,
+      sourceRunId: context.runId,
+      rolloutMode: defaults.rolloutMode,
+      policyPack: defaults.policyPack,
+      policyVersion: defaults.policyVersion,
+    });
+    if (createItem.isErr()) {
+      return err(new ToolError(`persona.send: failed to create workflow item: ${createItem.error.message}`));
+    }
+
+    return ok(createItem.value.id);
+  }
+
+  private recordWorkflowSubmission(
+    workflowItemId: string | undefined,
+    taskId: string,
+    context: ToolExecutionContext,
+  ): void {
+    if (!workflowItemId || !this.deps.workflowService) {
+      return;
+    }
+
+    this.deps.workflowService.attachEvidence({
+      id: randomUUID(),
+      workflowItemId,
+      claimId: null,
+      evidenceType: 'a2a_task_submitted',
+      source: 'a2a_task',
+      locator: `task:${taskId}`,
+      capturedAt: Date.now(),
+      provenance: {
+        tool: 'persona.send',
+        runId: context.runId,
+        threadId: context.threadId,
+        personaId: context.personaId,
+      },
+      payload: {
+        state: 'submitted',
+      },
+    });
+    this.deps.workflowService.requestTransition({
+      workflowItemId,
+      requestedState: 'ready',
+      actorId: context.personaId,
+      reason: 'a2a_submitted',
+      correlationId: taskId,
+    });
+  }
+
+  private recordWorkflowTaskState(workflowItemId: string, row: A2ATaskRow): void {
+    if (!this.deps.workflowService) {
+      return;
+    }
+
+    if (row.state === 'completed') {
+      this.deps.workflowService.attachEvidence({
+        id: randomUUID(),
+        workflowItemId,
+        claimId: null,
+        evidenceType: 'a2a_task_completed',
+        source: 'a2a_task',
+        locator: `task:${row.id}`,
+        capturedAt: row.completed_at ?? row.updated_at,
+        provenance: {
+          taskId: row.id,
+          state: row.state,
+        },
+        payload: {
+          resultPayload: row.result_payload,
+        },
+      });
+    }
+
+    this.deps.workflowService.requestTransition({
+      workflowItemId,
+      requestedState: mapA2ATaskStateToWorkflowState(row.state),
+      actorId: row.source_persona,
+      reason: `a2a_${row.state}`,
+      correlationId: row.id,
+    });
   }
 }

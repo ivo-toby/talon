@@ -167,6 +167,23 @@ backgroundAgent:
         defaultModel: gemini-2.5-pro
 
 # ---------------------------------------------------------------------------
+# Workflow kernel — durable workflow state, claims/evidence, and watchdogs
+# ---------------------------------------------------------------------------
+workflow:
+  enabled: false                     # sidecar is off by default
+  defaultRolloutMode: observe        # observe | guided | authoritative
+  defaultPolicyPack: observe-only
+  bindings:
+    - workflowType: orchestrator_task
+      policyPack: orchestrator-task
+      rolloutMode: authoritative
+  watchdog:
+    enabled: true
+    evaluationIntervalMs: 30000
+    freshnessThresholdMs: 900000
+    claimRejectionThreshold: 2
+
+# ---------------------------------------------------------------------------
 # Scheduler — cron/interval/one-shot task execution engine
 # ---------------------------------------------------------------------------
 scheduler:

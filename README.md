@@ -47,6 +47,7 @@ It is built for single-user or small-team deployments where you want persistent,
 - **Per-thread memory** — Each conversation thread gets its own workspace with transcript, working memory, and artifacts
 - **Skills** — Modular prompt and tool bundles with lazy loading (metadata-only in system prompt, full content on demand)
 - **MCP integration** — Connect external MCP tool servers via stdio, policy-enforced through host-tools bridge
+- **Workflow kernel sidecar** — Durable workflow items, claims, evidence, leases, watchdog checks, and one narrow authoritative orchestrator-task rollout
 
 ### Provider abstraction
 
@@ -397,6 +398,7 @@ dataDir: data
 | `queue`                | Retry/backoff/concurrency controls for durable queue processing               |
 | `agentRunner`          | Foreground provider config, including provider-scoped context management      |
 | `backgroundAgent`      | Enable and tune long-running background provider workers                      |
+| `workflow`             | Durable workflow kernel rollout, policy-pack bindings, and watchdog settings  |
 | `personas`             | Persona profiles: model, system prompt, skills, capabilities                  |
 | `channels`             | Channel connector entries with `type`, `name`, and connector `config` payload |
 | `bindings`             | Channel-to-persona routing with default persona per channel                   |
@@ -408,6 +410,32 @@ dataDir: data
 | `logLevel` / `dataDir` | Runtime logging level and data root                                           |
 
 For the context-management strategies and migration details, see [docs/context-management.md](docs/context-management.md).
+
+### Workflow kernel
+
+Talon now includes a domain-agnostic workflow sidecar. It stores workflow items, claims, evidence, append-only events, leases, and interventions in SQLite. The sidecar defaults to `observe` mode so it can track state without blocking the existing runtime path.
+
+The first authoritative rollout is intentionally narrow: explicit orchestrator delegations created through `persona_send` with `workflow_type: "orchestrator_task"`. That path creates a durable workflow item, links it to the A2A task, records A2A evidence, and enforces an evidence gate before authoritative completion transitions are accepted.
+
+You can inspect the current summary with `talonctl status` and list the operational rows with `talonctl list-workflows --db data/talond.sqlite`.
+
+Example configuration:
+
+```yaml
+workflow:
+  enabled: true
+  defaultRolloutMode: observe
+  defaultPolicyPack: observe-only
+  bindings:
+    - workflowType: orchestrator_task
+      policyPack: orchestrator-task
+      rolloutMode: authoritative
+  watchdog:
+    enabled: true
+    evaluationIntervalMs: 30000
+    freshnessThresholdMs: 900000
+    claimRejectionThreshold: 2
+```
 
 ### Environment Variable Substitution
 
@@ -2557,7 +2585,8 @@ Examples:
   "target_persona": "work-context-manager",
   "message": "Fetch the latest Jira and Confluence updates",
   "await_reply": true,
-  "timeout_ms": 300000
+  "timeout_ms": 300000,
+  "workflow_type": "orchestrator_task"
 }
 ```
 

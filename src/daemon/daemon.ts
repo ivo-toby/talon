@@ -22,7 +22,7 @@ import { McpRegistry } from '../mcp/mcp-registry.js';
 import { bootstrap } from './daemon-bootstrap.js';
 import { AgentRunner } from './agent-runner.js';
 import { writePidFile, removePidFile } from './lifecycle.js';
-import { WatchdogNotifier } from './watchdog.js';
+import { WatchdogNotifier, WorkflowWatchdogScheduler } from './watchdog.js';
 import { registerChannels, injectSiblingBotIds } from '../channels/channel-setup.js';
 
 import type { DaemonContext } from './daemon-context.js';
@@ -43,6 +43,7 @@ export class TalondDaemon {
   private agentRunner: AgentRunner | null = null;
   private ipcServer: DaemonIpcServer | null = null;
   private watchdog: WatchdogNotifier | null = null;
+  private workflowWatchdog: WorkflowWatchdogScheduler | null = null;
   private mcpRegistry: McpRegistry | null = null;
 
   constructor(private readonly logger: pino.Logger) {}
@@ -149,6 +150,16 @@ export class TalondDaemon {
     this.watchdog.start();
     this.watchdog.notifyReady();
 
+    const workflowConfig = this.ctx.config.workflow;
+    if (workflowConfig?.enabled && workflowConfig.watchdog.enabled) {
+      this.workflowWatchdog = new WorkflowWatchdogScheduler({
+        intervalMs: workflowConfig.watchdog.evaluationIntervalMs,
+        logger: this.logger,
+        tick: (now) => this.ctx!.workflowService.evaluateDueWork(now),
+      });
+      this.workflowWatchdog.start();
+    }
+
     return ok(undefined);
   }
 
@@ -168,6 +179,11 @@ export class TalondDaemon {
       this.watchdog.notifyStopping();
       this.watchdog.stop();
       this.watchdog = null;
+    }
+
+    if (this.workflowWatchdog !== null) {
+      this.workflowWatchdog.stop();
+      this.workflowWatchdog = null;
     }
 
     if (this.ctx !== null) {
@@ -422,6 +438,10 @@ export class TalondDaemon {
             channelCount:
               this.ctx?.config.channels.filter((channel) => channel.enabled).length ?? 0,
             deadLetterCount: healthData.queueStats.deadLetter,
+            ...(this.ctx?.workflowReadModel.summarizeOperationalView().match(
+              (summary) => ({ workflowSummary: summary }),
+              () => ({}),
+            ) ?? {}),
             ...(tokenUsage24h !== undefined ? { tokenUsage24h } : {}),
           },
         };

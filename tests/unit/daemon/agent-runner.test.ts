@@ -50,6 +50,16 @@ import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { type QueueItem, QueueItemStatus } from '../../../src/queue/queue-types.js';
 import { ProviderRegistry } from '../../../src/providers/provider-registry.js';
 import { ClaudeCodeProvider } from '../../../src/providers/claude-code-provider.js';
+import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
+import {
+  WorkflowItemRepository,
+  WorkflowClaimRepository,
+  WorkflowEvidenceRepository,
+  WorkflowEventRepository,
+  WorkflowLeaseRepository,
+  WorkflowInterventionRepository,
+} from '../../../src/core/database/repositories/index.js';
+import { WorkflowKernelService } from '../../../src/workflow/workflow-service.js';
 import type {
   ObservationHandle,
   StartedObservationHandle,
@@ -154,6 +164,9 @@ function makeMockContext(): DaemonContext {
           name: 'TestBot',
         })),
       } as any,
+      backgroundTask: {} as any,
+      executionEnv: {} as any,
+      executionEnvCheckpoint: {} as any,
       schedule: {} as any,
       audit: {} as any,
       message: {
@@ -169,6 +182,13 @@ function makeMockContext(): DaemonContext {
       } as any,
       binding: {} as any,
       memory: {} as any,
+      a2aTask: {} as any,
+      workflowItem: {} as any,
+      workflowClaim: {} as any,
+      workflowEvidence: {} as any,
+      workflowEvent: {} as any,
+      workflowLease: {} as any,
+      workflowIntervention: {} as any,
     },
     channelRegistry: {
       get: vi.fn().mockReturnValue({
@@ -233,6 +253,16 @@ function makeMockContext(): DaemonContext {
         await fn(makeObservationHandle(null))),
       shutdown: vi.fn().mockResolvedValue(undefined),
     } as any,
+    workflowService: {
+      submitClaim: vi.fn().mockReturnValue(ok({})),
+      attachEvidence: vi.fn().mockReturnValue(ok({})),
+      requestTransition: vi.fn().mockReturnValue(ok({
+        decision: 'accepted',
+        reasonCodes: ['observed_request'],
+        missingEvidence: [],
+        recommendedIntervention: null,
+      })),
+    } as any,
     hostToolsBridge: {
       path: '/tmp/test-data/host-tools.sock',
     } as any,
@@ -244,8 +274,43 @@ function makeMockContext(): DaemonContext {
         'claude-code': (config) => new ClaudeCodeProvider(config),
       },
     ),
+    subAgentRunner: null,
     backgroundAgentManager: null,
+    executionEnvManager: null,
+    a2aServer: null,
+    a2aTaskMapper: null,
     logger: mockLogger as any,
+  };
+}
+
+function createWorkflowHarness() {
+  const db = createTestDb();
+  const itemRepository = new WorkflowItemRepository(db);
+  const claimRepository = new WorkflowClaimRepository(db);
+  const evidenceRepository = new WorkflowEvidenceRepository(db);
+  const eventRepository = new WorkflowEventRepository(db);
+  const leaseRepository = new WorkflowLeaseRepository(db);
+  const interventionRepository = new WorkflowInterventionRepository(db);
+  const workflowService = new WorkflowKernelService({
+    itemRepository,
+    claimRepository,
+    evidenceRepository,
+    eventRepository,
+    leaseRepository,
+    interventionRepository,
+  });
+
+  return {
+    db,
+    workflowService,
+    repositories: {
+      item: itemRepository,
+      claim: claimRepository,
+      evidence: evidenceRepository,
+      event: eventRepository,
+      lease: leaseRepository,
+      intervention: interventionRepository,
+    },
   };
 }
 
@@ -3536,6 +3601,133 @@ describe('AgentRunner', () => {
       // Internal tools should NOT produce a tool call description
       const toolDescriptions = sendBodies.filter((b) => b.startsWith('💾') || b.startsWith('🔧'));
       expect(toolDescriptions).toHaveLength(0);
+    });
+  });
+
+  describe('workflow runtime hooks', () => {
+    it('records progress claims for queue items that reference an existing workflow item', async () => {
+      const workflow = createWorkflowHarness();
+      const workflowItem = workflow.workflowService.createItem({
+        id: uuid(),
+        workflowType: 'orchestrator_task',
+        domain: 'operations',
+        title: 'Coordinate delegated task',
+        goal: { deliverable: 'verified output' },
+        ownerActorId: 'persona-001',
+        sourceThreadId: 'thread-001',
+      })._unsafeUnwrap();
+
+      const baseCtx = makeMockContext();
+      ctx = {
+        ...baseCtx,
+        repos: {
+          ...baseCtx.repos,
+          workflowItem: workflow.repositories.item,
+          workflowClaim: workflow.repositories.claim,
+          workflowEvidence: workflow.repositories.evidence,
+          workflowEvent: workflow.repositories.event,
+          workflowLease: workflow.repositories.lease,
+          workflowIntervention: workflow.repositories.intervention,
+        },
+        workflowService: workflow.workflowService,
+      };
+      runner = new AgentRunner(ctx);
+      mockQuery.mockReturnValue(makeAgentStream());
+
+      const result = await runner.run(
+        makeQueueItem({
+          payload: {
+            personaId: 'persona-001',
+            content: 'Continue the delegated work',
+            workflow: {
+              workflowItemId: workflowItem.id,
+              claim: {
+                claimType: 'progress',
+                action: 'report_progress',
+                target: 'delegated-task',
+                assertedOutcome: 'in_progress',
+                summary: 'Progress checkpoint recorded.',
+                payload: { percentComplete: 50 },
+              },
+            },
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      const claims = workflow.repositories.claim.listByWorkflowItemId(workflowItem.id)._unsafeUnwrap();
+      expect(claims).toHaveLength(1);
+      expect(claims[0]?.claimType).toBe('progress');
+      expect(claims[0]?.summary).toBe('Progress checkpoint recorded.');
+
+      workflow.db.close();
+    });
+
+    it('records blockage claims and transition requests as append-only workflow events', async () => {
+      const workflow = createWorkflowHarness();
+      const workflowItem = workflow.workflowService.createItem({
+        id: uuid(),
+        workflowType: 'orchestrator_task',
+        domain: 'operations',
+        title: 'Coordinate delegated task',
+        goal: { deliverable: 'verified output' },
+        ownerActorId: 'persona-001',
+        sourceThreadId: 'thread-001',
+      })._unsafeUnwrap();
+
+      const baseCtx = makeMockContext();
+      ctx = {
+        ...baseCtx,
+        repos: {
+          ...baseCtx.repos,
+          workflowItem: workflow.repositories.item,
+          workflowClaim: workflow.repositories.claim,
+          workflowEvidence: workflow.repositories.evidence,
+          workflowEvent: workflow.repositories.event,
+          workflowLease: workflow.repositories.lease,
+          workflowIntervention: workflow.repositories.intervention,
+        },
+        workflowService: workflow.workflowService,
+      };
+      runner = new AgentRunner(ctx);
+      mockQuery.mockReturnValue(makeAgentStream());
+
+      const result = await runner.run(
+        makeQueueItem({
+          payload: {
+            personaId: 'persona-001',
+            content: 'I am blocked waiting for credentials',
+            workflow: {
+              workflowItemId: workflowItem.id,
+              claim: {
+                claimType: 'blockage',
+                action: 'report_blocker',
+                target: 'delegated-task',
+                assertedOutcome: 'blocked',
+                summary: 'Blocked on missing credential.',
+                payload: { reason: 'missing_credential' },
+              },
+              transition: {
+                requestedState: 'blocked',
+                reason: 'missing_credential',
+                correlationId: 'claim-blocked-001',
+              },
+            },
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      const updatedItem = workflow.repositories.item.findById(workflowItem.id)._unsafeUnwrap();
+      const events = workflow.repositories.event.listByWorkflowItemId(workflowItem.id)._unsafeUnwrap();
+      expect(updatedItem?.state).toBe('intake');
+      expect(events.map((event) => event.eventType)).toEqual([
+        'workflow.created',
+        'workflow.claim_submitted',
+        'workflow.transition_requested',
+      ]);
+
+      workflow.db.close();
     });
   });
 

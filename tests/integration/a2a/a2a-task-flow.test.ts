@@ -21,10 +21,17 @@ import { QueueRepository } from '../../../src/core/database/repositories/queue-r
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
+import { WorkflowItemRepository } from '../../../src/core/database/repositories/workflow-item-repository.js';
+import { WorkflowClaimRepository } from '../../../src/core/database/repositories/workflow-claim-repository.js';
+import { WorkflowEvidenceRepository } from '../../../src/core/database/repositories/workflow-evidence-repository.js';
+import { WorkflowEventRepository } from '../../../src/core/database/repositories/workflow-event-repository.js';
+import { WorkflowLeaseRepository } from '../../../src/core/database/repositories/workflow-lease-repository.js';
+import { WorkflowInterventionRepository } from '../../../src/core/database/repositories/workflow-intervention-repository.js';
 import { A2ATaskMapper } from '../../../src/a2a/a2a-task-mapper.js';
 import { A2AServer } from '../../../src/a2a/a2a-server.js';
 import { buildAgentCardRegistry } from '../../../src/a2a/persona-agent-card.js';
 import type { LoadedPersona } from '../../../src/personas/persona-types.js';
+import { WorkflowKernelService } from '../../../src/workflow/workflow-service.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -276,5 +283,91 @@ describe('A2A Task Flow Integration', () => {
     const body = await res.json() as { error?: { message: string } };
     expect(body.error).toBeDefined();
     expect(body.error?.message).toMatch(/hop/i);
+  });
+
+  it('stores workflow linkage in the durable A2A task payload when provided', () => {
+    const workflowService = new WorkflowKernelService({
+      itemRepository: new WorkflowItemRepository(db),
+      claimRepository: new WorkflowClaimRepository(db),
+      evidenceRepository: new WorkflowEvidenceRepository(db),
+      eventRepository: new WorkflowEventRepository(db),
+      leaseRepository: new WorkflowLeaseRepository(db),
+      interventionRepository: new WorkflowInterventionRepository(db),
+    });
+    const workflowItem = workflowService.createItem({
+      id: uuidv4(),
+      workflowType: 'orchestrator_task',
+      domain: 'operations',
+      title: 'Coordinate delegated task',
+      goal: { deliverable: 'verified output' },
+      ownerActorId: 'assistant',
+      sourceThreadId: threadId,
+      rolloutMode: 'authoritative',
+      policyPack: 'orchestrator-task',
+      policyVersion: '1',
+    })._unsafeUnwrap();
+
+    const submitResult = mapper.submitTask({
+      sourcePersona: 'assistant',
+      targetPersona: 'software-engineer',
+      sourceThreadId: threadId,
+      content: 'Review PR #42',
+      hopCount: 0,
+      workflowItemId: workflowItem.id,
+    } as any);
+
+    expect(submitResult.isOk()).toBe(true);
+    expect((submitResult._unsafeUnwrap() as any).workflowItemId).toBe(workflowItem.id);
+
+    const taskRow = taskRepo.findById(submitResult._unsafeUnwrap().taskId)._unsafeUnwrap();
+    const requestPayload = JSON.parse(taskRow!.request_payload) as { workflowItemId?: string };
+    expect(requestPayload.workflowItemId).toBe(workflowItem.id);
+
+    const queueRow = queueRepo.findById(submitResult._unsafeUnwrap().queueItemId!)._unsafeUnwrap();
+    const payload = JSON.parse(queueRow!.payload as unknown as string) as { metadata?: { workflow?: { workflowItemId?: string } } };
+    expect(payload.metadata?.workflow?.workflowItemId).toBe(workflowItem.id);
+  });
+
+  it('rejects authoritative completion transitions without required evidence', () => {
+    const itemRepository = new WorkflowItemRepository(db);
+    const workflowService = new WorkflowKernelService({
+      itemRepository,
+      claimRepository: new WorkflowClaimRepository(db),
+      evidenceRepository: new WorkflowEvidenceRepository(db),
+      eventRepository: new WorkflowEventRepository(db),
+      leaseRepository: new WorkflowLeaseRepository(db),
+      interventionRepository: new WorkflowInterventionRepository(db),
+    });
+    const workflowItem = workflowService.createItem({
+      id: uuidv4(),
+      workflowType: 'orchestrator_task',
+      domain: 'operations',
+      title: 'Coordinate delegated task',
+      goal: { deliverable: 'verified output' },
+      ownerActorId: 'assistant',
+      sourceThreadId: threadId,
+      rolloutMode: 'authoritative',
+      policyPack: 'orchestrator-task',
+      policyVersion: '1',
+    })._unsafeUnwrap();
+
+    workflowService.requestTransition({
+      workflowItemId: workflowItem.id,
+      requestedState: 'ready',
+      actorId: 'assistant',
+      reason: 'a2a_submitted',
+      correlationId: 'task-123',
+    });
+    const completionResult = workflowService.requestTransition({
+      workflowItemId: workflowItem.id,
+      requestedState: 'done',
+      actorId: 'assistant',
+      reason: 'a2a_completed',
+      correlationId: 'task-123',
+    });
+
+    expect(completionResult.isOk()).toBe(true);
+    expect(completionResult._unsafeUnwrap().decision).toBe('rejected');
+    expect(itemRepository.findById(workflowItem.id)._unsafeUnwrap()?.state).toBe('ready');
   });
 });

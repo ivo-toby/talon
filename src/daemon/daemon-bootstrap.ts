@@ -32,6 +32,12 @@ import {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  WorkflowItemRepository,
+  WorkflowClaimRepository,
+  WorkflowEvidenceRepository,
+  WorkflowEventRepository,
+  WorkflowLeaseRepository,
+  WorkflowInterventionRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
@@ -71,6 +77,10 @@ import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { wrapProviderOptions } from '../subagents/provider-options.js';
+import { WorkflowKernelService } from '../workflow/workflow-service.js';
+import { WorkflowWatchdog } from '../workflow/workflow-watchdog.js';
+import { WorkflowReadModel } from '../workflow/workflow-read-model.js';
+import { WorkflowPolicyRegistry } from '../workflow/workflow-policy-registry.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -147,7 +157,36 @@ export async function bootstrap(
     binding: new BindingRepository(db),
     memory: new MemoryRepository(db),
     a2aTask: new A2ATaskRepository(db),
+    workflowItem: new WorkflowItemRepository(db),
+    workflowClaim: new WorkflowClaimRepository(db),
+    workflowEvidence: new WorkflowEvidenceRepository(db),
+    workflowEvent: new WorkflowEventRepository(db),
+    workflowLease: new WorkflowLeaseRepository(db),
+    workflowIntervention: new WorkflowInterventionRepository(db),
   };
+
+  const workflowReadModel = new WorkflowReadModel(db);
+  const workflowPolicyRegistry = new WorkflowPolicyRegistry(config.workflow);
+  const workflowWatchdog = new WorkflowWatchdog({
+    itemRepository: repos.workflowItem,
+    claimRepository: repos.workflowClaim,
+    eventRepository: repos.workflowEvent,
+    leaseRepository: repos.workflowLease,
+    interventionRepository: repos.workflowIntervention,
+    claimRejectionThreshold: config.workflow.watchdog.claimRejectionThreshold,
+  });
+  const workflowServiceWithWatchdog = new WorkflowKernelService({
+    itemRepository: repos.workflowItem,
+    claimRepository: repos.workflowClaim,
+    evidenceRepository: repos.workflowEvidence,
+    eventRepository: repos.workflowEvent,
+    leaseRepository: repos.workflowLease,
+    interventionRepository: repos.workflowIntervention,
+    defaultRolloutMode: config.workflow.defaultRolloutMode,
+    defaultPolicyPack: config.workflow.defaultPolicyPack,
+    evaluateDueWorkFn: (now) => workflowWatchdog.evaluate(now),
+    policyRegistry: workflowPolicyRegistry,
+  });
 
   // 5. Audit logger
   const auditStore = new RepositoryAuditStore(repos.audit);
@@ -633,6 +672,8 @@ export async function bootstrap(
     toolInstructions,
     messagePipeline,
     observability,
+    workflowService: workflowServiceWithWatchdog,
+    workflowReadModel,
     subAgentRunner,
     providerRegistry,
     backgroundAgentManager,

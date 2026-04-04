@@ -90,6 +90,12 @@ export interface DaemonStatusData {
     /** Estimated cost in USD for the last 24 hours. */
     costUsd: number;
   };
+  /** Operational workflow summary when the workflow sidecar is enabled. */
+  workflowSummary?: {
+    totalItems: number;
+    blockedItems: number;
+    activeLeases: number;
+  };
 }
 
 // ---------------------------------------------------------------------------

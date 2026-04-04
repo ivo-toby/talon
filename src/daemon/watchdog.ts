@@ -16,6 +16,8 @@
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type pino from 'pino';
+import type { Result } from 'neverthrow';
+import type { WorkflowEvaluationSummary } from '../workflow/workflow-types.js';
 
 // ---------------------------------------------------------------------------
 // WatchdogNotifier
@@ -158,6 +160,53 @@ export class WatchdogNotifier {
     } catch (cause) {
       this.logger.warn({ cause, name }, 'watchdog: failed to write status file');
     }
+  }
+}
+
+export interface WorkflowWatchdogSchedulerOptions {
+  intervalMs: number;
+  logger: pino.Logger;
+  tick: (now: number) => Result<WorkflowEvaluationSummary, Error>;
+}
+
+export class WorkflowWatchdogScheduler {
+  private timer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(private readonly options: WorkflowWatchdogSchedulerOptions) {}
+
+  start(): void {
+    if (this.timer !== null) {
+      return;
+    }
+
+    this.timer = setInterval(() => {
+      const result = this.options.tick(Date.now());
+      if (result.isErr()) {
+        this.options.logger.warn(
+          { error: result.error.message },
+          'workflow-watchdog: evaluation failed',
+        );
+        return;
+      }
+
+      this.options.logger.debug(
+        { summary: result.value },
+        'workflow-watchdog: evaluation complete',
+      );
+    }, this.options.intervalMs);
+
+    if (typeof this.timer.unref === 'function') {
+      this.timer.unref();
+    }
+  }
+
+  stop(): void {
+    if (this.timer === null) {
+      return;
+    }
+
+    clearInterval(this.timer);
+    this.timer = null;
   }
 }
 

@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { WorkflowRolloutModeSchema } from '../../workflow/workflow-types.js';
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -267,6 +268,31 @@ export const BackgroundAgentConfigSchema = z.object({
   claudePath: z.string().optional(),
 });
 
+// ---------------------------------------------------------------------------
+// Workflow kernel
+// ---------------------------------------------------------------------------
+
+export const WorkflowPolicyBindingSchema = z.object({
+  workflowType: z.string().min(1),
+  policyPack: z.string().min(1),
+  rolloutMode: WorkflowRolloutModeSchema.default('observe'),
+});
+
+export const WorkflowWatchdogConfigSchema = z.object({
+  enabled: z.boolean().default(true),
+  evaluationIntervalMs: z.number().int().min(1000).default(30_000),
+  freshnessThresholdMs: z.number().int().min(1000).default(15 * 60 * 1000),
+  claimRejectionThreshold: z.number().int().min(1).default(2),
+});
+
+export const WorkflowConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  defaultRolloutMode: WorkflowRolloutModeSchema.default('observe'),
+  defaultPolicyPack: z.string().default('observe-only'),
+  bindings: z.array(WorkflowPolicyBindingSchema).default([]),
+  watchdog: WorkflowWatchdogConfigSchema.default(() => WorkflowWatchdogConfigSchema.parse({})),
+});
+
 export const SpritesConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -368,6 +394,7 @@ export const TalondConfigSchema = z.object({
   auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
   agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
   backgroundAgent: BackgroundAgentConfigSchema.default(() => BackgroundAgentConfigSchema.parse({})),
+  workflow: WorkflowConfigSchema.default(() => WorkflowConfigSchema.parse({})),
   sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
   langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
   subagents: SubAgentsConfigSchema.default({}),

@@ -182,6 +182,11 @@ function displayStatus(data: Partial<DaemonStatusData>): void {
   console.log(`Dead-letter items: ${data.deadLetterCount ?? 'unknown'}`);
   console.log(`Personas:          ${data.personaCount ?? 'unknown'}`);
   console.log(`Channels:          ${data.channelCount ?? 'unknown'}`);
+  if (data.workflowSummary) {
+    console.log(`Workflow items:    ${data.workflowSummary.totalItems}`);
+    console.log(`Blocked workflows: ${data.workflowSummary.blockedItems}`);
+    console.log(`Active leases:     ${data.workflowSummary.activeLeases}`);
+  }
 
   if (data.tokenUsage24h !== undefined) {
     const { inputTokens, outputTokens, cacheReadTokens = 0, cacheWriteTokens = 0, costUsd } = data.tokenUsage24h;

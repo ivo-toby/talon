@@ -106,4 +106,27 @@ export interface ToolCallResult {
   result?: unknown;
   /** Human-readable error message when status is `error`. */
   error?: string;
+  /** Optional structured workflow metadata used to derive durable claims/evidence. */
+  workflowMetadata?: ToolCallWorkflowMetadata;
+}
+
+export interface WorkflowEvidenceMetadata {
+  evidenceType: string;
+  source: string;
+  locator: string;
+  capturedAt: number;
+  provenance: Record<string, unknown>;
+  payload: Record<string, unknown>;
+}
+
+export interface WorkflowTransitionRequestMetadata {
+  workflowItemId: string;
+  requestedState: string;
+  reason: string;
+  correlationId?: string;
+}
+
+export interface ToolCallWorkflowMetadata {
+  evidence?: WorkflowEvidenceMetadata;
+  transitionRequest?: WorkflowTransitionRequestMetadata;
 }
