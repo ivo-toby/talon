@@ -569,7 +569,7 @@ export class CodexCliProvider implements AgentProvider {
     }
 
     const itemType = typeof item.type === 'string' ? item.type : undefined;
-    if (!itemType || /(assistant|message)/u.test(itemType)) {
+    if (!itemType || this.isAssistantMessageItemType(itemType)) {
       return null;
     }
 
@@ -625,13 +625,6 @@ export class CodexCliProvider implements AgentProvider {
       (type === undefined || /(text|message|assistant|delta|output)/u.test(type))
     ) {
       texts.push(record.text);
-    }
-
-    if (
-      typeof record.content === 'string' &&
-      /(text|message|assistant|delta|output)/u.test(type ?? '')
-    ) {
-      texts.push(record.content);
     }
 
     for (const key of ['content', 'delta', 'message', 'parts']) {
