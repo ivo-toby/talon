@@ -864,6 +864,70 @@ describe('CodexCliProvider', () => {
     }
   });
 
+  it('streams agent_message items with top-level text (real Codex CLI format)', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Thinking about it."}}\n';
+            yield '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}\n';
+            yield '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"/workspace","exit_code":0,"status":"completed"}}\n';
+            yield '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The answer is 4."}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'What is 2+2?',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      const textEvents = events.filter((e) => e.type === 'text');
+      expect(textEvents).toEqual([
+        { type: 'text', content: 'Thinking about it.' },
+        { type: 'text', content: 'The answer is 4.' },
+      ]);
+
+      const toolEvents = events.filter((e) => e.type === 'tool_event');
+      expect(toolEvents).toHaveLength(2);
+      expect(toolEvents[0]).toMatchObject({
+        type: 'tool_event',
+        subtype: 'command_execution',
+      });
+      expect(toolEvents[1]).toMatchObject({
+        type: 'tool_event',
+        subtype: 'command_execution',
+      });
+
+      expect(events[events.length - 1]).toEqual({
+        type: 'result',
+        result: expect.objectContaining({ output: 'final-output', isError: false }),
+      });
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
   it('marks successful background output without thread.started as failed', () => {
     const provider = makeProvider();
     const lastMessagePath = join(runtimeDir, 'last-message.txt');

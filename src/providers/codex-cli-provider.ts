@@ -557,7 +557,7 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private isAssistantMessageItemType(itemType: string): boolean {
-    return /(assistant.*message|message.*assistant|assistant_message)/u.test(itemType);
+    return /(assistant.*message|message.*assistant|assistant_message|agent_message)/u.test(itemType);
   }
 
   private extractToolEvent(
