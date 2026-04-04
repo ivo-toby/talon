@@ -85,6 +85,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
       if (result.isOk()) {
         resolvedModel = result.value;
         resolvedMaxTokens = entryMaxTokens;
+        logger.info(`Resolved model: ${entry.provider}/${entry.name}`);
         break;
       }
       logger.warn(`Model ${entry.provider}/${entry.name} failed, trying next`);

@@ -23,19 +23,17 @@ import { createChildLogger } from '../core/logging/index.js';
 import type pino from 'pino';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
+import type { SubAgentsConfig } from '../core/config/config-types.js';
 
 // ---------------------------------------------------------------------------
-// Model override types
+// Timeout sentinel
 // ---------------------------------------------------------------------------
 
-interface ModelOverrideEntry {
-  provider: string;
-  name: string;
-  maxTokens?: number;
-}
-
-interface SubAgentOverrides {
-  model: ModelOverrideEntry[];
+class SubAgentTimeoutError extends Error {
+  constructor(name: string, timeoutMs: number) {
+    super(`Sub-agent "${name}" timed out after ${timeoutMs}ms`);
+    this.name = 'SubAgentTimeoutError';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +68,7 @@ export class SubAgentRunner {
     services: SubAgentServices,
     logger: pino.Logger,
     observability: ObservabilityService = new NoopObservabilityService(),
-    private readonly subagentOverrides: Record<string, SubAgentOverrides> = {},
+    private readonly subagentOverrides: SubAgentsConfig = {},
   ) {
     this.agents = agents;
     this.modelResolver = modelResolver;
@@ -180,6 +178,14 @@ export class SubAgentRunner {
       source: 'manifest',
     });
 
+    // Build once — these don't depend on which model is being tried.
+    const systemPrompt = agent.promptContents.join('\n\n');
+    const childLogger = createChildLogger(this.logger, {
+      tool: `subagent:${name}`,
+      threadId: ctx.threadId,
+      persona: ctx.personaId,
+    });
+
     const failures: string[] = [];
 
     for (const modelEntry of modelChain) {
@@ -201,12 +207,6 @@ export class SubAgentRunner {
       }
 
       const model: LanguageModel = modelResult.value;
-      const systemPrompt = agent.promptContents.join('\n\n');
-      const childLogger = createChildLogger(this.logger, {
-        tool: `subagent:${name}`,
-        threadId: ctx.threadId,
-        persona: ctx.personaId,
-      });
 
       const agentContext = {
         threadId: ctx.threadId,
@@ -248,6 +248,18 @@ export class SubAgentRunner {
         const message = error instanceof Error ? error.message : String(error);
         const failMsg = `${modelEntry.provider}/${modelEntry.name} (${modelEntry.source}): ${message}`;
         failures.push(failMsg);
+
+        // Timeout errors are terminal — the timed-out promise is still running
+        // (Promise.race doesn't cancel the loser), so starting another model
+        // would risk concurrent execution and data-integrity issues.
+        if (error instanceof SubAgentTimeoutError) {
+          this.logger.error(
+            { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}` },
+            `Sub-agent timed out — not failing over to avoid concurrent execution`,
+          );
+          break;
+        }
+
         this.logger.warn(
           { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}` },
           `Sub-agent execution threw, trying next: ${message}`,
@@ -312,12 +324,7 @@ export class SubAgentRunner {
     let timeoutId: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
-        () =>
-          reject(
-            new Error(
-              `Sub-agent "${name}" timed out after ${timeoutMs}ms`,
-            ),
-          ),
+        () => reject(new SubAgentTimeoutError(name, timeoutMs)),
         timeoutMs,
       );
     });
