@@ -813,6 +813,57 @@ describe('CodexCliProvider', () => {
     }
   });
 
+  it('maps tool message end events to tool results', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.completed","item":{"type":"tool_message_end","name":"shell","call_id":"tool-1","output":{"cwd":"/workspace/repo"}}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      expect(events).toContainEqual({
+        type: 'tool_event',
+        messageType: 'tool_result',
+        tool: 'shell',
+        toolUseId: 'tool-1',
+        input: undefined,
+        output: { cwd: '/workspace/repo' },
+        isError: undefined,
+        subtype: 'tool_message_end',
+        serverName: undefined,
+      });
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
   it('marks successful background output without thread.started as failed', () => {
     const provider = makeProvider();
     const lastMessagePath = join(runtimeDir, 'last-message.txt');

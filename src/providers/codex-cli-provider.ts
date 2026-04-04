@@ -647,7 +647,7 @@ export class CodexCliProvider implements AgentProvider {
       return 'tool_use';
     }
     if (
-      /(tool|command|exec|web_search|plan).*?(result|output|response|error|completed)/u.test(
+      /(tool|command|exec|web_search|plan).*?(result|output|response|error|completed|end|finish|stop|done)/u.test(
         itemType,
       )
     ) {
