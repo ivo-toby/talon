@@ -342,6 +342,7 @@ export const SubAgentModelOverrideSchema = z.object({
   provider: z.string().min(1),
   name: z.string().min(1),
   maxTokens: z.number().int().positive().optional(),
+  timeoutMs: z.number().int().min(1000).optional(),
 });
 
 export const SubAgentOverrideSchema = z.object({

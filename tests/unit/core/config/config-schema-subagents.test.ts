@@ -72,4 +72,47 @@ describe('TalondConfigSchema — subagents override', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts timeoutMs on a model override entry', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'memory-groomer': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 120000 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5', timeoutMs: 60000 },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagents['memory-groomer'].model[0].timeoutMs).toBe(120000);
+      expect(result.data.subagents['memory-groomer'].model[1].timeoutMs).toBe(60000);
+    }
+  });
+
+  it('allows timeoutMs to be omitted (remains undefined)', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'test': {
+          model: [{ provider: 'anthropic', name: 'haiku' }],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagents['test'].model[0].timeoutMs).toBeUndefined();
+    }
+  });
+
+  it('rejects timeoutMs below 1000', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'test': {
+          model: [{ provider: 'anthropic', name: 'haiku', timeoutMs: 500 }],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
 });
