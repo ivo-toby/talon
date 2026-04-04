@@ -1019,6 +1019,37 @@ src/subagents/default/<agent_name>/    # built-in agents (compiled with daemon)
   lib/                   # optional helper modules
 ```
 
+### Authoring Custom Sub-Agents
+
+The `run(ctx, input)` function receives a `SubAgentContext` from the runner. A custom sub-agent **must** forward the following context fields to any Vercel AI SDK `generateText` / `generateObject` call it makes:
+
+```typescript
+import { generateText } from 'ai';
+
+export async function run(ctx, input) {
+  const { text } = await generateText({
+    model: ctx.model,
+    system: ctx.systemPrompt,
+    prompt: '...',
+    maxOutputTokens: ctx.maxOutputTokens,
+    experimental_telemetry: ctx.telemetry,
+    abortSignal: ctx.abortSignal,       // REQUIRED — see below
+    providerOptions: ctx.providerOptions, // REQUIRED — for ollama passthrough
+  });
+  // ...
+}
+```
+
+**`ctx.abortSignal` is a hard requirement, not a nice-to-have.** The runner creates an `AbortController` per model attempt and aborts it when the per-model `timeoutMs` fires. Sub-agents that do not forward `ctx.abortSignal` to their in-flight LLM calls will:
+
+1. Keep consuming the upstream provider's resources (tokens, rate limit quota, compute) after the runner has given up on that model
+2. Keep running in the background while failover already advances to the next model — producing overlapping, orphaned work
+3. Resolve later with a result that nothing is listening for, masking incidents
+
+All five built-in sub-agents forward both fields. Copy the pattern above when authoring new ones.
+
+**`ctx.providerOptions`** is only non-undefined when the active model entry is on the `ollama` provider slot (Talon's OpenAI-compatible passthrough). The runner wraps the user's override record under the provider name, and typed providers (`anthropic`, `openai`, `google`) receive `undefined` so they never see foreign body fields.
+
 ### Built-in Sub-Agents
 
 #### `file-searcher`

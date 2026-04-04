@@ -15,11 +15,11 @@
 **Files:**
 - Modify: `src/core/config/config-schema.ts:341-357` (root schema)
 - Modify: `src/core/config/config-types.ts` (add type exports)
-- Test: `tests/unit/config/config-schema-subagents.test.ts`
+- Test: `tests/unit/core/config/config-schema-subagents.test.ts`
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/unit/config/config-schema-subagents.test.ts`:
+Create `tests/unit/core/config/config-schema-subagents.test.ts`:
 
 ```typescript
 import { describe, it, expect } from 'vitest';
@@ -101,7 +101,7 @@ describe('TalondConfigSchema — subagents override', () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `npx vitest run tests/unit/config/config-schema-subagents.test.ts`
+Run: `npx vitest run tests/unit/core/config/config-schema-subagents.test.ts`
 Expected: FAIL — `subagents` field not recognized by schema
 
 - [ ] **Step 3: Write minimal implementation**
@@ -145,13 +145,13 @@ export type SubAgentModelOverride = z.infer<typeof SubAgentModelOverrideSchema>;
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `npx vitest run tests/unit/config/config-schema-subagents.test.ts`
+Run: `npx vitest run tests/unit/core/config/config-schema-subagents.test.ts`
 Expected: PASS (all 6 tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/core/config/config-schema.ts src/core/config/config-types.ts tests/unit/config/config-schema-subagents.test.ts
+git add src/core/config/config-schema.ts src/core/config/config-types.ts tests/unit/core/config/config-schema-subagents.test.ts
 git commit -m "feat(config): add subagent model override schema (#156)"
 ```
 
