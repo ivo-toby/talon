@@ -136,6 +136,14 @@ export interface SubAgentContext {
    * so that timed-out requests are cancelled promptly, enabling failover.
    */
   abortSignal?: AbortSignal;
+  /**
+   * Provider-specific options to forward to the AI SDK call, keyed by provider
+   * name. Comes from the active model entry's `providerOptions` in the subagent
+   * override config, wrapped under that entry's provider name. Example shape:
+   *   { ollama: { chat_template_kwargs: { enable_thinking: false } } }
+   * Subagents should forward this verbatim to generateText / generateObject.
+   */
+  providerOptions?: Record<string, Record<string, unknown>>;
 }
 
 // ---------------------------------------------------------------------------
