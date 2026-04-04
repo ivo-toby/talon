@@ -72,7 +72,7 @@ function makeRunner(
   agents: Map<string, LoadedSubAgent> = new Map(),
   resolver: ModelResolver = mockResolver,
   observability: ObservabilityService | undefined = undefined,
-  subagentOverrides: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number }> }> = {},
+  subagentOverrides: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number }> }> = {},
 ): SubAgentRunner {
   return new SubAgentRunner(agents, resolver, mockServices, mockLogger, observability, subagentOverrides);
 }
@@ -475,6 +475,111 @@ describe('SubAgentRunner', () => {
       const result = await runner.execute('test-agent', { key: 'value' }, makeContext());
       expect(result.isOk()).toBe(true);
       expect(agent.run).toHaveBeenCalledOnce();
+    });
+
+    it('uses per-model timeoutMs from override config', async () => {
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 30_000 },
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen3-30b', timeoutMs: 120_000 }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.abortSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('falls back to manifest timeoutMs when override has no timeoutMs', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen3-30b' }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.abortSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('fails over to next model on timeout instead of terminating', async () => {
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 50 },
+        run: vi.fn()
+          .mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000)))
+          .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+
+      const model1 = {} as any;
+      const model2 = {} as any;
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(ok(model1))
+          .mockResolvedValueOnce(ok(model2)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 50 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5', timeoutMs: 5000 },
+          ],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().summary).toBe('Done via fallback');
+      expect(agent.run).toHaveBeenCalledTimes(2);
+    });
+
+    it('aborts the signal when a model times out', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 50 },
+        run: vi.fn()
+          .mockImplementationOnce((ctx: any) => {
+            capturedSignal = ctx.abortSignal;
+            return new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000));
+          })
+          .mockResolvedValueOnce(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 50 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+          ],
+        },
+      });
+
+      await runner.execute('test-agent', {}, makeContext());
+      expect(capturedSignal).toBeInstanceOf(AbortSignal);
+      expect(capturedSignal!.aborted).toBe(true);
     });
   });
 });

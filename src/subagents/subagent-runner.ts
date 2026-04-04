@@ -160,7 +160,7 @@ export class SubAgentRunner {
 
     // 4. Build model chain: config overrides (if any) + manifest fallback
     const overrideConfig = this.subagentOverrides[name];
-    const modelChain: Array<{ provider: string; name: string; maxTokens: number; source: string }> = [];
+    const modelChain: Array<{ provider: string; name: string; maxTokens: number; timeoutMs: number; source: string }> = [];
 
     if (overrideConfig) {
       for (const entry of overrideConfig.model) {
@@ -168,6 +168,7 @@ export class SubAgentRunner {
           provider: entry.provider,
           name: entry.name,
           maxTokens: entry.maxTokens ?? agent.manifest.model.maxTokens,
+          timeoutMs: entry.timeoutMs ?? agent.manifest.timeoutMs,
           source: 'override',
         });
       }
@@ -178,6 +179,7 @@ export class SubAgentRunner {
       provider: agent.manifest.model.provider,
       name: agent.manifest.model.name,
       maxTokens: agent.manifest.model.maxTokens,
+      timeoutMs: agent.manifest.timeoutMs,
       source: 'manifest',
     });
 
@@ -211,6 +213,9 @@ export class SubAgentRunner {
 
       const model: LanguageModel = modelResult.value;
 
+      // Per-model AbortController for timeout cancellation
+      const abortController = new AbortController();
+
       const agentContext = {
         threadId: ctx.threadId,
         personaId: ctx.personaId,
@@ -220,13 +225,15 @@ export class SubAgentRunner {
         rootPaths: agent.manifest.rootPaths,
         services: { ...this.services, logger: childLogger },
         telemetry: { isEnabled: !(this.observability instanceof NoopObservabilityService) },
+        abortSignal: abortController.signal,
       };
 
       try {
         const runResult = await this.runWithTimeout(
           agent.run(agentContext, input),
-          agent.manifest.timeoutMs,
+          modelEntry.timeoutMs,
           name,
+          abortController,
         );
 
         if (runResult.isErr()) {
@@ -258,15 +265,12 @@ export class SubAgentRunner {
         const failMsg = `${modelEntry.provider}/${modelEntry.name} (${modelEntry.source}): ${message}`;
         failures.push(failMsg);
 
-        // Timeout errors are terminal — the timed-out promise is still running
-        // (Promise.race doesn't cancel the loser), so starting another model
-        // would risk concurrent execution and data-integrity issues.
         if (error instanceof SubAgentTimeoutError) {
-          this.logger.error(
-            { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}` },
-            `Sub-agent timed out — not failing over to avoid concurrent execution`,
+          this.logger.warn(
+            { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}`, timeoutMs: modelEntry.timeoutMs },
+            `Sub-agent timed out, failing over to next model`,
           );
-          break;
+          continue;
         }
 
         this.logger.warn(
@@ -323,17 +327,21 @@ export class SubAgentRunner {
 
   /**
    * Race the given promise against a timeout.
-   * Rejects with an Error if the timeout fires first.
+   * Aborts the controller when the timeout fires, then rejects with SubAgentTimeoutError.
    */
   private async runWithTimeout<T>(
     promise: Promise<T>,
     timeoutMs: number,
     name: string,
+    abortController: AbortController,
   ): Promise<T> {
     let timeoutId: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(
-        () => reject(new SubAgentTimeoutError(name, timeoutMs)),
+        () => {
+          abortController.abort();
+          reject(new SubAgentTimeoutError(name, timeoutMs));
+        },
         timeoutMs,
       );
     });
