@@ -592,6 +592,11 @@ That is enough to prove the architecture before Talon makes the kernel authorita
 
 The next artifact after this spec should be a technical design, not an implementation plan.
 
+That follow-on work now exists in:
+
+- `specs/2026-04-04-workflow-kernel-technical-design.md`
+- `specs/plans/2026-04-04-workflow-kernel-implementation-plan.md`
+
 The spec now defines the problem, the concepts, and the product direction. A technical design should narrow that into:
 
 - concrete database changes
