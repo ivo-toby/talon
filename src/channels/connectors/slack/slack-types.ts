@@ -28,6 +28,13 @@ export interface SlackConfig {
    * Optional — used when no specific channel is specified.
    */
   defaultChannel?: string;
+  /**
+   * The bot's Slack user ID (e.g. "U01234567").
+   * Optional — when set, validated against auth.test at startup to catch
+   * token/config mismatches. Also used for @mention filtering in shared
+   * channels with multiple bots.
+   */
+  botUserId?: string;
 }
 
 // ---------------------------------------------------------------------------

@@ -129,7 +129,8 @@ export async function resetProviderAffinity(
 
 export async function resetProviderAffinityCommand(options: {
   channel: string;
-  externalId: string;
+  externalId?: string;
+  all?: boolean;
   configPath?: string;
   yes?: boolean;
 }): Promise<void> {
@@ -150,9 +151,64 @@ export async function resetProviderAffinityCommand(options: {
 
   const db = dbResult.value;
   try {
+    if (options.all) {
+      const channelRepo = new ChannelRepository(db);
+      const channel = channelRepo.findByName(options.channel);
+      if (channel.isErr()) {
+        throw new Error(`Database error looking up channel: ${channel.error.message}`);
+      }
+      if (channel.value === null) {
+        throw new Error(`Unknown channel: "${options.channel}"`);
+      }
+
+      const threadRepo = new ThreadRepository(db);
+      const threads = threadRepo.findByChannelId(channel.value.id);
+      if (threads.isErr()) {
+        throw new Error(`Database error listing threads: ${threads.error.message}`);
+      }
+      if (threads.value.length === 0) {
+        console.log(`No threads found for channel "${options.channel}".`);
+        return;
+      }
+
+      if (!options.yes) {
+        if (!input.isTTY || !output.isTTY) {
+          throw new Error('Confirmation requires an interactive terminal. Re-run with --yes to bypass the prompt.');
+        }
+        const rl = createInterface({ input, output });
+        try {
+          const answer = await rl.question(
+            `Reset provider affinity for all ${threads.value.length} thread(s) on channel "${options.channel}"? [y/N] `,
+          );
+          if (!/^(y|yes)$/iu.test(answer.trim())) {
+            console.log('Aborted.');
+            return;
+          }
+        } finally {
+          rl.close();
+        }
+      }
+
+      const resetAt = Date.now();
+      let count = 0;
+      for (const thread of threads.value) {
+        const updated = threadRepo.update(thread.id, {
+          metadata: withProviderAffinityResetAt(thread.metadata, resetAt),
+        });
+        if (updated.isOk()) {
+          count++;
+        }
+      }
+
+      console.log(
+        `Reset provider affinity for ${count} of ${threads.value.length} thread(s) on channel "${options.channel}".`,
+      );
+      return;
+    }
+
     const result = await resetProviderAffinity({
       channel: options.channel,
-      externalId: options.externalId,
+      externalId: options.externalId!,
       db,
       confirm: options.yes ? async () => true : promptForConfirmation,
     });

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { CodexCliProvider } from '../../../src/providers/codex-cli-provider.js';
+import type { AgentStreamEvent } from '../../../src/providers/provider.js';
 
 describe('CodexCliProvider', () => {
   let runtimeDir: string;
@@ -47,56 +48,74 @@ describe('CodexCliProvider', () => {
     );
   }
 
-  it('creates a resumable CLI execution strategy', () => {
+  async function collectEvents(
+    stream: AsyncIterable<AgentStreamEvent>,
+  ): Promise<AgentStreamEvent[]> {
+    const events: AgentStreamEvent[] = [];
+    for await (const event of stream) {
+      events.push(event);
+    }
+    return events;
+  }
+
+  it('creates a resumable streaming execution strategy', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
 
-    expect(strategy.type).toBe('cli');
+    expect(strategy.type).toBe('sdk');
     expect(strategy.supportsSessionResumption).toBe(true);
     expect(typeof strategy.run).toBe('function');
   });
 
-  it('runs foreground sessions with stable HOME, seeded auth/config, and codex exec args', async () => {
+  it('streams foreground text chunks, tool events, and final result with stable HOME and codex exec args', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
-      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
       .mockImplementation(async (prepared) => {
         writeFileSync(prepared.resultFiles.lastMessagePath, 'foreground-output', 'utf8');
+        async function* events() {
+          yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+          yield '{"type":"item.completed","item":{"type":"assistant_message","content":[{"type":"output_text","text":"Hello "} ]}}\n';
+          yield '{"type":"item.completed","item":{"type":"mcp_tool_call","server_name":"brave","name":"search","call_id":"tool-1","arguments":{"q":"latest"}}}\n';
+          yield '{"type":"item.completed","item":{"type":"assistant_message","content":[{"type":"output_text","text":"world"}]}}\n';
+          yield '{"type":"turn.completed","usage":{"input_tokens":111,"cached_input_tokens":42,"output_tokens":7}}\n';
+        }
         return {
-          stdout: [
-            '{"type":"thread.started","thread_id":"codex-thread-123"}',
-            '{"type":"turn.completed","usage":{"input_tokens":111,"cached_input_tokens":42,"output_tokens":7}}',
-          ].join('\n'),
-          stderr: '',
-          exitCode: 0,
-          timedOut: false,
+          stdout: events(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
         };
       });
 
     try {
       const strategy = provider.createExecutionStrategy();
-      const result = await strategy.run({
-        threadId: 'thread-001',
-        prompt: 'Continue this conversation.',
-        systemPrompt: 'You are helpful.',
-        mcpServers: {
-          hostTools: {
-            transport: 'stdio',
-            command: 'node',
-            args: ['mcp.js'],
-            env: { TOKEN: 'abc' },
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {
+            hostTools: {
+              transport: 'stdio',
+              command: 'node',
+              args: ['mcp.js'],
+              env: { TOKEN: 'abc' },
+            },
+            remoteBrowser: {
+              transport: 'http',
+              url: 'https://mcp.example.test',
+              headers: { Authorization: 'Bearer secret-token' },
+            },
           },
-          remoteBrowser: {
-            transport: 'http',
-            url: 'https://mcp.example.test',
-            headers: { Authorization: 'Bearer secret-token' },
-          },
-        },
-        cwd: '/workspace/repo',
-        model: 'gpt-5.4',
-        maxTurns: 25,
-        timeoutMs: 60_000,
-      });
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
 
       const invocation = executeInvocation.mock.calls[0]?.[0];
       expect(invocation).toBeDefined();
@@ -130,10 +149,16 @@ describe('CodexCliProvider', () => {
       expect(existsSync(authPath)).toBe(true);
       expect(readFileSync(authPath, 'utf8')).toBe('{"access_token":"test"}');
       expect(readFileSync(join(expectedHome, '.codex', 'state_5.sqlite'), 'utf8')).toBe('state-db');
-      expect(readFileSync(join(expectedHome, '.codex', 'state_5.sqlite-wal'), 'utf8')).toBe('state-wal');
+      expect(readFileSync(join(expectedHome, '.codex', 'state_5.sqlite-wal'), 'utf8')).toBe(
+        'state-wal',
+      );
       expect(readFileSync(join(expectedHome, '.codex', 'logs_1.sqlite'), 'utf8')).toBe('logs-db');
-      expect(readFileSync(join(expectedHome, '.codex', 'models_cache.json'), 'utf8')).toContain('"models"');
-      expect(readFileSync(join(expectedHome, '.codex', 'version.json'), 'utf8')).toContain('0.118.0');
+      expect(readFileSync(join(expectedHome, '.codex', 'models_cache.json'), 'utf8')).toContain(
+        '"models"',
+      );
+      expect(readFileSync(join(expectedHome, '.codex', 'version.json'), 'utf8')).toContain(
+        '0.118.0',
+      );
 
       const configPath = join(expectedHome, '.codex', 'config.toml');
       expect(existsSync(configPath)).toBe(true);
@@ -149,16 +174,34 @@ describe('CodexCliProvider', () => {
       expect(configToml).toContain('url = "https://mcp.example.test"');
       expect(configToml).toContain('bearer_token_env_var = ');
 
-      expect(result).toEqual({
-        output: 'foreground-output',
-        sessionId: 'codex-thread-123',
-        usage: {
-          inputTokens: 111,
-          cacheReadTokens: 42,
-          outputTokens: 7,
+      expect(events).toEqual([
+        { type: 'text', content: 'Hello ' },
+        {
+          type: 'tool_event',
+          messageType: 'mcp_tool_use',
+          tool: 'search',
+          toolUseId: 'tool-1',
+          input: { q: 'latest' },
+          output: undefined,
+          isError: undefined,
+          subtype: 'mcp_tool_call',
+          serverName: 'brave',
         },
-        isError: false,
-      });
+        { type: 'text', content: 'world' },
+        {
+          type: 'result',
+          result: {
+            output: 'foreground-output',
+            sessionId: 'codex-thread-123',
+            usage: {
+              inputTokens: 111,
+              cacheReadTokens: 42,
+              outputTokens: 7,
+            },
+            isError: false,
+          },
+        },
+      ]);
     } finally {
       executeInvocation.mockRestore();
     }
@@ -167,54 +210,69 @@ describe('CodexCliProvider', () => {
   it('does not reuse stale foreground last-message output when a subsequent run does not write one', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
-      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
       .mockImplementationOnce(async (prepared) => {
         writeFileSync(prepared.resultFiles.lastMessagePath, 'first-output', 'utf8');
         return {
-          stdout: [
-            '{"type":"thread.started","thread_id":"codex-thread-123"}',
-            '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":2}}',
-          ].join('\n'),
-          stderr: '',
-          exitCode: 0,
-          timedOut: false,
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":11,"output_tokens":2}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
         };
       })
       .mockResolvedValueOnce({
-        stdout: 'second-raw-stdout',
-        stderr: 'failed',
-        exitCode: 1,
-        timedOut: false,
+        stdout: (async function* () {
+          yield 'second-raw-stdout';
+        })(),
+        completed: Promise.resolve({
+          stderr: 'failed',
+          exitCode: 1,
+          timedOut: false,
+        }),
       });
 
     try {
       const strategy = provider.createExecutionStrategy();
 
-      const first = await strategy.run({
-        threadId: 'thread-001',
-        prompt: 'First',
-        systemPrompt: 'You are helpful.',
-        mcpServers: {},
-        cwd: '/workspace/repo',
-        model: 'gpt-5.4',
-        maxTurns: 25,
-        timeoutMs: 60_000,
-      });
-      expect(first.output).toBe('first-output');
-
-      const second = await strategy.run({
-        threadId: 'thread-001',
-        prompt: 'Second',
-        systemPrompt: 'You are helpful.',
-        mcpServers: {},
-        cwd: '/workspace/repo',
-        model: 'gpt-5.4',
-        maxTurns: 25,
-        timeoutMs: 60_000,
+      const first = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'First',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+      expect(first[first.length - 1]).toEqual({
+        type: 'result',
+        result: expect.objectContaining({ output: 'first-output', isError: false }),
       });
 
-      expect(second.output).toBe('second-raw-stdout');
-      expect(second.isError).toBe(true);
+      const second = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Second',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      expect(second[second.length - 1]).toEqual({
+        type: 'result',
+        result: expect.objectContaining({ output: 'second-raw-stdout', isError: true }),
+      });
     } finally {
       executeInvocation.mockRestore();
     }
@@ -223,39 +281,40 @@ describe('CodexCliProvider', () => {
   it('uses codex exec resume when a session id is provided', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
-      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
       .mockImplementation(async (prepared) => {
         writeFileSync(prepared.resultFiles.lastMessagePath, 'resumed-output', 'utf8');
         return {
-          stdout: [
-            '{"type":"thread.started","thread_id":"codex-thread-001"}',
-            '{"type":"turn.completed","usage":{"input_tokens":144,"output_tokens":9}}',
-          ].join('\n'),
-          stderr: '',
-          exitCode: 0,
-          timedOut: false,
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-001"}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":144,"output_tokens":9}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
         };
       });
 
     try {
       const strategy = provider.createExecutionStrategy();
-      const result = await strategy.run({
-        threadId: 'thread-001',
-        prompt: 'Continue',
-        systemPrompt: 'You are helpful.',
-        mcpServers: {},
-        cwd: '/workspace/repo',
-        model: 'gpt-5.4',
-        maxTurns: 25,
-        timeoutMs: 60_000,
-        sessionId: 'codex-thread-001',
-      });
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+          sessionId: 'codex-thread-001',
+        }),
+      );
 
       const invocation = executeInvocation.mock.calls[0]?.[0];
-      expect(invocation.args.slice(0, 2)).toEqual([
-        'exec',
-        'resume',
-      ]);
+      expect(invocation.args.slice(0, 2)).toEqual(['exec', 'resume']);
       expect(invocation.args).toContain('--json');
       expect(invocation.args).toContain('--skip-git-repo-check');
       expect(invocation.args).toContain('--dangerously-bypass-approvals-and-sandbox');
@@ -263,7 +322,10 @@ describe('CodexCliProvider', () => {
       expect(invocation.args.slice(-2)).toEqual(['codex-thread-001', '-']);
       expect(invocation.stdin).toContain('You are helpful.');
       expect(invocation.stdin).toContain('Continue');
-      expect(result.sessionId).toBe('codex-thread-001');
+      expect(events[events.length - 1]).toEqual({
+        type: 'result',
+        result: expect.objectContaining({ sessionId: 'codex-thread-001' }),
+      });
     } finally {
       executeInvocation.mockRestore();
     }
@@ -455,30 +517,36 @@ describe('CodexCliProvider', () => {
   it('throws when successful foreground output is missing thread.started', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
-      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
       .mockImplementation(async (prepared) => {
         writeFileSync(prepared.resultFiles.lastMessagePath, 'foreground-output', 'utf8');
         return {
-          stdout: '{"type":"turn.completed","usage":{"input_tokens":111,"output_tokens":7}}',
-          stderr: '',
-          exitCode: 0,
-          timedOut: false,
+          stdout: (async function* () {
+            yield '{"type":"turn.completed","usage":{"input_tokens":111,"output_tokens":7}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
         };
       });
 
     try {
       const strategy = provider.createExecutionStrategy();
       await expect(
-        strategy.run({
-          threadId: 'thread-001',
-          prompt: 'Continue this conversation.',
-          systemPrompt: 'You are helpful.',
-          mcpServers: {},
-          cwd: '/workspace/repo',
-          model: 'gpt-5.4',
-          maxTurns: 25,
-          timeoutMs: 60_000,
-        }),
+        collectEvents(
+          strategy.run({
+            threadId: 'thread-001',
+            prompt: 'Continue this conversation.',
+            systemPrompt: 'You are helpful.',
+            mcpServers: {},
+            cwd: '/workspace/repo',
+            model: 'gpt-5.4',
+            maxTurns: 25,
+            timeoutMs: 60_000,
+          }),
+        ),
       ).rejects.toThrow('thread.started');
     } finally {
       executeInvocation.mockRestore();
@@ -488,30 +556,36 @@ describe('CodexCliProvider', () => {
   it('throws when successful foreground output is missing turn.completed', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
-      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
       .mockImplementation(async (prepared) => {
         writeFileSync(prepared.resultFiles.lastMessagePath, 'foreground-output', 'utf8');
         return {
-          stdout: '{"type":"thread.started","thread_id":"codex-thread-123"}',
-          stderr: '',
-          exitCode: 0,
-          timedOut: false,
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
         };
       });
 
     try {
       const strategy = provider.createExecutionStrategy();
       await expect(
-        strategy.run({
-          threadId: 'thread-001',
-          prompt: 'Continue this conversation.',
-          systemPrompt: 'You are helpful.',
-          mcpServers: {},
-          cwd: '/workspace/repo',
-          model: 'gpt-5.4',
-          maxTurns: 25,
-          timeoutMs: 60_000,
-        }),
+        collectEvents(
+          strategy.run({
+            threadId: 'thread-001',
+            prompt: 'Continue this conversation.',
+            systemPrompt: 'You are helpful.',
+            mcpServers: {},
+            cwd: '/workspace/repo',
+            model: 'gpt-5.4',
+            maxTurns: 25,
+            timeoutMs: 60_000,
+          }),
+        ),
       ).rejects.toThrow('turn.completed');
     } finally {
       executeInvocation.mockRestore();
@@ -521,23 +595,68 @@ describe('CodexCliProvider', () => {
   it('throws when successful foreground output has thread.started without a string thread_id', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
-      .spyOn(CodexCliProvider.prototype as any, 'executeInvocation')
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
       .mockImplementation(async (prepared) => {
         writeFileSync(prepared.resultFiles.lastMessagePath, 'foreground-output', 'utf8');
         return {
-          stdout: [
-            '{"type":"thread.started","thread_id":123}',
-            '{"type":"turn.completed","usage":{"input_tokens":111,"output_tokens":7}}',
-          ].join('\n'),
-          stderr: '',
-          exitCode: 0,
-          timedOut: false,
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":123}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":111,"output_tokens":7}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
         };
       });
 
     try {
       const strategy = provider.createExecutionStrategy();
       await expect(
+        collectEvents(
+          strategy.run({
+            threadId: 'thread-001',
+            prompt: 'Continue this conversation.',
+            systemPrompt: 'You are helpful.',
+            mcpServers: {},
+            cwd: '/workspace/repo',
+            model: 'gpt-5.4',
+            maxTurns: 25,
+            timeoutMs: 60_000,
+          }),
+        ),
+      ).rejects.toThrow('thread_id');
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('ignores malformed and unknown JSONL events while still streaming known assistant text', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield 'not-json\n';
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.weird","payload":{"foo":"bar"}}\n';
+            yield '{"type":"item.completed","item":{"type":"assistant_message","delta":{"text":"Known text"}}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
         strategy.run({
           threadId: 'thread-001',
           prompt: 'Continue this conversation.',
@@ -548,7 +667,265 @@ describe('CodexCliProvider', () => {
           maxTurns: 25,
           timeoutMs: 60_000,
         }),
-      ).rejects.toThrow('thread_id');
+      );
+
+      expect(events).toContainEqual({ type: 'text', content: 'Known text' });
+      expect(events[events.length - 1]).toEqual({
+        type: 'result',
+        result: expect.objectContaining({ output: 'final-output', isError: false }),
+      });
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('does not surface reasoning items as assistant text', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.completed","item":{"type":"assistant_reasoning","content":[{"type":"reasoning_text","text":"private chain of thought"}]}}\n';
+            yield '{"type":"item.completed","item":{"type":"assistant_message","content":[{"type":"output_text","text":"visible answer"}]}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      expect(events).toContainEqual({ type: 'text', content: 'visible answer' });
+      expect(events).not.toContainEqual({ type: 'text', content: 'private chain of thought' });
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('does not duplicate streamed text when assistant content is a bare string', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.completed","item":{"type":"assistant_message","content":"Known text"}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      expect(events.filter((event) => event.type === 'text')).toEqual([
+        { type: 'text', content: 'Known text' },
+      ]);
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('keeps tool events whose subtype contains message when they still map to tool activity', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.completed","item":{"type":"tool_message_start","name":"shell","call_id":"tool-1","input":{"cmd":"pwd"}}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      expect(events).toContainEqual({
+        type: 'tool_event',
+        messageType: 'tool_use',
+        tool: 'shell',
+        toolUseId: 'tool-1',
+        input: { cmd: 'pwd' },
+        output: undefined,
+        isError: undefined,
+        subtype: 'tool_message_start',
+        serverName: undefined,
+      });
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('maps tool message end events to tool results', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.completed","item":{"type":"tool_message_end","name":"shell","call_id":"tool-1","output":{"cwd":"/workspace/repo"}}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Continue this conversation.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      expect(events).toContainEqual({
+        type: 'tool_event',
+        messageType: 'tool_result',
+        tool: 'shell',
+        toolUseId: 'tool-1',
+        input: undefined,
+        output: { cwd: '/workspace/repo' },
+        isError: undefined,
+        subtype: 'tool_message_end',
+        serverName: undefined,
+      });
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('streams agent_message items with top-level text (real Codex CLI format)', async () => {
+    const provider = makeProvider();
+    const executeInvocation = vi
+      .spyOn(CodexCliProvider.prototype as any, 'streamInvocation')
+      .mockImplementation(async (prepared) => {
+        writeFileSync(prepared.resultFiles.lastMessagePath, 'final-output', 'utf8');
+        return {
+          stdout: (async function* () {
+            yield '{"type":"thread.started","thread_id":"codex-thread-123"}\n';
+            yield '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"Thinking about it."}}\n';
+            yield '{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"","exit_code":null,"status":"in_progress"}}\n';
+            yield '{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"pwd","aggregated_output":"/workspace","exit_code":0,"status":"completed"}}\n';
+            yield '{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"The answer is 4."}}\n';
+            yield '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":50,"output_tokens":10}}\n';
+          })(),
+          completed: Promise.resolve({
+            stderr: '',
+            exitCode: 0,
+            timedOut: false,
+          }),
+        };
+      });
+
+    try {
+      const strategy = provider.createExecutionStrategy();
+      const events = await collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'What is 2+2?',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 25,
+          timeoutMs: 60_000,
+        }),
+      );
+
+      const textEvents = events.filter((e) => e.type === 'text');
+      expect(textEvents).toEqual([
+        { type: 'text', content: 'Thinking about it.' },
+        { type: 'text', content: 'The answer is 4.' },
+      ]);
+
+      const toolEvents = events.filter((e) => e.type === 'tool_event');
+      expect(toolEvents).toHaveLength(2);
+      expect(toolEvents[0]).toMatchObject({
+        type: 'tool_event',
+        subtype: 'command_execution',
+      });
+      expect(toolEvents[1]).toMatchObject({
+        type: 'tool_event',
+        subtype: 'command_execution',
+      });
+
+      expect(events[events.length - 1]).toEqual({
+        type: 'result',
+        result: expect.objectContaining({ output: 'final-output', isError: false }),
+      });
     } finally {
       executeInvocation.mockRestore();
     }

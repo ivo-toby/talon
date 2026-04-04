@@ -1,12 +1,21 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import type { ProviderConfig } from '../core/config/config-types.js';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
-import type { AgentProvider, AgentRunInput } from './provider.js';
+import type { AgentProvider, AgentRunInput, AgentStreamEvent } from './provider.js';
 import type {
   AgentUsage,
   CanonicalMcpServer,
@@ -42,11 +51,15 @@ export class CodexCliProvider implements AgentProvider {
     private readonly runtime: CodexCliProviderRuntime,
   ) {}
 
-  createExecutionStrategy() {
+  createExecutionStrategy(): {
+    type: 'sdk';
+    supportsSessionResumption: true;
+    run: (input: AgentRunInput) => AsyncIterable<AgentStreamEvent>;
+  } {
     return {
-      type: 'cli' as const,
+      type: 'sdk' as const,
       supportsSessionResumption: true as const,
-      run: async (input: AgentRunInput) => this.runForeground(input),
+      run: (input: AgentRunInput) => this.runForeground(input),
     };
   }
 
@@ -140,12 +153,12 @@ export class CodexCliProvider implements AgentProvider {
 
   private shouldCopyCodexStateFile(name: string): boolean {
     return (
-      name === 'auth.json'
-      || name === 'models_cache.json'
-      || name === 'cloud-requirements-cache.json'
-      || name === 'version.json'
-      || /^state_\d+\.sqlite(?:-(?:wal|shm))?$/u.test(name)
-      || /^logs_\d+\.sqlite(?:-(?:wal|shm))?$/u.test(name)
+      name === 'auth.json' ||
+      name === 'models_cache.json' ||
+      name === 'cloud-requirements-cache.json' ||
+      name === 'version.json' ||
+      /^state_\d+\.sqlite(?:-(?:wal|shm))?$/u.test(name) ||
+      /^logs_\d+\.sqlite(?:-(?:wal|shm))?$/u.test(name)
     );
   }
 
@@ -275,7 +288,7 @@ export class CodexCliProvider implements AgentProvider {
     return ['System prompt:', systemPrompt, '', 'User prompt:', prompt, ''].join('\n');
   }
 
-  private async runForeground(input: AgentRunInput) {
+  private async *runForeground(input: AgentRunInput): AsyncIterable<AgentStreamEvent> {
     const homeDir = this.buildForegroundHome(input.threadId);
     const lastMessagePath = join(homeDir, 'last-message.txt');
     const resultFiles = { lastMessagePath };
@@ -305,17 +318,56 @@ export class CodexCliProvider implements AgentProvider {
       resultFiles,
     };
 
-    const raw = await this.executeInvocation(invocation);
-    const parsed = this.parseCodexResult(raw, resultFiles, {
-      failOnSuccessfulInvalidJsonl: true,
-      requireThreadId: true,
-    });
-    const parsedJsonl = this.parseCodexJsonl(raw.stdout);
-    return {
-      output: parsed.output,
-      sessionId: parsedJsonl.threadId,
-      usage: parsed.usage ?? { inputTokens: 0, outputTokens: 0 },
-      isError: parsed.exitCode !== 0 || parsed.timedOut,
+    const stream = await this.streamInvocation(invocation);
+    let rawStdout = '';
+    let lineBuffer = '';
+    const parsedJsonl: CodexParsedOutput = {
+      hasThreadStarted: false,
+      hasTurnCompleted: false,
+    };
+
+    for await (const chunk of stream.stdout) {
+      rawStdout += chunk;
+      lineBuffer += chunk;
+      const lines = lineBuffer.split('\n');
+      lineBuffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        for (const event of this.parseCodexStreamLine(line, parsedJsonl)) {
+          yield event;
+        }
+      }
+    }
+
+    if (lineBuffer.trim().length > 0) {
+      for (const event of this.parseCodexStreamLine(lineBuffer, parsedJsonl)) {
+        yield event;
+      }
+    }
+
+    const completion = await stream.completed;
+    const parsed = this.parseCodexResult(
+      {
+        stdout: rawStdout,
+        stderr: completion.stderr,
+        exitCode: completion.exitCode,
+        timedOut: completion.timedOut,
+      },
+      resultFiles,
+      {
+        failOnSuccessfulInvalidJsonl: true,
+        requireThreadId: true,
+      },
+    );
+
+    yield {
+      type: 'result',
+      result: {
+        output: parsed.output,
+        sessionId: parsedJsonl.threadId,
+        usage: parsed.usage ?? { inputTokens: 0, outputTokens: 0 },
+        isError: parsed.exitCode !== 0 || parsed.timedOut,
+      },
     };
   }
 
@@ -422,7 +474,10 @@ export class CodexCliProvider implements AgentProvider {
       hasThreadStarted: false,
       hasTurnCompleted: false,
     };
-    const lines = stdout.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+    const lines = stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
 
     for (const line of lines) {
       let event: Record<string, unknown>;
@@ -449,9 +504,8 @@ export class CodexCliProvider implements AgentProvider {
           };
           result.usage = {
             inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
-            cacheReadTokens: typeof usage.cached_input_tokens === 'number'
-              ? usage.cached_input_tokens
-              : undefined,
+            cacheReadTokens:
+              typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : undefined,
             outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
           };
         }
@@ -459,6 +513,186 @@ export class CodexCliProvider implements AgentProvider {
     }
 
     return result;
+  }
+
+  private parseCodexStreamLine(line: string, parsed: CodexParsedOutput): AgentStreamEvent[] {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) {
+      return [];
+    }
+
+    let event: Record<string, unknown>;
+    try {
+      event = JSON.parse(trimmed) as Record<string, unknown>;
+    } catch {
+      return [];
+    }
+
+    this.updateParsedState(parsed, event);
+
+    const textEvents = this.extractTextEvents(event);
+    if (textEvents.length > 0) {
+      return textEvents;
+    }
+
+    const toolEvent = this.extractToolEvent(event);
+    return toolEvent ? [toolEvent] : [];
+  }
+
+  private updateParsedState(parsed: CodexParsedOutput, event: Record<string, unknown>): void {
+    if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+      parsed.hasThreadStarted = true;
+      parsed.threadId = event.thread_id;
+    } else if (event.type === 'thread.started') {
+      parsed.hasThreadStarted = true;
+    }
+
+    if (event.type === 'turn.completed') {
+      parsed.hasTurnCompleted = true;
+      if (typeof event.usage === 'object' && event.usage !== null) {
+        const usage = event.usage as {
+          input_tokens?: unknown;
+          cached_input_tokens?: unknown;
+          output_tokens?: unknown;
+        };
+        parsed.usage = {
+          inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
+          cacheReadTokens:
+            typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : undefined,
+          outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
+        };
+      }
+    }
+  }
+
+  private extractTextEvents(
+    event: Record<string, unknown>,
+  ): Extract<AgentStreamEvent, { type: 'text' }>[] {
+    const item = this.readEventItem(event);
+    if (!item) {
+      return [];
+    }
+
+    const itemType = typeof item.type === 'string' ? item.type : undefined;
+    if (!itemType || !this.isAssistantMessageItemType(itemType)) {
+      return [];
+    }
+
+    const texts = this.collectTextFragments(item);
+    return texts.map((content) => ({ type: 'text', content }));
+  }
+
+  private isAssistantMessageItemType(itemType: string): boolean {
+    return /(assistant.*message|message.*assistant|assistant_message|agent_message)/u.test(itemType);
+  }
+
+  private extractToolEvent(
+    event: Record<string, unknown>,
+  ): Extract<AgentStreamEvent, { type: 'tool_event' }> | null {
+    const item = this.readEventItem(event);
+    if (!item) {
+      return null;
+    }
+
+    const itemType = typeof item.type === 'string' ? item.type : undefined;
+    if (!itemType || this.isAssistantMessageItemType(itemType)) {
+      return null;
+    }
+
+    const messageType = this.toToolMessageType(itemType);
+    if (!messageType) {
+      return null;
+    }
+
+    return {
+      type: 'tool_event',
+      messageType,
+      tool:
+        this.readString(item.name) ?? this.readString(item.tool) ?? this.readString(item.tool_name),
+      toolUseId:
+        this.readString(item.call_id) ??
+        this.readString(item.tool_use_id) ??
+        this.readString(item.id),
+      input: item.arguments ?? item.input,
+      output: item.output ?? item.result ?? item.content,
+      isError: this.readBoolean(item.is_error),
+      subtype: itemType,
+      serverName: this.readString(item.server_name) ?? this.readString(item.serverName),
+    };
+  }
+
+  private readEventItem(event: Record<string, unknown>): Record<string, unknown> | null {
+    if (typeof event.item === 'object' && event.item !== null) {
+      return event.item as Record<string, unknown>;
+    }
+
+    return null;
+  }
+
+  private collectTextFragments(value: unknown): string[] {
+    if (typeof value === 'string') {
+      return [value];
+    }
+
+    if (Array.isArray(value)) {
+      return value.flatMap((entry) => this.collectTextFragments(entry));
+    }
+
+    if (typeof value !== 'object' || value === null) {
+      return [];
+    }
+
+    const record = value as Record<string, unknown>;
+    const type = typeof record.type === 'string' ? record.type : undefined;
+    const texts: string[] = [];
+
+    if (
+      typeof record.text === 'string' &&
+      (type === undefined || /(text|message|assistant|delta|output)/u.test(type))
+    ) {
+      texts.push(record.text);
+    }
+
+    for (const key of ['content', 'delta', 'message', 'parts']) {
+      if (key in record) {
+        texts.push(...this.collectTextFragments(record[key]));
+      }
+    }
+
+    return texts;
+  }
+
+  private toToolMessageType(itemType: string): string | null {
+    if (/(mcp).*?(call|use|invoke|request)/u.test(itemType)) {
+      return 'mcp_tool_use';
+    }
+    if (/(mcp).*?(result|output|response|error)/u.test(itemType)) {
+      return 'mcp_tool_result';
+    }
+    if (/(tool|command|exec|web_search|plan).*?(call|use|invoke|request|start)/u.test(itemType)) {
+      return 'tool_use';
+    }
+    if (
+      /(tool|command|exec|web_search|plan).*?(result|output|response|error|completed|end|finish|stop|done)/u.test(
+        itemType,
+      )
+    ) {
+      return 'tool_result';
+    }
+
+    if (/(tool|command|exec|web_search|plan|mcp)/u.test(itemType)) {
+      return 'tool_use';
+    }
+
+    return null;
+  }
+
+  private readString(value: unknown): string | undefined {
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private readBoolean(value: unknown): boolean | undefined {
+    return typeof value === 'boolean' ? value : undefined;
   }
 
   private buildValidationError(
@@ -543,5 +777,67 @@ export class CodexCliProvider implements AgentProvider {
       child.stdin.on('error', () => {});
       child.stdin.end(invocation.stdin);
     });
+  }
+
+  private streamInvocation(invocation: PreparedProviderInvocation): Promise<{
+    stdout: AsyncIterable<string>;
+    completed: Promise<{
+      stderr: string;
+      exitCode: number | null;
+      timedOut: boolean;
+    }>;
+  }> {
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: invocation.cwd,
+      env: {
+        ...process.env,
+        ...(invocation.env ?? {}),
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const stderrChunks: Buffer[] = [];
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, invocation.timeoutMs);
+
+    const completed = new Promise<{
+      stderr: string;
+      exitCode: number | null;
+      timedOut: boolean;
+    }>((resolve, reject) => {
+      child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+      child.on('error', (cause) => {
+        clearTimeout(timeout);
+        reject(
+          new BackgroundAgentError(
+            `Codex CLI: failed to run provider process: ${cause.message}`,
+            cause,
+          ),
+        );
+      });
+      child.on('close', (exitCode) => {
+        clearTimeout(timeout);
+        resolve({
+          stderr: Buffer.concat(stderrChunks).toString('utf8'),
+          exitCode,
+          timedOut,
+        });
+      });
+    });
+
+    const stdout = (async function* (): AsyncIterable<string> {
+      for await (const chunk of child.stdout) {
+        const textChunk = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+        yield textChunk;
+      }
+    })();
+
+    child.stdin.on('error', () => {});
+    child.stdin.end(invocation.stdin);
+
+    return Promise.resolve({ stdout, completed });
   }
 }

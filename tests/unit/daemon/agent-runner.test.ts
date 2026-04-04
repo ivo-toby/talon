@@ -852,6 +852,135 @@ describe('AgentRunner', () => {
         expect.stringContaining('configured trigger metric not available'),
       );
     });
+
+    describe('response delivery ordering (issue #164)', () => {
+      // These tests verify that connector.send() and message.insert() both happen
+      // BEFORE contextRoller.checkAndRotate() runs. This ensures users receive
+      // responses immediately instead of waiting for the potentially slow
+      // summarizer LLM call during context rotation.
+
+      it('sends response to channel before running context rotation for SDK providers', async () => {
+        const callOrder: string[] = [];
+
+        const connector = ctx.channelRegistry.get('test-channel')!;
+        vi.mocked(connector.send).mockImplementation(async () => {
+          callOrder.push('send');
+          return ok(undefined);
+        });
+
+        ctx.contextRoller = {
+          checkAndRotate: vi.fn().mockImplementation(async () => {
+            callOrder.push('rotate');
+          }),
+        } as any;
+
+        // Provide cache tokens so selectedMetricValue > 0 and checkAndRotate is invoked.
+        mockQuery.mockReturnValue(
+          makeAgentStream({
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              cache_read_input_tokens: 80_000,
+              cache_creation_input_tokens: 2_000,
+            },
+          }),
+        );
+
+        const result = await runner.run(makeQueueItem());
+
+        expect(result.isOk()).toBe(true);
+        expect(callOrder).toContain('rotate'); // sanity: rotation was triggered
+        expect(callOrder.indexOf('send')).toBeLessThan(callOrder.indexOf('rotate'));
+      });
+
+      it('persists outbound message before running context rotation for SDK providers', async () => {
+        const callOrder: string[] = [];
+
+        vi.mocked(ctx.repos.message.insert).mockImplementation(() => {
+          callOrder.push('message.insert');
+          return ok({} as any);
+        });
+
+        ctx.contextRoller = {
+          checkAndRotate: vi.fn().mockImplementation(async () => {
+            callOrder.push('rotate');
+          }),
+        } as any;
+
+        mockQuery.mockReturnValue(
+          makeAgentStream({
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              cache_read_input_tokens: 80_000,
+              cache_creation_input_tokens: 2_000,
+            },
+          }),
+        );
+
+        const result = await runner.run(makeQueueItem());
+
+        expect(result.isOk()).toBe(true);
+        expect(callOrder).toContain('rotate'); // sanity: rotation was triggered
+        expect(callOrder.indexOf('message.insert')).toBeLessThan(callOrder.indexOf('rotate'));
+      });
+
+      it('sends response to channel before context rotation for CLI providers', async () => {
+        const callOrder: string[] = [];
+
+        const cliRun = vi.fn().mockResolvedValue({
+          output: 'CLI result',
+          sessionId: undefined,
+          usage: { inputTokens: 500_000, outputTokens: 120 },
+          isError: false,
+        });
+
+        const connector = ctx.channelRegistry.get('test-channel')!;
+        vi.mocked(connector.send).mockImplementation(async () => {
+          callOrder.push('send');
+          return ok(undefined);
+        });
+
+        ctx.contextRoller = {
+          checkAndRotate: vi.fn().mockImplementation(async () => {
+            callOrder.push('rotate');
+          }),
+        } as any;
+
+        ctx.providerRegistry = {
+          getDefault: vi.fn().mockReturnValue({
+            provider: {
+              name: 'gemini-cli',
+              createExecutionStrategy: () => ({
+                type: 'cli' as const,
+                supportsSessionResumption: false as const,
+                run: cliRun,
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({
+                inputTokens: 500_000,
+                metrics: { input_tokens: 500_000 },
+              }),
+            },
+            config: makeAgentRunnerProviderConfig({
+              command: 'gemini',
+              contextWindowTokens: 1_000_000,
+              contextManagement: makeContextManagement({
+                triggerMetric: 'input_tokens',
+                thresholdRatio: 0.8,
+              }),
+            }),
+          }),
+        } as any;
+
+        const result = await runner.run(makeQueueItem());
+
+        expect(result.isOk()).toBe(true);
+        expect(callOrder).toContain('rotate');
+        expect(callOrder.indexOf('send')).toBeLessThan(callOrder.indexOf('rotate'));
+      });
+    });
   });
 
   describe('background task notifications', () => {
