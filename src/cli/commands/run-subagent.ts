@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { SubAgentLoader } from '../../subagents/subagent-loader.js';
 import { ModelResolver } from '../../subagents/model-resolver.js';
 import type { SubAgentResult } from '../../subagents/subagent-types.js';
+import { wrapProviderOptions } from '../../subagents/provider-options.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,11 +108,21 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
   }
 
   // Execute with resolved timeout (from override or manifest).
+  //
+  // NOTE: This function contains its own failover + timeout loop that mirrors
+  // SubAgentRunner.executeInternal (src/subagents/subagent-runner.ts). The two
+  // implementations share wrapProviderOptions for provider-allowlist safety,
+  // but the outer loop structure is still duplicated. Fixes to failover
+  // semantics must be applied in both places until this is deduplicated.
+  // TODO(#159): extract a shared runSubAgentChain helper used by runner + CLI + bootstrap.
   const systemPrompt = agent.promptContents.join('\n\n');
   const abortController = new AbortController();
-  const wrappedProviderOptions = resolvedProviderOptions
-    ? { [resolvedProviderName]: resolvedProviderOptions }
-    : undefined;
+  const wrappedProviderOptions = wrapProviderOptions(
+    resolvedProviderName,
+    resolvedProviderOptions,
+    logger,
+    { subagent: name, source: 'cli' },
+  );
   const runPromise = agent.run(
     {
       threadId: 'cli-test',
@@ -133,7 +144,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
       },
       telemetry: { isEnabled: false },
       abortSignal: abortController.signal,
-      providerOptions: wrappedProviderOptions as Record<string, import('@ai-sdk/provider').JSONObject> | undefined,
+      providerOptions: wrappedProviderOptions,
     },
     input,
   );

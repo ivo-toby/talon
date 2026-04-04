@@ -69,6 +69,7 @@ import { loadToolInstructions } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
+import { wrapProviderOptions } from '../subagents/provider-options.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -375,6 +376,16 @@ export async function bootstrap(
       const summarizerPrompt = summarizerAgent.promptContents.join('\n\n');
 
       // Resolve model at call time so config overrides and failover apply.
+      //
+      // NOTE: This closure contains its own failover + timeout + abort loop
+      // that mirrors SubAgentRunner.executeInternal (src/subagents/subagent-runner.ts).
+      // Bootstrap runs outside a persona context (no capability checks, no
+      // observability wrapping), so it cannot go through SubAgentRunner.execute
+      // directly. The two implementations share wrapProviderOptions for
+      // provider-allowlist safety, but the outer loop structure is still
+      // duplicated. Any fix to failover semantics must be applied in both
+      // places until this is deduplicated.
+      // TODO(#159): extract a shared runSubAgentChain helper used by runner + CLI + bootstrap.
       const boundSummarizer: import('./context-roller.js').SummarizerRunFn = async (
         threadId, personaId, input,
       ) => {
@@ -412,9 +423,12 @@ export async function bootstrap(
             );
           });
 
-          const wrappedProviderOptions = entry.providerOptions
-            ? { [entry.provider]: entry.providerOptions }
-            : undefined;
+          const wrappedProviderOptions = wrapProviderOptions(
+            entry.provider,
+            entry.providerOptions,
+            logger,
+            { subagent: summarizerName, source: entry.source },
+          );
 
           try {
             const runPromise = summarizerAgent.run(
@@ -438,7 +452,7 @@ export async function bootstrap(
                 },
                 telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
                 abortSignal: abortController.signal,
-                providerOptions: wrappedProviderOptions as Record<string, import('@ai-sdk/provider').JSONObject> | undefined,
+                providerOptions: wrappedProviderOptions,
               },
               input,
             );

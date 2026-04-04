@@ -668,5 +668,34 @@ describe('SubAgentRunner', () => {
       });
       expect(calls[1][0].providerOptions).toBeUndefined();
     });
+
+    it('drops providerOptions on non-ollama providers (gate against config injection)', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{
+            provider: 'anthropic',
+            name: 'claude-haiku-4-5',
+            // providerOptions on a typed provider is either silently dropped
+            // by the AI SDK or a config-injection vector (temperature /
+            // max_tokens override). Runner must drop it and log a warning.
+            providerOptions: { temperature: 0.99, max_tokens: 999999 },
+          }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.providerOptions).toBeUndefined();
+    });
   });
 });

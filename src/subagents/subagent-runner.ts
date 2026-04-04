@@ -9,7 +9,6 @@
 
 import { ok, err, type Result } from 'neverthrow';
 import type { LanguageModel } from 'ai';
-import type { JSONObject } from '@ai-sdk/provider';
 import type {
   LoadedSubAgent,
   SubAgentInput,
@@ -25,6 +24,7 @@ import type pino from 'pino';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { SubAgentsConfig } from '../core/config/config-types.js';
+import { wrapProviderOptions } from './provider-options.js';
 
 // ---------------------------------------------------------------------------
 // Timeout sentinel
@@ -218,9 +218,12 @@ export class SubAgentRunner {
       // Per-model AbortController for timeout cancellation
       const abortController = new AbortController();
 
-      const wrappedProviderOptions = modelEntry.providerOptions
-        ? { [modelEntry.provider]: modelEntry.providerOptions as JSONObject }
-        : undefined;
+      const wrappedProviderOptions = wrapProviderOptions(
+        modelEntry.provider,
+        modelEntry.providerOptions,
+        childLogger,
+        { subagent: name, source: modelEntry.source },
+      );
 
       const agentContext = {
         threadId: ctx.threadId,
