@@ -384,7 +384,7 @@ export async function bootstrap(
             name: e.name,
             maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
             timeoutMs: e.timeoutMs ?? summarizerAgent.manifest.timeoutMs,
-            providerOptions: e.providerOptions as Record<string, unknown> | undefined,
+            providerOptions: e.providerOptions,
             source: 'override' as const,
           })),
           { ...summarizerAgent.manifest.model, timeoutMs: summarizerAgent.manifest.timeoutMs, providerOptions: undefined as Record<string, unknown> | undefined, source: 'manifest' as const },
