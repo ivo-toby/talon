@@ -82,11 +82,19 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   estimateContextUsage(usage: AgentUsage): ContextUsage {
+    const inputTokens = usage.inputTokens ?? 0;
+    const cacheReadTokens = usage.cacheReadTokens ?? 0;
+    // OpenAI reports cached_input_tokens (cache reads) but not a separate
+    // cache-creation metric. The uncached portion (input - cached) is the
+    // equivalent of Claude's cache_creation_input_tokens.
+    const cacheCreationTokens = Math.max(0, inputTokens - cacheReadTokens);
     return {
-      inputTokens: usage.inputTokens ?? 0,
+      inputTokens,
       metrics: {
-        input_tokens: usage.inputTokens ?? 0,
-        cache_read_input_tokens: usage.cacheReadTokens ?? 0,
+        input_tokens: inputTokens,
+        cache_read_input_tokens: cacheReadTokens,
+        cache_creation_input_tokens: cacheCreationTokens,
+        cache_total_input_tokens: cacheReadTokens + cacheCreationTokens,
       },
     };
   }

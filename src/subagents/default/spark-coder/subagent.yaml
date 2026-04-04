@@ -4,7 +4,7 @@ description: "Fast code generation using gpt-5.4-spark — accepts context files
 
 model:
   provider: openai
-  name: gpt-5.4-spark
+  name: gpt-5.3-codex-spark
   maxTokens: 16384
 
 requiredCapabilities: []
