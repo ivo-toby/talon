@@ -350,9 +350,10 @@ export async function bootstrap(
           provider: e.provider,
           name: e.name,
           maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
+          timeoutMs: e.timeoutMs ?? summarizerAgent.manifest.timeoutMs,
           source: 'override' as const,
         })),
-        { ...summarizerAgent.manifest.model, source: 'manifest' as const },
+        { ...summarizerAgent.manifest.model, timeoutMs: summarizerAgent.manifest.timeoutMs, source: 'manifest' as const },
       ];
 
       const anyResolvable = await Promise.any(
@@ -382,9 +383,10 @@ export async function bootstrap(
             provider: e.provider,
             name: e.name,
             maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
+            timeoutMs: e.timeoutMs ?? summarizerAgent.manifest.timeoutMs,
             source: 'override' as const,
           })),
-          { ...summarizerAgent.manifest.model, source: 'manifest' as const },
+          { ...summarizerAgent.manifest.model, timeoutMs: summarizerAgent.manifest.timeoutMs, source: 'manifest' as const },
         ];
 
         for (const entry of modelChain) {
@@ -397,8 +399,20 @@ export async function bootstrap(
             continue;
           }
 
+          const abortController = new AbortController();
+          let timeoutId: ReturnType<typeof setTimeout> | undefined;
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(
+              () => {
+                abortController.abort();
+                reject(new Error(`summarizer "${summarizerName}" timed out after ${entry.timeoutMs}ms`));
+              },
+              entry.timeoutMs,
+            );
+          });
+
           try {
-            const result = await summarizerAgent.run(
+            const runPromise = summarizerAgent.run(
               {
                 threadId,
                 personaId,
@@ -418,9 +432,12 @@ export async function bootstrap(
                   logger,
                 },
                 telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
+                abortSignal: abortController.signal,
               },
               input,
             );
+
+            const result = await Promise.race([runPromise, timeoutPromise]);
 
             if (result.isOk()) {
               return result;
@@ -433,9 +450,11 @@ export async function bootstrap(
           } catch (runError) {
             const msg = runError instanceof Error ? runError.message : String(runError);
             logger.warn(
-              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source },
+              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source, timeoutMs: entry.timeoutMs },
               `bootstrap: summarizer threw, trying next: ${msg}`,
             );
+          } finally {
+            if (timeoutId !== undefined) clearTimeout(timeoutId);
           }
         }
 
