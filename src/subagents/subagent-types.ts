@@ -130,6 +130,12 @@ export interface SubAgentContext {
    * traceparent needs to be threaded manually — just enabling it is enough.
    */
   telemetry: { isEnabled: boolean };
+  /**
+   * Abort signal from the runner's timeout controller.
+   * Sub-agents should pass this to AI SDK calls (`generateText`, `generateObject`)
+   * so that timed-out requests are cancelled promptly, enabling failover.
+   */
+  abortSignal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
