@@ -115,4 +115,62 @@ describe('TalondConfigSchema — subagents override', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('accepts providerOptions on a model override entry', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'session-summarizer': {
+          model: [
+            {
+              provider: 'ollama',
+              name: 'Qwen3.5-35B-A3B-UD-Q4_K_XL',
+              providerOptions: {
+                chat_template_kwargs: { enable_thinking: false },
+                temperature: 0.7,
+              },
+            },
+          ],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      const entry = result.data.subagents['session-summarizer'].model[0];
+      expect(entry.providerOptions).toEqual({
+        chat_template_kwargs: { enable_thinking: false },
+        temperature: 0.7,
+      });
+    }
+  });
+
+  it('allows providerOptions to be omitted (remains undefined)', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'test': { model: [{ provider: 'ollama', name: 'qwen' }] },
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagents['test'].model[0].providerOptions).toBeUndefined();
+    }
+  });
+
+  it('accepts deeply nested providerOptions without inner validation', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'test': {
+          model: [{
+            provider: 'ollama',
+            name: 'qwen',
+            providerOptions: {
+              level1: { level2: { level3: 'deep' } },
+              arrayField: [1, 2, 3],
+              nullField: null,
+            },
+          }],
+        },
+      },
+    });
+    expect(result.success).toBe(true);
+  });
 });
