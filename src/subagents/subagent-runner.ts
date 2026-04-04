@@ -104,10 +104,13 @@ export class SubAgentRunner {
           if (executeResult.isErr()) {
             throw executeResult.error;
           }
+          const { _model, _modelSource, ...value } = executeResult.value;
           observation.update({
-            output: executeResult.value,
+            output: value,
+            model: _model,
+            metadata: { modelSource: _modelSource },
           });
-          return executeResult.value;
+          return value;
         },
       );
 
@@ -126,7 +129,7 @@ export class SubAgentRunner {
     name: string,
     input: SubAgentInput,
     ctx: SubAgentInvokeContext,
-  ): Promise<Result<SubAgentResult, ToolError>> {
+  ): Promise<Result<SubAgentResult & { _model?: string; _modelSource?: string }, ToolError>> {
     // 1. Sub-agent must exist (was loaded)
     const agent = this.agents.get(name);
     if (!agent) {
@@ -236,14 +239,20 @@ export class SubAgentRunner {
           continue;
         }
 
+        const modelLabel = `${modelEntry.provider}/${modelEntry.name}`;
         if (failures.length > 0) {
           this.logger.info(
-            { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}`, failedAttempts: failures.length },
+            { subagent: name, model: modelLabel, source: modelEntry.source, failedAttempts: failures.length },
             'Sub-agent succeeded after failover',
+          );
+        } else {
+          this.logger.info(
+            { subagent: name, model: modelLabel, source: modelEntry.source },
+            'Sub-agent completed',
           );
         }
 
-        return ok(runResult.value);
+        return ok({ ...runResult.value, _model: modelLabel, _modelSource: modelEntry.source });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         const failMsg = `${modelEntry.provider}/${modelEntry.name} (${modelEntry.source}): ${message}`;
