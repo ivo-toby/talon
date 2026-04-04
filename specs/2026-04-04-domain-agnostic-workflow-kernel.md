@@ -37,7 +37,7 @@ This spec proposes a **domain-agnostic workflow kernel sidecar** that bolts onto
 - Rewrite the queue, scheduler, or background-agent architecture before the sidecar proves value.
 - Force all work types into one rigid lifecycle.
 - Solve multi-agent planning quality through schema alone.
-- Implement this design in this branch.
+- Implement this design as part of this spec branch review cycle; implementation is expected later, after the spec is reviewed and approved.
 
 ## 4. Design Principles
 
