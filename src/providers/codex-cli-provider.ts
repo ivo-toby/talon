@@ -10,7 +10,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import type { ProviderConfig } from '../core/config/config-types.js';
@@ -96,7 +96,14 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private buildBackgroundHome(): string {
-    return join(tmpdir(), `talon-provider-codex-cli-${randomUUID()}`);
+    return join(
+      this.runtime.dataDir,
+      'providers',
+      'codex-cli',
+      'background',
+      randomUUID(),
+      'home',
+    );
   }
 
   private operatorCodexDir(): string {
@@ -407,11 +414,13 @@ export class CodexCliProvider implements AgentProvider {
   ): ProviderResult {
     const parsed = this.parseCodexJsonl(raw.stdout);
     let output = raw.stdout;
+    let hasFinalOutputFile = false;
 
     const lastMessagePath = resultFiles?.lastMessagePath;
     if (typeof lastMessagePath === 'string') {
       try {
         output = readFileSync(lastMessagePath, 'utf8');
+        hasFinalOutputFile = true;
       } catch {
         // Fall back to stdout when the provider output file is unavailable.
       }
@@ -423,6 +432,23 @@ export class CodexCliProvider implements AgentProvider {
     if (raw.exitCode === 0 && !raw.timedOut && validationError) {
       if (options?.failOnSuccessfulInvalidJsonl) {
         throw new BackgroundAgentError(validationError);
+      }
+
+      // Background-only: tolerate a missing turn.completed event when Codex
+      // still wrote a non-empty final response file for this run.
+      if (
+        hasFinalOutputFile
+        && output.trim().length > 0
+        && parsed.hasThreadStarted
+        && !parsed.hasTurnCompleted
+      ) {
+        return {
+          output,
+          stderr: this.appendStderr(raw.stderr, validationError),
+          exitCode: raw.exitCode,
+          timedOut: raw.timedOut,
+          usage: parsed.usage,
+        };
       }
 
       return {
