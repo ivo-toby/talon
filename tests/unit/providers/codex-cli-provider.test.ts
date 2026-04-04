@@ -331,7 +331,7 @@ describe('CodexCliProvider', () => {
     }
   });
 
-  it('prepares background invocations with temp HOME, resultFiles metadata, and --ephemeral', () => {
+  it('prepares background invocations with a stable runtime HOME, resultFiles metadata, and --ephemeral', () => {
     const provider = makeProvider();
 
     const result = provider.prepareBackgroundInvocation({
@@ -368,7 +368,10 @@ describe('CodexCliProvider', () => {
     const invocation = result._unsafeUnwrap();
     cleanupPaths.push(...invocation.cleanupPaths);
 
-    expect(invocation.env?.HOME.startsWith(tmpdir())).toBe(true);
+    expect(invocation.env?.HOME.startsWith(
+      join(runtimeDir, 'providers', 'codex-cli', 'background'),
+    )).toBe(true);
+    expect(invocation.env?.HOME.endsWith('/home')).toBe(true);
     expect(invocation.cleanupPaths).toContain(invocation.env!.HOME);
     expect(invocation.resultFiles?.lastMessagePath).toBeDefined();
     expect(invocation.args[invocation.args.length - 1]).toBe('-');
@@ -947,10 +950,34 @@ describe('CodexCliProvider', () => {
     expect(result.stderr).toContain('thread.started');
   });
 
-  it('marks successful background output without turn.completed as failed', () => {
+  it('keeps successful background output with a non-empty final message when turn.completed is missing', () => {
     const provider = makeProvider();
     const lastMessagePath = join(runtimeDir, 'last-message.txt');
     writeFileSync(lastMessagePath, 'isolated-final-output', 'utf8');
+
+    const result = provider.parseBackgroundResult(
+      {
+        stdout: '{"type":"thread.started","thread_id":"codex-thread-009"}',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      { lastMessagePath },
+    );
+
+    expect(result).toEqual({
+      output: 'isolated-final-output',
+      stderr: expect.stringContaining('turn.completed'),
+      exitCode: 0,
+      timedOut: false,
+      usage: undefined,
+    });
+  });
+
+  it('marks successful background output as failed when the final message file is empty', () => {
+    const provider = makeProvider();
+    const lastMessagePath = join(runtimeDir, 'last-message.txt');
+    writeFileSync(lastMessagePath, '   \n', 'utf8');
 
     const result = provider.parseBackgroundResult(
       {
@@ -966,7 +993,25 @@ describe('CodexCliProvider', () => {
     expect(result.stderr).toContain('turn.completed');
   });
 
-  it('estimates context usage from input_tokens only', () => {
+  it('marks successful background output as failed when the final message file is unavailable', () => {
+    const provider = makeProvider();
+    const lastMessagePath = join(runtimeDir, 'missing-last-message.txt');
+
+    const result = provider.parseBackgroundResult(
+      {
+        stdout: '{"type":"thread.started","thread_id":"codex-thread-009"}',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      { lastMessagePath },
+    );
+
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain('turn.completed');
+  });
+
+  it('estimates context usage with derived cache_creation_input_tokens', () => {
     const provider = makeProvider();
 
     expect(
@@ -980,6 +1025,27 @@ describe('CodexCliProvider', () => {
       metrics: {
         input_tokens: 12_345,
         cache_read_input_tokens: 6_789,
+        cache_creation_input_tokens: 5_556,
+        cache_total_input_tokens: 12_345,
+      },
+    });
+  });
+
+  it('estimates context usage when no cache tokens are reported', () => {
+    const provider = makeProvider();
+
+    expect(
+      provider.estimateContextUsage({
+        inputTokens: 10_000,
+        outputTokens: 500,
+      }),
+    ).toEqual({
+      inputTokens: 10_000,
+      metrics: {
+        input_tokens: 10_000,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 10_000,
+        cache_total_input_tokens: 10_000,
       },
     });
   });

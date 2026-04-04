@@ -198,7 +198,7 @@ export class BackgroundAgentHandler {
       resolvedSkills: personaSkills,
       skillResolver: this.deps.skillResolver,
       excludeServerNames: ['__talond_host_tools'],
-      skillLoadingMode: 'eager',
+      skillLoadingMode: 'lazy',
       logger: this.deps.logger,
     });
 
@@ -263,6 +263,7 @@ export class BackgroundAgentHandler {
       channelContext,
       timeContext,
       toolInstructions: toolInstructionsBlock || undefined,
+      hasSkills: personaSkills.length > 0,
       mcpServers: runtimeContext.mcpServers,
       personaId: context.personaId,
       workerPersonaId: workerPersonaRowResult.value.id,

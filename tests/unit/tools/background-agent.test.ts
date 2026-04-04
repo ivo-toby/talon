@@ -209,8 +209,67 @@ describe('BackgroundAgentHandler', () => {
     expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).toContain(
       'Friendly personality.',
     );
+    // Lazy mode: skill index (name only) is in prompt, not full eager content
     expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).toContain(
+      'search-skill',
+    );
+    expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).not.toContain(
       'Skill instructions.',
+    );
+  });
+
+  it('uses lazy skill loading — system prompt contains skill index not full skill content', async () => {
+    const { handler, backgroundAgentManager } = createHandler();
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'Refactor the auth module' },
+      { runId: 'run-1', threadId: 'thread-1', personaId: 'persona-1', requestId: 'req-1' },
+    );
+
+    const personaPrompt = backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt as string;
+    // Lazy mode: skill index (name listed) is present
+    expect(personaPrompt).toContain('search-skill');
+    // Lazy mode: full eager skill content is NOT embedded
+    expect(personaPrompt).not.toContain('Skill instructions.');
+  });
+
+  it('passes hasSkills: true to spawn when persona has skills', async () => {
+    const { handler, backgroundAgentManager } = createHandler();
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'Do something' },
+      { runId: 'run-1', threadId: 'thread-1', personaId: 'persona-1', requestId: 'req-1' },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ hasSkills: true }),
+    );
+  });
+
+  it('passes hasSkills: false to spawn when persona has no skills', async () => {
+    const { handler, backgroundAgentManager } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { skills: [] },
+            systemPromptContent: 'Base system prompt.',
+            personalityContent: '',
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+        listNames: vi.fn().mockReturnValue(['TestBot']),
+        listProfiles: vi.fn().mockReturnValue([]),
+      },
+      loadedSkills: [],
+    });
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'Do something' },
+      { runId: 'run-1', threadId: 'thread-1', personaId: 'persona-1', requestId: 'req-1' },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ hasSkills: false }),
     );
   });
 
