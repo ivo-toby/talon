@@ -86,6 +86,7 @@ export async function run(
       schema: GroomResponseSchema,
       maxOutputTokens: ctx.maxOutputTokens,
       experimental_telemetry: ctx.telemetry,
+      abortSignal: ctx.abortSignal,
     });
 
     // 3. Check if any actions were returned.

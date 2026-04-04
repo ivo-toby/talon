@@ -36,6 +36,7 @@ export async function run(
       schema: SummarySchema,
       maxOutputTokens: ctx.maxOutputTokens,
       experimental_telemetry: ctx.telemetry,
+      abortSignal: ctx.abortSignal,
     });
 
     return ok({
