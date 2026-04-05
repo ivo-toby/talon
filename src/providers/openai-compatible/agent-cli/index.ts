@@ -1,7 +1,6 @@
 import { writeFileSync } from 'node:fs';
 import { Agent } from '@mastra/core/agent';
 import type { Tool } from '@mastra/core/tools';
-import { Workspace, LocalFilesystem, LocalSandbox } from '@mastra/core/workspace';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
 import {
   chooseUsage,
@@ -86,23 +85,24 @@ function emit(event: WrapperEvent): void {
 }
 
 async function main(): Promise<void> {
-  let workspace: Workspace | undefined;
   let mcpClient: MCPClient | undefined;
   let aggregatedText = '';
 
   try {
     const input = parseInput(await readStdin());
-    workspace = new Workspace({
-      filesystem: new LocalFilesystem({
-        basePath: input.cwd,
-      }),
-      sandbox: new LocalSandbox({
-        workingDirectory: input.cwd,
-        env: process.env,
-      }),
-    });
-    await workspace.init();
 
+    // Note: we intentionally do NOT attach a Mastra Workspace here.
+    // Mastra's Agent auto-injects filesystem/sandbox/exec tools when a
+    // workspace is set, and those tools are hard-sandboxed to
+    // `basePath`/`workingDirectory`. In Talon's architecture, the
+    // host-tools MCP bridge (wired up via `mcpServers` below) IS the
+    // filesystem/exec/capability layer, and it applies the persona's
+    // capability rules consistently across providers (claude-code,
+    // codex-cli, gemini-cli). Adding Mastra's workspace tools on top
+    // would give the agent a second, redundant, and differently-scoped
+    // toolset — which in practice confused models like GLM-5 into
+    // reporting "I'm sandboxed to ipc/" (the only populated subdir of
+    // the thread workspace) instead of using the full Talon host-tools.
     const mcpServers = toMastraMcpServers(input.mcpServers);
     const mcpTools = Object.keys(mcpServers).length > 0
       ? await (async (): Promise<Record<string, Tool<unknown, unknown, unknown, unknown>>> => {
@@ -122,7 +122,6 @@ async function main(): Promise<void> {
         ...(input.apiKey ? { apiKey: input.apiKey } : {}),
         ...(input.headers ? { headers: input.headers } : {}),
       },
-      workspace,
       tools: mcpTools,
     });
 
@@ -244,7 +243,6 @@ async function main(): Promise<void> {
     process.exitCode = 1;
   } finally {
     await mcpClient?.disconnect().catch(() => {});
-    await workspace?.destroy().catch(() => {});
   }
 }
 
