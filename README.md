@@ -1445,6 +1445,24 @@ npx talonctl test-provider --name gemini-cli
 
 For `openai-compatible`, add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
 
+##### Prompt caching with `openai-compatible`
+
+The provider already reads `prompt_tokens_details.cached_tokens` from the upstream response (via Mastra / the AI SDK), maps it onto `cacheReadTokens` in the run's `AgentUsage`, and exposes all four cache metrics — `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cache_total_input_tokens` — to the context roller and Langfuse observations. That means you can set `contextManagement.triggerMetric: cache_read_input_tokens` the same way as for `claude-code` or `codex-cli`, and prompt-cache hits will show up in the dashboard.
+
+Whether you actually see non-zero cache counts depends entirely on the **upstream server**, not on Talon:
+
+| Endpoint                                     | Emits cached token counts? |
+| -------------------------------------------- | -------------------------- |
+| OpenAI (`api.openai.com/v1`)                 | ✅ yes, automatic           |
+| DeepSeek (`api.deepseek.com/v1`)             | ✅ yes                      |
+| Zhipu GLM-4.5 / GLM-5 (`open.bigmodel.cn`)   | ✅ yes (paid tier)          |
+| vLLM (`--enable-prefix-caching`)             | ✅ yes                      |
+| OpenRouter                                   | depends on underlying model |
+| **Ollama (self-hosted or Cloud)**            | ❌ no — KV-cache is internal, not surfaced in the OpenAI-compatible usage object |
+| Groq / Together / Fireworks                  | ❌ no                       |
+
+If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens` will stay at 0 and `cache_creation_input_tokens` will equal `input_tokens` — that is the expected degradation, not a bug. Use `triggerMetric: input_tokens` for those endpoints.
+
 ### Scheduling
 
 | Command | Description |

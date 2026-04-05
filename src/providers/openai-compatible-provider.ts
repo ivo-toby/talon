@@ -194,10 +194,23 @@ export class OpenAiCompatibleProvider implements AgentProvider {
   }
 
   estimateContextUsage(usage: AgentUsage): ContextUsage {
+    const inputTokens = usage.inputTokens ?? 0;
+    const cacheReadTokens = usage.cacheReadTokens ?? 0;
+    // OpenAI-compatible servers report `prompt_tokens_details.cached_tokens`
+    // (cache reads) but no separate cache-creation metric. The uncached
+    // portion (input - cached) is the equivalent of Claude's
+    // cache_creation_input_tokens, mirroring the codex-cli provider.
+    // Note: many upstream servers (Ollama, Groq, Together, …) never emit
+    // cached_tokens, so cacheReadTokens stays zero and these metrics
+    // degrade gracefully to `input_tokens` for users on those endpoints.
+    const cacheCreationTokens = Math.max(0, inputTokens - cacheReadTokens);
     return {
-      inputTokens: usage.inputTokens ?? 0,
+      inputTokens,
       metrics: {
-        input_tokens: usage.inputTokens ?? 0,
+        input_tokens: inputTokens,
+        cache_read_input_tokens: cacheReadTokens,
+        cache_creation_input_tokens: cacheCreationTokens,
+        cache_total_input_tokens: cacheReadTokens + cacheCreationTokens,
       },
     };
   }

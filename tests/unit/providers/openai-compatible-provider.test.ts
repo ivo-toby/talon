@@ -569,4 +569,77 @@ describe('OpenAiCompatibleProvider', () => {
     expect(result.output).toBe('');
     expect(result.stderr).toContain('wrapper exited without emitting a result event');
   });
+
+  describe('estimateContextUsage', () => {
+    it('derives cache_creation_input_tokens from input - cache reads when the upstream reports caching', () => {
+      // OpenAI-compatible servers that honour prompt caching (OpenAI,
+      // DeepSeek, GLM, vLLM with prefix caching, …) set
+      // prompt_tokens_details.cached_tokens on the usage object. The
+      // Mastra AI-SDK wrapper maps it onto cachedInputTokens, our usage
+      // extractor maps it onto AgentUsage.cacheReadTokens, and this
+      // method must then expose all four cache metrics so the context
+      // roller and Langfuse observations see them.
+      const provider = makeProvider();
+
+      expect(
+        provider.estimateContextUsage({
+          inputTokens: 12_345,
+          cacheReadTokens: 6_789,
+          outputTokens: 100,
+        }),
+      ).toEqual({
+        inputTokens: 12_345,
+        metrics: {
+          input_tokens: 12_345,
+          cache_read_input_tokens: 6_789,
+          cache_creation_input_tokens: 5_556,
+          cache_total_input_tokens: 12_345,
+        },
+      });
+    });
+
+    it('falls back to zero cache metrics for upstreams that do not report caching (Ollama, Groq, …)', () => {
+      // Ollama self-hosted and Ollama Cloud do not populate
+      // prompt_tokens_details in their OpenAI-compatible response, and
+      // neither do Groq/Together. cacheReadTokens is therefore undefined
+      // and the three cache metrics must degrade gracefully:
+      // cache_read stays zero, cache_creation = input_tokens, and
+      // cache_total = input_tokens.
+      const provider = makeProvider();
+
+      expect(
+        provider.estimateContextUsage({
+          inputTokens: 10_000,
+          outputTokens: 500,
+        }),
+      ).toEqual({
+        inputTokens: 10_000,
+        metrics: {
+          input_tokens: 10_000,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 10_000,
+          cache_total_input_tokens: 10_000,
+        },
+      });
+    });
+
+    it('handles the zero-input edge case without going negative', () => {
+      const provider = makeProvider();
+
+      expect(
+        provider.estimateContextUsage({
+          inputTokens: 0,
+          outputTokens: 0,
+        }),
+      ).toEqual({
+        inputTokens: 0,
+        metrics: {
+          input_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_total_input_tokens: 0,
+        },
+      });
+    });
+  });
 });
