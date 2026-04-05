@@ -69,7 +69,7 @@ describe('OpenAiCompatibleProvider', () => {
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain(
-      'OpenAI-compatible provider requires providers.<name>.options.baseUrl or auth.providers.openai.baseURL',
+      'OpenAI-compatible provider requires providers.<name>.options.baseUrl or auth.providers.openai-compatible.baseURL',
     );
   });
 

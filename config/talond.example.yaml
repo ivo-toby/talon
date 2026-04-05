@@ -216,8 +216,12 @@ auth:
     openai:
       apiKey: ${OPENAI_API_KEY}
       # baseURL: https://api.openai.com/v1
-      # For Ollama or another OpenAI-compatible endpoint:
-      # baseURL: http://127.0.0.1:11434/v1
+    # Credentials for the `openai-compatible` agent provider (e.g. Ollama,
+    # Groq, Together, any OpenAI-compatible endpoint). This is separate from
+    # the `openai` entry above, which is used by the OpenAI sub-agent.
+    # openai-compatible:
+    #   apiKey: ${OLLAMA_API_KEY}
+    #   baseURL: https://ollama.com/v1
     # google:
     #   apiKey: ${GOOGLE_AI_API_KEY}
 

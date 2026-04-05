@@ -1407,7 +1407,7 @@ npx talonctl set-default-provider --name gemini-cli --context agent-runner
 npx talonctl test-provider --name gemini-cli
 ```
 
-For `openai-compatible`, add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`.
+For `openai-compatible`, add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials for this provider are read from `auth.providers.openai-compatible.{apiKey,baseURL}` (separate from `auth.providers.openai`, which is used by the OpenAI sub-agent).
 
 ### Scheduling
 

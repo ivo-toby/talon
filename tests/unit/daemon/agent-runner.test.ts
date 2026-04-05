@@ -889,11 +889,13 @@ describe('AgentRunner', () => {
       expect(cliRun).toHaveBeenCalledWith(expect.objectContaining({
         model: 'qwen3-coder:30b',
       }));
-      const nonThinkingCalls = vi.mocked(connector.send).mock.calls.filter(
-        ([, body]) => (body as { body: string }).body !== 'Thinking...',
+      const sendCalls = vi.mocked(connector.send).mock.calls;
+      const thinkingCalls = sendCalls.filter(
+        ([, body]) => (body as { body: string }).body === 'Thinking...',
       );
-      expect(nonThinkingCalls).toHaveLength(1);
-      expect(nonThinkingCalls[0]).toEqual([
+      expect(thinkingCalls).toHaveLength(0);
+      expect(sendCalls).toHaveLength(1);
+      expect(sendCalls[0]).toEqual([
         'ext-001',
         { body: 'OpenAI-compatible result' },
       ]);

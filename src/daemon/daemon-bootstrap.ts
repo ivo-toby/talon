@@ -308,8 +308,8 @@ export async function bootstrap(
     'gemini-cli': (providerConfig) => new GeminiCliProvider(providerConfig),
     'codex-cli': (providerConfig) => new CodexCliProvider(providerConfig, { dataDir }),
     'openai-compatible': (providerConfig) => new OpenAiCompatibleProvider(providerConfig, {
-      apiKey: config.auth?.providers?.openai?.apiKey,
-      baseUrl: config.auth?.providers?.openai?.baseURL,
+      apiKey: config.auth?.providers?.['openai-compatible']?.apiKey,
+      baseUrl: config.auth?.providers?.['openai-compatible']?.baseURL,
     }),
   };
   const providerRegistry = new ProviderRegistry(config.agentRunner.providers, providerFactories);

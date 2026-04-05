@@ -185,7 +185,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     if (!baseUrl) {
       return err(
         new BackgroundAgentError(
-          'OpenAI-compatible provider requires providers.<name>.options.baseUrl or auth.providers.openai.baseURL',
+          'OpenAI-compatible provider requires providers.<name>.options.baseUrl or auth.providers.openai-compatible.baseURL',
         ),
       );
     }

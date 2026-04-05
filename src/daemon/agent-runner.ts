@@ -439,7 +439,8 @@ export class AgentRunner {
 
             const suppressCliWaitingMessage =
               providerEntry.provider.name === 'gemini-cli'
-              || providerEntry.provider.name === 'codex-cli';
+              || providerEntry.provider.name === 'codex-cli'
+              || providerEntry.provider.name === 'openai-compatible';
 
             if (
               strategy.type === 'cli'
