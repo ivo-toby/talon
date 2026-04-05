@@ -41,6 +41,22 @@ describe('ModelResolver', () => {
     expect(result.isOk()).toBe(true);
   });
 
+  it('resolves an ollama model with a real apiKey (Ollama Cloud / authenticated endpoints)', async () => {
+    // The ollama slot is Talon's OpenAI-compatible passthrough. When creds.apiKey
+    // is set, the resolver must forward it instead of the dummy 'ollama' fallback,
+    // otherwise authenticated endpoints like Ollama Cloud reject every request.
+    const resolver = new ModelResolver({
+      ollama: {
+        baseURL: 'https://ollama.com',
+        apiKey: 'real-cloud-token',
+      },
+    });
+    const result = await resolver.resolve({ provider: 'ollama', name: 'qwen3-30b', maxTokens: 2048 });
+    expect(result.isOk()).toBe(true);
+    const model = result._unsafeUnwrap();
+    expect(model.modelId).toBe('qwen3-30b');
+  });
+
   it('returns error for unknown provider', async () => {
     const resolver = new ModelResolver({});
     const result = await resolver.resolve({ provider: 'unknown', name: 'model', maxTokens: 2048 });

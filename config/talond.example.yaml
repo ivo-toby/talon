@@ -196,6 +196,17 @@ auth:
       # baseURL: https://api.openai.com/v1
     # google:
     #   apiKey: ${GOOGLE_AI_API_KEY}
+    #
+    # The `ollama` slot is Talon's OpenAI-compatible passthrough. Use it for:
+    #   - Local Ollama:  baseURL: http://localhost:11434/v1  (no apiKey needed)
+    #   - llama.cpp:     baseURL: http://<host>:8080/v1      (no apiKey needed)
+    #   - vLLM:          baseURL: http://<host>:8000/v1      (no apiKey needed)
+    #   - Ollama Cloud:  baseURL + apiKey: ${OLLAMA_API_KEY} (auth required)
+    #   - Any OpenAI-compatible endpoint behind auth (e.g. Cloudflare tunnel).
+    #
+    # ollama:
+    #   baseURL: https://ollama.com
+    #   apiKey: ${OLLAMA_API_KEY}
 
 # Langfuse observability — traces agent runs, tool calls, and LLM generations.
 # Sign up at https://cloud.langfuse.com or self-host: https://langfuse.com/docs/deployment/self-host

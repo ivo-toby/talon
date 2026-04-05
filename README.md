@@ -1182,7 +1182,10 @@ auth:
       apiKey: ${GOOGLE_API_KEY}
     ollama:
       baseURL: http://localhost:11434/v1
+      # apiKey: ${OLLAMA_API_KEY}   # required for Ollama Cloud / authenticated endpoints
 ```
+
+The `ollama` slot is Talon's OpenAI-compatible passthrough — use it for local Ollama, llama.cpp, vLLM, Ollama Cloud, or any OpenAI-compatible endpoint. `apiKey` is forwarded when set (required for authenticated endpoints) and falls back to a dummy value for local endpoints that either ignore auth or accept any token. Environment variable references like `${OLLAMA_API_KEY}` are substituted from the shell environment / `.env` file at config load.
 
 ### Persona Configuration
 

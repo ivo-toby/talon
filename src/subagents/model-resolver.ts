@@ -71,9 +71,18 @@ export class ModelResolver {
         // (e.g. Qwen's chat_template_kwargs.enable_thinking) can flow through
         // via providerOptions. The @ai-sdk/openai typed options do not allow
         // non-standard fields.
+        //
+        // `creds.apiKey` is forwarded when set (required for Ollama Cloud and
+        // any authenticated OpenAI-compatible endpoint) and falls back to a
+        // dummy 'ollama' value for local ollama / llama.cpp / vLLM which
+        // either ignore auth or accept any token.
         const { createOpenAICompatible } = await import('@ai-sdk/openai-compatible');
         const baseURL = creds.baseURL ?? 'http://localhost:11434/v1';
-        return createOpenAICompatible({ name: 'ollama', baseURL, apiKey: 'ollama' })(modelName);
+        return createOpenAICompatible({
+          name: 'ollama',
+          baseURL,
+          apiKey: creds.apiKey ?? 'ollama',
+        })(modelName);
       }
       default:
         throw new Error(
