@@ -112,14 +112,16 @@ personas:
     // multiple invalid top-level fields alongside channels pushes the count above 5.
     const yaml = `
 logLevel: bad-level
-sandbox:
-  maxConcurrent: 0
-  runtime: invalid-runtime
 ipc:
   pollIntervalMs: 50
 queue:
   maxAttempts: 0
+  backoffBaseMs: -1
   concurrencyLimit: 0
+scheduler:
+  tickIntervalMs: 10
+auth:
+  mode: not-a-mode
 `;
     const result = loadConfigFromString(yaml);
     expect(result.isErr()).toBe(true);
@@ -138,12 +140,12 @@ queue:
     }
   });
 
-  it('returns Err(ConfigError) for invalid sandbox.maxConcurrent', () => {
-    const result = loadConfigFromString('sandbox:\n  maxConcurrent: 0');
+  it('returns Err(ConfigError) for invalid queue.maxAttempts', () => {
+    const result = loadConfigFromString('queue:\n  maxAttempts: 0');
     expect(result.isErr()).toBe(true);
     if (result.isErr()) {
       expect(result.error).toBeInstanceOf(ConfigError);
-      expect(result.error.message).toMatch(/sandbox\.maxConcurrent/);
+      expect(result.error.message).toMatch(/queue\.maxAttempts/);
     }
   });
 
@@ -515,7 +517,6 @@ describe('frozen config output', () => {
     expect(result.isOk()).toBe(true);
     if (result.isOk()) {
       expect(Object.isFrozen(result.value.storage)).toBe(true);
-      expect(Object.isFrozen(result.value.sandbox)).toBe(true);
       expect(Object.isFrozen(result.value.ipc)).toBe(true);
       expect(Object.isFrozen(result.value.queue)).toBe(true);
       expect(Object.isFrozen(result.value.scheduler)).toBe(true);
@@ -745,9 +746,11 @@ describe('validateConfig', () => {
   it('truncates error message and appends "and N more" when more than 5 issues are present', () => {
     const raw = {
       logLevel: 'bad-level',
-      sandbox: { maxConcurrent: 0, runtime: 'invalid-runtime' },
       ipc: { pollIntervalMs: 50 },
       queue: { maxAttempts: 0, concurrencyLimit: 0 },
+      scheduler: { tickIntervalMs: 10 },
+      auth: { mode: 'not-a-mode' },
+      storage: { type: 'postgres' },
     };
     const result = validateConfig(raw);
     expect(result.isErr()).toBe(true);

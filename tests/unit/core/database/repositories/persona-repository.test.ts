@@ -24,11 +24,18 @@ describe('PersonaRepository', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
       ...overrides,
     };
   }
+
+  describe('schema', () => {
+    it('does not expose a `mounts` column (dropped in migration 010)', () => {
+      const cols = db.pragma('table_info(personas)') as Array<{ name: string }>;
+      const names = cols.map((c) => c.name);
+      expect(names).not.toContain('mounts');
+    });
+  });
 
   describe('insert', () => {
     it('inserts and returns the new persona', () => {

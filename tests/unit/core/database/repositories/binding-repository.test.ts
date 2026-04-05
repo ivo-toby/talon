@@ -37,7 +37,6 @@ describe('BindingRepository', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
     personaIdB = uuid();
@@ -48,7 +47,6 @@ describe('BindingRepository', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
   });

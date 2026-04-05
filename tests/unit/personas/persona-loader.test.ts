@@ -71,9 +71,8 @@ function makePersonaConfig(overrides: Partial<PersonaConfig> = {}): PersonaConfi
     model: 'claude-sonnet-4-6',
     skills: [],
     capabilities: { allow: [], requireApproval: [] },
-    mounts: [],
     ...overrides,
-  };
+  } as PersonaConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +510,6 @@ describe('PersonaLoader', () => {
         system_prompt_file: null,
         skills: '[]',
         capabilities: '{}',
-        mounts: '[]',
         max_concurrent: null,
         created_at: Date.now(),
         updated_at: Date.now(),
@@ -600,18 +598,6 @@ describe('PersonaLoader', () => {
       const stored = JSON.parse(row!.capabilities);
       expect(stored.allow).toContain('fs.read:workspace');
       expect(stored.requireApproval).toContain('net.http:egress');
-    });
-
-    it('stores mounts as JSON array', async () => {
-      const config = makePersonaConfig({
-        name: 'mounted',
-        mounts: [{ source: '/host/path', target: '/container/path', mode: 'ro' }],
-      });
-      await loader.loadFromConfig([config]);
-      const row = repo.findByName('mounted')._unsafeUnwrap();
-      const stored = JSON.parse(row!.mounts);
-      expect(stored).toHaveLength(1);
-      expect(stored[0].source).toBe('/host/path');
     });
 
     it('stores maxConcurrent when set', async () => {

@@ -79,10 +79,6 @@ personas:
         - subagent.invoke
       requireApproval:
         - db.query:own
-    mounts:
-      - source: /srv/notes
-        target: /workspace/notes
-        mode: ro
     maxConcurrent: 2
 ```
 

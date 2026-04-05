@@ -34,7 +34,6 @@ describe('buildPersonaRuntimeContext', () => {
       skills: ['search', 'browser'],
       subagents: [],
       capabilities: { allow: [], requireApproval: [] },
-      mounts: [],
     },
     systemPromptContent: 'You are helpful.',
     personalityContent: 'Stay concise.',

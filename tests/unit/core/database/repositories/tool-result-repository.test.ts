@@ -45,7 +45,6 @@ describe('ToolResultRepository', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
 

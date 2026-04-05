@@ -82,8 +82,7 @@ async function scaffoldPersona(
     systemPromptFile,
     skills: [],
     capabilities: { allow: [], requireApproval: [] },
-    mounts: [],
-  };
+  } as unknown as PersonaConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +146,12 @@ describe('PersonaLoader — personality folder', () => {
   });
 
   it('returns undefined personalityContent when no systemPromptFile is set', async () => {
-    const config: PersonaConfig = {
+    const config = {
       name: 'no-prompt',
       model: 'claude-sonnet-4-6',
       skills: [],
       capabilities: { allow: [], requireApproval: [] },
-      mounts: [],
-    };
+    } as unknown as PersonaConfig;
 
     const result = await loader.loadFromConfig([config]);
     expect(result.isOk()).toBe(true);

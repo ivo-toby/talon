@@ -14,9 +14,7 @@ export {
 export {
   TalondConfigSchema,
   StorageConfigSchema,
-  SandboxConfigSchema,
   CapabilitiesSchema,
-  MountConfigSchema,
   PersonaConfigSchema,
   ChannelConfigSchema,
   IpcConfigSchema,
@@ -28,10 +26,7 @@ export {
 export type {
   TalondConfig,
   StorageConfig,
-  SandboxConfig,
-  SandboxResourceLimits,
   CapabilitiesConfig,
-  MountConfig,
   PersonaConfig,
   ChannelConfig,
   IpcConfig,

@@ -203,7 +203,7 @@ describe('generateDefaultConfig()', () => {
     const content = readFileSync(configPath, 'utf-8');
     expect(content).toContain('logLevel');
     expect(content).toContain('storage');
-    expect(content).toContain('sandbox');
+    expect(content).toContain('ipc');
   });
 
   it('skips generation when config already exists', async () => {

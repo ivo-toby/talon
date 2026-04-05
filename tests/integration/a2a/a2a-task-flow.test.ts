@@ -52,7 +52,6 @@ function makePersona(name: string, db: Database.Database): { loaded: LoadedPerso
     system_prompt_file: null,
     skills: '["code-review"]',
     capabilities: '{"allow":["read-repo"],"requireApproval":[]}',
-    mounts: '[]',
     max_concurrent: null,
   });
 
@@ -64,7 +63,6 @@ function makePersona(name: string, db: Database.Database): { loaded: LoadedPerso
       skills: ['code-review'],
       subagents: [],
       capabilities: { allow: ['read-repo'], requireApproval: [] },
-      mounts: [],
       maxConcurrent: undefined,
       provider: undefined,
     },

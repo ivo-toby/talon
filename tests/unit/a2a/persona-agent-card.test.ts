@@ -22,7 +22,6 @@ function makePersona(overrides: Partial<LoadedPersona['config']> = {}): LoadedPe
         allow: ['read-repo', 'run-tests'],
         requireApproval: ['write-files'],
       },
-      mounts: [],
       maxConcurrent: undefined,
       provider: undefined,
       ...overrides,

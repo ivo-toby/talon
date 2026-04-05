@@ -18,7 +18,6 @@ export interface PersonaRow {
   system_prompt_file: string | null;
   skills: string;
   capabilities: string;
-  mounts: string;
   max_concurrent: number | null;
   created_at: number;
   updated_at: number;
@@ -31,7 +30,7 @@ export type InsertPersonaInput = Omit<PersonaRow, 'created_at' | 'updated_at'>;
 export type UpdatePersonaInput = Partial<
   Pick<
     PersonaRow,
-    'name' | 'model' | 'system_prompt_file' | 'skills' | 'capabilities' | 'mounts' | 'max_concurrent'
+    'name' | 'model' | 'system_prompt_file' | 'skills' | 'capabilities' | 'max_concurrent'
   >
 >;
 
@@ -48,9 +47,9 @@ export class PersonaRepository extends BaseRepository {
 
     this.insertStmt = db.prepare(`
       INSERT INTO personas
-        (id, name, model, system_prompt_file, skills, capabilities, mounts, max_concurrent, created_at, updated_at)
+        (id, name, model, system_prompt_file, skills, capabilities, max_concurrent, created_at, updated_at)
       VALUES
-        (@id, @name, @model, @system_prompt_file, @skills, @capabilities, @mounts, @max_concurrent, @created_at, @updated_at)
+        (@id, @name, @model, @system_prompt_file, @skills, @capabilities, @max_concurrent, @created_at, @updated_at)
     `);
 
     this.findByIdStmt = db.prepare(`SELECT * FROM personas WHERE id = ?`);

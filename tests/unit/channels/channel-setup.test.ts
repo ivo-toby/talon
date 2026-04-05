@@ -39,11 +39,11 @@ describe('reconcileBindings()', () => {
     personaIdB = uuid();
     personaRepo.insert({
       id: personaIdA, name: 'alice', model: 'claude-sonnet-4-6',
-      system_prompt_file: null, skills: '[]', capabilities: '{}', mounts: '[]', max_concurrent: null,
+      system_prompt_file: null, skills: '[]', capabilities: '{}', max_concurrent: null,
     });
     personaRepo.insert({
       id: personaIdB, name: 'bob', model: 'claude-sonnet-4-6',
-      system_prompt_file: null, skills: '[]', capabilities: '{}', mounts: '[]', max_concurrent: null,
+      system_prompt_file: null, skills: '[]', capabilities: '{}', max_concurrent: null,
     });
   });
 

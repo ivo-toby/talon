@@ -300,14 +300,6 @@ export class TalondDaemon {
       this.logger.warn('daemon: reload — scheduler config changed; restart required to apply');
     }
 
-    // Container image change — warn.
-    if (oldConfig.sandbox.image !== newConfig.sandbox.image) {
-      this.logger.warn(
-        { from: oldConfig.sandbox.image, to: newConfig.sandbox.image },
-        'daemon: reload — container image changed — manual rolling restart required',
-      );
-    }
-
     // Reload personas.
     const personaReload = await this.ctx.personaLoader.loadFromConfig(newConfig.personas);
     if (personaReload.isErr()) {

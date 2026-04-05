@@ -415,7 +415,6 @@ export class PersonaLoader {
         system_prompt_file: config.systemPromptFile ?? null,
         skills: JSON.stringify(config.skills),
         capabilities: JSON.stringify(config.capabilities),
-        mounts: JSON.stringify(config.mounts),
         max_concurrent: config.maxConcurrent ?? null,
       });
 
@@ -439,7 +438,6 @@ export class PersonaLoader {
         system_prompt_file: config.systemPromptFile ?? null,
         skills: JSON.stringify(config.skills),
         capabilities: JSON.stringify(config.capabilities),
-        mounts: JSON.stringify(config.mounts),
         max_concurrent: config.maxConcurrent ?? null,
       });
 

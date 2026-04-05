@@ -166,7 +166,6 @@ export function seedFromConfig(
       systemPromptFile?: string;
       skills: string[];
       capabilities: Record<string, unknown>;
-      mounts?: unknown[];
     }>;
     channels: Array<{
       name: string;
@@ -197,7 +196,6 @@ export function seedFromConfig(
       system_prompt_file: personaConfig.systemPromptFile ?? null,
       skills: JSON.stringify(personaConfig.skills),
       capabilities: JSON.stringify(personaConfig.capabilities),
-      mounts: JSON.stringify(personaConfig.mounts ?? []),
       max_concurrent: null,
     });
     if (insertResult.isErr()) {

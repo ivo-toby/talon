@@ -62,7 +62,6 @@ function seedPersona(db: Database.Database, name: string): string {
     system_prompt_file: null,
     skills: '[]',
     capabilities: '{"allow":[],"requireApproval":[]}',
-    mounts: '[]',
     max_concurrent: null,
   });
   return id;

@@ -32,7 +32,7 @@ export type ChannelType = (typeof VALID_CHANNEL_TYPES)[number];
 /** Root YAML document structure (partial — only what we need). */
 export interface YamlDocument {
   channels?: Array<{ name: string; type: string; config?: Record<string, unknown>; enabled?: boolean }>;
-  personas?: Array<{ name: string; model?: string; systemPromptFile?: string; skills?: string[]; capabilities?: Record<string, unknown>; mounts?: unknown[] }>;
+  personas?: Array<{ name: string; model?: string; systemPromptFile?: string; skills?: string[]; capabilities?: Record<string, unknown> }>;
   bindings?: Array<{ persona: string; channel: string; isDefault?: boolean }>;
   [key: string]: unknown;
 }

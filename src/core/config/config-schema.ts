@@ -21,24 +21,8 @@ export const StorageConfigSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Sandbox
+// Execution environment resource limits
 // ---------------------------------------------------------------------------
-
-const ResourceLimitsSchema = z.object({
-  memoryMb: z.number().int().default(1024),
-  cpus: z.number().default(1),
-  pidsLimit: z.number().int().default(256),
-});
-
-export const SandboxConfigSchema = z.object({
-  runtime: z.enum(['docker', 'apple-container']).default('docker'),
-  image: z.string().default('talon-sandbox:latest'),
-  maxConcurrent: z.number().int().min(1).default(3),
-  networkDefault: z.enum(['off', 'on']).default('off'),
-  idleTimeoutMs: z.number().int().min(0).default(30 * 60 * 1000),
-  hardTimeoutMs: z.number().int().min(0).default(60 * 60 * 1000),
-  resourceLimits: ResourceLimitsSchema.default(() => ResourceLimitsSchema.parse({})),
-});
 
 export const ExecutionEnvResourceLimitsSchema = z.object({
   cpus: z.number().min(0.25).default(2),
@@ -53,16 +37,6 @@ export const ExecutionEnvResourceLimitsSchema = z.object({
 export const CapabilitiesSchema = z.object({
   allow: z.array(z.string()).default([]),
   requireApproval: z.array(z.string()).default([]),
-});
-
-// ---------------------------------------------------------------------------
-// Mounts
-// ---------------------------------------------------------------------------
-
-export const MountConfigSchema = z.object({
-  source: z.string(),
-  target: z.string(),
-  mode: z.enum(['ro', 'rw']).default('ro'),
 });
 
 // ---------------------------------------------------------------------------
@@ -89,7 +63,6 @@ export const PersonaConfigSchema = z.object({
   skills: z.array(z.string()).default([]),
   subagents: z.array(z.string()).default([]),
   capabilities: CapabilitiesSchema.default(() => CapabilitiesSchema.parse({})),
-  mounts: z.array(MountConfigSchema).default([]),
   maxConcurrent: z.number().int().min(1).optional(),
   executionEnv: PersonaExecutionEnvSchema.optional(),
 });
@@ -340,7 +313,6 @@ export const LangfuseConfigSchema = z
 
 export const TalondConfigSchema = z.object({
   storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
-  sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
   channels: z.array(ChannelConfigSchema).default([]),
   personas: z.array(PersonaConfigSchema).default([]),
   bindings: z.array(BindingConfigSchema).default([]),

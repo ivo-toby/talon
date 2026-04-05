@@ -28,7 +28,6 @@ describe('ScheduleRepository — findAll / findById', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
     personas.insert({
@@ -38,7 +37,6 @@ describe('ScheduleRepository — findAll / findById', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
   });
@@ -127,7 +125,6 @@ describe('addSchedule()', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
 
@@ -289,7 +286,6 @@ describe('listSchedules()', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
 
@@ -403,7 +399,6 @@ describe('removeSchedule()', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
 
@@ -477,7 +472,6 @@ describe('addSchedule() — seeding from config', () => {
       system_prompt_file: null,
       skills: '[]',
       capabilities: '{}',
-      mounts: '[]',
       max_concurrent: null,
     });
 
@@ -563,7 +557,7 @@ describe('addSchedule() — seeding from config', () => {
     const personaId = uuid();
     personaRepo.insert({
       id: personaId, name: 'james', model: 'claude-sonnet-4-6',
-      system_prompt_file: null, skills: '[]', capabilities: '{}', mounts: '[]', max_concurrent: null,
+      system_prompt_file: null, skills: '[]', capabilities: '{}', max_concurrent: null,
     });
     const channelRepo = new ChannelRepository(db);
     channelRepo.insert({

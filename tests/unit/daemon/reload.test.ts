@@ -70,15 +70,6 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
     ipc: { pollIntervalMs: 500, daemonSocketDir: 'data/ipc/daemon' },
     queue: { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 },
     scheduler: { tickIntervalMs: 5000 },
-    sandbox: {
-      runtime: 'docker',
-      image: 'talon-sandbox:latest',
-      maxConcurrent: 3,
-      networkDefault: 'off',
-      idleTimeoutMs: 1800000,
-      hardTimeoutMs: 3600000,
-      resourceLimits: { memoryMb: 1024, cpus: 1, pidsLimit: 256 },
-    },
     auth: { mode: 'subscription' },
     ...overrides,
   };
@@ -403,7 +394,7 @@ describe('TalondDaemon.reload()', () => {
       const logSpy = vi.spyOn(logger, 'info');
 
       const newConfig = makeConfig({
-        personas: [{ name: 'new-bot', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] }, mounts: [] }],
+        personas: [{ name: 'new-bot', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] } }],
       });
       vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
 
@@ -426,7 +417,7 @@ describe('TalondDaemon.reload()', () => {
 
     it('logs removed personas', async () => {
       setupSuccessfulStart({
-        personas: [{ name: 'old-bot', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] }, mounts: [] }],
+        personas: [{ name: 'old-bot', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] } }],
       });
       const logger = createDiscardLogger('silent');
       const localDaemon = new TalondDaemon(logger);
@@ -454,7 +445,7 @@ describe('TalondDaemon.reload()', () => {
     });
 
     it('logs changed personas', async () => {
-      const persona = { name: 'agent', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] }, mounts: [] };
+      const persona = { name: 'agent', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] } };
       setupSuccessfulStart({ personas: [persona] });
       const logger = createDiscardLogger('silent');
       const localDaemon = new TalondDaemon(logger);
@@ -528,61 +519,6 @@ describe('TalondDaemon.reload()', () => {
         (args) => typeof args[0] === 'string' && args[0].includes('scheduler config'),
       );
       expect(schedulerWarn).toBeDefined();
-
-      warnSpy.mockRestore();
-      await localDaemon.stop();
-    });
-  });
-
-  // -------------------------------------------------------------------------
-  // Container image changes
-  // -------------------------------------------------------------------------
-
-  describe('container image changes', () => {
-    it('logs a warning when the sandbox image changes', async () => {
-      setupSuccessfulStart({
-        sandbox: {
-          runtime: 'docker',
-          image: 'talon-sandbox:v1',
-          maxConcurrent: 3,
-          networkDefault: 'off',
-          idleTimeoutMs: 1800000,
-          hardTimeoutMs: 3600000,
-          resourceLimits: { memoryMb: 1024, cpus: 1, pidsLimit: 256 },
-        },
-      });
-      const logger = createDiscardLogger('silent');
-      const localDaemon = new TalondDaemon(logger);
-      await localDaemon.start('/config.yaml');
-      const warnSpy = vi.spyOn(logger, 'warn');
-
-      const newConfig = makeConfig({
-        sandbox: {
-          runtime: 'docker',
-          image: 'talon-sandbox:v2',
-          maxConcurrent: 3,
-          networkDefault: 'off',
-          idleTimeoutMs: 1800000,
-          hardTimeoutMs: 3600000,
-          resourceLimits: { memoryMb: 1024, cpus: 1, pidsLimit: 256 },
-        },
-      });
-      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
-
-      await localDaemon.reload('/config.yaml');
-
-      const warnCalls = warnSpy.mock.calls;
-      const imageWarn = warnCalls.find((args) => {
-        if (typeof args[0] === 'object' && args[0] !== null) {
-          const obj = args[0] as Record<string, unknown>;
-          return 'from' in obj && 'to' in obj;
-        }
-        if (typeof args[1] === 'string') {
-          return args[1].includes('container image');
-        }
-        return false;
-      });
-      expect(imageWarn).toBeDefined();
 
       warnSpy.mockRestore();
       await localDaemon.stop();
