@@ -2105,6 +2105,29 @@ npm run format         # Prettier
 npm run dev            # tsx watch mode with auto-reload
 ```
 
+### Troubleshooting: `better-sqlite3` bindings error
+
+If you see an error like:
+
+```
+Error: Could not locate the bindings file. Tried:
+ → .../node_modules/better-sqlite3/build/Release/better_sqlite3.node
+ ...
+```
+
+…the native module needs to be rebuilt for your current Node version. This
+commonly happens after a Node upgrade or a fresh `npm install` where
+`prebuild-install` reports success but does not produce a usable binary.
+
+Rebuild from source:
+
+```bash
+npm run rebuild:sqlite
+```
+
+This runs `node-gyp rebuild --release` inside `node_modules/better-sqlite3`,
+which is more reliable than `npm rebuild better-sqlite3`.
+
 ---
 
 ## Project Structure
