@@ -67,12 +67,13 @@ export class ModelResolver {
         return createGoogleGenerativeAI({ apiKey: creds.apiKey! })(modelName);
       }
       case 'ollama': {
-        // ollama-ai-provider only supports LanguageModelV1, which the AI SDK v5
-        // rejects at runtime. Use @ai-sdk/openai with Ollama's OpenAI-compatible
-        // endpoint instead.
-        const { createOpenAI } = await import('@ai-sdk/openai');
+        // Use @ai-sdk/openai-compatible so arbitrary request body fields
+        // (e.g. Qwen's chat_template_kwargs.enable_thinking) can flow through
+        // via providerOptions. The @ai-sdk/openai typed options do not allow
+        // non-standard fields.
+        const { createOpenAICompatible } = await import('@ai-sdk/openai-compatible');
         const baseURL = creds.baseURL ?? 'http://localhost:11434/v1';
-        return createOpenAI({ baseURL, apiKey: 'ollama' })(modelName);
+        return createOpenAICompatible({ name: 'ollama', baseURL, apiKey: 'ollama' })(modelName);
       }
       default:
         throw new Error(

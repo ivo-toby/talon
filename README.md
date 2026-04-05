@@ -446,18 +446,18 @@ Each connector implements the `ChannelConnector` interface: `start()`, `stop()`,
 
 Every channel entry supports these optional top-level fields in addition to the connector-specific `config` block:
 
-| Option          | Type    | Default | Description                                                                 |
-| --------------- | ------- | ------- | --------------------------------------------------------------------------- |
-| `enabled`       | boolean | `true`  | Enable or disable the channel                                               |
+| Option          | Type    | Default | Description                                                                   |
+| --------------- | ------- | ------- | ----------------------------------------------------------------------------- |
+| `enabled`       | boolean | `true`  | Enable or disable the channel                                                 |
 | `showToolCalls` | boolean | `false` | Send a human-readable message to the channel each time the agent calls a tool |
 
-When `showToolCalls` is enabled, each tool invocation produces a short status message in the channel (e.g. *"🌐 Using Brave Search: query"*), giving users visibility into what the agent is doing behind the scenes.
+When `showToolCalls` is enabled, each tool invocation produces a short status message in the channel (e.g. _"🌐 Using Brave Search: query"_), giving users visibility into what the agent is doing behind the scenes.
 
 ```yaml
 channels:
   - name: my-channel
     type: slack
-    showToolCalls: true   # sends a message like "🌐 Using Brave Search: web search" on each tool call
+    showToolCalls: true # sends a message like "🌐 Using Brave Search: web search" on each tool call
     config:
       botToken: ${SLACK_BOT_TOKEN}
       appToken: ${SLACK_APP_TOKEN}
@@ -542,10 +542,10 @@ channels:
       phoneNumberId: '123456789'
       accessToken: ${WHATSAPP_ACCESS_TOKEN}
       verifyToken: ${WHATSAPP_VERIFY_TOKEN}
-      appSecret: ${WHATSAPP_APP_SECRET}    # enables inbound webhook server
-      webhookPort: 3000                    # default: 3000
-      webhookHost: '0.0.0.0'              # default: 0.0.0.0
-      webhookPath: '/webhook'              # default: /webhook
+      appSecret: ${WHATSAPP_APP_SECRET} # enables inbound webhook server
+      webhookPort: 3000 # default: 3000
+      webhookHost: '0.0.0.0' # default: 0.0.0.0
+      webhookPath: '/webhook' # default: /webhook
 ```
 
 - **Inbound**: Embedded HTTP server handles Meta webhook verification (GET) and signed event delivery (POST with HMAC-SHA256 validation). Requires a public URL — use a reverse proxy (nginx, Caddy) or ngrok for local dev.
@@ -570,7 +570,7 @@ channels:
     enabled: true
     config:
       authDir: './baileys-auth'
-      allowedSenders:                         # Restrict who can message the bot
+      allowedSenders: # Restrict who can message the bot
         - '96490886312027'
 ```
 
@@ -584,7 +584,7 @@ channels:
     config:
       authDir: './baileys-auth'
       selfChat: true
-      triggerWords: ['@Talon']                # Optional — filter by trigger word
+      triggerWords: ['@Talon'] # Optional — filter by trigger word
 ```
 
 #### Self-Chat Mode
@@ -813,17 +813,17 @@ When creating a persona, `add-persona` checks `templates/<name>/system.md` first
 
 Tools are gated by scoped capability labels. Capabilities are listed in `allow` or `requireApproval` arrays — anything not listed is denied by default.
 
-| Capability               | Description                             |
-| ------------------------ | --------------------------------------- |
-| `channel.send:<channel>` | Send messages to a specific channel     |
+| Capability               | Description                                                                 |
+| ------------------------ | --------------------------------------------------------------------------- |
+| `channel.send:<channel>` | Send messages to a specific channel                                         |
 | `persona.send:*`         | Delegate to another persona, list personas, and fetch delegated task status |
-| `schedule.manage`        | Create/modify/delete scheduled tasks    |
-| `memory.access`          | Read/write per-thread structured memory |
-| `net.http`               | Fetch external URLs                     |
-| `db.query`               | Execute read-only database queries      |
-| `subagent.invoke`        | Invoke sub-agents for delegated tasks   |
-| `subagent.background`    | Launch and manage background workers    |
-| `execution.env`          | Manage sandboxed Sprite execution environments |
+| `schedule.manage`        | Create/modify/delete scheduled tasks                                        |
+| `memory.access`          | Read/write per-thread structured memory                                     |
+| `net.http`               | Fetch external URLs                                                         |
+| `db.query`               | Execute read-only database queries                                          |
+| `subagent.invoke`        | Invoke sub-agents for delegated tasks                                       |
+| `subagent.background`    | Launch and manage background workers                                        |
+| `execution.env`          | Manage sandboxed Sprite execution environments                              |
 
 ### Capability Resolution
 
@@ -919,6 +919,90 @@ Sub-agents solve this by offloading specific, well-scoped tasks to cheap models.
 4. The sub-agent's `run()` function executes with a system prompt, model, and injected services
 5. Results flow back to the main agent as structured data
 
+### Model Overrides and Failover
+
+By default, each sub-agent uses the model declared in its `subagent.yaml` manifest. Operators can override this in `talond.yaml` without editing manifests, and configure an ordered failover chain so if the primary model is unavailable, the next is tried automatically.
+
+```yaml
+subagents:
+  memory-groomer:
+    model:
+      - provider: ollama
+        name: qwen3-30b
+        # maxTokens: 4096     # optional — falls back to subagent.yaml default
+        # timeoutMs: 120000   # optional per-model wall-clock timeout (min 1000)
+      - provider: anthropic
+        name: claude-haiku-4-5
+  session-summarizer:
+    model:
+      - provider: openai
+        name: gpt-5.4-spark
+```
+
+**Per-model fields:**
+
+| Field             | Purpose                                                                                                                |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `provider`        | Provider slot: `anthropic`, `openai`, `google`, or `ollama` (required)                                                 |
+| `name`            | Model name as the provider expects it (required)                                                                       |
+| `maxTokens`       | Max output tokens; falls back to the manifest value                                                                    |
+| `timeoutMs`       | Per-model wall-clock timeout. On expiry the runner aborts the in-flight AI SDK call and fails over to the next model   |
+| `providerOptions` | Free-form record forwarded verbatim to the AI SDK call. Use this for vendor-specific knobs (see `providerOptions` below) |
+
+**How failover works:**
+
+1. The runner tries each model in the `model` array in order
+2. If a model fails (missing credentials, provider down, runtime error), it logs a warning and tries the next
+3. On timeout, the runner aborts the in-flight call via `AbortController` and fails over — timeouts are not terminal
+4. After exhausting the override list, the manifest's `model` is tried as a final fallback
+5. If all models fail, the error includes a summary of each attempt and why it failed
+
+Overrides apply everywhere a sub-agent runs, including the context roller's summarizer path. Each attempt gets its own `timeoutMs` and `providerOptions` — settings do not leak across chain entries.
+
+Sub-agents with no entry in `subagents:` use their manifest model unchanged. All per-model fields except `provider` and `name` are optional.
+
+#### `providerOptions` — vendor knob passthrough
+
+`providerOptions` is a free-form record of fields forwarded verbatim to the AI SDK call (`generateText` / `generateObject`). Use it to pass vendor-specific knobs like sampling parameters or custom chat template arguments.
+
+**Effective only on the `ollama` slot.** The `ollama` provider is Talon's OpenAI-compatible passthrough entry point — point it at any OpenAI-compatible endpoint (real Ollama, llama.cpp, vLLM, a Cloudflare-tunneled node) via `auth.providers.ollama.baseURL`. Typed providers (`anthropic`, `openai`, `google`) silently drop unknown fields, so keep `providerOptions` on the `ollama` entry of your chain.
+
+**Example — route `session-summarizer` to Qwen3 on llama.cpp with thinking mode disabled, fall back to Claude:**
+
+```yaml
+auth:
+  providers:
+    ollama:
+      baseURL: http://localhost:8080/v1   # llama.cpp OpenAI-compatible endpoint
+
+subagents:
+  session-summarizer:
+    model:
+      - provider: ollama
+        name: Qwen3.5-35B-A3B-UD-Q4_K_XL
+        timeoutMs: 180000
+        maxTokens: 32768
+        providerOptions:
+          chat_template_kwargs:
+            enable_thinking: false
+      - provider: anthropic
+        name: claude-sonnet-4-6
+        timeoutMs: 60000
+        # no providerOptions on the fallback — Claude would drop them anyway
+```
+
+The runner wraps `providerOptions` under the active model entry's provider name internally (the user-facing YAML shape is flat). On failover to the Anthropic entry, `providerOptions` is not carried over — the Qwen-specific `chat_template_kwargs` never reaches Claude.
+
+**Built-in sub-agent names** (use these as keys under `subagents:` in `talond.yaml`):
+
+| Name                  | Default model         | Description                                                  |
+| --------------------- | --------------------- | ------------------------------------------------------------ |
+| `file-searcher`       | `claude-haiku-4-5`    | Search files by content, return ranked results with snippets |
+| `memory-retriever`    | `claude-haiku-4-5`    | Find relevant memories via keyword pre-filter + LLM rerank  |
+| `memory-groomer`      | `claude-haiku-4-5`    | Prune stale, consolidate duplicate memory items              |
+| `session-summarizer`  | `claude-sonnet-4-6`   | Compress transcripts for rolling context window              |
+| `spark-coder`         | `gpt-5.4-spark`       | Fast single-shot code generation (requires `OPENAI_API_KEY`) |
+
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
 1. **Built-in** (`dist/subagents/default/`) — ships with the daemon
@@ -934,6 +1018,37 @@ src/subagents/default/<agent_name>/    # built-in agents (compiled with daemon)
   prompts/*.md           # system prompt fragments (concatenated in order)
   lib/                   # optional helper modules
 ```
+
+### Authoring Custom Sub-Agents
+
+The `run(ctx, input)` function receives a `SubAgentContext` from the runner. A custom sub-agent **must** forward the following context fields to any Vercel AI SDK `generateText` / `generateObject` call it makes:
+
+```typescript
+import { generateText } from 'ai';
+
+export async function run(ctx, input) {
+  const { text } = await generateText({
+    model: ctx.model,
+    system: ctx.systemPrompt,
+    prompt: '...',
+    maxOutputTokens: ctx.maxOutputTokens,
+    experimental_telemetry: ctx.telemetry,
+    abortSignal: ctx.abortSignal,       // REQUIRED — see below
+    providerOptions: ctx.providerOptions, // REQUIRED — for ollama passthrough
+  });
+  // ...
+}
+```
+
+**`ctx.abortSignal` is a hard requirement, not a nice-to-have.** The runner creates an `AbortController` per model attempt and aborts it when the per-model `timeoutMs` fires. Sub-agents that do not forward `ctx.abortSignal` to their in-flight LLM calls will:
+
+1. Keep consuming the upstream provider's resources (tokens, rate limit quota, compute) after the runner has given up on that model
+2. Keep running in the background while failover already advances to the next model — producing overlapping, orphaned work
+3. Resolve later with a result that nothing is listening for, masking incidents
+
+All five built-in sub-agents forward both fields. Copy the pattern above when authoring new ones.
+
+**`ctx.providerOptions`** is only non-undefined when the active model entry is on the `ollama` provider slot (Talon's OpenAI-compatible passthrough). The runner wraps the user's override record under the provider name, and typed providers (`anthropic`, `openai`, `google`) receive `undefined` so they never see foreign body fields.
 
 ### Built-in Sub-Agents
 
@@ -1005,16 +1120,16 @@ This sub-agent is called automatically by the **rolling context window** (see be
 
 **Problem:** Code generation tasks inside agentic loops are bottlenecked by the main model's speed. The parent agent already knows what code to generate — it just needs a fast model to produce it.
 
-**Solution:** Uses OpenAI's `gpt-5.4-spark` for fast, single-shot code generation. Receives a task description, optional context files, and optional constraints, then returns structured file operations (create or replace) via `generateObject` with a Zod schema. The parent agent handles all filesystem I/O; this sub-agent is pure generation with no tool use or agentic loop.
+**Solution:** Uses OpenAI's `gpt-5.3-spark` for fast, single-shot code generation. Receives a task description, optional context files, and optional constraints, then returns structured file operations (create or replace) via `generateObject` with a Zod schema. The parent agent handles all filesystem I/O; this sub-agent is pure generation with no tool use or agentic loop.
 
-|                           |                                                        |
-| ------------------------- | ------------------------------------------------------ |
-| **Model**                 | GPT-5.4 Spark (OpenAI)                                 |
-| **Required capabilities** | none                                                   |
-| **Requires env**          | `OPENAI_API_KEY`                                       |
-| **Timeout**               | 60s                                                    |
-| **Input**                 | `{ task, contextFiles?, constraints? }`                |
-| **Output**                | `{ files: [{ path, content, action }], explanation }`  |
+|                           |                                                       |
+| ------------------------- | ----------------------------------------------------- |
+| **Model**                 | GPT-5.3 Spark (OpenAI)                                |
+| **Required capabilities** | none                                                  |
+| **Requires env**          | `OPENAI_API_KEY`                                      |
+| **Timeout**               | 60s                                                   |
+| **Input**                 | `{ task, contextFiles?, constraints? }`               |
+| **Output**                | `{ files: [{ path, content, action }], explanation }` |
 
 This sub-agent is only loaded when `OPENAI_API_KEY` is set in the environment. Pairs well with the `execution_env` host tool for a generate → test → fix loop where the parent agent orchestrates between spark-coder (fast generation) and Sprites (sandboxed execution).
 
@@ -1599,19 +1714,19 @@ Talon implements defense in depth through capability-based access control, host-
 
 Agents interact with the host through a small set of MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
 
-| Tool              | Purpose                                                                  |
-| ----------------- | ------------------------------------------------------------------------ |
-| `schedule_manage` | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`    | Send messages to channel connectors                                      |
-| `persona_send`    | Submit a delegated A2A task to another persona                           |
-| `persona_task_status` | Fetch the status or result of a delegated A2A task                  |
-| `persona_list`    | List personas available for delegation                                   |
-| `memory_access`   | Read/write per-thread memory                                             |
-| `net_http`        | Fetch external URLs                                                      |
-| `db_query`        | Read-only database queries                                               |
-| `subagent_invoke` | Invoke a sub-agent by name                                               |
-| `background_agent`| Launch and manage long-running background workers                        |
-| `execution_env`   | Create, exec, upload, download, checkpoint, and restore Sprite VMs       |
+| Tool                  | Purpose                                                                  |
+| --------------------- | ------------------------------------------------------------------------ |
+| `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
+| `channel_send`        | Send messages to channel connectors                                      |
+| `persona_send`        | Submit a delegated A2A task to another persona                           |
+| `persona_task_status` | Fetch the status or result of a delegated A2A task                       |
+| `persona_list`        | List personas available for delegation                                   |
+| `memory_access`       | Read/write per-thread memory                                             |
+| `net_http`            | Fetch external URLs                                                      |
+| `db_query`            | Read-only database queries                                               |
+| `subagent_invoke`     | Invoke a sub-agent by name                                               |
+| `background_agent`    | Launch and manage long-running background workers                        |
+| `execution_env`       | Create, exec, upload, download, checkpoint, and restore Sprite VMs       |
 
 ### Capability System
 
@@ -1833,7 +1948,7 @@ sprites:
   token: ${SPRITES_TOKEN}
   workingDirectory: /workspace
   createTimeoutMs: 60000
-  execTimeoutMs: 1200000     # 20 minutes
+  execTimeoutMs: 1200000 # 20 minutes
   autoDestroyOnCompletion: true
   resourceLimits:
     cpus: 2
@@ -1841,19 +1956,19 @@ sprites:
     diskGb: 20
 ```
 
-| Option                     | Default                    | Description                                                |
-| -------------------------- | -------------------------- | ---------------------------------------------------------- |
-| `enabled`                  | `false`                    | Enable Sprites integration                                 |
-| `token`                    | —                          | Sprites.dev API token (required when enabled)              |
-| `apiBaseUrl`               | `https://api.sprites.dev`  | API endpoint                                               |
-| `defaultBaseSnapshot`      | —                          | Reserved for future snapshot-based creation; currently unsupported by the runtime |
-| `workingDirectory`         | `/workspace`               | Default working directory inside the VM                    |
-| `createTimeoutMs`          | `60000`                    | Timeout for VM creation                                    |
-| `execTimeoutMs`            | `1200000`                  | Default command execution timeout (20 min)                 |
-| `autoDestroyOnCompletion`  | `true`                     | Destroy VMs when the owning task finishes                  |
-| `resourceLimits.cpus`      | `2`                        | CPU cores allocated to each VM                             |
-| `resourceLimits.memoryMb`  | `4096`                     | RAM in MB                                                  |
-| `resourceLimits.diskGb`    | `20`                       | Disk in GB                                                 |
+| Option                    | Default                   | Description                                                                       |
+| ------------------------- | ------------------------- | --------------------------------------------------------------------------------- |
+| `enabled`                 | `false`                   | Enable Sprites integration                                                        |
+| `token`                   | —                         | Sprites.dev API token (required when enabled)                                     |
+| `apiBaseUrl`              | `https://api.sprites.dev` | API endpoint                                                                      |
+| `defaultBaseSnapshot`     | —                         | Reserved for future snapshot-based creation; currently unsupported by the runtime |
+| `workingDirectory`        | `/workspace`              | Default working directory inside the VM                                           |
+| `createTimeoutMs`         | `60000`                   | Timeout for VM creation                                                           |
+| `execTimeoutMs`           | `1200000`                 | Default command execution timeout (20 min)                                        |
+| `autoDestroyOnCompletion` | `true`                    | Destroy VMs when the owning task finishes                                         |
+| `resourceLimits.cpus`     | `2`                       | CPU cores allocated to each VM                                                    |
+| `resourceLimits.memoryMb` | `4096`                    | RAM in MB                                                                         |
+| `resourceLimits.diskGb`   | `20`                      | Disk in GB                                                                        |
 
 ### Persona setup
 
@@ -1869,33 +1984,33 @@ personas:
         - execution.env
         - channel.send:telegram
     executionEnv:
-      sandboxDefault: true            # sandbox=true unless overridden
+      sandboxDefault: true # sandbox=true unless overridden
       workingDirectory: /workspace
       resourceLimits:
         cpus: 4
         memoryMb: 8192
 ```
 
-| Persona option             | Description                                                    |
-| -------------------------- | -------------------------------------------------------------- |
-| `executionEnv.sandboxDefault` | When `true`, `background_agent spawn` defaults to sandboxed |
-| `executionEnv.baseSnapshot`   | Reserved for future snapshot-based creation; currently unsupported by the runtime |
-| `executionEnv.workingDirectory` | Override the VM working directory                          |
-| `executionEnv.resourceLimits`   | Override CPU, memory, and disk limits                      |
+| Persona option                  | Description                                                                       |
+| ------------------------------- | --------------------------------------------------------------------------------- |
+| `executionEnv.sandboxDefault`   | When `true`, `background_agent spawn` defaults to sandboxed                       |
+| `executionEnv.baseSnapshot`     | Reserved for future snapshot-based creation; currently unsupported by the runtime |
+| `executionEnv.workingDirectory` | Override the VM working directory                                                 |
+| `executionEnv.resourceLimits`   | Override CPU, memory, and disk limits                                             |
 
 ### The `execution_env` tool
 
 Foreground agents and background workers spawned with `sandbox=true` interact with Sprite VMs through the `execution_env` host tool. Available actions:
 
-| Action       | Purpose                                                      | Required args              |
-| ------------ | ------------------------------------------------------------ | -------------------------- |
-| `create`     | Provision a new VM (usually handled automatically on spawn)  | —                          |
-| `exec`       | Run a command inside the VM                                  | `envId`, `command`         |
-| `upload`     | Copy files from the host into the VM                         | `envId`, `sourcePath`, `destinationPath` |
-| `download`   | Copy files from the VM back to the host                      | `envId`, `sourcePath`, `destinationPath` |
-| `checkpoint` | Snapshot the current VM state                                | `envId`                    |
-| `restore`    | Roll the VM back to a previous checkpoint                    | `envId`, `checkpointId`    |
-| `destroy`    | Tear down the VM                                             | `envId`                    |
+| Action       | Purpose                                                     | Required args                            |
+| ------------ | ----------------------------------------------------------- | ---------------------------------------- |
+| `create`     | Provision a new VM (usually handled automatically on spawn) | —                                        |
+| `exec`       | Run a command inside the VM                                 | `envId`, `command`                       |
+| `upload`     | Copy files from the host into the VM                        | `envId`, `sourcePath`, `destinationPath` |
+| `download`   | Copy files from the VM back to the host                     | `envId`, `sourcePath`, `destinationPath` |
+| `checkpoint` | Snapshot the current VM state                               | `envId`                                  |
+| `restore`    | Roll the VM back to a previous checkpoint                   | `envId`, `checkpointId`                  |
+| `destroy`    | Tear down the VM                                            | `envId`                                  |
 
 Host file transfers are restricted to Talon's allowed host roots. For foreground agents, that is the thread workspace. For background agents, that is the requested `workingDirectory`, plus the per-task control directory when sandboxed. Directory uploads require `recursive: true`; downloads are file-only.
 
@@ -2245,14 +2360,14 @@ a2a_tasks (completed / failed)
 
 ### Task lifecycle states
 
-| State | Meaning |
-|---|---|
-| `submitted` | Task accepted, enqueued for processing |
-| `working` | AgentRunner has started processing |
-| `input-required` | Target persona is waiting for clarification |
-| `completed` | Target persona finished and returned a result |
-| `failed` | Processing failed with an error code |
-| `canceled` | Task was canceled before completion |
+| State            | Meaning                                       |
+| ---------------- | --------------------------------------------- |
+| `submitted`      | Task accepted, enqueued for processing        |
+| `working`        | AgentRunner has started processing            |
+| `input-required` | Target persona is waiting for clarification   |
+| `completed`      | Target persona finished and returned a result |
+| `failed`         | Processing failed with an error code          |
+| `canceled`       | Task was canceled before completion           |
 
 ### Agent-facing flow
 

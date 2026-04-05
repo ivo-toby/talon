@@ -13,6 +13,7 @@ import { join } from 'node:path';
 import { SubAgentLoader } from '../../subagents/subagent-loader.js';
 import { ModelResolver } from '../../subagents/model-resolver.js';
 import type { SubAgentResult } from '../../subagents/subagent-types.js';
+import { wrapProviderOptions } from '../../subagents/provider-options.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +24,7 @@ export interface RunSubAgentOptions {
   input: string;          // JSON string
   subagentsDir: string;
   providers: Record<string, { apiKey?: string; baseURL?: string }>;
+  subagentOverrides?: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number; providerOptions?: Record<string, unknown> }> }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,22 +69,67 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
     throw new Error(`Sub-agent "${name}" not found. Available: ${available}`);
   }
 
-  // Resolve model.
+  // Resolve model — try overrides first, then manifest fallback.
   const resolver = new ModelResolver(providers);
-  const modelResult = await resolver.resolve(agent.manifest.model);
-  if (modelResult.isErr()) {
-    throw new Error(`Model resolution failed: ${modelResult.error.message}`);
+  const overrideConfig = options.subagentOverrides?.[name];
+  let resolvedModel;
+  let resolvedMaxTokens = agent.manifest.model.maxTokens;
+  let resolvedTimeoutMs = agent.manifest.timeoutMs;
+  let resolvedProviderOptions: Record<string, unknown> | undefined;
+  let resolvedProviderName = agent.manifest.model.provider;
+
+  if (overrideConfig) {
+    for (const entry of overrideConfig.model) {
+      const entryMaxTokens = entry.maxTokens ?? agent.manifest.model.maxTokens;
+      const result = await resolver.resolve({
+        provider: entry.provider,
+        name: entry.name,
+        maxTokens: entryMaxTokens,
+      });
+      if (result.isOk()) {
+        resolvedModel = result.value;
+        resolvedMaxTokens = entryMaxTokens;
+        resolvedTimeoutMs = entry.timeoutMs ?? agent.manifest.timeoutMs;
+        resolvedProviderOptions = entry.providerOptions;
+        resolvedProviderName = entry.provider;
+        logger.info(`Resolved model: ${entry.provider}/${entry.name}`);
+        break;
+      }
+      logger.warn(`Model ${entry.provider}/${entry.name} failed, trying next`);
+    }
   }
 
-  // Execute with manifest timeout.
+  if (!resolvedModel) {
+    const modelResult = await resolver.resolve(agent.manifest.model);
+    if (modelResult.isErr()) {
+      throw new Error(`Model resolution failed: ${modelResult.error.message}`);
+    }
+    resolvedModel = modelResult.value;
+  }
+
+  // Execute with resolved timeout (from override or manifest).
+  //
+  // NOTE: This function contains its own failover + timeout loop that mirrors
+  // SubAgentRunner.executeInternal (src/subagents/subagent-runner.ts). The two
+  // implementations share wrapProviderOptions for provider-allowlist safety,
+  // but the outer loop structure is still duplicated. Fixes to failover
+  // semantics must be applied in both places until this is deduplicated.
+  // TODO(#159): extract a shared runSubAgentChain helper used by runner + CLI + bootstrap.
   const systemPrompt = agent.promptContents.join('\n\n');
+  const abortController = new AbortController();
+  const wrappedProviderOptions = wrapProviderOptions(
+    resolvedProviderName,
+    resolvedProviderOptions,
+    logger,
+    { subagent: name, source: 'cli' },
+  );
   const runPromise = agent.run(
     {
       threadId: 'cli-test',
       personaId: 'cli-test',
       systemPrompt,
-      model: modelResult.value,
-      maxOutputTokens: agent.manifest.model.maxTokens,
+      model: resolvedModel,
+      maxOutputTokens: resolvedMaxTokens,
       rootPaths: agent.manifest.rootPaths,
       services: {
         memory: {} as any,
@@ -96,15 +143,20 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
         logger,
       },
       telemetry: { isEnabled: false },
+      abortSignal: abortController.signal,
+      providerOptions: wrappedProviderOptions,
     },
     input,
   );
 
-  const timeoutMs = agent.manifest.timeoutMs;
+  const timeoutMs = resolvedTimeoutMs;
   let timeoutId: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(
-      () => reject(new Error(`Sub-agent "${name}" timed out after ${timeoutMs}ms`)),
+      () => {
+        abortController.abort();
+        reject(new Error(`Sub-agent "${name}" timed out after ${timeoutMs}ms`));
+      },
       timeoutMs,
     );
   });
@@ -164,6 +216,7 @@ export async function runSubAgentCommand(options: {
           input: options.input,
           subagentsDir: dir,
           providers: config.auth.providers ?? {},
+          subagentOverrides: config.subagents ?? {},
         });
         console.log(JSON.stringify(result, null, 2));
         return;

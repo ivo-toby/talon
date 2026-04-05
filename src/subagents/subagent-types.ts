@@ -12,6 +12,7 @@
 
 import type { Result } from 'neverthrow';
 import type { LanguageModel } from 'ai';
+import type { JSONObject } from '@ai-sdk/provider';
 import type pino from 'pino';
 import type { SubAgentError } from '../core/errors/error-types.js';
 import type { MemoryRepository } from '../core/database/repositories/memory-repository.js';
@@ -116,7 +117,7 @@ export interface SubAgentContext {
   systemPrompt: string;
   /** Resolved AI SDK model instance ready for generation. */
   model: LanguageModel;
-  /** Maximum output tokens per generation, from the manifest's model.maxTokens. */
+  /** Maximum output tokens per generation (from config override or manifest's model.maxTokens). */
   maxOutputTokens: number;
   /** Filesystem paths the sub-agent is allowed to access, from the manifest. */
   rootPaths: string[];
@@ -130,6 +131,20 @@ export interface SubAgentContext {
    * traceparent needs to be threaded manually — just enabling it is enough.
    */
   telemetry: { isEnabled: boolean };
+  /**
+   * Abort signal from the runner's timeout controller.
+   * Sub-agents should pass this to AI SDK calls (`generateText`, `generateObject`)
+   * so that timed-out requests are cancelled promptly, enabling failover.
+   */
+  abortSignal?: AbortSignal;
+  /**
+   * Provider-specific options to forward to the AI SDK call, keyed by provider
+   * name. Comes from the active model entry's `providerOptions` in the subagent
+   * override config, wrapped under that entry's provider name. Example shape:
+   *   { ollama: { chat_template_kwargs: { enable_thinking: false } } }
+   * Subagents should forward this verbatim to generateText / generateObject.
+   */
+  providerOptions?: Record<string, JSONObject>;
 }
 
 // ---------------------------------------------------------------------------

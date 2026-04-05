@@ -100,6 +100,8 @@ export async function run(
       prompt: `Query: "${query}"\n\nMatches:\n\n${matchSummary}`,
       maxOutputTokens: ctx.maxOutputTokens,
       experimental_telemetry: ctx.telemetry,
+      abortSignal: ctx.abortSignal,
+      providerOptions: ctx.providerOptions,
     });
 
     let ranked: Array<{ path: string; snippet: string; relevance: number }> = [];

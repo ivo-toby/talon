@@ -72,8 +72,9 @@ function makeRunner(
   agents: Map<string, LoadedSubAgent> = new Map(),
   resolver: ModelResolver = mockResolver,
   observability: ObservabilityService | undefined = undefined,
+  subagentOverrides: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number; providerOptions?: Record<string, unknown> }> }> = {},
 ): SubAgentRunner {
-  return new SubAgentRunner(agents, resolver, mockServices, mockLogger, observability);
+  return new SubAgentRunner(agents, resolver, mockServices, mockLogger, observability, subagentOverrides);
 }
 
 // ---------------------------------------------------------------------------
@@ -221,7 +222,7 @@ describe('SubAgentRunner', () => {
     expect(toolErr.message).toContain('Something went wrong');
   });
 
-  it('preserves the original sub-agent error as the ToolError cause', async () => {
+  it('includes the original sub-agent error message in the failure summary', async () => {
     const subAgentError = new SubAgentError('Something went wrong');
     const failingRun = vi.fn().mockResolvedValue(err(subAgentError));
     const agent = makeAgent({ run: failingRun });
@@ -233,7 +234,8 @@ describe('SubAgentRunner', () => {
     expect(result.isErr()).toBe(true);
     const toolErr = result._unsafeUnwrapErr();
     expect(toolErr.code).toBe('TOOL_ERROR');
-    expect(toolErr.cause).toBe(subAgentError);
+    expect(toolErr.message).toContain('Something went wrong');
+    expect(toolErr.message).toContain('All models failed');
   });
 
   it('returns error when model resolution fails', async () => {
@@ -249,7 +251,8 @@ describe('SubAgentRunner', () => {
     const result = await runner.execute('test-agent', {}, makeContext());
 
     expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr().message).toContain('Failed to resolve model');
+    expect(result._unsafeUnwrapErr().message).toContain('All models failed');
+    expect(result._unsafeUnwrapErr().message).toContain('No credentials');
   });
 
   it('passes telemetry.isEnabled=false when no observability service is provided (Noop)', async () => {
@@ -284,5 +287,415 @@ describe('SubAgentRunner', () => {
     expect(result.isOk()).toBe(true);
     const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(ctx.telemetry).toEqual({ isEnabled: true });
+  });
+
+  describe('failover', () => {
+    it('uses override model when config override exists', async () => {
+      const agent = makeAgent();
+      const agents = new Map([['test-agent', agent]]);
+
+      const overrideModel = {} as any;
+      const manifestModel = {} as any;
+      const resolver = {
+        resolve: vi.fn().mockImplementation(async (config: any) => {
+          if (config.provider === 'openai') return ok(overrideModel);
+          return ok(manifestModel);
+        }),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'openai', name: 'gpt-5.4-spark' }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.model).toBe(overrideModel);
+    });
+
+    it('falls back to next model in chain when first fails resolution', async () => {
+      const { ConfigError } = await import('../../../src/core/errors/index.js');
+      const agent = makeAgent();
+      const agents = new Map([['test-agent', agent]]);
+
+      const fallbackModel = {} as any;
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(err(new ConfigError('No credentials for ollama')))
+          .mockResolvedValueOnce(ok(fallbackModel)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b' },
+            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+          ],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.model).toBe(fallbackModel);
+    });
+
+    it('falls back to manifest model when all overrides fail', async () => {
+      const { ConfigError } = await import('../../../src/core/errors/index.js');
+      const agent = makeAgent();
+      const agents = new Map([['test-agent', agent]]);
+
+      const manifestModel = {} as any;
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(err(new ConfigError('No credentials for ollama')))
+          .mockResolvedValueOnce(ok(manifestModel)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen3-30b' }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      // Second resolve call should be the manifest model
+      expect(resolver.resolve).toHaveBeenCalledTimes(2);
+      const secondCall = (resolver.resolve as ReturnType<typeof vi.fn>).mock.calls[1][0];
+      expect(secondCall.provider).toBe('anthropic');
+      expect(secondCall.name).toBe('claude-haiku-4-5');
+    });
+
+    it('retries with next model when run() throws a runtime error', async () => {
+      const agent = makeAgent({
+        run: vi.fn()
+          .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+          .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+
+      const model1 = {} as any;
+      const model2 = {} as any;
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(ok(model1))
+          .mockResolvedValueOnce(ok(model2)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b' },
+            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+          ],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().summary).toBe('Done via fallback');
+    });
+
+    it('returns error listing all failures when entire chain exhausted', async () => {
+      const { ConfigError } = await import('../../../src/core/errors/index.js');
+      const agent = makeAgent();
+      const agents = new Map([['test-agent', agent]]);
+
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(err(new ConfigError('No creds for ollama')))
+          .mockResolvedValueOnce(err(new ConfigError('No creds for anthropic'))),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen3-30b' }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isErr()).toBe(true);
+      const msg = result._unsafeUnwrapErr().message;
+      expect(msg).toContain('All models failed');
+      expect(msg).toContain('ollama');
+      expect(msg).toContain('anthropic');
+    });
+
+    it('uses maxTokens from override when specified', async () => {
+      const agent = makeAgent();
+      const agents = new Map([['test-agent', agent]]);
+      const overrideModel = {} as any;
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok(overrideModel)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'openai', name: 'gpt-5.4-spark', maxTokens: 8192 }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.maxOutputTokens).toBe(8192);
+    });
+
+    it('uses manifest maxTokens when override does not specify it', async () => {
+      const agent = makeAgent();
+      const agents = new Map([['test-agent', agent]]);
+      const overrideModel = {} as any;
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok(overrideModel)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'openai', name: 'gpt-5.4-spark' }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.maxOutputTokens).toBe(2048); // from manifest default
+    });
+
+    it('behaves unchanged when no overrides configured', async () => {
+      const agent = makeAgent();
+      const agents = new Map([['test-agent', agent]]);
+      const runner = makeRunner(agents);
+
+      const result = await runner.execute('test-agent', { key: 'value' }, makeContext());
+      expect(result.isOk()).toBe(true);
+      expect(agent.run).toHaveBeenCalledOnce();
+    });
+
+    it('uses per-model timeoutMs from override config', async () => {
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 30_000 },
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen3-30b', timeoutMs: 120_000 }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.abortSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('falls back to manifest timeoutMs when override has no timeoutMs', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen3-30b' }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.abortSignal).toBeInstanceOf(AbortSignal);
+    });
+
+    it('fails over to next model on timeout instead of terminating', async () => {
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 50 },
+        run: vi.fn()
+          .mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000)))
+          .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+
+      const model1 = {} as any;
+      const model2 = {} as any;
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(ok(model1))
+          .mockResolvedValueOnce(ok(model2)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 50 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5', timeoutMs: 5000 },
+          ],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().summary).toBe('Done via fallback');
+      expect(agent.run).toHaveBeenCalledTimes(2);
+    });
+
+    it('aborts the signal when a model times out', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 50 },
+        run: vi.fn()
+          .mockImplementationOnce((ctx: any) => {
+            capturedSignal = ctx.abortSignal;
+            return new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000));
+          })
+          .mockResolvedValueOnce(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 50 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+          ],
+        },
+      });
+
+      await runner.execute('test-agent', {}, makeContext());
+      expect(capturedSignal).toBeInstanceOf(AbortSignal);
+      expect(capturedSignal!.aborted).toBe(true);
+    });
+
+    it('wraps providerOptions under the active model entry provider name', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{
+            provider: 'ollama',
+            name: 'qwen',
+            providerOptions: {
+              chat_template_kwargs: { enable_thinking: false },
+            },
+          }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.providerOptions).toEqual({
+        ollama: { chat_template_kwargs: { enable_thinking: false } },
+      });
+    });
+
+    it('leaves providerOptions undefined when override has none', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'qwen' }],
+        },
+      });
+
+      await runner.execute('test-agent', {}, makeContext());
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.providerOptions).toBeUndefined();
+    });
+
+    it('does not leak providerOptions across chain entries on failover', async () => {
+      const agent = makeAgent({
+        run: vi.fn()
+          .mockRejectedValueOnce(new Error('first model blew up'))
+          .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn()
+          .mockResolvedValueOnce(ok({} as any))
+          .mockResolvedValueOnce(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            {
+              provider: 'ollama',
+              name: 'qwen',
+              providerOptions: { chat_template_kwargs: { enable_thinking: false } },
+            },
+            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+          ],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const calls = (agent.run as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls).toHaveLength(2);
+      expect(calls[0][0].providerOptions).toEqual({
+        ollama: { chat_template_kwargs: { enable_thinking: false } },
+      });
+      expect(calls[1][0].providerOptions).toBeUndefined();
+    });
+
+    it('drops providerOptions on non-ollama providers (gate against config injection)', async () => {
+      const agent = makeAgent({
+        run: vi.fn().mockResolvedValue(ok({ summary: 'Done' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [{
+            provider: 'anthropic',
+            name: 'claude-haiku-4-5',
+            // providerOptions on a typed provider is either silently dropped
+            // by the AI SDK or a config-injection vector (temperature /
+            // max_tokens override). Runner must drop it and log a warning.
+            providerOptions: { temperature: 0.99, max_tokens: 999999 },
+          }],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+      expect(result.isOk()).toBe(true);
+
+      const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(ctx.providerOptions).toBeUndefined();
+    });
   });
 });
