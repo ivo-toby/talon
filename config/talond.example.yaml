@@ -197,15 +197,17 @@ auth:
     # google:
     #   apiKey: ${GOOGLE_AI_API_KEY}
     #
-    # The `ollama` slot is Talon's OpenAI-compatible passthrough. Use it for:
+    # The `ollama` slot is Talon's OpenAI-compatible passthrough. The baseURL
+    # MUST include the OpenAI-compatible path prefix (typically `/v1`) — the
+    # AI SDK appends paths like `/chat/completions` to it. Use this slot for:
     #   - Local Ollama:  baseURL: http://localhost:11434/v1  (no apiKey needed)
     #   - llama.cpp:     baseURL: http://<host>:8080/v1      (no apiKey needed)
     #   - vLLM:          baseURL: http://<host>:8000/v1      (no apiKey needed)
-    #   - Ollama Cloud:  baseURL + apiKey: ${OLLAMA_API_KEY} (auth required)
+    #   - Ollama Cloud:  baseURL: https://ollama.com/v1      (apiKey required)
     #   - Any OpenAI-compatible endpoint behind auth (e.g. Cloudflare tunnel).
     #
     # ollama:
-    #   baseURL: https://ollama.com
+    #   baseURL: https://ollama.com/v1
     #   apiKey: ${OLLAMA_API_KEY}
 
 # Langfuse observability — traces agent runs, tool calls, and LLM generations.
