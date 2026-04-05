@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { Agent } from '@mastra/core/agent';
 import type { Tool } from '@mastra/core/tools';
 import { Workspace, LocalFilesystem, LocalSandbox } from '@mastra/core/workspace';
@@ -13,6 +14,23 @@ interface WrapperInput {
   providerId?: string;
   headers?: Record<string, string>;
   mcpServers: Record<string, SerializableMcpServer>;
+  /**
+   * When true (default) the wrapper streams text/tool events to stdout as
+   * they arrive. When false, it consumes the underlying stream silently and
+   * emits only the terminal `result` (or `error`) event. The background
+   * invocation path sets this to false because its stdout buffer is capped
+   * at 100 KB, and losing the trailing `result` line to truncation would
+   * flip a successful run to a failure.
+   */
+  streamEvents?: boolean;
+  /**
+   * Optional absolute path to a file the wrapper should write the full
+   * aggregate response into after the stream completes. When set, the
+   * terminal `result` stdout line carries only usage metadata and the real
+   * output lives in this file. The background provider uses this to bypass
+   * the 100 KB stdout buffer cap entirely.
+   */
+  outputFilePath?: string;
 }
 
 type SerializableMcpServer =
@@ -28,9 +46,42 @@ type SerializableMcpServer =
       headers?: Record<string, string>;
     };
 
+/**
+ * NDJSON event emitted on stdout. One line per event. The `result` event is
+ * always emitted last and carries the aggregate text + usage, so the
+ * background-agent code path (which buffers stdout) can recover the final
+ * output even when streaming is not consumed.
+ */
+type WrapperEvent =
+  | { type: 'text'; content: string }
+  | {
+      type: 'tool_event';
+      messageType: 'tool_use' | 'tool_result';
+      tool?: string;
+      toolUseId?: string;
+      input?: unknown;
+      output?: unknown;
+      isError?: boolean;
+    }
+  | {
+      type: 'result';
+      output: string;
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens?: number;
+      };
+    }
+  | { type: 'error'; message: string };
+
+function emit(event: WrapperEvent): void {
+  process.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
 async function main(): Promise<void> {
   let workspace: Workspace | undefined;
   let mcpClient: MCPClient | undefined;
+  let aggregatedText = '';
 
   try {
     const input = parseInput(await readStdin());
@@ -68,21 +119,132 @@ async function main(): Promise<void> {
       tools: mcpTools,
     });
 
-    const result = await agent.generate(input.prompt);
-    process.stdout.write(
-      `${JSON.stringify({
-        output: result.text,
-        usage: normalizeUsage(result.totalUsage ?? result.usage),
-      })}\n`,
-    );
+    const stream = await agent.stream(input.prompt);
+    const shouldStream = input.streamEvents !== false;
+
+    for await (const rawChunk of stream.fullStream as AsyncIterable<unknown>) {
+      const chunk = normalizeStreamChunk(rawChunk);
+      if (!chunk) continue;
+
+      if (chunk.type === 'text-delta') {
+        const text = readStringProp(chunk.payload, 'text');
+        if (text && text.length > 0) {
+          aggregatedText += text;
+          if (shouldStream) {
+            emit({ type: 'text', content: text });
+          }
+        }
+        continue;
+      }
+
+      if (chunk.type === 'tool-call') {
+        if (shouldStream) {
+          emit({
+            type: 'tool_event',
+            messageType: 'tool_use',
+            tool: readStringProp(chunk.payload, 'toolName'),
+            toolUseId: readStringProp(chunk.payload, 'toolCallId'),
+            input: chunk.payload.args,
+          });
+        }
+        continue;
+      }
+
+      if (chunk.type === 'tool-result') {
+        if (shouldStream) {
+          emit({
+            type: 'tool_event',
+            messageType: 'tool_result',
+            tool: readStringProp(chunk.payload, 'toolName'),
+            toolUseId: readStringProp(chunk.payload, 'toolCallId'),
+            output: chunk.payload.result,
+            isError: readBooleanProp(chunk.payload, 'isError'),
+          });
+        }
+        continue;
+      }
+
+      if (chunk.type === 'error') {
+        const errorValue = chunk.payload.error;
+        const message = errorValue instanceof Error
+          ? errorValue.message
+          : typeof errorValue === 'string'
+            ? errorValue
+            : JSON.stringify(errorValue);
+        emit({ type: 'error', message });
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    const [finalText, finalUsage] = await Promise.all([stream.text, stream.usage]);
+    const resolvedText = finalText && finalText.length > 0 ? finalText : aggregatedText;
+
+    // Background path: write the full output to the operator-provided file
+    // and emit a tiny terminal summary on stdout so the buffer cap cannot
+    // truncate the real response away.
+    if (input.outputFilePath) {
+      try {
+        writeFileSync(input.outputFilePath, resolvedText, { encoding: 'utf8', mode: 0o600 });
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        emit({
+          type: 'error',
+          message: `OpenAI-compatible wrapper failed to write output file: ${message}`,
+        });
+        process.exitCode = 1;
+        return;
+      }
+      emit({
+        type: 'result',
+        output: '',
+        usage: normalizeUsage(finalUsage),
+      });
+      return;
+    }
+
+    emit({
+      type: 'result',
+      output: resolvedText,
+      usage: normalizeUsage(finalUsage),
+    });
   } catch (error) {
-    const message = error instanceof Error ? error.stack ?? error.message : String(error);
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    // Write the full stack to stderr for operator debugging, and emit a
+    // structured error event for downstream consumers.
     process.stderr.write(`${message}\n`);
+    emit({
+      type: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    });
     process.exitCode = 1;
   } finally {
     await mcpClient?.disconnect().catch(() => {});
     await workspace?.destroy().catch(() => {});
   }
+}
+
+interface StreamChunk {
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+function normalizeStreamChunk(value: unknown): StreamChunk | undefined {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return undefined;
+  }
+  const payload = isRecord(value.payload) ? value.payload : {};
+  return { type: value.type, payload };
+}
+
+function readStringProp(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readBooleanProp(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === 'boolean' ? value : undefined;
 }
 
 function parseInput(raw: string): WrapperInput {
@@ -101,6 +263,10 @@ function parseInput(raw: string): WrapperInput {
     ...(parsed.providerId ? { providerId: parsed.providerId } : {}),
     ...(parsed.headers ? { headers: parsed.headers } : {}),
     mcpServers: parsed.mcpServers ?? {},
+    ...(typeof parsed.streamEvents === 'boolean' ? { streamEvents: parsed.streamEvents } : {}),
+    ...(typeof parsed.outputFilePath === 'string' && parsed.outputFilePath.length > 0
+      ? { outputFilePath: parsed.outputFilePath }
+      : {}),
   };
 }
 
@@ -162,7 +328,7 @@ function normalizeUsage(
         cachedInputTokens?: number;
       }
     | undefined,
-): Record<string, number> {
+): { inputTokens: number; outputTokens: number; cacheReadTokens?: number } {
   return {
     inputTokens: usage?.inputTokens ?? 0,
     outputTokens: usage?.outputTokens ?? 0,
@@ -229,6 +395,14 @@ function isWrapperInput(value: unknown): value is WrapperInput {
   }
 
   if (!isRecord(value.mcpServers)) {
+    return false;
+  }
+
+  if (value.streamEvents !== undefined && typeof value.streamEvents !== 'boolean') {
+    return false;
+  }
+
+  if (value.outputFilePath !== undefined && typeof value.outputFilePath !== 'string') {
     return false;
   }
 

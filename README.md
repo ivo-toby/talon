@@ -1407,7 +1407,7 @@ npx talonctl set-default-provider --name gemini-cli --context agent-runner
 npx talonctl test-provider --name gemini-cli
 ```
 
-For `openai-compatible`, add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials for this provider are read from `auth.providers.openai-compatible.{apiKey,baseURL}` (separate from `auth.providers.openai`, which is used by the OpenAI sub-agent).
+For `openai-compatible`, add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
 
 ### Scheduling
 

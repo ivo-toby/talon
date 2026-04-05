@@ -216,12 +216,17 @@ auth:
     openai:
       apiKey: ${OPENAI_API_KEY}
       # baseURL: https://api.openai.com/v1
-    # Credentials for the `openai-compatible` agent provider (e.g. Ollama,
-    # Groq, Together, any OpenAI-compatible endpoint). This is separate from
-    # the `openai` entry above, which is used by the OpenAI sub-agent.
-    # openai-compatible:
+    # Credentials for the `openai-compatible` agent provider are looked up
+    # under auth.providers.<options.providerId> first (e.g. `ollama`, `groq`,
+    # `together`), so the same slot can be reused by the matching sub-agent.
+    # Falls back to `auth.providers.openai-compatible` for endpoints without
+    # a natural provider id.
+    # ollama:
     #   apiKey: ${OLLAMA_API_KEY}
     #   baseURL: https://ollama.com/v1
+    # openai-compatible:
+    #   apiKey: ${OPENAI_COMPATIBLE_API_KEY}
+    #   baseURL: https://example.com/v1
     # google:
     #   apiKey: ${GOOGLE_AI_API_KEY}
 

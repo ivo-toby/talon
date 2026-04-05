@@ -52,6 +52,12 @@ export interface SDKExecutionStrategy {
   run(input: AgentRunInput): AsyncIterable<AgentStreamEvent>;
 }
 
+export interface StatelessSDKExecutionStrategy {
+  readonly type: 'sdk';
+  readonly supportsSessionResumption: false;
+  run(input: AgentRunInput): AsyncIterable<AgentStreamEvent>;
+}
+
 export interface CLIExecutionStrategy {
   readonly type: 'cli';
   readonly supportsSessionResumption: true;
@@ -64,7 +70,11 @@ export interface StatelessCLIExecutionStrategy {
   run(input: AgentRunInput): Promise<AgentRunResult>;
 }
 
-export type ExecutionStrategy = SDKExecutionStrategy | CLIExecutionStrategy | StatelessCLIExecutionStrategy;
+export type ExecutionStrategy =
+  | SDKExecutionStrategy
+  | StatelessSDKExecutionStrategy
+  | CLIExecutionStrategy
+  | StatelessCLIExecutionStrategy;
 
 export interface AgentProvider {
   readonly name: ProviderName;

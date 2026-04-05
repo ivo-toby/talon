@@ -307,10 +307,25 @@ export async function bootstrap(
     'claude-code': (providerConfig) => new ClaudeCodeProvider(providerConfig),
     'gemini-cli': (providerConfig) => new GeminiCliProvider(providerConfig),
     'codex-cli': (providerConfig) => new CodexCliProvider(providerConfig, { dataDir }),
-    'openai-compatible': (providerConfig) => new OpenAiCompatibleProvider(providerConfig, {
-      apiKey: config.auth?.providers?.['openai-compatible']?.apiKey,
-      baseUrl: config.auth?.providers?.['openai-compatible']?.baseURL,
-    }),
+    'openai-compatible': (providerConfig) => {
+      // Credentials are looked up under auth.providers.<options.providerId>
+      // first (e.g. `ollama`, `groq`, `together`), so users can reuse the
+      // same credential slot already consumed by the matching sub-agent
+      // provider. Falls back to the dedicated `openai-compatible` key for
+      // endpoints without a natural provider id.
+      const authProviders = config.auth?.providers ?? {};
+      const providerIdOption = providerConfig.options?.providerId;
+      const providerId =
+        typeof providerIdOption === 'string' && providerIdOption.trim().length > 0
+          ? providerIdOption
+          : undefined;
+      const creds =
+        (providerId ? authProviders[providerId] : undefined) ?? authProviders['openai-compatible'];
+      return new OpenAiCompatibleProvider(providerConfig, {
+        apiKey: creds?.apiKey,
+        baseUrl: creds?.baseURL,
+      });
+    },
   };
   const providerRegistry = new ProviderRegistry(config.agentRunner.providers, providerFactories);
   const backgroundProviderRegistry = new ProviderRegistry(
