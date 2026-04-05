@@ -157,6 +157,20 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gpt-5.4
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 backgroundAgent:
   enabled: true
@@ -180,6 +194,14 @@ backgroundAgent:
       contextWindowTokens: 400000
       options:
         defaultModel: gpt-5.4
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 scheduler:
   tickIntervalMs: 5000
@@ -194,6 +216,8 @@ auth:
     openai:
       apiKey: ${OPENAI_API_KEY}
       # baseURL: https://api.openai.com/v1
+      # For Ollama or another OpenAI-compatible endpoint:
+      # baseURL: http://127.0.0.1:11434/v1
     # google:
     #   apiKey: ${GOOGLE_AI_API_KEY}
 

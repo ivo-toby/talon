@@ -795,6 +795,122 @@ describe('AgentRunner', () => {
       expect(ctx.contextRoller.checkAndRotate).not.toHaveBeenCalled();
     });
 
+    it('runs openai-compatible through the existing CLI branch without session resumption', async () => {
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'OpenAI-compatible result',
+        sessionId: undefined,
+        usage: {
+          inputTokens: 210_000,
+          outputTokens: 90,
+        },
+        isError: false,
+      });
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'qwen3-coder:30b',
+          provider: 'openai-compatible',
+          skills: [],
+          capabilities: { allow: [] },
+        },
+        systemPromptContent: 'You are an OpenAI-compatible test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      } as any));
+      ctx.config.agentRunner.defaultProvider = 'openai-compatible';
+      ctx.providerRegistry = {
+        get: vi.fn().mockImplementation((name: string) => (
+          name === 'openai-compatible'
+            ? {
+                provider: {
+                  name: 'openai-compatible',
+                  createExecutionStrategy: () => ({
+                    type: 'cli' as const,
+                    supportsSessionResumption: false as const,
+                    run: cliRun,
+                  }),
+                  prepareBackgroundInvocation: vi.fn(),
+                  parseBackgroundResult: vi.fn(),
+                  estimateContextUsage: vi.fn().mockReturnValue({
+                    inputTokens: 210_000,
+                    metrics: {
+                      input_tokens: 210_000,
+                    },
+                  }),
+                },
+                config: makeAgentRunnerProviderConfig({
+                  command: 'node',
+                  contextWindowTokens: 256_000,
+                  contextManagement: makeContextManagement({
+                    triggerMetric: 'input_tokens',
+                    thresholdRatio: 0.75,
+                  }),
+                }),
+              }
+            : undefined
+        )),
+        getDefault: vi.fn().mockImplementation(() => ({
+          provider: {
+            name: 'openai-compatible',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: false as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 210_000,
+              metrics: {
+                input_tokens: 210_000,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        })),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.sessionTracker.getSessionId).not.toHaveBeenCalled();
+      expect(cliRun).toHaveBeenCalledWith(expect.objectContaining({
+        model: 'qwen3-coder:30b',
+      }));
+      const nonThinkingCalls = vi.mocked(connector.send).mock.calls.filter(
+        ([, body]) => (body as { body: string }).body !== 'Thinking...',
+      );
+      expect(nonThinkingCalls).toHaveLength(1);
+      expect(nonThinkingCalls[0]).toEqual([
+        'ext-001',
+        { body: 'OpenAI-compatible result' },
+      ]);
+      expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+        'thread-001',
+        'persona-001',
+        {
+          ratio: 210_000 / 256_000,
+          inputTokens: 210_000,
+          rawMetric: 210_000,
+          rawMetricName: 'input_tokens',
+        },
+        0.75,
+        'session-summarizer',
+      );
+    });
+
     it('logs and skips rotation when the configured trigger metric is unavailable', async () => {
       ctx.contextRoller = {
         checkAndRotate: vi.fn().mockResolvedValue(undefined),

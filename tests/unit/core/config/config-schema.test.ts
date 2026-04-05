@@ -973,6 +973,60 @@ describe('TalondConfigSchema', () => {
     }
   });
 
+  it('accepts openai-compatible provider options for both main and background agents', () => {
+    const result = TalondConfigSchema.safeParse({
+      agentRunner: {
+        defaultProvider: 'openai-compatible',
+        providers: {
+          'openai-compatible': {
+            enabled: true,
+            command: 'node',
+            contextWindowTokens: 256000,
+            contextManagement: {
+              enabled: true,
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+              recentMessageCount: 10,
+              summarizer: 'session-summarizer',
+            },
+            options: {
+              defaultModel: 'qwen3-coder:30b',
+              baseUrl: 'http://127.0.0.1:11434/v1',
+            },
+          },
+        },
+      },
+      backgroundAgent: {
+        defaultProvider: 'openai-compatible',
+        providers: {
+          'openai-compatible': {
+            enabled: true,
+            command: 'node',
+            contextWindowTokens: 256000,
+            options: {
+              defaultModel: 'qwen3-coder:30b',
+              baseUrl: 'http://127.0.0.1:11434/v1',
+            },
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.agentRunner.defaultProvider).toBe('openai-compatible');
+      expect(result.data.backgroundAgent.defaultProvider).toBe('openai-compatible');
+      expect(result.data.agentRunner.providers['openai-compatible']?.options).toEqual({
+        defaultModel: 'qwen3-coder:30b',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+      });
+      expect(result.data.backgroundAgent.providers['openai-compatible']?.options).toEqual({
+        defaultModel: 'qwen3-coder:30b',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+      });
+    }
+  });
+
   it('rejects an invalid logLevel', () => {
     const result = TalondConfigSchema.safeParse({ logLevel: 'verbose' });
     expect(result.success).toBe(false);

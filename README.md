@@ -52,7 +52,7 @@ It is built for single-user or small-team deployments where you want persistent,
 
 Agent execution is decoupled from any specific SDK or CLI. A provider layer sits between the daemon core and the actual model runtime, so swapping or adding providers doesn't require changes to the runner, queue, or context management.
 
-Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI plus Codex CLI are supported.
+Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI, Codex CLI, plus an OpenAI-compatible Mastra wrapper are supported as first-class providers.
 
 This matters because it means you can:
 
@@ -87,6 +87,20 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gpt-5.4
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 backgroundAgent:
   enabled: true
@@ -103,6 +117,14 @@ backgroundAgent:
       contextWindowTokens: 400000
       options:
         defaultModel: gpt-5.4
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 ```
 
 ### Infrastructure
@@ -348,6 +370,20 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 logLevel: info
 dataDir: data
@@ -1370,6 +1406,8 @@ npx talonctl add-provider --name gemini-cli --command gemini \
 npx talonctl set-default-provider --name gemini-cli --context agent-runner
 npx talonctl test-provider --name gemini-cli
 ```
+
+For `openai-compatible`, add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`.
 
 ### Scheduling
 
