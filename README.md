@@ -452,7 +452,14 @@ backgroundAgent:
   enabled: true
   maxConcurrent: 3
   defaultTimeoutMinutes: 30
-  claudePath: claude # legacy shortcut for claude-code; prefer defaultProvider + providers
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+    # Any of the other providers (gemini-cli, codex-cli, openai-compatible)
+    # can be enabled here the same way they are in `agentRunner.providers`.
 ```
 
 | Option                  | Meaning                                                          |
@@ -460,7 +467,36 @@ backgroundAgent:
 | `enabled`               | Globally enable or disable background workers                    |
 | `maxConcurrent`         | Maximum number of background provider workers allowed at once    |
 | `defaultTimeoutMinutes` | Default wall-clock timeout when a tool call does not provide one |
-| `claudePath`            | Legacy shortcut for the `claude-code` provider command path      |
+| `defaultProvider`       | Provider used for tasks that do not specify one explicitly       |
+| `providers`             | Per-provider config; mirrors `agentRunner.providers`             |
+
+##### Using `openai-compatible` for background agents
+
+`openai-compatible` works as a background provider alongside the foreground `agentRunner` entry. Add it under `backgroundAgent.providers` the same way you would for the main agent:
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 2
+  defaultTimeoutMinutes: 30
+  defaultProvider: openai-compatible     # or keep claude-code and opt in per task
+  providers:
+    openai-compatible:
+      enabled: true
+      command: node                      # the bundled wrapper runs under node
+      contextWindowTokens: 256000
+      options:
+        baseUrl: ${OLLAMA_BASE_URL}      # e.g. https://ollama.com/v1
+        defaultModel: ${OLLAMA_AGENT_MODEL}
+        providerId: ollama               # triggers auth.providers.ollama lookup
+```
+
+Notes:
+
+- **Credentials are shared.** The background factory resolves them the same way the foreground one does — `auth.providers.<options.providerId>` first (e.g. `auth.providers.ollama`), falling back to `auth.providers.openai-compatible`. Nothing extra under `auth:` is needed if the agentRunner entry already works.
+- **Background runs don't stream.** The wrapper still runs Mastra's streaming API internally, but only emits a terminal summary on stdout and writes the full response to a temp `last-message.txt` file. This bypasses the 100 KB stdout buffer cap, so long outputs are never truncated.
+- **Tool calls still execute.** The background worker uses the same filtered host-tools MCP bridge as `claude-code`/`codex-cli` background workers; per-persona capabilities apply. Tool-call messages just aren't streamed to a channel because background runs don't have a live connection.
+- **Per-task override.** If you'd rather keep `defaultProvider: claude-code` and only route specific tasks through `openai-compatible`, pass the provider explicitly when dispatching the background task (same mechanism as routing to `codex-cli`).
 
 To let a persona use the feature, grant `subagent.background`:
 
