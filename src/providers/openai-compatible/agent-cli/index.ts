@@ -3,6 +3,13 @@ import { Agent } from '@mastra/core/agent';
 import type { Tool } from '@mastra/core/tools';
 import { Workspace, LocalFilesystem, LocalSandbox } from '@mastra/core/workspace';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
+import {
+  chooseUsage,
+  extractUsage,
+  mergeUsage,
+  normalizeUsage,
+  type UsageSnapshot,
+} from './usage.js';
 
 interface WrapperInput {
   prompt: string;
@@ -122,9 +129,24 @@ async function main(): Promise<void> {
     const stream = await agent.stream(input.prompt);
     const shouldStream = input.streamEvents !== false;
 
+    // Capture usage from every chunk that carries it. Mastra wraps the
+    // AI SDK `stream_options: { include_usage: true }` call for us, so the
+    // underlying server emits token counts in the final OpenAI stream
+    // event; Mastra surfaces them on `finish`/`step-finish` chunks (and
+    // some providers also sprinkle usage onto other chunks). Reading them
+    // inline is more reliable than awaiting `stream.usage` after draining
+    // the stream ourselves, because some wrappers settle that promise with
+    // zeros once fullStream has been externally consumed.
+    let streamedUsage: UsageSnapshot | undefined;
+
     for await (const rawChunk of stream.fullStream as AsyncIterable<unknown>) {
       const chunk = normalizeStreamChunk(rawChunk);
       if (!chunk) continue;
+
+      const chunkUsage = extractUsage(chunk.payload);
+      if (chunkUsage) {
+        streamedUsage = mergeUsage(streamedUsage, chunkUsage);
+      }
 
       if (chunk.type === 'text-delta') {
         const text = readStringProp(chunk.payload, 'text');
@@ -177,8 +199,10 @@ async function main(): Promise<void> {
       }
     }
 
-    const [finalText, finalUsage] = await Promise.all([stream.text, stream.usage]);
+    const [finalText, promiseUsage] = await Promise.all([stream.text, stream.usage]);
     const resolvedText = finalText && finalText.length > 0 ? finalText : aggregatedText;
+    // Prefer chunk-derived usage (authoritative), fall back to the promise.
+    const finalUsage = chooseUsage(streamedUsage, promiseUsage);
 
     // Background path: write the full output to the operator-provided file
     // and emit a tiny terminal summary on stdout so the buffer cap cannot
@@ -320,23 +344,6 @@ function toMastraMcpServers(
   return servers;
 }
 
-function normalizeUsage(
-  usage:
-    | {
-        inputTokens?: number;
-        outputTokens?: number;
-        cachedInputTokens?: number;
-      }
-    | undefined,
-): { inputTokens: number; outputTokens: number; cacheReadTokens?: number } {
-  return {
-    inputTokens: usage?.inputTokens ?? 0,
-    outputTokens: usage?.outputTokens ?? 0,
-    ...(typeof usage?.cachedInputTokens === 'number'
-      ? { cacheReadTokens: usage.cachedInputTokens }
-      : {}),
-  };
-}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
