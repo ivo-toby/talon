@@ -1,7 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { Agent } from '@mastra/core/agent';
 import type { Tool } from '@mastra/core/tools';
-import { Workspace, LocalFilesystem, LocalSandbox } from '@mastra/core/workspace';
+import { Workspace, LocalFilesystem, LocalSandbox, type WorkspaceToolsConfig } from '@mastra/core/workspace';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
 import {
   chooseUsage,
@@ -21,22 +21,7 @@ interface WrapperInput {
   providerId?: string;
   headers?: Record<string, string>;
   mcpServers: Record<string, SerializableMcpServer>;
-  /**
-   * When true (default) the wrapper streams text/tool events to stdout as
-   * they arrive. When false, it consumes the underlying stream silently and
-   * emits only the terminal `result` (or `error`) event. The background
-   * invocation path sets this to false because its stdout buffer is capped
-   * at 100 KB, and losing the trailing `result` line to truncation would
-   * flip a successful run to a failure.
-   */
   streamEvents?: boolean;
-  /**
-   * Optional absolute path to a file the wrapper should write the full
-   * aggregate response into after the stream completes. When set, the
-   * terminal `result` stdout line carries only usage metadata and the real
-   * output lives in this file. The background provider uses this to bypass
-   * the 100 KB stdout buffer cap entirely.
-   */
   outputFilePath?: string;
 }
 
@@ -53,12 +38,6 @@ type SerializableMcpServer =
       headers?: Record<string, string>;
     };
 
-/**
- * NDJSON event emitted on stdout. One line per event. The `result` event is
- * always emitted last and carries the aggregate text + usage, so the
- * background-agent code path (which buffers stdout) can recover the final
- * output even when streaming is not consumed.
- */
 type WrapperEvent =
   | { type: 'text'; content: string }
   | {
@@ -85,6 +64,61 @@ function emit(event: WrapperEvent): void {
   process.stdout.write(`${JSON.stringify(event)}\n`);
 }
 
+// ---------------------------------------------------------------------------
+// Fetch-level stream_options injection
+// ---------------------------------------------------------------------------
+// Mastra's OpenAICompatibleConfig model path does NOT send
+// `stream_options: { include_usage: true }` in the request body (unlike the
+// @ai-sdk/openai chat model which does). Without this flag, OpenAI-compatible
+// servers (Ollama, vLLM, etc.) omit the usage chunk from the SSE stream
+// entirely, so token counts show up as zeros everywhere downstream. Once the
+// flag is injected and the server sends the usage chunk, Mastra's own Agent
+// pipeline correctly propagates the values onto finish/step-finish chunks
+// and stream.usage.
+//
+// This patch is safe because the wrapper runs as a short-lived child
+// process — it does not affect the daemon's fetch.
+// ---------------------------------------------------------------------------
+
+function installStreamOptionsInterceptor(baseUrl: string): void {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async function interceptedFetch(
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+
+    if (url.startsWith(baseUrl) && url.includes('/chat/completions')) {
+      return originalFetch(input, injectStreamOptions(init));
+    }
+
+    return originalFetch(input, init);
+  };
+}
+
+function injectStreamOptions(init?: RequestInit): RequestInit | undefined {
+  if (!init?.body || typeof init.body !== 'string') return init;
+  try {
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    if (body.stream !== true) return init;
+    if (body.stream_options) return init;
+    body.stream_options = { include_usage: true };
+    return { ...init, body: JSON.stringify(body) };
+  } catch {
+    return init;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 async function main(): Promise<void> {
   let workspace: Workspace | undefined;
   let mcpClient: MCPClient | undefined;
@@ -92,25 +126,31 @@ async function main(): Promise<void> {
 
   try {
     const input = parseInput(await readStdin());
+    installStreamOptionsInterceptor(input.baseUrl);
 
-    // Mastra Workspace provides the model's filesystem + bash feature
-    // parity with claude-code, codex-cli, and gemini-cli. Mastra auto-
-    // injects its `read_file`, `write_file`, `list_files`,
-    // `execute_command`, … tools onto the Agent when a workspace is set.
-    //
-    // We configure it with:
-    //   - `contained: false` on the filesystem so the tools are NOT
-    //     jailed to basePath. basePath stays at the thread workspace dir
-    //     (used as the initial cwd and for relative paths) but the model
-    //     can read/write anywhere the daemon process can reach, matching
-    //     claude-code's unrestricted native-tool behavior.
-    //   - `isolation: 'none'` on the sandbox so commands run directly on
-    //     the host, again matching claude-code/codex defaults.
-    //
-    // Real OS-level isolation (seatbelt on macOS, bwrap on Linux) is
-    // tracked separately — see Option B in the provider docs. When
-    // exposed, it will flip these defaults based on persona config and
-    // user approval, without changing the surrounding wiring.
+    // Mastra Workspace provides fs + bash feature parity with claude-code,
+    // codex-cli, and gemini-cli. Mastra auto-injects read_file, write_file,
+    // list_files, execute_command, etc. onto the Agent when a workspace is
+    // set. We configure it with:
+    //   - contained: false — tools are NOT jailed to basePath; the model can
+    //     reach anywhere the daemon process can, matching claude-code behavior.
+    //   - isolation: 'none' — commands run directly on the host.
+    //   - maxOutputTokens caps on verbose tools to prevent stalls from huge
+    //     directory listings or command output.
+    //   - Heavy/redundant tools disabled.
+    const workspaceToolsConfig: WorkspaceToolsConfig = {
+      mastra_workspace_list_files: { maxOutputTokens: 2000 },
+      mastra_workspace_read_file: { maxOutputTokens: 3000 },
+      mastra_workspace_grep: { maxOutputTokens: 2000 },
+      mastra_workspace_execute_command: { maxOutputTokens: 3000 },
+      mastra_workspace_search: { enabled: false },
+      mastra_workspace_index: { enabled: false },
+      mastra_workspace_lsp_inspect: { enabled: false },
+      mastra_workspace_ast_edit: { enabled: false },
+      mastra_workspace_delete: { enabled: false },
+      mastra_workspace_kill_process: { enabled: false },
+    };
+
     workspace = new Workspace({
       filesystem: new LocalFilesystem({
         basePath: input.cwd,
@@ -120,6 +160,7 @@ async function main(): Promise<void> {
         workingDirectory: input.cwd,
         env: process.env,
       }),
+      tools: workspaceToolsConfig,
     });
     await workspace.init();
 
@@ -148,15 +189,6 @@ async function main(): Promise<void> {
 
     const stream = await agent.stream(input.prompt);
     const shouldStream = input.streamEvents !== false;
-
-    // Capture usage from every chunk that carries it. Mastra wraps the
-    // AI SDK `stream_options: { include_usage: true }` call for us, so the
-    // underlying server emits token counts in the final OpenAI stream
-    // event; Mastra surfaces them on `finish`/`step-finish` chunks (and
-    // some providers also sprinkle usage onto other chunks). Reading them
-    // inline is more reliable than awaiting `stream.usage` after draining
-    // the stream ourselves, because some wrappers settle that promise with
-    // zeros once fullStream has been externally consumed.
     let streamedUsage: UsageSnapshot | undefined;
 
     for await (const rawChunk of stream.fullStream as AsyncIterable<unknown>) {
@@ -219,14 +251,11 @@ async function main(): Promise<void> {
       }
     }
 
+    await stream.consumeStream().catch(() => {});
     const [finalText, promiseUsage] = await Promise.all([stream.text, stream.usage]);
     const resolvedText = finalText && finalText.length > 0 ? finalText : aggregatedText;
-    // Prefer chunk-derived usage (authoritative), fall back to the promise.
     const finalUsage = chooseUsage(streamedUsage, promiseUsage);
 
-    // Background path: write the full output to the operator-provided file
-    // and emit a tiny terminal summary on stdout so the buffer cap cannot
-    // truncate the real response away.
     if (input.outputFilePath) {
       try {
         writeFileSync(input.outputFilePath, resolvedText, { encoding: 'utf8', mode: 0o600 });
@@ -254,8 +283,6 @@ async function main(): Promise<void> {
     });
   } catch (error) {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
-    // Write the full stack to stderr for operator debugging, and emit a
-    // structured error event for downstream consumers.
     process.stderr.write(`${message}\n`);
     emit({
       type: 'error',
@@ -267,6 +294,10 @@ async function main(): Promise<void> {
     await workspace?.destroy().catch(() => {});
   }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 interface StreamChunk {
   type: string;
@@ -363,7 +394,6 @@ function toMastraMcpServers(
 
   return servers;
 }
-
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
