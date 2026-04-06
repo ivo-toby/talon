@@ -1019,4 +1019,75 @@ describe('BackgroundAgentManager', () => {
       }),
     );
   });
+
+  it('uses openai-compatible as an explicit background provider override', async () => {
+    prepareBackgroundInvocation.mockReturnValueOnce(ok({
+      command: 'node',
+      args: ['/workspace/talon/dist/providers/openai-compatible/agent-cli/index.js'],
+      stdin: '{"prompt":"Refactor the auth module"}',
+      env: {
+        TALOND_TRACEPARENT: '00-test',
+      },
+      cwd: '/workspace/repo',
+      timeoutMs: 30 * 60 * 1000,
+      cleanupPaths: [],
+    }));
+    const manager = createManager({
+      providerRegistry: {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'claude-code',
+            createExecutionStrategy: vi.fn(),
+            prepareBackgroundInvocation,
+            parseBackgroundResult,
+            estimateContextUsage: vi.fn(),
+          },
+          config: {
+            enabled: true,
+            command: 'claude',
+            contextWindowTokens: 200000,
+          },
+        }),
+        listEnabled: vi.fn().mockReturnValue(['claude-code', 'gemini-cli', 'openai-compatible']),
+        get: vi.fn((name: string) => {
+          if (name === 'openai-compatible') {
+            return {
+              provider: {
+                name: 'openai-compatible',
+                createExecutionStrategy: vi.fn(),
+                prepareBackgroundInvocation,
+                parseBackgroundResult,
+                estimateContextUsage: vi.fn(),
+              },
+              config: {
+                enabled: true,
+                command: 'node',
+                contextWindowTokens: 256000,
+              },
+            };
+          }
+          return undefined;
+        }),
+      } as any,
+    });
+
+    const result = await manager.spawn({
+      ...spawnInput,
+      provider: 'openai-compatible',
+      traceparent: '00-test',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const task = repository.findById(result._unsafeUnwrap())._unsafeUnwrap();
+    expect(task?.providerName).toBe('openai-compatible');
+    expect(processFactory).toHaveBeenCalledWith(
+      expect.objectContaining({
+        command: 'node',
+        env: expect.objectContaining({
+          TALOND_TRACEPARENT: '00-test',
+          TALON_BACKGROUND_TASK_ID: expect.any(String),
+        }),
+      }),
+    );
+  });
 });

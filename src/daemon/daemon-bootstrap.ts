@@ -60,6 +60,7 @@ import { ModelResolver } from '../subagents/model-resolver.js';
 import { ClaudeCodeProvider } from '../providers/claude-code-provider.js';
 import { GeminiCliProvider } from '../providers/gemini-cli-provider.js';
 import { CodexCliProvider } from '../providers/codex-cli-provider.js';
+import { OpenAiCompatibleProvider } from '../providers/openai-compatible-provider.js';
 import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider-registry.js';
 import { recoverFromCrash } from './lifecycle.js';
 import { ContextRoller } from './context-roller.js';
@@ -308,6 +309,25 @@ export async function bootstrap(
     'claude-code': (providerConfig) => new ClaudeCodeProvider(providerConfig),
     'gemini-cli': (providerConfig) => new GeminiCliProvider(providerConfig),
     'codex-cli': (providerConfig) => new CodexCliProvider(providerConfig, { dataDir }),
+    'openai-compatible': (providerConfig) => {
+      // Credentials are looked up under auth.providers.<options.providerId>
+      // first (e.g. `ollama`, `groq`, `together`), so users can reuse the
+      // same credential slot already consumed by the matching sub-agent
+      // provider. Falls back to the dedicated `openai-compatible` key for
+      // endpoints without a natural provider id.
+      const authProviders = config.auth?.providers ?? {};
+      const providerIdOption = providerConfig.options?.providerId;
+      const providerId =
+        typeof providerIdOption === 'string' && providerIdOption.trim().length > 0
+          ? providerIdOption
+          : undefined;
+      const creds =
+        (providerId ? authProviders[providerId] : undefined) ?? authProviders['openai-compatible'];
+      return new OpenAiCompatibleProvider(providerConfig, {
+        apiKey: creds?.apiKey,
+        baseUrl: creds?.baseURL,
+      });
+    },
   };
   const providerRegistry = new ProviderRegistry(config.agentRunner.providers, providerFactories);
   const backgroundProviderRegistry = new ProviderRegistry(

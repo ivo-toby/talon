@@ -1,0 +1,472 @@
+import { writeFileSync } from 'node:fs';
+import { Agent } from '@mastra/core/agent';
+import type { Tool } from '@mastra/core/tools';
+import { Workspace, LocalFilesystem, LocalSandbox, type WorkspaceToolsConfig } from '@mastra/core/workspace';
+import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
+import {
+  chooseUsage,
+  extractUsage,
+  mergeUsage,
+  normalizeUsage,
+  type UsageSnapshot,
+} from './usage.js';
+
+interface WrapperInput {
+  prompt: string;
+  systemPrompt: string;
+  cwd: string;
+  model: string;
+  baseUrl: string;
+  apiKey?: string;
+  providerId?: string;
+  headers?: Record<string, string>;
+  mcpServers: Record<string, SerializableMcpServer>;
+  streamEvents?: boolean;
+  outputFilePath?: string;
+}
+
+type SerializableMcpServer =
+  | {
+      transport: 'stdio';
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+    }
+  | {
+      transport: 'http' | 'sse';
+      url: string;
+      headers?: Record<string, string>;
+    };
+
+type WrapperEvent =
+  | { type: 'text'; content: string }
+  | {
+      type: 'tool_event';
+      messageType: 'tool_use' | 'tool_result';
+      tool?: string;
+      toolUseId?: string;
+      input?: unknown;
+      output?: unknown;
+      isError?: boolean;
+    }
+  | {
+      type: 'result';
+      output: string;
+      usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens?: number;
+      };
+    }
+  | { type: 'error'; message: string };
+
+function emit(event: WrapperEvent): void {
+  process.stdout.write(`${JSON.stringify(event)}\n`);
+}
+
+// ---------------------------------------------------------------------------
+// Fetch-level stream_options injection
+// ---------------------------------------------------------------------------
+// Mastra's OpenAICompatibleConfig model path does NOT send
+// `stream_options: { include_usage: true }` in the request body (unlike the
+// @ai-sdk/openai chat model which does). Without this flag, OpenAI-compatible
+// servers (Ollama, vLLM, etc.) omit the usage chunk from the SSE stream
+// entirely, so token counts show up as zeros everywhere downstream. Once the
+// flag is injected and the server sends the usage chunk, Mastra's own Agent
+// pipeline correctly propagates the values onto finish/step-finish chunks
+// and stream.usage.
+//
+// This patch is safe because the wrapper runs as a short-lived child
+// process — it does not affect the daemon's fetch.
+// ---------------------------------------------------------------------------
+
+function installStreamOptionsInterceptor(baseUrl: string): void {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async function interceptedFetch(
+    input: RequestInfo | URL,
+    init?: RequestInit,
+  ): Promise<Response> {
+    const url =
+      typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+
+    if (url.startsWith(baseUrl) && url.includes('/chat/completions')) {
+      return originalFetch(input, injectStreamOptions(init));
+    }
+
+    return originalFetch(input, init);
+  };
+}
+
+function injectStreamOptions(init?: RequestInit): RequestInit | undefined {
+  if (!init?.body || typeof init.body !== 'string') return init;
+  try {
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    if (body.stream !== true) return init;
+    if (body.stream_options) return init;
+    body.stream_options = { include_usage: true };
+    return { ...init, body: JSON.stringify(body) };
+  } catch {
+    return init;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
+async function main(): Promise<void> {
+  let workspace: Workspace | undefined;
+  let mcpClient: MCPClient | undefined;
+  let aggregatedText = '';
+
+  try {
+    const input = parseInput(await readStdin());
+    installStreamOptionsInterceptor(input.baseUrl);
+
+    // Mastra Workspace provides fs + bash feature parity with claude-code,
+    // codex-cli, and gemini-cli. Mastra auto-injects read_file, write_file,
+    // list_files, execute_command, etc. onto the Agent when a workspace is
+    // set. We configure it with:
+    //   - contained: false — tools are NOT jailed to basePath; the model can
+    //     reach anywhere the daemon process can, matching claude-code behavior.
+    //   - isolation: 'none' — commands run directly on the host.
+    //   - maxOutputTokens caps on verbose tools to prevent stalls from huge
+    //     directory listings or command output.
+    //   - Heavy/redundant tools disabled.
+    const workspaceToolsConfig: WorkspaceToolsConfig = {
+      mastra_workspace_list_files: { maxOutputTokens: 2000 },
+      mastra_workspace_read_file: { maxOutputTokens: 3000 },
+      mastra_workspace_grep: { maxOutputTokens: 2000 },
+      mastra_workspace_execute_command: { maxOutputTokens: 3000 },
+      mastra_workspace_search: { enabled: false },
+      mastra_workspace_index: { enabled: false },
+      mastra_workspace_lsp_inspect: { enabled: false },
+      mastra_workspace_ast_edit: { enabled: false },
+      mastra_workspace_delete: { enabled: false },
+      mastra_workspace_kill_process: { enabled: false },
+    };
+
+    workspace = new Workspace({
+      filesystem: new LocalFilesystem({
+        basePath: input.cwd,
+        contained: false,
+      }),
+      sandbox: new LocalSandbox({
+        workingDirectory: input.cwd,
+        env: process.env,
+      }),
+      tools: workspaceToolsConfig,
+    });
+    await workspace.init();
+
+    const mcpServers = toMastraMcpServers(input.mcpServers);
+    const mcpTools = Object.keys(mcpServers).length > 0
+      ? await (async (): Promise<Record<string, Tool<unknown, unknown, unknown, unknown>>> => {
+          mcpClient = new MCPClient({ servers: mcpServers });
+          return mcpClient.listTools();
+        })()
+      : {};
+
+    const agent = new Agent({
+      id: 'openai-compatible-cli',
+      name: 'OpenAI Compatible CLI',
+      instructions: input.systemPrompt,
+      model: {
+        providerId: input.providerId ?? 'openai-compatible',
+        modelId: input.model,
+        url: input.baseUrl,
+        ...(input.apiKey ? { apiKey: input.apiKey } : {}),
+        ...(input.headers ? { headers: input.headers } : {}),
+      },
+      workspace,
+      tools: mcpTools,
+    });
+
+    // Mastra's default stopWhen is stepCountIs(5), which stalls the stream
+    // after ~5 tool calls. Match the agent-runner's maxTurns (default 25)
+    // so the agent can do meaningful multi-tool work.
+    const stream = await agent.stream(input.prompt, { maxSteps: 25 });
+    const shouldStream = input.streamEvents !== false;
+    let streamedUsage: UsageSnapshot | undefined;
+
+    for await (const rawChunk of stream.fullStream as AsyncIterable<unknown>) {
+      const chunk = normalizeStreamChunk(rawChunk);
+      if (!chunk) continue;
+
+      const chunkUsage = extractUsage(chunk.payload);
+      if (chunkUsage) {
+        streamedUsage = mergeUsage(streamedUsage, chunkUsage);
+      }
+
+      if (chunk.type === 'text-delta') {
+        const text = readStringProp(chunk.payload, 'text');
+        if (text && text.length > 0) {
+          aggregatedText += text;
+          if (shouldStream) {
+            emit({ type: 'text', content: text });
+          }
+        }
+        continue;
+      }
+
+      if (chunk.type === 'tool-call') {
+        if (shouldStream) {
+          emit({
+            type: 'tool_event',
+            messageType: 'tool_use',
+            tool: readStringProp(chunk.payload, 'toolName'),
+            toolUseId: readStringProp(chunk.payload, 'toolCallId'),
+            input: chunk.payload.args,
+          });
+        }
+        continue;
+      }
+
+      if (chunk.type === 'tool-result') {
+        if (shouldStream) {
+          emit({
+            type: 'tool_event',
+            messageType: 'tool_result',
+            tool: readStringProp(chunk.payload, 'toolName'),
+            toolUseId: readStringProp(chunk.payload, 'toolCallId'),
+            output: chunk.payload.result,
+            isError: readBooleanProp(chunk.payload, 'isError'),
+          });
+        }
+        continue;
+      }
+
+      if (chunk.type === 'error') {
+        const errorValue = chunk.payload.error;
+        const message = errorValue instanceof Error
+          ? errorValue.message
+          : typeof errorValue === 'string'
+            ? errorValue
+            : JSON.stringify(errorValue);
+        emit({ type: 'error', message });
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    await stream.consumeStream().catch(() => {});
+    const [finalText, promiseUsage] = await Promise.all([stream.text, stream.usage]);
+    const resolvedText = finalText && finalText.length > 0 ? finalText : aggregatedText;
+    const finalUsage = chooseUsage(streamedUsage, promiseUsage);
+
+    if (input.outputFilePath) {
+      try {
+        writeFileSync(input.outputFilePath, resolvedText, { encoding: 'utf8', mode: 0o600 });
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        emit({
+          type: 'error',
+          message: `OpenAI-compatible wrapper failed to write output file: ${message}`,
+        });
+        process.exitCode = 1;
+        return;
+      }
+      emit({
+        type: 'result',
+        output: '',
+        usage: normalizeUsage(finalUsage),
+      });
+      return;
+    }
+
+    emit({
+      type: 'result',
+      output: resolvedText,
+      usage: normalizeUsage(finalUsage),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+    process.stderr.write(`${message}\n`);
+    emit({
+      type: 'error',
+      message: error instanceof Error ? error.message : String(error),
+    });
+    process.exitCode = 1;
+  } finally {
+    await mcpClient?.disconnect().catch(() => {});
+    await workspace?.destroy().catch(() => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+interface StreamChunk {
+  type: string;
+  payload: Record<string, unknown>;
+}
+
+function normalizeStreamChunk(value: unknown): StreamChunk | undefined {
+  if (!isRecord(value) || typeof value.type !== 'string') {
+    return undefined;
+  }
+  const payload = isRecord(value.payload) ? value.payload : {};
+  return { type: value.type, payload };
+}
+
+function readStringProp(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+function readBooleanProp(record: Record<string, unknown>, key: string): boolean | undefined {
+  const value = record[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function parseInput(raw: string): WrapperInput {
+  const parsed: unknown = JSON.parse(raw);
+  if (!isWrapperInput(parsed)) {
+    throw new Error('OpenAI-compatible wrapper requires prompt, systemPrompt, cwd, model, and baseUrl');
+  }
+
+  return {
+    prompt: parsed.prompt,
+    systemPrompt: parsed.systemPrompt,
+    cwd: parsed.cwd,
+    model: parsed.model,
+    baseUrl: parsed.baseUrl,
+    ...(parsed.apiKey ? { apiKey: parsed.apiKey } : {}),
+    ...(parsed.providerId ? { providerId: parsed.providerId } : {}),
+    ...(parsed.headers ? { headers: parsed.headers } : {}),
+    mcpServers: parsed.mcpServers ?? {},
+    ...(typeof parsed.streamEvents === 'boolean' ? { streamEvents: parsed.streamEvents } : {}),
+    ...(typeof parsed.outputFilePath === 'string' && parsed.outputFilePath.length > 0
+      ? { outputFilePath: parsed.outputFilePath }
+      : {}),
+  };
+}
+
+async function readStdin(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function toMastraMcpServers(
+  mcpServers: Record<string, SerializableMcpServer>,
+): Record<string, MastraMCPServerDefinition> {
+  const servers: Record<string, MastraMCPServerDefinition> = {};
+
+  for (const [name, server] of Object.entries(mcpServers)) {
+    if (server.transport === 'stdio') {
+      servers[name] = {
+        command: server.command,
+        args: server.args,
+        ...(server.env ? { env: server.env } : {}),
+        cwd: process.cwd(),
+      };
+      continue;
+    }
+
+    const headers = server.headers;
+    servers[name] = {
+      url: new URL(server.url),
+      ...(headers
+        ? {
+            requestInit: { headers },
+            eventSourceInit: {
+              fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+                const requestHeaders = new Headers(init?.headers);
+                for (const [key, value] of Object.entries(headers)) {
+                  requestHeaders.set(key, value);
+                }
+                return fetch(input, {
+                  ...init,
+                  headers: requestHeaders,
+                });
+              },
+            },
+          }
+        : {}),
+    };
+  }
+
+  return servers;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function isSerializableMcpServer(value: unknown): value is SerializableMcpServer {
+  if (!isRecord(value) || typeof value.transport !== 'string') {
+    return false;
+  }
+
+  if (value.transport === 'stdio') {
+    return (
+      typeof value.command === 'string'
+      && Array.isArray(value.args)
+      && value.args.every((entry) => typeof entry === 'string')
+      && (value.env === undefined || isStringRecord(value.env))
+    );
+  }
+
+  if (value.transport === 'http' || value.transport === 'sse') {
+    return typeof value.url === 'string' && (value.headers === undefined || isStringRecord(value.headers));
+  }
+
+  return false;
+}
+
+function isWrapperInput(value: unknown): value is WrapperInput {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  if (
+    typeof value.prompt !== 'string'
+    || typeof value.systemPrompt !== 'string'
+    || typeof value.cwd !== 'string'
+    || typeof value.model !== 'string'
+    || typeof value.baseUrl !== 'string'
+  ) {
+    return false;
+  }
+
+  if (value.apiKey !== undefined && typeof value.apiKey !== 'string') {
+    return false;
+  }
+
+  if (value.providerId !== undefined && typeof value.providerId !== 'string') {
+    return false;
+  }
+
+  if (value.headers !== undefined && !isStringRecord(value.headers)) {
+    return false;
+  }
+
+  if (!isRecord(value.mcpServers)) {
+    return false;
+  }
+
+  if (value.streamEvents !== undefined && typeof value.streamEvents !== 'boolean') {
+    return false;
+  }
+
+  if (value.outputFilePath !== undefined && typeof value.outputFilePath !== 'string') {
+    return false;
+  }
+
+  return Object.values(value.mcpServers).every(isSerializableMcpServer);
+}
+
+void main();

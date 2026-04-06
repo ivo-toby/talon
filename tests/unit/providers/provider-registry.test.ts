@@ -23,11 +23,16 @@ describe('ProviderRegistry', () => {
         'codex-cli': makeProviderConfig({
           command: 'codex',
         }),
+        'openai-compatible': makeProviderConfig({
+          enabled: false,
+          command: 'node',
+        }),
       },
       {
         'claude-code': () => ({ name: 'claude-code' }) as any,
         'gemini-cli': () => ({ name: 'gemini-cli' }) as any,
         'codex-cli': () => ({ name: 'codex-cli' }) as any,
+        'openai-compatible': () => ({ name: 'openai-compatible' }) as any,
       },
     );
 
@@ -116,6 +121,10 @@ describe('ProviderRegistry', () => {
         'codex-cli': makeProviderConfig({
           command: 'codex',
         }),
+        'openai-compatible': makeProviderConfig({
+          enabled: false,
+          command: 'node',
+        }),
         'grok-cli': makeProviderConfig({
           enabled: false,
           command: 'grok',
@@ -126,6 +135,7 @@ describe('ProviderRegistry', () => {
         'claude-code': () => ({ name: 'claude-code' }) as any,
         'gemini-cli': () => ({ name: 'gemini-cli' }) as any,
         'codex-cli': () => ({ name: 'codex-cli' }) as any,
+        'openai-compatible': () => ({ name: 'openai-compatible' }) as any,
         'grok-cli': () => ({ name: 'grok-cli' }) as any,
       },
     );

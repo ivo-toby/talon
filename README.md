@@ -52,7 +52,7 @@ It is built for single-user or small-team deployments where you want persistent,
 
 Agent execution is decoupled from any specific SDK or CLI. A provider layer sits between the daemon core and the actual model runtime, so swapping or adding providers doesn't require changes to the runner, queue, or context management.
 
-Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI plus Codex CLI are supported.
+Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI, Codex CLI are supported as first-class providers. An **experimental** OpenAI-compatible provider (Mastra-backed) is available for Ollama, vLLM, Groq, and other OpenAI-compatible endpoints.
 
 This matters because it means you can:
 
@@ -87,6 +87,20 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gpt-5.4
+    openai-compatible:                         # experimental
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 backgroundAgent:
   enabled: true
@@ -103,6 +117,14 @@ backgroundAgent:
       contextWindowTokens: 400000
       options:
         defaultModel: gpt-5.4
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 ```
 
 ### Infrastructure
@@ -348,6 +370,20 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
+    openai-compatible:                         # experimental
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 logLevel: info
 dataDir: data
@@ -416,7 +452,14 @@ backgroundAgent:
   enabled: true
   maxConcurrent: 3
   defaultTimeoutMinutes: 30
-  claudePath: claude # legacy shortcut for claude-code; prefer defaultProvider + providers
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+    # Any of the other providers (gemini-cli, codex-cli, openai-compatible)
+    # can be enabled here the same way they are in `agentRunner.providers`.
 ```
 
 | Option                  | Meaning                                                          |
@@ -424,7 +467,36 @@ backgroundAgent:
 | `enabled`               | Globally enable or disable background workers                    |
 | `maxConcurrent`         | Maximum number of background provider workers allowed at once    |
 | `defaultTimeoutMinutes` | Default wall-clock timeout when a tool call does not provide one |
-| `claudePath`            | Legacy shortcut for the `claude-code` provider command path      |
+| `defaultProvider`       | Provider used for tasks that do not specify one explicitly       |
+| `providers`             | Per-provider config; mirrors `agentRunner.providers`             |
+
+##### Using `openai-compatible` for background agents
+
+`openai-compatible` (**experimental**) works as a background provider alongside the foreground `agentRunner` entry. Add it under `backgroundAgent.providers` the same way you would for the main agent:
+
+```yaml
+backgroundAgent:
+  enabled: true
+  maxConcurrent: 2
+  defaultTimeoutMinutes: 30
+  defaultProvider: openai-compatible     # or keep claude-code and opt in per task
+  providers:
+    openai-compatible:
+      enabled: true
+      command: node                      # the bundled wrapper runs under node
+      contextWindowTokens: 256000
+      options:
+        baseUrl: ${OLLAMA_BASE_URL}      # e.g. https://ollama.com/v1
+        defaultModel: ${OLLAMA_AGENT_MODEL}
+        providerId: ollama               # triggers auth.providers.ollama lookup
+```
+
+Notes:
+
+- **Credentials are shared.** The background factory resolves them the same way the foreground one does — `auth.providers.<options.providerId>` first (e.g. `auth.providers.ollama`), falling back to `auth.providers.openai-compatible`. Nothing extra under `auth:` is needed if the agentRunner entry already works.
+- **Background runs don't stream.** The wrapper still runs Mastra's streaming API internally, but only emits a terminal summary on stdout and writes the full response to a temp `last-message.txt` file. This bypasses the 100 KB stdout buffer cap, so long outputs are never truncated.
+- **Tool calls still execute.** The background worker uses the same filtered host-tools MCP bridge as `claude-code`/`codex-cli` background workers; per-persona capabilities apply. Tool-call messages just aren't streamed to a channel because background runs don't have a live connection.
+- **Per-task override.** If you'd rather keep `defaultProvider: claude-code` and only route specific tasks through `openai-compatible`, pass the provider explicitly when dispatching the background task (same mechanism as routing to `codex-cli`).
 
 To let a persona use the feature, grant `subagent.background`:
 
@@ -1489,6 +1561,28 @@ npx talonctl set-default-provider --name gemini-cli --context agent-runner
 npx talonctl test-provider --name gemini-cli
 ```
 
+For `openai-compatible` (**experimental**), add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
+
+> **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, `maxSteps` override for tool-call limits, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
+
+##### Prompt caching with `openai-compatible`
+
+The provider already reads `prompt_tokens_details.cached_tokens` from the upstream response (via Mastra / the AI SDK), maps it onto `cacheReadTokens` in the run's `AgentUsage`, and exposes all four cache metrics — `input_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cache_total_input_tokens` — to the context roller and Langfuse observations. That means you can set `contextManagement.triggerMetric: cache_read_input_tokens` the same way as for `claude-code` or `codex-cli`, and prompt-cache hits will show up in the dashboard.
+
+Whether you actually see non-zero cache counts depends entirely on the **upstream server**, not on Talon:
+
+| Endpoint                                     | Emits cached token counts? |
+| -------------------------------------------- | -------------------------- |
+| OpenAI (`api.openai.com/v1`)                 | ✅ yes, automatic           |
+| DeepSeek (`api.deepseek.com/v1`)             | ✅ yes                      |
+| Zhipu GLM-4.5 / GLM-5 (`open.bigmodel.cn`)   | ✅ yes (paid tier)          |
+| vLLM (`--enable-prefix-caching`)             | ✅ yes                      |
+| OpenRouter                                   | depends on underlying model |
+| **Ollama (self-hosted or Cloud)**            | ❌ no — KV-cache is internal, not surfaced in the OpenAI-compatible usage object |
+| Groq / Together / Fireworks                  | ❌ no                       |
+
+If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens` will stay at 0 and `cache_creation_input_tokens` will equal `input_tokens` — that is the expected degradation, not a bug. Use `triggerMetric: input_tokens` for those endpoints.
+
 ### Scheduling
 
 | Command | Description |
@@ -2184,6 +2278,29 @@ npm run format         # Prettier
 ```bash
 npm run dev            # tsx watch mode with auto-reload
 ```
+
+### Troubleshooting: `better-sqlite3` bindings error
+
+If you see an error like:
+
+```
+Error: Could not locate the bindings file. Tried:
+ → .../node_modules/better-sqlite3/build/Release/better_sqlite3.node
+ ...
+```
+
+…the native module needs to be rebuilt for your current Node version. This
+commonly happens after a Node upgrade or a fresh `npm install` where
+`prebuild-install` reports success but does not produce a usable binary.
+
+Rebuild from source:
+
+```bash
+npm run rebuild:sqlite
+```
+
+This runs `node-gyp rebuild --release` inside `node_modules/better-sqlite3`,
+which is more reliable than `npm rebuild better-sqlite3`.
 
 ---
 

@@ -157,6 +157,20 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gpt-5.4
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 backgroundAgent:
   enabled: true
@@ -180,6 +194,20 @@ backgroundAgent:
       contextWindowTokens: 400000
       options:
         defaultModel: gpt-5.4
+    # OpenAI-compatible endpoints (Ollama, Groq, Together, vLLM, …). The
+    # wrapper spawns under `node` and reads credentials from the shared
+    # auth.providers.<providerId> slot (same as the agentRunner entry above),
+    # so no extra auth entries are needed. Streaming is intentionally off in
+    # background mode — the wrapper writes the full response to a temp file
+    # to bypass the 100 KB stdout buffer cap.
+    openai-compatible:
+      enabled: false
+      command: node
+      contextWindowTokens: 256000
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 scheduler:
   tickIntervalMs: 5000
@@ -194,6 +222,17 @@ auth:
     openai:
       apiKey: ${OPENAI_API_KEY}
       # baseURL: https://api.openai.com/v1
+    # Credentials for the `openai-compatible` agent provider are looked up
+    # under auth.providers.<options.providerId> first (e.g. `ollama`, `groq`,
+    # `together`), so the same slot can be reused by the matching sub-agent.
+    # Falls back to `auth.providers.openai-compatible` for endpoints without
+    # a natural provider id.
+    # ollama:
+    #   apiKey: ${OLLAMA_API_KEY}
+    #   baseURL: https://ollama.com/v1
+    # openai-compatible:
+    #   apiKey: ${OPENAI_COMPATIBLE_API_KEY}
+    #   baseURL: https://example.com/v1
     # google:
     #   apiKey: ${GOOGLE_AI_API_KEY}
     #

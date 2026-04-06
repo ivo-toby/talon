@@ -112,6 +112,44 @@ describe('ContextAssembler', () => {
     expect(result.text.match(/## Previous Context/g)?.length).toBe(1);
   });
 
+  it('fetches ALL messages when no summary exists (context grows toward rotation threshold)', () => {
+    const findLatestByThread = vi.fn().mockReturnValue(ok([
+      { direction: 'inbound', content: JSON.stringify({ body: 'msg 1' }) },
+      { direction: 'outbound', content: JSON.stringify({ body: 'reply 1' }) },
+      { direction: 'inbound', content: JSON.stringify({ body: 'msg 2' }) },
+    ]));
+    const deps = makeDeps({
+      messageRepo: { findLatestByThread } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    assembler.assemble('thread-1', 2);
+
+    // recentMessageLimit=2, but no summary → assembler should use the
+    // pre-summary cap (50) instead of the configured limit (2).
+    expect(findLatestByThread).toHaveBeenCalledWith('thread-1', 50);
+  });
+
+  it('caps messages to recentMessageLimit when a summary exists (post-rotation)', () => {
+    const findLatestByThread = vi.fn().mockReturnValue(ok([
+      { direction: 'inbound', content: JSON.stringify({ body: 'recent msg' }) },
+    ]));
+    const deps = makeDeps({
+      memoryRepo: {
+        findByThread: vi.fn().mockReturnValue(ok([
+          { id: 'sum-1', type: 'summary', content: 'Session summary.', created_at: 1000 },
+        ])),
+      } as any,
+      messageRepo: { findLatestByThread } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    assembler.assemble('thread-1', 5);
+
+    // Summary exists → assembler should cap at the configured limit.
+    expect(findLatestByThread).toHaveBeenCalledWith('thread-1', 5);
+  });
+
   it('handles non-JSON message content', () => {
     const deps = makeDeps({
       messageRepo: {

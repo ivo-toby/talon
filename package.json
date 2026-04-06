@@ -20,7 +20,8 @@
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
     "talond": "node dist/index.js",
     "talonctl": "node dist/cli/index.js",
-    "migrate": "node dist/cli/index.js migrate"
+    "migrate": "node dist/cli/index.js migrate",
+    "rebuild:sqlite": "cd node_modules/better-sqlite3 && node-gyp rebuild --release"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.58",
@@ -32,6 +33,8 @@
     "@fly/sprites": "^0.0.1",
     "@langfuse/otel": "^5.0.1",
     "@langfuse/tracing": "^5.0.1",
+    "@mastra/core": "^1.22.0",
+    "@mastra/mcp": "^1.4.1",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",

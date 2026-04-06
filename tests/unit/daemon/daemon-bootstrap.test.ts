@@ -763,6 +763,237 @@ describe('bootstrap', () => {
       );
     });
 
+    it('registers openai-compatible when enabled as the default provider in both registries', async () => {
+      setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            agentRunner: {
+              defaultProvider: 'openai-compatible',
+              providers: {
+                'claude-code': {
+                  ...makeAgentRunnerProviderConfig(),
+                },
+                'openai-compatible': {
+                  ...makeAgentRunnerProviderConfig({
+                    command: 'node',
+                    contextWindowTokens: 256000,
+                    contextManagement: makeContextManagementConfig({
+                      triggerMetric: 'input_tokens',
+                      thresholdRatio: 0.75,
+                    }),
+                  }),
+                  options: {
+                    defaultModel: 'qwen3-coder:30b',
+                    baseUrl: 'http://127.0.0.1:11434/v1',
+                  },
+                },
+              },
+            },
+            backgroundAgent: {
+              enabled: true,
+              maxConcurrent: 3,
+              defaultTimeoutMinutes: 30,
+              defaultProvider: 'openai-compatible',
+              providers: {
+                'claude-code': {
+                  ...makeBackgroundProviderConfig(),
+                },
+                'openai-compatible': {
+                  ...makeBackgroundProviderConfig({
+                    command: 'node',
+                    contextWindowTokens: 256000,
+                  }),
+                  options: {
+                    defaultModel: 'qwen3-coder:30b',
+                    baseUrl: 'http://127.0.0.1:11434/v1',
+                  },
+                },
+              },
+            },
+          }) as any,
+        ),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      expect(ctx.providerRegistry.get('openai-compatible')?.provider.name).toBe(
+        'openai-compatible',
+      );
+      expect(ctx.providerRegistry.getDefault(['openai-compatible'])?.provider.name).toBe(
+        'openai-compatible',
+      );
+
+      const backgroundProviderRegistry = vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0]
+        .providerRegistry;
+      expect(backgroundProviderRegistry.get('openai-compatible')?.provider.name).toBe(
+        'openai-compatible',
+      );
+      expect(backgroundProviderRegistry.getDefault(['openai-compatible'])?.provider.name).toBe(
+        'openai-compatible',
+      );
+      expect(BackgroundAgentManager).toHaveBeenCalledWith(
+        expect.objectContaining({
+          defaultProvider: 'openai-compatible',
+        }),
+      );
+    });
+
+    it('passes auth.providers["openai-compatible"] credentials to the provider as runtime fallback', async () => {
+      setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            auth: {
+              mode: 'subscription',
+              providers: {
+                'openai-compatible': {
+                  apiKey: 'ollama-cloud-key',
+                  baseURL: 'https://ollama.com/v1',
+                },
+              },
+            },
+            agentRunner: {
+              defaultProvider: 'openai-compatible',
+              providers: {
+                'claude-code': {
+                  ...makeAgentRunnerProviderConfig(),
+                },
+                // Intentionally omit options.baseUrl so the provider must
+                // fall back to auth.providers['openai-compatible'].baseURL.
+                'openai-compatible': {
+                  ...makeAgentRunnerProviderConfig({
+                    command: 'node',
+                    contextWindowTokens: 256000,
+                  }),
+                  options: {
+                    defaultModel: 'qwen3.5:cloud',
+                    providerId: 'ollama',
+                  },
+                },
+              },
+            },
+            backgroundAgent: {
+              enabled: true,
+              maxConcurrent: 3,
+              defaultTimeoutMinutes: 30,
+              defaultProvider: 'claude-code',
+              providers: {
+                'claude-code': {
+                  ...makeBackgroundProviderConfig(),
+                },
+              },
+            },
+          }) as any,
+        ),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      const entry = ctx.providerRegistry.get('openai-compatible');
+      expect(entry).toBeDefined();
+
+      const prepared = entry!.provider.prepareBackgroundInvocation!({
+        prompt: 'hello',
+        systemPrompt: 'system',
+        mcpServers: {},
+        cwd: '/tmp',
+        timeoutMs: 60_000,
+        model: undefined,
+      });
+
+      expect(prepared.isOk()).toBe(true);
+      const payload = JSON.parse(prepared._unsafeUnwrap().stdin!) as {
+        baseUrl: string;
+        apiKey: string;
+      };
+      expect(payload.baseUrl).toBe('https://ollama.com/v1');
+      expect(payload.apiKey).toBe('ollama-cloud-key');
+    });
+
+    it('prefers auth.providers.<options.providerId> credentials over the openai-compatible fallback', async () => {
+      setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            auth: {
+              mode: 'subscription',
+              providers: {
+                // Natural provider slot (shared with the ollama sub-agent).
+                ollama: {
+                  apiKey: 'ollama-natural-key',
+                  baseURL: 'https://ollama.com/v1',
+                },
+                // Dedicated fallback slot — should NOT be picked when the
+                // providerId-keyed slot exists.
+                'openai-compatible': {
+                  apiKey: 'should-not-be-used',
+                  baseURL: 'https://should-not-be-used.test/v1',
+                },
+              },
+            },
+            agentRunner: {
+              defaultProvider: 'openai-compatible',
+              providers: {
+                'claude-code': {
+                  ...makeAgentRunnerProviderConfig(),
+                },
+                'openai-compatible': {
+                  ...makeAgentRunnerProviderConfig({
+                    command: 'node',
+                    contextWindowTokens: 256000,
+                  }),
+                  options: {
+                    defaultModel: 'qwen3.5:cloud',
+                    providerId: 'ollama',
+                  },
+                },
+              },
+            },
+            backgroundAgent: {
+              enabled: true,
+              maxConcurrent: 3,
+              defaultTimeoutMinutes: 30,
+              defaultProvider: 'claude-code',
+              providers: {
+                'claude-code': {
+                  ...makeBackgroundProviderConfig(),
+                },
+              },
+            },
+          }) as any,
+        ),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      const entry = ctx.providerRegistry.get('openai-compatible');
+      expect(entry).toBeDefined();
+
+      const prepared = entry!.provider.prepareBackgroundInvocation!({
+        prompt: 'hello',
+        systemPrompt: 'system',
+        mcpServers: {},
+        cwd: '/tmp',
+        timeoutMs: 60_000,
+        model: undefined,
+      });
+
+      expect(prepared.isOk()).toBe(true);
+      const payload = JSON.parse(prepared._unsafeUnwrap().stdin!) as {
+        baseUrl: string;
+        apiKey: string;
+      };
+      expect(payload.baseUrl).toBe('https://ollama.com/v1');
+      expect(payload.apiKey).toBe('ollama-natural-key');
+    });
+
     it('calls registerChannels during bootstrap', async () => {
       setupSuccessfulMocks();
 
