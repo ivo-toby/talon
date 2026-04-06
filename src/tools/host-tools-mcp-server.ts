@@ -309,14 +309,15 @@ const TOOLS = [
   },
   {
     name: 'memory_access',
-    description: 'Reads from or writes to the per-thread layered memory store.',
+    description:
+      'Reads from or writes to the per-thread layered memory store. Use operation "read" to retrieve a key, "write" to store a value, "delete" to remove a key, or "list" to enumerate all items.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         operation: {
           type: 'string' as const,
           enum: ['read', 'write', 'delete', 'list'],
-          description: 'Operation to perform',
+          description: 'Operation to perform: "read", "write", "delete", or "list"',
         },
         key: {
           type: 'string' as const,
