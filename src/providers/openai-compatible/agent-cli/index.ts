@@ -187,7 +187,10 @@ async function main(): Promise<void> {
       tools: mcpTools,
     });
 
-    const stream = await agent.stream(input.prompt);
+    // Mastra's default stopWhen is stepCountIs(5), which stalls the stream
+    // after ~5 tool calls. Match the agent-runner's maxTurns (default 25)
+    // so the agent can do meaningful multi-tool work.
+    const stream = await agent.stream(input.prompt, { maxSteps: 25 });
     const shouldStream = input.streamEvents !== false;
     let streamedUsage: UsageSnapshot | undefined;
 
