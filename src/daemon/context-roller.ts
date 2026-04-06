@@ -85,10 +85,10 @@ export class ContextRoller {
     contextUsage: ResolvedContextUsage,
     overrideThreshold?: number,
     summarizerName: string = 'session-summarizer',
-  ): Promise<void> {
+  ): Promise<boolean> {
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
     if (contextUsage.ratio < threshold) {
-      return;
+      return false;
     }
 
     this.deps.logger.info(
@@ -103,13 +103,13 @@ export class ContextRoller {
         { threadId, error: messagesResult.error.message },
         'context-roller: failed to read messages, skipping rotation',
       );
-      return;
+      return false;
     }
 
     const messages = messagesResult.value;
     if (messages.length === 0) {
       this.deps.logger.warn({ threadId }, 'context-roller: no messages found, skipping rotation');
-      return;
+      return false;
     }
 
     const transcript = this.buildTranscript(messages, MAX_TRANSCRIPT_CHARS);
@@ -121,7 +121,7 @@ export class ContextRoller {
         { threadId, summarizer: summarizerName },
         'context-roller: summarizer not available, keeping current session',
       );
-      return;
+      return false;
     }
 
     // 2. Call pre-bound summarizer (model, prompt, and services captured at bootstrap).
@@ -136,7 +136,7 @@ export class ContextRoller {
         { threadId, error: summaryResult.error.message },
         'context-roller: summarization failed, keeping current session',
       );
-      return;
+      return false;
     }
 
     const summary = summaryResult.value;
@@ -191,7 +191,7 @@ export class ContextRoller {
     }
 
     if (preparationFailed) {
-      return;
+      return false;
     }
 
     // 4. Build summary content. Always include keyFacts as a safety net —
@@ -247,7 +247,7 @@ export class ContextRoller {
         { threadId, error: txResult.error.message },
         'context-roller: rotation transaction failed — all writes rolled back, keeping current session',
       );
-      return;
+      return false;
     }
 
     if (pendingUpdates.length > 0) {
@@ -264,6 +264,8 @@ export class ContextRoller {
       { threadId, messageCount: messages.length, summaryLength: summaryContent.length },
       'context-roller: session rotated successfully',
     );
+
+    return true;
   }
 
   /**
