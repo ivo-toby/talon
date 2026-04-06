@@ -937,7 +937,7 @@ export class AgentRunner {
               } else {
                 try {
                   if (selectedMetricValue > 0) {
-                    const rotated = await this.ctx.contextRoller.checkAndRotate(
+                    const rotation = await this.ctx.contextRoller.checkAndRotate(
                       item.threadId,
                       personaId,
                       {
@@ -952,10 +952,16 @@ export class AgentRunner {
 
                     // For stateless providers (no session resumption), the agent
                     // loses its in-progress task state after context rotation.
-                    // Auto-enqueue a continuation message so the agent picks up
-                    // open threads from the summary without requiring a manual
-                    // "resume" nudge from the user.
-                    if (rotated && !strategy.supportsSessionResumption && !isA2ATask && item.type !== 'schedule') {
+                    // Only auto-enqueue a continuation when the summarizer found
+                    // open threads — otherwise the task was complete and a
+                    // "continue" would cause the agent to invent work.
+                    if (
+                      rotation.rotated
+                      && rotation.hasOpenThreads
+                      && !strategy.supportsSessionResumption
+                      && !isA2ATask
+                      && item.type !== 'schedule'
+                    ) {
                       const continueMessageId = uuidv4();
                       this.ctx.repos.message.insert({
                         id: continueMessageId,
