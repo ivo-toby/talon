@@ -52,7 +52,7 @@ It is built for single-user or small-team deployments where you want persistent,
 
 Agent execution is decoupled from any specific SDK or CLI. A provider layer sits between the daemon core and the actual model runtime, so swapping or adding providers doesn't require changes to the runner, queue, or context management.
 
-Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI, Codex CLI, plus an OpenAI-compatible Mastra wrapper are supported as first-class providers.
+Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI, Codex CLI are supported as first-class providers. An **experimental** OpenAI-compatible provider (Mastra-backed) is available for Ollama, vLLM, Groq, and other OpenAI-compatible endpoints.
 
 This matters because it means you can:
 
@@ -87,7 +87,7 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gpt-5.4
-    openai-compatible:
+    openai-compatible:                         # experimental
       enabled: false
       command: node
       contextWindowTokens: 256000
@@ -370,7 +370,7 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
-    openai-compatible:
+    openai-compatible:                         # experimental
       enabled: false
       command: node
       contextWindowTokens: 256000
@@ -472,7 +472,7 @@ backgroundAgent:
 
 ##### Using `openai-compatible` for background agents
 
-`openai-compatible` works as a background provider alongside the foreground `agentRunner` entry. Add it under `backgroundAgent.providers` the same way you would for the main agent:
+`openai-compatible` (**experimental**) works as a background provider alongside the foreground `agentRunner` entry. Add it under `backgroundAgent.providers` the same way you would for the main agent:
 
 ```yaml
 backgroundAgent:
@@ -1443,7 +1443,9 @@ npx talonctl set-default-provider --name gemini-cli --context agent-runner
 npx talonctl test-provider --name gemini-cli
 ```
 
-For `openai-compatible`, add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
+For `openai-compatible` (**experimental**), add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
+
+> **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, `maxSteps` override for tool-call limits, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
 
 ##### Prompt caching with `openai-compatible`
 
