@@ -65,11 +65,16 @@ export class ContextAssembler {
     // 2. Get recent messages for immediate conversational context.
     // When a summary exists (post-rotation), cap at recentMessageLimit to
     // keep total size manageable — the summary already compresses older
-    // history. When NO summary exists yet, include all available messages
-    // so the context grows toward the rotation threshold naturally.
+    // history. When NO summary exists yet, use a higher cap so context
+    // grows toward the rotation threshold naturally. We cap at 50 rather
+    // than unlimited to avoid overwhelming the model with history it may
+    // misinterpret as new instructions — 50 recent messages is enough to
+    // fill a 256K context window toward a 0.75 threshold before rotation
+    // kicks in, without dumping the entire thread verbatim.
+    const PRE_SUMMARY_MESSAGE_CAP = 50;
     const effectiveLimit = summaryFound
       ? recentMessageLimit
-      : Number.MAX_SAFE_INTEGER;
+      : Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP);
 
     const messagesResult = this.deps.messageRepo.findLatestByThread(
       threadId,

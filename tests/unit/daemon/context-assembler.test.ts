@@ -125,9 +125,9 @@ describe('ContextAssembler', () => {
     const assembler = new ContextAssembler(deps);
     assembler.assemble('thread-1', 2);
 
-    // recentMessageLimit=2, but no summary → assembler should request
-    // all messages (Number.MAX_SAFE_INTEGER), not just the last 2.
-    expect(findLatestByThread).toHaveBeenCalledWith('thread-1', Number.MAX_SAFE_INTEGER);
+    // recentMessageLimit=2, but no summary → assembler should use the
+    // pre-summary cap (50) instead of the configured limit (2).
+    expect(findLatestByThread).toHaveBeenCalledWith('thread-1', 50);
   });
 
   it('caps messages to recentMessageLimit when a summary exists (post-rotation)', () => {
