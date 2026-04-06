@@ -49,6 +49,14 @@ export type SummarizerRunFn = (
   input: { transcript: string },
 ) => Promise<Result<SubAgentResult, SubAgentError>>;
 
+/** Result of a successful context rotation. */
+export interface ContextRotationResult {
+  /** Whether the session was actually rotated. */
+  rotated: boolean;
+  /** Whether the summarizer found unfinished work (open threads). */
+  hasOpenThreads: boolean;
+}
+
 export interface ContextRollerDeps {
   messageRepo: Pick<MessageRepository, 'findLatestByThread'>;
   memoryRepo: Pick<MemoryRepository, 'insert' | 'findById' | 'upsertByKey' | 'delete' | 'runInTransaction'>;
@@ -85,10 +93,11 @@ export class ContextRoller {
     contextUsage: ResolvedContextUsage,
     overrideThreshold?: number,
     summarizerName: string = 'session-summarizer',
-  ): Promise<boolean> {
+  ): Promise<ContextRotationResult> {
+    const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
     if (contextUsage.ratio < threshold) {
-      return false;
+      return noRotation;
     }
 
     this.deps.logger.info(
@@ -103,13 +112,13 @@ export class ContextRoller {
         { threadId, error: messagesResult.error.message },
         'context-roller: failed to read messages, skipping rotation',
       );
-      return false;
+      return noRotation;
     }
 
     const messages = messagesResult.value;
     if (messages.length === 0) {
       this.deps.logger.warn({ threadId }, 'context-roller: no messages found, skipping rotation');
-      return false;
+      return noRotation;
     }
 
     const transcript = this.buildTranscript(messages, MAX_TRANSCRIPT_CHARS);
@@ -121,7 +130,7 @@ export class ContextRoller {
         { threadId, summarizer: summarizerName },
         'context-roller: summarizer not available, keeping current session',
       );
-      return false;
+      return noRotation;
     }
 
     // 2. Call pre-bound summarizer (model, prompt, and services captured at bootstrap).
@@ -136,7 +145,7 @@ export class ContextRoller {
         { threadId, error: summaryResult.error.message },
         'context-roller: summarization failed, keeping current session',
       );
-      return false;
+      return noRotation;
     }
 
     const summary = summaryResult.value;
@@ -191,7 +200,7 @@ export class ContextRoller {
     }
 
     if (preparationFailed) {
-      return false;
+      return noRotation;
     }
 
     // 4. Build summary content. Always include keyFacts as a safety net —
@@ -247,7 +256,7 @@ export class ContextRoller {
         { threadId, error: txResult.error.message },
         'context-roller: rotation transaction failed — all writes rolled back, keeping current session',
       );
-      return false;
+      return noRotation;
     }
 
     if (pendingUpdates.length > 0) {
@@ -265,7 +274,8 @@ export class ContextRoller {
       'context-roller: session rotated successfully',
     );
 
-    return true;
+    const hasOpenThreads = (data?.openThreads ?? []).length > 0;
+    return { rotated: true, hasOpenThreads };
   }
 
   /**
