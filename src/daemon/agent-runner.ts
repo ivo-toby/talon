@@ -937,7 +937,7 @@ export class AgentRunner {
               } else {
                 try {
                   if (selectedMetricValue > 0) {
-                    await this.ctx.contextRoller.checkAndRotate(
+                    const rotated = await this.ctx.contextRoller.checkAndRotate(
                       item.threadId,
                       personaId,
                       {
@@ -949,6 +949,41 @@ export class AgentRunner {
                       enabledContextManagement.thresholdRatio,
                       enabledContextManagement.summarizer,
                     );
+
+                    // For stateless providers (no session resumption), the agent
+                    // loses its in-progress task state after context rotation.
+                    // Auto-enqueue a continuation message so the agent picks up
+                    // open threads from the summary without requiring a manual
+                    // "resume" nudge from the user.
+                    if (rotated && !strategy.supportsSessionResumption && !isA2ATask && item.type !== 'schedule') {
+                      const continueMessageId = uuidv4();
+                      this.ctx.repos.message.insert({
+                        id: continueMessageId,
+                        thread_id: item.threadId,
+                        direction: 'inbound',
+                        content: JSON.stringify({ body: 'continue' }),
+                        idempotency_key: `context-rotation-continue:${runId}`,
+                        provider_id: null,
+                        run_id: null,
+                      });
+                      const enqueueResult = this.ctx.queueManager.enqueue(
+                        item.threadId,
+                        'message',
+                        { personaId, content: 'continue' },
+                        continueMessageId,
+                      );
+                      if (enqueueResult.isOk()) {
+                        this.ctx.logger.info(
+                          { threadId: item.threadId, provider: providerEntry.provider.name },
+                          'agent-runner: auto-enqueued continuation after context rotation for stateless provider',
+                        );
+                      } else {
+                        this.ctx.logger.warn(
+                          { threadId: item.threadId, err: enqueueResult.error.message },
+                          'agent-runner: failed to auto-enqueue continuation after context rotation',
+                        );
+                      }
+                    }
                   }
                 } catch (e: unknown) {
                   this.ctx.logger.error(
