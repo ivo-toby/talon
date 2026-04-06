@@ -37,6 +37,15 @@ export class ContextAssembler {
   /**
    * Assemble previous context for a fresh session.
    *
+   * @param recentMessageLimit — the number of recent messages to include
+   *   after a summary exists (post-rotation). When no summary exists yet,
+   *   we include ALL available messages so the context window fills up
+   *   naturally — this is essential for stateless providers (like
+   *   openai-compatible) where every turn is a fresh session and the only
+   *   way for context to grow toward the rotation threshold is to replay
+   *   the full thread history. Once rotation fires and a summary is
+   *   written, subsequent turns get summary + last N instead.
+   *
    * Returns a markdown string and metadata for observability.
    */
   assemble(threadId: string, recentMessageLimit: number): AssembledContext {
@@ -54,9 +63,17 @@ export class ContextAssembler {
     }
 
     // 2. Get recent messages for immediate conversational context.
+    // When a summary exists (post-rotation), cap at recentMessageLimit to
+    // keep total size manageable — the summary already compresses older
+    // history. When NO summary exists yet, include all available messages
+    // so the context grows toward the rotation threshold naturally.
+    const effectiveLimit = summaryFound
+      ? recentMessageLimit
+      : Number.MAX_SAFE_INTEGER;
+
     const messagesResult = this.deps.messageRepo.findLatestByThread(
       threadId,
-      recentMessageLimit,
+      effectiveLimit,
     );
     if (messagesResult.isOk() && messagesResult.value.length > 0) {
       const formatted = this.formatMessages(messagesResult.value);
