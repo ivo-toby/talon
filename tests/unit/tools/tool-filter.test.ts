@@ -7,6 +7,7 @@ import {
   extractCapabilityPrefix,
   filterAllowedMcpTools,
   filterAllowedTools,
+  getToolPolicyDecision,
   isToolAllowed,
   ALL_HOST_TOOLS,
 } from '../../../src/tools/tool-filter.js';
@@ -235,6 +236,37 @@ describe('isToolAllowed', () => {
     for (const tool of ALL_HOST_TOOLS) {
       expect(isToolAllowed(tool, empty)).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getToolPolicyDecision
+// ---------------------------------------------------------------------------
+
+describe('getToolPolicyDecision', () => {
+  const caps: ResolvedCapabilities = {
+    allow: ['channel.send:TalonMain', 'memory.access'],
+    requireApproval: ['db.query'],
+  };
+
+  it('returns allow for directly allowed tools', () => {
+    expect(getToolPolicyDecision('channel.send', caps)).toBe('allow');
+    expect(getToolPolicyDecision('memory.access', caps)).toBe('allow');
+  });
+
+  it('returns require_approval for approval-gated tools', () => {
+    expect(getToolPolicyDecision('db.query', caps)).toBe('require_approval');
+  });
+
+  it('returns allow when a tool appears in both lists', () => {
+    expect(getToolPolicyDecision('db.query', {
+      allow: ['db.query'],
+      requireApproval: ['db.query'],
+    })).toBe('allow');
+  });
+
+  it('returns deny for disallowed tools', () => {
+    expect(getToolPolicyDecision('net.http', caps)).toBe('deny');
   });
 });
 

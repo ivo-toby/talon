@@ -24,7 +24,7 @@ import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
 import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/background-agent.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
-import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
+import { getToolPolicyDecision, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
@@ -287,7 +287,8 @@ export class HostToolsBridge {
           // will reject it here. Uses fail-closed semantics — if the persona
           // cannot be resolved, no tools are allowed.
           const resolvedCaps = this.resolvePersonaCapabilities(context.personaId);
-          if (!isToolAllowed(normalizedTool, resolvedCaps)) {
+          const policyDecision = getToolPolicyDecision(normalizedTool, resolvedCaps);
+          if (policyDecision === 'deny') {
             const toolResult: ToolCallResult = {
               requestId: context.requestId ?? 'unknown',
               tool: normalizedTool,
@@ -302,6 +303,25 @@ export class HostToolsBridge {
             this.ctx.logger.warn(
               { personaId: context.personaId, tool: normalizedTool },
               'host-tools-bridge: rejected disallowed tool call',
+            );
+            return toolResult;
+          }
+
+          if (policyDecision === 'require_approval') {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: `Tool "${normalizedTool}" requires approval for persona "${context.personaId}"`,
+            };
+            toolObservation.update({
+              output: toolResult,
+              level: 'ERROR',
+              statusMessage: toolResult.error,
+            });
+            this.ctx.logger.warn(
+              { personaId: context.personaId, tool: normalizedTool },
+              'host-tools-bridge: rejected approval-gated tool call without approval',
             );
             return toolResult;
           }

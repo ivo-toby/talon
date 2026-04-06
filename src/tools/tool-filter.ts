@@ -15,6 +15,7 @@
  */
 
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
+import type { PolicyDecision } from './tool-types.js';
 
 // ---------------------------------------------------------------------------
 // Capability-to-tool mapping
@@ -184,10 +185,10 @@ export function extractCapabilityPrefix(label: string): string | null {
  * Given resolved capabilities, returns the set of MCP tool names (underscore
  * format) that the persona is allowed to use.
  *
- * A tool is allowed if its corresponding capability prefix appears in either
- * the `allow` or `requireApproval` list. Tools in `requireApproval` are still
- * exposed (the agent can call them), but future enforcement at the bridge
- * level can gate execution with an approval step.
+ * A tool is exposed if its corresponding capability prefix appears in either
+ * the `allow` or `requireApproval` list. Tools in `requireApproval` remain
+ * discoverable so the agent can see that they exist, but execution must still
+ * be gated at dispatch time.
  *
  * If capabilities are empty (both allow and requireApproval are empty arrays),
  * no host tools are exposed — this is the secure default.
@@ -240,6 +241,9 @@ export function filterAllowedTools(capabilities: ResolvedCapabilities): string[]
  * Checks whether a specific tool (internal dot-notation name) is allowed
  * by the given capabilities. Uses direct lookup instead of recomputing the
  * full allowed set on each call.
+ *
+ * @deprecated Use `getToolPolicyDecision` for execution-time checks so
+ * approval-gated tools are not treated as directly allowed.
  */
 export function isToolAllowed(toolName: string, capabilities: ResolvedCapabilities): boolean {
   const allLabels = [...capabilities.allow, ...capabilities.requireApproval];
@@ -255,4 +259,44 @@ export function isToolAllowed(toolName: string, capabilities: ResolvedCapabiliti
   }
 
   return false;
+}
+
+/**
+ * Returns the execution policy decision for a host tool.
+ *
+ * - `allow` when the tool is backed by an `allow` capability
+ * - `require_approval` when it is only backed by a `requireApproval` capability
+ * - `deny` when no matching capability is present
+ */
+export function getToolPolicyDecision(
+  toolName: string,
+  capabilities: ResolvedCapabilities,
+): PolicyDecision {
+  let requiresApproval = false;
+
+  for (const label of capabilities.allow) {
+    const prefix = extractCapabilityPrefix(label);
+    if (prefix === null) continue;
+
+    const hasMatch = HOST_TOOL_REGISTRY.some(
+      (entry) => entry.capabilityPrefix === prefix && entry.internalName === toolName,
+    );
+    if (hasMatch) {
+      return 'allow';
+    }
+  }
+
+  for (const label of capabilities.requireApproval) {
+    const prefix = extractCapabilityPrefix(label);
+    if (prefix === null) continue;
+
+    const hasMatch = HOST_TOOL_REGISTRY.some(
+      (entry) => entry.capabilityPrefix === prefix && entry.internalName === toolName,
+    );
+    if (hasMatch) {
+      requiresApproval = true;
+    }
+  }
+
+  return requiresApproval ? 'require_approval' : 'deny';
 }

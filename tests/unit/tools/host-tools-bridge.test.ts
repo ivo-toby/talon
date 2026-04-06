@@ -589,6 +589,47 @@ describe('HostToolsBridge', () => {
       expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"error"');
     });
 
+    it('rejects tools that require approval before dispatching them', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: [
+            'schedule.manage',
+            'channel.send:*',
+            'memory.access',
+            'net.http',
+            'execution.env',
+            'subagent.background',
+          ],
+          requireApproval: ['db.query'],
+        },
+      } as any));
+
+      bridge = new HostToolsBridge(mockCtx);
+      const dispatchSpy = vi.spyOn(bridge as any, 'dispatch');
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-approval',
+          tool: 'db_query',
+          args: { sql: 'select 1' },
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-approval',
+          },
+        }),
+        socket,
+      );
+
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"error"');
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('requires approval');
+    });
+
     it('records a timeout as the final tool observation outcome', async () => {
       vi.useFakeTimers();
       try {
