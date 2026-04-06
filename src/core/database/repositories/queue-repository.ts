@@ -314,12 +314,13 @@ export class QueueRepository extends BaseRepository {
     try {
       const placeholders = statuses.map(() => '?').join(', ');
       const purgeTransaction = this.db.transaction(() => {
-        // Detach runs from queue items before deleting (FK constraint).
+        // Detach referencing rows before deleting (FK constraints without ON DELETE CASCADE).
         this.db.prepare(
           `UPDATE runs SET queue_item_id = NULL WHERE queue_item_id IN (SELECT id FROM queue_items WHERE status IN (${placeholders}))`,
         ).run(...statuses);
-        // Delete messages referencing these queue items' runs.
-        // (messages.run_id -> runs.id, but runs are kept — only queue_item_id is nulled)
+        this.db.prepare(
+          `UPDATE a2a_tasks SET queue_item_id = NULL WHERE queue_item_id IN (SELECT id FROM queue_items WHERE status IN (${placeholders}))`,
+        ).run(...statuses);
         const result = this.db.prepare(
           `DELETE FROM queue_items WHERE status IN (${placeholders})`,
         ).run(...statuses);
