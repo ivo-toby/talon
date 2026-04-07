@@ -289,16 +289,7 @@ export class ContextRoller {
     let totalChars = 0;
 
     for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      const role = msg.direction === 'inbound' ? 'User' : 'Assistant';
-      let body: string;
-      try {
-        const parsed = JSON.parse(msg.content);
-        body = typeof parsed.body === 'string' ? parsed.body : msg.content;
-      } catch {
-        body = msg.content;
-      }
-      const line = `${role}: ${body}`;
+      const line = formatMessageForTranscript(messages[i]);
 
       if (totalChars + line.length > maxChars && lines.length > 0) {
         break;
@@ -310,4 +301,60 @@ export class ContextRoller {
     // Reverse back to chronological order.
     return lines.reverse().join('\n');
   }
+}
+
+// ---------------------------------------------------------------------------
+// Message formatting (shared with context-assembler)
+// ---------------------------------------------------------------------------
+
+interface ToolActivityEntry {
+  tool: string;
+  input?: unknown;
+  output?: unknown;
+  isError?: boolean;
+}
+
+/**
+ * Format a single message row into a human-readable transcript line.
+ *
+ * Includes tool activity (calls + results) when present so the summarizer
+ * and the fresh-session context both capture what the agent actually did,
+ * not just the text it produced.
+ */
+export function formatMessageForTranscript(msg: MessageRow): string {
+  const role = msg.direction === 'inbound' ? 'User' : 'Assistant';
+  let body: string;
+  let toolActivity: ToolActivityEntry[] | undefined;
+
+  try {
+    const parsed = JSON.parse(msg.content);
+    body = typeof parsed.body === 'string' ? parsed.body : msg.content;
+    if (Array.isArray(parsed.toolActivity)) {
+      toolActivity = parsed.toolActivity;
+    }
+  } catch {
+    body = msg.content;
+  }
+
+  if (!toolActivity || toolActivity.length === 0) {
+    return `${role}: ${body}`;
+  }
+
+  // Build a compact tool activity section.
+  const toolLines = toolActivity.map((t) => {
+    const inputStr = t.input !== undefined ? ` input=${summarizeValue(t.input)}` : '';
+    const outputStr = t.output !== undefined ? ` → ${summarizeValue(t.output)}` : '';
+    const errorStr = t.isError ? ' [ERROR]' : '';
+    return `  [tool] ${t.tool}${inputStr}${outputStr}${errorStr}`;
+  });
+
+  return `${role}: ${body}\n${toolLines.join('\n')}`;
+}
+
+/** Truncate a value to a compact string for transcript inclusion. */
+function summarizeValue(value: unknown, maxLen = 200): string {
+  if (value === null || value === undefined) return '';
+  const str = typeof value === 'string' ? value : JSON.stringify(value);
+  if (str.length <= maxLen) return str;
+  return `${str.slice(0, maxLen)}…`;
 }

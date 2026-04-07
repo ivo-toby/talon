@@ -14,6 +14,7 @@
 
 import type { MessageRepository, MessageRow } from '../core/database/repositories/message-repository.js';
 import type { MemoryRepository } from '../core/database/repositories/memory-repository.js';
+import { formatMessageForTranscript } from './context-roller.js';
 
 export interface ContextAssemblerDeps {
   messageRepo: Pick<MessageRepository, 'findLatestByThread'>;
@@ -114,17 +115,7 @@ export class ContextAssembler {
 
   private formatMessages(messages: MessageRow[]): string {
     return messages
-      .map((msg) => {
-        const role = msg.direction === 'inbound' ? 'User' : 'Assistant';
-        let body: string;
-        try {
-          const parsed = JSON.parse(msg.content);
-          body = typeof parsed.body === 'string' ? parsed.body : msg.content;
-        } catch {
-          body = msg.content;
-        }
-        return `${role}: ${body}`;
-      })
+      .map((msg) => formatMessageForTranscript(msg))
       .join('\n');
   }
 }

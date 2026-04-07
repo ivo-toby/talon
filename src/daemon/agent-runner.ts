@@ -463,6 +463,7 @@ export class AgentRunner {
               fullOutputText: string;
               resultSessionId: string | undefined;
               usage: AgentUsage;
+              toolActivity: Array<{ tool: string; input?: unknown; output?: unknown; isError?: boolean }>;
             }> => {
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,
@@ -603,6 +604,10 @@ export class AgentRunner {
                   const activeProviderToolObservations = new Map<string, StartedObservationHandle>();
                   const ignoredProviderToolUseIds = new Set<string>();
                   const pendingProviderToolTasks: Array<Promise<void>> = [];
+                  // Collect tool activity for persistence in the outbound message.
+                  // Used by the context-roller and context-assembler to reconstruct
+                  // what the agent did (tool calls, results) after context rotation.
+                  const toolActivity: Array<{ tool: string; input?: unknown; output?: unknown; isError?: boolean }> = [];
                   // FIFO queue for tool events that lack a toolUseId (e.g. claude-code tool_use/tool_result
                   // streaming events). Events are sequential so FIFO order correctly pairs starts with ends.
                   const pendingNoIdToolObservations: StartedObservationHandle[] = [];
@@ -709,6 +714,24 @@ export class AgentRunner {
                             pendingNoIdToolObservations,
                             event,
                           );
+                          // Capture tool activity for the outbound message so the
+                          // context-roller and context-assembler can reconstruct
+                          // what the agent did after context rotation.
+                          if (isToolUse) {
+                            toolActivity.push({
+                              tool: event.tool ?? 'unknown',
+                              input: event.input,
+                            });
+                          } else if (event.messageType === 'tool_result') {
+                            // Attach result to the last matching tool call.
+                            const pending = [...toolActivity].reverse().find(
+                              (t) => t.output === undefined && (event.tool === undefined || t.tool === event.tool),
+                            );
+                            if (pending) {
+                              pending.output = event.output;
+                              pending.isError = event.isError;
+                            }
+                          }
                           this.ctx.logger.debug(
                             {
                               runId,
@@ -794,6 +817,7 @@ export class AgentRunner {
                     fullOutputText: fullOutputText.replace(/\n\n$/, ''),
                     resultSessionId,
                     usage,
+                    toolActivity,
                   };
                 },
               );
@@ -806,6 +830,7 @@ export class AgentRunner {
               inputTokens: 0,
               outputTokens: 0,
             };
+            let toolActivity: Array<{ tool: string; input?: unknown; output?: unknown; isError?: boolean }> = [];
 
             try {
               ({
@@ -813,6 +838,7 @@ export class AgentRunner {
                 fullOutputText,
                 resultSessionId,
                 usage,
+                toolActivity,
               } = await executeAgentQuery(existingSessionId));
             } catch (cause) {
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
@@ -830,6 +856,7 @@ export class AgentRunner {
                   fullOutputText,
                   resultSessionId,
                   usage,
+                  toolActivity,
                 } = await executeAgentQuery(undefined));
               } else {
                 throw cause;
@@ -908,7 +935,10 @@ export class AgentRunner {
                 id: uuidv4(),
                 thread_id: item.threadId,
                 direction: 'outbound',
-                content: JSON.stringify({ body: fullOutputText }),
+                content: JSON.stringify({
+                  body: fullOutputText,
+                  ...(toolActivity.length > 0 ? { toolActivity } : {}),
+                }),
                 idempotency_key: `outbound:${runId}`,
                 provider_id: null,
                 run_id: runId,
