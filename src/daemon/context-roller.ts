@@ -46,7 +46,7 @@ const MAX_TRANSCRIPT_CHARS = 100_000;
 export type SummarizerRunFn = (
   threadId: string,
   personaId: string,
-  input: { transcript: string },
+  input: Record<string, unknown>,
 ) => Promise<Result<SubAgentResult, SubAgentError>>;
 
 /** Result of a successful context rotation. */
@@ -57,12 +57,12 @@ export interface ContextRotationResult {
   hasOpenThreads: boolean;
 }
 
-/** Reflector function signature — receives the accumulated observation log. */
-export type ReflectorRunFn = (
-  threadId: string,
-  personaId: string,
-  input: { observationLog: string },
-) => Promise<Result<SubAgentResult, SubAgentError>>;
+/**
+ * Reflector function signature — receives the accumulated observation log.
+ * Uses the same base signature as SummarizerRunFn since both are pre-bound
+ * sub-agent runners; the input shape differs but the runner passes it through.
+ */
+export type ReflectorRunFn = SummarizerRunFn;
 
 /**
  * Maximum character budget for the accumulated observation log before
@@ -406,16 +406,29 @@ export class ContextRoller {
     }
 
     // 5. Persist: append new observations + process memory updates in a transaction.
+    // Use an in-batch accumulator to handle duplicate keys correctly — multiple
+    // append entries for the same key in one run should accumulate, not overwrite.
     const pendingUpdates: Array<{ key: string; content: string; type: 'note' }> = [];
+    const accumulatedContent = new Map<string, string>();
     if (observerData?.memoryUpdates) {
       for (const update of observerData.memoryUpdates) {
         if (!update.key || !update.value) continue;
         if (update.mode === 'append') {
-          const existingResult = this.deps.memoryRepo.findById(threadId, update.key);
-          const existingContent = existingResult.isOk() ? (existingResult.value?.content ?? '') : '';
+          // Check in-batch accumulator first, then fall back to DB.
+          let existingContent = accumulatedContent.get(update.key);
+          if (existingContent === undefined) {
+            const existingResult = this.deps.memoryRepo.findById(threadId, update.key);
+            existingContent = existingResult.isOk() ? (existingResult.value?.content ?? '') : '';
+          }
           const newContent = existingContent ? `${existingContent}\n${update.value}` : update.value;
+          accumulatedContent.set(update.key, newContent);
+          const existingIdx = pendingUpdates.findIndex((p) => p.key === update.key);
+          if (existingIdx !== -1) pendingUpdates.splice(existingIdx, 1);
           pendingUpdates.push({ key: update.key, content: newContent, type: 'note' });
         } else {
+          accumulatedContent.set(update.key, update.value);
+          const existingIdx = pendingUpdates.findIndex((p) => p.key === update.key);
+          if (existingIdx !== -1) pendingUpdates.splice(existingIdx, 1);
           pendingUpdates.push({ key: update.key, content: update.value, type: 'note' });
         }
       }
@@ -496,9 +509,17 @@ export class ContextRoller {
       'context-roller-om: observation log exceeds threshold, triggering reflector',
     );
 
-    const reflectorRun = this.deps.resolveReflectorRun
+    // Resolve the reflector sub-agent. Try the dedicated reflector resolver
+    // first, then fall back to the shared summarizer resolver (all sub-agents
+    // are registered in the same resolver in bootstrap).
+    const reflectorRun = (this.deps.resolveReflectorRun
       ? this.deps.resolveReflectorRun(reflectorName)
-      : this.deps.reflectorRun;
+      : null)
+      ?? (this.deps.resolveSummarizerRun
+        ? this.deps.resolveSummarizerRun(reflectorName)
+        : null)
+      ?? this.deps.reflectorRun
+      ?? null;
     if (!reflectorRun) {
       this.deps.logger.warn(
         { threadId, reflector: reflectorName },
