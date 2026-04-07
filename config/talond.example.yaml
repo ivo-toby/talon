@@ -171,6 +171,20 @@ agentRunner:
         baseUrl: http://127.0.0.1:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama
+    # Mastra Code provider — uses the Mastra Harness as an in-process agent
+    # runtime with built-in Observational Memory for context compression.
+    # No context-roller/summarizer needed — the Harness handles it natively.
+    # POC: intended to replace the openai-compatible provider once validated.
+    mastra-code:
+      enabled: false
+      command: node                            # unused (in-process), required by schema
+      contextWindowTokens: 256000
+      # Context management should be DISABLED — the Harness manages context
+      # internally via Observational Memory.
+      options:
+        baseUrl: http://127.0.0.1:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama
 
 backgroundAgent:
   enabled: true

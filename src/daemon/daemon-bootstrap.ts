@@ -61,6 +61,7 @@ import { ClaudeCodeProvider } from '../providers/claude-code-provider.js';
 import { GeminiCliProvider } from '../providers/gemini-cli-provider.js';
 import { CodexCliProvider } from '../providers/codex-cli-provider.js';
 import { OpenAiCompatibleProvider } from '../providers/openai-compatible-provider.js';
+import { MastraCodeProvider } from '../providers/mastra-code-provider.js';
 import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider-registry.js';
 import { recoverFromCrash } from './lifecycle.js';
 import { ContextRoller } from './context-roller.js';
@@ -324,6 +325,20 @@ export async function bootstrap(
       const creds =
         (providerId ? authProviders[providerId] : undefined) ?? authProviders['openai-compatible'];
       return new OpenAiCompatibleProvider(providerConfig, {
+        apiKey: creds?.apiKey,
+        baseUrl: creds?.baseURL,
+      });
+    },
+    'mastra-code': (providerConfig) => {
+      const authProviders = config.auth?.providers ?? {};
+      const providerIdOption = providerConfig.options?.providerId;
+      const providerId =
+        typeof providerIdOption === 'string' && providerIdOption.trim().length > 0
+          ? providerIdOption
+          : undefined;
+      const creds =
+        (providerId ? authProviders[providerId] : undefined) ?? authProviders['mastra-code'];
+      return new MastraCodeProvider(providerConfig, {
         apiKey: creds?.apiKey,
         baseUrl: creds?.baseURL,
       });
