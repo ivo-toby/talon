@@ -18,11 +18,13 @@
  * openai-compatible provider's child-process architecture.
  */
 
+import { join } from 'node:path';
 import { err, type Result } from 'neverthrow';
 import { Agent } from '@mastra/core/agent';
 import { Harness } from '@mastra/core/harness';
 import { Workspace, LocalFilesystem, LocalSandbox, type WorkspaceToolsConfig } from '@mastra/core/workspace';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
+import { LibSQLStore } from '@mastra/libsql';
 import type { ProviderConfig } from '../core/config/config-types.js';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
 import type {
@@ -48,6 +50,7 @@ import type { HarnessEvent } from '@mastra/core/harness';
 interface MastraCodeProviderRuntime {
   apiKey?: string;
   baseUrl?: string;
+  dataDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -199,9 +202,19 @@ export class MastraCodeProvider implements AgentProvider {
       tools: mcpTools as Record<string, any>,
     });
 
+    // Create a dedicated LibSQL storage for the Harness's internal state
+    // (threads, messages, observational memory). Uses a separate `mastra.db`
+    // file to avoid WAL locking contention with Talon's main `talon.db`.
+    const dataDir = this.runtime.dataDir ?? '.';
+    const storage = new LibSQLStore({
+      id: `talon-mastra-storage`,
+      url: `file:${join(dataDir, 'mastra.db')}`,
+    });
+
     // Create the Harness with Observational Memory enabled.
     const harness = new Harness({
       id: `talon-mastra-${input.threadId}`,
+      storage,
       modes: [{
         id: 'default',
         name: 'Default',

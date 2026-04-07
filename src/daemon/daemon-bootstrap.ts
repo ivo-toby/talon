@@ -341,6 +341,7 @@ export async function bootstrap(
       return new MastraCodeProvider(providerConfig, {
         apiKey: creds?.apiKey,
         baseUrl: creds?.baseURL,
+        dataDir,
       });
     },
   };
