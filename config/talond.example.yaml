@@ -132,7 +132,7 @@ agentRunner:
         triggerMetric: cache_read_input_tokens
         thresholdRatio: 0.5
         recentMessageCount: 10
-        summarizer: session-summarizer
+        summarizer: session-summarizer       # or session-observer for observational memory
     gemini-cli:
       enabled: false
       command: gemini

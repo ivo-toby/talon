@@ -1,0 +1,14 @@
+name: session-reflector
+version: "0.1.0"
+description: "Consolidates and garbage-collects accumulated observations, merging related items and dropping superseded context"
+
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  maxTokens: 16384
+
+requiredCapabilities: []
+
+rootPaths: []
+
+timeoutMs: 90000

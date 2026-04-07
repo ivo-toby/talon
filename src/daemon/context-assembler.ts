@@ -53,13 +53,36 @@ export class ContextAssembler {
     let summaryFound = false;
     let recentMessageCount = 0;
 
-    // 1. Get latest session summary from memory.
-    const summaryResult = this.deps.memoryRepo.findByThread(threadId, 'summary');
-    if (summaryResult.isOk() && summaryResult.value.length > 0) {
-      // findByThread with type filter returns DESC by created_at, first is newest.
-      const latest = summaryResult.value[0];
-      sections.push(latest.content);
+    // 1. Check for observations (OM path) or legacy summary.
+    // Observations take priority — if any exist, use the observation log.
+    // Otherwise fall back to the legacy summary blob.
+    const observationsResult = this.deps.memoryRepo.findByThread(threadId, 'observation');
+    if (observationsResult.isOk() && observationsResult.value.length > 0) {
+      // Observations are ordered DESC by created_at; reverse to chronological.
+      const observations = [...observationsResult.value].reverse();
+      const observationLog = observations.map((o) => o.content).join('\n\n');
+
+      // Extract currentTask and suggestedContinuation from the newest observation.
+      const newest = observationsResult.value[0];
+      let continuationHint = '';
+      try {
+        const meta = JSON.parse(newest.metadata);
+        const parts: string[] = [];
+        if (meta.currentTask) parts.push(`**Current task:** ${meta.currentTask}`);
+        if (meta.suggestedContinuation) parts.push(`**Next step:** ${meta.suggestedContinuation}`);
+        if (parts.length > 0) continuationHint = `\n\n${parts.join('\n')}`;
+      } catch { /* ignore parse errors */ }
+
+      sections.push(`### Observation Log\n\n${observationLog}${continuationHint}`);
       summaryFound = true;
+    } else {
+      // Legacy path: single summary blob.
+      const summaryResult = this.deps.memoryRepo.findByThread(threadId, 'summary');
+      if (summaryResult.isOk() && summaryResult.value.length > 0) {
+        const latest = summaryResult.value[0];
+        sections.push(latest.content);
+        summaryFound = true;
+      }
     }
 
     // 2. Get recent messages for immediate conversational context.

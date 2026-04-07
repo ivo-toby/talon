@@ -937,18 +937,30 @@ export class AgentRunner {
               } else {
                 try {
                   if (selectedMetricValue > 0) {
-                    const rotation = await this.ctx.contextRoller.checkAndRotate(
-                      item.threadId,
-                      personaId,
-                      {
-                        ratio: selectedMetricValue / Math.max(1, providerEntry.config.contextWindowTokens),
-                        inputTokens: contextUsage.inputTokens,
-                        rawMetric: selectedMetricValue,
-                        rawMetricName: enabledContextManagement.triggerMetric,
-                      },
-                      enabledContextManagement.thresholdRatio,
-                      enabledContextManagement.summarizer,
-                    );
+                    const contextUsagePayload = {
+                      ratio: selectedMetricValue / Math.max(1, providerEntry.config.contextWindowTokens),
+                      inputTokens: contextUsage.inputTokens,
+                      rawMetric: selectedMetricValue,
+                      rawMetricName: enabledContextManagement.triggerMetric,
+                    };
+                    // Route to observational memory path when configured with
+                    // session-observer; otherwise use the legacy summarizer.
+                    const useOM = enabledContextManagement.summarizer === 'session-observer';
+                    const rotation = useOM
+                      ? await this.ctx.contextRoller.checkAndRotateOM(
+                          item.threadId,
+                          personaId,
+                          contextUsagePayload,
+                          enabledContextManagement.thresholdRatio,
+                          enabledContextManagement.summarizer,
+                        )
+                      : await this.ctx.contextRoller.checkAndRotate(
+                          item.threadId,
+                          personaId,
+                          contextUsagePayload,
+                          enabledContextManagement.thresholdRatio,
+                          enabledContextManagement.summarizer,
+                        );
 
                     // For stateless providers (no session resumption), the agent
                     // loses its in-progress task state after context rotation.
