@@ -61,7 +61,7 @@ export class MemoryManager {
 
     const repoResult = this.memoryRepo.findByThread(
       threadId,
-      type as 'fact' | 'summary' | 'note' | 'embedding_ref' | undefined,
+      type as 'fact' | 'summary' | 'note' | 'embedding_ref' | 'observation' | undefined,
     );
 
     if (repoResult.isErr()) {
