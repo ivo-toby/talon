@@ -378,6 +378,39 @@ export class ContextRoller {
       return noRotation;
     }
 
+    // Log compression metrics and priority breakdown.
+    const priorityCounts = { high: 0, medium: 0, low: 0 };
+    for (const obs of observations) {
+      if (obs.priority in priorityCounts) {
+        priorityCounts[obs.priority as keyof typeof priorityCounts]++;
+      }
+    }
+    const observerUsage = observerResult.value.usage;
+    this.deps.logger.info(
+      {
+        threadId,
+        transcriptChars: transcript.length,
+        messageCount: messages.length,
+        observationCount: observations.length,
+        priorities: priorityCounts,
+        currentTask: observerData?.currentTask ?? null,
+        suggestedContinuation: observerData?.suggestedContinuation ?? null,
+        memoryUpdateCount: observerData?.memoryUpdates?.length ?? 0,
+        observerTokens: observerUsage
+          ? { input: observerUsage.inputTokens, output: observerUsage.outputTokens }
+          : null,
+      },
+      'context-roller-om: observer completed',
+    );
+
+    // Log individual observations at debug level for operator inspection.
+    for (const obs of observations) {
+      this.deps.logger.debug(
+        { threadId, date: obs.date, time: obs.time, priority: obs.priority },
+        `context-roller-om: [${obs.priority}] ${obs.text}`,
+      );
+    }
+
     // 3. Format observations into the observation log format.
     const priorityEmoji: Record<string, string> = { high: '🔴', medium: '🟡', low: '🟢' };
     const grouped = new Map<string, string[]>();
@@ -472,8 +505,18 @@ export class ContextRoller {
     // 6. Rotate session.
     this.deps.sessionTracker.rotateSession(threadId);
 
+    const compressionRatio = transcript.length > 0
+      ? (transcript.length / newObservationBlock.length).toFixed(1)
+      : '0';
     this.deps.logger.info(
-      { threadId, observationCount: observations.length, blockLength: newObservationBlock.length },
+      {
+        threadId,
+        observationCount: observations.length,
+        transcriptChars: transcript.length,
+        observationChars: newObservationBlock.length,
+        compressionRatio: `${compressionRatio}x`,
+        memoryUpdatesApplied: pendingUpdates.length,
+      },
       'context-roller-om: observations appended, session rotated',
     );
 
@@ -584,12 +627,16 @@ export class ContextRoller {
       return;
     }
 
+    const reflectorReduction = fullLog.length > 0
+      ? `${((1 - consolidated.length / fullLog.length) * 100).toFixed(0)}%`
+      : '0%';
     this.deps.logger.info(
       {
         threadId,
         consolidatedFrom: allObservations.length,
         originalChars: fullLog.length,
         consolidatedChars: consolidated.length,
+        reduction: reflectorReduction,
       },
       'context-roller-om: observations consolidated by reflector',
     );
