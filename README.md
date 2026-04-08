@@ -1266,13 +1266,26 @@ Each observation also carries `currentTask` and `suggestedContinuation` metadata
 **Priority levels:** 🔴 high (critical decisions, goals, deadlines) · 🟡 medium (questions, preferences, conditional info) · 🟢 low (ephemeral context, minor details)
 
 ```yaml
+# 1. Set the provider's summarizer to session-observer
 contextManagement:
   enabled: true
   triggerMetric: input_tokens
   thresholdRatio: 0.75
   recentMessageCount: 10
   summarizer: session-observer    # enables observational memory
+
+# 2. Add the observer and reflector to the persona's subagents list
+personas:
+  - name: assistant
+    subagents:
+      - session-observer           # required for observational memory
+      - session-reflector          # required for observation consolidation
+      - memory-groomer
+      - memory-retriever
+      - file-searcher
 ```
+
+**Important:** Personas only load sub-agents explicitly listed in their `subagents` config. Without `session-observer` and `session-reflector` in the list, the context-roller won't find them at runtime. You can remove `session-summarizer` from personas using OM since it won't be called.
 
 ### Provider Support
 
