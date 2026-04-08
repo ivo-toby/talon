@@ -38,7 +38,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Module    | Path                       | Purpose                                                             |
 | --------- | -------------------------- | ------------------------------------------------------------------- |
 | Daemon    | `src/daemon/`              | Lifecycle state machine, agent runner, bootstrap, watchdog          |
-| Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal |
+| Channels  | `src/channels/connectors/` | 8 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal, aisdk-http |
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                  |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter   |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                               |

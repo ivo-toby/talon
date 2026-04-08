@@ -39,6 +39,7 @@ It is built for single-user or small-team deployments where you want persistent,
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send, thread tracking via In-Reply-To headers _(not yet tested)_
+- **AI SDK HTTP** — HTTP + SSE server for any Vercel AI SDK v5 frontend (`useChat`, `DefaultChatTransport`)
 
 ### Agent System
 
@@ -169,6 +170,7 @@ graph TB
         WA[WhatsApp]
         EM[Email]
         TM[Terminal]
+        AH[AI SDK HTTP]
     end
 
     subgraph "talond (Host Daemon)"
@@ -196,7 +198,7 @@ graph TB
 
     DB[(SQLite)]
 
-    TG & SL & DC & WA & EM & TM --> CR
+    TG & SL & DC & WA & EM & TM & AH --> CR
     CR --> NP --> RT --> Q
     Q --> AR
     AR --> PR
@@ -1366,7 +1368,7 @@ npx talonctl chat --token mytoken --persona assistant
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--name <name>` | Unique channel name (required) | — |
-| `--type <type>` | Connector type: telegram, slack, discord, whatsappBaileys, whatsappBusiness, email, terminal (required) | — |
+| `--type <type>` | Connector type: telegram, slack, discord, whatsappBaileys, whatsappBusiness, email, terminal, aisdk-http (required) | — |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
 **`add-persona`** options:
@@ -2327,6 +2329,7 @@ talon/
         whatsapp-baileys/        # WhatsApp Web (Baileys) connector
         email/                   # IMAP + SMTP connector
         terminal/                # WebSocket terminal connector
+        aisdk-http/              # AI SDK v5 HTTP + SSE connector
       channel-registry.ts        # Connector lifecycle management
       channel-router.ts          # Thread -> persona routing
       channel-types.ts           # ChannelConnector interface
