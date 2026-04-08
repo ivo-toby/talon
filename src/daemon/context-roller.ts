@@ -46,7 +46,7 @@ const MAX_TRANSCRIPT_CHARS = 100_000;
 export type SummarizerRunFn = (
   threadId: string,
   personaId: string,
-  input: { transcript: string },
+  input: Record<string, unknown>,
 ) => Promise<Result<SubAgentResult, SubAgentError>>;
 
 /** Result of a successful context rotation. */
@@ -57,14 +57,32 @@ export interface ContextRotationResult {
   hasOpenThreads: boolean;
 }
 
+/**
+ * Reflector function signature — receives the accumulated observation log.
+ * Uses the same base signature as SummarizerRunFn since both are pre-bound
+ * sub-agent runners; the input shape differs but the runner passes it through.
+ */
+export type ReflectorRunFn = SummarizerRunFn;
+
+/**
+ * Maximum character budget for the accumulated observation log before
+ * the reflector is triggered to consolidate observations.
+ * ~40K chars ≈ ~10K tokens — keeps observations manageable.
+ */
+const MAX_OBSERVATION_CHARS = 40_000;
+
 export interface ContextRollerDeps {
   messageRepo: Pick<MessageRepository, 'findLatestByThread'>;
-  memoryRepo: Pick<MemoryRepository, 'insert' | 'findById' | 'upsertByKey' | 'delete' | 'runInTransaction'>;
+  memoryRepo: Pick<MemoryRepository, 'insert' | 'findById' | 'findByThread' | 'upsertByKey' | 'delete' | 'runInTransaction'>;
   sessionTracker: Pick<SessionTracker, 'rotateSession'>;
   /** Pre-bound summarizer function. Model, prompt, and services are captured at bootstrap. */
   summarizerRun: SummarizerRunFn;
   /** Optional resolver for provider-selected summarizer names. */
   resolveSummarizerRun?: (name: string) => SummarizerRunFn | null;
+  /** Optional pre-bound reflector function for observation consolidation. */
+  reflectorRun?: ReflectorRunFn;
+  /** Optional resolver for named reflector sub-agents. */
+  resolveReflectorRun?: (name: string) => ReflectorRunFn | null;
   logger: pino.Logger;
   /** Optional fallback context ratio threshold. */
   thresholdRatio?: number;
@@ -276,6 +294,352 @@ export class ContextRoller {
 
     const hasOpenThreads = (data?.openThreads ?? []).length > 0;
     return { rotated: true, hasOpenThreads };
+  }
+
+  /**
+   * Observational memory rotation — appends observations instead of
+   * overwriting summaries.
+   *
+   * Called when the configured summarizer is `session-observer`. Instead of
+   * producing a single summary blob, the observer generates dated, prioritized
+   * observations that are appended to an observation log in memory_items.
+   *
+   * When the accumulated observation log exceeds MAX_OBSERVATION_CHARS, the
+   * reflector is triggered to consolidate observations.
+   */
+  async checkAndRotateOM(
+    threadId: string,
+    personaId: string,
+    contextUsage: ResolvedContextUsage,
+    overrideThreshold?: number,
+    observerName: string = 'session-observer',
+    reflectorName: string = 'session-reflector',
+  ): Promise<ContextRotationResult> {
+    const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
+    const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
+    if (contextUsage.ratio < threshold) {
+      return noRotation;
+    }
+
+    this.deps.logger.info(
+      { threadId, contextUsage, thresholdRatio: threshold },
+      'context-roller-om: threshold exceeded, creating observations',
+    );
+
+    // 1. Reconstruct transcript.
+    const messagesResult = this.deps.messageRepo.findLatestByThread(threadId, 10_000);
+    if (messagesResult.isErr()) {
+      this.deps.logger.error(
+        { threadId, error: messagesResult.error.message },
+        'context-roller-om: failed to read messages, skipping rotation',
+      );
+      return noRotation;
+    }
+
+    const messages = messagesResult.value;
+    if (messages.length === 0) {
+      this.deps.logger.warn({ threadId }, 'context-roller-om: no messages found, skipping rotation');
+      return noRotation;
+    }
+
+    const transcript = this.buildTranscript(messages, MAX_TRANSCRIPT_CHARS);
+
+    // 2. Resolve and call the observer.
+    const observerRun = this.deps.resolveSummarizerRun
+      ? this.deps.resolveSummarizerRun(observerName)
+      : null;
+    if (!observerRun) {
+      this.deps.logger.error(
+        { threadId, observer: observerName },
+        'context-roller-om: observer not available, skipping rotation',
+      );
+      return noRotation;
+    }
+
+    const observerResult = await observerRun(threadId, personaId, { transcript });
+    if (observerResult.isErr()) {
+      this.deps.logger.error(
+        { threadId, error: observerResult.error.message },
+        'context-roller-om: observation failed, skipping rotation',
+      );
+      return noRotation;
+    }
+
+    const observerData = observerResult.value.data as {
+      observations?: Array<{ date: string; time: string; priority: string; text: string }>;
+      currentTask?: string;
+      suggestedContinuation?: string;
+      memoryUpdates?: Array<{ key: string; value: string; mode: 'append' | 'replace' }>;
+    } | undefined;
+
+    const observations = observerData?.observations ?? [];
+    if (observations.length === 0) {
+      this.deps.logger.warn({ threadId }, 'context-roller-om: observer produced no observations');
+      return noRotation;
+    }
+
+    // Log compression metrics and priority breakdown.
+    const priorityCounts = { high: 0, medium: 0, low: 0 };
+    for (const obs of observations) {
+      if (obs.priority in priorityCounts) {
+        priorityCounts[obs.priority as keyof typeof priorityCounts]++;
+      }
+    }
+    const observerUsage = observerResult.value.usage;
+    this.deps.logger.info(
+      {
+        threadId,
+        transcriptChars: transcript.length,
+        messageCount: messages.length,
+        observationCount: observations.length,
+        priorities: priorityCounts,
+        currentTask: observerData?.currentTask ?? null,
+        suggestedContinuation: observerData?.suggestedContinuation ?? null,
+        memoryUpdateCount: observerData?.memoryUpdates?.length ?? 0,
+        observerTokens: observerUsage
+          ? { input: observerUsage.inputTokens, output: observerUsage.outputTokens }
+          : null,
+      },
+      'context-roller-om: observer completed',
+    );
+
+    // Log individual observations at debug level for operator inspection.
+    for (const obs of observations) {
+      this.deps.logger.debug(
+        { threadId, date: obs.date, time: obs.time, priority: obs.priority },
+        `context-roller-om: [${obs.priority}] ${obs.text}`,
+      );
+    }
+
+    // 3. Format observations into the observation log format.
+    const priorityEmoji: Record<string, string> = { high: '🔴', medium: '🟡', low: '🟢' };
+    const grouped = new Map<string, string[]>();
+    for (const obs of observations) {
+      const lines = grouped.get(obs.date) ?? [];
+      const emoji = priorityEmoji[obs.priority] ?? '🟢';
+      lines.push(`- ${emoji} ${obs.time} ${obs.text}`);
+      grouped.set(obs.date, lines);
+    }
+    const newObservationBlock = [...grouped.entries()]
+      .map(([date, lines]) => `Date: ${date}\n${lines.join('\n')}`)
+      .join('\n\n');
+
+    // 4. Build metadata with currentTask and suggestedContinuation.
+    const metadata: Record<string, unknown> = {
+      source: 'context-roller-om',
+      messageCount: messages.length,
+      contextUsage,
+      createdAt: new Date().toISOString(),
+    };
+    if (observerData?.currentTask) {
+      metadata.currentTask = observerData.currentTask;
+    }
+    if (observerData?.suggestedContinuation) {
+      metadata.suggestedContinuation = observerData.suggestedContinuation;
+    }
+
+    // 5. Persist: append new observations + process memory updates in a transaction.
+    // Use an in-batch accumulator to handle duplicate keys correctly — multiple
+    // append entries for the same key in one run should accumulate, not overwrite.
+    const pendingUpdates: Array<{ key: string; content: string; type: 'note' }> = [];
+    const accumulatedContent = new Map<string, string>();
+    if (observerData?.memoryUpdates) {
+      for (const update of observerData.memoryUpdates) {
+        if (!update.key || !update.value) continue;
+        if (update.mode === 'append') {
+          // Check in-batch accumulator first, then fall back to DB.
+          let existingContent = accumulatedContent.get(update.key);
+          if (existingContent === undefined) {
+            const existingResult = this.deps.memoryRepo.findById(threadId, update.key);
+            existingContent = existingResult.isOk() ? (existingResult.value?.content ?? '') : '';
+          }
+          const newContent = existingContent ? `${existingContent}\n${update.value}` : update.value;
+          accumulatedContent.set(update.key, newContent);
+          const existingIdx = pendingUpdates.findIndex((p) => p.key === update.key);
+          if (existingIdx !== -1) pendingUpdates.splice(existingIdx, 1);
+          pendingUpdates.push({ key: update.key, content: newContent, type: 'note' });
+        } else {
+          accumulatedContent.set(update.key, update.value);
+          const existingIdx = pendingUpdates.findIndex((p) => p.key === update.key);
+          if (existingIdx !== -1) pendingUpdates.splice(existingIdx, 1);
+          pendingUpdates.push({ key: update.key, content: update.value, type: 'note' });
+        }
+      }
+    }
+
+    const observationId = randomUUID();
+    const txResult = this.deps.memoryRepo.runInTransaction(() => {
+      const insertResult = this.deps.memoryRepo.insert({
+        id: observationId,
+        thread_id: threadId,
+        type: 'observation',
+        content: newObservationBlock,
+        embedding_ref: null,
+        metadata: JSON.stringify(metadata),
+      });
+      if (insertResult.isErr()) {
+        throw new Error(`observation insert: ${insertResult.error.message}`);
+      }
+
+      for (const update of pendingUpdates) {
+        const upsertResult = this.deps.memoryRepo.upsertByKey(threadId, update.key, {
+          type: update.type,
+          content: update.content,
+        });
+        if (upsertResult.isErr()) {
+          throw new Error(`upsert ${update.key}: ${upsertResult.error.message}`);
+        }
+      }
+
+      return pendingUpdates.length;
+    });
+
+    if (txResult.isErr()) {
+      this.deps.logger.error(
+        { threadId, error: txResult.error.message },
+        'context-roller-om: observation transaction failed',
+      );
+      return noRotation;
+    }
+
+    // 6. Rotate session.
+    this.deps.sessionTracker.rotateSession(threadId);
+
+    const compressionRatio = transcript.length > 0
+      ? (transcript.length / newObservationBlock.length).toFixed(1)
+      : '0';
+    this.deps.logger.info(
+      {
+        threadId,
+        observationCount: observations.length,
+        transcriptChars: transcript.length,
+        observationChars: newObservationBlock.length,
+        compressionRatio: `${compressionRatio}x`,
+        memoryUpdatesApplied: pendingUpdates.length,
+      },
+      'context-roller-om: observations appended, session rotated',
+    );
+
+    // 7. Check if accumulated observations need reflection (consolidation).
+    await this.maybeReflect(threadId, personaId, reflectorName);
+
+    const hasOpenThreads = !!(observerData?.currentTask || observerData?.suggestedContinuation);
+    return { rotated: true, hasOpenThreads };
+  }
+
+  /**
+   * Trigger the reflector if accumulated observations exceed the threshold.
+   */
+  private async maybeReflect(
+    threadId: string,
+    personaId: string,
+    reflectorName: string,
+  ): Promise<void> {
+    const observationsResult = this.deps.memoryRepo.findByThread(threadId, 'observation');
+    if (observationsResult.isErr() || observationsResult.value.length === 0) {
+      return;
+    }
+
+    const allObservations = observationsResult.value;
+    const fullLog = allObservations.map((o) => o.content).join('\n\n');
+
+    if (fullLog.length < MAX_OBSERVATION_CHARS) {
+      return;
+    }
+
+    this.deps.logger.info(
+      { threadId, observationChars: fullLog.length, threshold: MAX_OBSERVATION_CHARS },
+      'context-roller-om: observation log exceeds threshold, triggering reflector',
+    );
+
+    // Resolve the reflector sub-agent. Try the dedicated reflector resolver
+    // first, then fall back to the shared summarizer resolver (all sub-agents
+    // are registered in the same resolver in bootstrap).
+    const reflectorRun = (this.deps.resolveReflectorRun
+      ? this.deps.resolveReflectorRun(reflectorName)
+      : null)
+      ?? (this.deps.resolveSummarizerRun
+        ? this.deps.resolveSummarizerRun(reflectorName)
+        : null)
+      ?? this.deps.reflectorRun
+      ?? null;
+    if (!reflectorRun) {
+      this.deps.logger.warn(
+        { threadId, reflector: reflectorName },
+        'context-roller-om: reflector not available, skipping consolidation',
+      );
+      return;
+    }
+
+    const reflectorResult = await reflectorRun(threadId, personaId, { observationLog: fullLog });
+    if (reflectorResult.isErr()) {
+      this.deps.logger.error(
+        { threadId, error: reflectorResult.error.message },
+        'context-roller-om: reflection failed, keeping current observations',
+      );
+      return;
+    }
+
+    const consolidated = (reflectorResult.value.data as { consolidatedLog?: string })?.consolidatedLog;
+    if (!consolidated || consolidated.trim().length === 0) {
+      this.deps.logger.warn({ threadId }, 'context-roller-om: reflector returned empty output');
+      return;
+    }
+
+    // Replace all existing observations with a single consolidated entry.
+    const consolidatedId = randomUUID();
+    const txResult = this.deps.memoryRepo.runInTransaction(() => {
+      // Delete all existing observations.
+      for (const obs of allObservations) {
+        const delResult = this.deps.memoryRepo.delete(threadId, obs.id);
+        if (delResult.isErr()) {
+          throw new Error(`delete observation ${obs.id}: ${delResult.error.message}`);
+        }
+      }
+
+      // Insert consolidated observation.
+      const insertResult = this.deps.memoryRepo.insert({
+        id: consolidatedId,
+        thread_id: threadId,
+        type: 'observation',
+        content: consolidated,
+        embedding_ref: null,
+        metadata: JSON.stringify({
+          source: 'context-roller-om-reflector',
+          consolidatedFrom: allObservations.length,
+          originalChars: fullLog.length,
+          consolidatedChars: consolidated.length,
+          createdAt: new Date().toISOString(),
+        }),
+      });
+      if (insertResult.isErr()) {
+        throw new Error(`consolidated insert: ${insertResult.error.message}`);
+      }
+
+      return allObservations.length;
+    });
+
+    if (txResult.isErr()) {
+      this.deps.logger.error(
+        { threadId, error: txResult.error.message },
+        'context-roller-om: reflection transaction failed',
+      );
+      return;
+    }
+
+    const reflectorReduction = fullLog.length > 0
+      ? `${((1 - consolidated.length / fullLog.length) * 100).toFixed(0)}%`
+      : '0%';
+    this.deps.logger.info(
+      {
+        threadId,
+        consolidatedFrom: allObservations.length,
+        originalChars: fullLog.length,
+        consolidatedChars: consolidated.length,
+        reduction: reflectorReduction,
+      },
+      'context-roller-om: observations consolidated by reflector',
+    );
   }
 
   /**

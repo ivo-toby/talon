@@ -1072,7 +1072,9 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 | `file-searcher`       | `claude-haiku-4-5`    | Search files by content, return ranked results with snippets |
 | `memory-retriever`    | `claude-haiku-4-5`    | Find relevant memories via keyword pre-filter + LLM rerank  |
 | `memory-groomer`      | `claude-haiku-4-5`    | Prune stale, consolidate duplicate memory items              |
-| `session-summarizer`  | `claude-sonnet-4-6`   | Compress transcripts for rolling context window              |
+| `session-summarizer`  | `claude-sonnet-4-6`   | Compress transcripts for rolling context window (legacy)     |
+| `session-observer`    | `claude-sonnet-4-6`   | Generate dated, prioritized observations for long-term memory |
+| `session-reflector`   | `claude-sonnet-4-6`   | Consolidate observations when log grows too large            |
 | `spark-coder`         | `gpt-5.4-spark`       | Fast single-shot code generation (requires `OPENAI_API_KEY`) |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
@@ -1238,6 +1240,52 @@ Agent run completes → selected trigger metric exceeds threshold?
 - **Prompt injection mitigation** — injected historical content is prefixed with a read-only disclaimer to prevent user messages from being treated as instructions.
 
 **Files:** `src/daemon/context-roller.ts`, `src/daemon/context-assembler.ts`
+
+#### Observational memory (long-term context)
+
+The default `session-summarizer` produces a single summary blob that gets overwritten on each rotation — history beyond the last rotation is lost. For long-running conversations (e.g. Telegram threads spanning days), switch to **observational memory** by setting `summarizer: session-observer`.
+
+Instead of overwriting, observations **append** over time as a dated, prioritized decision log:
+
+```
+Date: 2026-04-07
+- 🔴 14:10 User wants to replace openai-compatible provider with Mastra Harness
+- 🔴 14:12 Decision: keep existing provider, add new mastra-code provider alongside
+- 🟡 14:15 LibSQL storage uses separate mastra.db to avoid WAL contention
+- 🟢 14:20 Background invocations not supported yet
+
+Date: 2026-04-07
+- 🔴 16:30 Implemented observational memory for context roller
+- 🟡 16:45 Reflector threshold set at 40K chars
+```
+
+When the observation log exceeds 40K characters, the `session-reflector` sub-agent consolidates — merging related observations, dropping superseded context, and preserving important decisions. This gives the agent long-term memory that survives many rotations.
+
+Each observation also carries `currentTask` and `suggestedContinuation` metadata, so the agent resumes coherently after context rotation without requiring a manual nudge.
+
+**Priority levels:** 🔴 high (critical decisions, goals, deadlines) · 🟡 medium (questions, preferences, conditional info) · 🟢 low (ephemeral context, minor details)
+
+```yaml
+# 1. Set the provider's summarizer to session-observer
+contextManagement:
+  enabled: true
+  triggerMetric: input_tokens
+  thresholdRatio: 0.75
+  recentMessageCount: 10
+  summarizer: session-observer    # enables observational memory
+
+# 2. Add the observer and reflector to the persona's subagents list
+personas:
+  - name: assistant
+    subagents:
+      - session-observer           # required for observational memory
+      - session-reflector          # required for observation consolidation
+      - memory-groomer
+      - memory-retriever
+      - file-searcher
+```
+
+**Important:** Personas only load sub-agents explicitly listed in their `subagents` config. Without `session-observer` and `session-reflector` in the list, the context-roller won't find them at runtime. You can remove `session-summarizer` from personas using OM since it won't be called.
 
 ### Provider Support
 
@@ -2391,7 +2439,9 @@ talon/
       subagent-runner.ts         # Execution engine with timeout
       index.ts                   # Barrel export
       default/                   # Built-in sub-agents
-        session-summarizer/      # Transcript compression
+        session-summarizer/      # Transcript compression (legacy)
+        session-observer/        # Observational memory — observation generation
+        session-reflector/       # Observational memory — observation consolidation
         memory-groomer/          # Memory consolidation
         memory-retriever/        # Memory search + LLM reranking
         file-searcher/           # File search (rg/grep/node cascade)

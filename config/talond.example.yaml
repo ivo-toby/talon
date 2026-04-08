@@ -88,7 +88,10 @@ personas:
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
-      - session-summarizer
+      - session-summarizer           # legacy single-summary context compression
+      # For observational memory (long-term context), replace session-summarizer with:
+      # - session-observer           # generates dated, prioritized observations
+      # - session-reflector          # consolidates observations when log grows large
       - memory-groomer
       - memory-retriever
       - file-searcher
@@ -132,7 +135,7 @@ agentRunner:
         triggerMetric: cache_read_input_tokens
         thresholdRatio: 0.5
         recentMessageCount: 10
-        summarizer: session-summarizer
+        summarizer: session-summarizer       # or session-observer for observational memory
     gemini-cli:
       enabled: false
       command: gemini
