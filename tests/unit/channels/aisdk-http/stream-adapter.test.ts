@@ -1,43 +1,69 @@
 import { describe, it, expect } from 'vitest';
-import { encodeStreamPart, buildTextChunks, buildFinishChunks, buildKeepAlive } from '../../../../src/channels/connectors/aisdk-http/stream-adapter.js';
+import { encodeSSE, buildStart, buildStartStep, buildTextChunks, buildFinishChunks, buildDone, buildKeepAlive } from '../../../../src/channels/connectors/aisdk-http/stream-adapter.js';
 
-describe('encodeStreamPart', () => {
-  it('encodes a text-delta chunk', () => {
-    const line = encodeStreamPart('0', 'Hello world');
-    expect(line).toBe('0:"Hello world"\n');
+describe('encodeSSE', () => {
+  it('encodes a JSON object as an SSE data frame', () => {
+    const line = encodeSSE({ type: 'text-delta', id: 'msg1', delta: 'Hello' });
+    expect(line).toBe('data: {"type":"text-delta","id":"msg1","delta":"Hello"}\n\n');
   });
 
-  it('encodes a data chunk (array)', () => {
-    const line = encodeStreamPart('2', [{ type: 'test' }]);
-    expect(line).toBe('2:[{"type":"test"}]\n');
+  it('encodes nested objects', () => {
+    const line = encodeSSE({ type: 'finish', usage: { promptTokens: 10 } });
+    expect(line).toBe('data: {"type":"finish","usage":{"promptTokens":10}}\n\n');
   });
+});
 
-  it('encodes a finish-message chunk', () => {
-    const line = encodeStreamPart('d', { finishReason: 'stop', usage: { promptTokens: 10, completionTokens: 5 } });
-    expect(line).toBe('d:{"finishReason":"stop","usage":{"promptTokens":10,"completionTokens":5}}\n');
+describe('buildStart', () => {
+  it('emits a start chunk with messageId', () => {
+    const chunk = buildStart('msg-123');
+    expect(chunk).toContain('"type":"start"');
+    expect(chunk).toContain('"messageId":"msg-123"');
+    expect(chunk).toMatch(/^data: .+\n\n$/);
+  });
+});
+
+describe('buildStartStep', () => {
+  it('emits a start-step chunk', () => {
+    const chunk = buildStartStep();
+    expect(chunk).toBe('data: {"type":"start-step"}\n\n');
   });
 });
 
 describe('buildTextChunks', () => {
-  it('returns array of encoded text-delta lines for word tokens', () => {
-    const chunks = buildTextChunks('Hello world', null);
-    expect(chunks.length).toBeGreaterThan(0);
-    chunks.forEach(c => expect(c).toMatch(/^0:".+"\n$/));
+  it('returns text-start, text-delta(s), and text-end for standard mode', () => {
+    const chunks = buildTextChunks('Hello world', null, 'msg-1');
+    expect(chunks.length).toBeGreaterThanOrEqual(3); // start + at least 1 delta + end
+    expect(chunks[0]).toContain('"type":"text-start"');
+    expect(chunks[0]).toContain('"id":"msg-1"');
+    expect(chunks[chunks.length - 1]).toContain('"type":"text-end"');
+
+    // Middle chunks are text-delta
+    for (let i = 1; i < chunks.length - 1; i++) {
+      expect(chunks[i]).toContain('"type":"text-delta"');
+      expect(chunks[i]).toContain('"delta":');
+    }
   });
 
   it('uses custom chunk type when textChunkType is set', () => {
-    const chunks = buildTextChunks('Hi', 'data-human-readable');
-    expect(chunks[0]).toMatch(/^data-human-readable:/);
+    const chunks = buildTextChunks('Hi there', 'data-human-readable', 'msg-2');
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]).toContain('"type":"data-human-readable"');
+    expect(chunks[0]).toContain('"data":"Hi there"');
   });
 });
 
 describe('buildFinishChunks', () => {
-  it('returns finish-step and finish-message lines', () => {
+  it('returns finish-step and finish chunks', () => {
     const chunks = buildFinishChunks();
     expect(chunks).toHaveLength(2);
-    expect(chunks[0]).toContain('"finishReason":"stop"');
-    expect(chunks[0]).toContain('"isContinued":false');
-    expect(chunks[1]).toContain('"finishReason":"stop"');
+    expect(chunks[0]).toContain('"type":"finish-step"');
+    expect(chunks[1]).toContain('"type":"finish"');
+  });
+});
+
+describe('buildDone', () => {
+  it('returns the v5 stream terminator', () => {
+    expect(buildDone()).toBe('data: [DONE]\n\n');
   });
 });
 

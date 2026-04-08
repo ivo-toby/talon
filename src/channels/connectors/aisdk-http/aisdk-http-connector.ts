@@ -2,8 +2,11 @@
  * AI SDK HTTP channel connector.
  *
  * Runs a lightweight HTTP server that speaks the Vercel AI SDK v5
- * data-stream SSE protocol. Any @ai-sdk/react frontend (useChat,
- * DefaultChatTransport) can connect to a Talon persona via this channel.
+ * UI Message Stream protocol (SSE). Any @ai-sdk/react frontend
+ * (useChat, DefaultChatTransport) can connect to a Talon persona
+ * via this channel.
+ *
+ * Protocol: https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -14,9 +17,12 @@ import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
 import { matchRoute } from './route-parser.js';
-import { buildTextChunks, buildFinishChunks, buildKeepAlive, buildStartStep } from './stream-adapter.js';
+import { buildStart, buildStartStep, buildTextChunks, buildFinishChunks, buildDone, buildKeepAlive, encodeSSE } from './stream-adapter.js';
 import type { AisdkHttpChannelConfig, AisdkRequestBody, PendingStream } from './aisdk-http-types.js';
 import { AisdkHttpChannelConfigSchema } from './aisdk-http-types.js';
+
+/** Maximum request body size (1 MB). */
+const MAX_BODY_BYTES = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // AisdkHttpConnector
@@ -100,7 +106,7 @@ export class AisdkHttpConnector implements ChannelConnector {
 
   /**
    * Called by the daemon with the completed agent output.
-   * Flushes the response as AI SDK SSE chunks and closes the stream.
+   * Flushes the response as AI SDK v5 SSE chunks and closes the stream.
    */
   async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
     const pending = this.pendingStreams.get(externalThreadId);
@@ -109,23 +115,27 @@ export class AisdkHttpConnector implements ChannelConnector {
       return ok(undefined);
     }
 
-    const { res } = pending;
+    const { res, messageId } = pending;
     clearInterval(pending.keepAliveInterval);
     this.pendingStreams.delete(externalThreadId);
 
     try {
-      // Start step
-      res.write(buildStartStep(randomUUID()));
+      // Stream start + step start
+      res.write(buildStart(messageId));
+      res.write(buildStartStep());
 
       // Text chunks (word-by-word streaming feel)
-      for (const chunk of buildTextChunks(output.body, this.config.textChunkType)) {
+      for (const chunk of buildTextChunks(output.body, this.config.textChunkType, messageId)) {
         res.write(chunk);
       }
 
-      // Finish
+      // Finish step + message
       for (const chunk of buildFinishChunks()) {
         res.write(chunk);
       }
+
+      // Required v5 stream terminator
+      res.write(buildDone());
 
       res.end();
       return ok(undefined);
@@ -171,25 +181,21 @@ export class AisdkHttpConnector implements ChannelConnector {
       return;
     }
 
-    // Resolve persona from agentId
-    const agentId = params['agentId'];
-    // TODO: forward to pipeline once persona routing from channel is supported
-    const _personaName = agentId
-      ? (this.config.agentMapping[agentId] ?? agentId)
-      : this.config.defaultPersona ?? 'default';
-
     // Parse request body
     let body: AisdkRequestBody;
     try {
       body = await this.readBody(req);
-    } catch {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request body' }));
+    } catch (e) {
+      const status = e instanceof BodyTooLargeError ? 413 : 400;
+      const message = e instanceof BodyTooLargeError ? 'Request body too large' : 'Invalid request body';
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: message }));
       return;
     }
 
     // Determine thread ID (client-supplied or generate)
     const externalThreadId = body.id ?? randomUUID();
+    const messageId = randomUUID();
 
     // Extract headers to forward
     const forwardedHeaders: Record<string, string> = {};
@@ -201,9 +207,8 @@ export class AisdkHttpConnector implements ChannelConnector {
       if (params[param]) forwardedHeaders[headerName] = params[param] ?? '';
     }
 
-    // Build inbound event content from last user message
-    const lastUser = [...body.messages].reverse().find((m) => m.role === 'user');
-    const content = lastUser?.content ?? '';
+    // Extract text content from last user message (supports both v4 and v5 formats)
+    const content = this.extractUserContent(body);
 
     // Open SSE stream immediately
     res.writeHead(200, {
@@ -211,7 +216,8 @@ export class AisdkHttpConnector implements ChannelConnector {
       'Cache-Control': 'no-cache',
       'Connection': 'keep-alive',
       'X-Thread-Id': externalThreadId,
-      'Access-Control-Expose-Headers': 'X-Thread-Id',
+      'X-Vercel-AI-UI-Message-Stream': 'v1',
+      'Access-Control-Expose-Headers': 'X-Thread-Id, X-Vercel-AI-UI-Message-Stream',
     });
 
     // Set up keep-alive
@@ -225,7 +231,7 @@ export class AisdkHttpConnector implements ChannelConnector {
       clearInterval(existing.keepAliveInterval);
       try { existing.res.end(); } catch { /* ignore */ }
     }
-    this.pendingStreams.set(externalThreadId, { res, keepAliveInterval, forwardedHeaders });
+    this.pendingStreams.set(externalThreadId, { res, keepAliveInterval, forwardedHeaders, messageId });
 
     // Handle client disconnect
     req.on('close', () => {
@@ -257,11 +263,35 @@ export class AisdkHttpConnector implements ChannelConnector {
         clearInterval(keepAliveInterval);
         this.pendingStreams.delete(externalThreadId);
         try {
-          res.write(`3:"Internal error"\n`);
+          res.write(encodeSSE({ type: 'error', errorText: 'Internal error' }));
+          res.write(buildDone());
           res.end();
         } catch { /* ignore */ }
       }
     }
+  }
+
+  /**
+   * Extract plain text content from the last user message.
+   * Supports both v4 format ({ role, content: string }) and v5 format
+   * ({ role, parts: [{ type: 'text', text: '...' }, ...] }).
+   */
+  private extractUserContent(body: AisdkRequestBody): string {
+    const lastUser = [...body.messages].reverse().find((m) => m.role === 'user');
+    if (!lastUser) return '';
+
+    // V4: content is a plain string
+    if (typeof lastUser.content === 'string') return lastUser.content;
+
+    // V5: parts array with typed content blocks
+    if ('parts' in lastUser && Array.isArray(lastUser.parts)) {
+      return lastUser.parts
+        .filter((p) => p.type === 'text')
+        .map((p) => p.text ?? '')
+        .join('');
+    }
+
+    return '';
   }
 
   /**
@@ -288,7 +318,16 @@ export class AisdkHttpConnector implements ChannelConnector {
   private readBody(req: IncomingMessage): Promise<AisdkRequestBody> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = [];
-      req.on('data', (chunk: Buffer) => chunks.push(chunk));
+      let totalBytes = 0;
+      req.on('data', (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_BODY_BYTES) {
+          req.destroy();
+          reject(new BodyTooLargeError());
+          return;
+        }
+        chunks.push(chunk);
+      });
       req.on('end', () => {
         try {
           const raw = Buffer.concat(chunks).toString('utf8');
@@ -299,5 +338,12 @@ export class AisdkHttpConnector implements ChannelConnector {
       });
       req.on('error', reject);
     });
+  }
+}
+
+class BodyTooLargeError extends Error {
+  constructor() {
+    super('Request body exceeds maximum size');
+    this.name = 'BodyTooLargeError';
   }
 }

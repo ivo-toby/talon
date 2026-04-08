@@ -1,7 +1,7 @@
 /**
  * Types and Zod schemas for the aisdk-http channel connector.
  *
- * Defines the config shape, AI SDK v5 data-stream wire types, and internal
+ * Defines the config shape, AI SDK v5 UI Message Stream types, and internal
  * structures for managing pending SSE streams.
  */
 
@@ -14,7 +14,7 @@ import { z } from 'zod';
 export const ArtifactMappingSchema = z.object({
   /** Tool name whose result should emit a custom data chunk. */
   toolName: z.string(),
-  /** SSE data chunk type prefix, e.g. "data-exo-output-artifact". */
+  /** SSE data chunk type, e.g. "data-exo-output-artifact". */
   chunkType: z.string(),
   /**
    * Optional wrapper key. When set, result is emitted as { [wrapAs]: result }.
@@ -29,7 +29,6 @@ export const AisdkHttpChannelConfigSchema = z.object({
   /**
    * Express-style route pattern with named params (e.g. "/agents/:agentId/stream"
    * or "/spaces/:spaceId/environments/:envId/ai/agents/:agentId/stream").
-   * The :agentId param maps to a persona name.
    */
   routePattern: z.string().default('/agents/:agentId/stream'),
   /** CORS allowed origins. Glob patterns supported. */
@@ -43,7 +42,7 @@ export const AisdkHttpChannelConfigSchema = z.object({
   artifactMapping: z.array(ArtifactMappingSchema).default([]),
   /**
    * Override the SSE chunk type used for text output.
-   * null = use standard "0:" text-delta chunks (default, works with any useChat frontend).
+   * null = use standard text-start/text-delta/text-end (default).
    * Set to e.g. "data-human-readable" for custom frontend handling.
    */
   textChunkType: z.string().nullable().default(null),
@@ -57,13 +56,6 @@ export const AisdkHttpChannelConfigSchema = z.object({
    * E.g. { spaceId: "X-Space-Id" } extracts :spaceId from the URL and sends it as a header.
    */
   forwardPathParams: z.record(z.string(), z.string()).default({}),
-  /**
-   * Explicit agentId -> persona name mapping.
-   * If absent, agentId is used directly as the persona name.
-   */
-  agentMapping: z.record(z.string(), z.string()).default({}),
-  /** Fallback persona when agentId doesn't match any mapping. */
-  defaultPersona: z.string().optional(),
   /** Keep-alive SSE tick interval while agent is running (ms). Min 1000. */
   keepAliveIntervalMs: z.number().int().min(1000).max(60000).default(5000),
   /** Host to bind to. Defaults to 127.0.0.1. */
@@ -74,38 +66,33 @@ export type AisdkHttpChannelConfig = z.infer<typeof AisdkHttpChannelConfigSchema
 export type ArtifactMapping = z.infer<typeof ArtifactMappingSchema>;
 
 // ---------------------------------------------------------------------------
-// AI SDK v5 data-stream wire types
-// ---------------------------------------------------------------------------
-
-/** AI SDK data-stream protocol chunk types (numeric codes). */
-export const StreamPartType = {
-  TEXT_DELTA: '0',
-  DATA: '2',
-  ERROR: '3',
-  TOOL_CALL: '9',
-  TOOL_RESULT: 'a',
-  TOOL_CALL_STREAMING_START: 'b',
-  TOOL_CALL_DELTA: 'c',
-  FINISH_MESSAGE: 'd',
-  FINISH_STEP: 'e',
-  START_STEP: 'f',
-} as const;
-
-/** Represents one line in the AI SDK data-stream SSE body. */
-export interface StreamPart {
-  type: string;   // one of StreamPartType values
-  value: unknown; // serialised as JSON after the type prefix
-}
-
-// ---------------------------------------------------------------------------
 // AI SDK request body (what useChat POSTs)
 // ---------------------------------------------------------------------------
 
-export interface AisdkMessage {
+/** V4 message format: content is a plain string. */
+interface AisdkMessageV4 {
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
   id?: string;
 }
+
+/** A single part within a v5 UIMessage. */
+export interface AisdkMessagePart {
+  type: string;
+  text?: string;
+  [key: string]: unknown;
+}
+
+/** V5 UIMessage format: content may be parts array. */
+interface AisdkMessageV5 {
+  role: 'user' | 'assistant' | 'system' | 'tool';
+  content?: string;
+  parts?: AisdkMessagePart[];
+  id?: string;
+}
+
+/** Union of v4 and v5 message formats. */
+export type AisdkMessage = AisdkMessageV4 | AisdkMessageV5;
 
 export interface AisdkRequestBody {
   /** Conversation messages. Last user message is the new input. */
@@ -127,4 +114,6 @@ export interface PendingStream {
   keepAliveInterval: ReturnType<typeof setInterval>;
   /** Headers extracted from the original request (for MCP forwarding). */
   forwardedHeaders: Record<string, string>;
+  /** Generated message ID for this stream (used in v5 text chunks). */
+  messageId: string;
 }

@@ -1,63 +1,83 @@
 /**
- * AI SDK v5 data-stream SSE encoding utilities.
+ * AI SDK v5 UI Message Stream encoding utilities.
  *
- * Each function produces one or more encoded SSE lines in the format:
- * `TYPE_CODE:JSON_VALUE\n`
+ * V5 uses standard SSE format: `data: JSON\n\n`
+ * Each chunk is a JSON object with a `type` field.
+ *
+ * Protocol reference: https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol
  */
 
 /**
- * Serialise one AI SDK v5 data-stream protocol part.
- * Format: `TYPE_CODE:JSON_VALUE\n`
+ * Encode a single SSE data frame in AI SDK v5 format.
  */
-export function encodeStreamPart(type: string, value: unknown): string {
-  return `${type}:${JSON.stringify(value)}\n`;
+export function encodeSSE(value: Record<string, unknown>): string {
+  return `data: ${JSON.stringify(value)}\n\n`;
 }
 
 /**
- * Split agent body text into word-level text-delta chunks.
- *
- * When textChunkType is null, uses standard "0:" prefix.
- * When textChunkType is set, uses that string as the prefix instead.
+ * Build the stream start chunk.
  */
-export function buildTextChunks(body: string, textChunkType: string | null): string[] {
+export function buildStart(messageId: string): string {
+  return encodeSSE({ type: 'start', messageId });
+}
+
+/**
+ * Build the start-step chunk.
+ */
+export function buildStartStep(): string {
+  return encodeSSE({ type: 'start-step' });
+}
+
+/**
+ * Split agent body text into v5 text-start / text-delta / text-end chunks.
+ * Each chunk is one SSE data frame.
+ *
+ * When textChunkType is null, uses standard text-delta type.
+ * When textChunkType is set, emits a custom data chunk instead (e.g. "data-human-readable").
+ */
+export function buildTextChunks(body: string, textChunkType: string | null, messageId: string): string[] {
+  if (textChunkType) {
+    // Custom chunk type — emit as single data frame
+    return [encodeSSE({ type: textChunkType, data: body })];
+  }
+
+  // Standard v5 text streaming: start → deltas → end
+  const chunks: string[] = [];
+  chunks.push(encodeSSE({ type: 'text-start', id: messageId }));
+
   const tokens = body.match(/\S+\s*/g) ?? [body];
-  return tokens.map((token) =>
-    textChunkType
-      ? `${textChunkType}:${JSON.stringify(token)}\n`
-      : encodeStreamPart('0', token),
-  );
+  for (const token of tokens) {
+    chunks.push(encodeSSE({ type: 'text-delta', id: messageId, delta: token }));
+  }
+
+  chunks.push(encodeSSE({ type: 'text-end', id: messageId }));
+  return chunks;
 }
 
 /**
- * Build the two finish chunks that close an AI SDK stream:
- * 1. finish-step (`e`) — marks the end of a reasoning step
- * 2. finish-message (`d`) — marks the end of the assistant message
+ * Build the finish chunks that close an AI SDK v5 stream:
+ * 1. finish-step
+ * 2. finish (message-level)
  */
 export function buildFinishChunks(): string[] {
-  const finishStep = encodeStreamPart('e', {
-    finishReason: 'stop',
-    usage: { promptTokens: 0, completionTokens: 0 },
-    isContinued: false,
-  });
-  const finishMessage = encodeStreamPart('d', {
-    finishReason: 'stop',
-    usage: { promptTokens: 0, completionTokens: 0 },
-  });
-  return [finishStep, finishMessage];
+  return [
+    encodeSSE({ type: 'finish-step' }),
+    encodeSSE({ type: 'finish' }),
+  ];
+}
+
+/**
+ * The stream terminator required by AI SDK v5.
+ */
+export function buildDone(): string {
+  return 'data: [DONE]\n\n';
 }
 
 /**
  * SSE comment line used as a keep-alive tick.
- * Browsers and proxies treat comment lines as no-ops but they reset
+ * Browsers and proxies treat SSE comment lines as no-ops but they reset
  * connection timeout timers.
  */
 export function buildKeepAlive(): string {
   return ': keep-alive\n\n';
-}
-
-/**
- * Build the start-step chunk (`f`) that opens the stream.
- */
-export function buildStartStep(messageId: string): string {
-  return encodeStreamPart('f', { messageId });
 }
