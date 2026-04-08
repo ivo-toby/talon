@@ -1,30 +1,29 @@
-import { type FormEvent, type KeyboardEvent, useRef } from 'react';
+import { type KeyboardEvent, useRef } from 'react';
 import { Send } from 'lucide-react';
 
 interface InputBarProps {
   input: string;
   isLoading: boolean;
   onChange: (value: string) => void;
-  onSubmit: (e: FormEvent) => void;
+  onSubmit: () => void;
 }
 
 export function InputBar({ input, isLoading, onChange, onSubmit }: InputBarProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    // Guard against IME composition (CJK input)
+    if (e.nativeEvent.isComposing) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       if (input.trim() && !isLoading) {
-        onSubmit(e as unknown as FormEvent);
+        onSubmit();
       }
     }
   }
 
   return (
-    <form
-      onSubmit={onSubmit}
-      className="flex items-end gap-3 px-4 py-4 border-t border-gray-800 bg-gray-950"
-    >
+    <div className="flex items-end gap-3 px-4 py-4 border-t border-gray-800 bg-gray-950">
       <textarea
         ref={textareaRef}
         rows={1}
@@ -37,13 +36,14 @@ export function InputBar({ input, isLoading, onChange, onSubmit }: InputBarProps
         style={{ fieldSizing: 'content' } as React.CSSProperties}
       />
       <button
-        type="submit"
+        type="button"
+        onClick={onSubmit}
         disabled={isLoading || !input.trim()}
         className="flex items-center justify-center w-10 h-10 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-xl transition-colors shrink-0"
         aria-label="Send message"
       >
         <Send size={16} />
       </button>
-    </form>
+    </div>
   );
 }

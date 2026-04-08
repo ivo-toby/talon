@@ -1,42 +1,43 @@
+import { useState } from 'react';
 import { useChat } from '@ai-sdk/react';
+import { DefaultChatTransport } from 'ai';
 import { config } from './config';
 import { useThreadId } from './hooks/useThreadId';
-import { useArtifacts } from './hooks/useArtifacts';
 import { ChatWindow } from './components/ChatWindow';
 import { InputBar } from './components/InputBar';
-import { ArtifactPanel } from './components/ArtifactPanel';
 import { StatusBar } from './components/StatusBar';
 import { Sidebar } from './components/Sidebar';
 
 export function App() {
   const { threadId, resetThread } = useThreadId(config.threadStorageKey);
+  const [input, setInput] = useState('');
 
   const {
     messages,
-    input,
-    handleInputChange,
-    handleSubmit,
+    sendMessage,
     status,
-    data,
     error,
     setMessages,
   } = useChat({
-    api: config.streamUrl,
     id: threadId,
+    transport: new DefaultChatTransport({ api: config.streamUrl }),
     onError: (err) => {
       console.error('Chat error:', err);
     },
   });
 
-  const artifacts = useArtifacts((data ?? []) as object[]);
+  const isLoading = status === 'submitted' || status === 'streaming';
 
   function handleNewThread() {
     setMessages([]);
     resetThread();
   }
 
-  function handleInputBarChange(value: string) {
-    handleInputChange({ target: { value } } as React.ChangeEvent<HTMLInputElement>);
+  async function handleSubmit() {
+    const text = input.trim();
+    if (!text || isLoading) return;
+    setInput('');
+    await sendMessage({ text });
   }
 
   return (
@@ -52,7 +53,7 @@ export function App() {
 
         <div className="flex flex-1 min-h-0">
           <div className="flex flex-col flex-1 min-w-0">
-            <ChatWindow messages={messages} isLoading={status === 'submitted' || status === 'streaming'} />
+            <ChatWindow messages={messages} isLoading={isLoading} />
             {error && (
               <div className="px-4 py-2 text-xs text-red-400 bg-red-950 border-t border-red-900">
                 Error: {error.message}
@@ -60,13 +61,11 @@ export function App() {
             )}
             <InputBar
               input={input}
-              isLoading={status === 'submitted' || status === 'streaming'}
-              onChange={handleInputBarChange}
+              isLoading={isLoading}
+              onChange={setInput}
               onSubmit={handleSubmit}
             />
           </div>
-
-          <ArtifactPanel artifacts={artifacts} />
         </div>
       </div>
     </div>

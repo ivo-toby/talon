@@ -1,10 +1,10 @@
 import { useEffect, useRef } from 'react';
-import type { Message } from '@ai-sdk/react';
+import type { UIMessage } from 'ai';
 import { MessageBubble } from './MessageBubble';
 import { Bot } from 'lucide-react';
 
 interface ChatWindowProps {
-  messages: Message[];
+  messages: UIMessage[];
   isLoading: boolean;
 }
 
@@ -30,8 +30,7 @@ export function ChatWindow({ messages, isLoading }: ChatWindowProps) {
         <MessageBubble
           key={msg.id}
           role={msg.role as 'user' | 'assistant'}
-          content={msg.content}
-          createdAt={msg.createdAt ?? new Date()}
+          parts={msg.parts}
         />
       ))}
       {isLoading && (

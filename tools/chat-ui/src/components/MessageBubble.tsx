@@ -1,14 +1,20 @@
 import { markdownToHtml } from '../lib/markdown';
-import { formatTime } from '../lib/format';
 
 interface MessageBubbleProps {
   role: 'user' | 'assistant';
-  content: string;
-  createdAt: Date;
+  parts: Array<{ type: string; text?: string; [key: string]: unknown }>;
 }
 
-export function MessageBubble({ role, content, createdAt }: MessageBubbleProps) {
+function extractText(parts: MessageBubbleProps['parts']): string {
+  return parts
+    .filter((p) => p.type === 'text')
+    .map((p) => p.text ?? '')
+    .join('');
+}
+
+export function MessageBubble({ role, parts }: MessageBubbleProps) {
   const isUser = role === 'user';
+  const content = extractText(parts);
 
   return (
     <div className={`flex flex-col gap-1 ${isUser ? 'items-end' : 'items-start'}`}>
@@ -28,7 +34,6 @@ export function MessageBubble({ role, content, createdAt }: MessageBubbleProps) 
           />
         )}
       </div>
-      <span className="text-xs text-gray-500 px-1">{formatTime(createdAt.getTime())}</span>
     </div>
   );
 }
