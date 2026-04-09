@@ -1086,4 +1086,125 @@ describe('SkillLoader', () => {
       expect(skills[1].stagedSandbox).toBeNull();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // loadFromPersonaConfig — workdir:repo + repoPath validation warnings
+  // -------------------------------------------------------------------------
+
+  describe('loadFromPersonaConfig — workdir:repo repoPath warnings', () => {
+    /**
+     * Writes a skill manifest with a sandbox block using proper YAML nesting.
+     * The sandbox schema requires `skill.exec:<name>` in requiredCapabilities.
+     */
+    async function writeManifestWithSandbox(
+      skillDir: string,
+      name: string,
+      workdir: string,
+    ): Promise<void> {
+      const yaml = [
+        `name: ${name}`,
+        `version: "1.0.0"`,
+        `description: "Skill with sandbox"`,
+        `requiredCapabilities:`,
+        `  - skill.exec:${name}`,
+        `sandbox:`,
+        `  workdir: ${workdir}`,
+        `  bins:`,
+        `    - bash`,
+        `    - node`,
+      ].join('\n');
+      await writeFile(join(skillDir, 'skill.yaml'), yaml, 'utf-8');
+    }
+
+    beforeEach(() => {
+      // Mock sandbox staging so tests don't depend on real binary availability.
+      vi.spyOn(sandboxStaging, 'stageSkillSandbox').mockResolvedValue(
+        { isOk: () => true, isErr: () => false, value: { binDir: '/tmp/staged-bins', cleanup: async () => {} }, _unsafeUnwrap: () => ({ binDir: '/tmp/staged-bins', cleanup: async () => {} }) } as ReturnType<typeof import('neverthrow').ok<sandboxStaging.StagedSkillSandbox, sandboxStaging.StagingError>>,
+      );
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('does not warn when persona has repoPath and skill uses workdir:repo', async () => {
+      const skillDir = join(dataDir, 'skills', 'repo-skill');
+      await mkdir(skillDir, { recursive: true });
+      await writeManifestWithSandbox(skillDir, 'repo-skill', 'repo');
+
+      const personas = [
+        { name: 'dev-persona', skills: ['repo-skill'], repoPath: '/home/user/repo' },
+      ];
+
+      const result = await loader.loadFromPersonaConfig(personas, dataDir);
+      expect(result.isOk()).toBe(true);
+
+      const warnCalls = (logger.warn as ReturnType<typeof vi.fn>).mock.calls;
+      const repoPathWarnings = warnCalls.filter(
+        (call: unknown[]) => typeof call[1] === 'string' && call[1].includes('repoPath'),
+      );
+      expect(repoPathWarnings).toHaveLength(0);
+    });
+
+    it('warns when persona lacks repoPath and skill uses workdir:repo', async () => {
+      const skillDir = join(dataDir, 'skills', 'repo-skill');
+      await mkdir(skillDir, { recursive: true });
+      await writeManifestWithSandbox(skillDir, 'repo-skill', 'repo');
+
+      const personas = [
+        { name: 'no-repo-persona', skills: ['repo-skill'] },
+      ];
+
+      const result = await loader.loadFromPersonaConfig(personas, dataDir);
+      expect(result.isOk()).toBe(true);
+
+      const warnCalls = (logger.warn as ReturnType<typeof vi.fn>).mock.calls;
+      const repoPathWarnings = warnCalls.filter(
+        (call: unknown[]) => typeof call[1] === 'string' && call[1].includes('repoPath'),
+      );
+      expect(repoPathWarnings).toHaveLength(1);
+      expect(repoPathWarnings[0][0]).toEqual(
+        expect.objectContaining({ skill: 'repo-skill', persona: 'no-repo-persona' }),
+      );
+      expect(repoPathWarnings[0][1]).toContain('repo-skill_exec will be unavailable');
+    });
+
+    it('does not warn when skill uses workdir:skill-bundle regardless of repoPath', async () => {
+      const skillDir = join(dataDir, 'skills', 'bundle-skill');
+      await mkdir(skillDir, { recursive: true });
+      await writeManifestWithSandbox(skillDir, 'bundle-skill', 'skill-bundle');
+
+      const personas = [
+        { name: 'any-persona', skills: ['bundle-skill'] },
+      ];
+
+      const result = await loader.loadFromPersonaConfig(personas, dataDir);
+      expect(result.isOk()).toBe(true);
+
+      const warnCalls = (logger.warn as ReturnType<typeof vi.fn>).mock.calls;
+      const repoPathWarnings = warnCalls.filter(
+        (call: unknown[]) => typeof call[1] === 'string' && call[1].includes('repoPath'),
+      );
+      expect(repoPathWarnings).toHaveLength(0);
+    });
+
+    it('does not warn when skill has no sandbox block regardless of repoPath', async () => {
+      const skillDir = join(dataDir, 'skills', 'plain-skill');
+      await mkdir(skillDir, { recursive: true });
+      await writeMinimalManifest(skillDir, { name: 'plain-skill' });
+
+      const personas = [
+        { name: 'plain-persona', skills: ['plain-skill'] },
+      ];
+
+      const result = await loader.loadFromPersonaConfig(personas, dataDir);
+      expect(result.isOk()).toBe(true);
+
+      const warnCalls = (logger.warn as ReturnType<typeof vi.fn>).mock.calls;
+      const repoPathWarnings = warnCalls.filter(
+        (call: unknown[]) => typeof call[1] === 'string' && call[1].includes('repoPath'),
+      );
+      expect(repoPathWarnings).toHaveLength(0);
+    });
+  });
 });

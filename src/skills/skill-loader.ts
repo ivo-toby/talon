@@ -249,7 +249,7 @@ export class SkillLoader {
    * @returns `Ok(LoadedSkill[])` on success, `Err(SkillError)` on first failure.
    */
   async loadFromPersonaConfig(
-    personas: { skills: string[] }[],
+    personas: { name: string; skills: string[]; repoPath?: string }[],
     dataDir: string,
   ): Promise<Result<LoadedSkill[], SkillError>> {
     const uniqueSkillNames = new Set<string>();
@@ -286,7 +286,34 @@ export class SkillLoader {
       return ok([]);
     }
 
-    return this.loadMultiple(skillDirs, dataDir);
+    const loadResult = await this.loadMultiple(skillDirs, dataDir);
+    if (loadResult.isErr()) return loadResult;
+
+    const loadedSkills = loadResult.value;
+
+    // Build a name → LoadedSkill map for quick lookup.
+    const skillByName = new Map<string, LoadedSkill>();
+    for (const skill of loadedSkills) {
+      skillByName.set(skill.manifest.name, skill);
+    }
+
+    // Warn when a persona binds a skill that requires workdir:repo but has
+    // no repoPath configured. The skill still loads — hard gating happens at
+    // invocation time in SkillExecHandler.
+    for (const persona of personas) {
+      if (persona.repoPath) continue;
+      for (const skillName of persona.skills) {
+        const skill = skillByName.get(skillName);
+        if (skill?.manifest.sandbox?.workdir === 'repo') {
+          this.logger.warn(
+            { skill: skillName, persona: persona.name },
+            `skill '${skillName}' requires workdir:repo but persona '${persona.name}' has no repoPath configured — ${skillName}_exec will be unavailable`,
+          );
+        }
+      }
+    }
+
+    return ok(loadedSkills);
   }
 
   // -------------------------------------------------------------------------
