@@ -1,7 +1,8 @@
 import { existsSync, realpathSync } from 'node:fs';
-import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, resolve } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import { ExecutionEnvError } from '../core/errors/error-types.js';
+import { isPathWithinBase } from '../core/fs/path-containment.js';
 
 function canonicalizePath(path: string): string {
   const resolvedPath = resolve(path);
@@ -25,10 +26,6 @@ function canonicalizePath(path: string): string {
   }
 }
 
-function isWithinRoot(candidate: string, root: string): boolean {
-  return candidate === root || candidate.startsWith(`${root}${sep}`);
-}
-
 export function resolveAllowedHostPath(
   candidatePath: string,
   allowedRoots: string[],
@@ -49,7 +46,7 @@ export function resolveAllowedHostPath(
     ? canonicalizePath(candidatePath)
     : resolveRelativeHostPath(candidatePath, normalizedRoots);
 
-  if (!normalizedRoots.some((root) => isWithinRoot(resolvedCandidate, root))) {
+  if (!normalizedRoots.some((root) => isPathWithinBase(resolvedCandidate, root))) {
     return err(
       new ExecutionEnvError(
         `execution_env: [HOST_PATH_NOT_ALLOWED] path "${candidatePath}" is outside allowed roots`,
@@ -65,7 +62,7 @@ function resolveRelativeHostPath(candidatePath: string, normalizedRoots: string[
 
   for (const root of normalizedRoots) {
     const candidate = canonicalizePath(resolve(root, candidatePath));
-    if (!isWithinRoot(candidate, root)) {
+    if (!isPathWithinBase(candidate, root)) {
       continue;
     }
     if (existsSync(candidate)) {
