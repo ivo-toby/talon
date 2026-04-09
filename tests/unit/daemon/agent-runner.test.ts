@@ -3292,4 +3292,97 @@ describe('AgentRunner', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // Task 5.5: Skill-exec tool expansion in agent runs
+  // ---------------------------------------------------------------------------
+
+  describe('skill-exec tool expansion', () => {
+    it('includes <skill>_exec tools in TALOND_ALLOWED_TOOLS when persona has skill.exec capability and exec-capable skills', async () => {
+      // Configure a persona with skill.exec:contentful capability
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'claude-sonnet-4-20250514',
+          skills: ['contentful'],
+          capabilities: {
+            allow: ['channel.send:*', 'skill.exec:contentful'],
+          },
+        },
+        systemPromptContent: 'You are a test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*', 'skill.exec:contentful'],
+          requireApproval: [],
+        },
+      } as any));
+
+      // Add a loaded skill with sandbox config
+      ctx.loadedSkills.push({
+        manifest: {
+          name: 'contentful',
+          sandbox: {
+            workdir: 'repo',
+            mounts: [],
+            network: 'on',
+            secrets: ['CONTENTFUL_TOKEN'],
+            env: {},
+            bins: ['bash', 'node'],
+            image: 'talon-skill-runtime:latest',
+            shell: '/bin/bash',
+            timeoutSeconds: 60,
+            resourceLimits: { cpus: 1, memoryMb: 512, diskGb: 1 },
+          },
+        },
+        skillDir: '/tmp/skills/contentful',
+        format: 'yaml',
+        promptContents: ['Use contentful API'],
+        resolvedToolManifests: [],
+        resolvedMcpServers: [],
+        stagedSandbox: {
+          binDir: '/tmp/bins',
+          resolvedBins: { bash: '/bin/bash', node: '/usr/bin/node' },
+          canonicalMounts: [],
+        },
+        migrations: [],
+      } as any);
+
+      const item = makeQueueItem();
+      await runner.run(item);
+
+      // Verify contentful_exec appears in TALOND_ALLOWED_TOOLS
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any> };
+      };
+      const hostToolsEnv = queryCall.options.mcpServers.__talond_host_tools.env;
+      const allowedTools = (hostToolsEnv.TALOND_ALLOWED_TOOLS as string)
+        .split(',')
+        .filter(Boolean);
+      expect(allowedTools).toContain('contentful_exec');
+
+      // Verify TALOND_SKILL_EXEC_TOOLS is set with correct metadata
+      expect(hostToolsEnv.TALOND_SKILL_EXEC_TOOLS).toBeDefined();
+      const skillExecTools = JSON.parse(hostToolsEnv.TALOND_SKILL_EXEC_TOOLS as string) as Array<{
+        mcpName: string;
+        skillName: string;
+        description: string;
+      }>;
+      expect(skillExecTools).toHaveLength(1);
+      expect(skillExecTools[0]!.mcpName).toBe('contentful_exec');
+      expect(skillExecTools[0]!.skillName).toBe('contentful');
+      expect(skillExecTools[0]!.description).toContain('contentful');
+      expect(skillExecTools[0]!.description).toContain('CONTENTFUL_TOKEN');
+      expect(skillExecTools[0]!.description).toContain('Network: on');
+    });
+
+    it('does not include TALOND_SKILL_EXEC_TOOLS when no skill-exec tools are expanded', async () => {
+      // Default persona has no skill.exec capabilities
+      const item = makeQueueItem();
+      await runner.run(item);
+
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any> };
+      };
+      const hostToolsEnv = queryCall.options.mcpServers.__talond_host_tools.env;
+      expect(hostToolsEnv.TALOND_SKILL_EXEC_TOOLS).toBeUndefined();
+    });
+  });
+
 });

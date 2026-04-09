@@ -7,7 +7,8 @@ import { z } from 'zod';
 import type { DaemonContext } from './daemon-context.js';
 import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
-import { filterAllowedMcpTools } from '../tools/tool-filter.js';
+import { filterAllowedMcpTools, type ToolExpansionContext, resetSkillExecLookup } from '../tools/tool-filter.js';
+import { buildSkillExecDescription, type SkillExecToolMeta } from '../tools/skill-exec-description.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import {
@@ -328,11 +329,48 @@ export class AgentRunner {
             };
 
             // Determine which host tools this persona may use based on capabilities.
-            let allowedMcpTools = filterAllowedMcpTools(
-              loadedPersona.resolvedCapabilities ?? { allow: [], requireApproval: [] },
-            );
+            // Build expansion context so skill.exec capabilities expand to per-skill
+            // MCP tool names (e.g. skill.exec:contentful → contentful_exec).
+            const resolvedCaps = loadedPersona.resolvedCapabilities ?? { allow: [], requireApproval: [] };
+
+            // Reset the reverse lookup map before each run to avoid stale entries
+            // from previous runs with different persona/skill sets.
+            resetSkillExecLookup();
+
+            const expansionContext: ToolExpansionContext = {
+              personaId,
+              capabilities: resolvedCaps,
+              loadedSkills: personaSkills.map((s) => ({
+                manifest: { name: s.manifest.name, sandbox: s.manifest.sandbox },
+                stagedSandbox: s.stagedSandbox as Record<string, unknown> | null,
+              })),
+            };
+
+            let allowedMcpTools = filterAllowedMcpTools(resolvedCaps, expansionContext);
             if (!this.ctx.backgroundAgentManager) {
               allowedMcpTools = allowedMcpTools.filter((toolName) => toolName !== 'background_agent');
+            }
+
+            // Build TALOND_SKILL_EXEC_TOOLS metadata for the external MCP server.
+            // Only include tools that passed capability filtering.
+            const skillExecToolMeta: SkillExecToolMeta[] = [];
+            for (const mcpToolName of allowedMcpTools) {
+              if (!mcpToolName.endsWith('_exec')) continue;
+              // Find the matching skill to get the sandbox profile
+              const matchingSkill = personaSkills.find((s) => {
+                const sanitized = s.manifest.name.toLowerCase().replace(/-/g, '_') + '_exec';
+                return sanitized === mcpToolName;
+              });
+              if (matchingSkill?.manifest.sandbox) {
+                skillExecToolMeta.push({
+                  mcpName: mcpToolName,
+                  skillName: matchingSkill.manifest.name,
+                  description: buildSkillExecDescription(
+                    matchingSkill.manifest.sandbox,
+                    matchingSkill.manifest.name,
+                  ),
+                });
+              }
             }
 
             this.ctx.logger.info(
@@ -553,6 +591,9 @@ export class AgentRunner {
                         TALOND_ALLOWED_TOOLS: allowedMcpTools.join(','),
                         TALOND_ALLOWED_HOST_ROOTS: JSON.stringify([workspaceResult.value]),
                         TALOND_TRACEPARENT: generationObservation.getTraceparent() ?? '',
+                        ...(skillExecToolMeta.length > 0 ? {
+                          TALOND_SKILL_EXEC_TOOLS: JSON.stringify(skillExecToolMeta),
+                        } : {}),
                         ...(isA2ATask && a2aTaskId ? {
                           TALOND_A2A_TASK_ID: a2aTaskId,
                           TALOND_A2A_HOP_COUNT: String(

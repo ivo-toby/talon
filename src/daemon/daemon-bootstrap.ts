@@ -51,6 +51,9 @@ import { ThreadWorkspace } from '../memory/thread-workspace.js';
 import { SessionTracker } from '../sandbox/session-tracker.js';
 
 import { HostToolsBridge } from '../tools/host-tools-bridge.js';
+import { SkillExecHandler } from '../tools/host-tools/skill-exec.js';
+import { createSkillScriptRunner } from '../skills/script-runner/index.js';
+import { EnvSecretStore } from '../core/secrets/env-secret-store.js';
 import { BackgroundAgentManager } from '../subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import { SpritesClient } from '../execution-env/sprites-client.js';
@@ -520,7 +523,47 @@ export async function bootstrap(
     a2aTaskMapper,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
-  const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
+  // 18. SkillExecHandler wiring (optional — only when sandbox-capable skills exist)
+  let skillExecHandler: SkillExecHandler | undefined;
+  const hasExecSkills = loadedSkills.value.some((s) => s.manifest.sandbox && s.stagedSandbox);
+  if (hasExecSkills) {
+    try {
+      const runner = await createSkillScriptRunner({ logger, dataDir });
+      if (!runner) {
+        logger.warn('bootstrap: no sandbox backend available, skill.exec tools will be unavailable');
+      } else {
+        const secretStore = new EnvSecretStore({ dataDir, logger });
+
+        skillExecHandler = new SkillExecHandler({
+          runner,
+          secretStore,
+          auditLogger,
+          logger,
+          dataDir,
+          getLoadedSkill: (skillName: string, _personaId: string) => {
+            return loadedSkills.value.find((s) => s.manifest.name === skillName);
+          },
+          getPersonaRepoPath: (personaId: string) => {
+            const row = repos.persona.findById(personaId);
+            if (row.isErr() || !row.value) return undefined;
+            const loaded = personaLoader.getByName(row.value.name);
+            if (loaded.isErr() || !loaded.value) return undefined;
+            return loaded.value.config.repoPath;
+          },
+        });
+        logger.info('bootstrap: SkillExecHandler initialized');
+      }
+    } catch (cause) {
+      logger.warn(
+        { err: cause },
+        'bootstrap: failed to create SkillExecHandler, skill.exec tools will be unavailable',
+      );
+    }
+  }
+
+  const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext, {
+    skillExecHandler,
+  });
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;
 

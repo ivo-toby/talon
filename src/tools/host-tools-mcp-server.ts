@@ -16,6 +16,9 @@
  *                          may use (e.g. "channel_send,memory_access"). When set,
  *                          only these tools are listed and callable. When unset or
  *                          empty, NO host tools are exposed (secure default).
+ *   TALOND_SKILL_EXEC_TOOLS - JSON array of SkillExecToolMeta objects describing
+ *                             dynamic `<skill>_exec` tools to expose. Parsed at
+ *                             startup; invalid JSON is silently ignored.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -26,6 +29,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 
 import { MCP_TO_INTERNAL } from './tool-filter.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
+import { SKILL_EXEC_INPUT_SCHEMA, type SkillExecToolMeta } from './skill-exec-description.js';
 
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
@@ -571,6 +575,40 @@ function parseAllowedTools(): Set<string> {
   return new Set(names);
 }
 
+/**
+ * Parse TALOND_SKILL_EXEC_TOOLS into an array of SkillExecToolMeta objects.
+ *
+ * Returns an empty array when the env var is missing, empty, or contains
+ * invalid JSON. Each entry is validated for required fields.
+ */
+function parseSkillExecTools(): SkillExecToolMeta[] {
+  const raw = process.env.TALOND_SKILL_EXEC_TOOLS;
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) {
+      console.error('[host-tools-mcp] TALOND_SKILL_EXEC_TOOLS is not an array, ignoring');
+      return [];
+    }
+
+    return parsed.filter((entry: unknown): entry is SkillExecToolMeta => {
+      if (typeof entry !== 'object' || entry === null) return false;
+      const obj = entry as Record<string, unknown>;
+      return (
+        typeof obj.mcpName === 'string' &&
+        typeof obj.skillName === 'string' &&
+        typeof obj.description === 'string'
+      );
+    });
+  } catch {
+    console.error('[host-tools-mcp] Failed to parse TALOND_SKILL_EXEC_TOOLS, ignoring');
+    return [];
+  }
+}
+
 function parseOptionalJsonStringArray(raw: string | undefined): string[] | undefined {
   if (!raw) {
     return undefined;
@@ -610,6 +648,19 @@ async function main(): Promise<void> {
   const allowedSet = parseAllowedTools();
   const filteredTools = TOOLS.filter((t) => allowedSet.has(t.name));
 
+  // Parse dynamic skill-exec tools from env var.
+  const skillExecTools = parseSkillExecTools();
+  const skillExecToolNames = new Set(skillExecTools.map((t) => t.mcpName));
+
+  // Build the dynamic tool definitions for skill-exec tools.
+  const dynamicSkillExecToolDefs = skillExecTools
+    .filter((t) => allowedSet.has(t.mcpName))
+    .map((t) => ({
+      name: t.mcpName,
+      description: t.description,
+      inputSchema: SKILL_EXEC_INPUT_SCHEMA,
+    }));
+
   console.error('[host-tools-mcp] Starting with socket:', socketPath);
   console.error(
     '[host-tools-mcp] Context: runId=%s threadId=%s personaId=%s',
@@ -621,6 +672,12 @@ async function main(): Promise<void> {
     '[host-tools-mcp] Allowed tools: %s',
     filteredTools.length > 0 ? filteredTools.map((t) => t.name).join(', ') : '(none)',
   );
+  if (dynamicSkillExecToolDefs.length > 0) {
+    console.error(
+      '[host-tools-mcp] Dynamic skill-exec tools: %s',
+      dynamicSkillExecToolDefs.map((t) => t.name).join(', '),
+    );
+  }
 
   const client = new SocketClient(socketPath);
 
@@ -638,7 +695,7 @@ async function main(): Promise<void> {
 
   server.setRequestHandler(ListToolsRequestSchema, () => {
     return {
-      tools: filteredTools,
+      tools: [...filteredTools, ...dynamicSkillExecToolDefs],
     };
   });
 
@@ -661,7 +718,12 @@ async function main(): Promise<void> {
       };
     }
 
-    const handlerName = TOOL_NAME_MAP[name];
+    // Dynamic skill-exec tools are sent to the bridge using the raw MCP
+    // name (e.g. "contentful_exec"). The bridge normalises this to
+    // "skill.exec" internally and uses the reverse lookup map to resolve
+    // the original skill name.
+    const isSkillExecTool = skillExecToolNames.has(name);
+    const handlerName = isSkillExecTool ? name : TOOL_NAME_MAP[name];
     if (!handlerName) {
       return {
         content: [
