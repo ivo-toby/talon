@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { SkillSandboxProfileSchema } from './skill-sandbox-schema.js';
 
 // ---------------------------------------------------------------------------
 // Capability label pattern (permissive — loader emits warnings for mismatches)
@@ -71,6 +72,20 @@ export const SkillManifestSchema = z.object({
    * Auto-discovered from migrations/*.sql by the loader.
    */
   migrations: z.array(z.string()).default([]),
+
+  /** Optional sandbox execution profile for skill scripts. */
+  sandbox: SkillSandboxProfileSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.sandbox !== undefined) {
+    const required = `skill.exec:${value.name}`;
+    if (!value.requiredCapabilities.includes(required)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Skills with a sandbox block must include '${required}' in requiredCapabilities`,
+        path: ['requiredCapabilities'],
+      });
+    }
+  }
 });
 
 export const SkillMdFrontmatterSchema = z.object({
@@ -78,6 +93,20 @@ export const SkillMdFrontmatterSchema = z.object({
   version: z.string().min(1).default('0.1.0'),
   description: z.string().min(1, 'skill description must be non-empty'),
   requiredCapabilities: z.array(CapabilityLabelSchema).default([]),
+
+  /** Optional sandbox execution profile for skill scripts. */
+  sandbox: SkillSandboxProfileSchema.optional(),
+}).superRefine((value, ctx) => {
+  if (value.sandbox !== undefined) {
+    const required = `skill.exec:${value.name}`;
+    if (!value.requiredCapabilities.includes(required)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Skills with a sandbox block must include '${required}' in requiredCapabilities`,
+        path: ['requiredCapabilities'],
+      });
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
