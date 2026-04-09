@@ -18,11 +18,13 @@ function makeLoadedSkill(name: string, servers: McpServerDef[]): LoadedSkill {
       mcpServers: [],
       migrations: [],
     },
+    skillDir: `/fake/skills/${name}`,
     format: 'yaml',
     promptContents: [`prompt:${name}`],
     resolvedToolManifests: [],
     resolvedMcpServers: servers,
     migrationPaths: [],
+    stagedSandbox: null,
   };
 }
 

@@ -205,6 +205,7 @@ export class SkillLoader {
 
     const loaded: LoadedSkill = {
       manifest,
+      skillDir,
       format: 'yaml',
       promptContents,
       resolvedToolManifests,
@@ -477,6 +478,7 @@ export class SkillLoader {
 
     const loaded: LoadedSkill = {
       manifest,
+      skillDir,
       format: 'skillmd',
       promptContents: body.length > 0 ? [body] : [],
       resolvedToolManifests,

@@ -76,10 +76,13 @@ function makeLoadedSkill(
       mcpServers: [],
       migrations: [],
     },
+    skillDir: `/fake/skills/${name}`,
+    format: 'yaml',
     promptContents: [],
     resolvedToolManifests: [],
     resolvedMcpServers: [],
     migrationPaths: [],
+    stagedSandbox: null,
     ...overrides,
   };
 }

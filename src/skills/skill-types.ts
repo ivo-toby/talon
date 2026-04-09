@@ -93,6 +93,8 @@ export interface SkillManifest {
 export interface LoadedSkill {
   /** The validated manifest from skill.yaml. */
   manifest: SkillManifest;
+  /** Absolute path to the skill's root directory on disk. */
+  skillDir: string;
   /** Source manifest format used to load this skill. */
   format: 'yaml' | 'skillmd';
   /**
