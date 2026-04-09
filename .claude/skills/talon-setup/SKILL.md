@@ -122,6 +122,29 @@ npx talonctl add-skill --name my-skill --persona assistant --format skillmd
 npx talonctl add-skill --name my-skill --persona assistant
 ```
 
+## Installing external skills
+
+To install a skill from a local path or git repository:
+
+```bash
+npx talonctl install-skill <source> [--persona <name>]
+```
+
+Sources:
+- Local: `npx talonctl install-skill ./path/to/skill/`
+- Git: `npx talonctl install-skill https://github.com/user/skill-repo`
+- Git with ref: `npx talonctl install-skill https://github.com/user/skill-repo#v1.0`
+
+The installer will:
+1. Fetch the skill to a staging area
+2. Parse and validate the SKILL.md
+3. If the skill has a `sandbox:` block, show it for review and require approval
+4. If no `sandbox:` block but executable code fences exist, propose one based on detected bins/env vars/URLs
+5. Copy to `{dataDir}/skills/<name>/`
+6. Grant `skill.exec:<name>` capability to the target persona
+
+Script-enabled skills run commands in a bubblewrap (Linux) or Apple Container (macOS) sandbox. There is no host fallback — if neither is available, script execution is disabled.
+
 ## Full setup flow
 
 ### Step 1: Prerequisites
