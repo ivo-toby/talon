@@ -46,7 +46,9 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Tools     | `src/tools/`               | 11 host-tools + capability-based filtering via `tool-filter.ts`     |
 | MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |
 | Personas  | `src/personas/`            | Persona config loading + capability merging                         |
-| Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool) |
+| Skills    | `src/skills/`              | Declarative skill bundles with lazy loading + optional sandbox script execution via `sandbox:` block |
+| Script Runner | `src/skills/script-runner/` | Bubblewrap/Apple Container sandbox backends for skill script execution |
+| Secrets       | `src/core/secrets/`         | Daemon-level secret store for sandbox env var injection                |
 | SubAgents | `src/subagents/`           | Loader, model resolver, runner for cheap-model sub-agent tasks      |
 | Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema) |
 | Database  | `src/core/database/`       | better-sqlite3 wrapper, 14 repositories, SQL migrations             |
@@ -62,6 +64,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 - **Skills are declarative** — two formats: `skill.yaml` + `prompts/*.md` (legacy) or single `SKILL.md` with YAML frontmatter (preferred). No executable code in skills.
 - **Lazy skill loading** — only skill name + description injected into system prompts. Full content loaded on demand via `skill_load` tool (in-process MCP server for Claude SDK, external MCP server for Gemini CLI and Codex CLI). Background agents use eager loading.
 - **Internal MCP server prefix** — `__talond_` prefix is reserved for internal MCP servers (`__talond_host_tools`, `__talond_skill_loader`). User-defined servers with this prefix are rejected.
+- **Skill script execution** — skills can declare a `sandbox:` block in SKILL.md frontmatter. Each script-enabled skill gets a single `<skill>_exec` MCP tool that runs agent-supplied shell commands inside bubblewrap (Linux) or Apple Container (macOS). No host fallback. `bins[]` controls PATH; `secrets[]` injects env vars from a daemon-level store. `skill.exec:<name>` capability gates access. Dynamic `HOST_TOOL_REGISTRY` expansion maps one capability prefix to N MCP tool names derived from loaded skills.
 - **Multi-connector** — Multiple connector instances of the same channel type are supported. Channels are keyed by `name` (unique), not `type`. Slack and Discord filter all bot messages at the platform level; Telegram filters sibling Talon bot IDs injected at startup; WhatsApp Baileys uses JID-based self-filtering. WhatsApp Business has no bot-self filtering.
 
 ### Database

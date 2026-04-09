@@ -901,6 +901,68 @@ granted = persona.capabilities ∩ skill.requiredCapabilities
 
 Skills with unmet capabilities produce a warning at startup and are skipped.
 
+### Skill Script Execution
+
+Skills can declare a `sandbox:` block in their SKILL.md frontmatter to enable agent-callable script execution. When a script-enabled skill is loaded, the daemon registers a `<skill>_exec(command)` MCP tool that runs arbitrary shell commands inside a sandboxed container.
+
+**Example SKILL.md with sandbox block:**
+
+```markdown
+---
+name: contentful
+description: Manage Contentful CMS entries
+sandbox:
+  image: node:22-slim
+  bins: [node, npx, curl, jq]
+  env:
+    CONTENTFUL_SPACE_ID: ""
+  secrets: [CONTENTFUL_MANAGEMENT_TOKEN]
+  workdir: repo
+  readOnly: true
+  network: true
+  maxExecutionSeconds: 30
+---
+
+## Instructions
+
+Use `contentful_exec` to run Contentful CLI commands...
+```
+
+**How it works:**
+
+- The agent calls `contentful_exec(command: "npx contentful space list")` just like any other MCP tool
+- The command runs inside **bubblewrap** (Linux) or **Apple Container** (macOS) -- there is no host fallback
+- `bins[]` controls which executables are available on PATH inside the sandbox
+- `secrets[]` injects values from the daemon-level secret store (`talonctl secret set <key>`) as environment variables
+- `workdir: repo` mounts the persona's `repoPath` as the working directory
+
+**Capability gating:**
+
+Each script-enabled skill requires the `skill.exec:<name>` capability. For the example above:
+
+```yaml
+personas:
+  - name: assistant
+    skills: [contentful]
+    capabilities:
+      allow:
+        - skill.exec:contentful    # grants the contentful_exec tool
+```
+
+**Installing external skills:**
+
+```bash
+# Install from a git repo, local tarball, or directory
+npx talonctl install-skill <source>
+
+# Examples:
+npx talonctl install-skill https://github.com/org/talon-skill-contentful.git
+npx talonctl install-skill ./my-skill.tgz
+npx talonctl install-skill /path/to/skill-dir
+```
+
+Installed skills are placed in `<dataDir>/skills/` and available to all personas.
+
 ---
 
 ## Sub-Agents

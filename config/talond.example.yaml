@@ -192,5 +192,16 @@ langfuse:
   # flushAt: 20                   # spans buffered before flush
   # flushIntervalSeconds: 5       # max seconds between flushes
 
+# --- Example: persona with a script-enabled skill ---
+# personas:
+#   - name: dev-assistant
+#     repoPath: /home/user/projects/myrepo    # required for skills with workdir: repo
+#     skills:
+#       - contentful                           # skill with sandbox: block in SKILL.md
+#     capabilities:
+#       allow:
+#         - skill.exec:contentful              # grants the contentful_exec tool
+#         - channel.send:*
+
 logLevel: info
 dataDir: data
