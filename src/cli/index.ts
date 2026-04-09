@@ -48,6 +48,7 @@ import { resetProviderAffinityCommand } from './commands/reset-provider-affinity
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 import { setCapabilitiesCommand } from './commands/set-capabilities.js';
 import { a2aListCommand, a2aSendCommand } from './commands/a2a.js';
+import { installSkillCommand } from './commands/install-skill.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -635,6 +636,24 @@ program
     await whatsappAuthCommand({
       authDir: opts.authDir,
       timeout,
+    });
+  });
+
+// ---------------------------------------------------------------------------
+// Skill install command
+// ---------------------------------------------------------------------------
+
+program
+  .command('install-skill')
+  .description('Install an external skill from a local path or Git URL')
+  .argument('<source>', 'Skill source: local path or Git URL')
+  .option('--persona <name>', 'Persona to grant the skill to')
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .action(async (source: string, opts: { persona?: string; config: string }) => {
+    await installSkillCommand({
+      source,
+      persona: opts.persona,
+      configPath: opts.config,
     });
   });
 
