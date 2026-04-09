@@ -2,14 +2,18 @@
  * Unit tests for tool-filter.ts — capability-to-tool mapping and filtering.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   extractCapabilityPrefix,
   filterAllowedMcpTools,
   filterAllowedTools,
   isToolAllowed,
   ALL_HOST_TOOLS,
+  sanitizeSkillNameForMcp,
+  getSkillNameForMcpTool,
+  resetSkillExecLookup,
 } from '../../../src/tools/tool-filter.js';
+import type { ToolExpansionContext } from '../../../src/tools/tool-filter.js';
 import type { ResolvedCapabilities } from '../../../src/personas/persona-types.js';
 
 // ---------------------------------------------------------------------------
@@ -243,8 +247,8 @@ describe('isToolAllowed', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all eleven host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(11);
+  it('contains all twelve host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(12);
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('persona.send');
@@ -256,5 +260,237 @@ describe('ALL_HOST_TOOLS', () => {
     expect(ALL_HOST_TOOLS).toContain('execution.env');
     expect(ALL_HOST_TOOLS).toContain('subagent.invoke');
     expect(ALL_HOST_TOOLS).toContain('subagent.background');
+    expect(ALL_HOST_TOOLS).toContain('skill.exec');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sanitizeSkillNameForMcp
+// ---------------------------------------------------------------------------
+
+describe('sanitizeSkillNameForMcp', () => {
+  it('appends _exec to simple name', () => {
+    expect(sanitizeSkillNameForMcp('contentful')).toBe('contentful_exec');
+  });
+
+  it('replaces hyphens with underscores and appends _exec', () => {
+    expect(sanitizeSkillNameForMcp('git-flow')).toBe('git_flow_exec');
+  });
+
+  it('lowercases the name', () => {
+    expect(sanitizeSkillNameForMcp('MySkill')).toBe('myskill_exec');
+  });
+
+  it('handles multiple hyphens', () => {
+    expect(sanitizeSkillNameForMcp('my-cool-skill')).toBe('my_cool_skill_exec');
+  });
+
+  it('handles name already containing underscores', () => {
+    expect(sanitizeSkillNameForMcp('my_skill')).toBe('my_skill_exec');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// skill.exec dynamic expansion
+// ---------------------------------------------------------------------------
+
+describe('filterAllowedMcpTools with skill.exec expansion', () => {
+  beforeEach(() => {
+    resetSkillExecLookup();
+  });
+
+  function makeSkill(name: string, hasSandbox: boolean, staged: boolean) {
+    return {
+      manifest: {
+        name,
+        ...(hasSandbox ? { sandbox: { workdir: 'repo' } } : {}),
+      },
+      stagedSandbox: staged ? { binDir: `/tmp/${name}/.bin` } : null,
+    };
+  }
+
+  function makeContext(
+    caps: ResolvedCapabilities,
+    skills: ReturnType<typeof makeSkill>[],
+  ): ToolExpansionContext {
+    return {
+      personaId: 'test-persona',
+      capabilities: caps,
+      loadedSkills: skills,
+    };
+  }
+
+  it('returns both exec tools with skill.exec:* wildcard', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:*'],
+      requireApproval: [],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+      makeSkill('git-flow', true, true),
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    expect(result).toContain('contentful_exec');
+    expect(result).toContain('git_flow_exec');
+  });
+
+  it('returns only granted skill with specific scope', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:contentful'],
+      requireApproval: [],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+      makeSkill('git-flow', true, true),
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    expect(result).toContain('contentful_exec');
+    expect(result).not.toContain('git_flow_exec');
+  });
+
+  it('excludes skills without sandbox block', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:*'],
+      requireApproval: [],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+      makeSkill('prompt-only', false, false),
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    expect(result).toContain('contentful_exec');
+    expect(result).not.toContain('prompt_only_exec');
+  });
+
+  it('excludes skills with stagedSandbox: null', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:*'],
+      requireApproval: [],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+      makeSkill('broken', true, false), // sandbox block present but staging failed
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    expect(result).toContain('contentful_exec');
+    expect(result).not.toContain('broken_exec');
+  });
+
+  it('returns nothing when no expansion context is provided (backward compat)', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:*', 'channel.send:TalonMain'],
+      requireApproval: [],
+    };
+
+    const result = filterAllowedMcpTools(caps);
+    expect(result).toContain('channel_send');
+    expect(result).not.toContain('contentful_exec');
+    expect(result).not.toContain('skill_exec');
+  });
+
+  it('handles collision: two skills producing same MCP name', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:*'],
+      requireApproval: [],
+    };
+    // Both produce "git_flow_exec"
+    const ctx = makeContext(caps, [
+      makeSkill('git-flow', true, true),
+      makeSkill('git_flow', true, true),
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    // Only first one should be included
+    expect(result.filter((n) => n === 'git_flow_exec')).toHaveLength(1);
+  });
+
+  it('populates reverse lookup map', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:*'],
+      requireApproval: [],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+      makeSkill('git-flow', true, true),
+    ]);
+
+    filterAllowedMcpTools(caps, ctx);
+
+    expect(getSkillNameForMcpTool('contentful_exec')).toBe('contentful');
+    expect(getSkillNameForMcpTool('git_flow_exec')).toBe('git-flow');
+    expect(getSkillNameForMcpTool('unknown_exec')).toBeNull();
+  });
+
+  it('includes requireApproval skill.exec grants', () => {
+    const caps: ResolvedCapabilities = {
+      allow: [],
+      requireApproval: ['skill.exec:contentful'],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    expect(result).toContain('contentful_exec');
+  });
+
+  it('bare skill.exec without scope grants nothing', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec'],
+      requireApproval: [],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    expect(result).not.toContain('contentful_exec');
+  });
+
+  it('does not affect static tool resolution when expansion context is provided', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['channel.send:TalonMain', 'skill.exec:contentful'],
+      requireApproval: [],
+    };
+    const ctx = makeContext(caps, [
+      makeSkill('contentful', true, true),
+    ]);
+
+    const result = filterAllowedMcpTools(caps, ctx);
+    expect(result).toContain('channel_send');
+    expect(result).toContain('contentful_exec');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resetSkillExecLookup
+// ---------------------------------------------------------------------------
+
+describe('resetSkillExecLookup', () => {
+  it('clears the reverse lookup map', () => {
+    resetSkillExecLookup();
+
+    const caps: ResolvedCapabilities = {
+      allow: ['skill.exec:*'],
+      requireApproval: [],
+    };
+    const ctx: ToolExpansionContext = {
+      personaId: 'test',
+      capabilities: caps,
+      loadedSkills: [{
+        manifest: { name: 'test-skill', sandbox: { workdir: 'repo' } },
+        stagedSandbox: {},
+      }],
+    };
+
+    filterAllowedMcpTools(caps, ctx);
+    expect(getSkillNameForMcpTool('test_skill_exec')).toBe('test-skill');
+
+    resetSkillExecLookup();
+    expect(getSkillNameForMcpTool('test_skill_exec')).toBeNull();
   });
 });

@@ -12,13 +12,55 @@
  * match against known host tool names. The scope portion (after `:`) is
  * ignored for tool-level filtering — it is used for finer-grained access
  * control within handlers (e.g., which channels can be sent to).
+ *
+ * Some entries support dynamic expansion via an `expand()` function.
+ * The `skill.exec` capability prefix maps to one MCP tool per script-enabled
+ * skill (e.g., `contentful_exec`, `git_flow_exec`), computed at agent-run
+ * start from the persona's loaded skills.
  */
 
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
+import pino from 'pino';
+
+// ---------------------------------------------------------------------------
+// Tool expansion context (for dynamic 1-to-many capability mapping)
+// ---------------------------------------------------------------------------
+
+/**
+ * Context provided to registry entries with dynamic `expand()` functions.
+ * Passed by the agent bootstrap code at run start.
+ */
+export interface ToolExpansionContext {
+  personaId: string;
+  capabilities: { allow: string[]; requireApproval: string[] };
+  loadedSkills: ReadonlyArray<{
+    manifest: { name: string; sandbox?: { workdir: string } };
+    /** Non-null means the skill has been sandbox-staged and is exec-capable. */
+    stagedSandbox: Record<string, unknown> | null;
+  }>;
+}
 
 // ---------------------------------------------------------------------------
 // Capability-to-tool mapping
 // ---------------------------------------------------------------------------
+
+/**
+ * A single entry in the host tool registry.
+ */
+export interface HostToolRegistryEntry {
+  /** Capability prefix that grants access to this tool. */
+  capabilityPrefix: string;
+  /** Internal dot-notation tool name used by the bridge dispatcher. */
+  internalName: string;
+  /** MCP-style underscore tool name used in the MCP server protocol. */
+  mcpName: string;
+  /**
+   * Optional dynamic expansion function. When present, returns an array of
+   * MCP tool names derived from the expansion context (e.g., loaded skills).
+   * When absent, the entry maps to its single static `mcpName`.
+   */
+  expand?: (ctx: ToolExpansionContext) => string[];
+}
 
 /**
  * Single source of truth for the host tool registry.
@@ -29,14 +71,7 @@ import type { ResolvedCapabilities } from '../personas/persona-types.js';
  *
  * Adding a new host tool requires only a single entry here.
  */
-export const HOST_TOOL_REGISTRY: ReadonlyArray<{
-  /** Capability prefix that grants access to this tool. */
-  capabilityPrefix: string;
-  /** Internal dot-notation tool name used by the bridge dispatcher. */
-  internalName: string;
-  /** MCP-style underscore tool name used in the MCP server protocol. */
-  mcpName: string;
-}> = [
+export const HOST_TOOL_REGISTRY: ReadonlyArray<HostToolRegistryEntry> = [
   { capabilityPrefix: 'schedule.manage', internalName: 'schedule.manage', mcpName: 'schedule_manage' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.send', mcpName: 'channel_send' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.send', mcpName: 'persona_send' },
@@ -48,7 +83,108 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'execution.env', internalName: 'execution.env', mcpName: 'execution_env' },
   { capabilityPrefix: 'subagent.invoke', internalName: 'subagent.invoke', mcpName: 'subagent_invoke' },
   { capabilityPrefix: 'subagent.background', internalName: 'subagent.background', mcpName: 'background_agent' },
+  {
+    capabilityPrefix: 'skill.exec',
+    internalName: 'skill.exec',
+    mcpName: 'skill_exec',
+    expand: (ctx: ToolExpansionContext): string[] => {
+      const log = pino({ level: 'warn', name: 'tool-filter' });
+      const names: string[] = [];
+      const seen = new Map<string, string>(); // mcpName → original skill name
+
+      // Collect all capability labels that grant skill.exec access
+      const allLabels = [...ctx.capabilities.allow, ...ctx.capabilities.requireApproval];
+      const grantedScopes = new Set<string>();
+      let hasWildcard = false;
+
+      for (const label of allLabels) {
+        const colonIndex = label.indexOf(':');
+        const prefix = colonIndex === -1 ? label : label.slice(0, colonIndex);
+        if (prefix !== 'skill.exec') continue;
+
+        if (colonIndex === -1) {
+          // bare `skill.exec` — no scope, treat as no wildcard grant
+          continue;
+        }
+        const scope = label.slice(colonIndex + 1);
+        if (scope === '*') {
+          hasWildcard = true;
+        } else {
+          grantedScopes.add(scope);
+        }
+      }
+
+      for (const skill of ctx.loadedSkills) {
+        // Only include skills with a sandbox block AND non-null stagedSandbox
+        if (!skill.manifest.sandbox || skill.stagedSandbox == null) continue;
+
+        const skillName = skill.manifest.name;
+
+        // Check if persona has skill.exec:<skillName> or skill.exec:*
+        if (!hasWildcard && !grantedScopes.has(skillName)) continue;
+
+        const mcpName = sanitizeSkillNameForMcp(skillName);
+
+        // Collision detection
+        const existing = seen.get(mcpName);
+        if (existing != null) {
+          log.warn(
+            { mcpName, existingSkill: existing, skippedSkill: skillName },
+            'Skill MCP name collision: %s already registered by skill %s, skipping %s',
+            mcpName, existing, skillName,
+          );
+          continue;
+        }
+
+        seen.set(mcpName, skillName);
+        skillExecMcpToSkillName.set(mcpName, skillName);
+        names.push(mcpName);
+      }
+
+      return names;
+    },
+  },
 ];
+
+// ---------------------------------------------------------------------------
+// Skill name sanitization and reverse lookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Sanitize a skill name for use as an MCP tool name.
+ *
+ * Lowercases the name, replaces hyphens with underscores, and appends `_exec`.
+ * Example: `git-flow` → `git_flow_exec`, `contentful` → `contentful_exec`.
+ */
+export function sanitizeSkillNameForMcp(skillName: string): string {
+  return skillName.toLowerCase().replace(/-/g, '_') + '_exec';
+}
+
+/**
+ * Reverse lookup map: MCP tool name → original skill name.
+ *
+ * Built during `expand()` calls. Consumers can use `getSkillNameForMcpTool()`
+ * to look up the original skill name for a given MCP exec tool name.
+ */
+const skillExecMcpToSkillName = new Map<string, string>();
+
+/**
+ * Look up the original skill name for an MCP exec tool name.
+ *
+ * Returns `null` if the MCP name is not a known skill exec tool.
+ * The map is populated during `expand()` calls in `filterAllowedMcpTools()`.
+ */
+export function getSkillNameForMcpTool(mcpName: string): string | null {
+  return skillExecMcpToSkillName.get(mcpName) ?? null;
+}
+
+/**
+ * Reset the skill exec reverse lookup map. Intended for use at the start
+ * of a new agent run or in tests.
+ */
+export function resetSkillExecLookup(): void {
+  skillExecMcpToSkillName.clear();
+}
 
 /** Derived lookup: MCP tool name → internal tool name. Used by bridge and MCP server. */
 export const MCP_TO_INTERNAL = new Map(
@@ -191,8 +327,16 @@ export function extractCapabilityPrefix(label: string): string | null {
  *
  * If capabilities are empty (both allow and requireApproval are empty arrays),
  * no host tools are exposed — this is the secure default.
+ *
+ * When `expansionContext` is provided, registry entries with an `expand()`
+ * function use it to produce dynamic MCP tool names (e.g., one per
+ * script-enabled skill). When omitted, entries with `expand()` are skipped
+ * for backward compatibility.
  */
-export function filterAllowedMcpTools(capabilities: ResolvedCapabilities): string[] {
+export function filterAllowedMcpTools(
+  capabilities: ResolvedCapabilities,
+  expansionContext?: ToolExpansionContext,
+): string[] {
   const allowedMcpNames = new Set<string>();
 
   const allLabels = [...capabilities.allow, ...capabilities.requireApproval];
@@ -202,7 +346,17 @@ export function filterAllowedMcpTools(capabilities: ResolvedCapabilities): strin
     if (prefix === null) continue;
 
     for (const entry of HOST_TOOL_REGISTRY) {
-      if (entry.capabilityPrefix === prefix) {
+      if (entry.capabilityPrefix !== prefix) continue;
+
+      if (entry.expand) {
+        // Dynamic entry — only expand when context is provided
+        if (expansionContext) {
+          for (const name of entry.expand(expansionContext)) {
+            allowedMcpNames.add(name);
+          }
+        }
+        // When no context, skip this entry entirely (backward compat)
+      } else {
         allowedMcpNames.add(entry.mcpName);
       }
     }
