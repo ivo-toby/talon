@@ -9,6 +9,7 @@
  * via `config-loader.ts`.
  */
 
+import path from 'node:path';
 import { z } from 'zod';
 
 // ---------------------------------------------------------------------------
@@ -65,6 +66,11 @@ export const PersonaConfigSchema = z.object({
   capabilities: CapabilitiesSchema.default(() => CapabilitiesSchema.parse({})),
   maxConcurrent: z.number().int().min(1).optional(),
   executionEnv: PersonaExecutionEnvSchema.optional(),
+  /** Absolute path to the repository a persona's skill scripts operate on. */
+  repoPath: z
+    .string()
+    .refine((p) => path.isAbsolute(p), { message: 'repoPath must be an absolute path' })
+    .optional(),
 });
 
 // ---------------------------------------------------------------------------

@@ -90,6 +90,7 @@ personas:
       requireApproval:
         - fs.write:workspace
     maxConcurrent: 2
+    # repoPath: /home/user/projects/my-repo  # Absolute path to the repo skill scripts operate on
 
 ipc:
   pollIntervalMs: 500

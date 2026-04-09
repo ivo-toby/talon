@@ -204,6 +204,27 @@ describe('PersonaConfigSchema', () => {
     expect(result.success).toBe(false);
   });
 
+  it('accepts persona with absolute repoPath', () => {
+    const result = PersonaConfigSchema.safeParse({ name: 'dev', repoPath: '/home/ivo/projects/foo' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.repoPath).toBe('/home/ivo/projects/foo');
+    }
+  });
+
+  it('rejects persona with relative repoPath', () => {
+    const result = PersonaConfigSchema.safeParse({ name: 'dev', repoPath: 'relative/path' });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts persona without repoPath (optional)', () => {
+    const result = PersonaConfigSchema.safeParse({ name: 'dev' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.repoPath).toBeUndefined();
+    }
+  });
+
   it('rejects queryTimeoutMinutes outside the supported range', () => {
     expect(
       PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 0 }).success,
