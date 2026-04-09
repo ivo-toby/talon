@@ -565,6 +565,7 @@ describe('bootstrap', () => {
       // Verify bridge was constructed with the context object.
       expect(HostToolsBridge).toHaveBeenCalledWith(
         expect.objectContaining({ dataDir: '/tmp/test-data' }),
+        expect.objectContaining({}),
       );
       const ctx = result._unsafeUnwrap();
       expect(ctx.hostToolsBridge).toBeDefined();
