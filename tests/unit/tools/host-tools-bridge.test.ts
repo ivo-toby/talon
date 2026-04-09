@@ -12,6 +12,8 @@ import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import type { ChannelRegistry } from '../../../src/channels/channel-registry.js';
 import { ok } from 'neverthrow';
+import * as toolFilter from '../../../src/tools/tool-filter.js';
+import type { SkillExecHandler } from '../../../src/tools/host-tools/skill-exec.js';
 
 // Mock createDatabase so it doesn't try to open a real file for the readonly connection.
 // Returns an err() result so the bridge falls back to the main ctx.db connection.
@@ -587,6 +589,158 @@ describe('HostToolsBridge', () => {
         }),
       );
       expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"error"');
+    });
+
+    it('dispatches contentful_exec to SkillExecHandler with skillName merged into args', async () => {
+      const getSkillSpy = vi.spyOn(toolFilter, 'getSkillNameForMcpTool').mockReturnValue('contentful');
+
+      // Allow skill.exec capability so isToolAllowed passes
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: ['skill.exec'],
+          requireApproval: [],
+        },
+      } as any));
+
+      const mockExecute = vi.fn().mockResolvedValue({
+        requestId: 'req-001',
+        tool: 'skill.exec',
+        status: 'success',
+        result: { stdout: 'hello', stderr: '', exitCode: 0 },
+      });
+
+      const mockSkillExecHandler = { execute: mockExecute } as unknown as SkillExecHandler;
+      bridge = new HostToolsBridge(mockCtx, { skillExecHandler: mockSkillExecHandler });
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-001',
+          tool: 'contentful_exec',
+          args: { command: 'echo hello' },
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-001',
+          },
+        }),
+        socket,
+      );
+
+      expect(mockExecute).toHaveBeenCalledWith(
+        { skillName: 'contentful', command: 'echo hello' },
+        expect.objectContaining({ personaId: 'persona-001' }),
+      );
+
+      const response = JSON.parse((socket.write as any).mock.calls[0]?.[0] as string);
+      expect(response.result.status).toBe('success');
+
+      getSkillSpy.mockRestore();
+    });
+
+    it('returns error for unknown_exec with no loaded skill', async () => {
+      const getSkillSpy = vi.spyOn(toolFilter, 'getSkillNameForMcpTool').mockReturnValue(null);
+
+      // Allow skill.exec capability so isToolAllowed passes
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: ['skill.exec'],
+          requireApproval: [],
+        },
+      } as any));
+
+      bridge = new HostToolsBridge(mockCtx);
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-002',
+          tool: 'unknown_exec',
+          args: { command: 'echo hi' },
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-002',
+          },
+        }),
+        socket,
+      );
+
+      const response = JSON.parse((socket.write as any).mock.calls[0]?.[0] as string);
+      expect(response.result.status).toBe('error');
+      expect(response.result.error).toBe('unknown skill exec tool');
+
+      getSkillSpy.mockRestore();
+    });
+
+    it('returns error when SkillExecHandler not configured', async () => {
+      const getSkillSpy = vi.spyOn(toolFilter, 'getSkillNameForMcpTool').mockReturnValue('contentful');
+
+      // Allow skill.exec capability
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: ['skill.exec'],
+          requireApproval: [],
+        },
+      } as any));
+
+      // No skillExecHandler provided
+      bridge = new HostToolsBridge(mockCtx);
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-003',
+          tool: 'contentful_exec',
+          args: { command: 'echo hello' },
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-003',
+          },
+        }),
+        socket,
+      );
+
+      const response = JSON.parse((socket.write as any).mock.calls[0]?.[0] as string);
+      expect(response.result.status).toBe('error');
+      expect(response.result.error).toBe('skill exec not configured');
+
+      getSkillSpy.mockRestore();
+    });
+
+    it('dispatches channel_send to existing ChannelSendHandler (regression)', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'channel_send',
+        args: {
+          channelName: 'telegram-main',
+          threadExternalId: 'telegram-thread-001',
+          text: 'Hello world',
+        },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-004',
+        },
+      });
+
+      // channel.send is in the allowed capabilities, so it should dispatch
+      expect(response.result).toBeDefined();
+      // The mock channel registry returns null for get(), so the handler will
+      // return an error about channel not found — but the dispatch itself works
+      expect((response.result as any)?.tool).toBe('channel.send');
     });
 
     it('records a timeout as the final tool observation outcome', async () => {

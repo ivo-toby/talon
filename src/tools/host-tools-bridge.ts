@@ -24,7 +24,8 @@ import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
 import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/background-agent.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
-import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
+import { isToolAllowed, MCP_TO_INTERNAL, getSkillNameForMcpTool } from './tool-filter.js';
+import { SkillExecHandler, type SkillExecArgs } from './host-tools/skill-exec.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
@@ -63,8 +64,9 @@ export class HostToolsBridge {
   private subagentHandler: SubAgentInvokeHandler | null = null;
   private backgroundAgentHandler: BackgroundAgentHandler | null = null;
   private executionEnvHandler: ExecutionEnvHandler | null = null;
+  private skillExecHandler: SkillExecHandler | null = null;
 
-  constructor(private readonly ctx: DaemonContext) {
+  constructor(private readonly ctx: DaemonContext, opts?: { skillExecHandler?: SkillExecHandler }) {
     this.socketPath = resolve(join(ctx.dataDir, 'host-tools.sock'));
 
     this.scheduleHandler = new ScheduleManageHandler({
@@ -154,6 +156,10 @@ export class HostToolsBridge {
         executionEnvManager: ctx.executionEnvManager,
         logger: ctx.logger,
       });
+    }
+
+    if (opts?.skillExecHandler) {
+      this.skillExecHandler = opts.skillExecHandler;
     }
   }
 
@@ -259,11 +265,17 @@ export class HostToolsBridge {
       return;
     }
 
-    const normalizedTool = TOOL_NAME_MAP[tool] || tool;
+    // Normalize MCP tool name to internal dot-notation.
+    // Dynamic skill exec tools (e.g. "contentful_exec") are not in the static
+    // map — normalise them to "skill.exec" for capability checking while
+    // preserving the original MCP name for dispatch routing.
+    const isSkillExecTool = tool.endsWith('_exec') && !(tool in TOOL_NAME_MAP);
+    const normalizedTool = isSkillExecTool ? 'skill.exec' : (TOOL_NAME_MAP[tool] || tool);
+    const mcpToolName = tool;
 
     try {
       if (normalizedTool === 'skill.load') {
-        const result = await this.dispatch(normalizedTool, args, context);
+        const result = await this.dispatch(normalizedTool, args, context, mcpToolName);
         this.sendResponse(socket, { id, result });
         return;
       }
@@ -311,7 +323,7 @@ export class HostToolsBridge {
 
           try {
             const toolResult = await Promise.race([
-              this.dispatch(normalizedTool, args, context),
+              this.dispatch(normalizedTool, args, context, mcpToolName),
               new Promise<never>((_, reject) => {
                 timeoutId = setTimeout(() => {
                   this.ctx.logger.warn(
@@ -421,6 +433,7 @@ export class HostToolsBridge {
     tool: string,
     args: Record<string, unknown>,
     context: ToolExecutionContext,
+    mcpName?: string,
   ): Promise<ToolCallResult> {
     if (tool === 'skill.load') {
       const name = typeof args.name === 'string' ? args.name : '';
@@ -441,6 +454,32 @@ export class HostToolsBridge {
         status: 'success',
         result: content,
       };
+    }
+
+    // Dynamic skill exec routing: <skill>_exec → SkillExecHandler
+    const effectiveMcpName = mcpName ?? tool;
+    if (effectiveMcpName.endsWith('_exec') && tool === 'skill.exec') {
+      const skillName = getSkillNameForMcpTool(effectiveMcpName);
+      if (!skillName) {
+        return {
+          requestId: context.requestId ?? 'unknown',
+          tool,
+          status: 'error',
+          error: 'unknown skill exec tool',
+        };
+      }
+      if (!this.skillExecHandler) {
+        return {
+          requestId: context.requestId ?? 'unknown',
+          tool,
+          status: 'error',
+          error: 'skill exec not configured',
+        };
+      }
+      return this.skillExecHandler.execute(
+        { ...args, skillName } as unknown as SkillExecArgs,
+        context,
+      );
     }
 
     switch (tool) {
