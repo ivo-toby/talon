@@ -27,6 +27,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SkillLoader } from '../../../src/skills/skill-loader.js';
 import { SkillError } from '../../../src/core/errors/index.js';
+import * as sandboxStaging from '../../../src/skills/skill-sandbox-staging.js';
 
 // ---------------------------------------------------------------------------
 // Logger mock
@@ -145,11 +146,13 @@ function mcpServerDefJson(name = 'test-mcp'): string {
 describe('SkillLoader', () => {
   let logger: ReturnType<typeof makeLogger>;
   let loader: SkillLoader;
+  let dataDir: string;
   const cleanup: Array<() => Promise<void>> = [];
 
-  beforeEach(() => {
+  beforeEach(async () => {
     logger = makeLogger();
     loader = new SkillLoader(logger);
+    dataDir = await makeTmpDir(cleanup);
   });
 
   afterEach(async () => {
@@ -167,7 +170,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       const skill = result._unsafeUnwrap();
       expect(skill.manifest.name).toBe('test-skill');
@@ -179,7 +182,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.promptContents).toHaveLength(0);
       expect(skill.resolvedToolManifests).toHaveLength(0);
@@ -191,7 +194,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
 
-      await loader.loadFromDirectory(skillDir);
+      await loader.loadFromDirectory(skillDir, dataDir);
       expect(logger.info).toHaveBeenCalledWith(
         expect.objectContaining({ skill: 'test-skill' }),
         expect.any(String),
@@ -215,7 +218,7 @@ describe('SkillLoader', () => {
         '# Markdown Skill\n\nUse this skill carefully.',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
 
       const skill = result._unsafeUnwrap();
@@ -230,7 +233,7 @@ describe('SkillLoader', () => {
       await writeMinimalManifest(skillDir);
       await writeSkillMd(skillDir);
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr().message).toMatch(/ambiguous/i);
     });
@@ -242,7 +245,7 @@ describe('SkillLoader', () => {
       await mkdir(mcpDir);
       await writeFile(join(mcpDir, 'server.json'), mcpServerDefJson('server'), 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
 
       const skill = result._unsafeUnwrap();
@@ -263,7 +266,7 @@ describe('SkillLoader', () => {
         'Body',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap().manifest.version).toBe('0.1.0');
     });
@@ -281,7 +284,7 @@ describe('SkillLoader', () => {
       await mkdir(promptsDir);
       await writeFile(join(promptsDir, 'intro.md'), '# Introduction', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.promptContents).toHaveLength(1);
       expect(skill.promptContents[0]).toBe('# Introduction');
@@ -296,7 +299,7 @@ describe('SkillLoader', () => {
       await writeFile(join(promptsDir, 'a-first.md'), 'First', 'utf-8');
       await writeFile(join(promptsDir, 'c-third.md'), 'Third', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.promptContents).toHaveLength(3);
       expect(skill.promptContents[0]).toBe('First');
@@ -312,7 +315,7 @@ describe('SkillLoader', () => {
       await writeFile(join(promptsDir, 'fragment.md'), 'Content', 'utf-8');
       await writeFile(join(promptsDir, 'readme.txt'), 'Not a fragment', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.promptContents).toHaveLength(1);
     });
@@ -321,7 +324,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap().promptContents).toHaveLength(0);
     });
@@ -339,7 +342,7 @@ describe('SkillLoader', () => {
       await mkdir(toolsDir);
       await writeFile(join(toolsDir, 'search.yaml'), toolManifestYaml('search'), 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.resolvedToolManifests).toHaveLength(1);
       expect(skill.resolvedToolManifests[0].name).toBe('search');
@@ -354,7 +357,7 @@ describe('SkillLoader', () => {
       await writeFile(join(toolsDir, 'b-tool.yaml'), toolManifestYaml('b-tool'), 'utf-8');
       await writeFile(join(toolsDir, 'a-tool.yaml'), toolManifestYaml('a-tool'), 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.resolvedToolManifests).toHaveLength(2);
       expect(skill.resolvedToolManifests[0].name).toBe('a-tool');
@@ -373,7 +376,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
       expect(result._unsafeUnwrapErr().message).toMatch(/tool manifest validation failed/i);
@@ -383,7 +386,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap().resolvedToolManifests).toHaveLength(0);
     });
@@ -401,7 +404,7 @@ describe('SkillLoader', () => {
       await mkdir(mcpDir);
       await writeFile(join(mcpDir, 'github.json'), mcpServerDefJson('github'), 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.resolvedMcpServers).toHaveLength(1);
       expect(skill.resolvedMcpServers[0].name).toBe('github');
@@ -425,7 +428,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.resolvedMcpServers).toHaveLength(1);
       expect(skill.resolvedMcpServers[0].name).toBe('github');
@@ -440,7 +443,7 @@ describe('SkillLoader', () => {
       await writeFile(join(mcpDir, 'z-server.json'), mcpServerDefJson('z-server'), 'utf-8');
       await writeFile(join(mcpDir, 'a-server.json'), mcpServerDefJson('a-server'), 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.resolvedMcpServers).toHaveLength(2);
       expect(skill.resolvedMcpServers[0].name).toBe('a-server');
@@ -469,7 +472,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.resolvedMcpServers).toHaveLength(1);
       expect(skill.resolvedMcpServers[0].config.headers).toEqual({
@@ -490,7 +493,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
       expect(result._unsafeUnwrapErr().message).toMatch(/mcp server definition validation failed/i);
@@ -503,7 +506,7 @@ describe('SkillLoader', () => {
       await mkdir(mcpDir);
       await writeFile(join(mcpDir, 'broken.json'), '{ not valid json', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
     });
@@ -512,7 +515,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap().resolvedMcpServers).toHaveLength(0);
     });
@@ -531,7 +534,7 @@ describe('SkillLoader', () => {
       await writeFile(join(migrationsDir, '002_add_index.sql'), '-- index', 'utf-8');
       await writeFile(join(migrationsDir, '001_init.sql'), '-- init', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.migrationPaths).toHaveLength(2);
       expect(skill.migrationPaths[0]).toMatch(/001_init\.sql$/);
@@ -545,7 +548,7 @@ describe('SkillLoader', () => {
       await mkdir(migrationsDir);
       await writeFile(join(migrationsDir, '001_init.sql'), '-- init', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.migrationPaths[0]).toMatch(/^\//);
     });
@@ -558,7 +561,7 @@ describe('SkillLoader', () => {
       await writeFile(join(migrationsDir, '001_init.sql'), '-- init', 'utf-8');
       await writeFile(join(migrationsDir, 'readme.md'), '# Migrations', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       const skill = result._unsafeUnwrap();
       expect(skill.migrationPaths).toHaveLength(1);
     });
@@ -567,7 +570,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap().migrationPaths).toHaveLength(0);
     });
@@ -582,7 +585,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       // No skill.yaml written.
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
       expect(result._unsafeUnwrapErr().message).toMatch(/skill manifest/i);
@@ -596,7 +599,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
     });
@@ -609,7 +612,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
       expect(result._unsafeUnwrapErr().message).toMatch(/validation failed/i);
@@ -623,7 +626,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
     });
@@ -636,7 +639,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
     });
 
@@ -644,7 +647,7 @@ describe('SkillLoader', () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeFile(join(skillDir, 'skill.yaml'), '', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       // Empty manifest fails because name/version/description are required.
       expect(result.isErr()).toBe(true);
     });
@@ -666,7 +669,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       const skill = result._unsafeUnwrap();
       expect(skill.manifest.requiredCapabilities).toHaveLength(0);
@@ -693,7 +696,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(logger.warn).not.toHaveBeenCalled();
     });
@@ -712,7 +715,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({ skill: 'cap-skill', label: 'fs.read' }),
@@ -735,7 +738,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
       expect(logger.warn).not.toHaveBeenCalled();
     });
@@ -754,7 +757,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr().message).toMatch(/malformed/i);
     });
@@ -773,7 +776,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr().message).toMatch(/malformed/i);
     });
@@ -792,7 +795,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr().message).toMatch(/malformed/i);
     });
@@ -811,7 +814,7 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
       expect(result._unsafeUnwrapErr().message).toMatch(/malformed/i);
@@ -860,7 +863,7 @@ describe('SkillLoader', () => {
       await mkdir(migrationsDir);
       await writeFile(join(migrationsDir, '001_search_index.sql'), 'CREATE TABLE search_cache (id INTEGER);', 'utf-8');
 
-      const result = await loader.loadFromDirectory(skillDir);
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
       expect(result.isOk()).toBe(true);
 
       const skill = result._unsafeUnwrap();
@@ -883,7 +886,7 @@ describe('SkillLoader', () => {
 
   describe('loadMultiple', () => {
     it('returns Ok([]) for an empty array', async () => {
-      const result = await loader.loadMultiple([]);
+      const result = await loader.loadMultiple([], dataDir);
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toHaveLength(0);
     });
@@ -895,7 +898,7 @@ describe('SkillLoader', () => {
       const dir2 = await makeTmpDir(cleanup);
       await writeMinimalManifest(dir2, { name: 'skill-beta' });
 
-      const result = await loader.loadMultiple([dir1, dir2]);
+      const result = await loader.loadMultiple([dir1, dir2], dataDir);
       expect(result.isOk()).toBe(true);
       const skills = result._unsafeUnwrap();
       expect(skills).toHaveLength(2);
@@ -913,7 +916,7 @@ describe('SkillLoader', () => {
       const dir3 = await makeTmpDir(cleanup);
       await writeMinimalManifest(dir3, { name: 'skill-also-good' });
 
-      const result = await loader.loadMultiple([dir1, dir2, dir3]);
+      const result = await loader.loadMultiple([dir1, dir2, dir3], dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
     });
@@ -927,9 +930,160 @@ describe('SkillLoader', () => {
         'utf-8',
       );
 
-      const result = await loader.loadMultiple([dir]);
+      const result = await loader.loadMultiple([dir], dataDir);
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr().message).toMatch(/validation failed/i);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Sandbox staging integration
+  // -------------------------------------------------------------------------
+
+  describe('sandbox staging integration', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('sets stagedSandbox when sandbox block is present and staging succeeds', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeFile(
+        join(skillDir, 'skill.yaml'),
+        [
+          'name: sandbox-skill',
+          'version: 1.0.0',
+          'description: Skill with sandbox',
+          'requiredCapabilities:',
+          '  - skill.exec:sandbox-skill',
+          'sandbox:',
+          '  bins:',
+          '    - bash',
+          '    - sh',
+          '  shell: /bin/bash',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const fakeStagedSandbox: sandboxStaging.StagedSkillSandbox = {
+        binDir: '/fake/.bin',
+        resolvedBins: { bash: '/usr/bin/bash', sh: '/usr/bin/sh' },
+        canonicalMounts: [],
+      };
+
+      const spy = vi.spyOn(sandboxStaging, 'stageSkillSandbox').mockResolvedValue(
+        { isOk: () => true, isErr: () => false, value: fakeStagedSandbox, _unsafeUnwrap: () => fakeStagedSandbox } as ReturnType<typeof import('neverthrow').ok<sandboxStaging.StagedSkillSandbox, sandboxStaging.StagingError>>,
+      );
+
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
+      expect(result.isOk()).toBe(true);
+      const skill = result._unsafeUnwrap();
+      expect(skill.stagedSandbox).toBe(fakeStagedSandbox);
+      expect(spy).toHaveBeenCalledOnce();
+    });
+
+    it('sets stagedSandbox to null and logs warning when staging fails', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeFile(
+        join(skillDir, 'skill.yaml'),
+        [
+          'name: fail-sandbox',
+          'version: 1.0.0',
+          'description: Skill with bad sandbox',
+          'requiredCapabilities:',
+          '  - skill.exec:fail-sandbox',
+          'sandbox:',
+          '  bins:',
+          '    - bash',
+          '    - nonexistent-binary-xyz',
+          '  shell: /bin/bash',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const stagingError = new sandboxStaging.StagingError(
+        'fail-sandbox',
+        'binaries not found on PATH: nonexistent-binary-xyz',
+        { missingBins: ['nonexistent-binary-xyz'] },
+      );
+
+      vi.spyOn(sandboxStaging, 'stageSkillSandbox').mockResolvedValue(
+        { isOk: () => false, isErr: () => true, error: stagingError, _unsafeUnwrapErr: () => stagingError } as ReturnType<typeof import('neverthrow').err<sandboxStaging.StagedSkillSandbox, sandboxStaging.StagingError>>,
+      );
+
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
+      expect(result.isOk()).toBe(true);
+      const skill = result._unsafeUnwrap();
+      expect(skill.stagedSandbox).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skill: 'fail-sandbox',
+          reason: 'binaries not found on PATH: nonexistent-binary-xyz',
+        }),
+        expect.stringContaining('sandbox staging failed'),
+      );
+    });
+
+    it('sets stagedSandbox to null without warning when no sandbox block', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeMinimalManifest(skillDir);
+
+      const spy = vi.spyOn(sandboxStaging, 'stageSkillSandbox');
+
+      const result = await loader.loadFromDirectory(skillDir, dataDir);
+      expect(result.isOk()).toBe(true);
+      const skill = result._unsafeUnwrap();
+      expect(skill.stagedSandbox).toBeNull();
+      expect(spy).not.toHaveBeenCalled();
+      // No warning about sandbox staging
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        expect.objectContaining({ reason: expect.any(String) }),
+        expect.stringContaining('sandbox staging failed'),
+      );
+    });
+
+    it('other skills continue loading when one fails staging', async () => {
+      const dir1 = await makeTmpDir(cleanup);
+      await writeFile(
+        join(dir1, 'skill.yaml'),
+        [
+          'name: broken-sandbox',
+          'version: 1.0.0',
+          'description: Will fail staging',
+          'requiredCapabilities:',
+          '  - skill.exec:broken-sandbox',
+          'sandbox:',
+          '  bins:',
+          '    - bash',
+          '    - missing-bin',
+          '  shell: /bin/bash',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const dir2 = await makeTmpDir(cleanup);
+      await writeMinimalManifest(dir2, { name: 'healthy-skill' });
+
+      const stagingError = new sandboxStaging.StagingError(
+        'broken-sandbox',
+        'binaries not found on PATH: missing-bin',
+      );
+
+      vi.spyOn(sandboxStaging, 'stageSkillSandbox').mockResolvedValue(
+        { isOk: () => false, isErr: () => true, error: stagingError, _unsafeUnwrapErr: () => stagingError } as ReturnType<typeof import('neverthrow').err<sandboxStaging.StagedSkillSandbox, sandboxStaging.StagingError>>,
+      );
+
+      const result = await loader.loadMultiple([dir1, dir2], dataDir);
+      expect(result.isOk()).toBe(true);
+      const skills = result._unsafeUnwrap();
+      expect(skills).toHaveLength(2);
+
+      // First skill loaded but with null stagedSandbox
+      expect(skills[0].manifest.name).toBe('broken-sandbox');
+      expect(skills[0].stagedSandbox).toBeNull();
+
+      // Second skill loaded normally
+      expect(skills[1].manifest.name).toBe('healthy-skill');
+      expect(skills[1].stagedSandbox).toBeNull();
     });
   });
 });

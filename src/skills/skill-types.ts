@@ -12,6 +12,8 @@
 
 import type { ToolManifest } from '../tools/tool-types.js';
 import type { McpServerConfig } from '../mcp/mcp-types.js';
+import type { SkillSandboxProfile } from './skill-sandbox-schema.js';
+import type { StagedSkillSandbox } from './skill-sandbox-staging.js';
 
 // ---------------------------------------------------------------------------
 // MCP server definition (as declared in a skill)
@@ -74,6 +76,8 @@ export interface SkillManifest {
    * loader — execution is delegated to talonctl migrate.
    */
   migrations: string[];
+  /** Optional sandbox execution profile for skill scripts. */
+  sandbox?: SkillSandboxProfile;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +109,11 @@ export interface LoadedSkill {
    * Not executed here — collected for the migration runner.
    */
   migrationPaths: string[];
+  /**
+   * Staged sandbox environment for script execution, or `null` when the
+   * skill has no sandbox block or staging failed (degraded mode).
+   */
+  stagedSandbox: StagedSkillSandbox | null;
 }
 
 // ---------------------------------------------------------------------------

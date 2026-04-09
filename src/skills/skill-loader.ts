@@ -31,6 +31,8 @@ import { z } from 'zod';
 import { SkillError } from '../core/errors/index.js';
 import { SkillManifestSchema, SkillMdFrontmatterSchema } from './skill-schema.js';
 import type { LoadedSkill, McpServerDef } from './skill-types.js';
+import type { StagedSkillSandbox } from './skill-sandbox-staging.js';
+import { stageSkillSandbox } from './skill-sandbox-staging.js';
 import type { ToolManifest } from '../tools/tool-types.js';
 
 // ---------------------------------------------------------------------------
@@ -137,9 +139,10 @@ export class SkillLoader {
    *   6. Collect migration paths from `migrations/*.sql`.
    *
    * @param skillDir - Absolute path to the skill directory.
+   * @param dataDir  - Runtime data directory used for sandbox staging.
    * @returns `Ok(LoadedSkill)` on success, `Err(SkillError)` on any failure.
    */
-  async loadFromDirectory(skillDir: string): Promise<Result<LoadedSkill, SkillError>> {
+  async loadFromDirectory(skillDir: string, dataDir: string): Promise<Result<LoadedSkill, SkillError>> {
     this.logger.debug({ skillDir }, 'loading skill from directory');
 
     const hasSkillYaml = await this.fileExists(join(skillDir, 'skill.yaml'));
@@ -154,7 +157,7 @@ export class SkillLoader {
     }
 
     if (hasSkillMd) {
-      return this.loadFromSkillMd(skillDir);
+      return this.loadFromSkillMd(skillDir, dataDir);
     }
 
     // 1. Read and validate the manifest.
@@ -197,6 +200,9 @@ export class SkillLoader {
     if (migrationsResult.isErr()) return err(migrationsResult.error);
     const migrationPaths = migrationsResult.value;
 
+    // 7. Stage sandbox environment (if declared).
+    const stagedSandbox = await this.stageSandboxIfDeclared(manifest, skillDir, dataDir);
+
     const loaded: LoadedSkill = {
       manifest,
       format: 'yaml',
@@ -204,6 +210,7 @@ export class SkillLoader {
       resolvedToolManifests,
       resolvedMcpServers,
       migrationPaths,
+      stagedSandbox,
     };
 
     this.logger.info({ skill: manifest.name, skillDir }, 'skill loaded');
@@ -218,11 +225,11 @@ export class SkillLoader {
    * @param skillDirs - Array of absolute skill directory paths.
    * @returns `Ok(LoadedSkill[])` on success, `Err(SkillError)` on first failure.
    */
-  async loadMultiple(skillDirs: string[]): Promise<Result<LoadedSkill[], SkillError>> {
+  async loadMultiple(skillDirs: string[], dataDir: string): Promise<Result<LoadedSkill[], SkillError>> {
     const loaded: LoadedSkill[] = [];
 
     for (const skillDir of skillDirs) {
-      const result = await this.loadFromDirectory(skillDir);
+      const result = await this.loadFromDirectory(skillDir, dataDir);
       if (result.isErr()) return err(result.error);
       loaded.push(result.value);
     }
@@ -279,12 +286,47 @@ export class SkillLoader {
       return ok([]);
     }
 
-    return this.loadMultiple(skillDirs);
+    return this.loadMultiple(skillDirs, dataDir);
   }
 
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Stages sandbox environment for a skill if its manifest declares a
+   * `sandbox` block. Staging failure is non-fatal: the skill loads but
+   * without script execution capability.
+   */
+  private async stageSandboxIfDeclared(
+    manifest: LoadedSkill['manifest'],
+    skillDir: string,
+    dataDir: string,
+  ): Promise<StagedSkillSandbox | null> {
+    if (manifest.sandbox === undefined) {
+      return null;
+    }
+
+    const result = await stageSkillSandbox(manifest.sandbox, skillDir, dataDir, manifest.name);
+
+    if (result.isErr()) {
+      this.logger.warn(
+        {
+          skill: manifest.name,
+          reason: result.error.reason,
+          details: result.error.details,
+        },
+        'sandbox staging failed; skill loaded without script execution capability',
+      );
+      return null;
+    }
+
+    this.logger.debug(
+      { skill: manifest.name, binDir: result.value.binDir },
+      'sandbox staged successfully',
+    );
+    return result.value;
+  }
 
   private async fileExists(filePath: string): Promise<boolean> {
     try {
@@ -338,7 +380,7 @@ export class SkillLoader {
   /**
    * Reads and validates `SKILL.md` inside the given directory.
    */
-  private async loadFromSkillMd(skillDir: string): Promise<Result<LoadedSkill, SkillError>> {
+  private async loadFromSkillMd(skillDir: string, dataDir: string): Promise<Result<LoadedSkill, SkillError>> {
     const skillMdPath = join(skillDir, 'SKILL.md');
     let frontmatter: unknown;
     let body = '';
@@ -403,6 +445,9 @@ export class SkillLoader {
     if (migrationsResult.isErr()) return err(migrationsResult.error);
     const migrationPaths = migrationsResult.value;
 
+    // Stage sandbox environment (if declared).
+    const stagedSandbox = await this.stageSandboxIfDeclared(manifest, skillDir, dataDir);
+
     const loaded: LoadedSkill = {
       manifest,
       format: 'skillmd',
@@ -410,6 +455,7 @@ export class SkillLoader {
       resolvedToolManifests,
       resolvedMcpServers,
       migrationPaths,
+      stagedSandbox,
     };
 
     this.logger.info({ skill: manifest.name, skillDir }, 'skill loaded');
