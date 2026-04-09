@@ -720,6 +720,83 @@ describe('SkillLoader', () => {
       );
     });
 
+    it('accepts hyphenated scope segments (e.g. skill.exec:git-flow)', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeFile(
+        join(skillDir, 'skill.yaml'),
+        [
+          'name: hyphen-skill',
+          'version: 1.0.0',
+          'description: Hyphen scope test',
+          'requiredCapabilities:',
+          '  - skill.exec:git-flow',
+          '  - skill.exec:my-cool-skill',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isOk()).toBe(true);
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
+    it('rejects scope with spaces (skill.exec:git flow)', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeFile(
+        join(skillDir, 'skill.yaml'),
+        [
+          'name: space-scope',
+          'version: 1.0.0',
+          'description: Space scope test',
+          'requiredCapabilities:',
+          '  - "skill.exec:git flow"',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toMatch(/malformed/i);
+    });
+
+    it('rejects empty scope (skill.exec:)', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeFile(
+        join(skillDir, 'skill.yaml'),
+        [
+          'name: empty-scope',
+          'version: 1.0.0',
+          'description: Empty scope test',
+          'requiredCapabilities:',
+          '  - "skill.exec:"',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toMatch(/malformed/i);
+    });
+
+    it('rejects scope with slash (skill.exec:git/flow)', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeFile(
+        join(skillDir, 'skill.yaml'),
+        [
+          'name: slash-scope',
+          'version: 1.0.0',
+          'description: Slash scope test',
+          'requiredCapabilities:',
+          '  - "skill.exec:git/flow"',
+        ].join('\n'),
+        'utf-8',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toMatch(/malformed/i);
+    });
+
     it('returns Err for completely malformed capability labels', async () => {
       const skillDir = await makeTmpDir(cleanup);
       await writeFile(

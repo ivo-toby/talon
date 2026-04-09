@@ -38,7 +38,7 @@ import type { ToolManifest } from '../tools/tool-types.js';
 // ---------------------------------------------------------------------------
 
 /** Fully-qualified label: `domain.action:scope` */
-const CAPABILITY_WITH_SCOPE_RE = /^\w+\.\w+:\w+$/;
+const CAPABILITY_WITH_SCOPE_RE = /^\w+\.\w+:[A-Za-z0-9_-]+$/;
 /** Minimal label: `domain.action` (scope-less, accepted with warning) */
 const CAPABILITY_WITHOUT_SCOPE_RE = /^\w+\.\w+$/;
 

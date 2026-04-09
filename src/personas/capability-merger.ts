@@ -29,7 +29,7 @@ import type { ResolvedCapabilities } from './persona-types.js';
  * We also accept the no-scope form `<word>.<word>` but emit a warning for it
  * since the canonical format requires a scope.
  */
-const CAPABILITY_WITH_SCOPE_RE = /^\w+\.\w+:(?:\w+|\*)$/;
+const CAPABILITY_WITH_SCOPE_RE = /^\w+\.\w+:(?:[A-Za-z0-9_-]+|\*)$/;
 const CAPABILITY_WITHOUT_SCOPE_RE = /^\w+\.\w+$/;
 
 /**

@@ -301,3 +301,55 @@ describe('validateCapabilityLabels — malformed labels', () => {
     expect(warnings).toHaveLength(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// validateCapabilityLabels — hyphenated scope segments
+// ---------------------------------------------------------------------------
+
+describe('validateCapabilityLabels — hyphenated scope segments', () => {
+  it('accepts hyphenated scope (skill.exec:git-flow)', () => {
+    const { valid, warnings } = validateCapabilityLabels({
+      allow: ['skill.exec:git-flow', 'skill.exec:my-cool-skill'],
+      requireApproval: [],
+    });
+    expect(valid).toBe(true);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('still accepts wildcard scope (skill.exec:*)', () => {
+    const { valid, warnings } = validateCapabilityLabels({
+      allow: ['skill.exec:*'],
+      requireApproval: [],
+    });
+    expect(valid).toBe(true);
+    expect(warnings).toHaveLength(0);
+  });
+
+  it('rejects scope with spaces (skill.exec:git flow)', () => {
+    const { valid, warnings } = validateCapabilityLabels({
+      allow: ['skill.exec:git flow'],
+      requireApproval: [],
+    });
+    expect(valid).toBe(false);
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(warnings[0]).toMatch(/malformed/i);
+  });
+
+  it('rejects empty scope (skill.exec:)', () => {
+    const { valid, warnings } = validateCapabilityLabels({
+      allow: ['skill.exec:'],
+      requireApproval: [],
+    });
+    expect(valid).toBe(false);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('rejects scope with slash (skill.exec:git/flow)', () => {
+    const { valid, warnings } = validateCapabilityLabels({
+      allow: ['skill.exec:git/flow'],
+      requireApproval: [],
+    });
+    expect(valid).toBe(false);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+});
