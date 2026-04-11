@@ -62,7 +62,7 @@ export class GeminiCliProvider implements AgentProvider {
         const invocation = invocationResult.value;
         try {
           const raw = await this.executeInvocation(invocation);
-          const parsed = this.parseResult(raw, { failOnSuccessfulNonJson: true });
+          const parsed = this.parseResult(raw, { failOnSuccessfulNonJson: false });
           return {
             output: parsed.output,
             sessionId: undefined,

@@ -57,6 +57,7 @@
     "ora": "^9.3.0",
     "pino": "^9.3.2",
     "pino-pretty": "^11.2.2",
+    "playwright": "^1.59.1",
     "uuid": "^10.0.0",
     "write-file-atomic": "^6.0.0",
     "ws": "^8.19.0",
