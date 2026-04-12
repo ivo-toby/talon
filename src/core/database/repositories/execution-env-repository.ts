@@ -5,12 +5,13 @@ import { BaseRepository } from './base-repository.js';
 import type {
   CreateExecutionEnvironmentRecordInput,
   ExecutionEnvironment,
+  ExecutionEnvProvider,
   ExecutionEnvStatus,
 } from '../../../execution-env/execution-env-types.js';
 
 interface ExecutionEnvironmentRow {
   id: string;
-  provider: 'sprites';
+  provider: ExecutionEnvProvider;
   sprite_id: string;
   thread_id: string;
   persona_id: string;

@@ -16,6 +16,7 @@ import type {
   MountConfigSchema,
   PersonaConfigSchema,
   SpritesConfigSchema,
+  LocalWorktreeConfigSchema,
   ChannelConfigSchema,
   BindingConfigSchema,
   IpcConfigSchema,
@@ -89,6 +90,9 @@ export type BackgroundAgentConfig = z.infer<typeof BackgroundAgentConfigSchema>;
 
 /** Sprites provider settings. */
 export type SpritesConfig = z.infer<typeof SpritesConfigSchema>;
+
+/** Local worktree execution environment settings. */
+export type LocalWorktreeConfig = z.infer<typeof LocalWorktreeConfigSchema>;
 
 /** Langfuse Cloud observability settings. */
 export type LangfuseConfig = z.infer<typeof LangfuseConfigSchema>;

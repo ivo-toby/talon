@@ -5,12 +5,13 @@ import { BaseRepository } from './base-repository.js';
 import type {
   CreateExecutionEnvCheckpointInput,
   ExecutionEnvCheckpoint,
+  ExecutionEnvProvider,
 } from '../../../execution-env/execution-env-types.js';
 
 interface ExecutionEnvCheckpointRow {
   id: string;
   env_id: string;
-  provider: 'sprites';
+  provider: ExecutionEnvProvider;
   remote_ref: string;
   label: string | null;
   status: ExecutionEnvCheckpoint['status'];
