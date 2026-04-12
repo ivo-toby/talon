@@ -296,6 +296,29 @@ export const SpritesConfigSchema = z
   });
 
 // ---------------------------------------------------------------------------
+// Local worktree execution environments
+// ---------------------------------------------------------------------------
+
+export const LocalWorktreeConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    /** Root directory for git worktrees. Each env gets a subdirectory. */
+    worktreeRoot: z.string().default('/tmp/talon-envs'),
+    /** Command to run after worktree creation (e.g. "npm ci"). */
+    prepareCommand: z.string().optional(),
+    /** Default working directory inside the worktree. */
+    workingDirectory: z.string().default('/workspace'),
+    /** Max exec timeout in ms. */
+    execTimeoutMs: z.number().int().min(1000).default(10 * 60 * 1000),
+    /** Destroy worktree on task completion. */
+    autoDestroyOnCompletion: z.boolean().default(true),
+    /** Resource limits (advisory — not enforced without OS sandbox). */
+    resourceLimits: ExecutionEnvResourceLimitsSchema.default(() =>
+      ExecutionEnvResourceLimitsSchema.parse({}),
+    ),
+  });
+
+// ---------------------------------------------------------------------------
 // Langfuse observability
 // ---------------------------------------------------------------------------
 
@@ -369,6 +392,7 @@ export const TalondConfigSchema = z.object({
   agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
   backgroundAgent: BackgroundAgentConfigSchema.default(() => BackgroundAgentConfigSchema.parse({})),
   sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
+  localWorktree: LocalWorktreeConfigSchema.default(() => LocalWorktreeConfigSchema.parse({})),
   langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
   subagents: SubAgentsConfigSchema.default({}),
   logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),

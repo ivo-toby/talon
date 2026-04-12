@@ -54,6 +54,7 @@ import { HostToolsBridge } from '../tools/host-tools-bridge.js';
 import { BackgroundAgentManager } from '../subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import { SpritesClient } from '../execution-env/sprites-client.js';
+import { LocalWorktreeAdapter } from '../execution-env/local-worktree-adapter.js';
 import { SubAgentLoader } from '../subagents/subagent-loader.js';
 import { SubAgentRunner } from '../subagents/subagent-runner.js';
 import { ModelResolver } from '../subagents/model-resolver.js';
@@ -551,6 +552,19 @@ export async function bootstrap(
       defaultAutoDestroy: config.sprites.autoDestroyOnCompletion,
       defaultExecTimeoutMs: config.sprites.execTimeoutMs,
       defaultResourceLimits: config.sprites.resourceLimits,
+      logger,
+    });
+    await executionEnvManager.recoverOrphanedEnvironments();
+  } else if (config.localWorktree.enabled) {
+    const repoRoot = process.cwd();
+    executionEnvManager = new ExecutionEnvManager({
+      repository: repos.executionEnv,
+      checkpointRepository: repos.executionEnvCheckpoint,
+      client: new LocalWorktreeAdapter(config.localWorktree, repoRoot, logger),
+      defaultWorkingDirectory: config.localWorktree.workingDirectory,
+      defaultAutoDestroy: config.localWorktree.autoDestroyOnCompletion,
+      defaultExecTimeoutMs: config.localWorktree.execTimeoutMs,
+      defaultResourceLimits: config.localWorktree.resourceLimits,
       logger,
     });
     await executionEnvManager.recoverOrphanedEnvironments();

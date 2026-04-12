@@ -1,4 +1,4 @@
-export type ExecutionEnvProvider = 'sprites';
+export type ExecutionEnvProvider = 'sprites' | 'local';
 
 export type ExecutionEnvStatus =
   | 'creating'
