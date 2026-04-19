@@ -302,7 +302,9 @@ describe('ContextRoller', () => {
     // Should have called summarizer with the plain text content
     // New signature: summarizerRun(threadId, personaId, input)
     const callArgs = mockSummarizerRun.mock.calls[0][2];
-    expect(callArgs.transcript).toContain('User: plain text message');
+    // Transcript uses bracketed turn-number format so downstream LLMs do
+    // not mistake transcript lines for live prompt turns.
+    expect(callArgs.transcript).toContain('user]: plain text message');
   });
 
   // ---------------------------------------------------------------------------

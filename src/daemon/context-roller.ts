@@ -714,12 +714,17 @@ export class ContextRoller {
    */
   private buildTranscript(messages: MessageRow[], maxChars: number): string {
     // Build lines from newest to oldest, stop when budget is exhausted.
-    const lines: string[] = [];
+    // Lines are numbered and role-tagged in brackets rather than "User:" /
+    // "Assistant:" so downstream LLMs (observer/summarizer/reflector) do not
+    // mistake transcript entries for live prompt turns and respond to the
+    // most recent "User:" line instead of producing the structured output.
+    const entries: { n: number; role: string; body: string }[] = [];
     let totalChars = 0;
 
+    let turnNumber = messages.length;
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
-      const role = msg.direction === 'inbound' ? 'User' : 'Assistant';
+      const role = msg.direction === 'inbound' ? 'user' : 'assistant';
       let body: string;
       try {
         const parsed = JSON.parse(msg.content);
@@ -727,16 +732,20 @@ export class ContextRoller {
       } catch {
         body = msg.content;
       }
-      const line = `${role}: ${body}`;
+      const projected = `[turn ${turnNumber}, ${role}]: ${body}`;
 
-      if (totalChars + line.length > maxChars && lines.length > 0) {
+      if (totalChars + projected.length > maxChars && entries.length > 0) {
         break;
       }
-      lines.push(line);
-      totalChars += line.length + 1; // +1 for newline
+      entries.push({ n: turnNumber, role, body });
+      totalChars += projected.length + 1; // +1 for newline
+      turnNumber--;
     }
 
     // Reverse back to chronological order.
-    return lines.reverse().join('\n');
+    return entries
+      .reverse()
+      .map((e) => `[turn ${e.n}, ${e.role}]: ${e.body}`)
+      .join('\n');
   }
 }

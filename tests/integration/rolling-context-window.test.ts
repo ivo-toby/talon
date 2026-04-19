@@ -177,8 +177,11 @@ describe('Rolling context window integration', () => {
     // 5. Verify: summarizer was called with reconstructed transcript
     expect(mockSummarizerRun).toHaveBeenCalledOnce();
     const summarizerInput = mockSummarizerRun.mock.calls[0][2];
-    expect(summarizerInput.transcript).toContain('User: Can you help me deploy');
-    expect(summarizerInput.transcript).toContain('Assistant: Production deployment complete');
+    // buildTranscript emits bracketed turn-number tags rather than raw
+    // "User:" / "Assistant:" prefixes to defend against prompt-injection
+    // in the observer/summarizer.
+    expect(summarizerInput.transcript).toContain('user]: Can you help me deploy');
+    expect(summarizerInput.transcript).toContain('assistant]: Production deployment complete');
 
     // 6. Verify: summary stored as memory item
     const memories = memoryRepo.findByThread(threadId, 'summary');
@@ -224,8 +227,8 @@ describe('Rolling context window integration', () => {
     // make the agent re-read the user's original instruction and redo the
     // work (issue fixed on fix/om-resuming-fail).
     expect(context.text).not.toContain('Recent Messages');
-    expect(context.text).not.toContain('User: Can you help me deploy');
-    expect(context.text).not.toContain('Assistant: Production deployment complete');
+    expect(context.text).not.toContain('Can you help me deploy');
+    expect(context.text).not.toContain('Production deployment complete');
   });
 
   it('roller does not trigger below threshold', async () => {
