@@ -18,6 +18,7 @@ interface ObserverOutput {
     priority: 'high' | 'medium' | 'low';
     text: string;
   }>;
+  taskComplete: boolean;
   currentTask: string;
   suggestedContinuation: string;
   memoryUpdates: Array<{
@@ -34,12 +35,15 @@ Respond with a JSON object (no markdown fences, no extra text) matching this str
   "observations": [
     { "date": "YYYY-MM-DD", "time": "HH:MM", "priority": "high|medium|low", "text": "one sentence" }
   ],
-  "currentTask": "what was being worked on (empty string if nothing)",
-  "suggestedContinuation": "what to do next (empty string if nothing)",
+  "taskComplete": true,
+  "currentTask": "what was being worked on when interrupted (empty string when taskComplete is true)",
+  "suggestedContinuation": "what to do next to resume (empty string when taskComplete is true)",
   "memoryUpdates": [
     { "key": "namespace:topic", "value": "fact prefixed with date", "mode": "append|replace" }
   ]
-}`;
+}
+
+Set "taskComplete" to false ONLY when the agent was interrupted mid-step (unfinished tool call, explicit commitment not yet fulfilled, part-way through a declared multi-step plan). Default to true when the last assistant turn reached a natural stopping point.`;
 
 export async function run(
   ctx: SubAgentContext,
@@ -76,16 +80,47 @@ ${transcript}`,
       ));
     }
 
-    const parsed = JSON.parse(jsonStr) as ObserverOutput;
+    const parsed = JSON.parse(jsonStr) as Partial<ObserverOutput> & {
+      taskComplete?: unknown;
+      currentTask?: unknown;
+      suggestedContinuation?: unknown;
+    };
 
     // Validate minimum structure.
     if (!Array.isArray(parsed.observations)) {
       return err(new SubAgentError('Session observer response missing observations array'));
     }
 
+    // Normalize taskComplete to a strict boolean. Models frequently return
+    // "true"/"false" strings or omit the field entirely. Missing or
+    // unrecognized values fall back to `true` so the downstream roller does
+    // NOT fire an auto-"continue" when the observer couldn't make up its
+    // mind — treating "unknown" as "complete" keeps the safe default.
+    const taskComplete = normalizeBoolean(parsed.taskComplete, true);
+
+    // Coerce optional string fields. When taskComplete is true, hints are
+    // meaningless; blank them out so downstream consumers (context-roller
+    // metadata, context-assembler prompt) cannot accidentally surface them.
+    const currentTask = taskComplete
+      ? ''
+      : (typeof parsed.currentTask === 'string' ? parsed.currentTask : '');
+    const suggestedContinuation = taskComplete
+      ? ''
+      : (typeof parsed.suggestedContinuation === 'string' ? parsed.suggestedContinuation : '');
+
+    const normalized: ObserverOutput = {
+      observations: parsed.observations as ObserverOutput['observations'],
+      taskComplete,
+      currentTask,
+      suggestedContinuation,
+      memoryUpdates: Array.isArray(parsed.memoryUpdates)
+        ? (parsed.memoryUpdates as ObserverOutput['memoryUpdates'])
+        : [],
+    };
+
     return ok({
-      summary: parsed.currentTask || 'Observations recorded',
-      data: parsed as unknown as Record<string, unknown>,
+      summary: normalized.currentTask || 'Observations recorded',
+      data: normalized as unknown as Record<string, unknown>,
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
@@ -100,6 +135,21 @@ ${transcript}`,
       `Session observation failed: ${error instanceof Error ? error.message : String(error)}`,
     ));
   }
+}
+
+/**
+ * Coerce an unknown value to a boolean. Accepts actual booleans and the
+ * common string spellings ("true"/"false", case-insensitive). Anything
+ * else — missing, null, numbers, objects — returns `fallback`.
+ */
+function normalizeBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const lower = value.trim().toLowerCase();
+    if (lower === 'true') return true;
+    if (lower === 'false') return false;
+  }
+  return fallback;
 }
 
 /**

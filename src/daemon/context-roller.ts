@@ -139,6 +139,13 @@ export class ContextRoller {
       return noRotation;
     }
 
+    // Snapshot boundary: created_at of the newest message INCLUDED in the
+    // transcript. ContextAssembler uses this to scope "Recent Messages" to
+    // turns that arrived AFTER this point — not the summary's own write time,
+    // which can trail the snapshot by seconds (summarizer latency) and would
+    // incorrectly drop messages that arrived in between.
+    const rotatedThroughTs = messages[messages.length - 1].created_at;
+
     const transcript = this.buildTranscript(messages, MAX_TRANSCRIPT_CHARS);
     const summarizerRun = this.deps.resolveSummarizerRun
       ? this.deps.resolveSummarizerRun(summarizerName)
@@ -245,6 +252,7 @@ export class ContextRoller {
         metadata: JSON.stringify({
           source: 'context-roller',
           messageCount: messages.length,
+          rotatedThroughTs,
           contextUsage,
           ...(contextUsage.rawMetricName === 'cache_read_input_tokens'
             ? { cacheReadTokens: contextUsage.rawMetric }
@@ -342,6 +350,9 @@ export class ContextRoller {
       return noRotation;
     }
 
+    // Snapshot boundary — see comment in checkAndRotate above.
+    const rotatedThroughTs = messages[messages.length - 1].created_at;
+
     const transcript = this.buildTranscript(messages, MAX_TRANSCRIPT_CHARS);
 
     // 2. Resolve and call the observer.
@@ -367,6 +378,7 @@ export class ContextRoller {
 
     const observerData = observerResult.value.data as {
       observations?: Array<{ date: string; time: string; priority: string; text: string }>;
+      taskComplete?: boolean;
       currentTask?: string;
       suggestedContinuation?: string;
       memoryUpdates?: Array<{ key: string; value: string; mode: 'append' | 'replace' }>;
@@ -425,16 +437,22 @@ export class ContextRoller {
       .join('\n\n');
 
     // 4. Build metadata with currentTask and suggestedContinuation.
+    // Persist hints only when the observer flagged the task as incomplete —
+    // otherwise a downstream ContextAssembler would surface "Current task:" /
+    // "Next step:" lines in the fresh-session prompt even though the prior
+    // turn completed, which nudges the model to re-do the work.
     const metadata: Record<string, unknown> = {
       source: 'context-roller-om',
       messageCount: messages.length,
+      rotatedThroughTs,
       contextUsage,
       createdAt: new Date().toISOString(),
     };
-    if (observerData?.currentTask) {
+    const incompleteTask = observerData?.taskComplete === false;
+    if (incompleteTask && observerData?.currentTask) {
       metadata.currentTask = observerData.currentTask;
     }
-    if (observerData?.suggestedContinuation) {
+    if (incompleteTask && observerData?.suggestedContinuation) {
       metadata.suggestedContinuation = observerData.suggestedContinuation;
     }
 
@@ -523,7 +541,14 @@ export class ContextRoller {
     // 7. Check if accumulated observations need reflection (consolidation).
     await this.maybeReflect(threadId, personaId, reflectorName);
 
-    const hasOpenThreads = !!(observerData?.currentTask || observerData?.suggestedContinuation);
+    // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
+    // Fire it only when the observer explicitly flags unfinished work — i.e.
+    // taskComplete === false AND a non-empty suggestedContinuation. A missing
+    // or non-boolean taskComplete is treated as "complete" to avoid triggering
+    // spurious continuations that make the agent redo work it already finished.
+    const taskComplete = observerData?.taskComplete !== false;
+    const suggestedContinuation = (observerData?.suggestedContinuation ?? '').trim();
+    const hasOpenThreads = !taskComplete && suggestedContinuation.length > 0;
     return { rotated: true, hasOpenThreads };
   }
 
@@ -586,6 +611,35 @@ export class ContextRoller {
       return;
     }
 
+    // Carry forward the rotation boundary and continuation hints from the
+    // pre-consolidation observations. Without this, the ContextAssembler
+    // would fall back to the consolidated observation's own created_at —
+    // which is the reflector's write time, not the actual transcript cutoff
+    // — and would drop any messages that arrived during reflector latency.
+    // Hints come from the newest observation's metadata because that one
+    // reflects the most recent rotation state.
+    const maxRotatedThroughTs = allObservations.reduce<number | null>((acc, obs) => {
+      try {
+        const meta = JSON.parse(obs.metadata);
+        const ts = Number(meta.rotatedThroughTs);
+        if (Number.isFinite(ts)) return acc === null ? ts : Math.max(acc, ts);
+      } catch { /* ignore */ }
+      return acc;
+    }, null);
+
+    // allObservations is DESC by created_at → [0] is newest.
+    let carriedCurrentTask: string | undefined;
+    let carriedSuggestedContinuation: string | undefined;
+    try {
+      const newestMeta = JSON.parse(allObservations[0].metadata);
+      if (typeof newestMeta.currentTask === 'string' && newestMeta.currentTask.length > 0) {
+        carriedCurrentTask = newestMeta.currentTask;
+      }
+      if (typeof newestMeta.suggestedContinuation === 'string' && newestMeta.suggestedContinuation.length > 0) {
+        carriedSuggestedContinuation = newestMeta.suggestedContinuation;
+      }
+    } catch { /* ignore */ }
+
     // Replace all existing observations with a single consolidated entry.
     const consolidatedId = randomUUID();
     const txResult = this.deps.memoryRepo.runInTransaction(() => {
@@ -597,6 +651,23 @@ export class ContextRoller {
         }
       }
 
+      const consolidatedMetadata: Record<string, unknown> = {
+        source: 'context-roller-om-reflector',
+        consolidatedFrom: allObservations.length,
+        originalChars: fullLog.length,
+        consolidatedChars: consolidated.length,
+        createdAt: new Date().toISOString(),
+      };
+      if (maxRotatedThroughTs !== null) {
+        consolidatedMetadata.rotatedThroughTs = maxRotatedThroughTs;
+      }
+      if (carriedCurrentTask !== undefined) {
+        consolidatedMetadata.currentTask = carriedCurrentTask;
+      }
+      if (carriedSuggestedContinuation !== undefined) {
+        consolidatedMetadata.suggestedContinuation = carriedSuggestedContinuation;
+      }
+
       // Insert consolidated observation.
       const insertResult = this.deps.memoryRepo.insert({
         id: consolidatedId,
@@ -604,13 +675,7 @@ export class ContextRoller {
         type: 'observation',
         content: consolidated,
         embedding_ref: null,
-        metadata: JSON.stringify({
-          source: 'context-roller-om-reflector',
-          consolidatedFrom: allObservations.length,
-          originalChars: fullLog.length,
-          consolidatedChars: consolidated.length,
-          createdAt: new Date().toISOString(),
-        }),
+        metadata: JSON.stringify(consolidatedMetadata),
       });
       if (insertResult.isErr()) {
         throw new Error(`consolidated insert: ${insertResult.error.message}`);

@@ -16,6 +16,7 @@ import type pino from 'pino';
 import { loadConfig } from '../core/config/config-loader.js';
 import { createDatabase } from '../core/database/connection.js';
 import { runMigrations } from '../core/database/migrations/runner.js';
+import { BaseRepository } from '../core/database/repositories/base-repository.js';
 
 import {
   QueueRepository,
@@ -130,6 +131,12 @@ export async function bootstrap(
     );
   }
   logger.info({ applied: migrationsResult.value }, 'bootstrap: migrations complete');
+
+  // Seed the monotonic clock counter from the DB so that timestamps issued
+  // in this process are strictly greater than anything the previous process
+  // persisted. Keeps the context-rotation boundary filter safe across
+  // daemon restarts — see BaseRepository.seedMonotonicClockFromDb.
+  BaseRepository.seedMonotonicClockFromDb(db);
 
   // 4. Create repositories
   const repos = {
