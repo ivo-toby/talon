@@ -45,14 +45,14 @@ describe('ContextAssembler', () => {
     const result = assembler.assemble('thread-1', 10);
     expect(result.summaryFound).toBe(true);
     expect(result.recentMessageCount).toBe(0);
-    expect(result.text).toContain('Previous Context');
-    expect(result.text).toContain('read-only summary');
+    expect(result.text).toContain('Prior-conversation state');
+    expect(result.text).toContain('historical context');
     expect(result.text).toContain('Discussed deployment plans');
     expect(result.text).toContain('Using Docker');
     expect(result.charCount).toBe(result.text.length);
   });
 
-  it('includes recent messages when available', () => {
+  it('formats replayed turns with bracketed state tags, not role markers', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok([
@@ -68,9 +68,12 @@ describe('ContextAssembler', () => {
     expect(result.summaryFound).toBe(false);
     expect(result.recentMessageCount).toBe(2);
     expect(result.text).toContain('Recent Messages');
-    expect(result.text).toContain('User: how is the deploy going?');
-    expect(result.text).toContain('Assistant: All green, deployed 5 minutes ago.');
-    expect(result.charCount).toBe(result.text.length);
+    // Bracketed state tags instead of "User:" / "Assistant:" so the main
+    // agent does not read replayed turns as live role markers.
+    expect(result.text).toContain('[previous turn, user]: how is the deploy going?');
+    expect(result.text).toContain('[previous turn, agent]: All green, deployed 5 minutes ago.');
+    expect(result.text).not.toMatch(/^User: /m);
+    expect(result.text).not.toMatch(/^Assistant: /m);
   });
 
   it('includes both summary and recent messages', () => {
@@ -92,10 +95,10 @@ describe('ContextAssembler', () => {
     const result = assembler.assemble('thread-1', 10);
     expect(result.summaryFound).toBe(true);
     expect(result.recentMessageCount).toBe(1);
-    expect(result.text).toContain('Previous Context');
+    expect(result.text).toContain('Prior-conversation state');
     expect(result.text).toContain('Previous session summary.');
     expect(result.text).toContain('Recent Messages');
-    expect(result.text).toContain('User: latest question');
+    expect(result.text).toContain('[previous turn, user]: latest question');
   });
 
   it('uses only the most recent summary', () => {
@@ -111,8 +114,196 @@ describe('ContextAssembler', () => {
     const assembler = new ContextAssembler(deps);
     const result = assembler.assemble('thread-1', 10);
     expect(result.text).toContain('New summary.');
-    // Should only include one Previous Context section
-    expect(result.text.match(/## Previous Context/g)?.length).toBe(1);
+    expect(result.text.match(/## Prior-conversation state/g)?.length).toBe(1);
+  });
+
+  it('replays observations within a char budget (bounded, not full history)', () => {
+    // Each observation is ~15K chars. With a 20K-char replay budget, the
+    // assembler includes the newest observation unconditionally, then can
+    // fit at most one additional observation before the budget is
+    // exhausted. Older observations are excluded. This keeps prompt size
+    // flat across the thread lifetime (issue #197) while still preserving
+    // recent history — e.g. across a reflector consolidation boundary.
+    const big = (marker: string) => `Date: 2026-04-19\n- 🟢 10:00 ${marker}\n` + 'x'.repeat(15_000);
+    const deps = makeDeps({
+      memoryRepo: {
+        findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+          if (type === 'observation') {
+            return ok([
+              {
+                id: 'obs-new',
+                type: 'observation',
+                content: big('newest-obs-marker'),
+                created_at: 9000,
+                metadata: JSON.stringify({ source: 'context-roller-om', taskComplete: true }),
+              },
+              {
+                id: 'obs-consolidated',
+                type: 'observation',
+                content: big('consolidated-marker'),
+                created_at: 6000,
+                metadata: JSON.stringify({ source: 'context-roller-om-reflector', taskComplete: true }),
+              },
+              {
+                id: 'obs-old',
+                type: 'observation',
+                content: big('oldest-marker'),
+                created_at: 3000,
+                metadata: JSON.stringify({ source: 'context-roller-om', taskComplete: true }),
+              },
+            ]);
+          }
+          return ok([]);
+        }),
+      } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    const result = assembler.assemble('thread-1', 10);
+    // Newest is always included, so is guaranteed-present.
+    expect(result.text).toContain('newest-obs-marker');
+    // Budget exhausted after one more — oldest is excluded.
+    expect(result.text).not.toContain('oldest-marker');
+  });
+
+  it('still surfaces consolidated history alongside newest rotation when they fit', () => {
+    // Small observations — both fit within the replay budget. This is the
+    // scenario just after a reflector consolidation + one subsequent
+    // rotation. The agent should see BOTH the consolidated state and the
+    // newest rotation delta, not just the newest.
+    const deps = makeDeps({
+      memoryRepo: {
+        findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+          if (type === 'observation') {
+            return ok([
+              {
+                id: 'obs-new',
+                type: 'observation',
+                content: 'Date: 2026-04-19\n- 🟢 14:00 newest rotation delta',
+                created_at: 9000,
+                metadata: JSON.stringify({ source: 'context-roller-om', taskComplete: true }),
+              },
+              {
+                id: 'obs-consolidated',
+                type: 'observation',
+                content: 'Date: 2026-04-18\n- 🔴 09:00 consolidated historical decisions',
+                created_at: 6000,
+                metadata: JSON.stringify({ source: 'context-roller-om-reflector', taskComplete: true }),
+              },
+            ]);
+          }
+          return ok([]);
+        }),
+      } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    const result = assembler.assemble('thread-1', 10);
+    expect(result.text).toContain('newest rotation delta');
+    expect(result.text).toContain('consolidated historical decisions');
+    // Chronological order — older consolidated comes first, newest last.
+    expect(result.text.indexOf('consolidated historical decisions'))
+      .toBeLessThan(result.text.indexOf('newest rotation delta'));
+  });
+
+  it('suppresses currentTask/suggestedContinuation hints when newest observation is taskComplete', () => {
+    const deps = makeDeps({
+      memoryRepo: {
+        findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+          if (type === 'observation') {
+            return ok([
+              {
+                id: 'obs-1',
+                type: 'observation',
+                content: 'Date: 2026-04-19\n- 🟢 10:00 completed task',
+                created_at: 7000,
+                metadata: JSON.stringify({
+                  source: 'context-roller-om',
+                  taskComplete: true,
+                  // Even if hints are leaked into metadata, the assembler
+                  // must suppress them when taskComplete is true.
+                  currentTask: 'stale task leaked into metadata',
+                  suggestedContinuation: 'stale next step leaked into metadata',
+                }),
+              },
+            ]);
+          }
+          return ok([]);
+        }),
+      } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    const result = assembler.assemble('thread-1', 10);
+
+    expect(result.text).not.toContain('Current task:');
+    expect(result.text).not.toContain('Next step:');
+    expect(result.text).not.toContain('stale task leaked');
+    expect(result.text).not.toContain('stale next step leaked');
+  });
+
+  it('surfaces hints when taskComplete is false', () => {
+    const deps = makeDeps({
+      memoryRepo: {
+        findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+          if (type === 'observation') {
+            return ok([
+              {
+                id: 'obs-1',
+                type: 'observation',
+                content: 'Date: 2026-04-19\n- 🔴 10:00 in-progress',
+                created_at: 7000,
+                metadata: JSON.stringify({
+                  source: 'context-roller-om',
+                  taskComplete: false,
+                  currentTask: 'writing tests',
+                  suggestedContinuation: 'finish the assembler test',
+                }),
+              },
+            ]);
+          }
+          return ok([]);
+        }),
+      } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    const result = assembler.assemble('thread-1', 10);
+    expect(result.text).toContain('Current task:');
+    expect(result.text).toContain('writing tests');
+    expect(result.text).toContain('Next step:');
+    expect(result.text).toContain('finish the assembler test');
+  });
+
+  it('legacy observations without taskComplete still surface hints (backwards compat)', () => {
+    const deps = makeDeps({
+      memoryRepo: {
+        findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+          if (type === 'observation') {
+            return ok([
+              {
+                id: 'obs-legacy',
+                type: 'observation',
+                content: 'Date: 2026-04-19\n- 🔴 10:00 legacy',
+                created_at: 7000,
+                // No taskComplete field at all.
+                metadata: JSON.stringify({
+                  source: 'context-roller-om',
+                  currentTask: 'legacy task',
+                  suggestedContinuation: 'legacy next step',
+                }),
+              },
+            ]);
+          }
+          return ok([]);
+        }),
+      } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    const result = assembler.assemble('thread-1', 10);
+    expect(result.text).toContain('legacy task');
+    expect(result.text).toContain('legacy next step');
   });
 
   it('fetches ALL messages when no summary exists (context grows toward rotation threshold)', () => {
@@ -129,8 +320,6 @@ describe('ContextAssembler', () => {
     const assembler = new ContextAssembler(deps);
     assembler.assemble('thread-1', 2);
 
-    // recentMessageLimit=2, but no summary → assembler should use the
-    // pre-summary cap (50) instead of the configured limit (2).
     expect(findLatestByThread).toHaveBeenCalledWith('thread-1', 50);
     expect(findLatestByThreadSince).not.toHaveBeenCalled();
   });
@@ -158,14 +347,10 @@ describe('ContextAssembler', () => {
     const assembler = new ContextAssembler(deps);
     const result = assembler.assemble('thread-1', 5);
 
-    // Summary exists → assembler should query post-rotation using the
-    // metadata-stored snapshot timestamp (4500), NOT the summary's own
-    // created_at (5000). The snapshot timestamp is the upper bound of
-    // messages already summarized.
     expect(findLatestByThreadSince).toHaveBeenCalledWith('thread-1', 4500, 5);
     expect(findLatestByThread).not.toHaveBeenCalled();
     expect(result.recentMessageCount).toBe(1);
-    expect(result.text).toContain('User: post-rotation msg');
+    expect(result.text).toContain('[previous turn, user]: post-rotation msg');
   });
 
   it('falls back to created_at when metadata.rotatedThroughTs is absent (backwards compat)', () => {
@@ -209,6 +394,7 @@ describe('ContextAssembler', () => {
                 metadata: JSON.stringify({
                   source: 'context-roller-om',
                   rotatedThroughTs: 6800,
+                  taskComplete: true,
                 }),
               },
             ]);
@@ -225,13 +411,10 @@ describe('ContextAssembler', () => {
     const assembler = new ContextAssembler(deps);
     const result = assembler.assemble('thread-1', 10);
 
-    // Uses rotatedThroughTs (snapshot time), not the observation's created_at,
-    // so messages that arrived during observer latency are retained.
     expect(findLatestByThreadSince).toHaveBeenCalledWith('thread-1', 6800, 10);
     expect(result.summaryFound).toBe(true);
     expect(result.recentMessageCount).toBe(0);
     expect(result.text).toContain('Observation Log');
-    // Recent Messages section is absent when nothing came after rotation.
     expect(result.text).not.toContain('Recent Messages');
   });
 
@@ -262,7 +445,7 @@ describe('ContextAssembler', () => {
     expect(result.text).not.toContain('Next step:');
   });
 
-  it('handles non-JSON message content', () => {
+  it('handles non-JSON message content with bracketed tags', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok([
@@ -275,6 +458,6 @@ describe('ContextAssembler', () => {
     const assembler = new ContextAssembler(deps);
     const result = assembler.assemble('thread-1', 10);
     expect(result.recentMessageCount).toBe(1);
-    expect(result.text).toContain('User: plain text');
+    expect(result.text).toContain('[previous turn, user]: plain text');
   });
 });

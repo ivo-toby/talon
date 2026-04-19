@@ -1223,12 +1223,15 @@ Agent run completes → selected trigger metric exceeds threshold?
             4. Clear session → next run starts fresh
                                ↓
             ContextAssembler injects into fresh session:
-            ┌─────────────────────────────────────┐
-            │ ## Previous Context                  │
-            │ [Latest session summary]             │
-            │ ### Recent Messages                  │
-            │ [Last 10 messages verbatim]          │
-            └─────────────────────────────────────┘
+            ┌─────────────────────────────────────────────────────┐
+            │ ## Prior-conversation state (read-only)             │
+            │ [Latest session summary / recent observations,      │
+            │  bounded by a char budget]                          │
+            │ ### Recent Messages                                 │
+            │ [Turns AFTER the most recent rotation, up to        │
+            │  recentMessageCount, tagged as                      │
+            │  "[previous turn, user]: ..."]                      │
+            └─────────────────────────────────────────────────────┘
 ```
 
 **Key design decisions:**
@@ -1237,7 +1240,9 @@ Agent run completes → selected trigger metric exceeds threshold?
 - **Summaries are memory items** — stored as `memory_items` with type `summary`, so they're subject to `memory-groomer` consolidation. Old summaries get merged/pruned automatically.
 - **Daemon-side, not agent-side** — the agent never knows its session was rotated. Context injection happens in the system prompt before the agent sees its first message.
 - **Awaited, not fire-and-forget** — rotation completes before the next queue item is processed, preventing race conditions.
-- **Prompt injection mitigation** — injected historical content is prefixed with a read-only disclaimer to prevent user messages from being treated as instructions.
+- **Prompt injection mitigation** — injected historical content is framed as "prior-conversation state" and replayed turns use bracketed state tags (`[previous turn, user]: …`) rather than `User:` / `Assistant:` role markers, so the main agent doesn't mistake historical context for live instructions. Recent Messages is scoped to turns AFTER the most recent rotation via `metadata.rotatedThroughTs`; pre-rotation turns are already compressed in the summary/observation.
+- **Bounded observation replay** — for the observational-memory path, the ContextAssembler replays observations up to a character budget (~20K) rather than concatenating the full log. This keeps prompt size flat over the thread's lifetime while preserving the newest state snapshot plus recent consolidated history.
+- **Durable completion state** — each observation persists `taskComplete` in metadata. When the observer flags the prior turn as complete, the assembler suppresses "Current task:" / "Next step:" hints so stale task pointers don't survive rotation and cause the agent to re-enter old work.
 
 **Files:** `src/daemon/context-roller.ts`, `src/daemon/context-assembler.ts`
 
@@ -1259,9 +1264,9 @@ Date: 2026-04-07
 - 🟡 16:45 Reflector threshold set at 40K chars
 ```
 
-When the observation log exceeds 40K characters, the `session-reflector` sub-agent consolidates — merging related observations, dropping superseded context, and preserving important decisions. This gives the agent long-term memory that survives many rotations.
+When the observation log exceeds 40K characters, the `session-reflector` sub-agent consolidates — merging related observations, dropping superseded context, and preserving important decisions. This gives the agent long-term memory that survives many rotations. The reflector carries `taskComplete`, `currentTask`, `suggestedContinuation`, and the rotation-snapshot timestamp forward onto the consolidated row.
 
-Each observation also carries `currentTask` and `suggestedContinuation` metadata, so the agent resumes coherently after context rotation without requiring a manual nudge.
+Each observation also carries `taskComplete`, `currentTask`, and `suggestedContinuation` metadata. When `taskComplete` is true, hints are neither persisted nor surfaced — so the agent resumes only when there is genuinely unfinished work, and stale task pointers don't drift across rotations.
 
 **Priority levels:** 🔴 high (critical decisions, goals, deadlines) · 🟡 medium (questions, preferences, conditional info) · 🟢 low (ephemeral context, minor details)
 

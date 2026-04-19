@@ -436,23 +436,27 @@ export class ContextRoller {
       .map(([date, lines]) => `Date: ${date}\n${lines.join('\n')}`)
       .join('\n\n');
 
-    // 4. Build metadata with currentTask and suggestedContinuation.
-    // Persist hints only when the observer flagged the task as incomplete —
-    // otherwise a downstream ContextAssembler would surface "Current task:" /
-    // "Next step:" lines in the fresh-session prompt even though the prior
-    // turn completed, which nudges the model to re-do the work.
+    // 4. Build metadata.
+    // `taskComplete` is ALWAYS persisted so downstream consumers can reason
+    // about completion state without re-running the observer. Hints
+    // (currentTask / suggestedContinuation) are persisted only when the
+    // observer flagged the task as incomplete — otherwise a downstream
+    // ContextAssembler would surface "Current task:" / "Next step:" lines
+    // in the fresh-session prompt even though the prior turn completed
+    // (issue #197).
+    const taskComplete = observerData?.taskComplete !== false;
     const metadata: Record<string, unknown> = {
       source: 'context-roller-om',
       messageCount: messages.length,
       rotatedThroughTs,
+      taskComplete,
       contextUsage,
       createdAt: new Date().toISOString(),
     };
-    const incompleteTask = observerData?.taskComplete === false;
-    if (incompleteTask && observerData?.currentTask) {
+    if (!taskComplete && observerData?.currentTask) {
       metadata.currentTask = observerData.currentTask;
     }
-    if (incompleteTask && observerData?.suggestedContinuation) {
+    if (!taskComplete && observerData?.suggestedContinuation) {
       metadata.suggestedContinuation = observerData.suggestedContinuation;
     }
 
@@ -543,10 +547,9 @@ export class ContextRoller {
 
     // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
     // Fire it only when the observer explicitly flags unfinished work — i.e.
-    // taskComplete === false AND a non-empty suggestedContinuation. A missing
-    // or non-boolean taskComplete is treated as "complete" to avoid triggering
-    // spurious continuations that make the agent redo work it already finished.
-    const taskComplete = observerData?.taskComplete !== false;
+    // taskComplete === false AND a non-empty suggestedContinuation. The
+    // `taskComplete` local declared earlier (persisted to metadata) carries
+    // the same semantics — reuse it here.
     const suggestedContinuation = (observerData?.suggestedContinuation ?? '').trim();
     const hasOpenThreads = !taskComplete && suggestedContinuation.length > 0;
     return { rotated: true, hasOpenThreads };
@@ -627,11 +630,19 @@ export class ContextRoller {
       return acc;
     }, null);
 
-    // allObservations is DESC by created_at → [0] is newest.
+    // allObservations is DESC by created_at → [0] is newest. Carry forward
+    // the newest observation's `taskComplete` flag too so the consolidated
+    // observation inherits the current completion state; without it the
+    // ContextAssembler would lose the signal after consolidation and
+    // could re-surface stale hints.
     let carriedCurrentTask: string | undefined;
     let carriedSuggestedContinuation: string | undefined;
+    let carriedTaskComplete: boolean | undefined;
     try {
       const newestMeta = JSON.parse(allObservations[0].metadata);
+      if (typeof newestMeta.taskComplete === 'boolean') {
+        carriedTaskComplete = newestMeta.taskComplete;
+      }
       if (typeof newestMeta.currentTask === 'string' && newestMeta.currentTask.length > 0) {
         carriedCurrentTask = newestMeta.currentTask;
       }
@@ -660,6 +671,9 @@ export class ContextRoller {
       };
       if (maxRotatedThroughTs !== null) {
         consolidatedMetadata.rotatedThroughTs = maxRotatedThroughTs;
+      }
+      if (carriedTaskComplete !== undefined) {
+        consolidatedMetadata.taskComplete = carriedTaskComplete;
       }
       if (carriedCurrentTask !== undefined) {
         consolidatedMetadata.currentTask = carriedCurrentTask;

@@ -1078,6 +1078,135 @@ describe('ContextRoller', () => {
       const meta = JSON.parse(insertCall.metadata);
       expect(meta).not.toHaveProperty('currentTask');
       expect(meta).not.toHaveProperty('suggestedContinuation');
+      // taskComplete itself is durably stored on every observation
+      // (issue #197), so downstream consumers can reason about completion
+      // state without re-running the observer.
+      expect(meta.taskComplete).toBe(true);
+    });
+
+    it('durably persists taskComplete=false when observer flags incomplete work', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'started X' },
+          ],
+          taskComplete: false,
+          currentTask: 'implementing X',
+          suggestedContinuation: 'finish step 3 of X',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      const insertCall = (deps.memoryRepo.insert as any).mock.calls[0][0];
+      const meta = JSON.parse(insertCall.metadata);
+      expect(meta.taskComplete).toBe(false);
+    });
+
+    it('reflector carries forward taskComplete onto the consolidated observation', async () => {
+      // Build a reflection-triggering scenario by seeding observations
+      // whose combined content exceeds MAX_OBSERVATION_CHARS (40K). The
+      // newest observation was flagged as incomplete; the consolidated row
+      // must inherit that flag so ContextAssembler keeps surfacing hints
+      // post-reflection.
+      const fat = 'x'.repeat(25_000);
+      const observations = [
+        {
+          id: 'obs-new',
+          type: 'observation',
+          content: fat,
+          created_at: 9000,
+          metadata: JSON.stringify({
+            source: 'context-roller-om',
+            taskComplete: false,
+            currentTask: 'work in progress',
+            suggestedContinuation: 'continue step 4',
+            rotatedThroughTs: 8500,
+          }),
+        },
+        {
+          id: 'obs-old',
+          type: 'observation',
+          content: fat,
+          created_at: 5000,
+          metadata: JSON.stringify({
+            source: 'context-roller-om',
+            taskComplete: true,
+            rotatedThroughTs: 4500,
+          }),
+        },
+      ];
+
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'noop',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '12:00', priority: 'low', text: 'tick' },
+          ],
+          taskComplete: true,
+          currentTask: '',
+          suggestedContinuation: '',
+          memoryUpdates: [],
+        },
+      }));
+      const reflectorRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Consolidated',
+        data: { consolidatedLog: 'Date: 2026-04-19\n- 🔴 12:00 consolidated' },
+      }));
+
+      const insertedRecords: Array<{ metadata: string }> = [];
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok([
+            { direction: 'inbound', content: JSON.stringify({ body: 'hi' }), created_at: 1_000 },
+          ])),
+        } as any,
+        resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
+          if (name === 'session-observer') return observerRun;
+          if (name === 'session-reflector') return reflectorRun;
+          return null;
+        }),
+        memoryRepo: {
+          insert: vi.fn().mockImplementation((row: any) => {
+            insertedRecords.push({ metadata: row.metadata });
+            return ok(row);
+          }),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+            if (type === 'observation') return ok(observations);
+            return ok([]);
+          }),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+      });
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      const consolidated = insertedRecords
+        .map((r) => JSON.parse(r.metadata))
+        .find((m) => m.source === 'context-roller-om-reflector');
+      expect(consolidated).toBeDefined();
+      // Inherits the newest observation's incomplete flag.
+      expect(consolidated.taskComplete).toBe(false);
+      expect(consolidated.currentTask).toBe('work in progress');
+      expect(consolidated.suggestedContinuation).toBe('continue step 4');
     });
 
     it('persists the transcript-snapshot timestamp as metadata.rotatedThroughTs', async () => {

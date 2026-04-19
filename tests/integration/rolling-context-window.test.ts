@@ -215,8 +215,8 @@ describe('Rolling context window integration', () => {
     const context = assembler.assemble(threadId, 10);
 
     // Should contain the summary
-    expect(context.text).toContain('Previous Context');
-    expect(context.text).toContain('read-only summary');
+    expect(context.text).toContain('Prior-conversation state');
+    expect(context.text).toContain('historical context');
     expect(context.text).toContain('production deployment');
     expect(context.text).toContain('staging config');
 
@@ -300,8 +300,8 @@ describe('Rolling context window integration', () => {
 
     const context = assembler.assemble(threadId, 10);
     expect(context.text).toContain('Recent Messages');
-    expect(context.text).toContain('User: first message');
-    expect(context.text).toContain('Assistant: first reply');
+    expect(context.text).toContain('[previous turn, user]: first message');
+    expect(context.text).toContain('[previous turn, agent]: first reply');
     // No summary section content beyond the header
     expect(context.text).not.toContain('Key facts');
   });
