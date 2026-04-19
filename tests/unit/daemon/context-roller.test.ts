@@ -12,6 +12,7 @@ const makeDeps = (overrides: Partial<ContextRollerDeps> = {}): ContextRollerDeps
   memoryRepo: {
     insert: vi.fn().mockReturnValue(ok({})),
     findById: vi.fn().mockReturnValue(ok(null)),
+    findByThread: vi.fn().mockReturnValue(ok([])),
     upsertByKey: vi.fn().mockReturnValue(ok({})),
     delete: vi.fn().mockReturnValue(ok(undefined)),
     runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
@@ -301,7 +302,9 @@ describe('ContextRoller', () => {
     // Should have called summarizer with the plain text content
     // New signature: summarizerRun(threadId, personaId, input)
     const callArgs = mockSummarizerRun.mock.calls[0][2];
-    expect(callArgs.transcript).toContain('User: plain text message');
+    // Transcript uses bracketed turn-number format so downstream LLMs do
+    // not mistake transcript lines for live prompt turns.
+    expect(callArgs.transcript).toContain('user]: plain text message');
   });
 
   // ---------------------------------------------------------------------------
@@ -918,5 +921,331 @@ describe('ContextRoller', () => {
     expect(transcript.length).toBeLessThanOrEqual(100_000);
     // Rotation still completes
     expect(deps.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-1');
+  });
+
+  // ---------------------------------------------------------------------------
+  // Observational memory (checkAndRotateOM) — taskComplete gating
+  // ---------------------------------------------------------------------------
+
+  describe('checkAndRotateOM', () => {
+    const makeOmDeps = (observerRun: ReturnType<typeof vi.fn>, overrides: Partial<ContextRollerDeps> = {}) => {
+      const messages = [
+        { direction: 'inbound', content: JSON.stringify({ body: 'work on X' }), created_at: 1000 },
+        { direction: 'outbound', content: JSON.stringify({ body: 'done' }), created_at: 2000 },
+      ];
+      return makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        } as any,
+        resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
+          if (name === 'session-observer') return observerRun;
+          return null;
+        }),
+        ...overrides,
+      });
+    };
+
+    it('returns hasOpenThreads=false when observer flags taskComplete=true', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'task X completed' },
+          ],
+          taskComplete: true,
+          currentTask: '',
+          suggestedContinuation: '',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      const result = await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      expect(result.rotated).toBe(true);
+      expect(result.hasOpenThreads).toBe(false);
+      expect(deps.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-1');
+    });
+
+    it('returns hasOpenThreads=true only when taskComplete=false AND suggestedContinuation is non-empty', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'started X' },
+          ],
+          taskComplete: false,
+          currentTask: 'implementing X',
+          suggestedContinuation: 'finish step 3 of X',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      const result = await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      expect(result.hasOpenThreads).toBe(true);
+    });
+
+    it('returns hasOpenThreads=false when taskComplete=false but suggestedContinuation is blank', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'partial work' },
+          ],
+          taskComplete: false,
+          currentTask: 'something',
+          suggestedContinuation: '   ',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      const result = await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      expect(result.hasOpenThreads).toBe(false);
+    });
+
+    it('defaults to hasOpenThreads=false when observer omits taskComplete (safe default)', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'work happened' },
+          ],
+          currentTask: 'something',
+          suggestedContinuation: 'do next step',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      const result = await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      expect(result.hasOpenThreads).toBe(false);
+    });
+
+    it('does not persist currentTask/suggestedContinuation in observation metadata when taskComplete=true', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'task X completed' },
+          ],
+          taskComplete: true,
+          // Observer erroneously includes hints despite taskComplete=true.
+          currentTask: 'leftover hint',
+          suggestedContinuation: 'leftover next step',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      const insertCall = (deps.memoryRepo.insert as any).mock.calls[0][0];
+      const meta = JSON.parse(insertCall.metadata);
+      expect(meta).not.toHaveProperty('currentTask');
+      expect(meta).not.toHaveProperty('suggestedContinuation');
+    });
+
+    it('persists the transcript-snapshot timestamp as metadata.rotatedThroughTs', async () => {
+      const messages = [
+        { direction: 'inbound', content: JSON.stringify({ body: 'start' }), created_at: 1000 },
+        { direction: 'outbound', content: JSON.stringify({ body: 'reply' }), created_at: 2000 },
+        { direction: 'inbound', content: JSON.stringify({ body: 'follow-up' }), created_at: 3500 },
+      ];
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'low', text: 'greeting' },
+          ],
+          taskComplete: true,
+          currentTask: '',
+          suggestedContinuation: '',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        } as any,
+        resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
+          if (name === 'session-observer') return observerRun;
+          return null;
+        }),
+      });
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      const insertCall = (deps.memoryRepo.insert as any).mock.calls[0][0];
+      const meta = JSON.parse(insertCall.metadata);
+      // Snapshot timestamp is the newest message's created_at (3500),
+      // NOT the observation's own write time (which happens later).
+      expect(meta.rotatedThroughTs).toBe(3500);
+    });
+
+    it('reflector consolidation carries rotatedThroughTs and hints forward', async () => {
+      // Two pre-existing observations, the newer one carries an incomplete
+      // task with a suggested continuation. maybeReflect should consolidate
+      // them and preserve: (a) the max rotatedThroughTs, (b) the newest's
+      // currentTask/suggestedContinuation.
+      const newerMeta = JSON.stringify({
+        source: 'context-roller-om',
+        rotatedThroughTs: 9500,
+        currentTask: 'implementing X',
+        suggestedContinuation: 'finish step 3',
+      });
+      const olderMeta = JSON.stringify({
+        source: 'context-roller-om',
+        rotatedThroughTs: 4500,
+      });
+      const longContent = 'x'.repeat(25_000);
+      const observations = [
+        {
+          id: 'obs-new',
+          type: 'observation',
+          content: longContent,
+          created_at: 10_000,
+          metadata: newerMeta,
+        },
+        {
+          id: 'obs-old',
+          type: 'observation',
+          content: longContent,
+          created_at: 5_000,
+          metadata: olderMeta,
+        },
+      ];
+
+      const messages = [
+        { direction: 'inbound', content: JSON.stringify({ body: 'hi' }), created_at: 1_000 },
+      ];
+
+      const reflectorRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Consolidated',
+        data: { consolidatedLog: 'Date: 2026-04-19\n- 🔴 10:00 consolidated line' },
+      }));
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'noop',
+        data: {
+          observations: [{ date: '2026-04-19', time: '11:00', priority: 'low', text: 'tick' }],
+          taskComplete: true,
+          currentTask: '',
+          suggestedContinuation: '',
+          memoryUpdates: [],
+        },
+      }));
+
+      const insertedRecords: Array<{ id: string; metadata: string; type: string }> = [];
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        } as any,
+        resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
+          if (name === 'session-observer') return observerRun;
+          if (name === 'session-reflector') return reflectorRun;
+          return null;
+        }),
+        memoryRepo: {
+          insert: vi.fn().mockImplementation((row: any) => {
+            insertedRecords.push({ id: row.id, metadata: row.metadata, type: row.type });
+            return ok(row);
+          }),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+            if (type === 'observation') return ok(observations);
+            return ok([]);
+          }),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+      });
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      // Find the consolidated insert (the one with source=context-roller-om-reflector).
+      const consolidated = insertedRecords
+        .map((r) => ({ ...r, meta: JSON.parse(r.metadata) }))
+        .find((r) => r.meta.source === 'context-roller-om-reflector');
+      expect(consolidated).toBeDefined();
+      expect(consolidated!.meta.rotatedThroughTs).toBe(9500);
+      expect(consolidated!.meta.currentTask).toBe('implementing X');
+      expect(consolidated!.meta.suggestedContinuation).toBe('finish step 3');
+    });
+
+    it('persists currentTask/suggestedContinuation when taskComplete=false', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'started X' },
+          ],
+          taskComplete: false,
+          currentTask: 'implementing X',
+          suggestedContinuation: 'finish step 3 of X',
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+
+      const insertCall = (deps.memoryRepo.insert as any).mock.calls[0][0];
+      const meta = JSON.parse(insertCall.metadata);
+      expect(meta.currentTask).toBe('implementing X');
+      expect(meta.suggestedContinuation).toBe('finish step 3 of X');
+    });
   });
 });

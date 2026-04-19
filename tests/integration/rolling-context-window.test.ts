@@ -177,8 +177,11 @@ describe('Rolling context window integration', () => {
     // 5. Verify: summarizer was called with reconstructed transcript
     expect(mockSummarizerRun).toHaveBeenCalledOnce();
     const summarizerInput = mockSummarizerRun.mock.calls[0][2];
-    expect(summarizerInput.transcript).toContain('User: Can you help me deploy');
-    expect(summarizerInput.transcript).toContain('Assistant: Production deployment complete');
+    // buildTranscript emits bracketed turn-number tags rather than raw
+    // "User:" / "Assistant:" prefixes to defend against prompt-injection
+    // in the observer/summarizer.
+    expect(summarizerInput.transcript).toContain('user]: Can you help me deploy');
+    expect(summarizerInput.transcript).toContain('assistant]: Production deployment complete');
 
     // 6. Verify: summary stored as memory item
     const memories = memoryRepo.findByThread(threadId, 'summary');
@@ -193,6 +196,8 @@ describe('Rolling context window integration', () => {
     const metadata = JSON.parse(summaryItems[0].metadata);
     expect(metadata.source).toBe('context-roller');
     expect(metadata.messageCount).toBe(6);
+    expect(typeof metadata.rotatedThroughTs).toBe('number');
+    expect(metadata.rotatedThroughTs).toBeGreaterThan(0);
     expect(metadata.contextUsage).toEqual({
       ratio: 0.45,
       inputTokens: 90_000,
@@ -215,10 +220,15 @@ describe('Rolling context window integration', () => {
     expect(context.text).toContain('production deployment');
     expect(context.text).toContain('staging config');
 
-    // Should contain recent messages
-    expect(context.text).toContain('Recent Messages');
-    expect(context.text).toContain('User: Can you help me deploy');
-    expect(context.text).toContain('Assistant: Production deployment complete');
+    // Recent Messages is scoped to post-rotation messages. All transcript
+    // messages in this scenario were created BEFORE the summary, so they
+    // should NOT be replayed verbatim — the summary is the compressed
+    // representation of that history. Replaying pre-rotation turns would
+    // make the agent re-read the user's original instruction and redo the
+    // work (issue fixed on fix/om-resuming-fail).
+    expect(context.text).not.toContain('Recent Messages');
+    expect(context.text).not.toContain('Can you help me deploy');
+    expect(context.text).not.toContain('Production deployment complete');
   });
 
   it('roller does not trigger below threshold', async () => {

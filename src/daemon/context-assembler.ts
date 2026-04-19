@@ -16,7 +16,7 @@ import type { MessageRepository, MessageRow } from '../core/database/repositorie
 import type { MemoryRepository } from '../core/database/repositories/memory-repository.js';
 
 export interface ContextAssemblerDeps {
-  messageRepo: Pick<MessageRepository, 'findLatestByThread'>;
+  messageRepo: Pick<MessageRepository, 'findLatestByThread' | 'findLatestByThreadSince'>;
   memoryRepo: Pick<MemoryRepository, 'findByThread'>;
 }
 
@@ -52,6 +52,29 @@ export class ContextAssembler {
     const sections: string[] = [];
     let summaryFound = false;
     let recentMessageCount = 0;
+    // Rotation boundary: created_at of the newest summary or observation.
+    // When set, "Recent Messages" is scoped to messages created STRICTLY AFTER
+    // this timestamp so the pre-rotation tail (which the summary/observation
+    // already compresses) is not replayed verbatim. Replaying it causes the
+    // agent to re-read the user's original instruction as a new request and
+    // redo work it already finished.
+    let rotationBoundary: number | null = null;
+
+    // Resolve the rotation boundary preferring the transcript-snapshot
+    // timestamp stored in metadata.rotatedThroughTs (the created_at of the
+    // newest message included in the summary/observation's transcript).
+    // Falls back to the memory item's own created_at for observations written
+    // before rotatedThroughTs was introduced. Using the snapshot timestamp
+    // avoids dropping messages that arrived during summarizer latency.
+    const boundaryFromMeta = (rawMetadata: string, fallback: number): number => {
+      try {
+        const meta = JSON.parse(rawMetadata);
+        const ts = Number(meta.rotatedThroughTs);
+        return Number.isFinite(ts) ? ts : fallback;
+      } catch {
+        return fallback;
+      }
+    };
 
     // 1. Check for observations (OM path) or legacy summary.
     // Observations take priority — if any exist, use the observation log.
@@ -64,6 +87,7 @@ export class ContextAssembler {
 
       // Extract currentTask and suggestedContinuation from the newest observation.
       const newest = observationsResult.value[0];
+      rotationBoundary = boundaryFromMeta(newest.metadata, newest.created_at);
       let continuationHint = '';
       try {
         const meta = JSON.parse(newest.metadata);
@@ -81,28 +105,30 @@ export class ContextAssembler {
       if (summaryResult.isOk() && summaryResult.value.length > 0) {
         const latest = summaryResult.value[0];
         sections.push(latest.content);
+        rotationBoundary = boundaryFromMeta(latest.metadata, latest.created_at);
         summaryFound = true;
       }
     }
 
     // 2. Get recent messages for immediate conversational context.
-    // When a summary exists (post-rotation), cap at recentMessageLimit to
-    // keep total size manageable — the summary already compresses older
-    // history. When NO summary exists yet, use a higher cap so context
-    // grows toward the rotation threshold naturally. We cap at 50 rather
-    // than unlimited to avoid overwhelming the model with history it may
-    // misinterpret as new instructions — 50 recent messages is enough to
-    // fill a 256K context window toward a 0.75 threshold before rotation
-    // kicks in, without dumping the entire thread verbatim.
+    // Post-rotation (summary/observation exists): fetch ONLY messages created
+    // after the rotation boundary, capped at recentMessageLimit. This prevents
+    // the pre-rotation instruction tail from being replayed as instructions on
+    // the next turn.
+    // Pre-rotation (no summary yet): fetch the full thread up to the higher
+    // cap so the context window grows toward the rotation threshold naturally
+    // — essential for stateless providers where every turn is a fresh session.
     const PRE_SUMMARY_MESSAGE_CAP = 50;
-    const effectiveLimit = summaryFound
-      ? recentMessageLimit
-      : Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP);
-
-    const messagesResult = this.deps.messageRepo.findLatestByThread(
-      threadId,
-      effectiveLimit,
-    );
+    const messagesResult = rotationBoundary !== null
+      ? this.deps.messageRepo.findLatestByThreadSince(
+          threadId,
+          rotationBoundary,
+          recentMessageLimit,
+        )
+      : this.deps.messageRepo.findLatestByThread(
+          threadId,
+          Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP),
+        );
     if (messagesResult.isOk() && messagesResult.value.length > 0) {
       const formatted = this.formatMessages(messagesResult.value);
       sections.push(`### Recent Messages\n\n${formatted}`);

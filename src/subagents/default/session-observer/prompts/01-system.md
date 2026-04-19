@@ -12,13 +12,24 @@ A list of observations, each with:
   - `low` (🟢): Ephemeral context, greetings, minor details unlikely to matter later
 - **text**: One clear sentence describing the observation
 
-### 2. Current task
-What the agent was actively working on when the conversation was interrupted. One sentence. If no task was in progress, leave empty.
+### 2. Task complete
+`true` if the agent's last response completed the user's request at a natural stopping point — the user's question was answered, the task finished, or the conversation is in a settled state waiting for new input.
+`false` **only** if the agent was genuinely mid-execution when the transcript ends:
+- the last assistant message ended in the middle of a step (e.g. announced "I'll do X next" but never did it),
+- a tool call failed and the agent was expected to retry or recover,
+- the agent was part-way through a multi-step plan it explicitly committed to finish.
 
-### 3. Suggested continuation
-What the agent should do next to resume work. One sentence. If there's nothing to continue, leave empty.
+Default to `true` when in doubt. Do not mark `false` just because work happened — mark `false` only when work was interrupted.
 
-### 4. Memory updates
+### 3. Current task
+What the agent was actively working on when the conversation was interrupted. One sentence.
+**MUST be empty string (`""`) when `taskComplete` is `true`.**
+
+### 4. Suggested continuation
+What the agent should do next to resume the interrupted work. One sentence.
+**MUST be empty string (`""`) when `taskComplete` is `true`.**
+
+### 5. Memory updates
 Facts that should be stored in the persistent memory system. Same format as the session-summarizer:
 - **key**: Namespace:topic key (e.g., `work:people`, `projects:talon`)
 - **value**: The fact to store, prefixed with today's date
