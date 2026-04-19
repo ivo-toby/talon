@@ -48,3 +48,11 @@ talond.yaml
 # WhatsApp Baileys auth session
 baileys-auth/
 .claude/settings.json
+
+# Local tooling scratch / session state
+.codex
+.sprite
+.playwright-mcp/
+
+# Ad-hoc UI screenshots from local testing
+chat-ui-*.png
