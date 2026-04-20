@@ -78,6 +78,30 @@ describe('OpenAiCompatibleProvider', () => {
     });
   }
 
+  it('forwards options.toolOutputCap to the wrapper payload when configured', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 8_000,
+      options: {
+        defaultModel: 'qwen2.5-coder:7b',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+        toolOutputCap: 2048,
+      },
+    });
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'hi',
+      systemPrompt: 's',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 10_000,
+      model: 'qwen2.5-coder:7b',
+    });
+    expect(result.isOk()).toBe(true);
+    const payload = JSON.parse(result._unsafeUnwrap().stdin) as Record<string, unknown>;
+    expect(payload.toolOutputCap).toBe(2048);
+  });
+
   it('creates a stateless streaming SDK execution strategy for foreground runs', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
@@ -203,6 +227,9 @@ describe('OpenAiCompatibleProvider', () => {
     // The wrapper must receive the same result-file path the background
     // runner will later read from, so large outputs bypass the stdout cap.
     expect(payload.outputFilePath).toBe(invocation.resultFiles?.lastMessagePath);
+    // toolOutputCap is omitted from the payload when not configured so the
+    // wrapper falls back to its internal default.
+    expect(payload).not.toHaveProperty('toolOutputCap');
     expect(payload['mcpServers']).toEqual({
       hostTools: {
         transport: 'stdio',
@@ -353,6 +380,61 @@ describe('OpenAiCompatibleProvider', () => {
     }
 
     expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+
+  it('propagates tool-output excerpt telemetry (truncated/originalChars/excerptChars) across the wrapper boundary', async () => {
+    // The wrapper emits a single enriched tool_result event with the
+    // excerpting telemetry; the provider must forward those fields onto
+    // AgentStreamEvent so downstream observability (Langfuse, audit log)
+    // can count truncation rate without losing the original-size signal.
+    vi.mocked(mockedSpawn).mockImplementation((() =>
+      makeFakeChild({
+        stdoutLines: [
+          JSON.stringify({
+            type: 'tool_event',
+            messageType: 'tool_result',
+            tool: 'mcp_read_file',
+            toolUseId: 'call-42',
+            output: '…excerpt…',
+            truncated: true,
+            originalChars: 51234,
+            excerptChars: 3987,
+          }),
+          JSON.stringify({
+            type: 'result',
+            output: 'done',
+            usage: { inputTokens: 10, outputTokens: 2 },
+          }),
+        ],
+      })) as unknown as typeof mockedSpawn);
+
+    const provider = makeProvider();
+    const strategy = provider.createExecutionStrategy();
+    const events: AgentStreamEvent[] = [];
+    for await (const event of strategy.run({
+      threadId: 'thread-t',
+      prompt: 'x',
+      systemPrompt: 's',
+      mcpServers: {},
+      cwd: '/tmp',
+      model: 'qwen3-coder:30b',
+      maxTurns: 10,
+      timeoutMs: 5_000,
+    })) {
+      events.push(event);
+    }
+
+    const toolEvents = events.filter((e) => e.type === 'tool_event');
+    // Single event only — no duplicate from a synthetic wrapper emit.
+    expect(toolEvents).toHaveLength(1);
+    expect(toolEvents[0]).toMatchObject({
+      type: 'tool_event',
+      messageType: 'tool_result',
+      toolUseId: 'call-42',
+      truncated: true,
+      originalChars: 51234,
+      excerptChars: 3987,
+    });
   });
 
   it('sends streamEvents=true to the wrapper when the foreground strategy spawns the child', async () => {

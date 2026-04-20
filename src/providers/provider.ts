@@ -42,6 +42,17 @@ export type AgentStreamEvent =
       isError?: boolean;
       subtype?: string;
       serverName?: string;
+      /**
+       * Tool-output excerpting telemetry (openai-compatible provider, stage
+       * 1 — specs/2026-04-20-tool-output-excerpting-stage1.md). Set when the
+       * tool result was truncated before entering the agent's message
+       * history so downstream observability can count truncation rate and
+       * see the original payload size without having to retain the full
+       * blob.
+       */
+      truncated?: boolean;
+      originalChars?: number;
+      excerptChars?: number;
     }
   | { type: 'result'; result: AgentRunResult }
   | { type: 'error'; message: string };
