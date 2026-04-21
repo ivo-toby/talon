@@ -52,6 +52,13 @@ interface WrapperPayload {
    * cap cannot truncate away the run's actual output.
    */
   outputFilePath?: string;
+  /**
+   * Max chars of tool output allowed into agent message history before
+   * excerpting. 0 disables the feature. When omitted, the wrapper uses its
+   * internal default. See
+   * specs/2026-04-20-tool-output-excerpting-stage1.md for rationale.
+   */
+  toolOutputCap?: number;
 }
 
 /** NDJSON event shape emitted by the wrapper CLI. */
@@ -65,6 +72,13 @@ type WrapperEvent =
       input?: unknown;
       output?: unknown;
       isError?: boolean;
+      /**
+       * Tool-output excerpting metadata carried across the wrapper→provider
+       * boundary. See specs/2026-04-20-tool-output-excerpting-stage1.md.
+       */
+      truncated?: boolean;
+      originalChars?: number;
+      excerptChars?: number;
     }
   | {
       type: 'result';
@@ -301,6 +315,9 @@ export class OpenAiCompatibleProvider implements AgentProvider {
             input: event.input,
             output: event.output,
             isError: event.isError,
+            ...(event.truncated !== undefined ? { truncated: event.truncated } : {}),
+            ...(event.originalChars !== undefined ? { originalChars: event.originalChars } : {}),
+            ...(event.excerptChars !== undefined ? { excerptChars: event.excerptChars } : {}),
           };
         } else if (event.type === 'result') {
           sawResultEvent = true;
@@ -432,6 +449,9 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
       streamEvents: options.streamEvents,
       ...(options.outputFilePath ? { outputFilePath: options.outputFilePath } : {}),
+      ...(this.readNumericOption('toolOutputCap') !== undefined
+        ? { toolOutputCap: this.readNumericOption('toolOutputCap') }
+        : {}),
     };
 
     return ok({
@@ -449,6 +469,12 @@ export class OpenAiCompatibleProvider implements AgentProvider {
   private readStringOption(name: string): string | undefined {
     const value = this.config.options?.[name];
     return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+  }
+
+  private readNumericOption(name: string): number | undefined {
+    const value = this.config.options?.[name];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    return undefined;
   }
 
   private readRecordOption(name: string): Record<string, string> | undefined {

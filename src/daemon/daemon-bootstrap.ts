@@ -346,12 +346,23 @@ export async function bootstrap(
   let contextRoller: ContextRoller | null = null;
   const enabledContextProviders = Object.entries(config.agentRunner.providers)
     .filter(([, providerConfig]) => providerConfig.contextManagement.enabled);
+  const configuredSummarizers = enabledContextProviders
+    .map(([, providerConfig]) => providerConfig.contextManagement.summarizer)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
+  const usesObservationalMemory = configuredSummarizers.includes('session-observer');
+  // The observer/reflector path is a pair: once the observation log crosses
+  // MAX_OBSERVATION_CHARS the context-roller calls the reflector to
+  // consolidate. If the reflector isn't bound alongside the observer, the
+  // lookup misses at runtime and the log grows unbounded — the warning
+  // "context-roller-om: reflector not available, skipping consolidation"
+  // indicates this miswiring. Auto-include the reflector whenever any
+  // provider opts into observational memory so a single config key keeps
+  // both halves working.
   const requestedSummarizers = [
-    ...new Set(
-      enabledContextProviders
-        .map(([, providerConfig]) => providerConfig.contextManagement.summarizer)
-        .filter((name): name is string => typeof name === 'string' && name.length > 0),
-    ),
+    ...new Set([
+      ...configuredSummarizers,
+      ...(usesObservationalMemory ? ['session-reflector'] : []),
+    ]),
   ];
 
   if (enabledContextProviders.length === 0) {
