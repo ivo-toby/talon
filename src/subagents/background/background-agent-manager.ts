@@ -549,11 +549,9 @@ export class BackgroundAgentManager {
       task.completedAt && task.startedAt ? Math.max(0, Math.round((task.completedAt - task.startedAt) / 1000)) : 0;
 
     const content = [
-      `[Background Task ${title}] Task ${task.id}: "${preview}"`,
+      `[Task ${title}] ID: ${task.id.slice(0, 8)}`,
+      `Prompt: "${preview}"`,
       `Status: ${task.status}`,
-      `Provider: ${task.providerName}`,
-      `Output summary: ${summary}`,
-      `Working directory: ${task.workingDirectory ?? 'n/a'}`,
       `Duration: ${durationSeconds}s`,
     ].join('\n');
 
@@ -569,18 +567,6 @@ export class BackgroundAgentManager {
       this.deps.logger.error(
         { taskId: task.id, err: notifyResult.error },
         'background-agent: failed to enqueue completion notification',
-      );
-    }
-
-    const messageResult = this.deps.queueManager.enqueue(task.threadId, 'message', {
-      personaId: task.personaId,
-      content,
-      providerName: task.providerName,
-    });
-    if (messageResult.isErr()) {
-      this.deps.logger.error(
-        { taskId: task.id, err: messageResult.error },
-        'background-agent: failed to enqueue completion message',
       );
     }
   }

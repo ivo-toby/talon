@@ -18,6 +18,7 @@ import { PersonaRepository } from '../../core/database/repositories/persona-repo
 import { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
 import { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
 import { getNextCronTime, isValidCronExpression } from '../../scheduler/cron-evaluator.js';
+import type { TelegramConfig } from '../../channels/connectors/telegram/telegram-types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,12 +30,14 @@ export interface AddScheduleOptions {
   cron: string;
   label: string;
   prompt: string;
+  externalId?: string;
   db: Database.Database;
 }
 
 export interface AddScheduleResult {
   id: string;
   threadId: string;
+  externalId: string;
   expression: string;
   label: string;
   nextRunAt: number;
@@ -54,7 +57,7 @@ export interface AddScheduleResult {
  * @throws Error with a descriptive message on any failure.
  */
 export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
-  const { db, persona, channel, cron, label, prompt } = options;
+  const { db, persona, channel, cron, label, prompt, externalId } = options;
 
   // --- Validate cron expression (must be exactly 5 fields) ----------------
   const cronFields = cron.trim().split(/\s+/);
@@ -89,7 +92,30 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
 
   // --- Find or create schedule thread ------------------------------------
   const threadRepo = new ThreadRepository(db);
-  const scheduleExternalId = `schedule:${persona}:${channel}`;
+  let scheduleExternalId = externalId;
+
+  // If no explicit external ID is provided, try to resolve a sensible default.
+  if (!scheduleExternalId) {
+    if (channelRow.type === 'telegram') {
+      // For Telegram, we MUST have a numeric chat ID.
+      // Try to pull the first allowed ID from the channel config.
+      try {
+        const config = JSON.parse(channelRow.config);
+        const allowedIds = config.allowedUserIds || config.allowedChatIds;
+        if (allowedIds && Array.isArray(allowedIds) && allowedIds.length > 0) {
+          scheduleExternalId = String(allowedIds[0]);
+        }
+      } catch {
+        // Ignore parse errors.
+      }
+    }
+  }
+
+  // Fallback to the classic synthetic ID if we still don't have one (though this will fail on Telegram).
+  if (!scheduleExternalId) {
+    scheduleExternalId = `schedule:${persona}:${channel}`;
+  }
+
   let threadId: string;
 
   const existing = threadRepo.findByExternalId(channelRow.id, scheduleExternalId);
@@ -142,6 +168,7 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
   return {
     id: scheduleId,
     threadId,
+    externalId: scheduleExternalId,
     expression: cron,
     label,
     nextRunAt,
@@ -245,6 +272,7 @@ export async function addScheduleCommand(options: {
   cron: string;
   label: string;
   prompt: string;
+  externalId?: string;
   configPath?: string;
 }): Promise<void> {
   const { loadConfig } = await import('../../core/config/config-loader.js');
@@ -278,15 +306,17 @@ export async function addScheduleCommand(options: {
       cron: options.cron,
       label: options.label,
       prompt: options.prompt,
+      externalId: options.externalId,
       db,
     });
 
     console.log(`Schedule created successfully.`);
-    console.log(`  ID:         ${result.id}`);
-    console.log(`  Thread:     ${result.threadId}`);
-    console.log(`  Expression: ${result.expression}`);
-    console.log(`  Label:      ${result.label}`);
-    console.log(`  Next run:   ${new Date(result.nextRunAt).toISOString()}`);
+    console.log(`  ID:          ${result.id}`);
+    console.log(`  Thread:      ${result.threadId}`);
+    console.log(`  External ID: ${result.externalId}`);
+    console.log(`  Expression:  ${result.expression}`);
+    console.log(`  Label:       ${result.label}`);
+    console.log(`  Next run:    ${new Date(result.nextRunAt).toISOString()}`);
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     process.exit(1);

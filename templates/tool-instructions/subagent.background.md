@@ -11,6 +11,7 @@ Use `background_agent action="profiles"` to discover available profiles.
 - Multi-step tasks where the user doesn't need the result right now
 - Tasks that will fill up your context window while executing
 - Tasks involving file reads, edits, builds, tests — i.e. any coding work
+- **Delegation & Parallelization (Swarm):** If a user requests multi-stream work (e.g. "analyze these 3 different sources", "create a team"), spawn multiple background agents simultaneously to parallelize the workload rather than doing it sequentially.
 
 **When NOT to use them:**
 - Quick lookups (one tool call, instant answer)
@@ -23,11 +24,11 @@ require user input mid-way, use a background agent. When in doubt, use a
 background agent. The cost of blocking the conversation is higher than the
 cost of spawning an agent.
 
-**Pattern:** Acknowledge the request immediately, spawn the agent, continue
-the conversation. Check the result when notified or when the user asks.
+**Protocol (Filter & Focus Mode — noise reduction):**
+- **Handshake (Launch):** Be extremely concise. Avoid bullet points. Just say: "🚀 Start [ID]: [Brief Description]. → Wacht."
+- **Completion (Follow-up):**
+    - The system already posts a compact `[Task Complete]` notification.
+    - **Do NOT repeat the summary** if it's already redundant.
+    - Focus only on the results that require user attention and the **→ Next Step**.
+    - If the work was a hidden vault update, just confirm: "Vault bijgewerkt. → Volgende?"
 
-**Prompt quality matters:** Give background agents full context — don't
-assume they know what you know. Include: file paths, what to change,
-expected outcomes, and the full sequence of steps. A well-prompted
-background agent should complete the task without coming back for
-clarification.

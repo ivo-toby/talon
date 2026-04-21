@@ -425,14 +425,24 @@ program
   .requiredOption('--cron <expr>', 'Cron expression (5-field)')
   .requiredOption('--label <label>', 'Human-readable label')
   .requiredOption('--prompt <prompt>', 'Prompt text for the agent')
+  .option('--external-id <id>', 'Specific external ID (e.g. Telegram chat ID) for the schedule thread')
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
-  .action(async (opts: { persona: string; channel: string; cron: string; label: string; prompt: string; config: string }) => {
+  .action(async (opts: {
+    persona: string;
+    channel: string;
+    cron: string;
+    label: string;
+    prompt: string;
+    externalId?: string;
+    config: string;
+  }) => {
     await addScheduleCommand({
       persona: opts.persona,
       channel: opts.channel,
       cron: opts.cron,
       label: opts.label,
       prompt: opts.prompt,
+      externalId: opts.externalId,
       configPath: opts.config,
     });
   });
