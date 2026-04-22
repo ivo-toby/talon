@@ -59,7 +59,6 @@ function makePersonaRow(overrides: Partial<PersonaRow> = {}): PersonaRow {
     system_prompt_file: null,
     skills: '[]',
     capabilities: '{}',
-    mounts: '[]',
     max_concurrent: null,
     created_at: 1000,
     updated_at: 1000,

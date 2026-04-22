@@ -5,7 +5,7 @@ description: Configure persona prompts, capabilities, skills, sub-agents, and sc
 
 # Personas
 
-A persona is Talon's runtime identity for an agent: system prompt, optional provider override, model, skills, sub-agents, capability labels, mounts, and optional concurrency limits.
+A persona is Talon's runtime identity for an agent: system prompt, optional provider override, model, skills, sub-agents, capability labels, and optional concurrency limits.
 
 ## Persona config
 
@@ -125,18 +125,3 @@ npx talonctl unbind --persona assistant --channel my-telegram
 ```
 
 The first binding on a channel becomes the default binding automatically.
-
-## Mounts
-
-If a persona needs sandbox file access, use `mounts`:
-
-```yaml
-personas:
-  - name: coder
-    mounts:
-      - source: /srv/repos/project-a
-        target: /workspace/project-a
-        mode: rw
-```
-
-`source` and `target` are required. `mode` defaults to `ro`.

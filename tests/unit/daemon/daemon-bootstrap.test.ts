@@ -219,15 +219,6 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
     ipc: { pollIntervalMs: 500, daemonSocketDir: 'data/ipc/daemon' },
     queue: { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 },
     scheduler: { tickIntervalMs: 5000 },
-    sandbox: {
-      runtime: 'docker',
-      image: 'talon-sandbox:latest',
-      maxConcurrent: 3,
-      networkDefault: 'off',
-      idleTimeoutMs: 1800000,
-      hardTimeoutMs: 3600000,
-      resourceLimits: { memoryMb: 1024, cpus: 1, pidsLimit: 256 },
-    },
     auth: { mode: 'subscription' },
     agentRunner: {
       defaultProvider: 'claude-code',

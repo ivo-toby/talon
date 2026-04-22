@@ -10,10 +10,8 @@ import type { z } from 'zod';
 import type {
   TalondConfigSchema,
   StorageConfigSchema,
-  SandboxConfigSchema,
   ExecutionEnvResourceLimitsSchema,
   CapabilitiesSchema,
-  MountConfigSchema,
   PersonaConfigSchema,
   SpritesConfigSchema,
   ChannelConfigSchema,
@@ -36,20 +34,11 @@ export type TalondConfig = z.infer<typeof TalondConfigSchema>;
 /** Storage backend configuration. */
 export type StorageConfig = z.infer<typeof StorageConfigSchema>;
 
-/** Container sandbox configuration. */
-export type SandboxConfig = z.infer<typeof SandboxConfigSchema>;
-
-/** Resource limits within the sandbox. */
-export type SandboxResourceLimits = SandboxConfig['resourceLimits'];
-
 /** Resource limits for Sprites execution environments. */
 export type ExecutionEnvResourceLimitsConfig = z.infer<typeof ExecutionEnvResourceLimitsSchema>;
 
 /** Per-persona capability grants and approval requirements. */
 export type CapabilitiesConfig = z.infer<typeof CapabilitiesSchema>;
-
-/** A single host-to-container mount definition. */
-export type MountConfig = z.infer<typeof MountConfigSchema>;
 
 /** Persona definition as declared in the config file. */
 export type PersonaConfig = z.infer<typeof PersonaConfigSchema>;

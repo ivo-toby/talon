@@ -57,7 +57,6 @@ export function seedPersona(db: Database.Database): string {
     system_prompt_file: null,
     skills: '[]',
     capabilities: '{}',
-    mounts: '[]',
     max_concurrent: null,
   });
   if (result.isErr()) {

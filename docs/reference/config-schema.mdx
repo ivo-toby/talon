@@ -86,10 +86,6 @@ personas:
         - schedule.manage:own
       requireApproval:
         - db.query:own
-    mounts:
-      - source: /srv/notes
-        target: /workspace/notes
-        mode: ro
     maxConcurrent: 2
 ```
 
@@ -103,23 +99,7 @@ personas:
 | `subagents` | string[] | `[]` | Allowed sub-agent names |
 | `capabilities.allow` | string[] | `[]` | Allowed capability labels |
 | `capabilities.requireApproval` | string[] | `[]` | Approval-gated capability labels |
-| `mounts` | array | `[]` | Sandbox mounts |
 | `maxConcurrent` | integer ≥ 1 | — | Optional per-persona concurrency cap |
-
-### `personas[].mounts[]`
-
-```yaml
-mounts:
-  - source: /srv/notes
-    target: /workspace/notes
-    mode: ro
-```
-
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `source` | string | required | Host path |
-| `target` | string | required | Mount target in the sandbox |
-| `mode` | `ro \| rw` | `ro` | Mount mode |
 
 ---
 

@@ -46,7 +46,6 @@ function makePersonaConfig(overrides: Partial<PersonaConfig> = {}): PersonaConfi
     skills: [],
     subagents: [],
     capabilities: { allow: [], requireApproval: [] },
-    mounts: [],
     queryTimeoutMinutes: 10,
     maxConcurrent: undefined,
     ...overrides,

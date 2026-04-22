@@ -11,18 +11,6 @@ storage:
   type: sqlite
   path: data/talond.sqlite
 
-sandbox:
-  runtime: docker
-  image: talon-sandbox:latest
-  maxConcurrent: 3
-  networkDefault: off
-  idleTimeoutMs: 1800000
-  hardTimeoutMs: 3600000
-  resourceLimits:
-    memoryMb: 1024
-    cpus: 1
-    pidsLimit: 256
-
 channels:
   - type: telegram
     name: personal-telegram
@@ -104,13 +92,6 @@ personas:
         - subagent.background
       requireApproval:
         - fs.write:workspace
-    mounts:
-      - source: data/threads/{thread}/memory
-        target: /memory
-        mode: ro
-      - source: data/threads/{thread}/artifacts
-        target: /artifacts
-        mode: rw
     maxConcurrent: 2
 
 ipc:

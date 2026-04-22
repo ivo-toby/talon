@@ -3,10 +3,8 @@ import {
   TalondConfigSchema,
   LangfuseConfigSchema,
   StorageConfigSchema,
-  SandboxConfigSchema,
   ExecutionEnvResourceLimitsSchema,
   CapabilitiesSchema,
-  MountConfigSchema,
   PersonaConfigSchema,
   SpritesConfigSchema,
   ChannelConfigSchema,
@@ -107,61 +105,6 @@ describe('StorageConfigSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SandboxConfigSchema
-// ---------------------------------------------------------------------------
-
-describe('SandboxConfigSchema', () => {
-  it('parses an empty object with defaults', () => {
-    const result = SandboxConfigSchema.safeParse({});
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.runtime).toBe('docker');
-      expect(result.data.image).toBe('talon-sandbox:latest');
-      expect(result.data.maxConcurrent).toBe(3);
-      expect(result.data.networkDefault).toBe('off');
-      expect(result.data.idleTimeoutMs).toBe(30 * 60 * 1000);
-      expect(result.data.hardTimeoutMs).toBe(60 * 60 * 1000);
-      expect(result.data.resourceLimits.memoryMb).toBe(1024);
-      expect(result.data.resourceLimits.cpus).toBe(1);
-      expect(result.data.resourceLimits.pidsLimit).toBe(256);
-    }
-  });
-
-  it('accepts apple-container runtime', () => {
-    const result = SandboxConfigSchema.safeParse({ runtime: 'apple-container' });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.runtime).toBe('apple-container');
-    }
-  });
-
-  it('rejects an unknown runtime', () => {
-    const result = SandboxConfigSchema.safeParse({ runtime: 'lxc' });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects maxConcurrent below 1', () => {
-    const result = SandboxConfigSchema.safeParse({ maxConcurrent: 0 });
-    expect(result.success).toBe(false);
-  });
-
-  it('rejects negative idleTimeoutMs', () => {
-    const result = SandboxConfigSchema.safeParse({ idleTimeoutMs: -1 });
-    expect(result.success).toBe(false);
-  });
-
-  it('accepts custom resourceLimits', () => {
-    const result = SandboxConfigSchema.safeParse({
-      resourceLimits: { memoryMb: 2048, cpus: 2, pidsLimit: 512 },
-    });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.resourceLimits.memoryMb).toBe(2048);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
 // CapabilitiesSchema
 // ---------------------------------------------------------------------------
 
@@ -194,39 +137,6 @@ describe('CapabilitiesSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
-// MountConfigSchema
-// ---------------------------------------------------------------------------
-
-describe('MountConfigSchema', () => {
-  it('requires source and target', () => {
-    expect(MountConfigSchema.safeParse({}).success).toBe(false);
-    expect(MountConfigSchema.safeParse({ source: '/src' }).success).toBe(false);
-    expect(MountConfigSchema.safeParse({ target: '/dst' }).success).toBe(false);
-  });
-
-  it('defaults mode to ro', () => {
-    const result = MountConfigSchema.safeParse({ source: '/src', target: '/dst' });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.mode).toBe('ro');
-    }
-  });
-
-  it('accepts rw mode', () => {
-    const result = MountConfigSchema.safeParse({ source: '/src', target: '/dst', mode: 'rw' });
-    expect(result.success).toBe(true);
-    if (result.success) {
-      expect(result.data.mode).toBe('rw');
-    }
-  });
-
-  it('rejects an invalid mode', () => {
-    const result = MountConfigSchema.safeParse({ source: '/src', target: '/dst', mode: 'exec' });
-    expect(result.success).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
 // PersonaConfigSchema
 // ---------------------------------------------------------------------------
 
@@ -243,7 +153,6 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.model).toBe('claude-sonnet-4-6');
       expect(result.data.skills).toEqual([]);
       expect(result.data.capabilities.allow).toEqual([]);
-      expect(result.data.mounts).toEqual([]);
       expect(result.data.systemPromptFile).toBeUndefined();
       expect(result.data.queryTimeoutMinutes).toBe(10);
       expect(result.data.maxConcurrent).toBeUndefined();
@@ -260,7 +169,6 @@ describe('PersonaConfigSchema', () => {
       queryTimeoutMinutes: 45,
       skills: ['web-search', 'code-runner'],
       capabilities: { allow: ['read_file'], requireApproval: [] },
-      mounts: [{ source: '/data', target: '/workspace', mode: 'rw' }],
       maxConcurrent: 2,
       executionEnv: {
         sandboxDefault: true,
@@ -278,7 +186,6 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.provider).toBe('gemini-cli');
       expect(result.data.queryTimeoutMinutes).toBe(45);
       expect(result.data.maxConcurrent).toBe(2);
-      expect(result.data.mounts).toHaveLength(1);
       expect(result.data.executionEnv).toEqual({
         sandboxDefault: true,
         baseSnapshot: 'node-22-bookworm',
@@ -901,7 +808,6 @@ describe('TalondConfigSchema', () => {
       logLevel: 'debug',
       dataDir: '/var/lib/talon',
       storage: { type: 'sqlite', path: '/var/lib/talon/db.sqlite' },
-      sandbox: { runtime: 'docker', maxConcurrent: 5 },
       channels: [{ type: 'telegram', name: 'main', tokenRef: 'TELEGRAM_TOKEN' }],
       personas: [{ name: 'helper', model: 'claude-sonnet-4-6' }],
       ipc: { pollIntervalMs: 250 },

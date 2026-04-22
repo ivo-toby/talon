@@ -419,19 +419,6 @@ function buildDefaultConfigObject(dataDir: string): Record<string, unknown> {
       type: 'sqlite',
       path: `${dataDir}/talond.sqlite`,
     },
-    sandbox: {
-      runtime: 'docker',
-      image: 'talon-sandbox:latest',
-      maxConcurrent: 3,
-      networkDefault: 'off',
-      idleTimeoutMs: 1800000,
-      hardTimeoutMs: 3600000,
-      resourceLimits: {
-        memoryMb: 1024,
-        cpus: 1,
-        pidsLimit: 256,
-      },
-    },
     ipc: {
       pollIntervalMs: 500,
       daemonSocketDir: `${dataDir}/ipc/daemon`,
