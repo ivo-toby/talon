@@ -45,10 +45,19 @@ export class ContextAssembler {
    *   way for context to grow toward the rotation threshold is to replay
    *   the full thread history. Once rotation fires and a summary is
    *   written, subsequent turns get summary + last N instead.
+   * @param options.excludeMessageId — optional message id to drop from the
+   *   "Recent Messages" block. The message being processed is already
+   *   passed to the provider as the live prompt; echoing it in the system
+   *   prompt as a `[previous turn, user]: …` entry caused stateless
+   *   providers to respond twice (once to the replay, once to the prompt).
    *
    * Returns a markdown string and metadata for observability.
    */
-  assemble(threadId: string, recentMessageLimit: number): AssembledContext {
+  assemble(
+    threadId: string,
+    recentMessageLimit: number,
+    options: { excludeMessageId?: string } = {},
+  ): AssembledContext {
     const sections: string[] = [];
     let summaryFound = false;
     let recentMessageCount = 0;
@@ -152,9 +161,14 @@ export class ContextAssembler {
           Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP),
         );
     if (messagesResult.isOk() && messagesResult.value.length > 0) {
-      const formatted = this.formatMessages(messagesResult.value);
-      sections.push(`### Recent Messages\n\n${formatted}`);
-      recentMessageCount = messagesResult.value.length;
+      const filtered = options.excludeMessageId
+        ? messagesResult.value.filter((m) => m.id !== options.excludeMessageId)
+        : messagesResult.value;
+      if (filtered.length > 0) {
+        const formatted = this.formatMessages(filtered);
+        sections.push(`### Recent Messages\n\n${formatted}`);
+        recentMessageCount = filtered.length;
+      }
     }
 
     if (sections.length === 0) {

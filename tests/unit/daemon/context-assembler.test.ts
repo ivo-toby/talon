@@ -56,8 +56,8 @@ describe('ContextAssembler', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok([
-          { direction: 'inbound', content: JSON.stringify({ body: 'how is the deploy going?' }) },
-          { direction: 'outbound', content: JSON.stringify({ body: 'All green, deployed 5 minutes ago.' }) },
+          { id: 'msg-a', direction: 'inbound', content: JSON.stringify({ body: 'how is the deploy going?' }) },
+          { id: 'msg-b', direction: 'outbound', content: JSON.stringify({ body: 'All green, deployed 5 minutes ago.' }) },
         ])),
         findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
@@ -459,5 +459,47 @@ describe('ContextAssembler', () => {
     const result = assembler.assemble('thread-1', 10);
     expect(result.recentMessageCount).toBe(1);
     expect(result.text).toContain('[previous turn, user]: plain text');
+  });
+
+  it('excludes the current inbound message from Recent Messages when excludeMessageId is provided', () => {
+    // The message being processed is already passed to the provider as the
+    // live prompt; echoing it in the system prompt as a `[previous turn, user]`
+    // entry caused stateless providers to respond twice — once to the replay,
+    // once to the prompt itself. The agent runner now passes the processed
+    // message id so the assembler drops it.
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok([
+          { id: 'msg-prev', direction: 'inbound', content: JSON.stringify({ body: 'prior turn' }) },
+          { id: 'msg-current', direction: 'inbound', content: JSON.stringify({ body: 'current question' }) },
+        ])),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    const result = assembler.assemble('thread-1', 10, { excludeMessageId: 'msg-current' });
+
+    expect(result.recentMessageCount).toBe(1);
+    expect(result.text).toContain('[previous turn, user]: prior turn');
+    expect(result.text).not.toContain('current question');
+  });
+
+  it('suppresses the Recent Messages block entirely when excluding the only message', () => {
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok([
+          { id: 'msg-current', direction: 'inbound', content: JSON.stringify({ body: 'only message' }) },
+        ])),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+
+    const assembler = new ContextAssembler(deps);
+    const result = assembler.assemble('thread-1', 10, { excludeMessageId: 'msg-current' });
+
+    expect(result.recentMessageCount).toBe(0);
+    expect(result.text).not.toContain('Recent Messages');
+    expect(result.text).not.toContain('only message');
   });
 });

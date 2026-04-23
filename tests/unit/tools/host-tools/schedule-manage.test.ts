@@ -2,20 +2,36 @@
  * Unit tests for ScheduleManageHandler.
  *
  * Tests cover:
- *   - create: success with valid cron, invalid cron rejected, missing cronExpr
- *   - update: success with fields, missing scheduleId, invalid cron, no fields provided
- *   - cancel: success, missing scheduleId
+ *   - create: success stores on a dedicated per-(persona, channel, origin)
+ *     execution thread; validation errors; repository error propagation
+ *   - update / cancel / delete: persona-scoped ownership (must work from
+ *     the live thread even though the schedule sits on the dedicated one)
+ *   - list: returns every schedule owned by the persona regardless of thread
  *   - invalid action
- *   - repository error propagation
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { ok, err } from 'neverthrow';
 import { ScheduleManageHandler } from '../../../../src/tools/host-tools/schedule-manage.js';
 import type { ScheduleManageArgs } from '../../../../src/tools/host-tools/schedule-manage.js';
 import type { ToolExecutionContext } from '../../../../src/tools/host-tools/channel-send.js';
 import { DbError } from '../../../../src/core/errors/error-types.js';
-import type { ScheduleRepository, ScheduleRow } from '../../../../src/core/database/repositories/schedule-repository.js';
+import type {
+  ScheduleRepository,
+  ScheduleRow,
+} from '../../../../src/core/database/repositories/schedule-repository.js';
+import type {
+  ThreadRepository,
+  ThreadRow,
+} from '../../../../src/core/database/repositories/thread-repository.js';
+import type {
+  ChannelRepository,
+  ChannelRow,
+} from '../../../../src/core/database/repositories/channel-repository.js';
+import type {
+  PersonaRepository,
+  PersonaRow,
+} from '../../../../src/core/database/repositories/persona-repository.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -36,9 +52,51 @@ function makeLogger() {
 function makeContext(overrides: Partial<ToolExecutionContext> = {}): ToolExecutionContext {
   return {
     runId: 'run-001',
-    threadId: 'thread-001',
+    threadId: 'live-thread-001',
     personaId: 'persona-001',
     requestId: 'req-001',
+    ...overrides,
+  };
+}
+
+function makeThreadRow(overrides: Partial<ThreadRow> = {}): ThreadRow {
+  return {
+    id: 'live-thread-001',
+    channel_id: 'channel-001',
+    external_id: 'chat-42',
+    metadata: '{}',
+    created_at: 1000,
+    updated_at: 1000,
+    ...overrides,
+  };
+}
+
+function makeChannelRow(overrides: Partial<ChannelRow> = {}): ChannelRow {
+  return {
+    id: 'channel-001',
+    type: 'telegram',
+    name: 'telegram-main',
+    config: '{}',
+    credentials_ref: null,
+    enabled: 1,
+    created_at: 1000,
+    updated_at: 1000,
+    ...overrides,
+  };
+}
+
+function makePersonaRow(overrides: Partial<PersonaRow> = {}): PersonaRow {
+  return {
+    id: 'persona-001',
+    name: 'assistant',
+    model: 'claude-sonnet-4-6',
+    system_prompt_file: null,
+    skills: '[]',
+    capabilities: '{}',
+    mounts: '[]',
+    max_concurrent: null,
+    created_at: 1000,
+    updated_at: 1000,
     ...overrides,
   };
 }
@@ -47,7 +105,7 @@ function makeScheduleRow(overrides: Partial<ScheduleRow> = {}): ScheduleRow {
   return {
     id: 'sched-001',
     persona_id: 'persona-001',
-    thread_id: 'thread-001',
+    thread_id: 'dedicated-schedule-thread-001',
     type: 'cron',
     expression: '0 9 * * 1',
     payload: '{"label":"Daily standup","prompt":"What should I focus on today?"}',
@@ -60,7 +118,7 @@ function makeScheduleRow(overrides: Partial<ScheduleRow> = {}): ScheduleRow {
   };
 }
 
-function makeRepo(overrides: Partial<ScheduleRepository> = {}): ScheduleRepository {
+function makeScheduleRepo(overrides: Partial<ScheduleRepository> = {}): ScheduleRepository {
   return {
     insert: vi.fn().mockReturnValue(ok(makeScheduleRow())),
     update: vi.fn().mockReturnValue(ok(makeScheduleRow())),
@@ -73,6 +131,61 @@ function makeRepo(overrides: Partial<ScheduleRepository> = {}): ScheduleReposito
     updateNextRun: vi.fn().mockReturnValue(ok(null)),
     ...overrides,
   } as unknown as ScheduleRepository;
+}
+
+function makeThreadRepo(overrides: Partial<ThreadRepository> = {}): ThreadRepository {
+  return {
+    findById: vi.fn().mockReturnValue(ok(makeThreadRow())),
+    findByExternalId: vi.fn().mockReturnValue(ok(null)),
+    findByChannelId: vi.fn().mockReturnValue(ok([])),
+    insert: vi.fn().mockImplementation((row) => ok({
+      ...makeThreadRow(),
+      ...row,
+      created_at: 1000,
+      updated_at: 1000,
+    })),
+    update: vi.fn().mockReturnValue(ok(makeThreadRow())),
+    ...overrides,
+  } as unknown as ThreadRepository;
+}
+
+function makeChannelRepo(overrides: Partial<ChannelRepository> = {}): ChannelRepository {
+  return {
+    findById: vi.fn().mockReturnValue(ok(makeChannelRow())),
+    findByName: vi.fn().mockReturnValue(ok(makeChannelRow())),
+    findEnabled: vi.fn().mockReturnValue(ok([])),
+    insert: vi.fn().mockReturnValue(ok(makeChannelRow())),
+    update: vi.fn().mockReturnValue(ok(makeChannelRow())),
+    delete: vi.fn().mockReturnValue(ok(undefined)),
+    ...overrides,
+  } as unknown as ChannelRepository;
+}
+
+function makePersonaRepo(overrides: Partial<PersonaRepository> = {}): PersonaRepository {
+  return {
+    findById: vi.fn().mockReturnValue(ok(makePersonaRow())),
+    findByName: vi.fn().mockReturnValue(ok(makePersonaRow())),
+    findAll: vi.fn().mockReturnValue(ok([])),
+    insert: vi.fn().mockReturnValue(ok(makePersonaRow())),
+    update: vi.fn().mockReturnValue(ok(makePersonaRow())),
+    delete: vi.fn().mockReturnValue(ok(undefined)),
+    ...overrides,
+  } as unknown as PersonaRepository;
+}
+
+function makeHandler(overrides: {
+  scheduleRepository?: ScheduleRepository;
+  threadRepository?: ThreadRepository;
+  channelRepository?: ChannelRepository;
+  personaRepository?: PersonaRepository;
+} = {}) {
+  return new ScheduleManageHandler({
+    scheduleRepository: overrides.scheduleRepository ?? makeScheduleRepo(),
+    threadRepository: overrides.threadRepository ?? makeThreadRepo(),
+    channelRepository: overrides.channelRepository ?? makeChannelRepo(),
+    personaRepository: overrides.personaRepository ?? makePersonaRepo(),
+    logger: makeLogger(),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -98,10 +211,19 @@ describe('ScheduleManageHandler — manifest', () => {
 // ---------------------------------------------------------------------------
 
 describe('ScheduleManageHandler — create', () => {
-  it('creates a schedule with valid cron expression', async () => {
-    const insertFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ insert: insertFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+  it('creates a schedule on a newly-provisioned dedicated execution thread', async () => {
+    const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
+    const findByExternalId = vi.fn().mockReturnValue(ok(null));
+    const insertThread = vi.fn().mockImplementation((row) => ok({
+      ...makeThreadRow(),
+      ...row,
+      created_at: 1000,
+      updated_at: 1000,
+    }));
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
+      threadRepository: makeThreadRepo({ findByExternalId, insert: insertThread }),
+    });
 
     const result = await handler.execute(
       { action: 'create', cronExpr: '0 9 * * 1', label: 'Standup', prompt: 'What to do?' },
@@ -109,25 +231,76 @@ describe('ScheduleManageHandler — create', () => {
     );
 
     expect(result.status).toBe('success');
-    expect(result.tool).toBe('schedule.manage');
-    expect((result.result as { action: string }).action).toBe('create');
     expect((result.result as { created: boolean }).created).toBe(true);
-    expect((result.result as { scheduleId: string }).scheduleId).toBeTruthy();
+
+    // A dedicated schedule thread keyed `schedule:<persona>:<channel>:<origin>`
+    // was provisioned on the same channel as the live thread.
+    expect(findByExternalId).toHaveBeenCalledWith(
+      'channel-001',
+      'schedule:assistant:telegram-main:chat-42',
+    );
+    expect(insertThread).toHaveBeenCalledTimes(1);
+    const insertedThread = insertThread.mock.calls[0][0];
+    expect(insertedThread.channel_id).toBe('channel-001');
+    expect(insertedThread.external_id).toBe('schedule:assistant:telegram-main:chat-42');
+    expect(JSON.parse(insertedThread.metadata)).toMatchObject({
+      kind: 'schedule',
+      originExternalId: 'chat-42',
+      personaName: 'assistant',
+      channelName: 'telegram-main',
+    });
+
+    // The schedule row was stored against the dedicated thread, not the live one.
+    expect(insertSchedule).toHaveBeenCalledTimes(1);
+    const insertedSchedule = insertSchedule.mock.calls[0][0];
+    expect(insertedSchedule.thread_id).toBe(insertedThread.id);
+    expect(insertedSchedule.thread_id).not.toBe('live-thread-001');
   });
 
-  it('inserts schedule with correct fields', async () => {
-    const insertFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ insert: insertFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+  it('reuses an existing dedicated thread when one already exists for (persona, channel, origin)', async () => {
+    const existingDedicated = makeThreadRow({
+      id: 'dedicated-thread-xyz',
+      external_id: 'schedule:assistant:telegram-main:chat-42',
+      metadata: JSON.stringify({
+        kind: 'schedule',
+        originExternalId: 'chat-42',
+        personaName: 'assistant',
+        channelName: 'telegram-main',
+      }),
+    });
+    const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
+    const insertThread = vi.fn();
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
+      threadRepository: makeThreadRepo({
+        findByExternalId: vi.fn().mockReturnValue(ok(existingDedicated)),
+        insert: insertThread,
+      }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * *', prompt: 'Ping' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('success');
+    expect(insertThread).not.toHaveBeenCalled();
+    expect(insertSchedule.mock.calls[0][0].thread_id).toBe('dedicated-thread-xyz');
+  });
+
+  it('inserts schedule with correct persona_id, cron, and computed next_run_at', async () => {
+    const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
+    });
 
     await handler.execute(
       { action: 'create', cronExpr: '*/5 * * * *', label: 'Poll', prompt: 'Check status' },
-      makeContext({ personaId: 'persona-abc', threadId: 'thread-xyz' }),
+      makeContext({ personaId: 'persona-001' }),
     );
 
-    const insertArg = insertFn.mock.calls[0][0];
-    expect(insertArg.persona_id).toBe('persona-abc');
-    expect(insertArg.thread_id).toBe('thread-xyz');
+    const insertArg = insertSchedule.mock.calls[0][0];
+    expect(insertArg.persona_id).toBe('persona-001');
     expect(insertArg.expression).toBe('*/5 * * * *');
     expect(insertArg.type).toBe('cron');
     expect(insertArg.enabled).toBe(1);
@@ -137,9 +310,10 @@ describe('ScheduleManageHandler — create', () => {
   });
 
   it('accepts promptFile when creating a schedule', async () => {
-    const insertFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ insert: insertFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
+    });
 
     const result = await handler.execute(
       { action: 'create', cronExpr: '0 7 * * 1-5', label: 'Morning briefing', promptFile: 'morning-briefing' },
@@ -147,15 +321,14 @@ describe('ScheduleManageHandler — create', () => {
     );
 
     expect(result.status).toBe('success');
-    expect(JSON.parse(insertFn.mock.calls[0][0].payload)).toEqual({
+    expect(JSON.parse(insertSchedule.mock.calls[0][0].payload)).toEqual({
       label: 'Morning briefing',
       promptFile: 'morning-briefing',
     });
   });
 
   it('rejects create when prompt and promptFile are both provided', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler();
 
     const result = await handler.execute(
       {
@@ -172,36 +345,28 @@ describe('ScheduleManageHandler — create', () => {
   });
 
   it('returns error when cronExpr is missing', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
-    const result = await handler.execute(
-      { action: 'create' },
-      makeContext(),
-    );
-
+    const handler = makeHandler();
+    const result = await handler.execute({ action: 'create' }, makeContext());
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/cronExpr is required/);
   });
 
   it('returns error for invalid cron expression', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: 'create', cronExpr: 'not-a-cron' },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/invalid cron expression/);
   });
 
   it('propagates insert repository errors', async () => {
-    const repo = makeRepo({
-      insert: vi.fn().mockReturnValue(err(new DbError('db locked'))),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        insert: vi.fn().mockReturnValue(err(new DbError('db locked'))),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     const result = await handler.execute(
       { action: 'create', cronExpr: '0 * * * *' },
@@ -212,10 +377,92 @@ describe('ScheduleManageHandler — create', () => {
     expect(result.error).toMatch(/create failed/);
   });
 
+  it('returns an error when the invoking thread cannot be resolved', async () => {
+    const handler = makeHandler({
+      threadRepository: makeThreadRepo({
+        findById: vi.fn().mockReturnValue(ok(null)),
+      }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * 1' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/invoking thread .* not found/);
+  });
+
+  it('returns an error when the channel cannot be resolved', async () => {
+    const handler = makeHandler({
+      channelRepository: makeChannelRepo({
+        findById: vi.fn().mockReturnValue(ok(null)),
+      }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * 1' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/channel .* not found/);
+  });
+
+  it('returns an error when the persona cannot be resolved', async () => {
+    const handler = makeHandler({
+      personaRepository: makePersonaRepo({
+        findById: vi.fn().mockReturnValue(ok(null)),
+      }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * 1' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/persona .* not found/);
+  });
+
+  it('surfaces errors from the dedicated-thread lookup', async () => {
+    const handler = makeHandler({
+      threadRepository: makeThreadRepo({
+        findByExternalId: vi.fn().mockReturnValue(err(new DbError('lookup failed'))),
+      }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * 1' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/dedicated schedule thread/i);
+  });
+
+  it('surfaces errors from the dedicated-thread insert', async () => {
+    const handler = makeHandler({
+      threadRepository: makeThreadRepo({
+        findByExternalId: vi.fn().mockReturnValue(ok(null)),
+        insert: vi.fn().mockReturnValue(err(new DbError('insert failed'))),
+      }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * 1' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/dedicated schedule thread/i);
+  });
+
   it('handles missing label and prompt gracefully', async () => {
-    const insertFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ insert: insertFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
+    });
 
     const result = await handler.execute(
       { action: 'create', cronExpr: '0 0 * * *' },
@@ -223,7 +470,7 @@ describe('ScheduleManageHandler — create', () => {
     );
 
     expect(result.status).toBe('success');
-    const payload = JSON.parse(insertFn.mock.calls[0][0].payload);
+    const payload = JSON.parse(insertSchedule.mock.calls[0][0].payload);
     expect(payload).toEqual({ label: '' });
   });
 });
@@ -233,14 +480,15 @@ describe('ScheduleManageHandler — create', () => {
 // ---------------------------------------------------------------------------
 
 describe('ScheduleManageHandler — update', () => {
-  it('updates an existing schedule', async () => {
+  it('updates an existing schedule from the live thread', async () => {
     const updateFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ update: updateFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ update: updateFn }),
+    });
 
     const result = await handler.execute(
       { action: 'update', scheduleId: 'sched-001', cronExpr: '0 10 * * *', label: 'New label' },
-      makeContext(),
+      makeContext({ threadId: 'live-thread-001' }),
     );
 
     expect(result.status).toBe('success');
@@ -249,8 +497,9 @@ describe('ScheduleManageHandler — update', () => {
 
   it('recomputes next_run_at when cronExpr changes', async () => {
     const updateFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ update: updateFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ update: updateFn }),
+    });
 
     await handler.execute(
       { action: 'update', scheduleId: 'sched-001', cronExpr: '0 10 * * *' },
@@ -263,63 +512,56 @@ describe('ScheduleManageHandler — update', () => {
     expect(updateArg.next_run_at).toBeGreaterThan(Date.now() - 60_000);
   });
 
-  it('calls update with correct persona_id for ownership enforcement', async () => {
+  it('enforces ownership by persona, not by invoking thread', async () => {
     const updateFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ update: updateFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ update: updateFn }),
+    });
 
     await handler.execute(
       { action: 'update', scheduleId: 'sched-001', cronExpr: '0 10 * * *' },
-      makeContext({ personaId: 'persona-xyz' }),
+      makeContext({ personaId: 'persona-xyz', threadId: 'some-other-thread' }),
     );
 
     expect(updateFn).toHaveBeenCalledWith('sched-001', 'persona-xyz', expect.any(Object));
   });
 
   it('returns error when scheduleId is missing', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: 'update', cronExpr: '0 * * * *' },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/scheduleId is required/);
   });
 
   it('returns error for invalid cron expression in update', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: 'update', scheduleId: 'sched-001', cronExpr: 'bad cron here' },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/invalid cron expression/);
   });
 
   it('returns error when no update fields are provided', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: 'update', scheduleId: 'sched-001' },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/no fields provided to update/);
   });
 
   it('propagates update repository errors', async () => {
-    const repo = makeRepo({
-      update: vi.fn().mockReturnValue(err(new DbError('not found'))),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        update: vi.fn().mockReturnValue(err(new DbError('not found'))),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     const result = await handler.execute(
       { action: 'update', scheduleId: 'sched-001', label: 'Updated label' },
@@ -332,8 +574,9 @@ describe('ScheduleManageHandler — update', () => {
 
   it('accepts promptFile when updating a schedule', async () => {
     const updateFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ update: updateFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ update: updateFn }),
+    });
 
     const result = await handler.execute(
       { action: 'update', scheduleId: 'sched-001', promptFile: 'meeting-prep' },
@@ -348,9 +591,7 @@ describe('ScheduleManageHandler — update', () => {
   });
 
   it('rejects update when prompt and promptFile are both provided', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       {
         action: 'update',
@@ -367,11 +608,12 @@ describe('ScheduleManageHandler — update', () => {
 
   it('preserves the existing prompt source when only label changes', async () => {
     const updateFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({
-      update: updateFn,
-      findById: vi.fn().mockReturnValue(ok(makeScheduleRow())),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        update: updateFn,
+        findById: vi.fn().mockReturnValue(ok(makeScheduleRow())),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     await handler.execute(
       { action: 'update', scheduleId: 'sched-001', label: 'Renamed schedule' },
@@ -386,11 +628,12 @@ describe('ScheduleManageHandler — update', () => {
 
   it('replaces inline prompt with promptFile on update', async () => {
     const updateFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({
-      update: updateFn,
-      findById: vi.fn().mockReturnValue(ok(makeScheduleRow())),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        update: updateFn,
+        findById: vi.fn().mockReturnValue(ok(makeScheduleRow())),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     await handler.execute(
       { action: 'update', scheduleId: 'sched-001', promptFile: 'meeting-prep' },
@@ -404,10 +647,11 @@ describe('ScheduleManageHandler — update', () => {
   });
 
   it('rejects update when schedule does not exist', async () => {
-    const repo = makeRepo({
-      findById: vi.fn().mockReturnValue(ok(null)),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        findById: vi.fn().mockReturnValue(ok(null)),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     const result = await handler.execute(
       { action: 'update', scheduleId: 'nonexistent', label: 'New label' },
@@ -419,10 +663,11 @@ describe('ScheduleManageHandler — update', () => {
   });
 
   it('rejects update when schedule belongs to a different persona', async () => {
-    const repo = makeRepo({
-      findById: vi.fn().mockReturnValue(ok(makeScheduleRow({ persona_id: 'other-persona' }))),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        findById: vi.fn().mockReturnValue(ok(makeScheduleRow({ persona_id: 'other-persona' }))),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     const result = await handler.execute(
       { action: 'update', scheduleId: 'sched-001', label: 'New label' },
@@ -435,17 +680,18 @@ describe('ScheduleManageHandler — update', () => {
 
   it('replaces promptFile with inline prompt on update', async () => {
     const updateFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({
-      update: updateFn,
-      findById: vi.fn().mockReturnValue(
-        ok(
-          makeScheduleRow({
-            payload: '{"label":"Daily standup","promptFile":"meeting-prep"}',
-          }),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        update: updateFn,
+        findById: vi.fn().mockReturnValue(
+          ok(
+            makeScheduleRow({
+              payload: '{"label":"Daily standup","promptFile":"meeting-prep"}',
+            }),
+          ),
         ),
-      ),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     await handler.execute(
       { action: 'update', scheduleId: 'sched-001', prompt: 'Use inline prompt instead' },
@@ -464,14 +710,18 @@ describe('ScheduleManageHandler — update', () => {
 // ---------------------------------------------------------------------------
 
 describe('ScheduleManageHandler — cancel', () => {
-  it('cancels a schedule by disabling it', async () => {
+  it('cancels a schedule by disabling it when invoked from the live thread', async () => {
     const disableFn = vi.fn().mockReturnValue(ok(undefined));
-    const repo = makeRepo({ disable: disableFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        disable: disableFn,
+        findById: vi.fn().mockReturnValue(ok(makeScheduleRow())),
+      }),
+    });
 
     const result = await handler.execute(
       { action: 'cancel', scheduleId: 'sched-001' },
-      makeContext(),
+      makeContext({ threadId: 'some-live-thread' }),
     );
 
     expect(result.status).toBe('success');
@@ -480,36 +730,63 @@ describe('ScheduleManageHandler — cancel', () => {
   });
 
   it('returns error when scheduleId is missing', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
-    const result = await handler.execute(
-      { action: 'cancel' },
-      makeContext(),
-    );
-
+    const handler = makeHandler();
+    const result = await handler.execute({ action: 'cancel' }, makeContext());
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/scheduleId is required/);
   });
 
   it('returns error when scheduleId is empty string', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: 'cancel', scheduleId: '' },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/scheduleId is required/);
   });
 
-  it('propagates disable repository errors', async () => {
-    const repo = makeRepo({
-      disable: vi.fn().mockReturnValue(err(new DbError('row not found'))),
+  it('rejects cancel when schedule belongs to a different persona', async () => {
+    const disableFn = vi.fn().mockReturnValue(ok(undefined));
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        disable: disableFn,
+        findById: vi.fn().mockReturnValue(ok(makeScheduleRow({ persona_id: 'other-persona' }))),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+
+    const result = await handler.execute(
+      { action: 'cancel', scheduleId: 'sched-001' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/does not belong/);
+    expect(disableFn).not.toHaveBeenCalled();
+  });
+
+  it('rejects cancel when schedule does not exist', async () => {
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        findById: vi.fn().mockReturnValue(ok(null)),
+      }),
+    });
+
+    const result = await handler.execute(
+      { action: 'cancel', scheduleId: 'missing' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/not found/);
+  });
+
+  it('propagates disable repository errors', async () => {
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        disable: vi.fn().mockReturnValue(err(new DbError('row not found'))),
+      }),
+    });
 
     const result = await handler.execute(
       { action: 'cancel', scheduleId: 'sched-001' },
@@ -526,14 +803,15 @@ describe('ScheduleManageHandler — cancel', () => {
 // ---------------------------------------------------------------------------
 
 describe('ScheduleManageHandler — delete', () => {
-  it('permanently deletes a schedule', async () => {
+  it('permanently deletes a schedule when invoked from the live thread', async () => {
     const deleteFn = vi.fn().mockReturnValue(ok(makeScheduleRow()));
-    const repo = makeRepo({ delete: deleteFn });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ delete: deleteFn }),
+    });
 
     const result = await handler.execute(
       { action: 'delete', scheduleId: 'sched-001' },
-      makeContext(),
+      makeContext({ threadId: 'some-live-thread' }),
     );
 
     expect(result.status).toBe('success');
@@ -542,36 +820,28 @@ describe('ScheduleManageHandler — delete', () => {
   });
 
   it('returns error when scheduleId is missing', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
-    const result = await handler.execute(
-      { action: 'delete' },
-      makeContext(),
-    );
-
+    const handler = makeHandler();
+    const result = await handler.execute({ action: 'delete' }, makeContext());
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/scheduleId is required/);
   });
 
   it('returns error when scheduleId is empty string', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: 'delete', scheduleId: '' },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/scheduleId is required/);
   });
 
   it('returns error when schedule not found or not owned', async () => {
-    const repo = makeRepo({
-      delete: vi.fn().mockReturnValue(ok(null)),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        delete: vi.fn().mockReturnValue(ok(null)),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     const result = await handler.execute(
       { action: 'delete', scheduleId: 'nonexistent' },
@@ -583,10 +853,11 @@ describe('ScheduleManageHandler — delete', () => {
   });
 
   it('propagates delete repository errors', async () => {
-    const repo = makeRepo({
-      delete: vi.fn().mockReturnValue(err(new DbError('db locked'))),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        delete: vi.fn().mockReturnValue(err(new DbError('db locked'))),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     const result = await handler.execute(
       { action: 'delete', scheduleId: 'sched-001' },
@@ -604,27 +875,21 @@ describe('ScheduleManageHandler — delete', () => {
 
 describe('ScheduleManageHandler — invalid action', () => {
   it('returns error for unknown action', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: 'pause' as ScheduleManageArgs['action'] },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/invalid action/);
   });
 
   it('returns error for missing action', async () => {
-    const repo = makeRepo();
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
-
+    const handler = makeHandler();
     const result = await handler.execute(
       { action: undefined as unknown as ScheduleManageArgs['action'] },
       makeContext(),
     );
-
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/invalid action/);
   });
@@ -635,23 +900,37 @@ describe('ScheduleManageHandler — invalid action', () => {
 // ---------------------------------------------------------------------------
 
 describe('ScheduleManageHandler — list', () => {
-  it('returns all schedules for the persona', async () => {
+  it('returns every schedule owned by the persona regardless of invoking thread', async () => {
     const schedules = [
-      makeScheduleRow({ id: 'sched-001', expression: '0 9 * * 1', next_run_at: 1700000000000 }),
+      // Schedule stored against the dedicated execution thread — must still be listed
+      // when the agent invokes list from the live chat thread.
+      makeScheduleRow({
+        id: 'sched-001',
+        expression: '0 9 * * 1',
+        next_run_at: 1700000000000,
+        thread_id: 'dedicated-schedule-thread-001',
+      }),
       makeScheduleRow({
         id: 'sched-002',
         expression: '30 18 * * *',
         next_run_at: 1700050000000,
         enabled: 0,
         payload: '{"label":"Meeting prep","promptFile":"meeting-prep"}',
+        thread_id: 'dedicated-schedule-thread-001',
       }),
     ];
-    const repo = makeRepo({ findByPersona: vi.fn().mockReturnValue(ok(schedules)) });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const findByPersona = vi.fn().mockReturnValue(ok(schedules));
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ findByPersona }),
+    });
 
-    const result = await handler.execute({ action: 'list' }, makeContext());
+    const result = await handler.execute(
+      { action: 'list' },
+      makeContext({ threadId: 'live-thread-001' }),
+    );
 
     expect(result.status).toBe('success');
+    expect(findByPersona).toHaveBeenCalledWith('persona-001');
     const data = result.result as { schedules: unknown[]; count: number };
     expect(data.count).toBe(2);
     expect(data.schedules).toHaveLength(2);
@@ -669,8 +948,11 @@ describe('ScheduleManageHandler — list', () => {
   });
 
   it('returns empty list when no schedules exist', async () => {
-    const repo = makeRepo({ findByPersona: vi.fn().mockReturnValue(ok([])) });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        findByPersona: vi.fn().mockReturnValue(ok([])),
+      }),
+    });
 
     const result = await handler.execute({ action: 'list' }, makeContext());
 
@@ -681,10 +963,11 @@ describe('ScheduleManageHandler — list', () => {
   });
 
   it('returns error when repository fails', async () => {
-    const repo = makeRepo({
-      findByPersona: vi.fn().mockReturnValue(err(new DbError('DB read failed'))),
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({
+        findByPersona: vi.fn().mockReturnValue(err(new DbError('DB read failed'))),
+      }),
     });
-    const handler = new ScheduleManageHandler({ scheduleRepository: repo, logger: makeLogger() });
 
     const result = await handler.execute({ action: 'list' }, makeContext());
 

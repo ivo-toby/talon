@@ -12,6 +12,25 @@ import type { ChannelRegistry } from '../../channels/channel-registry.js';
 import type { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
 
+/**
+ * Returns the origin chat's external_id recorded in a dedicated schedule
+ * thread's metadata, or null if the thread is not a schedule thread or the
+ * metadata is malformed. Dedicated schedule threads are created by
+ * schedule.manage and carry `{ kind: 'schedule', originExternalId: ... }`.
+ */
+function readOriginExternalId(metadataJson: string | null | undefined): string | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
+    if (parsed && parsed.kind === 'schedule' && typeof parsed.originExternalId === 'string') {
+      return parsed.originExternalId;
+    }
+  } catch {
+    /* ignore — treat unparseable metadata as absent */
+  }
+  return null;
+}
+
 /** Manifest for the channel.send host tool. */
 export interface ChannelSendTool {
   readonly manifest: ToolManifest;
@@ -111,10 +130,14 @@ export class ChannelSendHandler {
     };
 
     // Resolve the thread's external_id (e.g. Telegram chat_id) from the DB.
+    // Dedicated schedule execution threads store the originating chat's
+    // external_id in metadata.originExternalId — prefer that so scheduled
+    // runs notify the originating user rather than the synthetic schedule
+    // thread id, which is not a valid provider-side recipient.
     const threadResult = this.deps.threadRepository.findById(context.threadId);
     const externalThreadId =
       threadResult.isOk() && threadResult.value
-        ? threadResult.value.external_id
+        ? (readOriginExternalId(threadResult.value.metadata) ?? threadResult.value.external_id)
         : context.threadId;
 
     const result = await connector.send(externalThreadId, output);

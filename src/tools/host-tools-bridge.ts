@@ -69,6 +69,9 @@ export class HostToolsBridge {
 
     this.scheduleHandler = new ScheduleManageHandler({
       scheduleRepository: ctx.repos.schedule,
+      threadRepository: ctx.repos.thread,
+      channelRepository: ctx.repos.channel,
+      personaRepository: ctx.repos.persona,
       logger: ctx.logger,
     });
 
