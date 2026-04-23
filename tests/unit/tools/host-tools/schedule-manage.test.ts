@@ -288,6 +288,124 @@ describe('ScheduleManageHandler — create', () => {
     expect(insertSchedule.mock.calls[0][0].thread_id).toBe('dedicated-thread-xyz');
   });
 
+  it('recovers from a UNIQUE-key race by re-querying the dedicated thread on insert failure (Codex P1)', async () => {
+    // Two concurrent schedule.manage create calls for the same
+    // (persona, channel, origin) can both pass findByExternalId → null
+    // and both attempt the insert. The first wins; the second hits
+    // threads.UNIQUE(channel_id, external_id). That second call must
+    // still succeed by re-querying the just-materialised row.
+    const winnerRow = makeThreadRow({
+      id: 'dedicated-winner',
+      external_id: 'schedule:assistant:telegram-main:chat-42',
+      metadata: JSON.stringify({
+        kind: 'schedule',
+        originExternalId: 'chat-42',
+      }),
+    });
+    let findCallCount = 0;
+    const findByExternalId = vi.fn().mockImplementation(() => {
+      findCallCount += 1;
+      // First lookup (before insert attempt): no thread yet.
+      // Second lookup (after insert failure): winner now materialised.
+      return findCallCount === 1 ? ok(null) : ok(winnerRow);
+    });
+    const insertThread = vi.fn().mockReturnValue(err(new DbError('UNIQUE constraint failed')));
+    const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
+
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
+      threadRepository: makeThreadRepo({ findByExternalId, insert: insertThread }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * *', prompt: 'Ping' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('success');
+    expect(findByExternalId).toHaveBeenCalledTimes(2);
+    expect(insertSchedule.mock.calls[0][0].thread_id).toBe('dedicated-winner');
+  });
+
+  it('unwraps origin external_id from metadata when invoked from an existing schedule thread (Codex P2)', async () => {
+    // When a scheduled run itself invokes schedule.manage to create a
+    // follow-up schedule, the invoking thread's external_id is the
+    // synthetic `schedule:persona:channel:origin` id. Passing that as
+    // the new schedule's origin would chain synthetic → synthetic and
+    // break outbound routing. The handler must unwrap the real origin
+    // from the invoking thread's metadata.
+    const invokingScheduleThread = makeThreadRow({
+      id: 'live-thread-001',
+      channel_id: 'channel-001',
+      external_id: 'schedule:assistant:telegram-main:chat-42',
+      metadata: JSON.stringify({
+        kind: 'schedule',
+        originExternalId: 'chat-42',
+      }),
+    });
+    const findById = vi.fn().mockReturnValue(ok(invokingScheduleThread));
+    const findByExternalId = vi.fn().mockReturnValue(ok(null));
+    const insertThread = vi.fn().mockImplementation((row) => ok({
+      ...makeThreadRow(),
+      ...row,
+      created_at: 1000,
+      updated_at: 1000,
+    }));
+    const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
+
+    const handler = makeHandler({
+      scheduleRepository: makeScheduleRepo({ insert: insertSchedule }),
+      threadRepository: makeThreadRepo({ findById, findByExternalId, insert: insertThread }),
+    });
+
+    const result = await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * *', prompt: 'Follow-up' },
+      makeContext(),
+    );
+
+    expect(result.status).toBe('success');
+    // The resolved dedicated thread must re-use the unwrapped origin,
+    // not the synthetic external_id of the invoking thread.
+    expect(findByExternalId).toHaveBeenCalledWith(
+      'channel-001',
+      'schedule:assistant:telegram-main:chat-42',
+    );
+    const insertedMetadata = JSON.parse(insertThread.mock.calls[0][0].metadata) as Record<string, unknown>;
+    expect(insertedMetadata.originExternalId).toBe('chat-42');
+    expect(insertedMetadata.originExternalId).not.toMatch(/^schedule:/);
+  });
+
+  it('writes thread metadata that round-trips back through the schedule-thread marker reader', async () => {
+    // Regression cover: if the insert-call shape test passes but the
+    // metadata the handler emits is not in the shape channel.send /
+    // agent-runner consume, scheduled delivery silently breaks. Assert
+    // the contract end-to-end by parsing the metadata the way the
+    // consumers do.
+    const insertThread = vi.fn().mockImplementation((row) => ok({
+      ...makeThreadRow(),
+      ...row,
+      created_at: 1000,
+      updated_at: 1000,
+    }));
+    const handler = makeHandler({
+      threadRepository: makeThreadRepo({
+        findByExternalId: vi.fn().mockReturnValue(ok(null)),
+        insert: insertThread,
+      }),
+    });
+
+    await handler.execute(
+      { action: 'create', cronExpr: '0 9 * * *', prompt: 'Round trip' },
+      makeContext(),
+    );
+
+    const rawMetadata: string = insertThread.mock.calls[0][0].metadata;
+    // Mirrors readOriginExternalId in channel-send.ts / agent-runner.ts.
+    const parsed = JSON.parse(rawMetadata) as Record<string, unknown>;
+    expect(parsed.kind).toBe('schedule');
+    expect(parsed.originExternalId).toBe('chat-42');
+  });
+
   it('inserts schedule with correct persona_id, cron, and computed next_run_at', async () => {
     const insertSchedule = vi.fn().mockReturnValue(ok(makeScheduleRow()));
     const handler = makeHandler({

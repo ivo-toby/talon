@@ -199,6 +199,31 @@ export class ScheduleRepository extends BaseRepository {
     }
   }
 
+  /**
+   * Rebinds a schedule to a different thread.
+   *
+   * Used by the startup migration to move pre-existing schedules from live
+   * chat threads (or old-style dedicated threads without the metadata
+   * marker) onto the canonical dedicated schedule thread. Not exposed via
+   * schedule.manage — thread re-assignment is an internal concern.
+   */
+  rebindThread(id: string, threadId: string): Result<void, DbError> {
+    try {
+      const stmt = this.db.prepare(
+        `UPDATE schedules SET thread_id = @thread_id, updated_at = @updated_at WHERE id = @id`,
+      );
+      stmt.run({ id, thread_id: threadId, updated_at: this.now() });
+      return ok(undefined);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to rebind schedule thread: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
   /** Enables a schedule. */
   enable(id: string): Result<void, DbError> {
     return this._setEnabled(id, 1);

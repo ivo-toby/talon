@@ -35,7 +35,11 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   BackgroundTaskRepository: vi.fn().mockImplementation(() => ({})),
   ExecutionEnvRepository: vi.fn().mockImplementation(() => ({})),
   ExecutionEnvCheckpointRepository: vi.fn().mockImplementation(() => ({})),
-  ScheduleRepository: vi.fn().mockImplementation(() => ({})),
+  ScheduleRepository: vi.fn().mockImplementation(() => ({
+    // Bootstrap now invokes migrateLegacySchedules() before the scheduler
+    // starts ticking; mock findAll() so the mocked repo satisfies it.
+    findAll: vi.fn().mockReturnValue({ isErr: () => true, isOk: () => false, error: new Error('mock: migration skipped') }),
+  })),
   AuditRepository: vi.fn().mockImplementation(() => ({})),
   MessageRepository: vi.fn().mockImplementation(() => ({})),
   RunRepository: vi.fn().mockImplementation(() => ({})),

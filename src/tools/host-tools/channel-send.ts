@@ -134,11 +134,25 @@ export class ChannelSendHandler {
     // external_id in metadata.originExternalId — prefer that so scheduled
     // runs notify the originating user rather than the synthetic schedule
     // thread id, which is not a valid provider-side recipient.
+    //
+    // Fail loud when the thread row is missing or unreadable: falling back
+    // to context.threadId (a UUID) produced 400 "chat not found" errors
+    // that the agent paraphrased as "Telegram unreachable — delivering
+    // inline", silently swallowing scheduled notifications (observed in
+    // PR #201 production rollout).
     const threadResult = this.deps.threadRepository.findById(context.threadId);
+    if (threadResult.isErr()) {
+      const msg = `channel.send: failed to resolve thread "${context.threadId}" — ${threadResult.error.message}`;
+      this.deps.logger.error({ requestId, threadId: context.threadId, err: threadResult.error }, msg);
+      return { requestId, tool: 'channel.send', status: 'error', error: msg };
+    }
+    if (!threadResult.value) {
+      const msg = `channel.send: thread "${context.threadId}" not found — cannot resolve recipient`;
+      this.deps.logger.error({ requestId, threadId: context.threadId, channelId }, msg);
+      return { requestId, tool: 'channel.send', status: 'error', error: msg };
+    }
     const externalThreadId =
-      threadResult.isOk() && threadResult.value
-        ? (readOriginExternalId(threadResult.value.metadata) ?? threadResult.value.external_id)
-        : context.threadId;
+      readOriginExternalId(threadResult.value.metadata) ?? threadResult.value.external_id;
 
     const result = await connector.send(externalThreadId, output);
 

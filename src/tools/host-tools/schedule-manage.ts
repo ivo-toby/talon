@@ -55,6 +55,26 @@ const CRON_PATTERN = /^(\S+\s+){4}\S+$/;
 const SCHEDULE_THREAD_KIND = 'schedule';
 
 /**
+ * Returns the origin chat's external_id stored in a dedicated schedule
+ * thread's metadata, or null when the thread is not a schedule thread.
+ * Used by handleCreate to unwrap nested schedule-thread invocations so
+ * a schedule created from a schedule run still chains back to the real
+ * live chat, not to another synthetic id.
+ */
+function readOriginExternalIdFromMetadata(metadataJson: string | null | undefined): string | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
+    if (parsed && parsed.kind === SCHEDULE_THREAD_KIND && typeof parsed.originExternalId === 'string') {
+      return parsed.originExternalId;
+    }
+  } catch {
+    /* ignore — treat unparseable metadata as absent */
+  }
+  return null;
+}
+
+/**
  * Handler class for the schedule.manage host tool.
  *
  * Creates, updates, or cancels scheduled tasks via the ScheduleRepository.
@@ -210,11 +230,21 @@ export class ScheduleManageHandler {
       return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
     }
 
+    // If this tool is invoked from an already-dedicated schedule thread
+    // (e.g. a scheduled run itself creating follow-up schedules), the
+    // invoking thread's external_id is the synthetic `schedule:...` id
+    // — not a provider-valid recipient. Unwrap it from thread metadata
+    // so the new schedule chains back to the real live chat instead of
+    // building a second-level synthetic origin that outbound routing
+    // cannot resolve.
+    const originExternalId =
+      readOriginExternalIdFromMetadata(originThread.metadata) ?? originThread.external_id;
+
     const dedicatedThreadResult = this.resolveDedicatedThread({
       channelId: channelRow.id,
       channelName: channelRow.name,
       personaName: personaRow.name,
-      originExternalId: originThread.external_id,
+      originExternalId,
       requestId,
     });
     if (dedicatedThreadResult.isErr()) {
@@ -583,6 +613,17 @@ export class ScheduleManageHandler {
       metadata,
     });
     if (insertResult.isErr()) {
+      // UNIQUE(channel_id, external_id) race: a concurrent create may have
+      // just inserted the same dedicated thread. Re-query before bailing —
+      // schedule creation should succeed regardless of who won the race.
+      const retry = this.deps.threadRepository.findByExternalId(channelId, dedicatedExternalId);
+      if (retry.isOk() && retry.value) {
+        this.deps.logger.info(
+          { requestId, channelId, dedicatedExternalId, threadId: retry.value.id },
+          'schedule.manage: dedicated schedule thread materialised by concurrent create, reusing',
+        );
+        return ok(retry.value.id);
+      }
       const msg = `schedule.manage: failed to create dedicated schedule thread — ${insertResult.error.message}`;
       this.deps.logger.error({ requestId, channelId, dedicatedExternalId, err: insertResult.error }, msg);
       return err(new ToolError(msg));

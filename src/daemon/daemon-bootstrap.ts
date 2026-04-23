@@ -42,6 +42,7 @@ import { registerChannels } from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
+import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
 import { DaemonError, SubAgentError } from '../core/errors/error-types.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
@@ -593,6 +594,16 @@ export async function bootstrap(
   }
 
   // 14. Scheduler
+  // Heal any legacy schedules (pre-dedicated-thread-model, PR #201) before
+  // the scheduler starts ticking so the first fire after upgrade delivers
+  // via the canonical dedicated-thread + origin-external-id path.
+  migrateLegacySchedules({
+    scheduleRepo: repos.schedule,
+    threadRepo: repos.thread,
+    channelRepo: repos.channel,
+    personaRepo: repos.persona,
+    logger,
+  });
   const scheduler = new Scheduler(repos.schedule, queueManager, personaLoader, config.scheduler, logger);
 
   // 15. Message pipeline and channel registration

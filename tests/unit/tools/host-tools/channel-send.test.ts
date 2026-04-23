@@ -326,3 +326,54 @@ describe('ChannelSendHandler — schedule-thread routing', () => {
     expect(connector.send).toHaveBeenCalledWith('chat-42', expect.any(Object));
   });
 });
+
+// ---------------------------------------------------------------------------
+// Fail-loud on missing thread
+// ---------------------------------------------------------------------------
+
+describe('ChannelSendHandler — missing thread fail-loud', () => {
+  it('returns a ToolError and does not call connector.send when the thread row is missing', async () => {
+    // Regression: before PR #201 review feedback, channel.send fell back
+    // to context.threadId (a UUID) when the thread row was missing,
+    // sending an unresolvable recipient to Telegram/Slack/Discord and
+    // producing "chat not found" errors the agent paraphrased as
+    // "channel unreachable — delivering inline" (silent delivery loss).
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(ok(null)),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext({ threadId: 'missing-thread-uuid' }));
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/thread "missing-thread-uuid" not found/);
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+
+  it('returns a ToolError when the thread lookup itself fails', async () => {
+    const { DbError } = await import('../../../../src/core/errors/error-types.js');
+    const { err: errFn } = await import('neverthrow');
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(errFn(new DbError('db locked'))),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/failed to resolve thread/);
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+});
