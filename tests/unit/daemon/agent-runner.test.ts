@@ -570,7 +570,11 @@ describe('AgentRunner', () => {
     it('uses the selected provider recentMessageCount when assembling fresh-session context', async () => {
       await runner.run(makeQueueItem());
 
-      expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith('thread-001', 10);
+      expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+        'thread-001',
+        10,
+        expect.any(Object),
+      );
     });
 
     it('passes the configured cache-read trigger metric into the roller', async () => {

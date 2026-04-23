@@ -27,6 +27,25 @@ import type { StartedObservationHandle } from '../observability/langfuse/observa
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
+/**
+ * Returns the origin chat's external_id recorded in a dedicated schedule
+ * thread's metadata, or null when the thread is not a schedule thread.
+ * Dedicated schedule threads are created by the schedule.manage tool and
+ * carry `{ kind: 'schedule', originExternalId: '<live chat external id>' }`.
+ */
+function readScheduleOriginExternalId(metadataJson: string | null | undefined): string | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
+    if (parsed && parsed.kind === 'schedule' && typeof parsed.originExternalId === 'string') {
+      return parsed.originExternalId;
+    }
+  } catch {
+    /* ignore — treat unparseable metadata as absent */
+  }
+  return null;
+}
+
 class AgentQueryAttemptError extends Error {
   constructor(
     message: string,
@@ -350,8 +369,16 @@ export class AgentRunner {
               channelRow && channelRow.isOk() && channelRow.value
                 ? this.ctx.channelRegistry.get(channelRow.value.name)
                 : undefined;
+            // For dedicated schedule execution threads (kind='schedule'),
+            // the thread's own external_id is a synthetic marker, not a
+            // valid provider recipient. Prefer metadata.originExternalId
+            // so typing indicators and any agent-runner-originated
+            // outbound reach the originating chat (issue #200).
             const externalId =
-              threadResult.isOk() && threadResult.value ? threadResult.value.external_id : undefined;
+              threadResult.isOk() && threadResult.value
+                ? (readScheduleOriginExternalId(threadResult.value.metadata)
+                    ?? threadResult.value.external_id)
+                : undefined;
             const channelConfig =
               channelRow?.isOk() && channelRow.value
                 ? this.ctx.config.channels?.find((c) => c.name === channelRow!.value!.name)
@@ -415,9 +442,16 @@ export class AgentRunner {
                     },
                   },
                   async (retrieverObservation) => {
+                    // Exclude the message being processed (if any) from the
+                    // "Recent Messages" block. That message is already passed
+                    // as the live prompt (`content`), and re-echoing it in
+                    // the system prompt made stateless providers respond
+                    // twice — once to the `[previous turn, user]: …` entry
+                    // and once to the prompt itself.
                     const assembled = this.ctx.contextAssembler.assemble(
                       item.threadId,
                       freshSessionRecentMessageCount,
+                      { excludeMessageId: item.messageId },
                     );
                     retrieverObservation.update({
                       output: assembled.text,

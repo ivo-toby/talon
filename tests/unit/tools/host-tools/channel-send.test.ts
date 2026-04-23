@@ -234,3 +234,146 @@ describe('ChannelSendHandler — connector send failure', () => {
     expect(result.error).toMatch(/Telegram API timeout/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Schedule-thread delivery routing
+// ---------------------------------------------------------------------------
+
+describe('ChannelSendHandler — schedule-thread routing', () => {
+  it('delivers to the origin external_id when the thread metadata marks it as a schedule thread', async () => {
+    // Dedicated schedule execution threads created by schedule.manage have
+    // kind='schedule' + originExternalId set — channel.send must route to the
+    // origin chat, not the synthetic schedule thread id (issue #200).
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'dedicated-schedule-thread-001',
+          channel_id: 'chan-001',
+          external_id: 'schedule:assistant:telegram-main:chat-42',
+          metadata: JSON.stringify({
+            kind: 'schedule',
+            originExternalId: 'chat-42',
+            personaName: 'assistant',
+            channelName: 'telegram-main',
+          }),
+        }),
+      ),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs(), makeContext({ threadId: 'dedicated-schedule-thread-001' }));
+
+    expect(connector.send).toHaveBeenCalledWith(
+      'chat-42',
+      expect.objectContaining({ body: 'Hello from persona!' }),
+    );
+  });
+
+  it('falls back to the thread external_id when metadata is not a schedule marker', async () => {
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'live-thread-001',
+          channel_id: 'chan-001',
+          external_id: 'chat-42',
+          metadata: JSON.stringify({ kind: 'live' }),
+        }),
+      ),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs(), makeContext());
+
+    expect(connector.send).toHaveBeenCalledWith(
+      'chat-42',
+      expect.any(Object),
+    );
+  });
+
+  it('ignores malformed metadata JSON and falls back to the thread external_id', async () => {
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'live-thread-001',
+          channel_id: 'chan-001',
+          external_id: 'chat-42',
+          metadata: '{not-json',
+        }),
+      ),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs(), makeContext());
+
+    expect(connector.send).toHaveBeenCalledWith('chat-42', expect.any(Object));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fail-loud on missing thread
+// ---------------------------------------------------------------------------
+
+describe('ChannelSendHandler — missing thread fail-loud', () => {
+  it('returns a ToolError and does not call connector.send when the thread row is missing', async () => {
+    // Regression: before PR #201 review feedback, channel.send fell back
+    // to context.threadId (a UUID) when the thread row was missing,
+    // sending an unresolvable recipient to Telegram/Slack/Discord and
+    // producing "chat not found" errors the agent paraphrased as
+    // "channel unreachable — delivering inline" (silent delivery loss).
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(ok(null)),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext({ threadId: 'missing-thread-uuid' }));
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/thread "missing-thread-uuid" not found/);
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+
+  it('returns a ToolError when the thread lookup itself fails', async () => {
+    const { DbError } = await import('../../../../src/core/errors/error-types.js');
+    const { err: errFn } = await import('neverthrow');
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(errFn(new DbError('db locked'))),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/failed to resolve thread/);
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+});

@@ -217,11 +217,35 @@ describe('HostToolsBridge', () => {
           id: 'thread-001',
           channel_id: 'channel-001',
           external_id: 'telegram-thread-001',
+          metadata: '{}',
+          created_at: 1,
+          updated_at: 1,
         }),
       ),
+      findByExternalId: vi.fn().mockReturnValue(ok(null)),
+      findByChannelId: vi.fn().mockReturnValue(ok([])),
+      insert: vi.fn().mockImplementation((row) =>
+        ok({
+          ...row,
+          created_at: 1,
+          updated_at: 1,
+        }),
+      ),
+      update: vi.fn().mockReturnValue(ok(null)),
     } as any;
     mockCtx.repos.channel = {
-      findById: vi.fn().mockReturnValue(ok({ id: 'channel-001', name: 'telegram-main' })),
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'channel-001',
+          type: 'telegram',
+          name: 'telegram-main',
+          config: '{}',
+          credentials_ref: null,
+          enabled: 1,
+          created_at: 1,
+          updated_at: 1,
+        }),
+      ),
       findEnabled: vi.fn().mockReturnValue(ok([
         { id: 'channel-001', name: 'telegram-main' },
         { id: 'channel-002', name: 'slack-general' },

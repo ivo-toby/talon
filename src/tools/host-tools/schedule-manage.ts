@@ -10,6 +10,9 @@ import { ok, err, type Result } from 'neverthrow';
 import { v4 as uuidv4 } from 'uuid';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import type { ScheduleRepository } from '../../core/database/repositories/schedule-repository.js';
+import type { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
+import type { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
+import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
 import { getNextCronTime } from '../../scheduler/cron-evaluator.js';
 import type { SchedulePayload } from '../../scheduler/schedule-types.js';
@@ -48,11 +51,38 @@ const VALID_ACTIONS = new Set(['create', 'update', 'cancel', 'delete', 'list']);
  */
 const CRON_PATTERN = /^(\S+\s+){4}\S+$/;
 
+/** Metadata marker applied to dedicated schedule execution threads. */
+const SCHEDULE_THREAD_KIND = 'schedule';
+
+/**
+ * Returns the origin chat's external_id stored in a dedicated schedule
+ * thread's metadata, or null when the thread is not a schedule thread.
+ * Used by handleCreate to unwrap nested schedule-thread invocations so
+ * a schedule created from a schedule run still chains back to the real
+ * live chat, not to another synthetic id.
+ */
+function readOriginExternalIdFromMetadata(metadataJson: string | null | undefined): string | null {
+  if (!metadataJson) return null;
+  try {
+    const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
+    if (parsed && parsed.kind === SCHEDULE_THREAD_KIND && typeof parsed.originExternalId === 'string') {
+      return parsed.originExternalId;
+    }
+  } catch {
+    /* ignore — treat unparseable metadata as absent */
+  }
+  return null;
+}
+
 /**
  * Handler class for the schedule.manage host tool.
  *
  * Creates, updates, or cancels scheduled tasks via the ScheduleRepository.
- * Schedules are owned by the persona and scoped to the current thread.
+ * Schedules are owned by the persona. On create, the schedule is stored on
+ * a dedicated per-(persona, channel, origin-chat) thread so scheduled runs
+ * do not pollute the live conversation session — but listing/updating/
+ * cancelling/deleting remain persona-scoped so those operations are visible
+ * from the live thread that invoked the tool.
  */
 export class ScheduleManageHandler {
   /** Static manifest describing the tool. */
@@ -67,6 +97,9 @@ export class ScheduleManageHandler {
   constructor(
     private readonly deps: {
       scheduleRepository: ScheduleRepository;
+      threadRepository: ThreadRepository;
+      channelRepository: ChannelRepository;
+      personaRepository: PersonaRepository;
       logger: pino.Logger;
     },
   ) {}
@@ -120,7 +153,7 @@ export class ScheduleManageHandler {
     }
   }
 
-  /** Handle the 'create' action — insert a new schedule. */
+  /** Handle the 'create' action — insert a new schedule on a dedicated execution thread. */
   private handleCreate(
     args: ScheduleManageArgs,
     context: ToolExecutionContext,
@@ -153,6 +186,77 @@ export class ScheduleManageHandler {
       };
     }
 
+    // Resolve the invoking thread + its channel so the schedule can be
+    // stored on a dedicated execution thread rather than polluting the
+    // live conversation session. The origin thread's external_id is
+    // captured in the dedicated thread's metadata so scheduled runs can
+    // still deliver notifications back to the originating chat.
+    const threadResult = this.deps.threadRepository.findById(context.threadId);
+    if (threadResult.isErr()) {
+      const msg = `schedule.manage: failed to load invoking thread — ${threadResult.error.message}`;
+      this.deps.logger.error({ requestId, threadId: context.threadId, err: threadResult.error }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+    const originThread = threadResult.value;
+    if (!originThread) {
+      const msg = `schedule.manage: invoking thread "${context.threadId}" not found`;
+      this.deps.logger.warn({ requestId, threadId: context.threadId }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+
+    const channelResult = this.deps.channelRepository.findById(originThread.channel_id);
+    if (channelResult.isErr()) {
+      const msg = `schedule.manage: failed to load channel — ${channelResult.error.message}`;
+      this.deps.logger.error({ requestId, channelId: originThread.channel_id, err: channelResult.error }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+    const channelRow = channelResult.value;
+    if (!channelRow) {
+      const msg = `schedule.manage: channel "${originThread.channel_id}" not found`;
+      this.deps.logger.warn({ requestId, channelId: originThread.channel_id }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+
+    const personaResult = this.deps.personaRepository.findById(context.personaId);
+    if (personaResult.isErr()) {
+      const msg = `schedule.manage: failed to load persona — ${personaResult.error.message}`;
+      this.deps.logger.error({ requestId, personaId: context.personaId, err: personaResult.error }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+    const personaRow = personaResult.value;
+    if (!personaRow) {
+      const msg = `schedule.manage: persona "${context.personaId}" not found`;
+      this.deps.logger.warn({ requestId, personaId: context.personaId }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+
+    // If this tool is invoked from an already-dedicated schedule thread
+    // (e.g. a scheduled run itself creating follow-up schedules), the
+    // invoking thread's external_id is the synthetic `schedule:...` id
+    // — not a provider-valid recipient. Unwrap it from thread metadata
+    // so the new schedule chains back to the real live chat instead of
+    // building a second-level synthetic origin that outbound routing
+    // cannot resolve.
+    const originExternalId =
+      readOriginExternalIdFromMetadata(originThread.metadata) ?? originThread.external_id;
+
+    const dedicatedThreadResult = this.resolveDedicatedThread({
+      channelId: channelRow.id,
+      channelName: channelRow.name,
+      personaName: personaRow.name,
+      originExternalId,
+      requestId,
+    });
+    if (dedicatedThreadResult.isErr()) {
+      return {
+        requestId,
+        tool: 'schedule.manage',
+        status: 'error',
+        error: dedicatedThreadResult.error.message,
+      };
+    }
+    const dedicatedThreadId = dedicatedThreadResult.value;
+
     const scheduleId = uuidv4();
     const payload = JSON.stringify(payloadResult.value);
 
@@ -168,7 +272,7 @@ export class ScheduleManageHandler {
     const insertResult = this.deps.scheduleRepository.insert({
       id: scheduleId,
       persona_id: context.personaId,
-      thread_id: context.threadId,
+      thread_id: dedicatedThreadId,
       type: 'cron',
       expression: cronExpr.trim(),
       payload,
@@ -184,8 +288,16 @@ export class ScheduleManageHandler {
     }
 
     this.deps.logger.info(
-      { requestId, scheduleId, personaId: context.personaId },
-      'schedule.manage: schedule created',
+      {
+        requestId,
+        scheduleId,
+        personaId: context.personaId,
+        personaName: personaRow.name,
+        channelName: channelRow.name,
+        originThreadId: context.threadId,
+        dedicatedThreadId,
+      },
+      'schedule.manage: schedule created on dedicated execution thread',
     );
 
     return {
@@ -245,6 +357,9 @@ export class ScheduleManageHandler {
         return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
       }
 
+      // Ownership check by persona — NOT by invoking thread. A schedule
+      // created on a dedicated execution thread must still be editable
+      // from the live chat thread that owns the persona.
       if (existingSchedule.value.persona_id !== context.personaId) {
         const msg = `schedule.manage: schedule "${scheduleId}" does not belong to this persona`;
         this.deps.logger.warn({ requestId, scheduleId, personaId: context.personaId }, msg);
@@ -319,6 +434,25 @@ export class ScheduleManageHandler {
       return { requestId, tool: 'schedule.manage', status: 'error', error: error.message };
     }
 
+    // Persona-ownership check: cancel must work from any invoking thread
+    // that owns the persona, not only the dedicated schedule thread.
+    const existing = this.deps.scheduleRepository.findById(scheduleId);
+    if (existing.isErr()) {
+      const msg = `schedule.manage: failed to load schedule — ${existing.error.message}`;
+      this.deps.logger.error({ requestId, scheduleId, err: existing.error }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+    if (!existing.value) {
+      const msg = `schedule.manage: schedule "${scheduleId}" not found`;
+      this.deps.logger.warn({ requestId, scheduleId }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+    if (existing.value.persona_id !== context.personaId) {
+      const msg = `schedule.manage: schedule "${scheduleId}" does not belong to this persona`;
+      this.deps.logger.warn({ requestId, scheduleId, personaId: context.personaId }, msg);
+      return { requestId, tool: 'schedule.manage', status: 'error', error: msg };
+    }
+
     const disableResult = this.deps.scheduleRepository.disable(scheduleId);
     if (disableResult.isErr()) {
       const msg = `schedule.manage: cancel failed — ${disableResult.error.message}`;
@@ -379,7 +513,13 @@ export class ScheduleManageHandler {
     };
   }
 
-  /** Handle the 'list' action — return all schedules for the persona. */
+  /**
+   * Handle the 'list' action — return all schedules for the persona.
+   *
+   * Returns every schedule owned by the invoking persona regardless of which
+   * thread (live or dedicated) it is stored against. This keeps schedules
+   * visible from the live chat that will normally be used to inspect them.
+   */
   private handleList(context: ToolExecutionContext, requestId: string): ToolCallResult {
     const result = this.deps.scheduleRepository.findByPersona(context.personaId);
     if (result.isErr()) {
@@ -428,6 +568,67 @@ export class ScheduleManageHandler {
       status: 'success',
       result: { schedules, count: schedules.length },
     };
+  }
+
+  /**
+   * Resolve (find or create) the dedicated execution thread for a schedule.
+   *
+   * Dedicated threads are keyed by `schedule:<persona>:<channel>:<origin>` so
+   * each originating chat has its own execution container. Scheduled runs
+   * therefore do not overwrite live-conversation session state, while the
+   * origin chat's external_id is persisted in the thread metadata so outbound
+   * notifications can still be routed back to the user.
+   */
+  private resolveDedicatedThread(input: {
+    channelId: string;
+    channelName: string;
+    personaName: string;
+    originExternalId: string;
+    requestId: string;
+  }): Result<string, ToolError> {
+    const { channelId, channelName, personaName, originExternalId, requestId } = input;
+    const dedicatedExternalId = `schedule:${personaName}:${channelName}:${originExternalId}`;
+
+    const existing = this.deps.threadRepository.findByExternalId(channelId, dedicatedExternalId);
+    if (existing.isErr()) {
+      const msg = `schedule.manage: failed to look up dedicated schedule thread — ${existing.error.message}`;
+      this.deps.logger.error({ requestId, channelId, dedicatedExternalId, err: existing.error }, msg);
+      return err(new ToolError(msg));
+    }
+    if (existing.value) {
+      return ok(existing.value.id);
+    }
+
+    const dedicatedThreadId = uuidv4();
+    const metadata = JSON.stringify({
+      kind: SCHEDULE_THREAD_KIND,
+      originExternalId,
+      personaName,
+      channelName,
+    });
+    const insertResult = this.deps.threadRepository.insert({
+      id: dedicatedThreadId,
+      channel_id: channelId,
+      external_id: dedicatedExternalId,
+      metadata,
+    });
+    if (insertResult.isErr()) {
+      // UNIQUE(channel_id, external_id) race: a concurrent create may have
+      // just inserted the same dedicated thread. Re-query before bailing —
+      // schedule creation should succeed regardless of who won the race.
+      const retry = this.deps.threadRepository.findByExternalId(channelId, dedicatedExternalId);
+      if (retry.isOk() && retry.value) {
+        this.deps.logger.info(
+          { requestId, channelId, dedicatedExternalId, threadId: retry.value.id },
+          'schedule.manage: dedicated schedule thread materialised by concurrent create, reusing',
+        );
+        return ok(retry.value.id);
+      }
+      const msg = `schedule.manage: failed to create dedicated schedule thread — ${insertResult.error.message}`;
+      this.deps.logger.error({ requestId, channelId, dedicatedExternalId, err: insertResult.error }, msg);
+      return err(new ToolError(msg));
+    }
+    return ok(dedicatedThreadId);
   }
 
   private buildSchedulePayload(

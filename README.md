@@ -2027,6 +2027,14 @@ Agents create schedules like:
 
 Scheduled tasks are enqueued through the standard queue pipeline, subject to the same retry and dead-letter policies as regular messages. Cron expressions evaluate in system local time.
 
+### Dedicated Execution Threads
+
+Schedules created by the agent via `schedule_manage` are stored against a dedicated execution thread keyed by `(persona, channel, origin chat)` — not the live chat thread. This keeps scheduled runs from polluting the live conversation's session state, observational-memory log, and session resumption id.
+
+The dedicated thread records the origin chat's `external_id` in metadata (`kind: "schedule"`, `originExternalId: "<chat id>"`). Outbound delivery (`channel_send`, typing indicators) reads that field and routes messages back to the originating chat, so users still receive scheduled notifications on the channel they set the schedule up from.
+
+List / update / cancel / delete remain persona-scoped rather than thread-scoped, so schedules created from the live chat are still fully visible and editable from the live chat thread.
+
 ### Task Prompt Files
 
 Schedules can reference reusable prompt files stored in a persona's `prompts/` directory instead of embedding prompt text inline. This keeps long or complex prompts version-controlled and editable without touching the schedule itself.
