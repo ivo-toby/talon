@@ -48,6 +48,15 @@ export interface WhatsAppBaileysConfig {
    * for it to be processed (case-insensitive). The trigger word is stripped
    * before the message reaches the agent. Example: ['@Talon', '@Bot'].
    * When empty or omitted, all messages pass through without filtering.
+   * In group chats at least one triggerWord must match — there is no automatic
+   * @mention detection on WhatsApp.
    */
   triggerWords?: string[];
+  /**
+   * Allow messages from WhatsApp group chats (JIDs ending in @g.us).
+   * Requires at least one triggerWord to be configured so the bot does not
+   * respond to every message in the group.
+   * Defaults to false.
+   */
+  allowGroupChats?: boolean;
 }

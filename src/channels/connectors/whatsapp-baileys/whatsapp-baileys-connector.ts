@@ -44,6 +44,8 @@ interface InboundWAMessage {
     fromMe?: boolean | null;
     remoteJid?: string | null;
     id?: string | null;
+    /** Set on group messages — the individual sender's JID. */
+    participant?: string | null;
   };
   message?: Record<string, unknown> | null;
   messageTimestamp?: number | { low: number; high: number; unsigned: boolean } | null;
@@ -311,14 +313,47 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       // ── Normal mode ───────────────────────────────────────────────
       if (fromMe) return;
 
+      const isGroup = jid.endsWith('@g.us');
+
+      if (isGroup) {
+        if (!this.config.allowGroupChats) {
+          this.logger.debug(
+            { channelName: this.name, jid },
+            'whatsapp-baileys: skipping group message (allowGroupChats not enabled)',
+          );
+          return;
+        }
+        // Require at least one triggerWord for groups — without one every group
+        // message would reach the agent.
+        const triggerWords = this.config.triggerWords;
+        if (!triggerWords || triggerWords.length === 0) {
+          this.logger.warn(
+            { channelName: this.name, jid },
+            'whatsapp-baileys: group message dropped — allowGroupChats is true but no triggerWords are configured',
+          );
+          return;
+        }
+        // Require a valid participant JID so senderId is always a real sender.
+        if (!msg.key.participant) {
+          this.logger.warn(
+            { channelName: this.name, jid },
+            'whatsapp-baileys: group message has no participant JID, dropping',
+          );
+          return;
+        }
+        // Group messages fall through to the triggerWords filter below.
+      }
+
       // Enforce allowedSenders restriction if configured.
+      // For group messages check the participant JID (individual sender), not the group JID.
       // Accepts the identifier part of any JID format:
       //   - Phone-based: "31612345678@s.whatsapp.net" or "31612345678:42@s.whatsapp.net"
       //   - LID-based:   "96490886312027@lid"
       // Strip the @domain suffix and any :device suffix to get the bare sender ID.
       const allowedSenders = this.config.allowedSenders;
       if (allowedSenders && allowedSenders.length > 0) {
-        const senderId = jid.replace(/@.*$/, '').replace(/:\d+$/, '');
+        const senderJid = isGroup ? msg.key.participant! : jid;
+        const senderId = senderJid.replace(/@.*$/, '').replace(/:\d+$/, '');
         if (!allowedSenders.includes(senderId)) {
           this.logger.warn(
             { channelName: this.name, jid, senderId },
@@ -326,15 +361,6 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
           );
           return;
         }
-      }
-
-      // Skip group messages in normal mode.
-      if (jid.endsWith('@g.us')) {
-        this.logger.debug(
-          { channelName: this.name, jid },
-          'whatsapp-baileys: skipping group message',
-        );
-        return;
       }
     }
 
@@ -378,11 +404,15 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     }
     const epochMs = epochSeconds * 1000;
 
+    // For group messages the individual sender is in key.participant; jid is the group.
+    // Participant is guaranteed non-null here — groups without a participant are dropped above.
+    const senderId = jid.endsWith('@g.us') ? msg.key.participant! : jid;
+
     const event: InboundEvent = {
       channelType: this.type,
       channelName: this.name,
       externalThreadId: jid,
-      senderId: jid,
+      senderId,
       idempotencyKey: msg.key.id,
       content: text,
       timestamp: epochMs,
