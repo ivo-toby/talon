@@ -15,6 +15,7 @@ import type {
   TelegramConfig,
   TelegramUpdate,
   TelegramUser,
+  TelegramMessage,
   TelegramSendResult,
   TelegramUpdatesResult,
 } from './telegram-types.js';
@@ -50,6 +51,7 @@ export class TelegramConnector implements ChannelConnector {
   readonly name: string;
 
   private _botUserId: string | undefined;
+  private _botUsername: string | undefined;
   private siblingBotIds: Set<string> = new Set();
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
@@ -110,8 +112,9 @@ export class TelegramConnector implements ChannelConnector {
       const data = (await response.json()) as { ok: boolean; result?: TelegramUser };
       if (data.ok && data.result) {
         this._botUserId = String(data.result.id);
+        this._botUsername = data.result.username;
         this.logger.info(
-          { channelName: this.name, botUserId: this._botUserId },
+          { channelName: this.name, botUserId: this._botUserId, botUsername: this._botUsername },
           'telegram bot identity resolved',
         );
       } else {
@@ -325,6 +328,16 @@ export class TelegramConnector implements ChannelConnector {
     }
 
     const chatId = String(message.chat.id);
+    const isGroup = message.chat.type === 'group' || message.chat.type === 'supergroup';
+
+    // Drop group messages unless explicitly enabled.
+    if (isGroup && !this.config.allowGroupChats) {
+      this.logger.debug(
+        { channelName: this.name, chatId, chatType: message.chat.type },
+        'telegram group message received but allowGroupChats is not enabled, dropping',
+      );
+      return;
+    }
 
     // Enforce allowedChatIds restriction if configured.
     if (
@@ -358,6 +371,39 @@ export class TelegramConnector implements ChannelConnector {
       return;
     }
 
+    // Apply mention/trigger filter and resolve final message text.
+    let content = message.text;
+
+    if (isGroup) {
+      // In groups the bot only responds when @mentioned by username or when a
+      // triggerWord matches. Strip the matched prefix before forwarding.
+      const result = this.extractGroupContent(message);
+      if (!result) {
+        this.logger.debug(
+          { channelName: this.name, chatId },
+          'telegram group message has no @mention or trigger word, dropping',
+        );
+        return;
+      }
+      content = result;
+    } else {
+      // In DMs, apply triggerWords filter if configured.
+      const triggerWords = this.config.triggerWords;
+      if (triggerWords && triggerWords.length > 0) {
+        const lower = content.toLowerCase();
+        const matched = triggerWords.find((tw) => lower.startsWith(tw.toLowerCase()));
+        if (!matched) {
+          this.logger.debug(
+            { channelName: this.name, chatId },
+            'telegram DM message has no trigger word, dropping',
+          );
+          return;
+        }
+        content = content.slice(matched.length).trimStart();
+        if (!content) return;
+      }
+    }
+
     const senderId = message.from ? String(message.from.id) : chatId;
 
     const event: InboundEvent = {
@@ -366,7 +412,7 @@ export class TelegramConnector implements ChannelConnector {
       externalThreadId: chatId,
       senderId,
       idempotencyKey: String(update.update_id),
-      content: message.text,
+      content,
       timestamp: message.date * 1000, // Telegram sends seconds; we want ms
       raw: update,
     };
@@ -387,6 +433,48 @@ export class TelegramConnector implements ChannelConnector {
         'telegram connector handler threw an error',
       );
     }
+  }
+
+  /**
+   * For group messages: check if the text contains the bot's @mention (detected
+   * via Telegram entities for precision) or starts with a configured trigger word.
+   * Returns the stripped content on match, or null if neither condition is met.
+   */
+  private extractGroupContent(message: TelegramMessage): string | null {
+    const text = message.text;
+    if (!text) return null;
+
+    const botUsername = this._botUsername;
+
+    // Use Telegram entities for exact @mention detection — avoids false
+    // positives like "@talon" matching "@talon2".
+    if (botUsername && message.entities) {
+      for (const entity of message.entities) {
+        if (entity.type === 'mention') {
+          const mentionText = text.slice(entity.offset, entity.offset + entity.length);
+          if (mentionText.toLowerCase() === `@${botUsername.toLowerCase()}`) {
+            // Strip the specific mention by position, then clean up surrounding whitespace.
+            const stripped = (
+              text.slice(0, entity.offset) + text.slice(entity.offset + entity.length)
+            ).trim();
+            return stripped || null;
+          }
+        }
+      }
+    }
+
+    // Fall back to triggerWords prefix match.
+    const triggerWords = this.config.triggerWords;
+    if (triggerWords && triggerWords.length > 0) {
+      const lower = text.toLowerCase();
+      const matched = triggerWords.find((tw) => lower.startsWith(tw.toLowerCase()));
+      if (matched) {
+        const stripped = text.slice(matched.length).trimStart();
+        return stripped || null;
+      }
+    }
+
+    return null;
   }
 
   /**

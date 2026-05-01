@@ -26,6 +26,19 @@ export interface TelegramConfig {
    * If set, messages from chats not in this list are silently dropped.
    */
   allowedChatIds?: string[];
+  /**
+   * Allow messages from group and supergroup chats.
+   * In group chats the bot only responds when @mentioned by username or when
+   * a message starts with one of the configured triggerWords.
+   * Defaults to false.
+   */
+  allowGroupChats?: boolean;
+  /**
+   * Optional trigger words. A message must start with one of these (case-
+   * insensitive) for the bot to respond. The matched prefix is stripped before
+   * the message reaches the agent. Applies to both DMs and group chats.
+   */
+  triggerWords?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +66,17 @@ export interface TelegramChat {
 }
 
 /**
+ * A Telegram message entity (bold, mention, etc.).
+ */
+export interface TelegramMessageEntity {
+  type: string;
+  offset: number;
+  length: number;
+  /** For type 'text_mention', the user object. */
+  user?: TelegramUser;
+}
+
+/**
  * A Telegram message object.
  * Only fields relevant to the connector are included.
  */
@@ -64,6 +88,8 @@ export interface TelegramMessage {
   date: number;
   /** Text of the message (absent for non-text messages). */
   text?: string;
+  /** Special entities in the message text (mentions, commands, etc.). */
+  entities?: TelegramMessageEntity[];
 }
 
 /**
