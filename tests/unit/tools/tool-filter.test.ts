@@ -123,6 +123,7 @@ describe('filterAllowedMcpTools', () => {
         'persona.send:*',
         'memory.access',
         'net.http',
+        'web.search',
         'db.query',
         'execution.env',
         'subagent.invoke',
@@ -131,12 +132,13 @@ describe('filterAllowedMcpTools', () => {
       requireApproval: [],
     };
     const result = filterAllowedMcpTools(caps);
-    expect(result).toHaveLength(11);
+    expect(result).toHaveLength(12);
     expect(result).toContain('background_agent');
     expect(result).toContain('persona_send');
     expect(result).toContain('persona_task_status');
     expect(result).toContain('persona_list');
     expect(result).toContain('execution_env');
+    expect(result).toContain('web_search');
   });
 
   it('maps persona.send capability to persona_send, persona_task_status, and persona_list MCP tools', () => {
@@ -243,8 +245,8 @@ describe('isToolAllowed', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all eleven host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(11);
+  it('contains all twelve host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(12);
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('persona.send');
@@ -252,6 +254,7 @@ describe('ALL_HOST_TOOLS', () => {
     expect(ALL_HOST_TOOLS).toContain('persona.list');
     expect(ALL_HOST_TOOLS).toContain('memory.access');
     expect(ALL_HOST_TOOLS).toContain('net.http');
+    expect(ALL_HOST_TOOLS).toContain('web.search');
     expect(ALL_HOST_TOOLS).toContain('db.query');
     expect(ALL_HOST_TOOLS).toContain('execution.env');
     expect(ALL_HOST_TOOLS).toContain('subagent.invoke');

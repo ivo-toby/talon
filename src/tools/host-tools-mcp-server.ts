@@ -366,6 +366,93 @@ const TOOLS = [
     },
   },
   {
+    name: 'web_search',
+    description:
+      'Performs AI-powered web search via Exa and returns results with text, highlights, or summaries. Use this to answer questions about live web content, recent events, or specific URLs. Requires the EXA_API_KEY environment variable on the daemon host.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        query: {
+          type: 'string' as const,
+          description: 'Search query string',
+        },
+        type: {
+          type: 'string' as const,
+          enum: ['neural', 'fast', 'auto', 'instant'],
+          description: 'Search method (default: auto)',
+        },
+        category: {
+          type: 'string' as const,
+          enum: [
+            'company',
+            'research paper',
+            'news',
+            'pdf',
+            'github',
+            'tweet',
+            'personal site',
+            'linkedin profile',
+            'financial report',
+          ],
+          description: 'Optional category filter — narrows results to a known content type',
+        },
+        numResults: {
+          type: 'number' as const,
+          description: 'Number of results to return (1–25, default: 5)',
+        },
+        includeDomains: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Include only results from these domains',
+        },
+        excludeDomains: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Exclude results from these domains',
+        },
+        includeText: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Require results to contain this phrase (max 5 words)',
+        },
+        excludeText: {
+          type: 'array' as const,
+          items: { type: 'string' as const },
+          description: 'Exclude results that contain this phrase (max 5 words)',
+        },
+        startPublishedDate: {
+          type: 'string' as const,
+          description: 'Minimum publication date (ISO 8601)',
+        },
+        endPublishedDate: {
+          type: 'string' as const,
+          description: 'Maximum publication date (ISO 8601)',
+        },
+        userLocation: {
+          type: 'string' as const,
+          description: 'Two-letter ISO country code (e.g. US, GB) for geographic relevance',
+        },
+        text: {
+          type: 'boolean' as const,
+          description: 'Return text excerpts (default: true)',
+        },
+        highlights: {
+          type: 'boolean' as const,
+          description: 'Return relevance-scored highlight snippets',
+        },
+        summary: {
+          description:
+            'Return an LLM summary of each result. Pass true for default summary, or { query: "..." } to guide it.',
+        },
+        maxCharacters: {
+          type: 'number' as const,
+          description: 'Maximum characters of text to return per result (default: 1000)',
+        },
+      },
+      required: ['query'],
+    },
+  },
+  {
     name: 'db_query',
     description: 'Executes read-only SQL SELECT queries against the talond SQLite database.',
     inputSchema: {

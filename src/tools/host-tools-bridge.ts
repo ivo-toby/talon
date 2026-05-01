@@ -19,6 +19,7 @@ import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-s
 import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
+import { ExaSearchHandler, type ExaSearchArgs } from './host-tools/exa-search.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
 import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-access.js';
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
@@ -58,6 +59,7 @@ export class HostToolsBridge {
   private personaTaskStatusHandler: PersonaTaskStatusHandler | null = null;
   private personaListHandler: PersonaListHandler;
   private httpHandler: HttpProxyHandler;
+  private exaSearchHandler: ExaSearchHandler;
   private dbHandler: DbQueryHandler;
   private memoryHandler: MemoryAccessHandler;
   private subagentHandler: SubAgentInvokeHandler | null = null;
@@ -102,6 +104,10 @@ export class HostToolsBridge {
     this.httpHandler = new HttpProxyHandler({
       logger: ctx.logger,
       allowedDomains: [],
+    });
+
+    this.exaSearchHandler = new ExaSearchHandler({
+      logger: ctx.logger,
     });
 
     // Open a separate read-only database connection for db.query.
@@ -483,6 +489,9 @@ export class HostToolsBridge {
 
       case 'net.http':
         return this.httpHandler.execute(args as unknown as HttpProxyArgs, context);
+
+      case 'web.search':
+        return this.exaSearchHandler.execute(args as unknown as ExaSearchArgs, context);
 
       case 'db.query':
         return this.dbHandler.execute(args as unknown as DbQueryArgs, context);

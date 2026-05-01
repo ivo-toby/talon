@@ -27,6 +27,16 @@ export { MemoryAccessHandler } from './memory-access.js';
 export type { HttpProxyTool, HttpProxyArgs } from './http-proxy.js';
 export { HttpProxyHandler } from './http-proxy.js';
 
+export type {
+  ExaSearchTool,
+  ExaSearchArgs,
+  ExaSearchType,
+  ExaCategory,
+  ExaSearchResultEntry,
+  ExaSearchResultPayload,
+} from './exa-search.js';
+export { ExaSearchHandler } from './exa-search.js';
+
 export type { DbQueryTool, DbQueryArgs } from './db-query.js';
 export { DbQueryHandler } from './db-query.js';
 

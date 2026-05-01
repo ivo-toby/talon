@@ -44,6 +44,7 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'persona.send', internalName: 'persona.list', mcpName: 'persona_list' },
   { capabilityPrefix: 'memory.access', internalName: 'memory.access', mcpName: 'memory_access' },
   { capabilityPrefix: 'net.http', internalName: 'net.http', mcpName: 'net_http' },
+  { capabilityPrefix: 'web.search', internalName: 'web.search', mcpName: 'web_search' },
   { capabilityPrefix: 'db.query', internalName: 'db.query', mcpName: 'db_query' },
   { capabilityPrefix: 'execution.env', internalName: 'execution.env', mcpName: 'execution_env' },
   { capabilityPrefix: 'subagent.invoke', internalName: 'subagent.invoke', mcpName: 'subagent_invoke' },
@@ -93,6 +94,13 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'net_http',
     labels: [
       { label: 'net.http:egress', description: 'Make outbound HTTP requests' },
+    ],
+  },
+  {
+    toolPrefix: 'web.search',
+    mcpName: 'web_search',
+    labels: [
+      { label: 'web.search:exa', description: 'Search the web via the Exa API (requires EXA_API_KEY)' },
     ],
   },
   {
