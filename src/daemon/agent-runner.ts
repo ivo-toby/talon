@@ -251,6 +251,12 @@ export class AgentRunner {
       });
     }
 
+    this.recordWorkflowRuntimeHooks(item, {
+      personaId,
+      runId,
+      providerName: providerEntry.provider.name,
+    });
+
     const content = typeof item.payload.content === 'string' ? item.payload.content : '';
     let runFinalized = false;
 
@@ -1299,6 +1305,144 @@ export class AgentRunner {
         'agent-runner: failed to mark A2A task as failed',
       );
     });
+  }
+
+  private recordWorkflowRuntimeHooks(
+    item: QueueItem,
+    params: { personaId: string; runId: string; providerName: string },
+  ): void {
+    const workflow = this.parseWorkflowRuntimePayload(item);
+    if (!workflow) {
+      return;
+    }
+
+    if (workflow.claim) {
+      const claimResult = this.ctx.workflowService.submitClaim({
+        id: uuidv4(),
+        workflowItemId: workflow.workflowItemId,
+        claimType: workflow.claim.claimType,
+        actorId: params.personaId,
+        actorKind: 'persona',
+        action: workflow.claim.action,
+        target: workflow.claim.target,
+        assertedOutcome: workflow.claim.assertedOutcome,
+        summary: workflow.claim.summary,
+        payload: {
+          runId: params.runId,
+          providerName: params.providerName,
+          ...(workflow.claim.payload ?? {}),
+        },
+      });
+
+      if (claimResult.isErr()) {
+        this.ctx.logger.warn(
+          {
+            workflowItemId: workflow.workflowItemId,
+            err: claimResult.error.message,
+          },
+          'agent-runner: failed to record workflow claim',
+        );
+      }
+    }
+
+    if (workflow.transition) {
+      const transitionResult = this.ctx.workflowService.requestTransition({
+        workflowItemId: workflow.workflowItemId,
+        requestedState: workflow.transition.requestedState,
+        actorId: params.personaId,
+        reason: workflow.transition.reason,
+        correlationId: workflow.transition.correlationId,
+      });
+
+      if (transitionResult.isErr()) {
+        this.ctx.logger.warn(
+          {
+            workflowItemId: workflow.workflowItemId,
+            err: transitionResult.error.message,
+          },
+          'agent-runner: failed to request workflow transition',
+        );
+      }
+    }
+  }
+
+  private parseWorkflowRuntimePayload(item: QueueItem): {
+    workflowItemId: string;
+    claim?: {
+      claimType: string;
+      action: string;
+      target: string;
+      assertedOutcome: string;
+      summary: string;
+      payload?: Record<string, unknown>;
+    };
+    transition?: {
+      requestedState: 'intake' | 'ready' | 'in_progress' | 'awaiting_validation' | 'blocked' | 'escalated' | 'done' | 'cancelled';
+      reason: string;
+      correlationId?: string;
+    };
+  } | null {
+    const workflow =
+      typeof item.payload?.workflow === 'object' && item.payload.workflow !== null
+        ? item.payload.workflow as Record<string, unknown>
+        : null;
+    const workflowItemId =
+      workflow && typeof workflow.workflowItemId === 'string'
+        ? workflow.workflowItemId
+        : null;
+
+    if (!workflow || !workflowItemId) {
+      return null;
+    }
+
+    const claim =
+      typeof workflow.claim === 'object' && workflow.claim !== null
+        ? workflow.claim as Record<string, unknown>
+        : null;
+    const transition =
+      typeof workflow.transition === 'object' && workflow.transition !== null
+        ? workflow.transition as Record<string, unknown>
+        : null;
+
+    const parsedClaim =
+      claim &&
+      typeof claim.claimType === 'string' &&
+      typeof claim.action === 'string' &&
+      typeof claim.target === 'string' &&
+      typeof claim.assertedOutcome === 'string' &&
+      typeof claim.summary === 'string'
+        ? {
+            claimType: claim.claimType,
+            action: claim.action,
+            target: claim.target,
+            assertedOutcome: claim.assertedOutcome,
+            summary: claim.summary,
+            payload:
+              typeof claim.payload === 'object' && claim.payload !== null
+                ? claim.payload as Record<string, unknown>
+                : undefined,
+          }
+        : undefined;
+
+    const parsedTransition =
+      transition &&
+      typeof transition.requestedState === 'string' &&
+      typeof transition.reason === 'string'
+        ? {
+            requestedState: transition.requestedState as 'intake' | 'ready' | 'in_progress' | 'awaiting_validation' | 'blocked' | 'escalated' | 'done' | 'cancelled',
+            reason: transition.reason,
+            correlationId:
+              typeof transition.correlationId === 'string'
+                ? transition.correlationId
+                : undefined,
+          }
+        : undefined;
+
+    return {
+      workflowItemId,
+      ...(parsedClaim ? { claim: parsedClaim } : {}),
+      ...(parsedTransition ? { transition: parsedTransition } : {}),
+    };
   }
 
   private parseBackgroundTaskNotification(item: QueueItem): {

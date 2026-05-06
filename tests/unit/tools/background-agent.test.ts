@@ -216,6 +216,13 @@ describe('BackgroundAgentHandler', () => {
     expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).not.toContain(
       'Skill instructions.',
     );
+    expect((result as any).workflowMetadata?.evidence).toEqual(
+      expect.objectContaining({
+        evidenceType: 'background_task_spawned',
+        source: 'background_task',
+        locator: 'task:task-1',
+      }),
+    );
   });
 
   it('uses lazy skill loading — system prompt contains skill index not full skill content', async () => {
@@ -460,6 +467,94 @@ describe('BackgroundAgentHandler', () => {
     expect(result.error).toContain('does not belong to the current thread');
     expect(backgroundAgentManager.getResult).not.toHaveBeenCalled();
   });
+
+  it('returns completed-task result metadata as workflow evidence', async () => {
+    const completedTask = makeTask({
+      status: 'completed',
+      completedAt: 2_000,
+      output: 'Done!',
+    });
+    const completedResult = makeResult({
+      status: 'completed',
+      output: 'Done!',
+    });
+    const completedManager = {
+      spawn: vi.fn().mockResolvedValue(ok('task-1')),
+      listTasksForThread: vi.fn().mockReturnValue(ok([completedTask])),
+      getTask: vi.fn().mockReturnValue(ok(completedTask)),
+      cancel: vi.fn().mockResolvedValue(ok(true)),
+      getResult: vi.fn().mockReturnValue(ok(completedResult)),
+    };
+    const { handler } = createHandler({
+      backgroundAgentManager: completedManager,
+    });
+
+    const result = await handler.execute(
+      { action: 'result', taskId: 'task-1' },
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-1',
+      },
+    );
+
+    expect(result.status).toBe('success');
+    expect(result.result).toEqual(completedResult);
+    expect((result as any).workflowMetadata?.evidence).toEqual(
+      expect.objectContaining({
+        evidenceType: 'background_task_completed',
+        locator: 'task:task-1',
+      }),
+    );
+    expect(completedManager.getResult).toHaveBeenCalledWith('task-1');
+  });
+
+  it.each([
+    ['timed_out', 'background_task_timed_out'],
+    ['failed', 'background_task_failed'],
+  ] as const)(
+    'returns %s task metadata as %s workflow evidence',
+    async (status, evidenceType) => {
+      const task = makeTask({
+        status,
+        completedAt: 2_000,
+        error: status === 'failed' ? 'process crashed' : 'Process timed out',
+      });
+      const taskResult = makeResult({
+        status,
+        output: status === 'timed_out' ? 'Partial output' : null,
+        error: task.error,
+      });
+      const { handler } = createHandler({
+        backgroundAgentManager: {
+          spawn: vi.fn().mockResolvedValue(ok('task-1')),
+          listTasksForThread: vi.fn().mockReturnValue(ok([task])),
+          getTask: vi.fn().mockReturnValue(ok(task)),
+          cancel: vi.fn().mockResolvedValue(ok(true)),
+          getResult: vi.fn().mockReturnValue(ok(taskResult)),
+        },
+      });
+
+      const result = await handler.execute(
+        { action: 'result', taskId: 'task-1' },
+        {
+          runId: 'run-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          requestId: 'req-1',
+        },
+      );
+
+      expect(result.status).toBe('success');
+      expect((result as any).workflowMetadata?.evidence).toEqual(
+        expect.objectContaining({
+          evidenceType,
+          locator: 'task:task-1',
+        }),
+      );
+    },
+  );
 
   describe('profile parameter', () => {
     it('spawns with profile persona when a valid profile name is given', async () => {

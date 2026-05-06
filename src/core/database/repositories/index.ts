@@ -60,6 +60,13 @@ export { AuditRepository } from './audit-repository.js';
 export type { ToolResultRow, ToolResultStatus, InsertToolResultInput } from './tool-result-repository.js';
 export { ToolResultRepository } from './tool-result-repository.js';
 
+export { WorkflowItemRepository } from './workflow-item-repository.js';
+export { WorkflowClaimRepository } from './workflow-claim-repository.js';
+export { WorkflowEvidenceRepository } from './workflow-evidence-repository.js';
+export { WorkflowEventRepository } from './workflow-event-repository.js';
+export { WorkflowLeaseRepository } from './workflow-lease-repository.js';
+export { WorkflowInterventionRepository } from './workflow-intervention-repository.js';
+
 export { BackgroundTaskRepository } from './background-task-repository.js';
 export type { InsertA2ATaskInput } from './a2a-task-repository.js';
 export { A2ATaskRepository } from './a2a-task-repository.js';

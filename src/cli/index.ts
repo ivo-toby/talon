@@ -48,6 +48,7 @@ import { resetProviderAffinityCommand } from './commands/reset-provider-affinity
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 import { setCapabilitiesCommand } from './commands/set-capabilities.js';
 import { a2aListCommand, a2aSendCommand } from './commands/a2a.js';
+import { listWorkflowsCommand } from './commands/list-workflows.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -92,6 +93,18 @@ program
     await statusCommand({
       ipcDir: opts.ipcDir,
       timeoutMs: parseInt(opts.timeout, 10),
+    });
+  });
+
+program
+  .command('list-workflows')
+  .description('Inspect workflow items from the local SQLite database')
+  .option('--db <path>', 'Path to the SQLite database', 'data/talond.sqlite')
+  .option('--limit <n>', 'Maximum workflows to print', '20')
+  .action(async (opts: { db: string; limit: string }) => {
+    await listWorkflowsCommand({
+      dbPath: opts.db,
+      limit: parseInt(opts.limit, 10),
     });
   });
 

@@ -44,6 +44,8 @@ export interface SubmitTaskInput {
   parentTaskId?: string;
   /** Trace ID for observability. */
   traceId?: string;
+  /** Optional workflow item linked to this durable task. */
+  workflowItemId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -84,7 +86,7 @@ export class A2ATaskMapper {
    * @returns Ok(A2ATaskStatus) on success, Err(A2AError) on validation/persistence failure.
    */
   submitTask(input: SubmitTaskInput): Result<A2ATaskStatus, A2AError> {
-    const { sourcePersona, targetPersona, sourceThreadId, content, hopCount, parentTaskId, traceId } = input;
+    const { sourcePersona, targetPersona, sourceThreadId, content, hopCount, parentTaskId, traceId, workflowItemId } = input;
 
     // 1. Validate content
     if (!content.trim()) {
@@ -143,6 +145,7 @@ export class A2ATaskMapper {
         traceId,
         maxHops: MAX_HOPS,
         queueType: 'collaboration',
+        ...(workflowItemId ? { workflow: { workflowItemId } } : {}),
       },
     };
 
@@ -174,7 +177,7 @@ export class A2ATaskMapper {
           source_persona: sourcePersona,
           target_persona: targetPersona,
           thread_id: sourceThreadId,
-          request_payload: JSON.stringify({ content, sourcePersona, targetPersona, sourceThreadId, hopCount, parentTaskId, traceId }),
+          request_payload: JSON.stringify({ content, sourcePersona, targetPersona, sourceThreadId, hopCount, parentTaskId, traceId, workflowItemId }),
           hop_count: hopCount,
           parent_task_id: parentTaskId ?? null,
           submitted_at: now,
@@ -227,6 +230,7 @@ export class A2ATaskMapper {
       queueItemId,
       submittedAt: now,
       updatedAt: now,
+      ...(workflowItemId ? { workflowItemId } : {}),
     });
   }
 
@@ -255,6 +259,7 @@ export class A2ATaskMapper {
       submittedAt: row.submitted_at,
       updatedAt: row.updated_at,
       completedAt: row.completed_at ?? undefined,
+      ...this.extractWorkflowLink(row.request_payload),
     };
 
     if (row.result_payload) {
@@ -273,5 +278,16 @@ export class A2ATaskMapper {
     }
 
     return ok(status);
+  }
+
+  private extractWorkflowLink(requestPayload: string): { workflowItemId?: string } {
+    try {
+      const parsed = JSON.parse(requestPayload) as { workflowItemId?: unknown };
+      return typeof parsed.workflowItemId === 'string'
+        ? { workflowItemId: parsed.workflowItemId }
+        : {};
+    } catch {
+      return {};
+    }
   }
 }

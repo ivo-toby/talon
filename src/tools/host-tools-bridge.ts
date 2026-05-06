@@ -86,6 +86,7 @@ export class HostToolsBridge {
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
         personaRepo: ctx.repos.persona,
+        workflowService: ctx.workflowService,
         logger: ctx.logger,
       });
       this.personaTaskStatusHandler = new PersonaTaskStatusHandler({
@@ -326,13 +327,20 @@ export class HostToolsBridge {
               }),
             ]);
 
+            const annotatedResult = this.annotateWorkflowMetadata(
+              toolResult,
+              normalizedTool,
+              args,
+              context,
+            );
+
             toolObservation.update({
-              output: toolResult,
+              output: annotatedResult,
               level: toolResult.status === 'error' ? 'ERROR' : undefined,
               statusMessage: toolResult.status === 'error' ? toolResult.error : undefined,
             });
 
-            return toolResult;
+            return annotatedResult;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             toolObservation.update({
@@ -358,6 +366,57 @@ export class HostToolsBridge {
 
   private sendResponse(socket: net.Socket, response: BridgeResponse): void {
     socket.write(JSON.stringify(response) + '\n');
+  }
+
+  private annotateWorkflowMetadata(
+    result: ToolCallResult,
+    tool: string,
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ): ToolCallResult {
+    if (result.workflowMetadata?.evidence) {
+      return {
+        ...result,
+        workflowMetadata: {
+          ...result.workflowMetadata,
+          evidence: {
+            ...result.workflowMetadata.evidence,
+            provenance: {
+              runId: context.runId,
+              threadId: context.threadId,
+              personaId: context.personaId,
+              requestId: context.requestId ?? null,
+              tool,
+              ...result.workflowMetadata.evidence.provenance,
+            },
+          },
+        },
+      };
+    }
+
+    return {
+      ...result,
+      workflowMetadata: {
+        evidence: {
+          evidenceType: 'tool_call_result',
+          source: 'tool_result',
+          locator: `tool_result:${context.runId}:${context.requestId ?? tool}`,
+          capturedAt: Date.now(),
+          provenance: {
+            runId: context.runId,
+            threadId: context.threadId,
+            personaId: context.personaId,
+            requestId: context.requestId ?? null,
+            tool,
+          },
+          payload: {
+            args,
+            status: result.status,
+          },
+        },
+        transitionRequest: result.workflowMetadata?.transitionRequest,
+      },
+    };
   }
 
   private resolveSkillContent(personaId: string, skillName: string): string | null {

@@ -4,6 +4,7 @@ import {
   LangfuseConfigSchema,
   StorageConfigSchema,
   SandboxConfigSchema,
+  WorkflowConfigSchema,
   ExecutionEnvResourceLimitsSchema,
   CapabilitiesSchema,
   MountConfigSchema,
@@ -75,6 +76,55 @@ describe('LangfuseConfigSchema', () => {
         secretKey: '',
       }).success,
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WorkflowConfigSchema
+// ---------------------------------------------------------------------------
+
+describe('WorkflowConfigSchema', () => {
+  it('defaults to disabled observational mode', () => {
+    const result = WorkflowConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.enabled).toBe(false);
+      expect(result.data.defaultRolloutMode).toBe('observe');
+      expect(result.data.defaultPolicyPack).toBe('observe-only');
+      expect(result.data.bindings).toEqual([]);
+      expect(result.data.watchdog).toEqual({
+        enabled: true,
+        evaluationIntervalMs: 30_000,
+        freshnessThresholdMs: 15 * 60 * 1000,
+        claimRejectionThreshold: 2,
+      });
+    }
+  });
+
+  it('accepts explicit authoritative bindings when enabled', () => {
+    const result = WorkflowConfigSchema.safeParse({
+      enabled: true,
+      defaultRolloutMode: 'guided',
+      bindings: [
+        {
+          workflowType: 'orchestrator_task',
+          policyPack: 'orchestrator-task',
+          rolloutMode: 'authoritative',
+        },
+      ],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.enabled).toBe(true);
+      expect(result.data.defaultRolloutMode).toBe('guided');
+      expect(result.data.bindings).toEqual([
+        {
+          workflowType: 'orchestrator_task',
+          policyPack: 'orchestrator-task',
+          rolloutMode: 'authoritative',
+        },
+      ]);
+    }
   });
 });
 
@@ -869,6 +919,18 @@ describe('TalondConfigSchema', () => {
           },
         },
       });
+      expect(result.data.workflow).toEqual({
+        enabled: false,
+        defaultRolloutMode: 'observe',
+        defaultPolicyPack: 'observe-only',
+        bindings: [],
+        watchdog: {
+          enabled: true,
+          evaluationIntervalMs: 30_000,
+          freshnessThresholdMs: 15 * 60 * 1000,
+          claimRejectionThreshold: 2,
+        },
+      });
       expect(result.data.sprites).toEqual({
         enabled: false,
         token: '',
@@ -938,6 +1000,24 @@ describe('TalondConfigSchema', () => {
           },
         },
       },
+      workflow: {
+        enabled: true,
+        defaultRolloutMode: 'guided',
+        defaultPolicyPack: 'observe-only',
+        bindings: [
+          {
+            workflowType: 'orchestrator_task',
+            policyPack: 'orchestrator-task',
+            rolloutMode: 'authoritative',
+          },
+        ],
+        watchdog: {
+          enabled: true,
+          evaluationIntervalMs: 15_000,
+          freshnessThresholdMs: 120_000,
+          claimRejectionThreshold: 3,
+        },
+      },
       sprites: {
         enabled: true,
         token: 'sprites-token',
@@ -967,6 +1047,8 @@ describe('TalondConfigSchema', () => {
       expect(result.data.channels).toHaveLength(1);
       expect(result.data.personas).toHaveLength(1);
       expect(result.data.backgroundAgent.enabled).toBe(false);
+      expect(result.data.workflow.bindings).toHaveLength(1);
+      expect(result.data.workflow.bindings[0]?.rolloutMode).toBe('authoritative');
       expect(result.data.sprites.enabled).toBe(true);
       expect(result.data.sprites.resourceLimits.diskGb).toBe(40);
       expect(result.data.langfuse.release).toBe('abcdef1234');

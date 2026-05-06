@@ -219,6 +219,20 @@ backgroundAgent:
         defaultModel: qwen3-coder:30b
         providerId: ollama
 
+workflow:
+  enabled: false
+  defaultRolloutMode: observe
+  defaultPolicyPack: observe-only
+  bindings:
+    - workflowType: orchestrator_task
+      policyPack: orchestrator-task
+      rolloutMode: authoritative
+  watchdog:
+    enabled: true
+    evaluationIntervalMs: 30000
+    freshnessThresholdMs: 900000
+    claimRejectionThreshold: 2
+
 scheduler:
   tickIntervalMs: 5000
 

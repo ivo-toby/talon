@@ -48,6 +48,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Personas  | `src/personas/`            | Persona config loading + capability merging                         |
 | Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool) |
 | SubAgents | `src/subagents/`           | Loader, model resolver, runner with per-subagent model overrides and failover |
+| Workflow  | `src/workflow/`            | Workflow kernel service, policy packs, watchdogs, evidence adapters, read models |
 | Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema) |
 | Database  | `src/core/database/`       | better-sqlite3 wrapper, 14 repositories, SQL migrations             |
 | IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                |
@@ -66,13 +67,13 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 ### Database
 
-Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`.
+Schema in `src/core/database/migrations/001-initial-schema.sql` plus follow-on numbered migrations. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`, `a2a_tasks`, and the workflow tables (`workflow_items`, `workflow_claims`, `workflow_evidence`, `workflow_events`, `workflow_leases`, `workflow_interventions`).
 
 Table names to know: `memory_items` (not `memory`), `schedules` (column `expression` not `cron_expression`).
 
 ### Config
 
-YAML config validated by Zod schema in `config-schema.ts`. Supports `${ENV_VAR}` substitution. Example at `config/talond.example.yaml`.
+YAML config validated by Zod schema in `config-schema.ts`. Supports `${ENV_VAR}` substitution. Example at `config/talond.example.yaml`. Workflow rollout and watchdog settings live under the top-level `workflow` key.
 
 ## Code Conventions
 

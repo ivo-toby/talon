@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { writeFileSync, unlinkSync, mkdirSync } from 'node:fs';
+import { writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadConfig, loadConfigFromString, validateConfig } from '../../../../src/core/config/config-loader.js';
@@ -256,6 +256,26 @@ agentRunner:
           summarizer: 'session-summarizer',
         },
       });
+    }
+  });
+
+  it('loads the root talond.yaml.example successfully', () => {
+    const example = readFileSync(join(process.cwd(), 'talond.yaml.example'), 'utf8');
+    const result = loadConfigFromString(example);
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value.workflow.defaultRolloutMode).toBe('observe');
+    }
+  });
+
+  it('loads config/talond.example.yaml successfully', () => {
+    const example = readFileSync(join(process.cwd(), 'config/talond.example.yaml'), 'utf8');
+    const result = loadConfigFromString(example);
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value.workflow.defaultRolloutMode).toBe('observe');
     }
   });
 

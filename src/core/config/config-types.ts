@@ -24,6 +24,9 @@ import type {
   AuthConfigSchema,
   AgentRunnerConfigSchema,
   BackgroundAgentConfigSchema,
+  WorkflowConfigSchema,
+  WorkflowPolicyBindingSchema,
+  WorkflowWatchdogConfigSchema,
   LangfuseConfigSchema,
   ProviderConfigSchema,
   SubAgentsConfigSchema,
@@ -86,6 +89,15 @@ export type AgentRunnerConfig = z.infer<typeof AgentRunnerConfigSchema>;
 
 /** Background Claude Code worker settings. */
 export type BackgroundAgentConfig = z.infer<typeof BackgroundAgentConfigSchema>;
+
+/** Workflow kernel rollout and policy-pack configuration. */
+export type WorkflowConfig = z.infer<typeof WorkflowConfigSchema>;
+
+/** Per-workflow-type policy binding. */
+export type WorkflowPolicyBindingConfig = z.infer<typeof WorkflowPolicyBindingSchema>;
+
+/** Workflow watchdog thresholds and cadence. */
+export type WorkflowWatchdogConfig = z.infer<typeof WorkflowWatchdogConfigSchema>;
 
 /** Sprites provider settings. */
 export type SpritesConfig = z.infer<typeof SpritesConfigSchema>;

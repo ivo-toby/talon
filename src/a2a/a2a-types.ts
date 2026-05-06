@@ -81,6 +81,9 @@ export interface A2ATaskPayload {
     traceId?: string;
     maxHops: number;
     queueType: 'collaboration';
+    workflow?: {
+      workflowItemId: string;
+    };
   };
 }
 
@@ -109,6 +112,7 @@ export interface A2ATaskStatus {
   submittedAt: number;
   updatedAt: number;
   completedAt?: number;
+  workflowItemId?: string;
   result?: {
     text: string;
   };

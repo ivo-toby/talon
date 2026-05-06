@@ -94,6 +94,18 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
         resourceLimits: { memoryMb: 1024, cpus: 1, pidsLimit: 256 },
       },
       auth: { mode: 'subscription' },
+      workflow: {
+        enabled: false,
+        defaultRolloutMode: 'observe',
+        defaultPolicyPack: 'observe-only',
+        bindings: [],
+        watchdog: {
+          enabled: true,
+          evaluationIntervalMs: 30_000,
+          freshnessThresholdMs: 15 * 60 * 1000,
+          claimRejectionThreshold: 2,
+        },
+      },
     } as any,
     configPath: '/etc/talond/config.yaml',
     dataDir: '/tmp/test-data',
@@ -103,12 +115,21 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       channel: {} as any,
       persona: {} as any,
       backgroundTask: {} as any,
+      executionEnv: {} as any,
+      executionEnvCheckpoint: {} as any,
       schedule: {} as any,
       audit: {} as any,
       message: {} as any,
       run: { aggregateByPeriod: vi.fn().mockReturnValue(ok({ total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0 })) } as any,
       binding: {} as any,
       memory: {} as any,
+      a2aTask: {} as any,
+      workflowItem: {} as any,
+      workflowClaim: {} as any,
+      workflowEvidence: {} as any,
+      workflowEvent: {} as any,
+      workflowLease: {} as any,
+      workflowIntervention: {} as any,
     },
     channelRegistry: {
       startAll: vi.fn().mockResolvedValue(undefined),
@@ -149,8 +170,22 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       observe: vi.fn(),
       observeWithTraceparent: vi.fn(),
     } as any,
+    workflowService: {
+      evaluateDueWork: vi.fn().mockReturnValue(ok({ evaluatedItems: 0, interventionsRequested: 0 })),
+    } as any,
+    workflowReadModel: {
+      summarizeOperationalView: vi.fn().mockReturnValue(ok({
+        totalItems: 0,
+        blockedItems: 0,
+        activeLeases: 0,
+      })),
+    } as any,
     hostToolsBridge: { path: '/tmp/host-tools.sock', start: vi.fn(), stop: vi.fn() } as any,
+    subAgentRunner: null,
     logger: mockLogger as any,
+    executionEnvManager: null,
+    a2aServer: null,
+    a2aTaskMapper: null,
     ...overrides,
   };
 }
@@ -266,6 +301,33 @@ describe('TalondDaemon', () => {
       await daemon.start('/config.yaml');
 
       expect(ctx.scheduler.start).toHaveBeenCalledOnce();
+    });
+
+    it('starts periodic workflow watchdog evaluation when workflow watchdog is enabled', async () => {
+      vi.useFakeTimers();
+      const ctx = setupSuccessfulBootstrap({
+        config: {
+          ...makeMockContext().config,
+          workflow: {
+            enabled: true,
+            defaultRolloutMode: 'observe',
+            defaultPolicyPack: 'observe-only',
+            bindings: [],
+            watchdog: {
+              enabled: true,
+              evaluationIntervalMs: 15_000,
+              freshnessThresholdMs: 15 * 60 * 1000,
+              claimRejectionThreshold: 2,
+            },
+          },
+        } as any,
+      });
+
+      await daemon.start('/config.yaml');
+      vi.advanceTimersByTime(15_000);
+
+      expect(ctx.workflowService.evaluateDueWork).toHaveBeenCalled();
+      vi.useRealTimers();
     });
 
     it('writes the PID file on successful start', async () => {
