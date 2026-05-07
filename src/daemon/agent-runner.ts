@@ -731,19 +731,20 @@ export class AgentRunner {
                           // unset so the implicit final-response delivery
                           // still runs.
                           //
-                          // Restrict mcp_tool_use to the internal
-                          // __talond_host_tools server: a user MCP server
-                          // could expose an unrelated tool also named
-                          // `channel_send`, and suppressing implicit
-                          // delivery on its calls would silently drop the
-                          // schedule's final message.
+                          // The Claude Agent SDK emits MCP tool calls
+                          // with messageType='tool_use' AND serverName
+                          // set — NOT messageType='mcp_tool_use' as the
+                          // type-side hint suggests. So we identify the
+                          // internal channel.send by serverName +
+                          // tool-name pair, not by messageType. Trust
+                          // only the internal __talond_host_tools server
+                          // — a user MCP server happening to expose a
+                          // same-named tool must not suppress delivery.
                           const isInternalChannelSendToolUse =
                             isToolUse &&
-                            ((event.messageType === 'mcp_tool_use' &&
-                              event.tool === 'channel_send' &&
-                              event.serverName === '__talond_host_tools') ||
-                              ((event.messageType === 'tool_use' ||
-                                event.messageType === 'server_tool_use') &&
+                            ((event.serverName === '__talond_host_tools' &&
+                              event.tool === 'channel_send') ||
+                              (event.serverName === undefined &&
                                 event.tool === 'channel.send'));
                           if (isInternalChannelSendToolUse && event.toolUseId) {
                             pendingChannelSendToolUseIds.add(event.toolUseId);

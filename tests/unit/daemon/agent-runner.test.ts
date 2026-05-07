@@ -1195,19 +1195,22 @@ describe('AgentRunner', () => {
       );
     });
 
-    it('skips implicit delivery when the agent invoked channel.send and the call succeeded', async () => {
-      // Stream emits an mcp_tool_use for the internal host-tools
-      // channel_send, then a successful mcp_tool_result, then the final
-      // assistant text. The runner should observe the successful call
-      // and suppress its own implicit delivery to avoid double-posting.
+    it('skips implicit delivery when the agent invoked channel.send and the call succeeded (production SDK shape)', async () => {
+      // Production-observed shape: the Claude Agent SDK emits an MCP
+      // tool call as a `tool_use` block (not `mcp_tool_use`) with
+      // `server_name` set to the MCP server. The provider transforms
+      // this to messageType='tool_use' + serverName='__talond_host_tools'
+      // + tool='channel_send'. An earlier version of this fix only
+      // matched messageType==='mcp_tool_use', which never fired against
+      // real SDK output and let the implicit delivery double-post.
       async function* streamWithSuccessfulChannelSend() {
         yield {
           type: 'assistant',
           message: {
             content: [
               {
-                type: 'mcp_tool_use',
-                id: 'mcpu_cs_001',
+                type: 'tool_use',
+                id: 'toolu_cs_001',
                 name: 'channel_send',
                 server_name: '__talond_host_tools',
                 input: { channelId: 'Telegram-workContext', content: 'sent by agent' },
@@ -1220,8 +1223,8 @@ describe('AgentRunner', () => {
           message: {
             content: [
               {
-                type: 'mcp_tool_result',
-                tool_use_id: 'mcpu_cs_001',
+                type: 'tool_result',
+                tool_use_id: 'toolu_cs_001',
                 content: 'sent',
                 is_error: false,
               },
@@ -1268,8 +1271,8 @@ describe('AgentRunner', () => {
           message: {
             content: [
               {
-                type: 'mcp_tool_use',
-                id: 'mcpu_cs_002',
+                type: 'tool_use',
+                id: 'toolu_cs_002',
                 name: 'channel_send',
                 server_name: '__talond_host_tools',
                 input: { channelId: 'Telegram-workContext', content: 'attempt' },
@@ -1282,8 +1285,8 @@ describe('AgentRunner', () => {
           message: {
             content: [
               {
-                type: 'mcp_tool_result',
-                tool_use_id: 'mcpu_cs_002',
+                type: 'tool_result',
+                tool_use_id: 'toolu_cs_002',
                 content: 'channel.send: failed to send message — chat not found',
                 is_error: true,
               },
@@ -1330,8 +1333,8 @@ describe('AgentRunner', () => {
           message: {
             content: [
               {
-                type: 'mcp_tool_use',
-                id: 'mcpu_user_001',
+                type: 'tool_use',
+                id: 'toolu_user_001',
                 name: 'channel_send',
                 server_name: 'user-side-mcp',
                 input: { foo: 'bar' },
@@ -1344,8 +1347,8 @@ describe('AgentRunner', () => {
           message: {
             content: [
               {
-                type: 'mcp_tool_result',
-                tool_use_id: 'mcpu_user_001',
+                type: 'tool_result',
+                tool_use_id: 'toolu_user_001',
                 content: 'ok',
                 is_error: false,
               },
