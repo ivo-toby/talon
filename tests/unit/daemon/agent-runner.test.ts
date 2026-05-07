@@ -1143,6 +1143,69 @@ describe('AgentRunner', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Scheduled-run delivery contract (issue #205)
+  //
+  // Scheduled prompts must invoke channel.send explicitly to deliver.
+  // The agent's final assistant text on a scheduled run is treated as
+  // a self-narration / wrap-up (e.g. "Silent — lunch window, items
+  // pending. Log written.") and must NOT be auto-delivered to the
+  // originating chat. The actual #205 silent-failure was caused by
+  // corrupted thread metadata (originExternalId pointing at a synthetic
+  // id) that made channel.send fail with 400 chat-not-found. That is
+  // fixed at the migration layer plus operator rebinds onto healthy
+  // dedicated threads, not by relaxing the schedule-skip here.
+  // -------------------------------------------------------------------------
+
+  describe('scheduled run final-response delivery (issue #205)', () => {
+    beforeEach(() => {
+      // Dedicated schedule thread: external_id is the synthetic schedule
+      // marker, metadata.originExternalId is the real chat recipient.
+      // Retained for symmetry with the live-run tests that this thread
+      // shape exercises.
+      ctx.repos.thread.findById = vi.fn().mockReturnValue(ok({
+        id: 'thread-001',
+        channel_id: 'chan-001',
+        external_id: 'schedule:work-context-manager:Telegram-workContext:74575531',
+        metadata: JSON.stringify({
+          kind: 'schedule',
+          originExternalId: '74575531',
+          personaName: 'work-context-manager',
+          channelName: 'Telegram-workContext',
+        }),
+      })) as any;
+    });
+
+    it('does not implicit-deliver the final assistant message for schedule items — agent must use channel.send', async () => {
+      // Production behaviour observed at lunch heartbeat 2026-05-07:
+      // agent stays "silent" per its prompt, produces a wrap-up text
+      // ("Silent — lunch window..."), does NOT invoke channel.send.
+      // Auto-delivering that wrap-up would re-introduce the noise the
+      // pre-existing schedule-skip was added to prevent.
+      mockQuery.mockReturnValue(makeAgentStream({
+        result: 'Silent — lunch window, items from 11:05 still pending. Log written.',
+      }));
+
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem({ type: 'schedule' });
+
+      const result = await runner.run(item);
+
+      expect(result.isOk()).toBe(true);
+      // No implicit channel send for schedule items — only sendTyping
+      // is permitted, which is a separate method.
+      expect(connector.send).not.toHaveBeenCalled();
+      // The wrap-up is still persisted on the schedule's thread for
+      // observability/audit, just not delivered to the originating chat.
+      expect(ctx.repos.message.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thread_id: 'thread-001',
+          direction: 'outbound',
+        }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Session restore from DB (BUG-008)
   // -------------------------------------------------------------------------
 

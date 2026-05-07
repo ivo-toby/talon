@@ -304,6 +304,104 @@ describe('migrateLegacySchedules', () => {
     expect(result.metadataRehydrated).toBe(0);
   });
 
+  it('refuses already-corrupted dedicated threads whose metadata.originExternalId is itself synthetic (issue #205)', () => {
+    // Production-corrupted shape produced by an earlier version of this
+    // migration: kind=schedule marker IS present but originExternalId
+    // points to a synthetic `schedule:<persona>:<channel>` id rather
+    // than the real chat recipient. Pre-fix the migration treated this
+    // as alreadyMigrated and never logged. We now refuse and skip.
+    const db = createTestDb();
+    const seeded = seedChannelAndLiveThread(db);
+    const threads = new ThreadRepository(db);
+
+    const corruptedId = uuidv4();
+    threads.insert({
+      id: corruptedId,
+      channel_id: seeded.channelId,
+      external_id: `schedule:${seeded.personaName}:${seeded.channelName}:schedule:${seeded.personaName}:${seeded.channelName}`,
+      metadata: JSON.stringify({
+        kind: 'schedule',
+        originExternalId: `schedule:${seeded.personaName}:${seeded.channelName}`,
+        personaName: seeded.personaName,
+        channelName: seeded.channelName,
+        migratedFrom: 'legacy-live-thread',
+      }),
+    });
+    const scheduleId = seedSchedule(db, seeded.personaId, corruptedId);
+
+    const scheduleRepo = new ScheduleRepository(db);
+    const result = migrateLegacySchedules({
+      scheduleRepo,
+      threadRepo: threads,
+      channelRepo: new ChannelRepository(db),
+      personaRepo: new PersonaRepository(db),
+      logger: createTestLogger(),
+    });
+
+    expect(result.skipped).toBe(1);
+    expect(result.alreadyMigrated).toBe(0);
+    expect(result.rebound).toBe(0);
+    expect(result.metadataRehydrated).toBe(0);
+
+    // Schedule remains on the corrupted thread (no destructive automatic
+    // recovery) — operator removes/recreates manually.
+    const schedRow = scheduleRepo.findById(scheduleId);
+    expect(schedRow._unsafeUnwrap()!.thread_id).toBe(corruptedId);
+  });
+
+  it('refuses to rebind when the thread external_id is itself synthetic (3-part schedule prefix) and skips the schedule (issue #205)', () => {
+    // Pre-fix bug: a thread whose external_id matched the older 3-part
+    // synthetic shape `schedule:<persona>:<channel>` (no origin appended,
+    // no kind=schedule marker) flowed past parseSyntheticOrigin (length
+    // < 4 → null) into Case C, which then concatenated it as if it were a
+    // real chat id, producing a doubly-nested external_id and a synthetic
+    // originExternalId. We now log + skip such cases, leaving the schedule
+    // on its legacy thread for manual remediation.
+    const db = createTestDb();
+    const seeded = seedChannelAndLiveThread(db);
+    const threads = new ThreadRepository(db);
+
+    // 3-part synthetic external_id with no kind=schedule marker — exactly
+    // the shape the buggy migration silently corrupted into doubly-nested
+    // dedicated threads on production databases.
+    const syntheticThreeId = uuidv4();
+    threads.insert({
+      id: syntheticThreeId,
+      channel_id: seeded.channelId,
+      external_id: `schedule:${seeded.personaName}:${seeded.channelName}`,
+      metadata: '{}',
+    });
+    const scheduleId = seedSchedule(db, seeded.personaId, syntheticThreeId);
+
+    const scheduleRepo = new ScheduleRepository(db);
+    const result = migrateLegacySchedules({
+      scheduleRepo,
+      threadRepo: threads,
+      channelRepo: new ChannelRepository(db),
+      personaRepo: new PersonaRepository(db),
+      logger: createTestLogger(),
+    });
+
+    expect(result.skipped).toBe(1);
+    expect(result.rebound).toBe(0);
+    expect(result.metadataRehydrated).toBe(0);
+
+    // Schedule is still bound to the legacy thread — we did not create a
+    // doubly-nested replacement.
+    const schedRow = scheduleRepo.findById(scheduleId);
+    expect(schedRow._unsafeUnwrap()!.thread_id).toBe(syntheticThreeId);
+
+    // No new thread was created for this (persona, channel, synthetic
+    // origin) tuple. (The only schedule-prefixed thread should remain the
+    // one we seeded.)
+    const candidate = threads.findByExternalId(
+      seeded.channelId,
+      `schedule:${seeded.personaName}:${seeded.channelName}:schedule:${seeded.personaName}:${seeded.channelName}`,
+    );
+    expect(candidate.isOk()).toBe(true);
+    expect(candidate._unsafeUnwrap()).toBeNull();
+  });
+
   it('skips schedules with a null thread_id', () => {
     const db = createTestDb();
     const personaId = seedPersona(db);

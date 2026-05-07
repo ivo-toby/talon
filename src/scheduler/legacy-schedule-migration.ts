@@ -141,7 +141,33 @@ export function migrateLegacySchedules(
     }
 
     // Case A — already migrated.
-    if (readMarker(thread.metadata) !== null) {
+    const existingMarker = readMarker(thread.metadata);
+    if (existingMarker !== null) {
+      // A previous version of this migration would, for threads whose
+      // external_id was an old 3-part synthetic `schedule:<persona>:<channel>`
+      // shape, fall through to Case C and concatenate that synthetic id
+      // as if it were a real recipient — producing doubly-nested
+      // external_ids and, in metadata, an `originExternalId` that is
+      // itself synthetic. channel.send and agent-runner then handed
+      // that synthetic id to the connector and got `chat not found`.
+      // Refuse such corrupted markers loudly so production schedules
+      // stop being treated as healthy. We can't auto-recover the real
+      // chat id from a synthetic origin alone (issue #205).
+      if (existingMarker.startsWith('schedule:')) {
+        logger.error(
+          {
+            scheduleId: schedule.id,
+            threadId: thread.id,
+            externalId: thread.external_id,
+            corruptedOriginExternalId: existingMarker,
+            personaId: schedule.persona_id,
+            channelId: thread.channel_id,
+          },
+          'schedule-migration: thread metadata is corrupted — originExternalId is itself synthetic; delete and recreate the schedule from a live chat to fix',
+        );
+        result.skipped += 1;
+        continue;
+      }
       result.alreadyMigrated += 1;
       continue;
     }
@@ -188,6 +214,30 @@ export function migrateLegacySchedules(
     // Provision or reuse the canonical dedicated schedule thread and
     // rebind the schedule onto it. The live thread's external_id is a
     // real provider recipient, so we capture it as the originExternalId.
+    //
+    // Refuse if the existing thread's external_id is itself synthetic
+    // (starts with `schedule:`). Earlier versions of this migration
+    // mistakenly treated such ids as a real recipient and produced
+    // doubly-nested external_ids whose `originExternalId` was still
+    // synthetic — which channel.send and agent-runner then handed to
+    // the connector, getting "chat not found" rejections. We can't
+    // recover the real chat id from a synthetic external_id alone, so
+    // log a structured error per affected schedule and leave it on the
+    // legacy thread for manual remediation (issue #205).
+    if (thread.external_id.startsWith('schedule:')) {
+      logger.error(
+        {
+          scheduleId: schedule.id,
+          threadId: thread.id,
+          syntheticExternalId: thread.external_id,
+          personaId: schedule.persona_id,
+          channelId: thread.channel_id,
+        },
+        'schedule-migration: refusing to migrate — thread external_id is itself synthetic, cannot recover origin chat id; delete and recreate the schedule from a live chat to fix',
+      );
+      result.skipped += 1;
+      continue;
+    }
     const personaResult = personaRepo.findById(schedule.persona_id);
     if (personaResult.isErr() || !personaResult.value) {
       logger.warn(

@@ -919,9 +919,22 @@ export class AgentRunner {
                 'agent-sdk: A2A task completed, result stored (no channel send)',
               );
             } else if (item.type === 'schedule') {
+              // Scheduled prompts must invoke channel.send explicitly to
+              // deliver. The agent's final assistant text on a scheduled
+              // run is a self-narration / wrap-up (e.g. "Silent — lunch
+              // window, items from 11:05 still pending. Log written.")
+              // and is not meant to reach the originating chat.
+              //
+              // The actual #205 bug was a corrupted thread metadata
+              // shape that made channel.send fail with "chat not found".
+              // That is fixed by the migration refusal in
+              // src/scheduler/legacy-schedule-migration.ts plus operator
+              // rebinds onto healthy dedicated threads. With those in
+              // place, channel.send delivers correctly and this skip
+              // remains the right contract for scheduled runs.
               this.ctx.logger.info(
                 { runId, outputLength: fullOutputText.length },
-                'agent-sdk: skipping outbound reply for schedule item (agent already sent via channel_send)',
+                'agent-sdk: skipping outbound reply for schedule item (agent must use channel.send to deliver)',
               );
             } else if (connector !== undefined && externalId && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
