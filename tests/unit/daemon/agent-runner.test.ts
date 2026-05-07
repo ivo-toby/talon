@@ -1143,6 +1143,266 @@ describe('AgentRunner', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Scheduled-run delivery (issue #205)
+  //
+  // Pre-fix, schedule items short-circuited the final-response delivery
+  // unconditionally — under the (incorrect) assumption that the agent
+  // always invokes channel.send explicitly. Prompts that produced a
+  // natural assistant response had their output persisted to messages
+  // but never delivered to the connector. Two tests below pin the new
+  // contract: deliver the final assistant message for schedule items
+  // unless the agent has already taken explicit control via channel.send.
+  // -------------------------------------------------------------------------
+
+  describe('scheduled run final-response delivery (issue #205)', () => {
+    beforeEach(() => {
+      // Dedicated schedule thread: external_id is the synthetic schedule
+      // marker, metadata.originExternalId is the real chat recipient.
+      ctx.repos.thread.findById = vi.fn().mockReturnValue(ok({
+        id: 'thread-001',
+        channel_id: 'chan-001',
+        external_id: 'schedule:work-context-manager:Telegram-workContext:74575531',
+        metadata: JSON.stringify({
+          kind: 'schedule',
+          originExternalId: '74575531',
+          personaName: 'work-context-manager',
+          channelName: 'Telegram-workContext',
+        }),
+      })) as any;
+    });
+
+    it('delivers the final assistant message to originExternalId when the agent did not invoke channel.send', async () => {
+      mockQuery.mockReturnValue(makeAgentStream({
+        result: 'Briefing: 1 meeting at 09:30, 2 unread emails.',
+      }));
+
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem({ type: 'schedule' });
+
+      const result = await runner.run(item);
+
+      expect(result.isOk()).toBe(true);
+      // Implicit delivery uses originExternalId, NOT the synthetic
+      // dedicated-thread external_id.
+      expect(connector.send).toHaveBeenCalledWith('74575531', {
+        body: expect.any(String),
+      });
+      expect(ctx.repos.message.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          thread_id: 'thread-001',
+          direction: 'outbound',
+        }),
+      );
+    });
+
+    it('skips implicit delivery when the agent invoked channel.send and the call succeeded', async () => {
+      // Stream emits an mcp_tool_use for the internal host-tools
+      // channel_send, then a successful mcp_tool_result, then the final
+      // assistant text. The runner should observe the successful call
+      // and suppress its own implicit delivery to avoid double-posting.
+      async function* streamWithSuccessfulChannelSend() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_use',
+                id: 'mcpu_cs_001',
+                name: 'channel_send',
+                server_name: '__talond_host_tools',
+                input: { channelId: 'Telegram-workContext', content: 'sent by agent' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_result',
+                tool_use_id: 'mcpu_cs_001',
+                content: 'sent',
+                is_error: false,
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'Done.' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'Done.',
+          session_id: 'session-cs',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 10, output_tokens: 4 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithSuccessfulChannelSend());
+
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem({ type: 'schedule' });
+
+      const result = await runner.run(item);
+
+      expect(result.isOk()).toBe(true);
+      // No implicit final-response send — the agent already delivered
+      // explicitly via channel.send.
+      const sendCalls = vi.mocked(connector.send).mock.calls;
+      expect(sendCalls).toEqual([]);
+    });
+
+    it('falls back to implicit delivery when channel.send tool_result reports is_error=true (issue #205 fail-loud)', async () => {
+      // Pre-fix the runner suppressed implicit delivery on tool-use
+      // alone, so a failed channel.send (e.g. corrupted recipient → 400
+      // chat-not-found) silently dropped the schedule's final message.
+      // We now require a successful tool_result before suppressing.
+      async function* streamWithFailingChannelSend() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_use',
+                id: 'mcpu_cs_002',
+                name: 'channel_send',
+                server_name: '__talond_host_tools',
+                input: { channelId: 'Telegram-workContext', content: 'attempt' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_result',
+                tool_use_id: 'mcpu_cs_002',
+                content: 'channel.send: failed to send message — chat not found',
+                is_error: true,
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: {
+            content: [{ text: 'Telegram unreachable; here is the briefing inline.' }],
+          },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'Telegram unreachable; here is the briefing inline.',
+          session_id: 'session-cs-err',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 10, output_tokens: 12 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithFailingChannelSend());
+
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem({ type: 'schedule' });
+
+      const result = await runner.run(item);
+
+      expect(result.isOk()).toBe(true);
+      expect(connector.send).toHaveBeenCalledWith('74575531', {
+        body: expect.stringContaining('Telegram unreachable'),
+      });
+    });
+
+    it('does not suppress implicit delivery for a same-named tool from a non-internal MCP server', async () => {
+      // A user MCP server could expose an unrelated tool also named
+      // `channel_send`. We must not let it trigger our suppression flag
+      // — only __talond_host_tools is trusted.
+      async function* streamWithUserMcpChannelSend() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_use',
+                id: 'mcpu_user_001',
+                name: 'channel_send',
+                server_name: 'user-side-mcp',
+                input: { foo: 'bar' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'mcp_tool_result',
+                tool_use_id: 'mcpu_user_001',
+                content: 'ok',
+                is_error: false,
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'Briefing body.' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'Briefing body.',
+          session_id: 'session-user',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 10, output_tokens: 5 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithUserMcpChannelSend());
+
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      const item = makeQueueItem({ type: 'schedule' });
+
+      const result = await runner.run(item);
+
+      expect(result.isOk()).toBe(true);
+      // Implicit delivery still runs because the user MCP server's
+      // same-named tool is not a trusted host-tool channel.send.
+      expect(connector.send).toHaveBeenCalledWith('74575531', {
+        body: expect.any(String),
+      });
+    });
+
+    it('fails the run when the implicit final-response send returns an error', async () => {
+      // Acceptance criterion in issue #205: delivery failures must be
+      // surfaced loudly, not silently dropped.
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      vi.mocked(connector.send).mockResolvedValueOnce(
+        err(new Error('telegram 400 chat not found')),
+      );
+
+      mockQuery.mockReturnValue(makeAgentStream({
+        result: 'Briefing body that should fail to deliver.',
+      }));
+
+      const item = makeQueueItem({ type: 'schedule' });
+      const result = await runner.run(item);
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toMatch(/channel send failed/i);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Session restore from DB (BUG-008)
   // -------------------------------------------------------------------------
 
