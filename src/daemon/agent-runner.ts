@@ -497,7 +497,6 @@ export class AgentRunner {
               fullOutputText: string;
               resultSessionId: string | undefined;
               usage: AgentUsage;
-              agentInvokedChannelSend: boolean;
             }> => {
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,
@@ -635,27 +634,6 @@ export class AgentRunner {
                     outputTokens: 0,
                   };
                   let sawEvents = false;
-                  // Tracks whether the agent successfully delivered a
-                  // message via the host channel.send tool during this
-                  // run. Only true after a matching tool_result with
-                  // is_error=false arrives — failed channel.send calls
-                  // (e.g. 400 chat-not-found from a corrupted recipient)
-                  // must NOT suppress the implicit final-response send,
-                  // otherwise we re-introduce the silent-failure mode
-                  // that issue #205 fixes. For schedule items we suppress
-                  // implicit delivery only when this flag is true.
-                  // Non-SDK strategies don't expose tool events we can
-                  // observe — we default to false so their final response
-                  // is delivered like a live run; the (rare) prompt that
-                  // delivers via channel.send AND produces a substantive
-                  // final message will double-post, which is a strictly
-                  // better failure mode than total silence.
-                  let agentInvokedChannelSend = false;
-                  // toolUseIds of in-flight host channel.send invocations
-                  // awaiting their tool_result. Only an internal-MCP
-                  // (__talond_host_tools) channel_send qualifies — we
-                  // never trust a same-named tool from a user MCP server.
-                  const pendingChannelSendToolUseIds = new Set<string>();
                   const activeProviderToolObservations = new Map<string, StartedObservationHandle>();
                   const ignoredProviderToolUseIds = new Set<string>();
                   const pendingProviderToolTasks: Array<Promise<void>> = [];
@@ -723,46 +701,6 @@ export class AgentRunner {
                             event.messageType === 'tool_use' ||
                             event.messageType === 'server_tool_use' ||
                             event.messageType === 'mcp_tool_use';
-                          // Track only host-tool channel.send invocations
-                          // (issue #205). On tool_use we record the
-                          // toolUseId; on the matching tool_result with
-                          // is_error=false we flip the suppression flag.
-                          // Failed channel.send calls leave the flag
-                          // unset so the implicit final-response delivery
-                          // still runs.
-                          //
-                          // The Claude Agent SDK emits MCP tool calls
-                          // with messageType='tool_use' AND serverName
-                          // set — NOT messageType='mcp_tool_use' as the
-                          // type-side hint suggests. So we identify the
-                          // internal channel.send by serverName +
-                          // tool-name pair, not by messageType. Trust
-                          // only the internal __talond_host_tools server
-                          // — a user MCP server happening to expose a
-                          // same-named tool must not suppress delivery.
-                          const isInternalChannelSendToolUse =
-                            isToolUse &&
-                            ((event.serverName === '__talond_host_tools' &&
-                              event.tool === 'channel_send') ||
-                              (event.serverName === undefined &&
-                                event.tool === 'channel.send'));
-                          if (isInternalChannelSendToolUse && event.toolUseId) {
-                            pendingChannelSendToolUseIds.add(event.toolUseId);
-                          }
-                          const isToolResult =
-                            event.messageType === 'tool_result' ||
-                            event.messageType === 'mcp_tool_result' ||
-                            event.messageType === 'server_tool_result';
-                          if (
-                            isToolResult &&
-                            event.toolUseId &&
-                            pendingChannelSendToolUseIds.has(event.toolUseId)
-                          ) {
-                            pendingChannelSendToolUseIds.delete(event.toolUseId);
-                            if (!event.isError) {
-                              agentInvokedChannelSend = true;
-                            }
-                          }
                           if (isToolUse && item.type !== 'schedule' && !isA2ATask && connector !== undefined && externalId) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
                             if (outputText) {
@@ -890,7 +828,6 @@ export class AgentRunner {
                     fullOutputText: fullOutputText.replace(/\n\n$/, ''),
                     resultSessionId,
                     usage,
-                    agentInvokedChannelSend,
                   };
                 },
               );
@@ -903,7 +840,6 @@ export class AgentRunner {
               inputTokens: 0,
               outputTokens: 0,
             };
-            let agentInvokedChannelSend = false;
 
             try {
               ({
@@ -911,7 +847,6 @@ export class AgentRunner {
                 fullOutputText,
                 resultSessionId,
                 usage,
-                agentInvokedChannelSend,
               } = await executeAgentQuery(existingSessionId));
             } catch (cause) {
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
@@ -929,7 +864,6 @@ export class AgentRunner {
                   fullOutputText,
                   resultSessionId,
                   usage,
-                  agentInvokedChannelSend,
                 } = await executeAgentQuery(undefined));
               } else {
                 throw cause;
@@ -984,17 +918,23 @@ export class AgentRunner {
                 { runId, a2aTaskId, outputLength: fullOutputText.length },
                 'agent-sdk: A2A task completed, result stored (no channel send)',
               );
-            } else if (item.type === 'schedule' && agentInvokedChannelSend) {
-              // Agent took explicit control of delivery via channel.send,
-              // so suppress the implicit final-response send to avoid
-              // double-posting. This preserves the historical schedule
-              // behaviour for prompts that explicitly invoke channel.send
-              // (e.g. one-shot reminders), while letting prompts that
-              // produce a natural final response still reach the
-              // originating chat (issue #205).
+            } else if (item.type === 'schedule') {
+              // Scheduled prompts must invoke channel.send explicitly to
+              // deliver. The agent's final assistant text on a scheduled
+              // run is a self-narration / wrap-up (e.g. "Silent — lunch
+              // window, items from 11:05 still pending. Log written.")
+              // and is not meant to reach the originating chat.
+              //
+              // The actual #205 bug was a corrupted thread metadata
+              // shape that made channel.send fail with "chat not found".
+              // That is fixed by the migration refusal in
+              // src/scheduler/legacy-schedule-migration.ts plus operator
+              // rebinds onto healthy dedicated threads. With those in
+              // place, channel.send delivers correctly and this skip
+              // remains the right contract for scheduled runs.
               this.ctx.logger.info(
                 { runId, outputLength: fullOutputText.length },
-                'agent-sdk: skipping outbound reply for schedule item (agent already sent via channel.send)',
+                'agent-sdk: skipping outbound reply for schedule item (agent must use channel.send to deliver)',
               );
             } else if (connector !== undefined && externalId && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
