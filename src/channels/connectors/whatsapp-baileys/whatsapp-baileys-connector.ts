@@ -32,7 +32,9 @@ import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
 import { markdownToWhatsApp } from '../whatsapp-business/whatsapp-format.js';
+import { registerSafeRejectionMatcher } from '../../../daemon/unhandled-rejection-shield.js';
 import type { WhatsAppBaileysConfig } from './whatsapp-baileys-types.js';
+import { isBaileysInternalRejection } from './whatsapp-baileys-rejection-matcher.js';
 
 /** Baileys socket type — intentionally loose to keep Baileys as an optional dependency. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -60,6 +62,31 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   private sock: BaileysSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   /**
+   * Deregister fn for the rejection shield matcher we install on first start.
+   * Null when no matcher is currently registered. Baileys can leak unhandled
+   * promise rejections from its internal WebSocket teardown; without this
+   * shield they would crash the daemon via the global unhandledRejection
+   * handler.
+   */
+  private deregisterShield: (() => void) | null = null;
+  /**
+   * Latched once stop() has been called. Suppresses any pending or future
+   * reconnect attempts and aborts an in-flight start() if it crosses an
+   * await boundary while shutdown is in progress.
+   */
+  private stopRequested = false;
+  /**
+   * Grace window (ms) between socket teardown and shield deregistration.
+   * Baileys can leak a rejection from its noise-handler / WebSocket decode
+   * pipeline AFTER `sock.end()` returns — the in-flight frame may still
+   * settle into a rejected promise. Keeping the shield registered for a few
+   * seconds past stop() covers that window.
+   *
+   * Mutable so unit tests can shorten it. unref() on the timer keeps the
+   * daemon process from being held open by the grace timer alone.
+   */
+  protected shieldTeardownGraceMs = 5000;
+  /**
    * Set of bare self-identifiers (stripped of @domain and :device).
    * Baileys exposes the phone-number JID via sock.user.id but self-chat
    * messages may arrive under the LID JID. We store both so the self-chat
@@ -76,145 +103,201 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   }
 
   async start(): Promise<void> {
+    if (this.stopRequested) {
+      this.logger.debug(
+        { channelName: this.name },
+        'whatsapp-baileys: start() ignored — connector has been stopped',
+      );
+      return;
+    }
     if (this.running) {
       this.logger.debug({ channelName: this.name }, 'whatsapp-baileys: already running');
       return;
     }
 
-    const baileys = await import('@whiskeysockets/baileys').catch(() => {
-      throw new Error(
-        'whatsapp-baileys requires @whiskeysockets/baileys. Run: npm install @whiskeysockets/baileys',
-      );
-    });
+    // Register the rejection shield once per instance. Reconnects re-enter
+    // start() but the guard inside registerRejectionShield keeps it idempotent.
+    this.registerRejectionShield();
 
-    const { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason, Browsers } = baileys;
-
-    const authDir = this.config.authDir ?? './baileys-auth';
-    const { state, saveCreds } = await useMultiFileAuthState(authDir);
-
-    // Fetch the latest WhatsApp Web version to avoid 405 protocol rejections.
-    // Baileys' bundled default goes stale as WhatsApp increments server-side.
-    let version: [number, number, number] | undefined;
     try {
-      const fetched = await fetchLatestBaileysVersion();
-      version = fetched.version;
-      this.logger.info(
-        { channelName: this.name, version },
-        'whatsapp-baileys: fetched latest WA web version',
-      );
-    } catch {
-      this.logger.warn(
-        { channelName: this.name },
-        'whatsapp-baileys: failed to fetch latest version, using bundled default',
-      );
-    }
+      const baileys = await import('@whiskeysockets/baileys').catch(() => {
+        throw new Error(
+          'whatsapp-baileys requires @whiskeysockets/baileys. Run: npm install @whiskeysockets/baileys',
+        );
+      });
+      if (this.stopRequested) return;
 
-    const sock = makeWASocket({
-      auth: state,
-      version,
-      browser: this.config.browser ?? Browsers.appropriate('Talon'),
-      logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
-        typeof pino
-      >,
-      markOnlineOnConnect: this.config.markOnlineOnConnect ?? false,
-    });
+      const { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason, Browsers } = baileys;
 
-    this.sock = sock;
+      const authDir = this.config.authDir ?? './baileys-auth';
+      const { state, saveCreds } = await useMultiFileAuthState(authDir);
+      if (this.stopRequested) return;
 
-    sock.ev.on('creds.update', saveCreds);
+      // Fetch the latest WhatsApp Web version to avoid 405 protocol rejections.
+      // Baileys' bundled default goes stale as WhatsApp increments server-side.
+      let version: [number, number, number] | undefined;
+      try {
+        const fetched = await fetchLatestBaileysVersion();
+        version = fetched.version;
+        this.logger.info(
+          { channelName: this.name, version },
+          'whatsapp-baileys: fetched latest WA web version',
+        );
+      } catch {
+        this.logger.warn(
+          { channelName: this.name },
+          'whatsapp-baileys: failed to fetch latest version, using bundled default',
+        );
+      }
+      if (this.stopRequested) return;
 
-    return new Promise<void>((resolve, reject) => {
-      let settled = false;
+      const sock = makeWASocket({
+        auth: state,
+        version,
+        browser: this.config.browser ?? Browsers.appropriate('Talon'),
+        logger: this.logger.child({ component: 'baileys' }) as unknown as ReturnType<
+          typeof pino
+        >,
+        markOnlineOnConnect: this.config.markOnlineOnConnect ?? false,
+      });
 
-      sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
+      this.sock = sock;
 
-        if (qr) {
-          this.logger.warn(
-            { channelName: this.name },
-            'whatsapp-baileys: not authenticated. Run "talonctl whatsapp-auth" to scan a QR code and link this device.',
-          );
+      // If stop() interleaved between makeWASocket and now, tear the socket
+      // down and bail before wiring up handlers that would keep it alive.
+      if (this.stopRequested) {
+        try {
+          sock.end(undefined);
+        } catch {
+          // ignore
         }
+        this.sock = null;
+        return;
+      }
 
-        if (connection === 'open') {
-          this.running = true;
-          // Capture own identifiers for self-chat mode.
-          // sock.user.id is the phone-number JID (e.g. "31612345678:49@s.whatsapp.net").
-          // sock.user.lid is the LID JID (e.g. "96490886312027:49@lid").
-          // Self-chat messages may arrive under either format, so store both.
-          this.selfIds.clear();
-          const userPn = sock.user?.id;
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const userLid = (sock.user as any)?.lid as string | undefined;
-          if (userPn) this.selfIds.add(userPn.replace(/@.*$/, '').replace(/:\d+$/, ''));
-          if (userLid) this.selfIds.add(userLid.replace(/@.*$/, '').replace(/:\d+$/, ''));
-          const allowedSenders = this.config.allowedSenders;
-          this.logger.info(
-            {
-              channelName: this.name,
-              authDir,
-              selfIds: [...this.selfIds],
-              selfChat: this.config.selfChat ?? false,
-              triggerWords: this.config.triggerWords?.length ? this.config.triggerWords : 'none',
-              allowedSenders: allowedSenders?.length ? allowedSenders : 'none (open to all)',
-            },
-            'whatsapp-baileys connector connected',
-          );
-          if (!settled) {
-            settled = true;
-            resolve();
-          }
-        }
+      sock.ev.on('creds.update', saveCreds);
 
-        if (connection === 'close') {
-          const statusCode = (
-            lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
-          )?.output?.statusCode;
-          const loggedOut = statusCode === DisconnectReason.loggedOut;
+      return await new Promise<void>((resolve, reject) => {
+        let settled = false;
 
-          this.running = false;
-          this.sock = null;
+        sock.ev.on('connection.update', (update) => {
+          const { connection, lastDisconnect, qr } = update;
 
-          if (loggedOut) {
+          if (qr) {
             this.logger.warn(
               { channelName: this.name },
-              'whatsapp-baileys: logged out — re-authentication required. Delete authDir and restart.',
+              'whatsapp-baileys: not authenticated. Run "talonctl whatsapp-auth" to scan a QR code and link this device.',
             );
-            if (!settled) {
-              settled = true;
-              reject(new Error('WhatsApp Baileys: logged out, re-authentication required'));
-            }
-          } else {
+          }
+
+          if (connection === 'open') {
+            this.running = true;
+            // Capture own identifiers for self-chat mode.
+            // sock.user.id is the phone-number JID (e.g. "31612345678:49@s.whatsapp.net").
+            // sock.user.lid is the LID JID (e.g. "96490886312027:49@lid").
+            // Self-chat messages may arrive under either format, so store both.
+            this.selfIds.clear();
+            const userPn = sock.user?.id;
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const userLid = (sock.user as any)?.lid as string | undefined;
+            if (userPn) this.selfIds.add(userPn.replace(/@.*$/, '').replace(/:\d+$/, ''));
+            if (userLid) this.selfIds.add(userLid.replace(/@.*$/, '').replace(/:\d+$/, ''));
+            const allowedSenders = this.config.allowedSenders;
             this.logger.info(
-              { channelName: this.name, statusCode },
-              'whatsapp-baileys: disconnected, reconnecting in 5s...',
+              {
+                channelName: this.name,
+                authDir,
+                selfIds: [...this.selfIds],
+                selfChat: this.config.selfChat ?? false,
+                triggerWords: this.config.triggerWords?.length ? this.config.triggerWords : 'none',
+                allowedSenders: allowedSenders?.length ? allowedSenders : 'none (open to all)',
+              },
+              'whatsapp-baileys connector connected',
             );
             if (!settled) {
               settled = true;
               resolve();
             }
-            this.scheduleReconnect();
           }
-        }
-      });
 
-      sock.ev.on('messages.upsert', ({ messages, type }) => {
-        if (type !== 'notify') return;
-        for (const msg of messages) {
-          this.handleInboundMessage(msg as unknown as InboundWAMessage).catch((handlerErr: unknown) => {
-            this.logger.error(
-              { err: handlerErr, channelName: this.name },
-              'whatsapp-baileys: handler error',
+          if (connection === 'close') {
+            const statusCode = (
+              lastDisconnect?.error as { output?: { statusCode?: number } } | undefined
+            )?.output?.statusCode;
+            const loggedOut = statusCode === DisconnectReason.loggedOut;
+
+            this.running = false;
+            this.sock = null;
+
+            if (loggedOut) {
+              this.logger.warn(
+                { channelName: this.name },
+                'whatsapp-baileys: logged out — re-authentication required. Delete authDir and restart.',
+              );
+              // Logged-out is terminal: no reconnect, ever. Latch the stop
+              // flag and schedule shield teardown so a dead connector does
+              // not keep claiming rejections process-wide. The grace window
+              // covers any final frame still settling in Baileys.
+              this.stopRequested = true;
+              this.scheduleShieldTeardown();
+              if (!settled) {
+                settled = true;
+                reject(new Error('WhatsApp Baileys: logged out, re-authentication required'));
+              }
+            } else {
+              this.logger.info(
+                { channelName: this.name, statusCode },
+                'whatsapp-baileys: disconnected, reconnecting in 5s...',
+              );
+              if (!settled) {
+                settled = true;
+                resolve();
+              }
+              this.scheduleReconnect();
+            }
+          }
+        });
+
+        sock.ev.on('messages.upsert', ({ messages, type }) => {
+          if (type !== 'notify') return;
+          for (const msg of messages) {
+            this.handleInboundMessage(msg as unknown as InboundWAMessage).catch(
+              (handlerErr: unknown) => {
+                this.logger.error(
+                  { err: handlerErr, channelName: this.name },
+                  'whatsapp-baileys: handler error',
+                );
+              },
             );
-          });
-        }
+          }
+        });
       });
-    });
+    } catch (startErr) {
+      // start() failed before reaching the running state (e.g. baileys
+      // package missing, auth state unreadable, or the close handler
+      // rejected with loggedOut before connection ever opened). Schedule
+      // shield teardown so a dead connector doesn't keep claiming rejections
+      // for the rest of the daemon's lifetime — but defer the deregister
+      // through the same grace window we use elsewhere so any in-flight
+      // Baileys async work is still covered.
+      if (!this.running) {
+        this.scheduleShieldTeardown();
+      }
+      throw startErr;
+    }
   }
 
   async stop(): Promise<void> {
-    if (!this.running && !this.sock) return;
+    if (this.stopRequested) {
+      // Already stopped. The grace timer scheduled by the original stop()
+      // is responsible for the actual deregister; nothing to do here.
+      return;
+    }
+    this.stopRequested = true;
 
+    // Cancel any pending reconnect *first*. Without this, a close event
+    // that fired moments before stop() will leave a timer alive that
+    // re-enters start() after the daemon thinks the connector is gone.
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -229,6 +312,13 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       }
       this.sock = null;
     }
+
+    // Defer shield deregistration so Baileys' async teardown work — frame
+    // decoders settling in-flight promises after the WebSocket is closed —
+    // is still covered. Without this grace, a late rejection during
+    // shutdown can still hit the daemon's global unhandledRejection handler.
+    this.scheduleShieldTeardown();
+
     this.logger.info({ channelName: this.name }, 'whatsapp-baileys connector stopped');
   }
 
@@ -438,9 +528,11 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   }
 
   private scheduleReconnect(): void {
+    if (this.stopRequested) return;
     if (this.reconnectTimer) return;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
+      if (this.stopRequested) return;
       this.start().catch((reconnectErr: unknown) => {
         this.logger.error(
           { channelName: this.name, err: reconnectErr },
@@ -448,5 +540,47 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         );
       });
     }, 5000);
+  }
+
+  /**
+   * Adds this instance's matcher to the unhandled-rejection shield. Idempotent
+   * across reconnects — once registered, the matcher stays until stop() is
+   * called.
+   */
+  private registerRejectionShield(): void {
+    if (this.deregisterShield) return;
+    this.deregisterShield = registerSafeRejectionMatcher({
+      name: `whatsapp-baileys:${this.name}`,
+      matches: isBaileysInternalRejection,
+    });
+  }
+
+  /**
+   * Removes this instance's matcher from the unhandled-rejection shield.
+   * Safe to call when no matcher is registered.
+   */
+  private deregisterRejectionShield(): void {
+    if (this.deregisterShield) {
+      this.deregisterShield();
+      this.deregisterShield = null;
+    }
+  }
+
+  /**
+   * Deregister the shield after a short grace window. Baileys may continue
+   * to settle frame-decoding promises for a few hundred milliseconds after
+   * `sock.end()` returns, and we want the shield to keep catching those.
+   * If the grace is configured to 0 (test mode), deregister immediately.
+   */
+  private scheduleShieldTeardown(): void {
+    if (!this.deregisterShield) return; // nothing to tear down
+    if (this.shieldTeardownGraceMs <= 0) {
+      this.deregisterRejectionShield();
+      return;
+    }
+    const timer = setTimeout(() => {
+      this.deregisterRejectionShield();
+    }, this.shieldTeardownGraceMs);
+    if (typeof timer.unref === 'function') timer.unref();
   }
 }

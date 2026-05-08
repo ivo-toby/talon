@@ -12,6 +12,10 @@ import { WhatsAppBaileysConnector } from '../../../../../src/channels/connectors
 import { markdownToWhatsApp } from '../../../../../src/channels/connectors/whatsapp-business/whatsapp-format.js';
 import type { WhatsAppBaileysConfig } from '../../../../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-types.js';
 import type { InboundEvent } from '../../../../../src/channels/channel-types.js';
+import {
+  classifyRejection,
+  __resetMatchersForTesting,
+} from '../../../../../src/daemon/unhandled-rejection-shield.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,6 +107,145 @@ describe('WhatsAppBaileysConnector', () => {
   it('stop() is idempotent when not running', async () => {
     await connector.stop();
     await connector.stop();
+  });
+
+  // -------------------------------------------------------------------------
+  // Unhandled-rejection shield registration
+  // -------------------------------------------------------------------------
+
+  describe('rejection shield', () => {
+    function baileysShapedRejection(): Error {
+      const e = new Error('Stream Errored (conflict)');
+      e.stack =
+        'Error: Stream Errored (conflict)\n    at Object.decodeFrame (file:///app/node_modules/@whiskeysockets/baileys/lib/Utils/noise-handler.js:141:17)';
+      return e;
+    }
+
+    beforeEach(() => {
+      __resetMatchersForTesting();
+      // Run shield teardown synchronously in tests so assertions don't have
+      // to wait the full 5s production grace window.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).shieldTeardownGraceMs = 0;
+    });
+
+    it('registers a matcher that claims Baileys-internal rejections', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).registerRejectionShield();
+
+      const result = classifyRejection(baileysShapedRejection());
+      expect(result.fatal).toBe(false);
+      expect(result.matchedBy).toBe('whatsapp-baileys:test-baileys');
+    });
+
+    it('does not claim unrelated rejections', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).registerRejectionShield();
+
+      const result = classifyRejection(new Error('database connection lost'));
+      expect(result.fatal).toBe(true);
+    });
+
+    it('deregisters cleanly so the daemon resumes normal fail-fast on Baileys rejections', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).registerRejectionShield();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).deregisterRejectionShield();
+
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(true);
+    });
+
+    it('is idempotent across multiple registerRejectionShield calls', () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).registerRejectionShield();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).registerRejectionShield();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).deregisterRejectionShield();
+
+      // If the second call had registered a duplicate matcher, one would
+      // still claim the rejection after a single deregister.
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(true);
+    });
+
+    it('stop() deregisters the shield matcher even if start() never connected', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (connector as any).registerRejectionShield();
+      await connector.stop();
+
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(true);
+    });
+
+    it('stop() cancels a pending reconnect timer left behind by a prior close', async () => {
+      // Simulate the post-close state: running=false, sock=null, but a
+      // reconnect timer is armed. Without the fix this branch would
+      // short-circuit and leave the timer alive.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const c = connector as any;
+      c.registerRejectionShield();
+      c.running = false;
+      c.sock = null;
+      c.reconnectTimer = setTimeout(() => {
+        throw new Error('reconnect timer should have been cancelled by stop()');
+      }, 50);
+
+      await connector.stop();
+
+      // Wait past the original timer window. If stop() did not cancel it, the
+      // throw above would have escaped onto the timer queue.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+
+      expect(c.reconnectTimer).toBeNull();
+      expect(c.stopRequested).toBe(true);
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(true);
+    });
+
+    it('start() is a no-op once stop() has been called (no shield re-registration)', async () => {
+      await connector.stop();
+
+      // Calling start() after stop() must not re-register the shield, since
+      // the connector instance is supposed to be dead. We assert by side
+      // effect: any Baileys-shaped rejection should still be classified fatal.
+      await connector.start();
+
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(true);
+    });
+
+    it('keeps the shield registered through the grace window after stop()', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const c = connector as any;
+      // Use a small but non-zero grace so we can observe both states.
+      c.shieldTeardownGraceMs = 60;
+      c.registerRejectionShield();
+
+      await connector.stop();
+
+      // Immediately after stop() the shield must still claim Baileys
+      // rejections — Baileys' frame decoder may still be settling.
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(false);
+
+      // After the grace window the shield is torn down.
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(true);
+    });
+
+    it('schedules shield teardown for a post-open loggedOut event', () => {
+      // Simulates what the connection.update close handler does when it sees
+      // a loggedOut status code after the connection had already opened: the
+      // socket is gone, no reconnect should ever happen, and the shield must
+      // be torn down so a dead connector doesn't keep claiming rejections.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const c = connector as any;
+      c.registerRejectionShield();
+
+      // Mirror the loggedOut branch in connection.update.
+      c.running = false;
+      c.sock = null;
+      c.stopRequested = true;
+      c.scheduleShieldTeardown();
+
+      expect(classifyRejection(baileysShapedRejection()).fatal).toBe(true);
+    });
   });
 
   // -------------------------------------------------------------------------
