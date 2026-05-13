@@ -262,6 +262,62 @@ describe('Scheduler', () => {
       expect(enqueued.content).not.toContain('file:braintoss');
     });
 
+    it('does NOT promote a prompt whose body legitimately starts with "file:"', async () => {
+      // Regression guard: a prompt like `"file: summarize the latest backup log"`
+      // is real prose, not a promptFile alias. A loose `startsWith("file:")`
+      // check would discard the body and call resolveTaskPrompt() with a
+      // nonexistent alias — leaving the schedule stuck (no enqueue, no
+      // next-run advance). The strict `^file:<name>$` pattern guarantees
+      // only the exact agent-invented shape is promoted.
+      const prose = 'file: summarize the latest backup log';
+      const payload = { label: 'Prose with colon', prompt: prose };
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify(payload),
+      });
+
+      scheduler.start();
+      await wait(150);
+      scheduler.stop();
+
+      expect(personaLoader.resolveTaskPrompt).not.toHaveBeenCalled();
+      const enqueueCalls = (queueStub.enqueue as ReturnType<typeof vi.fn>).mock.calls;
+      expect(enqueueCalls).toHaveLength(1);
+      const enqueued = enqueueCalls[0][2] as Record<string, unknown>;
+      expect(enqueued.content).toBe(prose);
+    });
+
+    it('does NOT promote "file:" followed by content with spaces or special chars', async () => {
+      // A few near-miss patterns that must NOT be treated as aliases:
+      // file:name with space, file:name@host, file:/absolute/path, etc.
+      const nearMisses = [
+        'file:my name',
+        'file:user@host',
+        'file:/etc/passwd',
+        'file:name?query',
+      ];
+
+      for (const prompt of nearMisses) {
+        vi.mocked(personaLoader.resolveTaskPrompt).mockClear();
+        (queueStub.enqueue as ReturnType<typeof vi.fn>).mockClear();
+        const myThread = seedThread(db);
+        seedDueSchedule(db, personaId, myThread, {
+          type: 'one_shot',
+          payload: JSON.stringify({ label: 'near-miss', prompt }),
+        });
+
+        scheduler.start();
+        await wait(150);
+        scheduler.stop();
+
+        expect(personaLoader.resolveTaskPrompt).not.toHaveBeenCalled();
+        const calls = (queueStub.enqueue as ReturnType<typeof vi.fn>).mock.calls;
+        expect(calls.length).toBeGreaterThanOrEqual(1);
+        const last = calls[calls.length - 1][2] as Record<string, unknown>;
+        expect(last.content).toBe(prompt);
+      }
+    });
+
     it('prefers explicit promptFile over a file:-prefixed prompt when both are set', async () => {
       // If a schedule somehow has BOTH `promptFile: "real"` and
       // `prompt: "file:other"`, the explicit promptFile wins — the
