@@ -1,58 +1,103 @@
 import { describe, expect, it } from 'vitest';
 import {
   chooseUsage,
+  extractCumulativeUsage,
+  extractPerStepUsage,
   extractUsage,
   mergeUsage,
   normalizeUsage,
 } from '../../../src/providers/openai-compatible/agent-cli/usage.js';
 
 describe('openai-compatible wrapper usage extraction', () => {
-  describe('extractUsage', () => {
-    it('reads usage from a step-finish-style totalUsage payload', () => {
-      // Shape emitted by Mastra on step-finish chunks.
-      const usage = extractUsage({
-        totalUsage: { inputTokens: 120, outputTokens: 24, cachedInputTokens: 48 },
+  describe('extractPerStepUsage', () => {
+    it('reads the top-level payload.usage shape (step-finish per-step)', () => {
+      const usage = extractPerStepUsage({
+        usage: { inputTokens: 30, outputTokens: 10 },
       });
-      expect(usage).toEqual({ inputTokens: 120, outputTokens: 24, cachedInputTokens: 48 });
+      expect(usage).toEqual({ inputTokens: 30, outputTokens: 10 });
     });
 
-    it('reads usage from a finish-style output.usage payload', () => {
-      // Shape emitted by Mastra on finish chunks (FinishPayload.output.usage).
-      const usage = extractUsage({
-        output: { usage: { inputTokens: 42, outputTokens: 7 } },
-      });
-      expect(usage).toEqual({ inputTokens: 42, outputTokens: 7 });
-    });
-
-    it('reads usage from a flat payload.usage shape', () => {
-      // Some providers / older Mastra versions place it at the top level.
-      const usage = extractUsage({
-        usage: { inputTokens: 10, outputTokens: 3 },
-      });
-      expect(usage).toEqual({ inputTokens: 10, outputTokens: 3 });
-    });
-
-    it('reads usage from stepResult.totalUsage when that is the only location', () => {
-      // Mastra's own step-result schema includes stepResult.totalUsage;
-      // some provider pipelines surface usage only there.
-      const usage = extractUsage({
-        stepResult: {
-          totalUsage: { inputTokens: 200, outputTokens: 80 },
-        },
-      });
-      expect(usage).toEqual({ inputTokens: 200, outputTokens: 80 });
-    });
-
-    it('prefers stepResult.usage over stepResult.totalUsage when both exist', () => {
-      // The per-step usage (stepResult.usage) is scanned first because it
-      // is the more specific, per-chunk value; totalUsage is the accumulator.
-      const usage = extractUsage({
-        stepResult: {
-          usage: { inputTokens: 50, outputTokens: 20 },
-          totalUsage: { inputTokens: 200, outputTokens: 80 },
-        },
+    it('reads stepResult.usage (Mastra step-finish per-step)', () => {
+      const usage = extractPerStepUsage({
+        stepResult: { usage: { inputTokens: 50, outputTokens: 20 } },
       });
       expect(usage).toEqual({ inputTokens: 50, outputTokens: 20 });
+    });
+
+    it('prefers payload.usage over stepResult.usage when both exist', () => {
+      // Both are per-step but we still need a deterministic order. Top-level
+      // wins because Mastra's outer chunk typically carries the freshest data.
+      const usage = extractPerStepUsage({
+        usage: { inputTokens: 30, outputTokens: 10 },
+        stepResult: { usage: { inputTokens: 999, outputTokens: 999 } },
+      });
+      expect(usage).toEqual({ inputTokens: 30, outputTokens: 10 });
+    });
+
+    it('returns undefined when only cumulative shapes are present', () => {
+      // Cumulative `totalUsage` / `output.usage` must NOT leak into per-step.
+      // This is the core invariant that prevents the inflated-ratio bug.
+      expect(
+        extractPerStepUsage({ totalUsage: { inputTokens: 540, outputTokens: 90 } }),
+      ).toBeUndefined();
+      expect(
+        extractPerStepUsage({ output: { usage: { inputTokens: 540, outputTokens: 90 } } }),
+      ).toBeUndefined();
+      expect(
+        extractPerStepUsage({
+          stepResult: { totalUsage: { inputTokens: 540, outputTokens: 90 } },
+        }),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('extractCumulativeUsage', () => {
+    it('reads the top-level payload.totalUsage shape (step-finish cumulative)', () => {
+      const usage = extractCumulativeUsage({
+        totalUsage: { inputTokens: 540, outputTokens: 90, cachedInputTokens: 48 },
+      });
+      expect(usage).toEqual({ inputTokens: 540, outputTokens: 90, cachedInputTokens: 48 });
+    });
+
+    it('reads output.usage (Mastra finish-chunk cumulative)', () => {
+      const usage = extractCumulativeUsage({
+        output: { usage: { inputTokens: 540, outputTokens: 90 } },
+      });
+      expect(usage).toEqual({ inputTokens: 540, outputTokens: 90 });
+    });
+
+    it('reads stepResult.totalUsage when nothing else is present', () => {
+      const usage = extractCumulativeUsage({
+        stepResult: { totalUsage: { inputTokens: 540, outputTokens: 90 } },
+      });
+      expect(usage).toEqual({ inputTokens: 540, outputTokens: 90 });
+    });
+
+    it('returns undefined when only per-step shapes are present', () => {
+      // Symmetric guarantee: per-step values must NOT leak into cumulative.
+      expect(
+        extractCumulativeUsage({ usage: { inputTokens: 30, outputTokens: 10 } }),
+      ).toBeUndefined();
+      expect(
+        extractCumulativeUsage({ stepResult: { usage: { inputTokens: 30, outputTokens: 10 } } }),
+      ).toBeUndefined();
+    });
+  });
+
+  describe('extractUsage (legacy combined)', () => {
+    it('prefers per-step over cumulative when both are present', () => {
+      const usage = extractUsage({
+        usage: { inputTokens: 30, outputTokens: 10 },
+        totalUsage: { inputTokens: 540, outputTokens: 90 },
+      });
+      expect(usage).toEqual({ inputTokens: 30, outputTokens: 10 });
+    });
+
+    it('falls back to cumulative when only cumulative is present', () => {
+      const usage = extractUsage({
+        totalUsage: { inputTokens: 540, outputTokens: 90 },
+      });
+      expect(usage).toEqual({ inputTokens: 540, outputTokens: 90 });
     });
 
     it('returns undefined for chunks without any recognised usage shape', () => {
@@ -63,7 +108,6 @@ describe('openai-compatible wrapper usage extraction', () => {
     });
 
     it('ignores non-numeric token fields', () => {
-      // Defensive: some providers send string counts.
       const usage = extractUsage({
         usage: { inputTokens: '42' as unknown as number, outputTokens: 7 },
       });
@@ -71,10 +115,93 @@ describe('openai-compatible wrapper usage extraction', () => {
     });
   });
 
+  describe('two-accumulator streaming semantics', () => {
+    // These guard the wrapper-CLI streaming loop's invariant: per-step and
+    // cumulative are accumulated in SEPARATE variables so a later cumulative
+    // chunk can never clobber the freshest per-step value (and vice versa).
+    // We simulate the streaming loop here to lock in behavior.
+
+    function simulate(chunks: Array<Record<string, unknown>>): {
+      perStep: ReturnType<typeof mergeUsage> | undefined;
+      cumulative: ReturnType<typeof mergeUsage> | undefined;
+    } {
+      let perStep: ReturnType<typeof mergeUsage> | undefined;
+      let cumulative: ReturnType<typeof mergeUsage> | undefined;
+      for (const chunk of chunks) {
+        const ps = extractPerStepUsage(chunk);
+        if (ps) perStep = mergeUsage(perStep, ps);
+        const cu = extractCumulativeUsage(chunk);
+        if (cu) cumulative = mergeUsage(cumulative, cu);
+      }
+      return { perStep, cumulative };
+    }
+
+    it('per-step value survives a trailing cumulative finish chunk', () => {
+      // Mastra emits per-step on step-finish, then a finish chunk with the
+      // cumulative total in output.usage. The per-step value must NOT be
+      // overwritten — this is the inflated-ratio regression guard.
+      const { perStep, cumulative } = simulate([
+        // First step-finish: per-step 20K, cumulative 20K.
+        { usage: { inputTokens: 20_000, outputTokens: 500 }, totalUsage: { inputTokens: 20_000, outputTokens: 500 } },
+        // Second step-finish: per-step 30K, cumulative 50K.
+        { usage: { inputTokens: 30_000, outputTokens: 800 }, totalUsage: { inputTokens: 50_000, outputTokens: 1_300 } },
+        // Trailing finish chunk: only cumulative (546K) present, no per-step.
+        { output: { usage: { inputTokens: 546_000, outputTokens: 1_500 } } },
+      ]);
+      expect(perStep?.inputTokens).toBe(30_000);
+      expect(cumulative?.inputTokens).toBe(546_000);
+    });
+
+    it('cumulative value survives partial per-step-only chunks', () => {
+      // Symmetric guarantee: a chunk with only per-step data does not
+      // overwrite the running cumulative total.
+      const { perStep, cumulative } = simulate([
+        { totalUsage: { inputTokens: 100_000, outputTokens: 2_000 } },
+        // Partial per-step chunk (no totalUsage) — must not clobber cumulative.
+        { usage: { inputTokens: 15_000, outputTokens: 400 } },
+      ]);
+      expect(perStep?.inputTokens).toBe(15_000);
+      expect(cumulative?.inputTokens).toBe(100_000);
+    });
+
+    it('cachedInputTokens stays within its own accumulator', () => {
+      // Field-level provenance check: cumulative cache tokens never leak
+      // into the per-step accumulator and vice versa.
+      const { perStep, cumulative } = simulate([
+        { totalUsage: { inputTokens: 200_000, cachedInputTokens: 80_000 } },
+        { usage: { inputTokens: 25_000, cachedInputTokens: 1_000 } },
+      ]);
+      expect(perStep?.cachedInputTokens).toBe(1_000);
+      expect(cumulative?.cachedInputTokens).toBe(80_000);
+    });
+
+    it('summed per-step is a faithful cumulative fallback', () => {
+      // For providers that only emit per-step shapes (no native cumulative
+      // chunk), summing per-step inputs across the loop equals what
+      // `totalUsage` would have reported. The wrapper uses this as a
+      // billing-accurate fallback so Langfuse / `runs.input_tokens` do not
+      // silently under-report. Simulate the loop's third accumulator here.
+      let summedInput = 0;
+      let summedOutput = 0;
+      const chunks = [
+        { usage: { inputTokens: 20_000, outputTokens: 500 } },
+        { usage: { inputTokens: 30_000, outputTokens: 800 } },
+        { usage: { inputTokens: 25_000, outputTokens: 600 } },
+      ];
+      for (const c of chunks) {
+        const ps = extractPerStepUsage(c);
+        if (ps) {
+          summedInput += ps.inputTokens ?? 0;
+          summedOutput += ps.outputTokens ?? 0;
+        }
+      }
+      expect(summedInput).toBe(75_000);
+      expect(summedOutput).toBe(1_900);
+    });
+  });
+
   describe('mergeUsage', () => {
-    it('lets later chunks overwrite earlier ones', () => {
-      // OpenAI-compatible servers emit the final counts on the last stream
-      // event, so newer values must win.
+    it('lets later snapshots overwrite earlier ones', () => {
       const merged = mergeUsage(
         { inputTokens: 10, outputTokens: 5 },
         { inputTokens: 120, outputTokens: 24 },
@@ -110,9 +237,6 @@ describe('openai-compatible wrapper usage extraction', () => {
 
   describe('chooseUsage', () => {
     it('prefers chunk-derived usage when it has non-zero counts', () => {
-      // This is the regression guard for the bug where `stream.usage` settles
-      // with zeros after fullStream is externally drained — the chunk-derived
-      // counts must win.
       const chunk = { inputTokens: 120, outputTokens: 24 };
       const fromPromise = { inputTokens: 0, outputTokens: 0 };
       expect(chooseUsage(chunk, fromPromise)).toEqual(chunk);
@@ -134,9 +258,6 @@ describe('openai-compatible wrapper usage extraction', () => {
     });
 
     it('treats a chunk with only cache tokens as authoritative', () => {
-      // Regression guard: if a provider emits a chunk that carries only
-      // cachedInputTokens (and the promise resolves with zeros), the chunk
-      // must still win so we do not drop the cache signal.
       const chunk = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 42 };
       const fromPromise = { inputTokens: 0, outputTokens: 0 };
       expect(chooseUsage(chunk, fromPromise)).toEqual(chunk);

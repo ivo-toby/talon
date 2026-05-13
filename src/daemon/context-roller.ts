@@ -65,11 +65,12 @@ export interface ContextRotationResult {
 export type ReflectorRunFn = SummarizerRunFn;
 
 /**
- * Maximum character budget for the accumulated observation log before
- * the reflector is triggered to consolidate observations.
- * ~40K chars ≈ ~10K tokens — keeps observations manageable.
+ * Default character budget for the accumulated observation log before the
+ * reflector is triggered to consolidate observations. ~40K chars ≈ ~10K
+ * tokens — keeps observations manageable. Operators can override via
+ * `agentRunner.providers.<name>.contextManagement.reflectionThresholdChars`.
  */
-const MAX_OBSERVATION_CHARS = 40_000;
+export const DEFAULT_MAX_OBSERVATION_CHARS = 40_000;
 
 export interface ContextRollerDeps {
   messageRepo: Pick<MessageRepository, 'findLatestByThread'>;
@@ -322,6 +323,7 @@ export class ContextRoller {
     overrideThreshold?: number,
     observerName: string = 'session-observer',
     reflectorName: string = 'session-reflector',
+    reflectionThresholdChars: number = DEFAULT_MAX_OBSERVATION_CHARS,
   ): Promise<ContextRotationResult> {
     const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
@@ -543,7 +545,7 @@ export class ContextRoller {
     );
 
     // 7. Check if accumulated observations need reflection (consolidation).
-    await this.maybeReflect(threadId, personaId, reflectorName);
+    await this.maybeReflect(threadId, personaId, reflectorName, reflectionThresholdChars);
 
     // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
     // Fire it only when the observer explicitly flags unfinished work — i.e.
@@ -562,6 +564,7 @@ export class ContextRoller {
     threadId: string,
     personaId: string,
     reflectorName: string,
+    reflectionThresholdChars: number,
   ): Promise<void> {
     const observationsResult = this.deps.memoryRepo.findByThread(threadId, 'observation');
     if (observationsResult.isErr() || observationsResult.value.length === 0) {
@@ -571,12 +574,12 @@ export class ContextRoller {
     const allObservations = observationsResult.value;
     const fullLog = allObservations.map((o) => o.content).join('\n\n');
 
-    if (fullLog.length < MAX_OBSERVATION_CHARS) {
+    if (fullLog.length < reflectionThresholdChars) {
       return;
     }
 
     this.deps.logger.info(
-      { threadId, observationChars: fullLog.length, threshold: MAX_OBSERVATION_CHARS },
+      { threadId, observationChars: fullLog.length, threshold: reflectionThresholdChars },
       'context-roller-om: observation log exceeds threshold, triggering reflector',
     );
 

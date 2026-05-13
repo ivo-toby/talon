@@ -26,7 +26,18 @@ export interface AgentRunInput {
 export interface AgentRunResult {
   output: string;
   sessionId?: string;
+  /**
+   * Cumulative token usage for the whole run — used for telemetry and
+   * `runs` table accounting (what the user was billed for).
+   */
   usage: AgentUsage;
+  /**
+   * Per-step usage from the FINAL model turn, when the provider can report
+   * it. For multi-turn agent loops this is the prompt size of the last
+   * model call rather than the sum across all tool-call iterations. Use
+   * for context-rotation gating; falls back to `usage` when absent.
+   */
+  lastStepUsage?: AgentUsage;
   isError: boolean;
 }
 

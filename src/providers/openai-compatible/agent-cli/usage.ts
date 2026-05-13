@@ -3,13 +3,31 @@
  * CLI. Kept in their own module so they can be unit-tested without having
  * to spawn Mastra or connect to a real LLM endpoint.
  *
- * Mastra and the AI SDK place the authoritative token counts on the
- * `finish` / `step-finish` chunks that flow through `fullStream`. The
- * exact location varies by provider and version — sometimes
- * `payload.output.usage`, sometimes `payload.totalUsage`, sometimes
- * `payload.usage`. We scan every known location and prefer chunk-derived
- * counts over the `stream.usage` promise, because some providers resolve
- * that promise with zeros once `fullStream` has been externally drained.
+ * Mastra and the AI SDK place token counts on `step-finish` and `finish`
+ * chunks in fullStream. The exact location varies by provider and version
+ * — sometimes `payload.usage`, sometimes `payload.totalUsage`, sometimes
+ * `payload.output.usage`, sometimes `payload.stepResult.{usage,totalUsage}`.
+ * We scan every known location and prefer chunk-derived counts over the
+ * `stream.usage` promise, because some providers resolve that promise with
+ * zeros once `fullStream` has been externally drained.
+ *
+ * Per-step vs cumulative
+ * ----------------------
+ * `usage` on a step-finish chunk reports tokens for THAT step (the last
+ * model call). `totalUsage` (and the cumulative-shaped `output.usage` on a
+ * finish chunk) reports the running total across all steps in the current
+ * agent loop. Downstream consumers care about each separately:
+ *
+ * - Telemetry / accounting (Langfuse, `runs.input_tokens`) wants
+ *   CUMULATIVE — that is what the user was actually billed for.
+ * - Context-rotation gating wants PER-STEP — it asks "is the NEXT prompt
+ *   going to exceed the model's context window?". Cumulative across a
+ *   multi-tool loop can easily exceed the per-call window and would
+ *   trigger spurious session rotations.
+ *
+ * These are exposed as two distinct extractors so the caller can maintain
+ * separate accumulators and surface both upstream. Mixing the two within a
+ * single snapshot is never correct.
  */
 
 export interface UsageSnapshot {
@@ -23,33 +41,56 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Scan a stream-chunk payload for a usage record in any of the known
- * shapes. Returns `undefined` if the payload carries no token counts.
+ * Extract PER-STEP usage from a stream chunk payload.
+ *
+ * Scans only the locations that carry per-step (single-turn) token counts:
+ * `payload.usage` and `payload.stepResult.usage`. Returns `undefined` if
+ * neither is present, so callers never mistake cumulative shapes for
+ * per-step data.
  */
-export function extractUsage(payload: Record<string, unknown>): UsageSnapshot | undefined {
+export function extractPerStepUsage(payload: Record<string, unknown>): UsageSnapshot | undefined {
   const stepResult = isRecord(payload.stepResult) ? payload.stepResult : undefined;
-  const output = isRecord(payload.output) ? payload.output : undefined;
-
-  const candidates: unknown[] = [
-    // Top-level locations Mastra uses on finish/step-finish chunks.
-    payload.totalUsage,
-    payload.usage,
-    // FinishPayload.output.usage.
-    output?.usage,
-    // StepFinishPayload.stepResult.{usage,totalUsage}. Some Mastra versions
-    // and providers prefer one over the other, so scan both.
-    stepResult?.usage,
-    stepResult?.totalUsage,
-  ];
-
+  const candidates: unknown[] = [payload.usage, stepResult?.usage];
   for (const candidate of candidates) {
     const snapshot = toUsageSnapshot(candidate);
     if (snapshot) {
       return snapshot;
     }
   }
-
   return undefined;
+}
+
+/**
+ * Extract CUMULATIVE usage from a stream chunk payload.
+ *
+ * Scans only the locations that carry running totals across the agent
+ * loop: `payload.output.usage` (final cumulative on finish chunks),
+ * `payload.totalUsage`, and `payload.stepResult.totalUsage`. Returns
+ * `undefined` if none is present.
+ */
+export function extractCumulativeUsage(
+  payload: Record<string, unknown>,
+): UsageSnapshot | undefined {
+  const stepResult = isRecord(payload.stepResult) ? payload.stepResult : undefined;
+  const output = isRecord(payload.output) ? payload.output : undefined;
+  const candidates: unknown[] = [output?.usage, payload.totalUsage, stepResult?.totalUsage];
+  for (const candidate of candidates) {
+    const snapshot = toUsageSnapshot(candidate);
+    if (snapshot) {
+      return snapshot;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Legacy combined extractor — preferred order is per-step first, then
+ * cumulative. Retained for callers that want a single "best available"
+ * usage signal without caring about provenance. Avoid in code paths that
+ * need to distinguish the two (use the specialized extractors instead).
+ */
+export function extractUsage(payload: Record<string, unknown>): UsageSnapshot | undefined {
+  return extractPerStepUsage(payload) ?? extractCumulativeUsage(payload);
 }
 
 export function toUsageSnapshot(value: unknown): UsageSnapshot | undefined {
@@ -75,9 +116,15 @@ export function toUsageSnapshot(value: unknown): UsageSnapshot | undefined {
 
 /**
  * Merge a newer usage snapshot into an accumulator. Later chunks always
- * win: OpenAI-compatible servers emit the final, authoritative counts on
- * the last stream event, so we let them overwrite any partial numbers
- * seen earlier in the stream.
+ * win: openai-compatible servers emit the final, authoritative counts on
+ * the last stream event, so newer values overwrite earlier ones.
+ *
+ * IMPORTANT: callers must keep per-step and cumulative accumulators in
+ * SEPARATE variables and only merge values of the same kind into each.
+ * This function does not enforce that — it cannot know what kind a
+ * snapshot is — so cross-kind merges are the caller's responsibility to
+ * avoid (e.g. by extracting via `extractPerStepUsage` vs
+ * `extractCumulativeUsage` and routing into the matching accumulator).
  */
 export function mergeUsage(
   current: UsageSnapshot | undefined,

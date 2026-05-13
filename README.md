@@ -1278,6 +1278,7 @@ contextManagement:
   thresholdRatio: 0.75
   recentMessageCount: 10
   summarizer: session-observer    # enables observational memory
+  reflectionThresholdChars: 40000 # observation-log size that triggers session-reflector (default 40000)
 
 # 2. Add the observer and reflector to the persona's subagents list
 personas:

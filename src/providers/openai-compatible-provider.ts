@@ -88,6 +88,17 @@ type WrapperEvent =
         outputTokens?: number;
         cacheReadTokens?: number;
       };
+      /**
+       * Per-step usage from the FINAL model turn — distinct from
+       * cumulative `usage`. Forwarded to ProviderResult.lastStepUsage so
+       * context-rotation can gate on per-call prompt size rather than the
+       * inflated sum across the agent loop.
+       */
+      lastStepUsage?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+      };
     }
   | { type: 'error'; message: string };
 
@@ -192,6 +203,14 @@ export class OpenAiCompatibleProvider implements AgentProvider {
         cacheReadTokens: resultEvent.usage.cacheReadTokens,
       };
     }
+    let lastStepUsage: AgentUsage | undefined;
+    if (resultEvent?.lastStepUsage) {
+      lastStepUsage = {
+        inputTokens: resultEvent.lastStepUsage.inputTokens ?? 0,
+        outputTokens: resultEvent.lastStepUsage.outputTokens ?? 0,
+        cacheReadTokens: resultEvent.lastStepUsage.cacheReadTokens,
+      };
+    }
 
     const failed = raw.exitCode !== 0 || raw.timedOut || errorEvent !== undefined || !resultEvent;
     const combinedStderr = failed
@@ -204,6 +223,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       exitCode: failed && raw.exitCode === 0 ? 1 : raw.exitCode,
       timedOut: raw.timedOut,
       usage,
+      ...(lastStepUsage ? { lastStepUsage } : {}),
     };
   }
 
@@ -329,12 +349,20 @@ export class OpenAiCompatibleProvider implements AgentProvider {
               cacheReadTokens: event.usage.cacheReadTokens,
             };
           }
+          const lastStepUsage = event.lastStepUsage
+            ? {
+                inputTokens: event.lastStepUsage.inputTokens ?? 0,
+                outputTokens: event.lastStepUsage.outputTokens ?? 0,
+                cacheReadTokens: event.lastStepUsage.cacheReadTokens,
+              }
+            : undefined;
           yield {
             type: 'result',
             result: {
               output: resultOutput,
               sessionId: undefined,
               usage,
+              ...(lastStepUsage ? { lastStepUsage } : {}),
               isError: false,
             },
           };
