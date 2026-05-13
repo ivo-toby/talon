@@ -183,6 +183,11 @@ export const ContextManagementConfigSchema = z
     thresholdRatio: z.number().min(0).max(1).optional(),
     recentMessageCount: z.number().int().min(0).default(10),
     summarizer: z.string().trim().min(1).optional(),
+    // Max combined size, in characters, of the per-thread observation log
+    // before the reflector sub-agent is invoked to consolidate it. Only
+    // applies when `summarizer` is `session-observer` (observational memory
+    // path). Defaults to 40_000 (~10K tokens).
+    reflectionThresholdChars: z.number().int().min(1000).default(40_000),
   })
   .superRefine((value, ctx) => {
     if (!value.enabled) {

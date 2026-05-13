@@ -421,6 +421,7 @@ export class AgentRunner {
                   thresholdRatio: contextManagement.thresholdRatio!,
                   recentMessageCount: contextManagement.recentMessageCount!,
                   summarizer: contextManagement.summarizer!,
+                  reflectionThresholdChars: contextManagement.reflectionThresholdChars,
                 }
               : null;
             // Fresh-session history injection is independent of automatic rotation.
@@ -497,6 +498,7 @@ export class AgentRunner {
               fullOutputText: string;
               resultSessionId: string | undefined;
               usage: AgentUsage;
+              lastStepUsage: AgentUsage | undefined;
             }> => {
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,
@@ -633,6 +635,12 @@ export class AgentRunner {
                     inputTokens: 0,
                     outputTokens: 0,
                   };
+                  // Distinct accumulator for per-step usage (final model
+                  // turn only). When the provider reports it, rotation
+                  // gating uses this in preference to the cumulative
+                  // `usage` so multi-tool runs don't trigger spurious
+                  // rotations from inflated cross-turn token sums.
+                  let lastStepUsage: AgentUsage | undefined;
                   let sawEvents = false;
                   const activeProviderToolObservations = new Map<string, StartedObservationHandle>();
                   const ignoredProviderToolUseIds = new Set<string>();
@@ -682,6 +690,7 @@ export class AgentRunner {
                         } else if (event.type === 'result') {
                           resultSessionId = event.result.sessionId;
                           usage = event.result.usage;
+                          lastStepUsage = event.result.lastStepUsage;
 
                           if (!fullOutputText && event.result.output) {
                             outputText = event.result.output;
@@ -766,6 +775,7 @@ export class AgentRunner {
                     fullOutputText = result.output;
                     resultSessionId = result.sessionId;
                     usage = result.usage;
+                    lastStepUsage = result.lastStepUsage;
 
                     if (result.isError) {
                       throw new Error(`CLI provider returned error: ${result.output || 'unknown error'}`);
@@ -828,6 +838,7 @@ export class AgentRunner {
                     fullOutputText: fullOutputText.replace(/\n\n$/, ''),
                     resultSessionId,
                     usage,
+                    lastStepUsage,
                   };
                 },
               );
@@ -840,6 +851,7 @@ export class AgentRunner {
               inputTokens: 0,
               outputTokens: 0,
             };
+            let lastStepUsage: AgentUsage | undefined;
 
             try {
               ({
@@ -847,6 +859,7 @@ export class AgentRunner {
                 fullOutputText,
                 resultSessionId,
                 usage,
+                lastStepUsage,
               } = await executeAgentQuery(existingSessionId));
             } catch (cause) {
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
@@ -864,6 +877,7 @@ export class AgentRunner {
                   fullOutputText,
                   resultSessionId,
                   usage,
+                  lastStepUsage,
                 } = await executeAgentQuery(undefined));
               } else {
                 throw cause;
@@ -970,7 +984,14 @@ export class AgentRunner {
             // picked up until rotation completes, preserving per-thread ordering.
             // (issue #164)
             if (this.ctx.contextRoller && enabledContextManagement) {
-              const contextUsage = providerEntry.provider.estimateContextUsage(usage);
+              // Gate rotation on per-step usage when the provider reports
+              // it; cumulative `usage` across a multi-tool agent loop can
+              // easily exceed the per-call context window even when each
+              // individual prompt fits, which would trigger spurious
+              // rotations. Telemetry/accounting still uses the cumulative
+              // `usage` further down (it's what the user was billed for).
+              const usageForRotation = lastStepUsage ?? usage;
+              const contextUsage = providerEntry.provider.estimateContextUsage(usageForRotation);
               const selectedMetricValue = contextUsage.metrics[enabledContextManagement.triggerMetric];
               if (selectedMetricValue === undefined) {
                 this.ctx.logger.error(
@@ -1000,6 +1021,8 @@ export class AgentRunner {
                           contextUsagePayload,
                           enabledContextManagement.thresholdRatio,
                           enabledContextManagement.summarizer,
+                          'session-reflector',
+                          enabledContextManagement.reflectionThresholdChars,
                         )
                       : await this.ctx.contextRoller.checkAndRotate(
                           item.threadId,

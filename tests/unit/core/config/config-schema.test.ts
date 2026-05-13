@@ -641,6 +641,7 @@ describe('AgentRunnerConfigSchema', () => {
               thresholdRatio: 0.5,
               recentMessageCount: 10,
               summarizer: 'session-summarizer',
+              reflectionThresholdChars: 40_000,
             },
           },
         },
@@ -678,6 +679,7 @@ describe('AgentRunnerConfigSchema', () => {
           thresholdRatio: 0.5,
           recentMessageCount: 12,
           summarizer: 'session-summarizer',
+          reflectionThresholdChars: 40_000,
         },
       });
     }
@@ -852,6 +854,7 @@ describe('TalondConfigSchema', () => {
               thresholdRatio: 0.5,
               recentMessageCount: 10,
               summarizer: 'session-summarizer',
+              reflectionThresholdChars: 40_000,
             },
           },
         },

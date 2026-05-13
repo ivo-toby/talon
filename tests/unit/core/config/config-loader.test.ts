@@ -254,6 +254,7 @@ agentRunner:
           thresholdRatio: 0.5,
           recentMessageCount: 10,
           summarizer: 'session-summarizer',
+          reflectionThresholdChars: 40_000,
         },
       });
     }
@@ -288,6 +289,7 @@ agentRunner:
           thresholdRatio: 0.5,
           recentMessageCount: 10,
           summarizer: 'session-summarizer',
+          reflectionThresholdChars: 40_000,
         },
       });
     }
