@@ -1653,8 +1653,11 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | `--channel <name>` | Channel to bind the schedule thread to (required) | — |
 | `--cron <expr>` | Cron expression, 5-field (required) | — |
 | `--label <label>` | Human-readable label (required) | — |
-| `--prompt <prompt>` | Prompt text for the agent (required) | — |
+| `--prompt <prompt>` | Inline prompt text. Mutually exclusive with `--prompt-file`. | — |
+| `--prompt-file <name>` | Prompt file basename (without `.md`) under `personas/<persona>/prompts/`. Resolved by the scheduler at fire time. Mutually exclusive with `--prompt`. | — |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
+
+Exactly one of `--prompt` or `--prompt-file` must be provided. `--prompt-file` is preferred for reusable, long-form prompts (e.g. `--prompt-file braintoss` resolves to `personas/<persona>/prompts/braintoss.md` at fire time).
 
 **`list-schedules`** options:
 
@@ -1670,8 +1673,14 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
 ```bash
+# Inline prompt
 npx talonctl add-schedule --persona assistant --channel my-telegram \
   --cron "0 8 * * 1-5" --label "Morning briefing" --prompt "Give me a morning briefing"
+
+# Reusable prompt file (resolves to personas/assistant/prompts/braintoss.md)
+npx talonctl add-schedule --persona assistant --channel my-telegram \
+  --cron "*/15 6-23 * * *" --label "Braintoss inbox" --prompt-file braintoss
+
 npx talonctl list-schedules --persona assistant
 npx talonctl remove-schedule abc123
 ```
