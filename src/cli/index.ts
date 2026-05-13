@@ -424,15 +424,38 @@ program
   .requiredOption('--channel <name>', 'Channel to bind the schedule thread to')
   .requiredOption('--cron <expr>', 'Cron expression (5-field)')
   .requiredOption('--label <label>', 'Human-readable label')
-  .requiredOption('--prompt <prompt>', 'Prompt text for the agent')
+  .option('--prompt <prompt>', 'Inline prompt text (mutually exclusive with --prompt-file)')
+  .option(
+    '--prompt-file <name>',
+    'Prompt file basename in the persona\'s prompts/ dir (without .md), resolved by the scheduler at fire time',
+  )
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
-  .action(async (opts: { persona: string; channel: string; cron: string; label: string; prompt: string; config: string }) => {
+  .action(async (opts: {
+    persona: string;
+    channel: string;
+    cron: string;
+    label: string;
+    prompt?: string;
+    promptFile?: string;
+    config: string;
+  }) => {
+    if (opts.prompt && opts.promptFile) {
+      console.error('Error: --prompt and --prompt-file are mutually exclusive');
+      process.exit(1);
+      return;
+    }
+    if (!opts.prompt && !opts.promptFile) {
+      console.error('Error: provide one of --prompt or --prompt-file');
+      process.exit(1);
+      return;
+    }
     await addScheduleCommand({
       persona: opts.persona,
       channel: opts.channel,
       cron: opts.cron,
       label: opts.label,
-      prompt: opts.prompt,
+      ...(opts.prompt !== undefined ? { prompt: opts.prompt } : {}),
+      ...(opts.promptFile !== undefined ? { promptFile: opts.promptFile } : {}),
       configPath: opts.config,
     });
   });

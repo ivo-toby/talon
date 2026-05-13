@@ -167,10 +167,32 @@ export class Scheduler {
       }
 
       const schedulePayload = rawPayload as SchedulePayload & Record<string, unknown>;
-      const promptFile =
+      let promptFile =
         typeof schedulePayload.promptFile === 'string' ? schedulePayload.promptFile : undefined;
       let content =
         typeof schedulePayload.prompt === 'string' ? schedulePayload.prompt : '';
+
+      // Defensive: agents and humans sometimes invent `prompt: "file:NAME"`
+      // as if it were a documented convention (it isn't). Without this
+      // promotion, the literal string ships to the agent and it falls back
+      // to grepping/reading the file itself — expensive and non-deterministic.
+      // Promote the alias here and warn so the operator can fix the schedule
+      // row (or the agent that created it).
+      if (!promptFile && content.startsWith('file:')) {
+        const aliased = content.slice('file:'.length).trim();
+        if (aliased.length > 0) {
+          this.logger.warn(
+            {
+              scheduleId: schedule.id,
+              personaId: schedule.persona_id,
+              aliased,
+            },
+            'scheduler: prompt starts with "file:" — treating as promptFile alias. Update the schedule payload to use {promptFile: "..."} explicitly.',
+          );
+          promptFile = aliased;
+          content = '';
+        }
+      }
 
       if (promptFile) {
         const promptResult = await this.personaLoader.resolveTaskPrompt(schedule.persona_id, promptFile);

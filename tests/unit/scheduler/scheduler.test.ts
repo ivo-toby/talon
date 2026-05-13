@@ -235,6 +235,55 @@ describe('Scheduler', () => {
       });
     });
 
+    it('promotes prompt:"file:NAME" to a promptFile alias and resolves it', async () => {
+      // Regression guard: an agent/human that creates a schedule with
+      // `prompt: "file:foo"` (a non-documented convention they invented)
+      // would otherwise ship the literal string to the agent, which then
+      // wastes turns greppingfor the file. The scheduler defensively
+      // recognises the prefix and routes through resolveTaskPrompt.
+      vi.mocked(personaLoader.resolveTaskPrompt).mockResolvedValue(ok('Resolved prompt body'));
+      const payload = { label: 'Braintoss', prompt: 'file:braintoss' };
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify(payload),
+      });
+
+      scheduler.start();
+      await wait(150);
+      scheduler.stop();
+
+      expect(personaLoader.resolveTaskPrompt).toHaveBeenCalledWith(personaId, 'braintoss');
+      const enqueueCalls = (queueStub.enqueue as ReturnType<typeof vi.fn>).mock.calls;
+      expect(enqueueCalls).toHaveLength(1);
+      const enqueued = enqueueCalls[0][2] as Record<string, unknown>;
+      expect(enqueued.content).toBe('Resolved prompt body');
+      // The literal `file:braintoss` string must NOT survive into content
+      // — otherwise the agent would still see it and discover the file.
+      expect(enqueued.content).not.toContain('file:braintoss');
+    });
+
+    it('prefers explicit promptFile over a file:-prefixed prompt when both are set', async () => {
+      // If a schedule somehow has BOTH `promptFile: "real"` and
+      // `prompt: "file:other"`, the explicit promptFile wins — the
+      // defensive promotion is fallback-only, not an override.
+      vi.mocked(personaLoader.resolveTaskPrompt).mockResolvedValue(ok('Real body'));
+      const payload = {
+        label: 'Mixed',
+        promptFile: 'real',
+        prompt: 'file:other',
+      };
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify(payload),
+      });
+
+      scheduler.start();
+      await wait(150);
+      scheduler.stop();
+
+      expect(personaLoader.resolveTaskPrompt).toHaveBeenCalledWith(personaId, 'real');
+    });
+
     it('uses the thread_id of the schedule when enqueuing', async () => {
       const anotherThread = seedThread(db);
       seedDueSchedule(db, personaId, anotherThread, { type: 'one_shot' });
