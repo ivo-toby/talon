@@ -6,7 +6,8 @@ import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
 import { z } from 'zod';
 import {
   chooseUsage,
-  extractUsage,
+  extractCumulativeUsage,
+  extractPerStepUsage,
   mergeUsage,
   normalizeUsage,
   type UsageSnapshot,
@@ -246,15 +247,46 @@ async function main(): Promise<void> {
     // so the agent can do meaningful multi-tool work.
     const stream = await agent.stream(input.prompt, { maxSteps: 25 });
     const shouldStream = input.streamEvents !== false;
-    let streamedUsage: UsageSnapshot | undefined;
+    // Track per-step and cumulative usage in SEPARATE accumulators so we
+    // can surface each to the right consumer downstream:
+    //   - `cumulativeUsage` → reported as the result's `usage` field for
+    //     telemetry/accounting (Langfuse, `runs.input_tokens`, etc).
+    //   - `perStepUsage` → reported as `lastStepUsage` for rotation gating
+    //     in agent-runner. Per-step is what answers "is the next prompt
+    //     going to exceed the model context window?".
+    // Mixing them within one snapshot leads either to inflated rotation
+    // ratios (using cumulative) or under-reported billing (using per-step).
+    let cumulativeUsage: UsageSnapshot | undefined;
+    let perStepUsage: UsageSnapshot | undefined;
+    // Third accumulator: running SUM of per-step values across the agent
+    // loop. Used as a cumulative fallback when the provider/version never
+    // emits a native cumulative shape (no `totalUsage`, no `output.usage`).
+    // For those providers, summed per-step equals what `totalUsage` would
+    // have reported, so it correctly preserves billing accuracy without
+    // leaking back into the per-step accumulator used for rotation gating.
+    const summedPerStep: UsageSnapshot = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    };
+    let sawAnyPerStep = false;
 
     for await (const rawChunk of stream.fullStream as AsyncIterable<unknown>) {
       const chunk = normalizeStreamChunk(rawChunk);
       if (!chunk) continue;
 
-      const chunkUsage = extractUsage(chunk.payload);
-      if (chunkUsage) {
-        streamedUsage = mergeUsage(streamedUsage, chunkUsage);
+      const perStep = extractPerStepUsage(chunk.payload);
+      if (perStep) {
+        perStepUsage = mergeUsage(perStepUsage, perStep);
+        sawAnyPerStep = true;
+        summedPerStep.inputTokens = (summedPerStep.inputTokens ?? 0) + (perStep.inputTokens ?? 0);
+        summedPerStep.outputTokens = (summedPerStep.outputTokens ?? 0) + (perStep.outputTokens ?? 0);
+        summedPerStep.cachedInputTokens =
+          (summedPerStep.cachedInputTokens ?? 0) + (perStep.cachedInputTokens ?? 0);
+      }
+      const cumulative = extractCumulativeUsage(chunk.payload);
+      if (cumulative) {
+        cumulativeUsage = mergeUsage(cumulativeUsage, cumulative);
       }
 
       if (chunk.type === 'text-delta') {
@@ -325,7 +357,34 @@ async function main(): Promise<void> {
     await stream.consumeStream().catch(() => {});
     const [finalText, promiseUsage] = await Promise.all([stream.text, stream.usage]);
     const resolvedText = finalText && finalText.length > 0 ? finalText : aggregatedText;
-    const finalUsage = chooseUsage(streamedUsage, promiseUsage);
+    // `usage` is the cumulative total — what the user was billed for and
+    // what telemetry/accounting expects. Resolution order:
+    //   1. Native cumulative chunks (`totalUsage`, `output.usage`) — most
+    //      authoritative when the provider emits them.
+    //   2. `stream.usage` promise — Mastra's official end-of-stream total.
+    //   3. SUM of per-step chunks across the loop — for providers/versions
+    //      that only emit per-step shapes, the per-step sum equals what
+    //      `totalUsage` would have reported, so it preserves billing
+    //      accuracy. Without this fallback the wrapper would emit
+    //      `{ inputTokens: 0 }` while `lastStepUsage` was populated, and
+    //      Langfuse + `runs.input_tokens` would silently under-report.
+    const cumulativeFallback = sawAnyPerStep ? summedPerStep : undefined;
+    // Chain chooseUsage so that a non-zero source always wins over a zero
+    // one. Without the chain, `chooseUsage(cumulativeUsage, promiseUsage)`
+    // could return `{0, 0}` when the promise settles with zeros after
+    // `fullStream` is externally drained, and a plain `??` wouldn't fall
+    // through to `summedPerStep`.
+    const finalCumulativeUsage = chooseUsage(
+      chooseUsage(cumulativeUsage, promiseUsage),
+      cumulativeFallback,
+    );
+    // `lastStepUsage` is the per-step total from the FINAL model turn —
+    // what context-rotation gating uses to estimate the next prompt size.
+    // No fallback to the promise (which is cumulative); if we never saw a
+    // per-step shape, we omit the field and let agent-runner fall back to
+    // the cumulative usage (degraded signal, but better than nothing).
+    const normalizedCumulative = normalizeUsage(finalCumulativeUsage);
+    const normalizedPerStep = perStepUsage ? normalizeUsage(perStepUsage) : undefined;
 
     if (input.outputFilePath) {
       try {
@@ -342,7 +401,8 @@ async function main(): Promise<void> {
       emit({
         type: 'result',
         output: '',
-        usage: normalizeUsage(finalUsage),
+        usage: normalizedCumulative,
+        ...(normalizedPerStep ? { lastStepUsage: normalizedPerStep } : {}),
       });
       return;
     }
@@ -350,7 +410,8 @@ async function main(): Promise<void> {
     emit({
       type: 'result',
       output: resolvedText,
-      usage: normalizeUsage(finalUsage),
+      usage: normalizedCumulative,
+      ...(normalizedPerStep ? { lastStepUsage: normalizedPerStep } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);

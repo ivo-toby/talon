@@ -136,6 +136,7 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer       # or session-observer for observational memory
+        # reflectionThresholdChars: 40000   # OM only: observation log size that triggers session-reflector. Default 40000.
     gemini-cli:
       enabled: false
       command: gemini

@@ -1348,6 +1348,111 @@ describe('ContextRoller', () => {
       expect(consolidated!.meta.suggestedContinuation).toBe('finish step 3');
     });
 
+    it('honors configurable reflectionThresholdChars when accumulated observations are short', async () => {
+      // Two 5K-char observations total 10K chars + separator — under the 40K
+      // default, so the reflector would not fire with defaults. With a 5K
+      // override the threshold is crossed, so the reflector MUST run.
+      const shortContent = 'x'.repeat(5_000);
+      const observations = [
+        {
+          id: 'obs-1',
+          type: 'observation',
+          content: shortContent,
+          created_at: 2_000,
+          metadata: JSON.stringify({ source: 'context-roller-om', rotatedThroughTs: 1_500 }),
+        },
+        {
+          id: 'obs-2',
+          type: 'observation',
+          content: shortContent,
+          created_at: 1_000,
+          metadata: JSON.stringify({ source: 'context-roller-om', rotatedThroughTs: 500 }),
+        },
+      ];
+
+      const messages = [
+        { direction: 'inbound', content: JSON.stringify({ body: 'hi' }), created_at: 1_000 },
+      ];
+
+      const reflectorRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Consolidated',
+        data: { consolidatedLog: 'Date: 2026-04-19\n- 🔴 10:00 consolidated' },
+      }));
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'noop',
+        data: {
+          observations: [{ date: '2026-04-19', time: '11:00', priority: 'low', text: 'tick' }],
+          taskComplete: true,
+          memoryUpdates: [],
+        },
+      }));
+
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        } as any,
+        resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
+          if (name === 'session-observer') return observerRun;
+          if (name === 'session-reflector') return reflectorRun;
+          return null;
+        }),
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockImplementation((_tid: string, type?: string) => {
+            if (type === 'observation') return ok(observations);
+            return ok([]);
+          }),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+      });
+      const roller = new ContextRoller(deps);
+
+      // First: default threshold (40K) — observations only total ~10K, so
+      // reflector must NOT fire.
+      await roller.checkAndRotateOM('thread-1', 'persona-1', {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 100_000,
+        rawMetricName: 'cache_read_input_tokens',
+      });
+      expect(reflectorRun).not.toHaveBeenCalled();
+
+      // Now lower the threshold to 5K — the same observations exceed it,
+      // so the reflector MUST fire.
+      const observerRun2 = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'noop',
+        data: {
+          observations: [{ date: '2026-04-19', time: '11:00', priority: 'low', text: 'tick' }],
+          taskComplete: true,
+          memoryUpdates: [],
+        },
+      }));
+      (deps.resolveSummarizerRun as any).mockImplementation((name: string) => {
+        if (name === 'session-observer') return observerRun2;
+        if (name === 'session-reflector') return reflectorRun;
+        return null;
+      });
+
+      await roller.checkAndRotateOM(
+        'thread-1',
+        'persona-1',
+        {
+          ratio: 0.5,
+          inputTokens: 100_000,
+          rawMetric: 100_000,
+          rawMetricName: 'cache_read_input_tokens',
+        },
+        undefined,
+        'session-observer',
+        'session-reflector',
+        5_000,
+      );
+      expect(reflectorRun).toHaveBeenCalledTimes(1);
+    });
+
     it('persists currentTask/suggestedContinuation when taskComplete=false', async () => {
       const observerRun = vi.fn().mockResolvedValueOnce(ok({
         summary: 'Observations recorded',

@@ -46,7 +46,7 @@ talond.yaml
 .worktrees/
 
 # WhatsApp Baileys auth session
-baileys-auth/
+baileys-auth*
 .claude/settings.json
 
 # Local tooling scratch / session state

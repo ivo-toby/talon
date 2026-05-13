@@ -55,7 +55,19 @@ export interface ProviderResult {
   exitCode: number | null;
   timedOut: boolean;
   stderr: string;
+  /**
+   * Cumulative token usage for the whole run — what the user was billed
+   * for. Use this for telemetry and `runs` table accounting.
+   */
   usage?: AgentUsage;
+  /**
+   * Per-step token usage from the FINAL model turn, when the provider can
+   * report it. For multi-turn agent loops this is the prompt size of the
+   * last model call rather than the sum across all tool-call iterations.
+   * Use this for context-rotation gating; falls back to `usage` when
+   * absent.
+   */
+  lastStepUsage?: AgentUsage;
 }
 
 export interface ProviderSpawnInput {
