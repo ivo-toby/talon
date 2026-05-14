@@ -24,6 +24,7 @@ import { AgentRunner } from './agent-runner.js';
 import { writePidFile, removePidFile } from './lifecycle.js';
 import { WatchdogNotifier } from './watchdog.js';
 import { registerChannels, injectSiblingBotIds } from '../channels/channel-setup.js';
+import { cleanupOrphanedMcpChildren } from './mcp-orphan-cleanup.js';
 
 import type { DaemonContext } from './daemon-context.js';
 import type { DaemonState, DaemonHealth } from './daemon-types.js';
@@ -64,6 +65,14 @@ export class TalondDaemon {
 
     this._state = 'starting';
     this.logger.info({ configPath }, 'daemon: starting');
+
+    // 0. Sweep orphaned MCP subprocesses left behind by previous runs. The
+    // openai-compatible wrapper's per-run cleanup is the primary fix for
+    // issue #210; this catches the case where the wrapper itself died
+    // before its `finally` block could run (e.g. SIGKILL on timeout) and
+    // a marked grandchild is still holding a port (e.g. mcp-remote's
+    // OAuth callback). No-op on non-Linux.
+    cleanupOrphanedMcpChildren(this.logger);
 
     // 1. Bootstrap — builds the full DaemonContext or fails.
     const ctxResult = await bootstrap(configPath, this.logger);

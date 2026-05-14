@@ -19,6 +19,7 @@ import {
   DEFAULT_TOOL_OUTPUT_CAP,
   DEFAULT_FETCH_SLICE_CAP,
 } from './tool-output-excerpter.js';
+import { killDescendantTree, MCP_CHILD_MARKER_ENV } from './process-cleanup.js';
 
 interface WrapperInput {
   prompt: string;
@@ -424,6 +425,29 @@ async function main(): Promise<void> {
   } finally {
     await mcpClient?.disconnect().catch(() => {});
     await workspace?.destroy().catch(() => {});
+    // Safety net for issue #210: Mastra's MCPClient.disconnect() only kills
+    // the direct stdio child. When that child is an `npx`/shell shim, the
+    // real MCP `node` process gets reparented to PID 1 and keeps holding
+    // its resources (ports, sockets) — silently breaking subsequent runs.
+    // Sweep the wrapper's descendant tree ourselves so nothing survives us.
+    try {
+      const survivors = await killDescendantTree(process.pid, {
+        onSurvivor: (pid) => {
+          process.stderr.write(
+            `openai-compatible wrapper: SIGKILL escalation on surviving descendant pid=${pid}\n`,
+          );
+        },
+      });
+      if (survivors.length > 0) {
+        process.stderr.write(
+          `openai-compatible wrapper: cleaned up ${survivors.length} descendant process(es) after MCP disconnect\n`,
+        );
+      }
+    } catch (cause) {
+      process.stderr.write(
+        `openai-compatible wrapper: descendant cleanup failed: ${cause instanceof Error ? cause.message : String(cause)}\n`,
+      );
+    }
   }
 }
 
@@ -601,10 +625,15 @@ function toMastraMcpServers(
 
   for (const [name, server] of Object.entries(mcpServers)) {
     if (server.transport === 'stdio') {
+      // Stamp a marker env var on every stdio MCP child. The wrapper uses
+      // its descendant process tree to clean up survivors on exit; the
+      // marker lets a defensive daemon-boot pass identify any process that
+      // still leaks past the wrapper (e.g. wrapper killed with SIGKILL by
+      // the parent timeout). See process-cleanup.ts and issue #210.
       servers[name] = {
         command: server.command,
         args: server.args,
-        ...(server.env ? { env: server.env } : {}),
+        env: { ...(server.env ?? {}), [MCP_CHILD_MARKER_ENV]: '1' },
         cwd: process.cwd(),
       };
       continue;
