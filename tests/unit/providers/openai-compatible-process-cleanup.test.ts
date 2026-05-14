@@ -4,6 +4,8 @@ import {
   collectDescendantPids,
   killDescendantTree,
   MCP_CHILD_MARKER_ENV,
+  snapshotDescendantPids,
+  terminateProcesses,
   type ProcessInfo,
 } from '../../../src/providers/openai-compatible/agent-cli/process-cleanup.js';
 
@@ -44,7 +46,6 @@ describe('collectDescendantPids', () => {
   });
 
   it('ignores cycles defensively (does not loop forever)', () => {
-    // Pathological table — ppid points back at the descendant.
     const table: ProcessInfo[] = [
       { pid: 100, ppid: 1 },
       { pid: 200, ppid: 100 },
@@ -55,19 +56,25 @@ describe('collectDescendantPids', () => {
   });
 });
 
-describe('killDescendantTree', () => {
-  it('signals every descendant with SIGTERM and escalates to SIGKILL on survivors', async () => {
+describe('snapshotDescendantPids', () => {
+  it('captures the descendant tree from the live process table', () => {
     const table: ProcessInfo[] = [
-      { pid: 100, ppid: 1 }, // wrapper (self)
+      { pid: 100, ppid: 1 },
       { pid: 200, ppid: 100 },
-      { pid: 300, ppid: 200 }, // this one "survives" SIGTERM
+      { pid: 300, ppid: 200 },
     ];
-    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    expect(snapshotDescendantPids(100, () => table).sort((a, b) => a - b)).toEqual([
+      200, 300,
+    ]);
+  });
+});
 
-    const result = await killDescendantTree(100, {
-      readProcesses: () => table,
+describe('terminateProcesses', () => {
+  it('SIGTERMs every alive pid then SIGKILLs survivors after the grace period', async () => {
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const result = await terminateProcesses([200, 300], {
       sleep: async () => {},
-      isAlive: (pid) => pid === 300, // 200 dies on SIGTERM, 300 survives
+      isAlive: () => true,
       signal: (pid, sig) => {
         signals.push({ pid, signal: sig });
         return true;
@@ -79,16 +86,58 @@ describe('killDescendantTree', () => {
     expect(signals).toEqual([
       { pid: 200, signal: 'SIGTERM' },
       { pid: 300, signal: 'SIGTERM' },
+      { pid: 200, signal: 'SIGKILL' },
       { pid: 300, signal: 'SIGKILL' },
     ]);
   });
 
-  it('is a no-op when no descendants exist', async () => {
+  it('does not SIGKILL processes that died during the grace period', async () => {
+    const aliveCalls: number[] = [];
+    let phase: 'before' | 'after' = 'before';
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
-    const result = await killDescendantTree(100, {
-      readProcesses: () => [{ pid: 100, ppid: 1 }],
+
+    await terminateProcesses([200], {
+      sleep: async () => {
+        phase = 'after';
+      },
+      isAlive: (pid) => {
+        aliveCalls.push(pid);
+        return phase === 'before';
+      },
+      signal: (pid, sig) => {
+        signals.push({ pid, signal: sig });
+        return true;
+      },
+      gracePeriodMs: 0,
+    });
+
+    expect(signals).toEqual([{ pid: 200, signal: 'SIGTERM' }]);
+  });
+
+  it('skips pids that are already dead at the start (no useless SIGTERM)', async () => {
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const result = await terminateProcesses([200, 300], {
       sleep: async () => {},
-      isAlive: () => false,
+      isAlive: (pid) => pid === 300, // 200 was already cleaned up by upstream disconnect
+      signal: (pid, sig) => {
+        signals.push({ pid, signal: sig });
+        return true;
+      },
+      gracePeriodMs: 0,
+    });
+
+    expect(result).toEqual([300]);
+    expect(signals).toEqual([
+      { pid: 300, signal: 'SIGTERM' },
+      { pid: 300, signal: 'SIGKILL' },
+    ]);
+  });
+
+  it('is a no-op when called with an empty pid list', async () => {
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const result = await terminateProcesses([], {
+      sleep: async () => {},
+      isAlive: () => true,
       signal: (pid, sig) => {
         signals.push({ pid, signal: sig });
         return true;
@@ -98,39 +147,126 @@ describe('killDescendantTree', () => {
     expect(signals).toEqual([]);
   });
 
-  it('does not SIGKILL processes that exited during the grace period', async () => {
+  it('invokes onSurvivor for each pid escalated to SIGKILL', async () => {
+    const survivors: number[] = [];
+    await terminateProcesses([200, 300], {
+      sleep: async () => {},
+      isAlive: () => true,
+      signal: () => true,
+      onSurvivor: (pid) => survivors.push(pid),
+      gracePeriodMs: 0,
+    });
+    expect(survivors.sort((a, b) => a - b)).toEqual([200, 300]);
+  });
+});
+
+describe('snapshot-then-terminate race', () => {
+  it('still kills grandchildren that get reparented to PID 1 during the upstream disconnect', async () => {
+    // BEFORE disconnect: full wrapper → npx → sh → node chain.
+    const beforeDisconnect: ProcessInfo[] = [
+      { pid: 100, ppid: 1 }, // wrapper (self)
+      { pid: 200, ppid: 100 }, // npx
+      { pid: 300, ppid: 200 }, // sh
+      { pid: 400, ppid: 300 }, // node mcp-remote (the leaker)
+    ];
+    // AFTER disconnect: Mastra killed 200, then 300/400 reparent to PID 1.
+    // A "find descendants of 100" walk done at this point would return [].
+    // The whole point of snapshot-first is to have already captured them.
+    const afterDisconnect: ProcessInfo[] = [
+      { pid: 100, ppid: 1 },
+      { pid: 300, ppid: 1 },
+      { pid: 400, ppid: 1 },
+    ];
+
+    // Step 1: snapshot BEFORE disconnect.
+    const snapshot = snapshotDescendantPids(100, () => beforeDisconnect).sort(
+      (a, b) => a - b,
+    );
+    expect(snapshot).toEqual([200, 300, 400]);
+
+    // Sanity check: a snapshot taken AFTER disconnect would miss the orphans
+    // entirely. This is precisely what the P1 review flagged in the
+    // pre-refactor wrapper code path.
+    const stalePostDisconnectSnapshot = snapshotDescendantPids(
+      100,
+      () => afterDisconnect,
+    );
+    expect(stalePostDisconnectSnapshot).toEqual([]);
+
+    // Step 2: terminate the snapshotted PIDs. 200 is gone (Mastra got it),
+    // 300 dies on SIGTERM, 400 hangs onto its port and needs SIGKILL.
+    const sigkilledSurvivors: number[] = [];
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    let phase: 'before' | 'after' = 'before';
+
+    await terminateProcesses(snapshot, {
+      sleep: async () => {
+        phase = 'after';
+      },
+      isAlive: (pid) => {
+        if (pid === 200) return false; // killed by upstream
+        if (pid === 300) return phase === 'before'; // SIGTERM works
+        if (pid === 400) return true; // survives SIGTERM, needs SIGKILL
+        return false;
+      },
+      signal: (pid, sig) => {
+        signals.push({ pid, signal: sig });
+        return true;
+      },
+      onSurvivor: (pid) => sigkilledSurvivors.push(pid),
+      gracePeriodMs: 0,
+    });
+
+    expect(signals).toEqual([
+      { pid: 300, signal: 'SIGTERM' },
+      { pid: 400, signal: 'SIGTERM' },
+      { pid: 400, signal: 'SIGKILL' },
+    ]);
+    expect(sigkilledSurvivors).toEqual([400]);
+  });
+});
+
+describe('killDescendantTree (convenience wrapper)', () => {
+  it('snapshots then terminates in one call', async () => {
     const table: ProcessInfo[] = [
       { pid: 100, ppid: 1 },
       { pid: 200, ppid: 100 },
+      { pid: 300, ppid: 200 },
     ];
     const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
-    await killDescendantTree(100, {
+    const result = await killDescendantTree(100, {
       readProcesses: () => table,
       sleep: async () => {},
-      isAlive: () => false,
+      isAlive: () => true,
+      signal: (pid, sig) => {
+        signals.push({ pid, signal: sig });
+        return true;
+      },
+      gracePeriodMs: 0,
+    });
+
+    expect(result.sort((a, b) => a - b)).toEqual([200, 300]);
+    expect(signals).toEqual([
+      { pid: 200, signal: 'SIGTERM' },
+      { pid: 300, signal: 'SIGTERM' },
+      { pid: 200, signal: 'SIGKILL' },
+      { pid: 300, signal: 'SIGKILL' },
+    ]);
+  });
+
+  it('is a no-op when no descendants exist', async () => {
+    const signals: Array<{ pid: number; signal: NodeJS.Signals }> = [];
+    const result = await killDescendantTree(100, {
+      readProcesses: () => [{ pid: 100, ppid: 1 }],
+      sleep: async () => {},
+      isAlive: () => true,
       signal: (pid, sig) => {
         signals.push({ pid, signal: sig });
         return true;
       },
     });
-    expect(signals).toEqual([{ pid: 200, signal: 'SIGTERM' }]);
-  });
-
-  it('invokes onSurvivor for each pid escalated to SIGKILL', async () => {
-    const table: ProcessInfo[] = [
-      { pid: 100, ppid: 1 },
-      { pid: 200, ppid: 100 },
-      { pid: 300, ppid: 100 },
-    ];
-    const survivors: number[] = [];
-    await killDescendantTree(100, {
-      readProcesses: () => table,
-      sleep: async () => {},
-      isAlive: () => true,
-      signal: () => true,
-      onSurvivor: (pid) => survivors.push(pid),
-    });
-    expect(survivors.sort((a, b) => a - b)).toEqual([200, 300]);
+    expect(result).toEqual([]);
+    expect(signals).toEqual([]);
   });
 });
 

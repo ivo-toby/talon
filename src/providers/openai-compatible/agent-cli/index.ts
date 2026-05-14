@@ -19,7 +19,7 @@ import {
   DEFAULT_TOOL_OUTPUT_CAP,
   DEFAULT_FETCH_SLICE_CAP,
 } from './tool-output-excerpter.js';
-import { killDescendantTree } from './process-cleanup.js';
+import { snapshotDescendantPids, terminateProcesses } from './process-cleanup.js';
 import { stampMcpChildMarker } from '../../mcp-child-marker.js';
 
 interface WrapperInput {
@@ -424,15 +424,29 @@ async function main(): Promise<void> {
     });
     process.exitCode = 1;
   } finally {
+    // Issue #210 race-safe teardown: Mastra's MCPClient.disconnect() only
+    // SIGTERMs the direct stdio child. When that child is an `npx`/shell
+    // shim, the real MCP `node` process gets reparented to PID 1 the
+    // instant the shim dies — at which point a "find descendants of
+    // wrapper" walk finds nothing.
+    //
+    // Snapshot the descendant tree FIRST, then run disconnect, then
+    // signal the snapshotted PIDs. Pids that disconnect already cleaned
+    // up are filtered out by the alive-check in terminateProcesses.
+    let descendantsSnapshot: number[] = [];
+    try {
+      descendantsSnapshot = snapshotDescendantPids(process.pid);
+    } catch (cause) {
+      process.stderr.write(
+        `openai-compatible wrapper: descendant snapshot failed: ${cause instanceof Error ? cause.message : String(cause)}\n`,
+      );
+    }
+
     await mcpClient?.disconnect().catch(() => {});
     await workspace?.destroy().catch(() => {});
-    // Safety net for issue #210: Mastra's MCPClient.disconnect() only kills
-    // the direct stdio child. When that child is an `npx`/shell shim, the
-    // real MCP `node` process gets reparented to PID 1 and keeps holding
-    // its resources (ports, sockets) — silently breaking subsequent runs.
-    // Sweep the wrapper's descendant tree ourselves so nothing survives us.
+
     try {
-      const survivors = await killDescendantTree(process.pid, {
+      const survivors = await terminateProcesses(descendantsSnapshot, {
         onSurvivor: (pid) => {
           process.stderr.write(
             `openai-compatible wrapper: SIGKILL escalation on surviving descendant pid=${pid}\n`,

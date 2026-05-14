@@ -9,9 +9,15 @@
  * `mcp-remote`). The next wrapper run then fails to bind the port and
  * Mastra silently drops the MCP from the toolset.
  *
- * This module provides a wrapper-level safety net that walks the wrapper's
- * descendant process tree at teardown and signals every surviving descendant
- * directly, regardless of what the upstream library did.
+ * This module provides a wrapper-level safety net. Critically the API is
+ * split into a *snapshot* step and a *terminate* step, so callers can
+ * record the descendant tree BEFORE asking the upstream library to
+ * disconnect. Otherwise the race below defeats the whole point:
+ *
+ *   1. snapshot → Mastra disconnect kills npx
+ *   2. sh / node reparent to PID 1
+ *   3. tree walk run AFTER disconnect would find nothing — the orphans are
+ *      no longer descendants of the wrapper.
  *
  * See https://github.com/ivo-toby/talon/issues/210.
  */
@@ -94,6 +100,21 @@ export function collectDescendantPids(rootPid: number, processes: ProcessInfo[])
 }
 
 /**
+ * Snapshot the descendant PIDs of `rootPid` from the live process table.
+ *
+ * Call this BEFORE the upstream library tears down its direct child. If
+ * you snapshot afterwards, grandchildren that have already been reparented
+ * to PID 1 will not appear in the tree and you will not be able to kill
+ * them.
+ */
+export function snapshotDescendantPids(
+  rootPid: number,
+  readProcesses: () => ProcessInfo[] = readProcessTable,
+): number[] {
+  return collectDescendantPids(rootPid, readProcesses());
+}
+
+/**
  * Best-effort signal delivery. Returns true on success, false when the
  * process no longer exists or the signal could not be delivered.
  */
@@ -118,31 +139,71 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-export interface KillDescendantsOptions {
+export interface TerminateOptions {
   /** How long to wait after SIGTERM before escalating to SIGKILL. */
   gracePeriodMs?: number;
-  /**
-   * Optional injection point for tests. Defaults to `readProcessTable`.
-   */
-  readProcesses?: () => ProcessInfo[];
   /** Optional sleep override for tests. */
   sleep?: (ms: number) => Promise<void>;
   /** Optional liveness check override for tests. */
   isAlive?: (pid: number) => boolean;
   /** Optional signal override for tests. Should match `process.kill` semantics. */
   signal?: (pid: number, sig: NodeJS.Signals) => boolean;
-  /** Optional callback for diagnostic logging. */
+  /** Optional callback invoked for each pid escalated to SIGKILL. */
   onSurvivor?: (pid: number) => void;
 }
 
 /**
- * Walk the wrapper's descendant process tree and signal every survivor.
+ * Send SIGTERM to every pid, wait `gracePeriodMs`, then SIGKILL anything
+ * still alive. Best-effort: individual signal failures are swallowed.
  *
- * Sends SIGTERM first so processes get a chance to clean up (close ports,
- * release sockets), then escalates to SIGKILL after `gracePeriodMs`. The
- * function is best-effort: errors from individual `process.kill` calls are
- * swallowed since the target may legitimately be gone by the time the
- * signal lands.
+ * Skips pids that are already dead at call time so we don't accidentally
+ * race against PID reuse on busy hosts.
+ *
+ * @returns the pids that received at least one signal attempt.
+ */
+export async function terminateProcesses(
+  pids: readonly number[],
+  options: TerminateOptions = {},
+): Promise<number[]> {
+  if (pids.length === 0) return [];
+
+  const sleep = options.sleep ?? defaultSleep;
+  const aliveCheck = options.isAlive ?? isPidAlive;
+  const signal = options.signal ?? trySignal;
+  const gracePeriodMs = options.gracePeriodMs ?? 500;
+
+  const targets = pids.filter((pid) => aliveCheck(pid));
+  if (targets.length === 0) return [];
+
+  for (const pid of targets) {
+    signal(pid, 'SIGTERM');
+  }
+
+  await sleep(gracePeriodMs);
+
+  for (const pid of targets) {
+    if (aliveCheck(pid)) {
+      options.onSurvivor?.(pid);
+      signal(pid, 'SIGKILL');
+    }
+  }
+
+  return targets;
+}
+
+export interface KillDescendantsOptions extends TerminateOptions {
+  /** Optional injection point for tests. Defaults to `readProcessTable`. */
+  readProcesses?: () => ProcessInfo[];
+}
+
+/**
+ * Convenience: snapshot descendants and terminate them in one call.
+ *
+ * NOT appropriate when an upstream `disconnect`/`destroy` step runs
+ * between the snapshot and the terminate — for that case, call
+ * `snapshotDescendantPids` first, run the disconnect, then
+ * `terminateProcesses` on the snapshot. See the wrapper's `finally`
+ * block for the canonical example.
  *
  * @returns the PIDs we attempted to terminate (does not imply success).
  */
@@ -151,29 +212,8 @@ export async function killDescendantTree(
   options: KillDescendantsOptions = {},
 ): Promise<number[]> {
   const readProcesses = options.readProcesses ?? readProcessTable;
-  const sleep = options.sleep ?? defaultSleep;
-  const aliveCheck = options.isAlive ?? isPidAlive;
-  const signal = options.signal ?? trySignal;
-  const gracePeriodMs = options.gracePeriodMs ?? 500;
-
-  const processes = readProcesses();
-  const descendants = collectDescendantPids(rootPid, processes);
-  if (descendants.length === 0) return [];
-
-  for (const pid of descendants) {
-    signal(pid, 'SIGTERM');
-  }
-
-  await sleep(gracePeriodMs);
-
-  for (const pid of descendants) {
-    if (aliveCheck(pid)) {
-      options.onSurvivor?.(pid);
-      signal(pid, 'SIGKILL');
-    }
-  }
-
-  return descendants;
+  const descendants = snapshotDescendantPids(rootPid, readProcesses);
+  return terminateProcesses(descendants, options);
 }
 
 function defaultSleep(ms: number): Promise<void> {
@@ -181,3 +221,4 @@ function defaultSleep(ms: number): Promise<void> {
     setTimeout(resolve, ms).unref();
   });
 }
+
