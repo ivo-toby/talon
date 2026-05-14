@@ -15,6 +15,7 @@ import type {
   ProviderResult,
   ProviderSpawnInput,
 } from './provider-types.js';
+import { stampMcpChildMarker } from './mcp-child-marker.js';
 
 interface GeminiTokens {
   input?: number;
@@ -239,10 +240,13 @@ export class GeminiCliProvider implements AgentProvider {
       }
 
       if (server.transport === 'stdio') {
+        // Stamp the TALON_MCP_CHILD marker so the daemon-boot orphan
+        // reaper can clean up any subprocess that leaks past the
+        // `gemini` CLI (see daemon/mcp-orphan-cleanup.ts, issue #210).
         nativeServers[name] = {
           command: server.command,
           args: server.args,
-          ...(server.env ? { env: server.env } : {}),
+          env: stampMcpChildMarker(server.env),
         };
         continue;
       }

@@ -25,6 +25,7 @@ import type {
   ProviderResult,
   ProviderSpawnInput,
 } from './provider-types.js';
+import { stampMcpChildMarker } from './mcp-child-marker.js';
 
 interface CodexCliProviderRuntime {
   dataDir: string;
@@ -199,13 +200,16 @@ export class CodexCliProvider implements AgentProvider {
         lines.push(`args = [${server.args.map((arg) => JSON.stringify(arg)).join(', ')}]`);
         lines.push('');
 
-        if (server.env && Object.keys(server.env).length > 0) {
-          lines.push(`[${tableName}.env]`);
-          for (const [key, value] of Object.entries(server.env)) {
-            lines.push(`${key} = ${JSON.stringify(value)}`);
-          }
-          lines.push('');
+        // Always emit the env table so the TALON_MCP_CHILD marker is
+        // present even when the user did not configure any MCP env vars.
+        // The marker lets the daemon-boot orphan reaper identify and clean
+        // up subprocesses that leak past the `codex` CLI (issue #210).
+        const stampedEnv = stampMcpChildMarker(server.env);
+        lines.push(`[${tableName}.env]`);
+        for (const [key, value] of Object.entries(stampedEnv)) {
+          lines.push(`${key} = ${JSON.stringify(value)}`);
         }
+        lines.push('');
         continue;
       }
 

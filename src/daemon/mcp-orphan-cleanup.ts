@@ -20,7 +20,7 @@
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import type { Logger } from 'pino';
-import { MCP_CHILD_MARKER_ENV } from '../providers/openai-compatible/agent-cli/process-cleanup.js';
+import { MCP_CHILD_MARKER_ENV } from '../providers/mcp-child-marker.js';
 
 export interface OrphanCleanupResult {
   scanned: number;

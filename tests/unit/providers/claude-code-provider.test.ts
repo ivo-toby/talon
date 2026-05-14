@@ -66,7 +66,10 @@ describe('ClaudeCodeProvider', () => {
           type: 'stdio',
           command: 'node',
           args: ['dist/tools/host-tools-mcp-server.js'],
-          env: { TALOND_SOCKET: '/tmp/talond.sock' },
+          // TALON_MCP_CHILD marker is stamped on every stdio MCP child so
+          // the daemon-boot orphan reaper can recognize subprocesses we
+          // spawned. See providers/mcp-child-marker.ts and issue #210.
+          env: { TALOND_SOCKET: '/tmp/talond.sock', TALON_MCP_CHILD: '1' },
         },
         remoteBrowser: {
           type: 'http',

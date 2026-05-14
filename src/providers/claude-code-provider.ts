@@ -14,6 +14,7 @@ import type {
   ProviderSpawnInput,
 } from './provider-types.js';
 import type { ProviderConfig } from '../core/config/config-types.js';
+import { stampMcpChildMarker } from './mcp-child-marker.js';
 
 export class ClaudeCodeProvider implements AgentProvider {
   readonly name = 'claude-code';
@@ -280,11 +281,14 @@ export class ClaudeCodeProvider implements AgentProvider {
       }
 
       if (server.transport === 'stdio') {
+        // Stamp the TALON_MCP_CHILD marker so the daemon-boot orphan
+        // reaper can clean up any subprocess that leaks past the SDK or
+        // the `claude` CLI (see daemon/mcp-orphan-cleanup.ts, issue #210).
         nativeServers[name] = {
           type: 'stdio',
           command: server.command,
           args: server.args,
-          ...(server.env ? { env: server.env } : {}),
+          env: stampMcpChildMarker(server.env),
         };
         continue;
       }

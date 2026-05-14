@@ -17,8 +17,7 @@
  */
 import { execFileSync } from 'node:child_process';
 
-/** Env marker stamped on every stdio MCP child spawned by the wrapper. */
-export const MCP_CHILD_MARKER_ENV = 'TALON_MCP_CHILD';
+export { MCP_CHILD_MARKER_ENV } from '../../mcp-child-marker.js';
 
 export interface ProcessInfo {
   pid: number;

@@ -19,7 +19,8 @@ import {
   DEFAULT_TOOL_OUTPUT_CAP,
   DEFAULT_FETCH_SLICE_CAP,
 } from './tool-output-excerpter.js';
-import { killDescendantTree, MCP_CHILD_MARKER_ENV } from './process-cleanup.js';
+import { killDescendantTree } from './process-cleanup.js';
+import { stampMcpChildMarker } from '../../mcp-child-marker.js';
 
 interface WrapperInput {
   prompt: string;
@@ -625,15 +626,13 @@ function toMastraMcpServers(
 
   for (const [name, server] of Object.entries(mcpServers)) {
     if (server.transport === 'stdio') {
-      // Stamp a marker env var on every stdio MCP child. The wrapper uses
-      // its descendant process tree to clean up survivors on exit; the
-      // marker lets a defensive daemon-boot pass identify any process that
-      // still leaks past the wrapper (e.g. wrapper killed with SIGKILL by
-      // the parent timeout). See process-cleanup.ts and issue #210.
+      // Stamp the shared TALON_MCP_CHILD marker so the daemon-boot orphan
+      // reaper can identify and clean up any subprocess that leaks past
+      // this wrapper (see process-cleanup.ts + mcp-orphan-cleanup.ts).
       servers[name] = {
         command: server.command,
         args: server.args,
-        env: { ...(server.env ?? {}), [MCP_CHILD_MARKER_ENV]: '1' },
+        env: stampMcpChildMarker(server.env),
         cwd: process.cwd(),
       };
       continue;
