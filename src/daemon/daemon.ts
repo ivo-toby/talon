@@ -121,7 +121,26 @@ export class TalondDaemon {
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
     // 5. Start queue processing.
-    this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
+    //
+    // Wrap the runner in a per-item finally that sweeps any orphaned MCP
+    // subprocesses left behind by this run. Long-lived daemons accumulate
+    // orphans between runs when the provider's CLI (`claude`, `gemini`,
+    // `codex`) exits and its `mcp-remote`-style grandchildren reparent to
+    // PID 1 while still holding their resources (e.g. port 8787). The
+    // boot-time reaper from cleanupOrphanedMcpChildren only fires on
+    // restart; this hook makes it fire after every queue item so the next
+    // run on the same persona doesn't hit a port collision. See #210.
+    this.ctx.queueManager.startProcessing(async (item) => {
+      try {
+        return await this.agentRunner!.run(item);
+      } finally {
+        try {
+          cleanupOrphanedMcpChildren(this.logger);
+        } catch (cause) {
+          this.logger.warn({ cause }, 'daemon: post-run MCP orphan sweep failed');
+        }
+      }
+    });
 
     // 6. Start scheduler.
     this.ctx.scheduler.start();

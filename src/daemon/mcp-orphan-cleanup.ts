@@ -1,16 +1,27 @@
 /**
- * Daemon-boot defensive cleanup for orphaned MCP subprocesses.
+ * Reaper for orphaned MCP subprocesses identified by the
+ * `TALON_MCP_CHILD=1` env marker that every Talon provider stamps onto
+ * its stdio MCP children.
  *
- * The openai-compatible wrapper stamps `TALON_MCP_CHILD=1` on every stdio
- * MCP child it spawns and sweeps its descendant tree on exit. That covers
- * the normal exit path, but if the wrapper itself dies abruptly (e.g.
- * SIGKILL on a parent timeout), the stamped grandchildren can still
- * reparent to PID 1 and survive across daemon restarts.
+ * The function runs in two places:
  *
- * This module runs once at daemon boot and SIGKILLs any process whose
- * environment carries the marker and whose parent is PID 1. It is a
- * defensive net for past leaks only — the normal exit path is the
- * primary fix (see openai-compatible/agent-cli/process-cleanup.ts).
+ *   1. Daemon boot — cleans up orphans left by a previous daemon
+ *      process. The openai-compatible wrapper sweeps its own descendant
+ *      tree on exit, but if the wrapper itself dies abruptly (e.g.
+ *      SIGKILL on parent timeout) the stamped grandchildren can still
+ *      reparent to PID 1 and survive across a restart.
+ *
+ *   2. After every queue item — closes the cross-run gap inside a
+ *      single daemon session. The CLI providers (`claude`, `gemini`,
+ *      `codex`) spawn MCPs as their own descendants and Talon has no
+ *      per-process `finally` block to clean them up. When the CLI exits
+ *      its MCP grandchildren reparent to PID 1 still holding their
+ *      ports (e.g. `mcp-remote`'s OAuth callback on 8787), and the next
+ *      agent run on the same persona collides. Reaping right after each
+ *      run keeps that from accumulating.
+ *
+ * Either invocation SIGKILLs every process whose environment carries
+ * the marker and whose parent is PID 1.
  *
  * Linux is the supported scanning target (uses `/proc/<pid>/environ`,
  * `/proc/<pid>/stat`). On other platforms the function is a no-op since

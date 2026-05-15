@@ -39,6 +39,14 @@ vi.mock('../../../src/skills/skill-loader.js', () => ({
   })),
 }));
 
+vi.mock('../../../src/daemon/mcp-orphan-cleanup.js', () => ({
+  cleanupOrphanedMcpChildren: vi.fn().mockReturnValue({
+    scanned: 0,
+    candidates: [],
+    killed: [],
+  }),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
@@ -48,6 +56,7 @@ import { bootstrap } from '../../../src/daemon/daemon-bootstrap.js';
 import { loadConfig } from '../../../src/core/config/config-loader.js';
 import { writePidFile, removePidFile } from '../../../src/daemon/lifecycle.js';
 import { injectSiblingBotIds } from '../../../src/channels/channel-setup.js';
+import { cleanupOrphanedMcpChildren } from '../../../src/daemon/mcp-orphan-cleanup.js';
 import { DaemonError } from '../../../src/core/errors/index.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { createDiscardLogger } from './helpers.js';
@@ -258,6 +267,43 @@ describe('TalondDaemon', () => {
       await daemon.start('/config.yaml');
 
       expect(ctx.queueManager.startProcessing).toHaveBeenCalledOnce();
+    });
+
+    it('sweeps orphaned MCP subprocesses after every queue item (cross-run gap, issue #210)', async () => {
+      const ctx = setupSuccessfulBootstrap();
+
+      await daemon.start('/config.yaml');
+
+      // Capture the handler the daemon wired into queueManager.startProcessing.
+      const handler = (ctx.queueManager.startProcessing as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(typeof handler).toBe('function');
+
+      const runnerOk = ok(undefined);
+      // The wrapper calls the runner first, then runs the sweep in finally.
+      vi.mocked(cleanupOrphanedMcpChildren).mockClear();
+
+      const result = await handler!({ id: 'q1', threadId: 't1', payload: {} } as unknown);
+      // The handler should return whatever the underlying runner returned. We
+      // are not asserting on result.shape here — the relevant assertion is
+      // that the sweep ran. AgentRunner is not stubbed in these mocks, so
+      // the handler may resolve to an err; that is fine because the sweep
+      // runs in finally.
+      void result;
+
+      expect(cleanupOrphanedMcpChildren).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs the post-run MCP orphan sweep even when the runner throws', async () => {
+      const ctx = setupSuccessfulBootstrap();
+      await daemon.start('/config.yaml');
+
+      const handler = (ctx.queueManager.startProcessing as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(typeof handler).toBe('function');
+      vi.mocked(cleanupOrphanedMcpChildren).mockClear();
+
+      await handler!(null as unknown).catch(() => {});
+
+      expect(cleanupOrphanedMcpChildren).toHaveBeenCalledTimes(1);
     });
 
     it('starts scheduler after bootstrap', async () => {
