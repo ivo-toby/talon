@@ -175,6 +175,70 @@ describe('BackgroundAgentManager', () => {
     allowedMcpTools: [],
   };
 
+  it('materializes OAuth bearers on HTTP MCP entries before invoking the provider (#212 review)', async () => {
+    // Regression guard: the foreground path resolves auth in
+    // agent-runner; the background path was missing that step, so a
+    // background run on the Glean MCP would receive an unresolved
+    // `auth: { kind: "oauth2" }` entry and the server would 401.
+    const tokenStore = {
+      materializeBearer: vi.fn().mockResolvedValue('shiny-access-token'),
+    } as unknown as import('../../../../src/auth/oauth-token-store.js').OAuthTokenStore;
+
+    const manager = createManager({ oauthTokenStore: tokenStore });
+
+    await manager.spawn({
+      ...spawnInput,
+      mcpServers: {
+        glean: {
+          transport: 'http',
+          url: 'https://contentful-be.glean.com/mcp/default',
+          auth: { kind: 'oauth2', tokenStore: 'glean/glean' },
+        },
+      },
+    });
+
+    expect(tokenStore.materializeBearer).toHaveBeenCalledWith('glean/glean');
+    expect(prepareBackgroundInvocation).toHaveBeenCalledTimes(1);
+    const passed = (prepareBackgroundInvocation.mock.calls[0][0] as {
+      mcpServers: Record<string, unknown>;
+    }).mcpServers;
+    expect(passed.glean).toEqual({
+      transport: 'http',
+      url: 'https://contentful-be.glean.com/mcp/default',
+      headers: { Authorization: 'Bearer shiny-access-token' },
+    });
+    // The auth field must be stripped — providers never see it.
+    expect((passed.glean as Record<string, unknown>).auth).toBeUndefined();
+  });
+
+  it('passes server entries through unchanged when no oauthTokenStore is wired', async () => {
+    // The token store is optional so existing test scaffolds + setups
+    // without it keep working. Entries with `auth` still get forwarded;
+    // the provider/MCP server will surface the resulting 401 loudly.
+    const manager = createManager();
+
+    await manager.spawn({
+      ...spawnInput,
+      mcpServers: {
+        glean: {
+          transport: 'http',
+          url: 'https://contentful-be.glean.com/mcp/default',
+          auth: { kind: 'oauth2', tokenStore: 'glean/glean' },
+        },
+      },
+    });
+
+    const passed = (prepareBackgroundInvocation.mock.calls[0][0] as {
+      mcpServers: Record<string, unknown>;
+    }).mcpServers;
+    // Field preserved so the operator sees the MCP fail loudly with a
+    // missing Authorization header — better than silently passing.
+    expect((passed.glean as Record<string, unknown>).auth).toEqual({
+      kind: 'oauth2',
+      tokenStore: 'glean/glean',
+    });
+  });
+
   it('creates a running task and returns its id', async () => {
     const manager = createManager();
     const result = await manager.spawn(spawnInput);

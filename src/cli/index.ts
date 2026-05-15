@@ -36,6 +36,7 @@ import { removeChannelCommand } from './commands/remove-channel.js';
 import { removePersonaCommand } from './commands/remove-persona.js';
 import { configShowCommand } from './commands/config-show.js';
 import { addScheduleCommand } from './commands/add-schedule.js';
+import { authMcp, AuthMcpError } from './commands/auth-mcp.js';
 import { listSchedulesCommand } from './commands/list-schedules.js';
 import { removeScheduleCommand } from './commands/remove-schedule.js';
 import { runSubAgentCommand } from './commands/run-subagent.js';
@@ -467,6 +468,65 @@ program
   .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
   .action(async (opts: { config: string; persona?: string }) => {
     await listSchedulesCommand({ configPath: opts.config, persona: opts.persona });
+  });
+
+// ---------------------------------------------------------------------------
+// OAuth for HTTP MCP servers
+// ---------------------------------------------------------------------------
+
+program
+  .command('auth-mcp')
+  .description('One-time interactive OAuth dance for an HTTP MCP server')
+  .argument(
+    '<selector>',
+    'Skill + server in "<skill>:<server>" form (e.g. "glean:glean")',
+  )
+  .option(
+    '--headless',
+    'Headless mode: print the auth URL + SSH forward command; do not open a browser',
+    false,
+  )
+  .option(
+    '--port <port>',
+    'Localhost callback port (default 8788)',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--skills-dir <path>', 'Path to the skills/ directory', 'skills')
+  .action(async (
+    selector: string,
+    opts: { headless: boolean; port?: number; config: string; skillsDir: string },
+  ) => {
+    const { loadConfig } = await import('../core/config/config-loader.js');
+    const configResult = loadConfig(opts.config);
+    if (configResult.isErr()) {
+      console.error(`Error loading config: ${configResult.error.message}`);
+      process.exit(1);
+      return;
+    }
+    // Resolve `dataDir` from the exact same config field the daemon uses
+    // in daemon-bootstrap.ts (`resolve(config.dataDir)`). Using a
+    // different source (e.g. derived from `storage.path`) would cause
+    // talonctl to write tokens to one directory and the daemon to read
+    // from another, producing "no cached tokens" failures at runtime
+    // even after a successful auth flow.
+    const dataDir = resolve(configResult.value.dataDir);
+    try {
+      await authMcp({
+        selector,
+        dataDir,
+        skillsDir: opts.skillsDir,
+        headless: opts.headless,
+        ...(opts.port !== undefined ? { callbackPort: opts.port } : {}),
+      });
+    } catch (cause) {
+      if (cause instanceof AuthMcpError) {
+        console.error(`auth-mcp: ${cause.message}`);
+      } else {
+        console.error(`auth-mcp: ${(cause as Error).message ?? String(cause)}`);
+      }
+      process.exit(1);
+    }
   });
 
 program

@@ -19,6 +19,8 @@ import type { AgentProvider } from '../../providers/provider.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { ObservabilityService, StartedObservationHandle } from '../../observability/langfuse/observability-types.js';
 import type { ExecutionEnvManager } from '../../execution-env/execution-env-manager.js';
+import type { OAuthTokenStore } from '../../auth/oauth-token-store.js';
+import { resolveMcpServers } from '../../mcp/resolve-mcp-servers.js';
 
 export interface SpawnBackgroundAgentInput {
   prompt: string;
@@ -66,6 +68,14 @@ interface BackgroundAgentManagerDeps {
   observability?: ObservabilityService;
   executionEnvManager?: Pick<ExecutionEnvManager, 'create' | 'upload' | 'destroyOwnedByTask'> | null;
   hostToolsSocketPath?: string;
+  /**
+   * Token store used to materialize `Authorization: Bearer …` headers on
+   * HTTP MCP servers that declare `auth: { kind: 'oauth2' }`. Optional so
+   * existing test scaffolds that don't construct one keep working — when
+   * absent, server entries with `auth` set are passed through unresolved
+   * (and the MCP server is expected to 401 loudly).
+   */
+  oauthTokenStore?: OAuthTokenStore;
 }
 
 interface ManagedProcess {
@@ -214,10 +224,24 @@ export class BackgroundAgentManager {
       hasSkills: input.hasSkills ?? false,
     });
 
+    // Materialize dynamic auth (OAuth bearers) on HTTP MCP entries the
+    // same way the foreground agent-runner path does in
+    // src/daemon/agent-runner.ts. Without this step a background run
+    // would receive raw `auth: { kind: 'oauth2' }` entries and the
+    // remote MCP would 401 because the Authorization header is never
+    // injected (issue surfaced in PR #212 codex review). When no token
+    // store is provided we pass through unresolved — the MCP server
+    // will surface the failure clearly.
+    const resolvedWorkerMcpServers = this.deps.oauthTokenStore
+      ? await resolveMcpServers(workerMcpServers, {
+          tokenStore: this.deps.oauthTokenStore,
+        })
+      : workerMcpServers;
+
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
       prompt: input.prompt,
       systemPrompt,
-      mcpServers: workerMcpServers,
+      mcpServers: resolvedWorkerMcpServers,
       cwd: sandboxContext?.controlDirectory ?? input.workingDirectory ?? process.cwd(),
       timeoutMs: timeoutMinutes * 60 * 1000,
       traceparent: childTraceparent,

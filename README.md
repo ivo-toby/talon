@@ -973,6 +973,61 @@ granted = persona.capabilities ∩ skill.requiredCapabilities
 
 Skills with unmet capabilities produce a warning at startup and are skipped.
 
+### HTTP MCP Servers and OAuth
+
+For HTTP / SSE MCP servers that require OAuth (e.g. Glean, GitHub Enterprise),
+Talon owns the token lifecycle directly — no `mcp-remote` or other stdio
+bridge process at runtime.
+
+The interactive OAuth dance lives in `talonctl auth-mcp`, runs once per
+server, and writes a refreshable token bundle into Talon's data dir. The
+daemon reads + refreshes that bundle on every agent run and injects the
+resulting `Authorization: Bearer <token>` header into the MCP server config
+before the provider sees it. Providers (claude-code, gemini-cli, codex-cli,
+openai-compatible) stay completely unaware of the OAuth flow.
+
+**Skill config shape:**
+
+```json
+{
+  "name": "glean",
+  "config": {
+    "name": "glean",
+    "transport": "http",
+    "url": "https://contentful-be.glean.com/mcp/default",
+    "auth": { "kind": "oauth2" }
+  }
+}
+```
+
+The skill loader stamps `auth.tokenStore: "<skillName>/<serverName>"` when
+omitted. Token bundles live at `<dataDir>/mcp-auth/<tokenStore>.json` (mode
+0600, atomic temp+rename writes).
+
+**One-time authorisation:**
+
+```bash
+# Interactive (operator's desktop — opens local browser)
+npx talonctl auth-mcp glean:glean
+
+# Headless (operator on the daemon's host over SSH)
+npx talonctl auth-mcp glean:glean --headless
+# Prints the auth URL plus an `ssh -L <port>:localhost:<port> server`
+# command. Run the SSH forward from your local machine, then open the URL
+# in your local browser — the callback comes back over the forward.
+```
+
+The command performs Dynamic Client Registration (RFC 7591) when the
+server advertises a `registration_endpoint`, generates a PKCE challenge,
+runs the standard authorisation-code flow, and persists the resulting
+access + refresh tokens. After it completes, the daemon picks up the new
+bundle on the next agent run — no daemon restart required.
+
+**Refresh:** the daemon automatically refreshes access tokens that fall
+within 60 s of expiry, using the cached `refresh_token` and the OAuth
+provider's `token_endpoint`. If both access and refresh have expired,
+agent runs fail loudly with a "re-run `talonctl auth-mcp`" message.
+
 ---
 
 ## Sub-Agents
@@ -1636,6 +1691,21 @@ Whether you actually see non-zero cache counts depends entirely on the **upstrea
 | Groq / Together / Fireworks                  | ❌ no                       |
 
 If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens` will stay at 0 and `cache_creation_input_tokens` will equal `input_tokens` — that is the expected degradation, not a bug. Use `triggerMetric: input_tokens` for those endpoints.
+
+### MCP Authentication
+
+| Command | Description |
+|---------|-------------|
+| `auth-mcp <skill>:<server>` | One-time interactive OAuth flow for an HTTP MCP server. See [HTTP MCP Servers and OAuth](#http-mcp-servers-and-oauth). |
+
+**`auth-mcp`** options:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--headless` | Don't try to open a browser. Print the auth URL + suggested SSH forward command. Use this on remote daemons. | off |
+| `--port <port>` | Localhost callback port. Must match the SSH `-L` forward in headless mode. | `8788` |
+| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| `--skills-dir <path>` | Path to the skills directory | `skills` |
 
 ### Scheduling
 
