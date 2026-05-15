@@ -11,4 +11,4 @@ requiredCapabilities: []
 
 rootPaths: []
 
-timeoutMs: 60000
+timeoutMs: 180000
