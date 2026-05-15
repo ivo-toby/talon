@@ -134,6 +134,25 @@ export class TalondDaemon {
       try {
         return await this.agentRunner!.run(item);
       } finally {
+        // The Anthropic Agent SDK's `query()` can resolve a beat ahead of
+        // the underlying `claude` process's kernel-side exit. During that
+        // window the spawned MCP grandchildren (e.g. mcp-remote) still
+        // have `claude` as their parent in /proc, so the reaper's
+        // PPID==1 filter skips them and the orphan is left behind to
+        // collide with the next agent run's MCP spawn (issue #210, the
+        // cross-run race).
+        //
+        // Give the kernel a moment to reap `claude` and re-parent its
+        // descendants to PID 1 before we sweep. 500 ms is generous; on a
+        // healthy host the exit completes within a few ms. Tests can set
+        // TALON_MCP_SWEEP_SETTLE_MS=0 to skip the delay.
+        const settleMs = Number.parseInt(
+          process.env.TALON_MCP_SWEEP_SETTLE_MS ?? '500',
+          10,
+        );
+        if (Number.isFinite(settleMs) && settleMs > 0) {
+          await new Promise<void>((resolve) => setTimeout(resolve, settleMs));
+        }
         try {
           cleanupOrphanedMcpChildren(this.logger);
         } catch (cause) {

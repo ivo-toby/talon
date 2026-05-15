@@ -184,9 +184,14 @@ describe('TalondDaemon', () => {
   beforeEach(() => {
     daemon = new TalondDaemon(createSilentLogger());
     vi.clearAllMocks();
+    // The production code adds a 500ms settle delay before the post-run
+    // MCP sweep so the kernel can reap the just-exited CLI subprocess and
+    // re-parent its MCP descendants to PID 1. Skip the delay in tests.
+    process.env.TALON_MCP_SWEEP_SETTLE_MS = '0';
   });
 
   afterEach(async () => {
+    delete process.env.TALON_MCP_SWEEP_SETTLE_MS;
     if (daemon.state !== 'stopped') {
       await daemon.stop();
     }
@@ -291,6 +296,34 @@ describe('TalondDaemon', () => {
       void result;
 
       expect(cleanupOrphanedMcpChildren).toHaveBeenCalledTimes(1);
+    });
+
+    it('settles for TALON_MCP_SWEEP_SETTLE_MS before sweeping (race fix for #210)', async () => {
+      // Reproduces the cross-run race: the SDK's query() can resolve a
+      // beat ahead of the underlying claude process's kernel-side exit,
+      // so the post-run sweep must wait for descendants to re-parent to
+      // PID 1 before walking /proc. The delay is read from
+      // TALON_MCP_SWEEP_SETTLE_MS so tests can opt out.
+      process.env.TALON_MCP_SWEEP_SETTLE_MS = '120';
+      try {
+        const ctx = setupSuccessfulBootstrap();
+        await daemon.start('/config.yaml');
+
+        const handler = (ctx.queueManager.startProcessing as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+        expect(typeof handler).toBe('function');
+        vi.mocked(cleanupOrphanedMcpChildren).mockClear();
+
+        const start = Date.now();
+        await handler!({ id: 'q1', threadId: 't1', payload: {} } as unknown);
+        const elapsed = Date.now() - start;
+
+        expect(cleanupOrphanedMcpChildren).toHaveBeenCalledTimes(1);
+        // Within a tolerance — the handler resolves AFTER the settle
+        // delay completes, so elapsed must be at least the configured ms.
+        expect(elapsed).toBeGreaterThanOrEqual(100);
+      } finally {
+        process.env.TALON_MCP_SWEEP_SETTLE_MS = '0';
+      }
     });
 
     it('runs the post-run MCP orphan sweep even when the runner throws', async () => {
