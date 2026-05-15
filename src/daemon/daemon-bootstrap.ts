@@ -111,6 +111,14 @@ export async function bootstrap(
 
   logger.info({ logLevel: config.logLevel }, 'bootstrap: config loaded');
 
+  // OAuth token store for HTTP MCP servers. Created early so it can be
+  // handed to both the foreground agent-runner path (via DaemonContext)
+  // and the background agent manager. `talonctl auth-mcp` writes
+  // bundles into <dataDir>/mcp-auth/; the daemon reads + refreshes
+  // them from the same path here, so foreground and background runs
+  // see identical materialized Bearer headers.
+  const oauthTokenStore = new OAuthTokenStore({ dataDir });
+
   // 2. Open database
   const dbResult = createDatabase(config.storage.path);
   if (dbResult.isErr()) {
@@ -588,6 +596,11 @@ export async function bootstrap(
       providerRegistry: backgroundProviderRegistry,
       executionEnvManager,
       hostToolsSocketPath: resolve(join(dataDir, 'host-tools.sock')),
+      // Share the same token store the foreground path uses so an
+      // `talonctl auth-mcp` run unlocks Glean (etc.) for both run
+      // types — without this, background runs receive raw
+      // `auth: { kind: 'oauth2' }` entries and the MCP server 401s.
+      oauthTokenStore,
       logger,
       observability,
     });
@@ -645,12 +658,6 @@ export async function bootstrap(
   // We build the context object first, then create the bridge and attach it.
   // Two-phase init: HostToolsBridge needs ctx, but ctx needs hostToolsBridge.
   // Build a partial context first, then fill in the bridge field.
-  // OAuth token store for HTTP MCP servers — backed by
-  // <dataDir>/mcp-auth/<tokenStore>.json files. The CLI command
-  // `talonctl auth-mcp` writes those files; the daemon reads + refreshes
-  // them on the way to materializing Authorization headers.
-  const oauthTokenStore = new OAuthTokenStore({ dataDir });
-
   const partialCtx = {
     db,
     config,

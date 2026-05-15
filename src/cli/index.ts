@@ -504,12 +504,13 @@ program
       process.exit(1);
       return;
     }
-    // Anchor `dataDir` to the dir containing the SQLite path so
-    // `data/mcp-auth/` lives alongside other Talon-managed state.
-    const dbPath = configResult.value.storage.path;
-    const dataDir = dbPath.includes('/')
-      ? dbPath.replace(/\/+[^/]+$/, '')
-      : '.';
+    // Resolve `dataDir` from the exact same config field the daemon uses
+    // in daemon-bootstrap.ts (`resolve(config.dataDir)`). Using a
+    // different source (e.g. derived from `storage.path`) would cause
+    // talonctl to write tokens to one directory and the daemon to read
+    // from another, producing "no cached tokens" failures at runtime
+    // even after a successful auth flow.
+    const dataDir = resolve(configResult.value.dataDir);
     try {
       await authMcp({
         selector,
