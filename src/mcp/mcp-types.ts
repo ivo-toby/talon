@@ -45,6 +45,13 @@ export interface McpServerConfig {
   /** Custom headers sent with HTTP/SSE transport requests (e.g. Authorization). */
   headers?: Record<string, string>;
 
+  /**
+   * Dynamic auth resolved by `resolveMcpServers()` before the server entry
+   * reaches a provider. The resolver materializes the credential into a
+   * header on `headers` and strips this field, so providers never see it.
+   */
+  auth?: McpAuthConfig;
+
   // --- common optional fields -----------------------------------------------
 
   /**
@@ -74,6 +81,29 @@ export interface McpServerConfig {
    * Defaults to 60 tokens per minute if not specified.
    */
   rateLimit?: McpRateLimitConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Auth configuration (dynamic, resolved per run)
+// ---------------------------------------------------------------------------
+
+/**
+ * Auth specifications recognised by `resolveMcpServers()`. Keep the
+ * discriminator on `kind` so future schemes (`basic`, `mtls`, …) land
+ * without breaking existing entries.
+ */
+export type McpAuthConfig = McpOAuth2AuthConfig;
+
+export interface McpOAuth2AuthConfig {
+  kind: 'oauth2';
+  /**
+   * Opaque, filesystem-safe identifier for the cached token bundle.
+   * Resolves to `<dataDir>/mcp-auth/<tokenStore>.json`. Skill-loader
+   * defaults this to `<skill>/<server>` when the skill author omits it,
+   * so the on-disk layout follows the same shape the CLI uses
+   * (`talonctl auth-mcp <skill>:<server>`).
+   */
+  tokenStore: string;
 }
 
 // ---------------------------------------------------------------------------

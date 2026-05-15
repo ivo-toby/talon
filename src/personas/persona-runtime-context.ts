@@ -153,6 +153,12 @@ export function buildPersonaRuntimeContext(
       transport: cfg.transport,
       url: cfg.url,
       ...(Object.keys(resolvedHeaders).length > 0 ? { headers: resolvedHeaders } : {}),
+      // Forward dynamic auth verbatim. `resolveMcpServers()` runs in the
+      // agent-runner and turns this into a materialized Bearer header
+      // before the entry reaches a provider — domain `McpAuthConfig`
+      // and canonical `McpAuthSpec` are structurally identical (same
+      // discriminator + same `tokenStore` field) so a flat copy is safe.
+      ...(cfg.auth ? { auth: cfg.auth } : {}),
     };
   }
 

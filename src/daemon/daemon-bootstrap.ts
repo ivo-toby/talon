@@ -73,6 +73,7 @@ import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { wrapProviderOptions } from '../subagents/provider-options.js';
+import { OAuthTokenStore } from '../auth/oauth-token-store.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -644,6 +645,12 @@ export async function bootstrap(
   // We build the context object first, then create the bridge and attach it.
   // Two-phase init: HostToolsBridge needs ctx, but ctx needs hostToolsBridge.
   // Build a partial context first, then fill in the bridge field.
+  // OAuth token store for HTTP MCP servers — backed by
+  // <dataDir>/mcp-auth/<tokenStore>.json files. The CLI command
+  // `talonctl auth-mcp` writes those files; the daemon reads + refreshes
+  // them on the way to materializing Authorization headers.
+  const oauthTokenStore = new OAuthTokenStore({ dataDir });
+
   const partialCtx = {
     db,
     config,
@@ -668,6 +675,7 @@ export async function bootstrap(
     executionEnvManager,
     contextRoller,
     contextAssembler,
+    oauthTokenStore,
     logger,
     a2aServer,
     a2aTaskMapper,

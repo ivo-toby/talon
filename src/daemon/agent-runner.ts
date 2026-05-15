@@ -9,6 +9,7 @@ import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
+import { resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import {
   TALON_SKILL_LOAD_TOOL_DESCRIPTION,
@@ -649,11 +650,21 @@ export class AgentRunner {
                   // streaming events). Events are sequential so FIFO order correctly pairs starts with ends.
                   const pendingNoIdToolObservations: StartedObservationHandle[] = [];
 
+                  // Materialize dynamic auth (OAuth bearers) on HTTP MCP
+                  // entries before handing them to the provider. Providers
+                  // stay completely unaware of `auth` — the resolver
+                  // strips the field and merges Authorization into headers.
+                  // Failure here surfaces with a "run talonctl auth-mcp …"
+                  // message so the operator can fix it without restarting.
+                  const resolvedMcpServers = await resolveMcpServers(mcpServers, {
+                    tokenStore: this.ctx.oauthTokenStore,
+                  });
+
                   const queryInput = {
                     threadId: item.threadId,
                     prompt: content,
                     systemPrompt,
-                    mcpServers,
+                    mcpServers: resolvedMcpServers,
                     cwd: workspaceResult.value,
                     model,
                     maxTurns: 25,

@@ -89,6 +89,23 @@ const McpRateLimitSchema = z.object({
   callsPerMinute: z.number().int().positive(),
 });
 
+/**
+ * Auth specification for HTTP/SSE MCP servers. The resolver
+ * (`resolveMcpServers()`) materializes the configured credential into
+ * an `Authorization` header at runtime; providers never see this field.
+ *
+ * `tokenStore` is an opaque, filesystem-safe identifier resolved to
+ * `<dataDir>/mcp-auth/<tokenStore>.json`. When omitted, the loader
+ * stamps a default of `<skillName>/<serverName>` so the on-disk path
+ * matches `talonctl auth-mcp <skill>:<server>`.
+ */
+const McpOAuth2AuthSchema = z.object({
+  kind: z.literal('oauth2'),
+  tokenStore: z.string().trim().min(1).optional(),
+});
+
+const McpAuthSchema = z.discriminatedUnion('kind', [McpOAuth2AuthSchema]);
+
 const McpServerConfigSchema = z.object({
   name: z.string().min(1).optional(),
   transport: z.enum(['stdio', 'sse', 'http']),
@@ -96,6 +113,7 @@ const McpServerConfigSchema = z.object({
   args: z.array(z.string()).optional(),
   url: z.string().optional(),
   headers: z.record(z.string(), z.string()).optional(),
+  auth: McpAuthSchema.optional(),
   env: z.record(z.string(), z.string()).optional(),
   allowedTools: z.array(z.string()).optional(),
   credentialScope: z.string().optional(),
@@ -107,7 +125,10 @@ const McpServerDefFileSchema = z.object({
   config: McpServerConfigSchema,
 }).transform((def) => ({
   ...def,
-  config: { ...def.config, name: def.config.name ?? def.name },
+  config: {
+    ...def.config,
+    name: def.config.name ?? def.name,
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -570,7 +591,23 @@ export class SkillLoader {
         );
       }
 
-      defs.push(parseResult.data as McpServerDef);
+      const def = parseResult.data as McpServerDef;
+      // Stamp the default OAuth tokenStore identifier so skill authors
+      // can declare `auth: { kind: 'oauth2' }` without repeating the
+      // skill/server name. The on-disk cache for this server then
+      // lives at `<dataDir>/mcp-auth/<skill>/<server>.json`, which
+      // matches the CLI command shape `talonctl auth-mcp <skill>:<server>`.
+      if (
+        (def.config.transport === 'http' || def.config.transport === 'sse')
+        && def.config.auth?.kind === 'oauth2'
+        && (def.config.auth.tokenStore === undefined || def.config.auth.tokenStore === '')
+      ) {
+        def.config.auth = {
+          ...def.config.auth,
+          tokenStore: `${skillName}/${def.config.name}`,
+        };
+      }
+      defs.push(def);
       this.logger.debug({ skill: skillName, file }, 'MCP server definition loaded');
     }
 
