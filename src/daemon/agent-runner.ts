@@ -539,7 +539,10 @@ export class AgentRunner {
                 },
                 async (generationObservation) => {
                   const sdkSkillServer: Record<string, CanonicalMcpSdkServer> = {};
-                  if (strategy.type === 'sdk' && skillContentMap.size > 0) {
+                  if (
+                    providerEntry.provider.skillLoaderTransport === 'in-process'
+                    && skillContentMap.size > 0
+                  ) {
                     const skillLoaderServer = createSdkMcpServer({
                       name: '__talond_skill_loader',
                       tools: [
@@ -601,7 +604,10 @@ export class AgentRunner {
                     },
                   };
 
-                  if (strategy.type === 'cli' && skillContentMap.size > 0) {
+                  if (
+                    providerEntry.provider.skillLoaderTransport === 'stdio'
+                    && skillContentMap.size > 0
+                  ) {
                     mcpServers.__talond_skill_loader = {
                       transport: 'stdio',
                       command: 'node',

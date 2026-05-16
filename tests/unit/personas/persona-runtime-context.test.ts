@@ -57,9 +57,9 @@ describe('buildPersonaRuntimeContext', () => {
       expect(index).toContain('- **search**: search description');
       expect(index).toContain('- **browser**: browser description');
       expect(index).toContain(
-        'For Talon skills, `skill_load` is authoritative. If a skill is listed here, call `skill_load` before claiming it is unavailable.',
+        'BEFORE acting on a user request, scan the skills above. If any "Use when…" trigger matches the request, call `skill_load` first',
       );
-      expect(index).toContain('A listed skill may not already be loaded into context.');
+      expect(index).toContain('A listed skill may not already be loaded into context');
       expect(index).not.toContain('prompt:search');
       expect(index).not.toContain('prompt:browser');
     });
@@ -114,6 +114,55 @@ describe('buildPersonaRuntimeContext', () => {
       });
 
       expect(result.personaPrompt).toContain('FULL PROMPT CONTENT');
+    });
+
+    it('honors per-skill eager flag in lazy mode (mixed loading)', () => {
+      const eagerSkill = makeLoadedSkill('reflexive', []);
+      eagerSkill.manifest.eager = true;
+      const lazySkill = makeLoadedSkill('episodic', []);
+      lazySkill.manifest.eager = false;
+      const resolvedSkills = [eagerSkill, lazySkill];
+
+      const skillResolver = {
+        mergePromptFragments: vi.fn((skills: LoadedSkill[]) =>
+          skills.map((s) => `BODY:${s.manifest.name}`).join('\n'),
+        ),
+        collectMcpServers: vi.fn().mockReturnValue([]),
+      };
+
+      const result = buildPersonaRuntimeContext({
+        loadedPersona,
+        resolvedSkills,
+        skillResolver: skillResolver as any,
+      });
+
+      // mergePromptFragments was called only with the eager skill
+      expect(skillResolver.mergePromptFragments).toHaveBeenCalledWith([eagerSkill]);
+      // Eager body merged into the prompt
+      expect(result.personaPrompt).toContain('BODY:reflexive');
+      expect(result.personaPrompt).not.toContain('BODY:episodic');
+      // Lazy skill appears in the index, eager skill does not
+      expect(result.personaPrompt).toContain('- **episodic**: episodic description');
+      expect(result.personaPrompt).not.toContain('- **reflexive**');
+    });
+
+    it('emits no index when every skill is eager', () => {
+      const eagerSkill = makeLoadedSkill('reflexive', []);
+      eagerSkill.manifest.eager = true;
+
+      const skillResolver = {
+        mergePromptFragments: vi.fn(() => 'BODY'),
+        collectMcpServers: vi.fn().mockReturnValue([]),
+      };
+
+      const result = buildPersonaRuntimeContext({
+        loadedPersona,
+        resolvedSkills: [eagerSkill],
+        skillResolver: skillResolver as any,
+      });
+
+      expect(result.personaPrompt).toContain('BODY');
+      expect(result.personaPrompt).not.toContain('## Talon Persona Skills');
     });
   });
 

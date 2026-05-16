@@ -17,6 +17,7 @@ import type { ProviderConfig } from '../core/config/config-types.js';
 
 export class ClaudeCodeProvider implements AgentProvider {
   readonly name = 'claude-code';
+  readonly skillLoaderTransport = 'in-process' as const;
 
   constructor(private readonly config: ProviderConfig) {}
 

@@ -104,6 +104,7 @@ type WrapperEvent =
 
 export class OpenAiCompatibleProvider implements AgentProvider {
   readonly name = 'openai-compatible';
+  readonly skillLoaderTransport = 'stdio' as const;
 
   constructor(
     private readonly config: ProviderConfig,

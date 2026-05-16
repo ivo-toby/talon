@@ -963,6 +963,20 @@ Only skill name and description are included in the agent's system prompt per ru
 
 Background agents use eager loading to ensure full access without calling `skill_load`.
 
+#### Per-skill eager opt-in
+
+Some skills describe reflexive behaviors (e.g. "search memory before answering") that smaller models miss when only the description is available. Mark such a skill `eager: true` in its `SKILL.md` frontmatter (or `skill.yaml`) and its full body is merged into the persona system prompt at startup — the rest of the persona's skills stay lazy.
+
+```yaml
+---
+name: my-skill
+description: Use when …
+eager: true
+---
+```
+
+Defaults to `false`. Useful when a persona runs on a model that doesn't reliably autonomously call `skill_load` for indirect triggers (most open-weight ≤70B-effective models).
+
 ### Skill Resolution
 
 Persona capabilities and skill requirements are intersected at runtime:

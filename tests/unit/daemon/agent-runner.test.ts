@@ -2601,6 +2601,7 @@ describe('AgentRunner', () => {
         getDefault: vi.fn().mockReturnValue({
           provider: {
             name: 'gemini-cli',
+            skillLoaderTransport: 'stdio' as const,
             createExecutionStrategy: () => ({
               type: 'cli' as const,
               supportsSessionResumption: false as const,
