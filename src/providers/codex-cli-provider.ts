@@ -45,6 +45,7 @@ interface RenderedCodexConfig {
 
 export class CodexCliProvider implements AgentProvider {
   readonly name = 'codex-cli';
+  readonly skillLoaderTransport = 'stdio' as const;
 
   constructor(
     private readonly config: ProviderConfig,

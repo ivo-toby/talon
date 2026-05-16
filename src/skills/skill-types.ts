@@ -74,6 +74,12 @@ export interface SkillManifest {
    * loader — execution is delegated to talonctl migrate.
    */
   migrations: string[];
+  /**
+   * When `true`, the skill body is merged into the persona system prompt at
+   * startup. When `false` (default), only the name+description appears in the
+   * lazy skill index and the body is loaded on demand via `skill_load`.
+   */
+  eager: boolean;
 }
 
 // ---------------------------------------------------------------------------

@@ -98,8 +98,30 @@ export type ExecutionStrategy =
   | CLIExecutionStrategy
   | StatelessCLIExecutionStrategy;
 
+/**
+ * How a provider receives the `skill_load` tool.
+ *
+ * - `in-process`: the agent-runner constructs the skill-loader server via
+ *   `@anthropic-ai/claude-agent-sdk`'s `createSdkMcpServer` and hands it to
+ *   the provider as a `transport: 'sdk'` entry. Only providers running on
+ *   the Anthropic SDK runtime can host this (currently `claude-code`).
+ * - `stdio`: the agent-runner spawns `dist/tools/skill-loader-mcp-server.js`
+ *   as a stdio MCP child process; the provider proxies it through its own
+ *   MCP layer like any other stdio server. Required for every provider
+ *   whose runtime can't host the in-process SDK server — including CLI-
+ *   strategy providers (gemini-cli) AND SDK-strategy providers that
+ *   delegate MCP to a child wrapper (codex-cli, openai-compatible).
+ *
+ * Decoupled from `ExecutionStrategy['type']` because the run-loop interface
+ * (`'sdk'` returns AsyncIterable, `'cli'` returns Promise) is orthogonal to
+ * how the provider hosts MCP servers. Conflating the two left codex-cli
+ * and openai-compatible silently without `skill_load`.
+ */
+export type SkillLoaderTransport = 'in-process' | 'stdio';
+
 export interface AgentProvider {
   readonly name: ProviderName;
+  readonly skillLoaderTransport: SkillLoaderTransport;
   createExecutionStrategy(): ExecutionStrategy;
   prepareBackgroundInvocation(input: ProviderSpawnInput): Result<PreparedProviderInvocation, BackgroundAgentError>;
   parseBackgroundResult(raw: {

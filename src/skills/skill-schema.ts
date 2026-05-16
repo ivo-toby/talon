@@ -71,6 +71,15 @@ export const SkillManifestSchema = z.object({
    * Auto-discovered from migrations/*.sql by the loader.
    */
   migrations: z.array(z.string()).default([]),
+
+  /**
+   * When `true`, the skill body is merged into the persona system prompt at
+   * startup (always loaded), instead of only the name+description appearing
+   * in the lazy skill index. Use for skills with reflexive triggers (e.g.
+   * `talon-memory` for "search memory before answering") that smaller models
+   * miss when only the description is available. Default `false`.
+   */
+  eager: z.boolean().default(false),
 });
 
 export const SkillMdFrontmatterSchema = z.object({
@@ -78,6 +87,8 @@ export const SkillMdFrontmatterSchema = z.object({
   version: z.string().min(1).default('0.1.0'),
   description: z.string().min(1, 'skill description must be non-empty'),
   requiredCapabilities: z.array(CapabilityLabelSchema).default([]),
+  /** See `SkillManifestSchema.eager`. */
+  eager: z.boolean().default(false),
 });
 
 // ---------------------------------------------------------------------------

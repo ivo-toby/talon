@@ -396,6 +396,7 @@ export class SkillLoader {
       toolManifests: [],
       mcpServers: [],
       migrations: [],
+      eager: parseResult.data.eager,
     };
 
     for (const label of manifest.requiredCapabilities) {
