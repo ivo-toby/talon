@@ -80,6 +80,18 @@ export const PersonaConfigSchema = z.object({
   name: z.string().min(1),
   model: z.string().default('claude-sonnet-4-6'),
   provider: z.string().trim().min(1).optional(),
+  /**
+   * Optional override: when set, background agents spawned by this persona use
+   * this provider instead of the persona's foreground `provider` (or the
+   * `backgroundAgent.defaultProvider`). Must be enabled under
+   * `backgroundAgent.providers`. Validated at config load.
+   */
+  backgroundProvider: z.string().trim().min(1).optional(),
+  /**
+   * Optional model override paired with `backgroundProvider`. Ignored when
+   * `backgroundProvider` is not set (to prevent cross-provider model leaks).
+   */
+  backgroundModel: z.string().trim().min(1).optional(),
   systemPromptFile: z.string().optional(),
   /**
    * Maximum time in minutes the agent runner will wait for a single query to complete.

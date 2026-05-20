@@ -824,6 +824,40 @@ describe('AgentRunnerConfigSchema', () => {
 });
 
 // ---------------------------------------------------------------------------
+// PersonaConfigSchema — background overrides
+// ---------------------------------------------------------------------------
+
+describe('PersonaConfigSchema — background overrides', () => {
+  it('accepts optional backgroundProvider and backgroundModel', () => {
+    const parsed = PersonaConfigSchema.parse({
+      name: 'assistant',
+      backgroundProvider: 'claude-code',
+      backgroundModel: 'claude-sonnet-4-6',
+    });
+    expect(parsed.backgroundProvider).toBe('claude-code');
+    expect(parsed.backgroundModel).toBe('claude-sonnet-4-6');
+  });
+
+  it('defaults backgroundProvider and backgroundModel to undefined when omitted', () => {
+    const parsed = PersonaConfigSchema.parse({ name: 'assistant' });
+    expect(parsed.backgroundProvider).toBeUndefined();
+    expect(parsed.backgroundModel).toBeUndefined();
+  });
+
+  it('rejects empty string backgroundProvider', () => {
+    expect(() =>
+      PersonaConfigSchema.parse({ name: 'assistant', backgroundProvider: '   ' }),
+    ).toThrow();
+  });
+
+  it('rejects empty string backgroundModel', () => {
+    expect(() =>
+      PersonaConfigSchema.parse({ name: 'assistant', backgroundModel: '' }),
+    ).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // TalondConfigSchema (root)
 // ---------------------------------------------------------------------------
 
