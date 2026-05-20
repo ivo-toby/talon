@@ -140,6 +140,7 @@ export class HostToolsBridge {
     if (ctx.backgroundAgentManager) {
       this.backgroundAgentHandler = new BackgroundAgentHandler({
         backgroundAgentManager: ctx.backgroundAgentManager,
+        backgroundProviderRegistry: ctx.backgroundProviderRegistry,
         personaRepository: ctx.repos.persona,
         personaLoader: ctx.personaLoader,
         threadRepository: ctx.repos.thread,

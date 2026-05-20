@@ -678,6 +678,7 @@ export async function bootstrap(
     observability,
     subAgentRunner,
     providerRegistry,
+    backgroundProviderRegistry,
     backgroundAgentManager,
     executionEnvManager,
     contextRoller,

@@ -9,6 +9,7 @@ import type { ChannelRepository } from '../../core/database/repositories/channel
 import type { SkillResolver } from '../../skills/skill-resolver.js';
 import type { ContextAssembler } from '../../daemon/context-assembler.js';
 import type { LoadedSkill } from '../../skills/skill-types.js';
+import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import { buildPersonaRuntimeContext } from '../../personas/persona-runtime-context.js';
 import type { BackgroundTask } from '../../subagents/background/background-agent-types.js';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
@@ -32,6 +33,7 @@ export interface BackgroundAgentArgs {
 
 interface BackgroundAgentHandlerDeps {
   backgroundAgentManager: BackgroundAgentManager;
+  backgroundProviderRegistry: Pick<ProviderRegistry, 'hasProvider'>;
   personaRepository: PersonaRepository;
   personaLoader: PersonaLoader;
   threadRepository: ThreadRepository;
@@ -218,16 +220,33 @@ export class BackgroundAgentHandler {
       );
     }
 
-    // Resolve provider: explicit arg > persona/profile config > undefined (daemon default).
+    // Resolution chain (most specific to least specific):
+    //   1. args.provider — strict, honored as-is; manager validates registry membership
+    //   2. persona.backgroundProvider — config-load validated against background registry
+    //   3. persona.provider — only if also enabled in background registry (safety net
+    //      for personas whose foreground runtime is unsuitable for background work,
+    //      e.g. local Ollama on a small model)
+    //   4. undefined — manager picks backgroundAgent.defaultProvider
     const explicitProvider =
       typeof args.provider === 'string' && args.provider.trim().length > 0
         ? args.provider.trim()
         : undefined;
+    const personaBackgroundProvider =
+      typeof loadedPersona.config.backgroundProvider === 'string' &&
+      loadedPersona.config.backgroundProvider.trim().length > 0
+        ? loadedPersona.config.backgroundProvider.trim()
+        : undefined;
     const personaProvider =
-      typeof loadedPersona.config.provider === 'string' && loadedPersona.config.provider.trim().length > 0
+      typeof loadedPersona.config.provider === 'string' &&
+      loadedPersona.config.provider.trim().length > 0
         ? loadedPersona.config.provider.trim()
         : undefined;
-    const resolvedProvider = explicitProvider ?? personaProvider;
+    const personaProviderIfAvailable =
+      personaProvider && this.deps.backgroundProviderRegistry.hasProvider(personaProvider)
+        ? personaProvider
+        : undefined;
+    const resolvedProvider =
+      explicitProvider ?? personaBackgroundProvider ?? personaProviderIfAvailable;
     const allowedMcpTools = filterAllowedMcpTools(
       loadedPersona.resolvedCapabilities ?? { allow: [], requireApproval: [] },
     ).filter((toolName) => toolName !== 'background_agent');
