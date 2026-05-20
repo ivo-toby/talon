@@ -432,6 +432,63 @@ describe('bootstrap', () => {
       expect(db.close).toHaveBeenCalledOnce();
       expect(observability.shutdown).toHaveBeenCalledOnce();
     });
+
+    it('returns error when a persona backgroundProvider passes schema validation but has no registered factory', async () => {
+      // Scenario: user writes a provider name that is enabled in
+      // backgroundAgent.providers (so schema validation passes) but whose
+      // key has no matching factory in the ProviderRegistry constructor
+      // (e.g. a typo like "claud-code" instead of "claude-code"). The
+      // registry silently drops it; without this bootstrap-time guard the
+      // misconfiguration would only surface at first background-agent spawn.
+      const config = makeConfig({
+        backgroundAgent: {
+          enabled: true,
+          maxConcurrent: 3,
+          defaultTimeoutMinutes: 30,
+          defaultProvider: 'claude-code',
+          providers: {
+            'claude-code': makeBackgroundProviderConfig(),
+            // "typoed-provider" has enabled:true so schema superRefine
+            // accepts it, but no factory exists for this key, so the
+            // ProviderRegistry drops it silently.
+            'typoed-provider': makeBackgroundProviderConfig({ command: 'nonexistent' }),
+          },
+        },
+        personas: [
+          {
+            name: 'testbot',
+            backgroundProvider: 'typoed-provider',
+          },
+        ],
+      });
+      const db = makeMockDb();
+      const observability = {
+        observe: vi.fn(),
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(loadConfig).mockReturnValue(ok(config as any));
+      vi.mocked(createDatabase).mockReturnValue(ok(db as any));
+      vi.mocked(runMigrations).mockReturnValue(ok(1));
+      vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
+      // Restore PersonaLoader and SkillLoader to success — previous failure
+      // tests override these and clearAllMocks does not reset implementations.
+      vi.mocked(PersonaLoader).mockImplementation(() => ({
+        loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+        getByName: vi.fn().mockReturnValue(ok({})),
+      }) as any);
+      vi.mocked(SkillLoader).mockImplementation(() => ({
+        loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
+      }) as any);
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isErr()).toBe(true);
+      const msg = result._unsafeUnwrapErr().message;
+      expect(msg).toContain('testbot');
+      expect(msg).toContain('typoed-provider');
+      expect(msg).toContain('not available in the background agent registry');
+    });
   });
 
   // -------------------------------------------------------------------------
