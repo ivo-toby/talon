@@ -82,14 +82,15 @@ export const PersonaConfigSchema = z.object({
   provider: z.string().trim().min(1).optional(),
   /**
    * Optional override: when set, background agents spawned by this persona use
-   * this provider instead of the persona's foreground `provider` (or the
-   * `backgroundAgent.defaultProvider`). Must be enabled under
-   * `backgroundAgent.providers`. Validated at config load.
+   * this provider instead of the persona's foreground `provider`. Cross-validated
+   * against `backgroundAgent.providers` at root config level.
    */
   backgroundProvider: z.string().trim().min(1).optional(),
   /**
-   * Optional model override paired with `backgroundProvider`. Ignored when
-   * `backgroundProvider` is not set (to prevent cross-provider model leaks).
+   * Optional model override paired with `backgroundProvider`. When
+   * `backgroundProvider` is absent, this field is ignored by the runtime
+   * resolution chain (prevents forwarding a non-matching model name like
+   * `gpt-oss` to a claude-code background provider).
    */
   backgroundModel: z.string().trim().min(1).optional(),
   systemPromptFile: z.string().optional(),
