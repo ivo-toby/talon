@@ -264,16 +264,23 @@ export class BackgroundAgentHandler {
       );
     }
 
-    // Only forward the persona's model when:
-    // 1. No explicit provider override was given in the tool args, AND
-    // 2. The persona itself has an explicit provider configured.
+    // Model resolution mirrors provider resolution:
+    //   - args.provider given                                   → no model
+    //   - persona.backgroundProvider used                       → persona.backgroundModel
+    //   - persona.provider used (validated against registry)    → persona.model
+    //   - daemon default                                        → no model
     //
-    // When the persona has no provider, the background agent falls back to
-    // backgroundAgent.defaultProvider, which may differ from the agentRunner's
-    // default. Forwarding the persona's model (configured for the agent-runner
-    // provider) to a different background provider causes cross-provider model
-    // mismatches (e.g. "gpt-5.4" sent to claude-code).
-    const shouldForwardModel = !explicitProvider && !!personaProvider && !!loadedPersona.config.model;
+    // This prevents cross-provider model mismatches (e.g. an Ollama model name
+    // sent to claude-code) when a persona's foreground stack differs from the
+    // background stack.
+    let resolvedModel: string | undefined;
+    if (!explicitProvider) {
+      if (personaBackgroundProvider) {
+        resolvedModel = loadedPersona.config.backgroundModel ?? undefined;
+      } else if (personaProviderIfAvailable && loadedPersona.config.model) {
+        resolvedModel = loadedPersona.config.model;
+      }
+    }
 
     const toolInstructionsBlock = resolveToolInstructions(
       this.deps.toolInstructions,
@@ -299,12 +306,7 @@ export class BackgroundAgentHandler {
       sandbox,
       executionEnvDefaults: loadedPersona.config.executionEnv as PersonaExecutionEnvConfig,
       ...(profileName ? { profileName } : {}),
-      // TODO(Task 5): shouldForwardModel should consult resolvedProvider rather
-      // than raw personaProvider. Today this can forward the persona's model
-      // even when personaProviderIfAvailable resolved to undefined (the persona's
-      // foreground provider isn't enabled for background runs), causing cross-
-      // provider model leaks (e.g. an Ollama model name passed to claude-code).
-      ...(shouldForwardModel ? { model: loadedPersona.config.model } : {}),
+      ...(resolvedModel ? { model: resolvedModel } : {}),
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.timeoutMinutes ? { timeoutMinutes: args.timeoutMinutes } : {}),
       traceparent: context.traceparent,
