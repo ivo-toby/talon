@@ -1161,3 +1161,46 @@ describe('background-agent model resolution chain', () => {
     expect(spawnArgs.model).toBeUndefined();
   });
 });
+
+describe('regression: openai-compatible persona spawning background agents', () => {
+  it('does not forward openai-compatible to the background manager (trace 91a662301c97b16bb345de7cec973286)', async () => {
+    // Reproduces the original report: persona has `provider: openai-compatible`
+    // (foreground), backgroundAgent.providers only enables claude-code + codex-cli.
+    // Before the fix, openai-compatible was forwarded as an "explicit" provider
+    // and tripped the manager's strict registry check.
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation(
+        (name: string) => name === 'claude-code' || name === 'codex-cli',
+      ),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              model: 'kimi-k2.6:cloud',
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'do background work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(result.status).toBe('success');
+    const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBeUndefined(); // manager picks defaultProvider
+    expect(spawnArgs.model).toBeUndefined();    // no cross-provider model leak
+  });
+});
