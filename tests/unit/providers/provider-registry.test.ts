@@ -206,5 +206,13 @@ describe('ProviderRegistry', () => {
       );
       expect(registry.hasProvider('codex-cli')).toBe(false);
     });
+
+    it('returns false for a provider that has no matching factory', () => {
+      const registry = new ProviderRegistry(
+        { 'unknown-provider': makeProviderConfig() },
+        {}, // no factories
+      );
+      expect(registry.hasProvider('unknown-provider')).toBe(false);
+    });
   });
 });
