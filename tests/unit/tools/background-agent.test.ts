@@ -1000,5 +1000,6 @@ describe('background-agent provider resolution chain', () => {
     expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'codex-cli' }),
     );
+    expect((deps.backgroundProviderRegistry as any).hasProvider).not.toHaveBeenCalled();
   });
 });

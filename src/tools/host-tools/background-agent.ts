@@ -241,8 +241,13 @@ export class BackgroundAgentHandler {
       loadedPersona.config.provider.trim().length > 0
         ? loadedPersona.config.provider.trim()
         : undefined;
+    // Tier 3 registry lookup is only needed when tiers 1 and 2 don't apply —
+    // avoid calling hasProvider unnecessarily (short-circuit for explicit provider).
     const personaProviderIfAvailable =
-      personaProvider && this.deps.backgroundProviderRegistry.hasProvider(personaProvider)
+      !explicitProvider &&
+      !personaBackgroundProvider &&
+      personaProvider &&
+      this.deps.backgroundProviderRegistry.hasProvider(personaProvider)
         ? personaProvider
         : undefined;
     const resolvedProvider =
@@ -294,10 +299,11 @@ export class BackgroundAgentHandler {
       sandbox,
       executionEnvDefaults: loadedPersona.config.executionEnv as PersonaExecutionEnvConfig,
       ...(profileName ? { profileName } : {}),
-      // Only pass the persona's model when the resolved provider matches the persona's
-      // configured provider (or when the persona has no provider set). This prevents
-      // cross-provider model mismatches (e.g. "claude-opus-4-6" on gemini-cli) that
-      // occur when the daemon default provider differs from the profile's provider.
+      // TODO(Task 5): shouldForwardModel should consult resolvedProvider rather
+      // than raw personaProvider. Today this can forward the persona's model
+      // even when personaProviderIfAvailable resolved to undefined (the persona's
+      // foreground provider isn't enabled for background runs), causing cross-
+      // provider model leaks (e.g. an Ollama model name passed to claude-code).
       ...(shouldForwardModel ? { model: loadedPersona.config.model } : {}),
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.timeoutMinutes ? { timeoutMinutes: args.timeoutMinutes } : {}),
