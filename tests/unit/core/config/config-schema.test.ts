@@ -1147,5 +1147,22 @@ describe('TalondConfigSchema', () => {
       // ZodError serialises issue messages as JSON, so " becomes \" in the thrown message string
       expect(() => TalondConfigSchema.parse(cfg)).toThrow(/persona \\"bad\\"/i);
     });
+
+    it('rejects invalid backgroundProvider even when backgroundAgent.enabled is false', () => {
+      const cfg = baseConfig();
+      cfg.backgroundAgent.enabled = false;
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'openai-compatible' } as any;
+      // ZodError serialises issue messages as JSON, so " becomes \" in the thrown message string
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundProvider \\"openai-compatible\\" is not enabled/i,
+      );
+    });
+
+    it('includes "(none)" in the error message when backgroundAgent.providers is empty', () => {
+      const cfg = baseConfig();
+      cfg.backgroundAgent.providers = {} as any;
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'claude-code' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(/Enabled providers:.*?\(none\)/i);
+    });
   });
 });
