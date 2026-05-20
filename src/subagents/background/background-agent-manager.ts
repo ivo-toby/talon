@@ -60,7 +60,7 @@ interface BackgroundAgentManagerDeps {
   maxConcurrent: number;
   defaultTimeoutMinutes: number;
   defaultProvider: string;
-  providerRegistry: Pick<ProviderRegistry, 'get' | 'getDefault' | 'listEnabled'>;
+  providerRegistry: Pick<ProviderRegistry, 'get' | 'getDefault' | 'listEnabled' | 'hasProvider'>;
   logger: pino.Logger;
   processFactory?: (options: BackgroundAgentProcessOptions) => BackgroundAgentProcess;
   isPidAlive?: (pid: number) => boolean;
