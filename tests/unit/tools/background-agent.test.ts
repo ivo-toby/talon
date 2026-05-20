@@ -634,7 +634,7 @@ describe('BackgroundAgentHandler', () => {
       expect(backgroundAgentManager.spawn.mock.calls[0][0].model).toBeUndefined();
     });
 
-    it('passes model when persona has both model and explicit provider', async () => {
+    it('passes model when persona.provider is registered in the background registry', async () => {
       const { handler, backgroundAgentManager, deps } = createHandler();
 
       deps.personaLoader.getByName = vi.fn().mockReturnValue(
@@ -1126,6 +1126,38 @@ describe('background-agent model resolution chain', () => {
 
     const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
     expect(spawnArgs.provider).toBe('gemini-cli');
+    expect(spawnArgs.model).toBeUndefined();
+  });
+
+  it('does NOT forward a model when backgroundProvider is set but backgroundModel is absent', async () => {
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              model: 'gpt-oss',
+              backgroundProvider: 'claude-code',
+              // intentionally no backgroundModel
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBe('claude-code');
     expect(spawnArgs.model).toBeUndefined();
   });
 });

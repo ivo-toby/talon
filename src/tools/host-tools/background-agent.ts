@@ -276,7 +276,7 @@ export class BackgroundAgentHandler {
     let resolvedModel: string | undefined;
     if (!explicitProvider) {
       if (personaBackgroundProvider) {
-        resolvedModel = loadedPersona.config.backgroundModel ?? undefined;
+        resolvedModel = loadedPersona.config.backgroundModel;
       } else if (personaProviderIfAvailable && loadedPersona.config.model) {
         resolvedModel = loadedPersona.config.model;
       }
