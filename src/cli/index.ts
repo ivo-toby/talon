@@ -60,6 +60,11 @@ if (existsSync(envPath)) {
   }
 }
 
+// Default config path for `--config`. Honors TALOND_CONFIG_PATH so the docker
+// starter bundle (which sets this env var in the container) and other deploys
+// don't need to pass --config on every command.
+const DEFAULT_CONFIG_PATH = process.env.TALOND_CONFIG_PATH ?? 'talond.yaml';
+
 const program = new Command();
 
 function parseBooleanOption(value: string): boolean {
@@ -99,7 +104,7 @@ program
 program
   .command('migrate')
   .description('Apply database migrations')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action((opts: { config: string }) => {
     migrateCommand({ configPath: opts.config });
   });
@@ -107,7 +112,7 @@ program
 program
   .command('backup')
   .description('Backup database, config, personas, and skills')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--output <path>', 'Backup output directory (overrides default)')
   .action(async (opts: { config: string; output?: string }) => {
     await backupCommand({
@@ -131,7 +136,7 @@ program
 program
   .command('doctor')
   .description('Check system requirements and configuration')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { config: string }) => {
     await doctorCommand({ configPath: opts.config });
   });
@@ -139,7 +144,7 @@ program
 program
   .command('setup')
   .description('First-time setup: detect environment, create directories, generate config')
-  .option('--config <path>', 'Path to write talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to write talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--data-dir <path>', 'Data directory path', 'data')
   .action(async (opts: { config: string; dataDir: string }) => {
     await setupCommand({
@@ -153,7 +158,7 @@ program
   .description('Add a channel connector to talond.yaml')
   .requiredOption('--name <name>', 'Unique channel name (e.g. my-telegram)')
   .requiredOption('--type <type>', 'Connector type (e.g. telegram, slack, discord)')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { name: string; type: string; config: string }) => {
     await addChannelCommand({
       name: opts.name,
@@ -166,7 +171,7 @@ program
   .command('add-persona')
   .description('Scaffold a persona directory and add it to talond.yaml')
   .requiredOption('--name <name>', 'Persona name (e.g. assistant)')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--templates-dir <path>', 'Path to templates directory', 'templates')
   .option('--model <model>', 'Model name')
   .option('--provider <provider>', 'Provider name')
@@ -207,7 +212,7 @@ program
   .requiredOption('--name <name>', 'Skill name (e.g. web-search)')
   .requiredOption('--persona <persona>', 'Persona to attach the skill to')
   .option('--format <format>', 'Skill format: yaml or skillmd', 'yaml')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { name: string; persona: string; format: string; config: string }) => {
     if (opts.format !== 'yaml' && opts.format !== 'skillmd') {
       console.error(`Error: invalid format "${opts.format}". Must be "yaml" or "skillmd".`);
@@ -269,7 +274,7 @@ program
 program
   .command('list-channels')
   .description('List all configured channels')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { config: string }) => {
     await listChannelsCommand({ configPath: opts.config });
   });
@@ -277,7 +282,7 @@ program
 program
   .command('list-personas')
   .description('List all configured personas')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { config: string }) => {
     await listPersonasCommand({ configPath: opts.config });
   });
@@ -285,7 +290,7 @@ program
 program
   .command('list-skills')
   .description('List all skills (optionally filter by persona)')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--persona <name>', 'Filter skills by persona name')
   .action(async (opts: { config: string; persona?: string }) => {
     await listSkillsCommand({ configPath: opts.config, personaName: opts.persona });
@@ -307,7 +312,7 @@ program
   .option('--remove <labels>', 'Remove from allow list (comma-separated)')
   .option('--require-approval <labels>', 'Replace requireApproval list (comma-separated)')
   .option('--show', 'Show current capabilities without modifying')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: {
     persona: string;
     allow?: string;
@@ -333,7 +338,7 @@ program
   .description('Bind a persona to a channel')
   .requiredOption('--persona <name>', 'Persona name')
   .requiredOption('--channel <name>', 'Channel name')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { persona: string; channel: string; config: string }) => {
     await bindCommand({ persona: opts.persona, channel: opts.channel, configPath: opts.config });
   });
@@ -343,7 +348,7 @@ program
   .description('Remove a persona-channel binding')
   .requiredOption('--persona <name>', 'Persona name')
   .requiredOption('--channel <name>', 'Channel name')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { persona: string; channel: string; config: string }) => {
     await unbindCommand({ persona: opts.persona, channel: opts.channel, configPath: opts.config });
   });
@@ -382,7 +387,7 @@ program
 program
   .command('env-check')
   .description('Check environment variables referenced in config')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { config: string }) => {
     await envCheckCommand({ configPath: opts.config });
   });
@@ -391,7 +396,7 @@ program
   .command('remove-channel')
   .description('Remove a channel from talond.yaml')
   .requiredOption('--name <name>', 'Channel name to remove')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { name: string; config: string }) => {
     await removeChannelCommand({ name: opts.name, configPath: opts.config });
   });
@@ -400,7 +405,7 @@ program
   .command('remove-persona')
   .description('Remove a persona from talond.yaml')
   .requiredOption('--name <name>', 'Persona name to remove')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { name: string; config: string }) => {
     await removePersonaCommand({ name: opts.name, configPath: opts.config });
   });
@@ -408,7 +413,7 @@ program
 program
   .command('config-show')
   .description('Show effective config with env vars substituted (secrets masked)')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--show-secrets', 'Show secret values instead of masking them')
   .action(async (opts: { config: string; showSecrets?: boolean }) => {
     await configShowCommand({ configPath: opts.config, showSecrets: opts.showSecrets });
@@ -430,7 +435,7 @@ program
     '--prompt-file <name>',
     'Prompt file basename in the persona\'s prompts/ dir (without .md), resolved by the scheduler at fire time',
   )
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: {
     persona: string;
     channel: string;
@@ -465,7 +470,7 @@ program
   .command('list-schedules')
   .description('List all scheduled tasks')
   .option('--persona <name>', 'Filter by persona name')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { config: string; persona?: string }) => {
     await listSchedulesCommand({ configPath: opts.config, persona: opts.persona });
   });
@@ -491,7 +496,7 @@ program
     'Localhost callback port (default 8788)',
     (v) => Number.parseInt(v, 10),
   )
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--skills-dir <path>', 'Path to the skills/ directory', 'skills')
   .action(async (
     selector: string,
@@ -533,7 +538,7 @@ program
   .command('remove-schedule')
   .description('Permanently delete a scheduled task')
   .argument('<schedule-id>', 'Schedule ID to remove')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (scheduleId: string, opts: { config: string }) => {
     await removeScheduleCommand({ scheduleId, configPath: opts.config });
   });
@@ -547,7 +552,7 @@ program
   .description('Manually invoke a sub-agent for testing (no daemon required)')
   .requiredOption('--name <name>', 'Sub-agent name (e.g. "session-summarizer")')
   .requiredOption('--input <json>', 'JSON input for the sub-agent')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--subagents-dir <path>', 'Sub-agents directory (overrides config default)')
   .action(async (opts: { name: string; input: string; config: string; subagentsDir?: string }) => {
     await runSubAgentCommand({
@@ -565,7 +570,7 @@ program
 program
   .command('list-providers')
   .description('List all configured providers from agentRunner and backgroundAgent')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { config: string }) => {
     await listProvidersCommand({ configPath: opts.config });
   });
@@ -587,7 +592,7 @@ program
   .option('--summarizer <name>', 'Subagent name used for session summarization', 'session-summarizer')
   .option('--enabled', 'Enable the provider immediately (default: disabled)')
   .option('--default-model <model>', 'Set options.defaultModel (e.g. gemini-2.5-pro)')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: {
     name: string;
     command: string;
@@ -630,7 +635,7 @@ program
   .description('Switch the default provider for agent-runner or background context')
   .requiredOption('--name <name>', 'Provider name to set as default')
   .requiredOption('--context <ctx>', 'Context: agent-runner or background')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { name: string; context: string; config: string }) => {
     await setDefaultProviderCommand({
       name: opts.name,
@@ -644,7 +649,7 @@ program
   .description('Test a provider by running a version check and minimal prompt')
   .requiredOption('--name <name>', 'Provider name to test')
   .option('--context <ctx>', 'Context: agent-runner or background', 'agent-runner')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { name: string; context: string; config: string }) => {
     await testProviderCommand({
       name: opts.name,
@@ -657,7 +662,7 @@ program
   .command('list-threads')
   .description('List persisted threads for a channel, including external IDs and latest provider info')
   .requiredOption('--channel <name>', 'Channel name')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { channel: string; config: string }) => {
     await listThreadsCommand({
       channel: opts.channel,
@@ -672,7 +677,7 @@ program
   .option('--external-id <id>', 'Thread external ID. Use `talonctl list-threads --channel <name>` to discover values.')
   .option('--all', 'Reset affinity for all threads on this channel')
   .option('--yes', 'Bypass the confirmation prompt')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { channel: string; externalId?: string; all?: boolean; yes?: boolean; config: string }) => {
     if (!opts.all && !opts.externalId) {
       console.error('Error: specify --external-id <id> or --all');
@@ -735,7 +740,7 @@ a2a
   .option('--status <state>', 'Filter by task state (submitted, working, completed, failed, canceled)')
   .option('--target <persona>', 'Filter by target persona name')
   .option('--limit <n>', 'Maximum number of tasks to show', '20')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { status?: string; target?: string; limit: string; config: string }) => {
     const limit = parseInt(opts.limit, 10);
     if (isNaN(limit) || limit < 1) {
@@ -754,7 +759,7 @@ a2a
   .command('send <target-persona> <message>')
   .description('Submit a manual A2A task to a persona (for testing)')
   .option('--source <persona>', 'Source persona name (defaults to "cli")', 'cli')
-  .option('--config <path>', 'Path to talond.yaml', 'talond.yaml')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (targetPersona: string, message: string, opts: { source: string; config: string }) => {
     await a2aSendCommand({
       configPath: opts.config,

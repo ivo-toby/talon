@@ -28,10 +28,10 @@ channels:
     name: personal-telegram
     enabled: true
     config:
-      token: ${TELEGRAM_BOT_TOKEN}
-      allowedUserIds:
-        - 123456789
-      pollIntervalMs: 1000
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowedChatIds:
+        - "123456789"
+      pollingTimeoutSec: 30
 
   # WhatsApp Web bridge via Baileys — no Meta Business account required.
   # Authenticate first: npx talonctl whatsapp-auth --auth-dir ./baileys-auth

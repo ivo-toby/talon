@@ -1,0 +1,70 @@
+# =============================================================================
+# docker-compose.yaml — Talon starter
+# =============================================================================
+# Quick start:
+#   1. cp .env.example .env                          # add your secrets
+#   2. cp config/talond.example.yaml config/talond.yaml   # edit for your setup
+#   3. docker compose up -d
+#   4. ./bin/talonctl status                         # or `talonctl status` if installed
+# =============================================================================
+
+services:
+  talond:
+    image: ghcr.io/ivo-toby/talond:latest
+    container_name: talond
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      TALOND_DATA_DIR: /data
+      TALOND_CONFIG_PATH: /config/talond.yaml
+
+    volumes:
+      # Persistent data: SQLite DB, PID file, IPC socket.
+      # Bind-mounted (not a named volume) so `talonctl` from the host can reach
+      # the socket directly once the host-side CLI ships (today's wrapper uses
+      # `docker exec` and works either way).
+      - ./data:/data
+
+      # Configuration: bind-mount your edited talond.yaml. NOT read-only
+      # because the bundled setup skills and talonctl commands (add-channel,
+      # add-persona, bind, …) mutate this file in place.
+      - type: bind
+        source: ./config/talond.yaml
+        target: /config/talond.yaml
+
+      # Personas: edit prompts from the host. Persona dirs live here.
+      - type: bind
+        source: ./personas
+        target: /personas
+
+      # Optional: custom skills and sub-agents.
+      # - type: bind
+      #   source: ./skills
+      #   target: /skills
+      # - type: bind
+      #   source: ./subagents
+      #   target: /subagents
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "const fs=require('fs');const p=process.env.TALON_PID_FILE||'/data/talond.pid';if(!fs.existsSync(p)){process.exit(1);}try{process.kill(parseInt(fs.readFileSync(p,'utf8').trim()),0);process.exit(0);}catch{process.exit(1);}"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    cap_drop:
+      - ALL
+
+    security_opt:
+      - no-new-privileges:true
+
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M

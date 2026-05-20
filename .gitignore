@@ -56,3 +56,7 @@ baileys-auth*
 
 # Ad-hoc UI screenshots from local testing
 chat-ui-*.png
+
+# Starter bundle — synced skill dirs are regenerated from .claude/skills/ via
+# scripts/sync-starter-skills.sh. INCLUDED.txt stays tracked.
+starter/.claude/skills/*/
