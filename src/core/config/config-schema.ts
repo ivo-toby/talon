@@ -374,21 +374,52 @@ export const SubAgentsConfigSchema = z.record(z.string(), SubAgentOverrideSchema
 // Root config
 // ---------------------------------------------------------------------------
 
-export const TalondConfigSchema = z.object({
-  storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
-  sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
-  channels: z.array(ChannelConfigSchema).default([]),
-  personas: z.array(PersonaConfigSchema).default([]),
-  bindings: z.array(BindingConfigSchema).default([]),
-  ipc: IpcConfigSchema.default(() => IpcConfigSchema.parse({})),
-  queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
-  scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),
-  auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
-  agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
-  backgroundAgent: BackgroundAgentConfigSchema.default(() => BackgroundAgentConfigSchema.parse({})),
-  sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
-  langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
-  subagents: SubAgentsConfigSchema.default({}),
-  logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-  dataDir: z.string().default('data'),
-});
+export const TalondConfigSchema = z
+  .object({
+    storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
+    sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
+    channels: z.array(ChannelConfigSchema).default([]),
+    personas: z.array(PersonaConfigSchema).default([]),
+    bindings: z.array(BindingConfigSchema).default([]),
+    ipc: IpcConfigSchema.default(() => IpcConfigSchema.parse({})),
+    queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
+    scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),
+    auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
+    agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
+    backgroundAgent: BackgroundAgentConfigSchema.default(() =>
+      BackgroundAgentConfigSchema.parse({}),
+    ),
+    sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
+    langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
+    subagents: SubAgentsConfigSchema.default({}),
+    logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+    dataDir: z.string().default('data'),
+  })
+  .superRefine((value, ctx) => {
+    const enabledBackgroundProviders = new Set(
+      Object.entries(value.backgroundAgent.providers)
+        .filter(([, p]) => p.enabled)
+        .map(([name]) => name),
+    );
+
+    value.personas.forEach((persona, index) => {
+      if (persona.backgroundProvider) {
+        if (!enabledBackgroundProviders.has(persona.backgroundProvider)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['personas', index, 'backgroundProvider'],
+            message:
+              `persona "${persona.name}": backgroundProvider "${persona.backgroundProvider}" ` +
+              `is not enabled in backgroundAgent.providers. ` +
+              `Enabled providers: ${[...enabledBackgroundProviders].join(', ') || '(none)'}.`,
+          });
+        }
+      } else if (persona.backgroundModel) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['personas', index, 'backgroundModel'],
+          message: `persona "${persona.name}": backgroundModel requires backgroundProvider to be set.`,
+        });
+      }
+    });
+  });

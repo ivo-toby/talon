@@ -1088,4 +1088,64 @@ describe('TalondConfigSchema', () => {
       expect((result.data as Record<string, unknown>)['unknownField']).toBeUndefined();
     }
   });
+
+  describe('TalondConfigSchema — backgroundProvider cross-validation', () => {
+    function baseConfig() {
+      return {
+        personas: [{ name: 'assistant' }],
+        backgroundAgent: {
+          enabled: true,
+          providers: {
+            'claude-code': { enabled: true, command: 'claude', contextWindowTokens: 200_000 },
+          },
+        },
+      };
+    }
+
+    it('accepts a persona whose backgroundProvider is enabled', () => {
+      const cfg = baseConfig();
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'claude-code' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).not.toThrow();
+    });
+
+    it('rejects a persona whose backgroundProvider is not in backgroundAgent.providers', () => {
+      const cfg = baseConfig();
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'openai-compatible' } as any;
+      // ZodError serialises issue messages as JSON, so " becomes \" in the thrown message string
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundProvider \\"openai-compatible\\" is not enabled/i,
+      );
+    });
+
+    it('rejects a persona whose backgroundProvider is registered but disabled', () => {
+      const cfg = baseConfig();
+      (cfg.backgroundAgent.providers as any)['codex-cli'] = {
+        enabled: false,
+        command: 'codex',
+        contextWindowTokens: 200_000,
+      };
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'codex-cli' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundProvider \\"codex-cli\\" is not enabled/i,
+      );
+    });
+
+    it('rejects backgroundModel set without backgroundProvider', () => {
+      const cfg = baseConfig();
+      cfg.personas[0] = { name: 'assistant', backgroundModel: 'claude-opus-4-7' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundModel requires backgroundProvider/i,
+      );
+    });
+
+    it('reports the failing persona name in the error', () => {
+      const cfg = baseConfig();
+      cfg.personas = [
+        { name: 'good', backgroundProvider: 'claude-code' },
+        { name: 'bad', backgroundProvider: 'openai-compatible' },
+      ] as any;
+      // ZodError serialises issue messages as JSON, so " becomes \" in the thrown message string
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(/persona \\"bad\\"/i);
+    });
+  });
 });
