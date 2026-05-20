@@ -352,6 +352,30 @@ export async function bootstrap(
     providerFactories,
   );
 
+  // 9a-guard. Validate that every persona's backgroundProvider is actually
+  // registered in the background provider registry. The config-schema
+  // superRefine already rejects names that aren't enabled in
+  // backgroundAgent.providers, but the ProviderRegistry constructor
+  // silently drops entries that have no matching factory (e.g. a typo in
+  // the provider name key). Without this check the misconfiguration would
+  // only surface at first background-agent spawn, breaking the
+  // "fail loudly at daemon start" invariant.
+  for (const persona of config.personas) {
+    if (
+      persona.backgroundProvider &&
+      !backgroundProviderRegistry.hasProvider(persona.backgroundProvider)
+    ) {
+      const available = backgroundProviderRegistry.listEnabled().join(', ') || '(none)';
+      return err(
+        new DaemonError(
+          `persona "${persona.name}": backgroundProvider "${persona.backgroundProvider}" ` +
+            `is not available in the background agent registry. ` +
+            `Available providers: ${available}.`,
+        ),
+      );
+    }
+  }
+
   // 9b. Context roller (needs configured summarizer sub-agents)
   let contextRoller: ContextRoller | null = null;
   const enabledContextProviders = Object.entries(config.agentRunner.providers)
@@ -678,6 +702,7 @@ export async function bootstrap(
     observability,
     subAgentRunner,
     providerRegistry,
+    backgroundProviderRegistry,
     backgroundAgentManager,
     executionEnvManager,
     contextRoller,

@@ -85,6 +85,14 @@ personas:
   - name: assistant
     model: claude-sonnet-4-6
     provider: claude-code
+    # Optional: override provider/model for background_agent spawns.
+    # Useful when the foreground stack (e.g. Ollama) is not suitable for
+    # long-running background work. Validated at config load against
+    # backgroundAgent.providers — daemon refuses to start if the named
+    # provider is not enabled there. backgroundModel must be paired with
+    # backgroundProvider.
+    # backgroundProvider: claude-code
+    # backgroundModel: claude-sonnet-4-6
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:

@@ -106,6 +106,7 @@ export interface DaemonContext {
   readonly hostToolsBridge: HostToolsBridge;
   readonly oauthTokenStore: OAuthTokenStore;
   readonly providerRegistry: ProviderRegistry<AgentRunnerProviderConfig>;
+  readonly backgroundProviderRegistry: ProviderRegistry;
   readonly subAgentRunner: SubAgentRunner | null;
   readonly backgroundAgentManager: BackgroundAgentManager | null;
   readonly executionEnvManager: ExecutionEnvManager | null;

@@ -305,6 +305,42 @@ describe('PersonaConfigSchema', () => {
       PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 481 }).success,
     ).toBe(false);
   });
+
+  describe('PersonaConfigSchema — background overrides', () => {
+    it('accepts optional backgroundProvider and backgroundModel', () => {
+      const parsed = PersonaConfigSchema.parse({
+        name: 'assistant',
+        backgroundProvider: 'claude-code',
+        backgroundModel: 'claude-sonnet-4-6',
+      });
+      expect(parsed.backgroundProvider).toBe('claude-code');
+      expect(parsed.backgroundModel).toBe('claude-sonnet-4-6');
+    });
+
+    it('leaves backgroundProvider and backgroundModel absent from parsed output when omitted', () => {
+      const parsed = PersonaConfigSchema.parse({ name: 'assistant' });
+      expect(Object.keys(parsed)).not.toContain('backgroundProvider');
+      expect(Object.keys(parsed)).not.toContain('backgroundModel');
+    });
+
+    it('rejects empty string backgroundProvider', () => {
+      expect(() =>
+        PersonaConfigSchema.parse({ name: 'assistant', backgroundProvider: '   ' }),
+      ).toThrow();
+    });
+
+    it('rejects empty string backgroundModel', () => {
+      expect(() =>
+        PersonaConfigSchema.parse({ name: 'assistant', backgroundModel: '' }),
+      ).toThrow();
+    });
+
+    it('accepts backgroundModel without backgroundProvider at the schema level (cross-validation deferred to TalondConfigSchema)', () => {
+      expect(() =>
+        PersonaConfigSchema.parse({ name: 'assistant', backgroundModel: 'claude-sonnet-4-6' }),
+      ).not.toThrow();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -823,6 +859,7 @@ describe('AgentRunnerConfigSchema', () => {
   });
 });
 
+
 // ---------------------------------------------------------------------------
 // TalondConfigSchema (root)
 // ---------------------------------------------------------------------------
@@ -1050,5 +1087,82 @@ describe('TalondConfigSchema', () => {
     if (result.success) {
       expect((result.data as Record<string, unknown>)['unknownField']).toBeUndefined();
     }
+  });
+
+  describe('TalondConfigSchema — backgroundProvider cross-validation', () => {
+    function baseConfig() {
+      return {
+        personas: [{ name: 'assistant' }],
+        backgroundAgent: {
+          enabled: true,
+          providers: {
+            'claude-code': { enabled: true, command: 'claude', contextWindowTokens: 200_000 },
+          },
+        },
+      };
+    }
+
+    it('accepts a persona whose backgroundProvider is enabled', () => {
+      const cfg = baseConfig();
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'claude-code' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).not.toThrow();
+    });
+
+    it('rejects a persona whose backgroundProvider is not in backgroundAgent.providers', () => {
+      const cfg = baseConfig();
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'openai-compatible' } as any;
+      // ZodError serialises issue messages as JSON, so " becomes \" in the thrown message string
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundProvider \\"openai-compatible\\" is not enabled/i,
+      );
+    });
+
+    it('rejects a persona whose backgroundProvider is registered but disabled', () => {
+      const cfg = baseConfig();
+      (cfg.backgroundAgent.providers as any)['codex-cli'] = {
+        enabled: false,
+        command: 'codex',
+        contextWindowTokens: 200_000,
+      };
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'codex-cli' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundProvider \\"codex-cli\\" is not enabled/i,
+      );
+    });
+
+    it('rejects backgroundModel set without backgroundProvider', () => {
+      const cfg = baseConfig();
+      cfg.personas[0] = { name: 'assistant', backgroundModel: 'claude-opus-4-7' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundModel requires backgroundProvider/i,
+      );
+    });
+
+    it('reports the failing persona name in the error', () => {
+      const cfg = baseConfig();
+      cfg.personas = [
+        { name: 'good', backgroundProvider: 'claude-code' },
+        { name: 'bad', backgroundProvider: 'openai-compatible' },
+      ] as any;
+      // ZodError serialises issue messages as JSON, so " becomes \" in the thrown message string
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(/persona \\"bad\\"/i);
+    });
+
+    it('rejects invalid backgroundProvider even when backgroundAgent.enabled is false', () => {
+      const cfg = baseConfig();
+      cfg.backgroundAgent.enabled = false;
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'openai-compatible' } as any;
+      // ZodError serialises issue messages as JSON, so " becomes \" in the thrown message string
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(
+        /backgroundProvider \\"openai-compatible\\" is not enabled/i,
+      );
+    });
+
+    it('includes "(none)" in the error message when backgroundAgent.providers is empty', () => {
+      const cfg = baseConfig();
+      cfg.backgroundAgent.providers = {} as any;
+      cfg.personas[0] = { name: 'assistant', backgroundProvider: 'claude-code' } as any;
+      expect(() => TalondConfigSchema.parse(cfg)).toThrow(/Enabled providers:.*?\(none\)/i);
+    });
   });
 });

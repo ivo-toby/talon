@@ -9,6 +9,7 @@ import type { ChannelRepository } from '../../core/database/repositories/channel
 import type { SkillResolver } from '../../skills/skill-resolver.js';
 import type { ContextAssembler } from '../../daemon/context-assembler.js';
 import type { LoadedSkill } from '../../skills/skill-types.js';
+import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import { buildPersonaRuntimeContext } from '../../personas/persona-runtime-context.js';
 import type { BackgroundTask } from '../../subagents/background/background-agent-types.js';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
@@ -32,6 +33,7 @@ export interface BackgroundAgentArgs {
 
 interface BackgroundAgentHandlerDeps {
   backgroundAgentManager: BackgroundAgentManager;
+  backgroundProviderRegistry: Pick<ProviderRegistry, 'hasProvider'>;
   personaRepository: PersonaRepository;
   personaLoader: PersonaLoader;
   threadRepository: ThreadRepository;
@@ -218,16 +220,38 @@ export class BackgroundAgentHandler {
       );
     }
 
-    // Resolve provider: explicit arg > persona/profile config > undefined (daemon default).
+    // Resolution chain (most specific to least specific):
+    //   1. args.provider — strict, honored as-is; manager validates registry membership
+    //   2. persona.backgroundProvider — config-load validated against background registry
+    //   3. persona.provider — only if also enabled in background registry (safety net
+    //      for personas whose foreground runtime is unsuitable for background work,
+    //      e.g. local Ollama on a small model)
+    //   4. undefined — manager picks backgroundAgent.defaultProvider
     const explicitProvider =
       typeof args.provider === 'string' && args.provider.trim().length > 0
         ? args.provider.trim()
         : undefined;
+    const personaBackgroundProvider =
+      typeof loadedPersona.config.backgroundProvider === 'string' &&
+      loadedPersona.config.backgroundProvider.trim().length > 0
+        ? loadedPersona.config.backgroundProvider.trim()
+        : undefined;
     const personaProvider =
-      typeof loadedPersona.config.provider === 'string' && loadedPersona.config.provider.trim().length > 0
+      typeof loadedPersona.config.provider === 'string' &&
+      loadedPersona.config.provider.trim().length > 0
         ? loadedPersona.config.provider.trim()
         : undefined;
-    const resolvedProvider = explicitProvider ?? personaProvider;
+    // Tier 3 registry lookup is only needed when tiers 1 and 2 don't apply —
+    // avoid calling hasProvider unnecessarily (short-circuit for explicit provider).
+    const personaProviderIfAvailable =
+      !explicitProvider &&
+      !personaBackgroundProvider &&
+      personaProvider &&
+      this.deps.backgroundProviderRegistry.hasProvider(personaProvider)
+        ? personaProvider
+        : undefined;
+    const resolvedProvider =
+      explicitProvider ?? personaBackgroundProvider ?? personaProviderIfAvailable;
     const allowedMcpTools = filterAllowedMcpTools(
       loadedPersona.resolvedCapabilities ?? { allow: [], requireApproval: [] },
     ).filter((toolName) => toolName !== 'background_agent');
@@ -240,16 +264,23 @@ export class BackgroundAgentHandler {
       );
     }
 
-    // Only forward the persona's model when:
-    // 1. No explicit provider override was given in the tool args, AND
-    // 2. The persona itself has an explicit provider configured.
+    // Model resolution mirrors provider resolution:
+    //   - args.provider given                                   → no model
+    //   - persona.backgroundProvider used                       → persona.backgroundModel
+    //   - persona.provider used (validated against registry)    → persona.model
+    //   - daemon default                                        → no model
     //
-    // When the persona has no provider, the background agent falls back to
-    // backgroundAgent.defaultProvider, which may differ from the agentRunner's
-    // default. Forwarding the persona's model (configured for the agent-runner
-    // provider) to a different background provider causes cross-provider model
-    // mismatches (e.g. "gpt-5.4" sent to claude-code).
-    const shouldForwardModel = !explicitProvider && !!personaProvider && !!loadedPersona.config.model;
+    // This prevents cross-provider model mismatches (e.g. an Ollama model name
+    // sent to claude-code) when a persona's foreground stack differs from the
+    // background stack.
+    let resolvedModel: string | undefined;
+    if (!explicitProvider) {
+      if (personaBackgroundProvider) {
+        resolvedModel = loadedPersona.config.backgroundModel;
+      } else if (personaProviderIfAvailable && loadedPersona.config.model) {
+        resolvedModel = loadedPersona.config.model;
+      }
+    }
 
     const toolInstructionsBlock = resolveToolInstructions(
       this.deps.toolInstructions,
@@ -275,11 +306,7 @@ export class BackgroundAgentHandler {
       sandbox,
       executionEnvDefaults: loadedPersona.config.executionEnv as PersonaExecutionEnvConfig,
       ...(profileName ? { profileName } : {}),
-      // Only pass the persona's model when the resolved provider matches the persona's
-      // configured provider (or when the persona has no provider set). This prevents
-      // cross-provider model mismatches (e.g. "claude-opus-4-6" on gemini-cli) that
-      // occur when the daemon default provider differs from the profile's provider.
-      ...(shouldForwardModel ? { model: loadedPersona.config.model } : {}),
+      ...(resolvedModel ? { model: resolvedModel } : {}),
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.timeoutMinutes ? { timeoutMinutes: args.timeoutMinutes } : {}),
       traceparent: context.traceparent,

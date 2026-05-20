@@ -39,6 +39,15 @@ export class ProviderRegistry<Config extends ProviderConfig = ProviderConfig> {
     return this.providers.get(name);
   }
 
+  /**
+   * True when the provider is registered, enabled, and has a matching factory.
+   * Predicate variant of `get` for callers that only need an availability check
+   * without retrieving the entry.
+   */
+  hasProvider(name: ProviderName): boolean {
+    return this.providers.has(name);
+  }
+
   getDefault(preferredOrder: ProviderName[]): ProviderEntry<Config> | undefined {
     for (const name of preferredOrder) {
       const entry = this.providers.get(name);

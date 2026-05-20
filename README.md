@@ -470,6 +470,32 @@ backgroundAgent:
 | `defaultProvider`       | Provider used for tasks that do not specify one explicitly       |
 | `providers`             | Per-provider config; mirrors `agentRunner.providers`             |
 
+##### Per-persona override
+
+Personas can route their background agents through a different provider/model than their foreground runtime by setting `backgroundProvider` and (optionally) `backgroundModel`:
+
+```yaml
+personas:
+  - name: assistant
+    model: qwen3-coder:30b
+    provider: openai-compatible    # foreground stays on Ollama
+    backgroundProvider: claude-code   # background runs on Claude Code
+    backgroundModel: claude-sonnet-4-6
+  - name: work-context-manager
+    model: qwen3-coder:30b
+    provider: openai-compatible
+    # no backgroundProvider — falls back to backgroundAgent.defaultProvider
+```
+
+`backgroundProvider` must be enabled under `backgroundAgent.providers`; the daemon refuses to start otherwise. `backgroundModel` is paired with `backgroundProvider` — setting it without `backgroundProvider` is rejected at config load.
+
+Resolution order at spawn time:
+
+1. Provider given explicitly in the `background_agent` tool call (strict)
+2. Persona's `backgroundProvider`
+3. Persona's foreground `provider` — **only** if it is also enabled in `backgroundAgent.providers`
+4. `backgroundAgent.defaultProvider`
+
 ##### Using `openai-compatible` for background agents
 
 `openai-compatible` (**experimental**) works as a background provider alongside the foreground `agentRunner` entry. Add it under `backgroundAgent.providers` the same way you would for the main agent:

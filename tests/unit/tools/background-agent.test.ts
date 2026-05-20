@@ -58,8 +58,15 @@ function createHandler(overrides: Record<string, unknown> = {}) {
     getResult: vi.fn().mockReturnValue(ok(makeResult())),
   };
 
+  // Default: hasProvider returns true for any name — preserves existing tests'
+  // assumptions that persona.provider is always forwarded.
+  const backgroundProviderRegistry = overrides.backgroundProviderRegistry ?? {
+    hasProvider: vi.fn().mockReturnValue(true),
+  };
+
   const deps = {
     backgroundAgentManager: backgroundAgentManager as any,
+    backgroundProviderRegistry: backgroundProviderRegistry as any,
     personaRepository: {
       findById: vi.fn().mockReturnValue(ok({ id: 'persona-1', name: 'TestBot' })),
       findByName: vi.fn().mockImplementation((name: string) => ok({ id: `persona-${name}`, name })),
@@ -627,7 +634,7 @@ describe('BackgroundAgentHandler', () => {
       expect(backgroundAgentManager.spawn.mock.calls[0][0].model).toBeUndefined();
     });
 
-    it('passes model when persona has both model and explicit provider', async () => {
+    it('passes model when persona.provider is registered in the background registry', async () => {
       const { handler, backgroundAgentManager, deps } = createHandler();
 
       deps.personaLoader.getByName = vi.fn().mockReturnValue(
@@ -870,5 +877,330 @@ describe('BackgroundAgentHandler', () => {
     expect(result.status).toBe('error');
     expect(result.error).toContain('execution.env');
     expect(backgroundAgentManager.spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe('background-agent provider resolution chain', () => {
+  it('uses persona.backgroundProvider when set, ignoring persona.provider', async () => {
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: ['search-skill'],
+              provider: 'openai-compatible',
+              backgroundProvider: 'claude-code',
+            },
+            systemPromptContent: 'Base system prompt.',
+            personalityContent: 'Friendly personality.',
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'do work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(result.status).toBe('success');
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'claude-code' }),
+    );
+  });
+
+  it('falls back to persona.provider only when it is available in the background registry', async () => {
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation((name: string) => name === 'gemini-cli'),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { skills: [], provider: 'gemini-cli' },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'do work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(result.status).toBe('success');
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'gemini-cli' }),
+    );
+  });
+
+  it('drops persona.provider when it is NOT in the background registry (defaults to daemon)', async () => {
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation((name: string) => name === 'claude-code'),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { skills: [], provider: 'openai-compatible' },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'do work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(result.status).toBe('success');
+    const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBeUndefined();
+  });
+
+  it('honors explicit args.provider strictly (still forwarded even when persona has backgroundProvider)', async () => {
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { skills: [], provider: 'openai-compatible', backgroundProvider: 'claude-code' },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'do work', provider: 'codex-cli' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(result.status).toBe('success');
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex-cli' }),
+    );
+    expect((deps.backgroundProviderRegistry as any).hasProvider).not.toHaveBeenCalled();
+  });
+});
+
+describe('background-agent model resolution chain', () => {
+  it('forwards backgroundModel when backgroundProvider resolves', async () => {
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              model: 'gpt-oss',
+              backgroundProvider: 'claude-code',
+              backgroundModel: 'claude-sonnet-4-6',
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'claude-code', model: 'claude-sonnet-4-6' }),
+    );
+  });
+
+  it('forwards persona.model when persona.provider resolves (registry has it)', async () => {
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation((name: string) => name === 'codex-cli'),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { skills: [], provider: 'codex-cli', model: 'gpt-5.4' },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'codex-cli', model: 'gpt-5.4' }),
+    );
+  });
+
+  it('does NOT forward any model when persona.provider is dropped (not in background registry)', async () => {
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation((name: string) => name === 'claude-code'),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { skills: [], provider: 'openai-compatible', model: 'gpt-oss' },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBeUndefined();
+    expect(spawnArgs.model).toBeUndefined();
+  });
+
+  it('does NOT forward model when args.provider is explicitly given', async () => {
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'codex-cli',
+              model: 'gpt-5.4',
+              backgroundProvider: 'claude-code',
+              backgroundModel: 'claude-sonnet-4-6',
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work', provider: 'gemini-cli' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBe('gemini-cli');
+    expect(spawnArgs.model).toBeUndefined();
+  });
+
+  it('does NOT forward a model when backgroundProvider is set but backgroundModel is absent', async () => {
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              model: 'gpt-oss',
+              backgroundProvider: 'claude-code',
+              // intentionally no backgroundModel
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBe('claude-code');
+    expect(spawnArgs.model).toBeUndefined();
+  });
+});
+
+describe('regression: openai-compatible persona spawning background agents', () => {
+  it('does not forward openai-compatible to the background manager (trace 91a662301c97b16bb345de7cec973286)', async () => {
+    // Reproduces the original report: persona has `provider: openai-compatible`
+    // (foreground), backgroundAgent.providers only enables claude-code + codex-cli.
+    // Before the fix, openai-compatible was forwarded as an "explicit" provider
+    // and tripped the manager's strict registry check.
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation(
+        (name: string) => name === 'claude-code' || name === 'codex-cli',
+      ),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              model: 'kimi-k2.6:cloud',
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'do background work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(result.status).toBe('success');
+    const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
+    expect(spawnArgs.provider).toBeUndefined(); // manager picks defaultProvider
+    expect(spawnArgs.model).toBeUndefined();    // no cross-provider model leak
   });
 });
