@@ -73,6 +73,10 @@ Examples:
 | `balanced` | summarize, draft, write, general assistance | `claude-sonnet-4-6` | `gemini-2.5-flash` |
 | `fast` | classify, tag, triage, quick, simple | `claude-haiku-4-5` | `gemini-2.5-flash` |
 
+**`backgroundProvider`** *(optional)* — provider used when this persona spawns a background agent. Defaults to `backgroundAgent.defaultProvider`. Set when the foreground provider is unsuitable for background work (e.g. local Ollama running short-context models). Must be enabled under `backgroundAgent.providers`.
+
+**`backgroundModel`** *(optional)* — model passed to the background provider. Paired with `backgroundProvider`; ignored if `backgroundProvider` is not set. Useful for sending background work to a more capable model than the foreground.
+
 ### Capabilities
 
 Use these exact labels.
