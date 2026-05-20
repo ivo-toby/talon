@@ -176,12 +176,25 @@ export class BackgroundAgentManager {
       );
     }
 
+    // Resolve the model name for telemetry: prefer the explicit override the
+    // handler computed (tier 2/3 of the resolution chain), otherwise fall back
+    // to the provider's configured defaultModel. This is the same string the
+    // worker will actually run with, so LangFuse pricing lookups land on the
+    // right model.
+    const providerOptions = providerEntry.config.options;
+    const observationModel =
+      input.model ??
+      (providerOptions && typeof providerOptions['defaultModel'] === 'string'
+        ? (providerOptions['defaultModel'] as string)
+        : undefined);
+
     // Start a LangFuse observation span if observability is available.
     const observation = this.deps.observability
       ? this.deps.observability.startWithTraceparent(input.traceparent ?? null, {
           type: 'agent',
           name: 'background-agent',
           input: { prompt: input.prompt, taskId, threadId: input.threadId },
+          ...(observationModel ? { model: observationModel } : {}),
           trace: {
             userId: undefined,
             tags: ['background-agent', `provider:${providerEntry.provider.name}`],
@@ -548,9 +561,27 @@ export class BackgroundAgentManager {
       );
     }
 
+    // Forward provider-reported token usage and cost so LangFuse can show what
+    // the worker actually consumed. Snake_case keys match Anthropic's API
+    // fields and LangFuse's pricing regexes (e.g. "^input" → input_tokens),
+    // mirroring the foreground emit in src/daemon/agent-runner.ts.
+    const usage = parsedResult.usage;
+    const usageDetails = usage
+      ? {
+          input_tokens: usage.inputTokens,
+          output_tokens: usage.outputTokens,
+          cache_read_input_tokens: usage.cacheReadTokens ?? 0,
+          cache_creation_input_tokens: usage.cacheWriteTokens ?? 0,
+        }
+      : undefined;
+    const costDetails =
+      usage?.totalCostUsd !== undefined ? { totalCostUsd: usage.totalCostUsd } : undefined;
+
     managedProcess?.observation?.update({
       output: parsedResult.output?.trim(),
       statusMessage: finalStatusMessage ?? finalStatus,
+      ...(usageDetails ? { usageDetails } : {}),
+      ...(costDetails ? { costDetails } : {}),
     });
     managedProcess?.observation?.end();
 

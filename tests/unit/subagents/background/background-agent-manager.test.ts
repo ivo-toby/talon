@@ -1041,6 +1041,113 @@ describe('BackgroundAgentManager', () => {
     expect(observation.end).toHaveBeenCalled();
   });
 
+  it('starts the observation span with the resolved input.model when provided', async () => {
+    const { manager, observability } = createManagerWithObservability();
+
+    await manager.spawn({ ...spawnInput, model: 'claude-sonnet-4-6' });
+
+    const startCall = observability.startWithTraceparent.mock.calls[0]!;
+    expect(startCall[1]).toEqual(expect.objectContaining({ model: 'claude-sonnet-4-6' }));
+  });
+
+  it('falls back to provider options.defaultModel for the observation model when input.model is unset', async () => {
+    const { observability, observation } = makeObservability();
+    const claudeProvider = {
+      name: 'claude-code',
+      createExecutionStrategy: vi.fn(),
+      prepareBackgroundInvocation,
+      parseBackgroundResult,
+      estimateContextUsage: vi.fn(),
+    };
+    const providerEntry = {
+      provider: claudeProvider,
+      config: {
+        enabled: true,
+        command: 'claude',
+        contextWindowTokens: 200_000,
+        options: { defaultModel: 'claude-sonnet-4-6' },
+      },
+    };
+    const manager = new BackgroundAgentManager({
+      repository,
+      queueManager,
+      maxConcurrent: 2,
+      defaultTimeoutMinutes: 30,
+      defaultProvider: 'claude-code',
+      providerRegistry: {
+        getDefault: vi.fn().mockReturnValue(providerEntry),
+        listEnabled: vi.fn().mockReturnValue(['claude-code']),
+        get: vi.fn((name: string) => (name === 'claude-code' ? providerEntry : undefined)),
+      } as any,
+      logger: makeLogger(),
+      processFactory,
+      isPidAlive: vi.fn().mockReturnValue(false),
+      readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
+      observability,
+    });
+
+    await manager.spawn(spawnInput);
+
+    const startCall = observability.startWithTraceparent.mock.calls[0]!;
+    expect(startCall[1]).toEqual(expect.objectContaining({ model: 'claude-sonnet-4-6' }));
+    // observation handle returned by makeObservability is used internally
+    expect(observation).toBeDefined();
+  });
+
+  it('forwards token usage and cost details to the observation on completion', async () => {
+    const { manager, observation } = createManagerWithObservability();
+    parseBackgroundResult.mockImplementationOnce((raw: any) => ({
+      output: raw.stdout,
+      stderr: raw.stderr,
+      exitCode: raw.exitCode,
+      timedOut: raw.timedOut,
+      usage: {
+        inputTokens: 1234,
+        outputTokens: 567,
+        cacheReadTokens: 89,
+        cacheWriteTokens: 12,
+        totalCostUsd: 0.0042,
+      },
+    }));
+    await manager.spawn(spawnInput);
+
+    completionResolve?.(
+      ok({ stdout: 'Done!', stderr: '', exitCode: 0, signal: null, timedOut: false }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usageDetails: {
+          input_tokens: 1234,
+          output_tokens: 567,
+          cache_read_input_tokens: 89,
+          cache_creation_input_tokens: 12,
+        },
+        costDetails: { totalCostUsd: 0.0042 },
+      }),
+    );
+  });
+
+  it('does not attach usageDetails when the provider result reports no usage', async () => {
+    const { manager, observation } = createManagerWithObservability();
+    // Default parseBackgroundResult mock omits `usage` — exercises the no-usage branch.
+    await manager.spawn(spawnInput);
+
+    completionResolve?.(
+      ok({ stdout: 'Done!', stderr: '', exitCode: 0, signal: null, timedOut: false }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const updateCall = observation.update.mock.calls.find(
+      (args: unknown[]) => typeof args[0] === 'object' && args[0] !== null && 'output' in (args[0] as Record<string, unknown>),
+    );
+    expect(updateCall).toBeDefined();
+    const payload = updateCall![0] as Record<string, unknown>;
+    expect(payload.usageDetails).toBeUndefined();
+    expect(payload.costDetails).toBeUndefined();
+  });
+
   it('works without observability service (backwards compatible)', async () => {
     // createManager() does not pass observability — it should spawn fine
     const manager = createManager();
