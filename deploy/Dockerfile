@@ -39,10 +39,22 @@ LABEL org.opencontainers.image.title="talond" \
 # Always run in production mode
 ENV NODE_ENV=production
 
-# Install tini as a minimal init process so signals are forwarded correctly
-# and zombie processes are reaped.
+# Install runtime essentials:
+#   tini             — minimal init: forwards signals and reaps zombies
+#   git, curl, jq    — used by agents that need to shell out (clone repos,
+#                      fetch URLs, parse JSON output of tools). These are
+#                      tiny universal building blocks; specialized tools
+#                      (gh, atlassian-cli, …) are added via MCP servers
+#                      instead — see starter/docs/troubleshooting.md.
+#   ca-certificates  — TLS root store, required for HTTPS calls by the
+#                      provider runtime and any tool the agent runs.
 RUN apt-get update -qq && \
-    apt-get install -y --no-install-recommends tini && \
+    apt-get install -y --no-install-recommends \
+        tini \
+        git \
+        curl \
+        jq \
+        ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a non-root user/group with a fixed UID so host bind-mount

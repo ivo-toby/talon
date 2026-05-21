@@ -11,6 +11,12 @@ Run [Talon](https://github.com/ivo-toby/talon) without cloning the source.
 - `bin/talonctl` — host-side wrapper for the in-container CLI
 - `.claude/skills/` — Claude Code skills that walk you through setup interactively
 
+The container image ships with `git`, `curl`, `jq`, and `ca-certificates`
+preinstalled alongside Node.js, so the agent can clone repos, fetch URLs,
+and parse JSON without you adding tools. More specialized integrations
+(GitHub, Atlassian, Gmail, Slack, …) come through MCP servers added via
+`talonctl add-mcp` — no image rebuild needed.
+
 ## Requirements
 
 - Docker (Engine on Linux, or Docker Desktop on macOS/Windows) with `docker compose`
