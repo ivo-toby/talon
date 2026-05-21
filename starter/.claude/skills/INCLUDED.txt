@@ -1,0 +1,18 @@
+# Allowlist for skills that ship in the starter bundle.
+# One skill directory name per line. Lines starting with `#` are comments.
+# The source is `.claude/skills/<name>/` at the repo root.
+# Run scripts/sync-starter-skills.sh to populate starter/.claude/skills/.
+
+talon-setup
+
+add-telegram
+add-slack
+add-discord
+add-whatsapp
+add-email
+add-terminal
+
+create-profile
+create-personality
+
+manage-schedules
