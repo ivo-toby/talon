@@ -3,7 +3,11 @@
 # The source is `.claude/skills/<name>/` at the repo root.
 # Run scripts/sync-starter-skills.sh to populate starter/.claude/skills/.
 
-talon-setup
+# Top-level guided flow — docker-aware variant.
+# (The native-install `talon-setup` is intentionally NOT shipped — it
+# assumes `npx talonctl`, node_modules/, etc. and would mislead bundle
+# users.)
+talon-setup-docker
 
 add-telegram
 add-slack
