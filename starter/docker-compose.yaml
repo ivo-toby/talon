@@ -41,6 +41,15 @@ services:
         source: ./personas
         target: /personas
 
+      # Userdata: a dropbox for files you want the agent to see.
+      # Drop PDFs, notes, repos, attachments — the agent reads them at
+      # /userdata via its own file tools (Claude's Read, etc.). Persona
+      # capabilities don't gate this; access is controlled by what's in the
+      # folder. Read+write so the agent can write artifacts back.
+      - type: bind
+        source: ./userdata
+        target: /userdata
+
       # Optional: custom skills and sub-agents.
       # - type: bind
       #   source: ./skills

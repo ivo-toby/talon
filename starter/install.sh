@@ -20,10 +20,10 @@ mkdir -p "$PREFIX"
 install -m 0755 "$SRC" "$DEST"
 echo "Installed: $DEST"
 
-# Ensure the bind-mount source for /data exists before `docker compose up`.
-# Without this, Docker creates it as root-owned on Linux, breaking the
+# Ensure the bind-mount sources exist before `docker compose up`.
+# Without this, Docker creates them as root-owned on Linux, breaking the
 # non-root user inside the container.
-mkdir -p "$HERE/data"
+mkdir -p "$HERE/data" "$HERE/userdata"
 
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
