@@ -140,9 +140,13 @@ Ask: **"Which AI provider do you want to use?"**
 ```
 a) Claude (Anthropic API)            — default, smartest, costs $
 b) OpenAI-compatible endpoint        — local Ollama, vLLM, Groq, Together, custom
-c) Gemini CLI                        — Google's CLI, needs gemini binary in container (advanced)
-d) Codex CLI                         — OpenAI's CLI, same caveat as Gemini (advanced)
+c) Gemini CLI                        — Google's CLI, preinstalled in the image
+d) Codex CLI                         — OpenAI's CLI, preinstalled in the image
 ```
+
+All four work out of the box. `claude` (bundled in the Agent SDK),
+`codex`, and `gemini` ship in the container image; `openai-compatible`
+runs in-process.
 
 For (a) ask for nothing else here — defaults work.
 
@@ -154,10 +158,11 @@ For (b) ask three things, **one at a time**:
 - "Does the endpoint need an API key?" → if yes, ask the env var name
   to use (default: `OPENAI_COMPATIBLE_API_KEY`)
 
-For (c)/(d), explain: "Gemini CLI and Codex CLI run *inside* the
-container. The starter image does not preinstall these binaries — you'd
-need to build a custom image. For most users, OpenAI-compatible (b)
-pointing at Google or OpenAI is simpler." Then offer to switch to (b).
+For (c)/(d), note one caveat: Gemini CLI and Codex CLI store auth/config
+under `~/.gemini` / `~/.codex` inside the container, which is wiped on
+container recreation. Recommend API-key auth (`GOOGLE_AI_API_KEY` /
+`OPENAI_API_KEY` in `.env`, read fresh each run). OAuth state needs a
+`/home/talond` bind-mount to persist — see `docs/providers.md`.
 
 ### Step 2: Configure `.env`
 

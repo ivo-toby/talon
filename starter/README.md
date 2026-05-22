@@ -86,11 +86,14 @@ The minimal `talond.yaml` defaults to Claude (`claude-code` provider) and reads
 | Provider | What to change in `talond.yaml` | What to set in `.env` |
 | --- | --- | --- |
 | **OpenAI-compatible** (Ollama Cloud, Groq, Together, vLLM, llama.cpp, …) | Set `provider: openai-compatible` on the persona; configure `agentRunner.providers.openai-compatible` with `baseUrl` + `defaultModel`; set `auth.providers.<providerId>.baseURL` (+ optional `apiKey`) | Your endpoint's API key if it needs one |
-| **Gemini CLI** | Set `provider: gemini-cli`; ensure `gemini` is on PATH inside the container (currently not preinstalled — workaround required) | `GOOGLE_AI_API_KEY` if not using interactive OAuth |
-| **Codex CLI** | Set `provider: codex-cli`; same caveat as Gemini for the binary | `OPENAI_API_KEY` |
+| **Gemini CLI** | Set `provider: gemini-cli`. The `gemini` binary is preinstalled in the image. | `GOOGLE_AI_API_KEY` if not using interactive OAuth |
+| **Codex CLI** | Set `provider: codex-cli`. The `codex` binary is preinstalled in the image. | `OPENAI_API_KEY` |
 
-See the [full reference config](https://github.com/ivo-toby/talon/blob/main/config/talond.example.yaml)
-for complete provider snippets including context-management and sub-agent tuning.
+All four providers work out of the box — `claude` (bundled in the Agent
+SDK), `codex`, and `gemini` ship in the image; `openai-compatible` runs
+in-process. See [`docs/providers.md`](docs/providers.md) for full config
+snippets, and the [reference config](https://github.com/ivo-toby/talon/blob/main/config/talond.example.yaml)
+for context-management and sub-agent tuning.
 
 ## Sharing files with the agent
 

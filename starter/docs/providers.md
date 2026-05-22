@@ -123,29 +123,14 @@ GROQ_API_KEY=gsk_...                           # name matches whatever you used 
 ## Gemini CLI
 
 Google's [Gemini CLI](https://github.com/google-gemini/gemini-cli). Runs
-as a subprocess inside the container, so the `gemini` binary must be on
-the container's PATH.
+as a subprocess inside the container — the `gemini` binary is
+**preinstalled** in the image, so no custom build is needed.
 
-### Caveat: not preinstalled
-
-The starter image does **not** ship the `gemini` binary. To use this
-provider you need a custom image. The simplest path is a small
-Dockerfile that extends the upstream image:
-
-```dockerfile
-FROM ghcr.io/ivo-toby/talond:latest
-USER root
-RUN npm install -g @google/gemini-cli@latest && \
-    chown -R talond:talond /usr/local/lib/node_modules
-USER talond
-```
-
-Build + tag locally, then point `docker-compose.yaml` at it:
-`image: my-talond-gemini:latest`.
-
-For most users, accessing Gemini through the **OpenAI-compatible**
-provider (above) pointing at Google's OpenAI-compatible endpoint is
-simpler and doesn't need a custom image.
+> **Auth state does not persist.** Gemini CLI stores OAuth credentials
+> under `~/.gemini` inside the container, which is wiped on every
+> container recreation. Use `GOOGLE_AI_API_KEY` (read fresh from `.env`
+> each run) for a stateless setup, or bind-mount `/home/talond` in
+> `docker-compose.yaml` if you need OAuth state to survive restarts.
 
 ### `config/talond.yaml`
 
@@ -176,20 +161,13 @@ GOOGLE_AI_API_KEY=...                          # or rely on interactive OAuth (m
 
 ## Codex CLI
 
-OpenAI's [Codex CLI](https://github.com/openai/codex). Same model as
-Gemini CLI — runs as a subprocess, needs the binary on PATH.
+OpenAI's [Codex CLI](https://github.com/openai/codex). Runs as a
+subprocess — the `codex` binary is **preinstalled** in the image.
 
-### Caveat: not preinstalled
-
-Same as Gemini. Custom image required:
-
-```dockerfile
-FROM ghcr.io/ivo-toby/talond:latest
-USER root
-RUN npm install -g @openai/codex@latest && \
-    chown -R talond:talond /usr/local/lib/node_modules
-USER talond
-```
+> **Auth state does not persist.** Codex CLI stores config and auth
+> under `~/.codex` inside the container, wiped on container recreation.
+> Use `OPENAI_API_KEY` from `.env` for a stateless setup, or bind-mount
+> `/home/talond` to persist it.
 
 ### `config/talond.yaml`
 
@@ -235,7 +213,7 @@ so the cleanest path is:
    ```
 
 For providers that *are* fully covered by `add-provider` flags (Claude,
-Gemini CLI, Codex CLI with the binary preinstalled in a custom image):
+Gemini CLI, Codex CLI — all preinstalled in the image):
 
 ```bash
 talonctl list-providers

@@ -60,10 +60,16 @@ RUN apt-get update -qq && \
 # Create a non-root user/group with a fixed UID so host bind-mount
 # permissions are predictable. node:slim ships with a `node` user at
 # UID/GID 1000 already, so remove it first to free the slot.
+#
+# The user gets a real home directory (/home/talond): the codex and
+# gemini CLIs write config/auth under ~/.codex and ~/.gemini and crash
+# without a writable home. OAuth state stored there does NOT survive
+# container recreation — use API-key auth, or bind-mount /home/talond,
+# if you need it to persist.
 RUN userdel node && \
     (getent group node >/dev/null && groupdel node || true) && \
     groupadd --gid 1000 talond && \
-    useradd --uid 1000 --gid talond --no-create-home --shell /usr/sbin/nologin talond
+    useradd --uid 1000 --gid talond --create-home --shell /usr/sbin/nologin talond
 
 # Application directory
 WORKDIR /opt/talond
@@ -75,6 +81,14 @@ COPY --from=builder /build/dist ./dist/
 # We reinstall with --omit=dev so we don't carry devDependencies.
 COPY --from=builder /build/package.json /build/package-lock.json ./
 RUN npm ci --omit=dev
+
+# Install the CLI-based agent providers globally so the `codex-cli` and
+# `gemini-cli` provider strategies work out of the box (their config
+# `command:` resolves `codex` / `gemini` from PATH). The `claude-code`
+# provider needs nothing here — the Claude Code CLI ships bundled inside
+# the `@anthropic-ai/claude-agent-sdk` npm dependency.
+RUN npm install -g @openai/codex @google/gemini-cli && \
+    npm cache clean --force
 
 # Copy the example config so the image is self-documenting
 COPY config/talond.example.yaml ./config/

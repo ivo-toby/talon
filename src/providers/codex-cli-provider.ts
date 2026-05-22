@@ -129,18 +129,24 @@ export class CodexCliProvider implements AgentProvider {
       const codexDir = join(homeDir, '.codex');
       mkdirSync(codexDir, { recursive: true, mode: 0o700 });
 
+      // Copy operator state (auth.json, etc.) from the operator's own
+      // ~/.codex when it exists. On a fresh container it won't — that is
+      // fine for API-key auth, where the CLI reads OPENAI_API_KEY from
+      // the environment and needs no seeded state.
       const sourceCodexDir = this.operatorCodexDir();
-      for (const entry of readdirSync(sourceCodexDir)) {
-        if (!this.shouldCopyCodexStateFile(entry)) {
-          continue;
-        }
+      if (existsSync(sourceCodexDir)) {
+        for (const entry of readdirSync(sourceCodexDir)) {
+          if (!this.shouldCopyCodexStateFile(entry)) {
+            continue;
+          }
 
-        const sourcePath = join(sourceCodexDir, entry);
-        if (!existsSync(sourcePath) || !statSync(sourcePath).isFile()) {
-          continue;
-        }
+          const sourcePath = join(sourceCodexDir, entry);
+          if (!existsSync(sourcePath) || !statSync(sourcePath).isFile()) {
+            continue;
+          }
 
-        copyFileSync(sourcePath, join(codexDir, entry));
+          copyFileSync(sourcePath, join(codexDir, entry));
+        }
       }
 
       const renderedConfig = this.renderConfigToml({ cwd, model, mcpServers });

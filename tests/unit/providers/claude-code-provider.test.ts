@@ -51,7 +51,11 @@ describe('ClaudeCodeProvider', () => {
     const invocation = result._unsafeUnwrap();
     cleanupPaths.push(...invocation.cleanupPaths);
 
-    expect(invocation.command).toBe('claude');
+    // Background runs spawn the Claude Code CLI bundled inside the Agent
+    // SDK via node, so a `claude` binary need not be on PATH (this is
+    // what makes background runs work inside the docker image).
+    expect(invocation.command).toBe(process.execPath);
+    expect(invocation.args[0]).toMatch(/cli\.js$/);
     expect(invocation.stdin).toBe('Refactor the auth module.');
     expect(invocation.cwd).toBe('/tmp');
     expect(invocation.args).toContain('--append-system-prompt');
@@ -95,6 +99,31 @@ describe('ClaudeCodeProvider', () => {
     expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
       mcpServers: {},
     });
+  });
+
+  it('honors an explicitly configured command for background invocations', () => {
+    // A non-default command (operator chose a specific path/wrapper) is
+    // used verbatim — not replaced by the SDK-bundled CLI.
+    const customProvider = new ClaudeCodeProvider({
+      enabled: true,
+      command: '/opt/claude/bin/claude',
+      contextWindowTokens: 200000,
+    });
+
+    const result = customProvider.prepareBackgroundInvocation({
+      prompt: 'Ping.',
+      systemPrompt: 'You are a helpful assistant.',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 60_000,
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+
+    expect(invocation.command).toBe('/opt/claude/bin/claude');
+    expect(invocation.args[0]).toBe('--print');
   });
 
   it('parses Claude JSON output into normalized usage and text', () => {
