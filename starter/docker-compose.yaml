@@ -50,13 +50,17 @@ services:
         source: ./userdata
         target: /userdata
 
-      # Optional: custom skills and sub-agents.
-      # - type: bind
-      #   source: ./skills
-      #   target: /skills
-      # - type: bind
-      #   source: ./subagents
-      #   target: /subagents
+      # Skills and sub-agents. Bind-mounted (not optional) so that writes
+      # from `talonctl add-mcp` / `add-skill` and any hand-authored skills
+      # persist across container recreation. Without these mounts the
+      # daemon's /skills and /subagents live only in the container's
+      # ephemeral layer and are lost on `docker compose up` / `pull`.
+      - type: bind
+        source: ./skills
+        target: /skills
+      - type: bind
+        source: ./subagents
+        target: /subagents
 
     healthcheck:
       test: ["CMD", "node", "-e", "const fs=require('fs');const p=process.env.TALON_PID_FILE||'/data/talond.pid';if(!fs.existsSync(p)){process.exit(1);}try{process.kill(parseInt(fs.readFileSync(p,'utf8').trim()),0);process.exit(0);}catch{process.exit(1);}"]
