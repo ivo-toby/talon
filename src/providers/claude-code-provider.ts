@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
 import type { AgentProvider, AgentRunInput, AgentStreamEvent } from './provider.js';
@@ -20,6 +21,41 @@ export class ClaudeCodeProvider implements AgentProvider {
   readonly skillLoaderTransport = 'in-process' as const;
 
   constructor(private readonly config: ProviderConfig) {}
+
+  /**
+   * Resolve the executable for background (subprocess) invocations.
+   *
+   * Foreground turns run through the Agent SDK in-process, but background
+   * runs spawn the Claude Code CLI as a subprocess.
+   *
+   * An explicitly configured `command` (anything other than the default
+   * bare `claude`) is honored verbatim — an operator who set a specific
+   * path or wrapper did so deliberately.
+   *
+   * For the default `claude`, we resolve the CLI bundled inside the
+   * `@anthropic-ai/claude-agent-sdk` package (`cli.js`) and spawn it via
+   * node. That makes background runs work without a `claude` binary on
+   * PATH (e.g. inside the docker image, where only the SDK dependency is
+   * present) and keeps the CLI version matched to the SDK the foreground
+   * path uses. Falls back to bare `claude` if the SDK layout changes.
+   */
+  private resolveBackgroundCommand(): { command: string; prefixArgs: string[] } {
+    if (this.config.command !== 'claude') {
+      return { command: this.config.command, prefixArgs: [] };
+    }
+    try {
+      const require = createRequire(import.meta.url);
+      const sdkDir = dirname(require.resolve('@anthropic-ai/claude-agent-sdk'));
+      const cliJs = join(sdkDir, 'cli.js');
+      if (existsSync(cliJs)) {
+        return { command: process.execPath, prefixArgs: [cliJs] };
+      }
+    } catch {
+      // SDK layout changed or not resolvable — fall back to the
+      // configured command below.
+    }
+    return { command: this.config.command, prefixArgs: [] };
+  }
 
   createExecutionStrategy() {
     return {
@@ -62,9 +98,11 @@ export class ClaudeCodeProvider implements AgentProvider {
         args.push('--model', input.model);
       }
 
+      const { command, prefixArgs } = this.resolveBackgroundCommand();
+
       return ok({
-        command: this.config.command,
-        args,
+        command,
+        args: [...prefixArgs, ...args],
         stdin: input.prompt,
         env: input.traceparent ? { TALOND_TRACEPARENT: input.traceparent } : undefined,
         cwd: input.cwd,
