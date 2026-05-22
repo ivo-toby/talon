@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# talonctl — host-side wrapper around the in-container CLI.
+#
+# Usage:
+#   talonctl status
+#   talonctl list-channels
+#   talonctl chat
+#
+# Forwards all arguments and stdin/stdout to `node dist/cli/index.js` inside
+# the running talond container. Allocates a TTY only when stdin and stdout are
+# both terminals, so piping works:
+#
+#   talonctl list-channels | jq
+#
+# Container name defaults to `talond`. Override with TALOND_CONTAINER.
+
+set -euo pipefail
+
+CONTAINER="${TALOND_CONTAINER:-talond}"
+
+if ! command -v docker >/dev/null 2>&1; then
+  echo "talonctl: docker not found on PATH." >&2
+  exit 127
+fi
+
+if ! docker inspect "$CONTAINER" >/dev/null 2>&1; then
+  echo "talonctl: container '$CONTAINER' not found." >&2
+  echo "  Is the daemon running? Try: docker compose up -d" >&2
+  echo "  Or set TALOND_CONTAINER to the right container name." >&2
+  exit 1
+fi
+
+state="$(docker inspect -f '{{.State.Status}}' "$CONTAINER" 2>/dev/null || echo unknown)"
+if [ "$state" != "running" ]; then
+  echo "talonctl: container '$CONTAINER' is $state, not running." >&2
+  echo "  Start it with: docker compose up -d" >&2
+  exit 1
+fi
+
+# Config path resolution: the CLI honors $TALOND_CONFIG_PATH (set by the
+# bundled docker-compose.yaml to /config/talond.yaml), so we don't need to
+# pass --config explicitly. Override per-command if needed:
+#   talonctl status --config /some/other/path.yaml
+if [ -t 0 ] && [ -t 1 ]; then
+  exec docker exec -it "$CONTAINER" node /opt/talond/dist/cli/index.js "$@"
+else
+  exec docker exec -i  "$CONTAINER" node /opt/talond/dist/cli/index.js "$@"
+fi

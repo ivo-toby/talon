@@ -1,0 +1,87 @@
+# talond.yaml — Talon + Postgram stack config
+#
+# Copy to talond.yaml and edit `allowedChatIds` at minimum. The
+# `postgram-memory` skill (bundled in skills/) wires the agent to the
+# Postgram knowledge store running alongside this daemon.
+
+storage:
+  type: sqlite
+  path: data/talond.sqlite
+
+# ---------------------------------------------------------------------------
+# Channels
+# ---------------------------------------------------------------------------
+channels:
+  - type: telegram
+    name: personal-telegram
+    enabled: true
+    config:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      # Restrict who can message the bot. Find your Telegram user ID via
+      # @userinfobot. Values must be strings, not numbers.
+      allowedChatIds:
+        - "123456789"
+      pollingTimeoutSec: 30
+
+# ---------------------------------------------------------------------------
+# Personas
+# ---------------------------------------------------------------------------
+personas:
+  - name: assistant
+    model: claude-sonnet-4-6
+    provider: claude-code
+    systemPromptFile: personas/assistant/system.md
+    # The postgram-memory skill is eager — its usage guidance is always
+    # in the system prompt, and it carries the Postgram MCP server
+    # definition (skills/postgram-memory/mcp/postgram.json, rendered by
+    # bootstrap.sh with your API key).
+    skills:
+      - postgram-memory
+    subagents: []
+    capabilities:
+      allow:
+        - channel.send:*
+        - memory.access:*
+    maxConcurrent: 1
+
+# ---------------------------------------------------------------------------
+# Bindings
+# ---------------------------------------------------------------------------
+bindings:
+  - persona: assistant
+    channel: personal-telegram
+    isDefault: true
+
+# ---------------------------------------------------------------------------
+# Agent runtime
+# ---------------------------------------------------------------------------
+agentRunner:
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+
+backgroundAgent:
+  enabled: false
+  defaultProvider: claude-code
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+# Default: api_key — reads $ANTHROPIC_API_KEY from .env. To use a
+# different provider (OpenAI-compatible, Gemini, Codex) see
+# https://github.com/ivo-toby/talon/blob/main/starter/docs/providers.md
+auth:
+  mode: api_key
+  providers:
+    anthropic:
+      apiKey: ${ANTHROPIC_API_KEY}
+
+logLevel: info

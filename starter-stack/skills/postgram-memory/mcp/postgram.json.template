@@ -1,0 +1,10 @@
+{
+  "name": "postgram",
+  "config": {
+    "transport": "sse",
+    "url": "http://postgram:3100/mcp",
+    "headers": {
+      "Authorization": "Bearer __PGM_API_KEY__"
+    }
+  }
+}

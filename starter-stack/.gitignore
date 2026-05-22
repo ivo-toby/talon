@@ -1,0 +1,9 @@
+# Rendered by bootstrap.sh from postgram.json.template — contains the
+# minted Postgram API key. Never commit.
+skills/postgram-memory/mcp/postgram.json
+
+# User content dropped for the agent.
+userdata/*
+!userdata/.gitkeep
+
+# (.env, data/, config/talond.yaml are covered by the repo-root .gitignore.)
