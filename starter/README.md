@@ -58,13 +58,15 @@ claude
 
 Then in Claude Code:
 
-- `/talon-setup` — top-level guided setup
+- `/talon-setup-docker` — top-level guided setup (docker-aware)
 - `/add-telegram`, `/add-slack`, `/add-discord`, `/add-whatsapp`, `/add-email`, `/add-terminal` — add channels
 - `/create-profile` — create a new persona
 - `/create-personality` — customize a persona's voice and tone
 - `/manage-schedules` — set up scheduled agent runs
 
-The skills edit your `.env`, `config/talond.yaml`, and `personas/` for you.
+The skills walk you through editing `.env` and `config/talond.yaml`
+manually for first-time setup, then drive `talonctl` for follow-on
+changes (add another channel, swap providers, etc.).
 
 ## Configuration
 
@@ -107,6 +109,15 @@ cp ~/Documents/quarterly-report.pdf userdata/notes/
 The agent can also write artifacts back here — useful for drafts,
 reports, generated code. See [`userdata/README.md`](userdata/README.md)
 inside the bundle for permission notes (Linux UID/GID 1000).
+
+## Documentation
+
+The `docs/` folder in this bundle has deeper guides:
+
+| File | What's in it |
+| --- | --- |
+| [`docs/providers.md`](docs/providers.md) | Full config snippets for Claude, OpenAI-compatible, Gemini CLI, Codex CLI |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | Common issues — Telegram errors, permission problems, provider connectivity, MCP server setup |
 
 ## Common operations
 
