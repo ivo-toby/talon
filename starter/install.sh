@@ -22,8 +22,10 @@ echo "Installed: $DEST"
 
 # Ensure the bind-mount sources exist before `docker compose up`.
 # Without this, Docker creates them as root-owned on Linux, breaking the
-# non-root user inside the container.
-mkdir -p "$HERE/data" "$HERE/userdata"
+# non-root user inside the container. `skills/` and `subagents/` must
+# exist so `talonctl add-mcp` / `add-skill` writes land on the host and
+# survive container recreation.
+mkdir -p "$HERE/data" "$HERE/userdata" "$HERE/skills" "$HERE/subagents"
 
 case ":$PATH:" in
   *":$PREFIX:"*) ;;

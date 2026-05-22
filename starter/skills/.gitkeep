@@ -1,0 +1,2 @@
+# Talon skills live here. The daemon loads them from /skills (bind-mounted).
+# `talonctl add-mcp` / `add-skill` write here; drop hand-authored skills here too.
