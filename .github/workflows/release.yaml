@@ -66,36 +66,42 @@ jobs:
           chmod +x scripts/sync-starter-skills.sh
           scripts/sync-starter-skills.sh
 
-      - name: Ensure starter/data exists in tarball
-        run: mkdir -p starter/data
+      - name: Ensure bind-mount dirs exist in tarballs
+        run: mkdir -p starter/data starter-stack/data
 
-      - name: Create tarball
+      - name: Create tarballs
         run: |
-          # Rename top-level dir from `starter/` to `talon-starter/` so users
-          # get a friendlier name when they extract. Done via a copy (portable
-          # across BSD and GNU tar) rather than --transform.
+          # Rename top-level dirs to friendly names inside the tar, via a
+          # copy (portable across BSD and GNU tar) rather than --transform.
           #
-          # The artifact filename is unversioned (`talon-starter.tar.gz`) so the
-          # GitHub `/releases/latest/download/talon-starter.tar.gz` URL — what
-          # the starter README documents — resolves correctly. The release tag
-          # itself carries the version.
+          # Artifact filenames are unversioned so the GitHub
+          # `/releases/latest/download/<name>.tar.gz` URLs — what the
+          # READMEs document — resolve correctly. The release tag carries
+          # the version.
           rm -rf build && mkdir build
           cp -R starter build/talon-starter
+          cp -R starter-stack build/talon-postgram-stack
           tar -czf talon-starter.tar.gz -C build talon-starter
+          tar -czf talon-postgram-stack.tar.gz -C build talon-postgram-stack
 
       - name: Attach to release
         uses: softprops/action-gh-release@v3
         with:
-          files: talon-starter.tar.gz
+          files: |
+            talon-starter.tar.gz
+            talon-postgram-stack.tar.gz
           fail_on_unmatched_files: true
           generate_release_notes: false
           body: |
             ## Talon ${{ github.ref_name }}
 
             **Container image:** `ghcr.io/ivo-toby/talond:${{ github.ref_name }}` (also tagged `:latest`)
-            **Starter bundle:** `talon-starter.tar.gz` attached below
 
-            ### Quick start
+            **Bundles attached below:**
+            - `talon-starter.tar.gz` — single Talon daemon
+            - `talon-postgram-stack.tar.gz` — Talon + Postgram (persistent memory)
+
+            ### Quick start (single daemon)
 
             ```bash
             curl -fsSL https://github.com/ivo-toby/talon/releases/download/${{ github.ref_name }}/talon-starter.tar.gz | tar xz
@@ -103,6 +109,16 @@ jobs:
             ./install.sh
             # edit .env + config/talond.yaml, then:
             docker compose up -d
+            ```
+
+            ### Quick start (Talon + Postgram)
+
+            ```bash
+            curl -fsSL https://github.com/ivo-toby/talon/releases/download/${{ github.ref_name }}/talon-postgram-stack.tar.gz | tar xz
+            cd talon-postgram-stack
+            ./install.sh
+            # edit .env + config/talond.yaml, then:
+            ./bootstrap.sh
             ```
 
             See the [starter README](https://github.com/ivo-toby/talon/blob/main/starter/README.md) for full setup.
