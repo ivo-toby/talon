@@ -29,6 +29,43 @@ It is built for single-user or small-team deployments where you want persistent,
 
 ---
 
+## Quick start (Docker)
+
+The fastest way to run Talon — no clone, no build, no toolchain. Download
+the starter bundle, add your tokens, and bring it up:
+
+```bash
+# 1. Download and extract the starter bundle
+curl -fsSL https://github.com/ivo-toby/talon/releases/latest/download/talon-starter.tar.gz | tar xz
+cd talon-starter
+
+# 2. Install the talonctl helper (no sudo)
+./install.sh
+
+# 3. Configure
+cp .env.example .env                              # add your bot token + provider key
+cp config/talond.example.yaml config/talond.yaml  # set allowedChatIds, pick a provider
+
+# 4. Run
+docker compose up -d
+talonctl status
+```
+
+The daemon image is published to `ghcr.io/ivo-toby/talond` — multi-arch
+(linux/amd64 + linux/arm64), `:latest` plus per-release tags. The compose
+file pulls it for you; there is nothing to build.
+
+**Guided setup with Claude Code.** The bundle ships a setup skill — run
+`claude` in the extracted folder and type `/talon-setup-docker` to be
+walked through provider choice, channel config, and first boot
+conversationally.
+
+Full bundle reference: [`starter/README.md`](starter/README.md). Prefer
+running from a source clone as a systemd service? See
+[Quick start (from source)](#quick-start-from-source).
+
+---
+
 ## Features
 
 ### Channels
@@ -242,7 +279,11 @@ sequenceDiagram
 
 ---
 
-## Quick start
+## Quick start (from source)
+
+Run Talon from a clone — the path for native/systemd deployments and
+local development. For the zero-build container path, see
+[Quick start (Docker)](#quick-start-docker) above.
 
 For the full deployment walkthrough, see the [setup guide](docs/setup-guide.md).
 
@@ -1945,7 +1986,32 @@ The service includes security hardening: `NoNewPrivileges`, `PrivateTmp`, `Prote
 
 ### 2. Containerized Daemon (Docker)
 
-> **Coming soon** — Docker deployment is under active development. The goal is to run provider runtimes inside Docker containers for blast-radius isolation against prompt injection from untrusted input (repos, emails, messages). The host-mode path will remain as fallback. Dockerfiles and Compose config exist in `deploy/` and will be updated for the current architecture.
+The zero-build path — a published multi-arch image plus a starter bundle
+of config templates, a `talonctl` wrapper, and guided setup skills.
+
+```bash
+curl -fsSL https://github.com/ivo-toby/talon/releases/latest/download/talon-starter.tar.gz | tar xz
+cd talon-starter
+./install.sh
+cp .env.example .env                              # fill in secrets
+cp config/talond.example.yaml config/talond.yaml  # edit for your setup
+docker compose up -d
+```
+
+The image is published at `ghcr.io/ivo-toby/talond` (`:latest` and
+per-release tags, linux/amd64 + linux/arm64). The bundle bind-mounts
+`config/`, `personas/`, `data/`, and `userdata/` so you edit everything
+from the host. See [`starter/README.md`](starter/README.md) for the full
+walkthrough, [`starter/docs/providers.md`](starter/docs/providers.md) for
+provider configuration, and
+[`starter/docs/troubleshooting.md`](starter/docs/troubleshooting.md) when
+something misbehaves.
+
+To build the image yourself instead of pulling the published one:
+
+```bash
+docker build -f deploy/Dockerfile -t talond .
+```
 
 ### 3. Wake-Only Mode (Timer)
 
