@@ -11,6 +11,12 @@
 
 import { z } from 'zod';
 
+import {
+  MAX_HOPS,
+  MAX_CONCURRENT_PER_TARGET,
+  DEFAULT_A2A_MAX_ATTEMPTS,
+} from '../../a2a/a2a-types.js';
+
 // ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
@@ -353,6 +359,29 @@ export const LangfuseConfigSchema = z
   });
 
 // ---------------------------------------------------------------------------
+// A2A (agent-to-agent) limits
+// ---------------------------------------------------------------------------
+
+export const A2AConfigSchema = z.object({
+  /**
+   * Maximum hop count before a chained A2A task is rejected. Guards against
+   * runaway delegation loops. Submissions with `hopCount >= maxHops` fail.
+   */
+  maxHops: z.number().int().min(1).max(32).default(MAX_HOPS),
+  /**
+   * Maximum number of in-flight (submitted/working/input-required) A2A tasks
+   * targeting a single persona. Additional submissions are rejected until one
+   * completes. Set higher to allow parallel delegation to the same persona.
+   */
+  maxConcurrentPerTarget: z.number().int().min(1).max(100).default(MAX_CONCURRENT_PER_TARGET),
+  /**
+   * Max queue retry attempts for collaboration queue items before they move
+   * to the dead-letter queue.
+   */
+  maxAttempts: z.number().int().min(1).max(20).default(DEFAULT_A2A_MAX_ATTEMPTS),
+});
+
+// ---------------------------------------------------------------------------
 // Sub-agent overrides
 // ---------------------------------------------------------------------------
 
@@ -392,6 +421,7 @@ export const TalondConfigSchema = z
     sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
     langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
     subagents: SubAgentsConfigSchema.default({}),
+    a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
     dataDir: z.string().default('data'),
   })

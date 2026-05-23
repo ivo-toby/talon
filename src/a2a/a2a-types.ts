@@ -148,14 +148,34 @@ export interface A2ATaskRow {
 }
 
 // ---------------------------------------------------------------------------
-// Constants
+// Constants — default A2A limits
 // ---------------------------------------------------------------------------
+//
+// These are the built-in defaults used when no `a2a:` block is present in
+// talond.yaml. They are also the source of truth for `A2AConfigSchema`'s
+// defaults in `core/config/config-schema.ts` — keep them in sync.
 
-/** Maximum hop count before rejecting a task to prevent infinite loops. */
+/** Default maximum hop count before rejecting a task to prevent infinite loops. */
 export const MAX_HOPS = 4;
 
-/** Maximum number of concurrent active A2A tasks per target persona. */
+/** Default maximum number of concurrent active A2A tasks per target persona. */
 export const MAX_CONCURRENT_PER_TARGET = 1;
 
 /** Default max queue retry attempts for A2A collaboration items. */
 export const DEFAULT_A2A_MAX_ATTEMPTS = 3;
+
+/** Runtime A2A limits resolved from config. Defaults mirror the constants above. */
+export interface A2ALimits {
+  maxHops: number;
+  maxConcurrentPerTarget: number;
+  maxAttempts: number;
+}
+
+/** Returns A2ALimits populated with the built-in defaults. */
+export function defaultA2ALimits(): A2ALimits {
+  return {
+    maxHops: MAX_HOPS,
+    maxConcurrentPerTarget: MAX_CONCURRENT_PER_TARGET,
+    maxAttempts: DEFAULT_A2A_MAX_ATTEMPTS,
+  };
+}
