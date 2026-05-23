@@ -1,30 +1,25 @@
 #!/usr/bin/env bash
-# sync-starter-skills.sh — copy the user-facing Claude skills into a starter
-# bundle. Source: .claude/skills/<name>/. Destination: <bundle>/.claude/skills/<name>/.
+# sync-starter-skills.sh — copy the user-facing Claude skills into the starter
+# bundle. Source: .claude/skills/<name>/. Destination: starter/.claude/skills/<name>/.
 #
-# Reads the allowlist from <bundle>/.claude/skills/INCLUDED.txt.
+# Reads the allowlist from starter/.claude/skills/INCLUDED.txt.
 #
 # Usage:
-#   scripts/sync-starter-skills.sh [BUNDLE]           # sync (default: starter)
-#   scripts/sync-starter-skills.sh [BUNDLE] --check   # exit non-zero if any
-#                                                     # allowlisted skill is missing
+#   scripts/sync-starter-skills.sh           # sync
+#   scripts/sync-starter-skills.sh --check   # exit non-zero if any allowlisted
+#                                            # skill is missing from .claude/skills/
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$ROOT/.claude/skills"
-
-BUNDLE="${1:-starter}"
-MODE="sync"
-
-# Detect if second arg is --check (or first arg is --check when no bundle given)
-if [ "${2:-}" = "--check" ] || [ "$BUNDLE" = "--check" ]; then
-  MODE="check"
-  [ "$BUNDLE" = "--check" ] && BUNDLE="starter"
-fi
-
-DEST_DIR="$ROOT/$BUNDLE/.claude/skills"
+DEST_DIR="$ROOT/starter/.claude/skills"
 ALLOWLIST="$DEST_DIR/INCLUDED.txt"
+
+MODE="sync"
+if [ "${1:-}" = "--check" ]; then
+  MODE="check"
+fi
 
 if [ ! -f "$ALLOWLIST" ]; then
   echo "sync-starter-skills: allowlist not found at $ALLOWLIST" >&2
