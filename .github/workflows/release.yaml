@@ -61,11 +61,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Sync skills into starter bundles
+      - name: Sync skills into starter/
         run: |
           chmod +x scripts/sync-starter-skills.sh
-          scripts/sync-starter-skills.sh starter
-          scripts/sync-starter-skills.sh starter-stack
+          scripts/sync-starter-skills.sh
 
       - name: Ensure bind-mount dirs exist in tarballs
         run: mkdir -p starter/data starter-stack/data
