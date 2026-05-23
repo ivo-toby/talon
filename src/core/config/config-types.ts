@@ -28,6 +28,7 @@ import type {
   ProviderConfigSchema,
   SubAgentsConfigSchema,
   SubAgentModelOverrideSchema,
+  A2AConfigSchema,
 } from './config-schema.js';
 
 /** The full daemon configuration, validated and frozen at startup. */
@@ -98,3 +99,6 @@ export type SubAgentsConfig = z.infer<typeof SubAgentsConfigSchema>;
 
 /** A single model entry in a subagent override chain. */
 export type SubAgentModelOverride = z.infer<typeof SubAgentModelOverrideSchema>;
+
+/** Agent-to-agent runtime limits. */
+export type A2AConfig = z.infer<typeof A2AConfigSchema>;

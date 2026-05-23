@@ -231,6 +231,27 @@ backgroundAgent:
 scheduler:
   tickIntervalMs: 5000
 
+# Agent-to-agent (A2A) limits.
+#
+# Talon implements the Google A2A protocol so personas can delegate tasks to
+# each other (see `persona_send` / `persona_task_status` host tools). These
+# knobs cap how aggressive that delegation is allowed to be.
+#
+# Defaults shown below match the built-in values — omit the entire block to
+# accept them.
+a2a:
+  # Maximum chain depth before a delegated task is rejected. Guards against
+  # runaway delegation loops. A task is rejected when `hopCount >= maxHops`.
+  # Bounded to 1..32.
+  maxHops: 4
+  # Maximum in-flight A2A tasks targeting a single persona at once. Additional
+  # submissions are rejected until one finishes. Raise this to allow parallel
+  # delegation to the same target. Bounded to 1..100.
+  maxConcurrentPerTarget: 1
+  # Max queue retry attempts for A2A `collaboration` queue items before they
+  # move to the dead-letter queue. Bounded to 1..20.
+  maxAttempts: 3
+
 auth:
   mode: subscription
   # mode: api_key

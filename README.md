@@ -2794,13 +2794,35 @@ talonctl a2a send software-engineer "Run the test suite" --source james
 
 `a2a send` inserts a task directly into the database and enqueues it for processing. If the daemon is running, the task will be picked up immediately. If not, it will be processed on next daemon start.
 
+### Configuration
+
+A2A runtime limits live under the top-level `a2a:` block in `talond.yaml`. All
+three keys are optional and fall back to the built-in defaults shown below:
+
+```yaml
+a2a:
+  maxHops: 4                # max delegation chain depth (1..32)
+  maxConcurrentPerTarget: 1 # max in-flight tasks per target persona (1..100)
+  maxAttempts: 3            # max queue retries before dead-letter (1..20)
+```
+
+- **`maxHops`** — a task is rejected when its incoming `hopCount >= maxHops`.
+  Raise this if your supervisor/worker chains genuinely need more depth.
+- **`maxConcurrentPerTarget`** — admission control at submission time. Submissions
+  beyond the cap fail with a "Max allowed" error. Raise this to allow parallel
+  fan-out to the same persona.
+- **`maxAttempts`** — retry budget for the `collaboration` queue items that
+  carry A2A tasks. After this many failures the item is dead-lettered.
+
 ### Milestone 1 scope
 
 The current implementation covers:
 
 - Internal-only task routing (no external HTTP exposure)
-- Single-hop and multi-hop delegation (up to 4 hops, configurable via `MAX_HOPS`)
-- Concurrency admission: at most 1 active task per target persona at a time
+- Single-hop and multi-hop delegation (configurable via `a2a.maxHops`, default 4)
+- Concurrency admission per target persona (configurable via
+  `a2a.maxConcurrentPerTarget`, default 1)
+- Configurable queue retry budget (`a2a.maxAttempts`, default 3)
 - Full task lifecycle tracking in `a2a_tasks` table
 - Agent card discovery per persona
 - CLI commands for listing and submitting tasks

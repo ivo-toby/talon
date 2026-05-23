@@ -674,6 +674,7 @@ export async function bootstrap(
     repos.persona,
     a2aCardRegistry,
     logger,
+    config.a2a,
   );
   const a2aServer = new A2AServer(a2aCardRegistry, a2aTaskMapper, logger);
   logger.info({ personas: [...a2aCardRegistry.keys()] }, 'bootstrap: A2A server initialized');

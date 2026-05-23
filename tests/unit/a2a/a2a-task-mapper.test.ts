@@ -252,6 +252,101 @@ describe('A2ATaskMapper', () => {
   });
 
   // -------------------------------------------------------------------------
+  // configurable limits
+  // -------------------------------------------------------------------------
+
+  describe('configurable limits', () => {
+    it('honors a custom maxHops from limits', () => {
+      const strict = new A2ATaskMapper(
+        taskRepo,
+        queueRepo,
+        threadRepo,
+        personaRepo,
+        registry,
+        createTestLogger(),
+        { maxHops: 2, maxConcurrentPerTarget: 1, maxAttempts: 3 },
+      );
+
+      const ok = strict.submitTask({
+        sourcePersona: 'assistant',
+        targetPersona: 'software-engineer',
+        sourceThreadId: threadId,
+        content: 'Within bounds',
+        hopCount: 1,
+      });
+      expect(ok.isOk()).toBe(true);
+
+      const rejected = strict.submitTask({
+        sourcePersona: 'assistant',
+        targetPersona: 'software-engineer',
+        sourceThreadId: threadId,
+        content: 'Past bounds',
+        hopCount: 2,
+      });
+      expect(rejected.isErr()).toBe(true);
+      expect(rejected._unsafeUnwrapErr().message).toMatch(/maximum allowed hops \(2\)/);
+    });
+
+    it('honors a higher maxConcurrentPerTarget', () => {
+      const relaxed = new A2ATaskMapper(
+        taskRepo,
+        queueRepo,
+        threadRepo,
+        personaRepo,
+        registry,
+        createTestLogger(),
+        { maxHops: 4, maxConcurrentPerTarget: 3, maxAttempts: 3 },
+      );
+
+      for (let i = 0; i < 3; i++) {
+        const r = relaxed.submitTask({
+          sourcePersona: 'assistant',
+          targetPersona: 'software-engineer',
+          sourceThreadId: threadId,
+          content: `Task ${i}`,
+          hopCount: 0,
+        });
+        expect(r.isOk()).toBe(true);
+      }
+
+      const fourth = relaxed.submitTask({
+        sourcePersona: 'assistant',
+        targetPersona: 'software-engineer',
+        sourceThreadId: threadId,
+        content: 'Over the new limit',
+        hopCount: 0,
+      });
+      expect(fourth.isErr()).toBe(true);
+      expect(fourth._unsafeUnwrapErr().message).toMatch(/Max allowed: 3/);
+    });
+
+    it('propagates maxAttempts into queue items', () => {
+      const relaxed = new A2ATaskMapper(
+        taskRepo,
+        queueRepo,
+        threadRepo,
+        personaRepo,
+        registry,
+        createTestLogger(),
+        { maxHops: 4, maxConcurrentPerTarget: 1, maxAttempts: 7 },
+      );
+
+      const result = relaxed.submitTask({
+        sourcePersona: 'assistant',
+        targetPersona: 'software-engineer',
+        sourceThreadId: threadId,
+        content: 'Retry-policy check',
+        hopCount: 0,
+      });
+      expect(result.isOk()).toBe(true);
+
+      const status = result._unsafeUnwrap();
+      const queueRow = queueRepo.findById(status.queueItemId!)._unsafeUnwrap();
+      expect(queueRow?.max_attempts).toBe(7);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // getTaskStatus
   // -------------------------------------------------------------------------
 
