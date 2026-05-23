@@ -101,7 +101,7 @@ at a time.
 | `add-discord` | "add discord", "connect discord" |
 | `add-whatsapp` | "add whatsapp", "connect whatsapp" |
 | `add-email` | "add email", "connect email" |
-| `add-terminal` | "add terminal", "connect terminal" |
+| `add-terminal` | "add terminal", "cli chat", "talonctl chat" |
 | `create-profile` | "create a profile", "add a persona", "new background agent" |
 | `create-personality` | "create a personality", "add personality files" |
 | `manage-schedules` | "manage schedules", "add a schedule", "cron job" |

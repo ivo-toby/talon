@@ -24,6 +24,9 @@ function listSkillDirs(dir: string): string[] {
 }
 
 // Sync skills before running assertions so the test passes on a fresh clone.
+// Note: this writes into the working tree (`<bundle>/.claude/skills/`). On a
+// clean tree it's idempotent; if a developer has uncommitted edits in
+// `.claude/skills/`, those will be reflected in the bundle dirs afterwards.
 beforeAll(() => {
   const script = resolve(ROOT, 'scripts/sync-starter-skills.sh');
   execSync(`bash "${script}" starter`, { stdio: 'ignore' });
@@ -34,47 +37,36 @@ beforeAll(() => {
 // starter/ bundle
 // ---------------------------------------------------------------------------
 
-describe('starter/.claude/skills', () => {
-  const allowlist = resolve(ROOT, 'starter/.claude/skills/INCLUDED.txt');
-  const skillsDir = resolve(ROOT, 'starter/.claude/skills');
+for (const bundle of ['starter', 'starter-stack'] as const) {
+  describe(`${bundle}/.claude/skills`, () => {
+    const allowlist = resolve(ROOT, bundle, '.claude/skills/INCLUDED.txt');
+    const skillsDir = resolve(ROOT, bundle, '.claude/skills');
+    const sourceDir = resolve(ROOT, '.claude/skills');
 
-  it('has an INCLUDED.txt allowlist', () => {
-    expect(existsSync(allowlist)).toBe(true);
+    it('has an INCLUDED.txt allowlist', () => {
+      expect(existsSync(allowlist)).toBe(true);
+    });
+
+    it('every allowlisted skill exists as a directory', () => {
+      const expected = readLines(allowlist);
+      expect(expected.length).toBeGreaterThan(0);
+
+      const actual = listSkillDirs(skillsDir);
+      for (const skill of expected) {
+        expect(actual).toContain(skill);
+      }
+    });
+
+    it('synced SKILL.md content matches the source', () => {
+      const expected = readLines(allowlist);
+      for (const skill of expected) {
+        const src = readFileSync(resolve(sourceDir, skill, 'SKILL.md'), 'utf8');
+        const dst = readFileSync(resolve(skillsDir, skill, 'SKILL.md'), 'utf8');
+        expect(dst, `${bundle}/${skill}/SKILL.md drifted from source`).toBe(src);
+      }
+    });
   });
-
-  it('every allowlisted skill exists as a directory', () => {
-    const expected = readLines(allowlist);
-    expect(expected.length).toBeGreaterThan(0);
-
-    const actual = listSkillDirs(skillsDir);
-    for (const skill of expected) {
-      expect(actual).toContain(skill);
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// starter-stack/ bundle
-// ---------------------------------------------------------------------------
-
-describe('starter-stack/.claude/skills', () => {
-  const allowlist = resolve(ROOT, 'starter-stack/.claude/skills/INCLUDED.txt');
-  const skillsDir = resolve(ROOT, 'starter-stack/.claude/skills');
-
-  it('has an INCLUDED.txt allowlist', () => {
-    expect(existsSync(allowlist)).toBe(true);
-  });
-
-  it('every allowlisted skill exists as a directory', () => {
-    const expected = readLines(allowlist);
-    expect(expected.length).toBeGreaterThan(0);
-
-    const actual = listSkillDirs(skillsDir);
-    for (const skill of expected) {
-      expect(actual).toContain(skill);
-    }
-  });
-});
+}
 
 // ---------------------------------------------------------------------------
 // Release workflow
@@ -85,11 +77,11 @@ describe('.github/workflows/release.yaml', () => {
   const workflow = readFileSync(workflowPath, 'utf8');
 
   it('syncs skills into starter/', () => {
-    expect(workflow).toMatch(/scripts\/sync-starter-skills\.sh/);
+    // Negative lookahead prevents `starter\b` from matching inside `starter-stack`.
+    expect(workflow).toMatch(/sync-starter-skills\.sh\s+starter(?![-\w])/);
   });
 
   it('syncs skills into starter-stack/', () => {
-    // The workflow must run the sync for both bundles.
-    expect(workflow).toMatch(/starter-stack.*sync|sync.*starter-stack|sync-starter-stack-skills/i);
+    expect(workflow).toMatch(/sync-starter-skills\.sh\s+starter-stack(?![-\w])/);
   });
 });

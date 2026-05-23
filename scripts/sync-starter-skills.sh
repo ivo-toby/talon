@@ -5,23 +5,52 @@
 # Reads the allowlist from <bundle>/.claude/skills/INCLUDED.txt.
 #
 # Usage:
-#   scripts/sync-starter-skills.sh [BUNDLE]           # sync (default: starter)
-#   scripts/sync-starter-skills.sh [BUNDLE] --check   # exit non-zero if any
-#                                                     # allowlisted skill is missing
+#   scripts/sync-starter-skills.sh [BUNDLE] [--check]
+#
+#   BUNDLE   directory under the repo root (default: starter)
+#   --check  exit non-zero if any allowlisted skill is missing in source;
+#            do not write to the destination
+#
+# Flag and positional may appear in any order. -h / --help prints this usage.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$ROOT/.claude/skills"
 
-BUNDLE="${1:-starter}"
+usage() {
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+BUNDLE=""
 MODE="sync"
 
-# Detect if second arg is --check (or first arg is --check when no bundle given)
-if [ "${2:-}" = "--check" ] || [ "$BUNDLE" = "--check" ]; then
-  MODE="check"
-  [ "$BUNDLE" = "--check" ] && BUNDLE="starter"
-fi
+for arg in "$@"; do
+  case "$arg" in
+    --check)
+      MODE="check"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      echo "sync-starter-skills: unknown flag: $arg" >&2
+      usage >&2
+      exit 64
+      ;;
+    *)
+      if [ -n "$BUNDLE" ]; then
+        echo "sync-starter-skills: unexpected positional argument: $arg" >&2
+        usage >&2
+        exit 64
+      fi
+      BUNDLE="$arg"
+      ;;
+  esac
+done
+
+BUNDLE="${BUNDLE:-starter}"
 
 DEST_DIR="$ROOT/$BUNDLE/.claude/skills"
 ALLOWLIST="$DEST_DIR/INCLUDED.txt"
