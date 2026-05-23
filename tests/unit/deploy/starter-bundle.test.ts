@@ -1,9 +1,10 @@
 // Tests that the starter bundles ship the Claude skills declared in their
 // INCLUDED.txt allowlists, and that the release workflow syncs both bundles.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { readFileSync, readdirSync, existsSync } from 'fs';
 import { resolve } from 'path';
+import { execSync } from 'child_process';
 
 const ROOT = resolve(import.meta.dirname, '../../..');
 
@@ -21,6 +22,13 @@ function listSkillDirs(dir: string): string[] {
     .map((d) => d.name)
     .sort();
 }
+
+// Sync skills before running assertions so the test passes on a fresh clone.
+beforeAll(() => {
+  const script = resolve(ROOT, 'scripts/sync-starter-skills.sh');
+  execSync(`bash "${script}" starter`, { stdio: 'ignore' });
+  execSync(`bash "${script}" starter-stack`, { stdio: 'ignore' });
+});
 
 // ---------------------------------------------------------------------------
 // starter/ bundle
