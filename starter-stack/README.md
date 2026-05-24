@@ -86,6 +86,31 @@ in its `skills:`, so the agent gets the Postgram tools and the guidance.
 To use a non-Claude provider for Talon, see
 [the provider cookbook](https://github.com/ivo-toby/talon/blob/main/starter/docs/providers.md).
 
+## Guided setup with Claude Code
+
+The bundle ships `.claude/skills/` — interactive setup guides that Claude Code
+reads when you ask for help. Open the project in Claude Code and say things
+like "set up talon" or "add telegram" and it walks you through one question
+at a time.
+
+| Skill | Say this in Claude Code |
+|-------|------------------------|
+| `talon-setup-docker` | "set up talon", "configure talon", "talon doctor" |
+| `add-telegram` | "add telegram", "connect telegram" |
+| `add-slack` | "add slack", "connect slack" |
+| `add-discord` | "add discord", "connect discord" |
+| `add-whatsapp` | "add whatsapp", "connect whatsapp" |
+| `add-email` | "add email", "connect email" |
+| `add-terminal` | "add terminal", "cli chat", "talonctl chat" |
+| `create-profile` | "create a profile", "add a persona", "new background agent" |
+| `create-personality` | "create a personality", "add personality files" |
+| `manage-schedules` | "manage schedules", "add a schedule", "cron job" |
+
+These skills are **not** loaded by the Talon daemon — they are for the
+operator's local Claude Code session. They know the bundle layout, use the
+bundled `talonctl` wrapper, and never ask you to run `npm install` or
+`npx talonctl`.
+
 ## Common operations
 
 ```bash

@@ -1,25 +1,59 @@
 #!/usr/bin/env bash
-# sync-starter-skills.sh — copy the user-facing Claude skills into the starter
-# bundle. Source: .claude/skills/<name>/. Destination: starter/.claude/skills/<name>/.
+# sync-starter-skills.sh — copy the user-facing Claude skills into a starter
+# bundle. Source: .claude/skills/<name>/. Destination: <bundle>/.claude/skills/<name>/.
 #
-# Reads the allowlist from starter/.claude/skills/INCLUDED.txt.
+# Reads the allowlist from <bundle>/.claude/skills/INCLUDED.txt.
 #
 # Usage:
-#   scripts/sync-starter-skills.sh           # sync
-#   scripts/sync-starter-skills.sh --check   # exit non-zero if any allowlisted
-#                                            # skill is missing from .claude/skills/
+#   scripts/sync-starter-skills.sh [BUNDLE] [--check]
+#
+#   BUNDLE   directory under the repo root (default: starter)
+#   --check  exit non-zero if any allowlisted skill is missing in source;
+#            do not write to the destination
+#
+# Flag and positional may appear in any order. -h / --help prints this usage.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$ROOT/.claude/skills"
-DEST_DIR="$ROOT/starter/.claude/skills"
-ALLOWLIST="$DEST_DIR/INCLUDED.txt"
 
+usage() {
+  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+BUNDLE=""
 MODE="sync"
-if [ "${1:-}" = "--check" ]; then
-  MODE="check"
-fi
+
+for arg in "$@"; do
+  case "$arg" in
+    --check)
+      MODE="check"
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --*)
+      echo "sync-starter-skills: unknown flag: $arg" >&2
+      usage >&2
+      exit 64
+      ;;
+    *)
+      if [ -n "$BUNDLE" ]; then
+        echo "sync-starter-skills: unexpected positional argument: $arg" >&2
+        usage >&2
+        exit 64
+      fi
+      BUNDLE="$arg"
+      ;;
+  esac
+done
+
+BUNDLE="${BUNDLE:-starter}"
+
+DEST_DIR="$ROOT/$BUNDLE/.claude/skills"
+ALLOWLIST="$DEST_DIR/INCLUDED.txt"
 
 if [ ! -f "$ALLOWLIST" ]; then
   echo "sync-starter-skills: allowlist not found at $ALLOWLIST" >&2
