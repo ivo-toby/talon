@@ -17,10 +17,12 @@ import type { Result } from 'neverthrow';
 import type pino from 'pino';
 import type { MessageRepository, MessageRow } from '../core/database/repositories/message-repository.js';
 import type { MemoryRepository, MemoryType } from '../core/database/repositories/memory-repository.js';
+import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
 import type { SessionTracker } from '../sandbox/session-tracker.js';
 import type { SubAgentResult } from '../subagents/subagent-types.js';
 import type { SubAgentError } from '../core/errors/index.js';
 import type { ResolvedContextUsage } from '../providers/provider-types.js';
+import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,6 +34,12 @@ import type { ResolvedContextUsage } from '../providers/provider-types.js';
  * We take the newest messages first, so recent context is always preserved.
  */
 const MAX_TRANSCRIPT_CHARS = 100_000;
+const SCHEDULE_CONTEXT_MESSAGE_LIMIT = 500;
+const SCHEDULE_CONTEXT_WINDOW_MS = 48 * 60 * 60 * 1000;
+const DIRECT_CONVERSATION_SECTION_HEADER = '[Direct conversation context last 48h]';
+const SCHEDULE_HISTORY_SECTION_HEADER = '[Schedule thread history]';
+const DIRECT_CONTEXT_BUDGET_RATIO = 0.25;
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -74,6 +82,7 @@ export const DEFAULT_MAX_OBSERVATION_CHARS = 40_000;
 
 export interface ContextRollerDeps {
   messageRepo: Pick<MessageRepository, 'findLatestByThread'>;
+  threadRepo?: Pick<ThreadRepository, 'findByExternalId'>;
   memoryRepo: Pick<MemoryRepository, 'insert' | 'findById' | 'findByThread' | 'upsertByKey' | 'delete' | 'runInTransaction'>;
   sessionTracker: Pick<SessionTracker, 'rotateSession'>;
   /** Pre-bound summarizer function. Model, prompt, and services are captured at bootstrap. */
@@ -324,6 +333,8 @@ export class ContextRoller {
     observerName: string = 'session-observer',
     reflectorName: string = 'session-reflector',
     reflectionThresholdChars: number = DEFAULT_MAX_OBSERVATION_CHARS,
+    threadMetadata?: string | null,
+    channelId?: string,
   ): Promise<ContextRotationResult> {
     const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
     const threshold = overrideThreshold ?? this.deps.thresholdRatio ?? 0.4;
@@ -355,7 +366,12 @@ export class ContextRoller {
     // Snapshot boundary — see comment in checkAndRotate above.
     const rotatedThroughTs = messages[messages.length - 1].created_at;
 
-    const transcript = this.buildTranscript(messages, MAX_TRANSCRIPT_CHARS);
+    const transcript = await this.buildObservationTranscript(
+      threadId,
+      messages,
+      threadMetadata,
+      channelId,
+    );
 
     // 2. Resolve and call the observer.
     const observerRun = this.deps.resolveSummarizerRun
@@ -722,6 +738,96 @@ export class ContextRoller {
       },
       'context-roller-om: observations consolidated by reflector',
     );
+  }
+
+  private async buildObservationTranscript(
+    threadId: string,
+    scheduleMessages: MessageRow[],
+    threadMetadata?: string | null,
+    channelId?: string,
+  ): Promise<string> {
+    const scheduleTranscript = this.buildTranscript(scheduleMessages, MAX_TRANSCRIPT_CHARS);
+    const originExternalId = readScheduleOriginExternalId(threadMetadata);
+    if (!originExternalId || !channelId || !this.deps.threadRepo) {
+      return scheduleTranscript;
+    }
+
+    const conversationThreadResult = this.deps.threadRepo.findByExternalId(channelId, originExternalId);
+    if (conversationThreadResult.isErr()) {
+      this.deps.logger.debug(
+        { threadId, channelId, originExternalId, error: conversationThreadResult.error.message },
+        'context-roller-om: failed to load direct conversation thread, continuing with schedule history only',
+      );
+      return scheduleTranscript;
+    }
+
+    const conversationThread = conversationThreadResult.value;
+    if (!conversationThread || conversationThread.id === threadId) {
+      return scheduleTranscript;
+    }
+
+    const conversationMessagesResult = this.deps.messageRepo.findLatestByThread(
+      conversationThread.id,
+      SCHEDULE_CONTEXT_MESSAGE_LIMIT,
+    );
+    if (conversationMessagesResult.isErr()) {
+      this.deps.logger.debug(
+        { threadId, conversationThreadId: conversationThread.id, error: conversationMessagesResult.error.message },
+        'context-roller-om: failed to load direct conversation messages, continuing with schedule history only',
+      );
+      return scheduleTranscript;
+    }
+
+    const cutoff = Date.now() - SCHEDULE_CONTEXT_WINDOW_MS;
+    const recentConversationMessages = conversationMessagesResult.value.filter((message) =>
+      message.created_at >= cutoff,
+    );
+    if (recentConversationMessages.length === 0) {
+      return scheduleTranscript;
+    }
+
+    return this.buildObservationTranscriptWithDirectContext(
+      recentConversationMessages,
+      scheduleMessages,
+      MAX_TRANSCRIPT_CHARS,
+    );
+  }
+
+  private buildObservationTranscriptWithDirectContext(
+    directConversationMessages: MessageRow[],
+    scheduleMessages: MessageRow[],
+    maxChars: number,
+  ): string {
+    const sectionOverhead = DIRECT_CONVERSATION_SECTION_HEADER.length
+      + SCHEDULE_HISTORY_SECTION_HEADER.length
+      + 3;
+    const availableChars = Math.max(1, maxChars - sectionOverhead);
+
+    // Keep most of the budget for the schedule thread being rotated; the
+    // direct conversation block is supporting context for one-sided schedules.
+    const directContextBudget = Math.max(
+      1,
+      Math.min(availableChars, Math.floor(availableChars * DIRECT_CONTEXT_BUDGET_RATIO)),
+    );
+    const directConversationTranscript = this.buildTranscript(
+      directConversationMessages,
+      directContextBudget,
+    );
+    const remainingScheduleChars = Math.max(
+      1,
+      availableChars - directConversationTranscript.length,
+    );
+    const scheduleTranscript = this.buildTranscript(
+      scheduleMessages,
+      remainingScheduleChars,
+    );
+
+    return [
+      DIRECT_CONVERSATION_SECTION_HEADER,
+      directConversationTranscript,
+      SCHEDULE_HISTORY_SECTION_HEADER,
+      scheduleTranscript,
+    ].join('\n');
   }
 
   /**

@@ -16,6 +16,7 @@ import {
   formatMissingTalonSkillError,
 } from '../skills/skill-runtime-text.js';
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
+import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import type {
@@ -27,25 +28,6 @@ import type { StartedObservationHandle } from '../observability/langfuse/observa
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-
-/**
- * Returns the origin chat's external_id recorded in a dedicated schedule
- * thread's metadata, or null when the thread is not a schedule thread.
- * Dedicated schedule threads are created by the schedule.manage tool and
- * carry `{ kind: 'schedule', originExternalId: '<live chat external id>' }`.
- */
-function readScheduleOriginExternalId(metadataJson: string | null | undefined): string | null {
-  if (!metadataJson) return null;
-  try {
-    const parsed = JSON.parse(metadataJson) as Record<string, unknown>;
-    if (parsed && parsed.kind === 'schedule' && typeof parsed.originExternalId === 'string') {
-      return parsed.originExternalId;
-    }
-  } catch {
-    /* ignore — treat unparseable metadata as absent */
-  }
-  return null;
-}
 
 class AgentQueryAttemptError extends Error {
   constructor(
@@ -1040,6 +1022,12 @@ export class AgentRunner {
                           enabledContextManagement.summarizer,
                           'session-reflector',
                           enabledContextManagement.reflectionThresholdChars,
+                          threadResult.isOk() && threadResult.value
+                            ? threadResult.value.metadata
+                            : null,
+                          threadResult.isOk() && threadResult.value
+                            ? threadResult.value.channel_id
+                            : undefined,
                         )
                       : await this.ctx.contextRoller.checkAndRotate(
                           item.threadId,

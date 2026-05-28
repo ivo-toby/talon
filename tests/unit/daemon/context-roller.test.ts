@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ok, err } from 'neverthrow';
 
-import { ContextRoller, type ContextRollerDeps } from '../../../src/daemon/context-roller.js';
+import {
+  ContextRoller,
+  DEFAULT_MAX_OBSERVATION_CHARS,
+  type ContextRollerDeps,
+} from '../../../src/daemon/context-roller.js';
 
 const mockSummarizerRun = vi.fn();
 
@@ -944,6 +948,273 @@ describe('ContextRoller', () => {
         ...overrides,
       });
     };
+
+    it('prepends recent direct-conversation context for schedule threads', async () => {
+      const now = Date.UTC(2026, 4, 28, 12, 0, 0);
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'captured context' },
+          ],
+          taskComplete: true,
+          memoryUpdates: [],
+        },
+      }));
+      const scheduleMessages = [
+        { direction: 'outbound', content: JSON.stringify({ body: 'scheduled follow-up' }), created_at: now - 1_000 },
+      ];
+      const conversationMessages = [
+        { direction: 'inbound', content: JSON.stringify({ body: 'please follow up tomorrow' }), created_at: now - (2 * 60 * 60 * 1000) },
+        { direction: 'outbound', content: JSON.stringify({ body: 'I will remind you' }), created_at: now - (60 * 60 * 1000) },
+      ];
+      const findLatestByThread = vi.fn().mockImplementation((threadId: string, limit: number) => {
+        if (threadId === 'thread-1') {
+          expect(limit).toBe(10000);
+          return ok(scheduleMessages);
+        }
+        if (threadId === 'conversation-thread') {
+          expect(limit).toBe(500);
+          return ok(conversationMessages);
+        }
+        return ok([]);
+      });
+      const deps = makeDeps({
+        messageRepo: { findLatestByThread } as any,
+        threadRepo: {
+          findByExternalId: vi.fn().mockReturnValue(ok({
+            id: 'conversation-thread',
+            channel_id: 'channel-1',
+            external_id: 'chat-42',
+            metadata: '{}',
+            created_at: 0,
+            updated_at: 0,
+          })),
+        } as any,
+        resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
+          if (name === 'session-observer') return observerRun;
+          return null;
+        }),
+      });
+      const roller = new ContextRoller(deps);
+
+      try {
+        await roller.checkAndRotateOM(
+          'thread-1',
+          'persona-1',
+          {
+            ratio: 0.5,
+            inputTokens: 100_000,
+            rawMetric: 100_000,
+            rawMetricName: 'cache_read_input_tokens',
+          },
+          undefined,
+          'session-observer',
+          'session-reflector',
+          DEFAULT_MAX_OBSERVATION_CHARS,
+          JSON.stringify({ kind: 'schedule', originExternalId: 'chat-42' }),
+          'channel-1',
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      const transcript = observerRun.mock.calls[0][2].transcript as string;
+      expect(transcript).toContain('[Direct conversation context last 48h]');
+      expect(transcript).toContain('[Schedule thread history]');
+      expect(transcript).toContain('please follow up tomorrow');
+      expect(transcript).toContain('scheduled follow-up');
+      expect(transcript.indexOf('[Direct conversation context last 48h]')).toBeLessThan(
+        transcript.indexOf('[Schedule thread history]'),
+      );
+    });
+
+    it('keeps the transcript unchanged when a schedule thread has no matching conversation thread', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'captured context' },
+          ],
+          taskComplete: true,
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun, {
+        threadRepo: {
+          findByExternalId: vi.fn().mockReturnValue(ok(null)),
+        } as any,
+      });
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM(
+        'thread-1',
+        'persona-1',
+        {
+          ratio: 0.5,
+          inputTokens: 100_000,
+          rawMetric: 100_000,
+          rawMetricName: 'cache_read_input_tokens',
+        },
+        undefined,
+        'session-observer',
+        'session-reflector',
+        DEFAULT_MAX_OBSERVATION_CHARS,
+        JSON.stringify({ kind: 'schedule', originExternalId: 'chat-42' }),
+        'channel-1',
+      );
+
+      const transcript = observerRun.mock.calls[0][2].transcript as string;
+      expect(transcript).toBe('[turn 1, user]: work on X\n[turn 2, assistant]: done');
+    });
+
+    it('excludes conversation-thread messages older than 48h', async () => {
+      const now = Date.UTC(2026, 4, 28, 12, 0, 0);
+      const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'captured context' },
+          ],
+          taskComplete: true,
+          memoryUpdates: [],
+        },
+      }));
+      const findLatestByThread = vi.fn().mockImplementation((threadId: string) => {
+        if (threadId === 'thread-1') {
+          return ok([
+            { direction: 'outbound', content: JSON.stringify({ body: 'scheduled follow-up' }), created_at: now - 1_000 },
+          ]);
+        }
+        if (threadId === 'conversation-thread') {
+          return ok([
+            { direction: 'inbound', content: JSON.stringify({ body: 'old human context' }), created_at: now - (49 * 60 * 60 * 1000) },
+            { direction: 'inbound', content: JSON.stringify({ body: 'recent human context' }), created_at: now - (2 * 60 * 60 * 1000) },
+          ]);
+        }
+        return ok([]);
+      });
+      const deps = makeDeps({
+        messageRepo: { findLatestByThread } as any,
+        threadRepo: {
+          findByExternalId: vi.fn().mockReturnValue(ok({
+            id: 'conversation-thread',
+            channel_id: 'channel-1',
+            external_id: 'chat-42',
+            metadata: '{}',
+            created_at: 0,
+            updated_at: 0,
+          })),
+        } as any,
+        resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
+          if (name === 'session-observer') return observerRun;
+          return null;
+        }),
+      });
+      const roller = new ContextRoller(deps);
+
+      try {
+        await roller.checkAndRotateOM(
+          'thread-1',
+          'persona-1',
+          {
+            ratio: 0.5,
+            inputTokens: 100_000,
+            rawMetric: 100_000,
+            rawMetricName: 'cache_read_input_tokens',
+          },
+          undefined,
+          'session-observer',
+          'session-reflector',
+          DEFAULT_MAX_OBSERVATION_CHARS,
+          JSON.stringify({ kind: 'schedule', originExternalId: 'chat-42' }),
+          'channel-1',
+        );
+      } finally {
+        nowSpy.mockRestore();
+      }
+
+      const transcript = observerRun.mock.calls[0][2].transcript as string;
+      expect(transcript).toContain('recent human context');
+      expect(transcript).not.toContain('old human context');
+    });
+
+    it('keeps the transcript unchanged for non-schedule threads', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'captured context' },
+          ],
+          taskComplete: true,
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun, {
+        threadRepo: {
+          findByExternalId: vi.fn(),
+        } as any,
+      });
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM(
+        'thread-1',
+        'persona-1',
+        {
+          ratio: 0.5,
+          inputTokens: 100_000,
+          rawMetric: 100_000,
+          rawMetricName: 'cache_read_input_tokens',
+        },
+        undefined,
+        'session-observer',
+        'session-reflector',
+        DEFAULT_MAX_OBSERVATION_CHARS,
+        JSON.stringify({ kind: 'conversation', originExternalId: 'chat-42' }),
+        'channel-1',
+      );
+
+      const transcript = observerRun.mock.calls[0][2].transcript as string;
+      expect(transcript).toBe('[turn 1, user]: work on X\n[turn 2, assistant]: done');
+      expect((deps.threadRepo as any).findByExternalId).not.toHaveBeenCalled();
+    });
+
+    it('keeps the transcript unchanged when threadRepo is unavailable', async () => {
+      const observerRun = vi.fn().mockResolvedValueOnce(ok({
+        summary: 'Observations recorded',
+        data: {
+          observations: [
+            { date: '2026-04-19', time: '10:00', priority: 'high', text: 'captured context' },
+          ],
+          taskComplete: true,
+          memoryUpdates: [],
+        },
+      }));
+      const deps = makeOmDeps(observerRun);
+      const roller = new ContextRoller(deps);
+
+      await roller.checkAndRotateOM(
+        'thread-1',
+        'persona-1',
+        {
+          ratio: 0.5,
+          inputTokens: 100_000,
+          rawMetric: 100_000,
+          rawMetricName: 'cache_read_input_tokens',
+        },
+        undefined,
+        'session-observer',
+        'session-reflector',
+        DEFAULT_MAX_OBSERVATION_CHARS,
+        JSON.stringify({ kind: 'schedule', originExternalId: 'chat-42' }),
+        'channel-1',
+      );
+
+      const transcript = observerRun.mock.calls[0][2].transcript as string;
+      expect(transcript).toBe('[turn 1, user]: work on X\n[turn 2, assistant]: done');
+    });
 
     it('returns hasOpenThreads=false when observer flags taskComplete=true', async () => {
       const observerRun = vi.fn().mockResolvedValueOnce(ok({

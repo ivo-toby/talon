@@ -564,6 +564,7 @@ export async function bootstrap(
     if (defaultSummarizer) {
       contextRoller = new ContextRoller({
         messageRepo: repos.message,
+        threadRepo: repos.thread,
         memoryRepo: repos.memory,
         sessionTracker,
         summarizerRun: defaultSummarizer,
