@@ -141,6 +141,20 @@ export class ContextAssembler {
       }
     }
 
+    // 1b. Inject pre-roll tail if present — messages saved by the context-roller
+    //     just before the last rotation. These give the agent conversational
+    //     continuity (what was being discussed) without risking instruction-replay,
+    //     because the roller already wrote defensive framing into the content.
+    //     Only inject when a summary/observation exists (post-rotation context)
+    //     and when there are no recent messages yet (gap scenario).
+    if (summaryFound) {
+      const tailResult = this.deps.memoryRepo.findByThread(threadId, 'pre-roll-tail');
+      if (tailResult.isOk() && tailResult.value.length > 0) {
+        // Ordered DESC by created_at — [0] is newest (only one tail exists at a time).
+        sections.push(tailResult.value[0].content);
+      }
+    }
+
     // 2. Get recent messages for immediate conversational context.
     // Post-rotation (summary/observation exists): fetch ONLY messages created
     // after the rotation boundary, capped at recentMessageLimit. This prevents

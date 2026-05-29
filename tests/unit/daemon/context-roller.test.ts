@@ -724,7 +724,13 @@ describe('ContextRoller', () => {
       rawMetricName: 'cache_read_input_tokens',
     });
 
-    expect(deps.memoryRepo.upsertByKey).not.toHaveBeenCalled();
+    // upsertByKey is called once for the pre-roll tail, but NEVER for empty-key
+    // or empty-value memoryUpdates from the summarizer.
+    const calls = (deps.memoryRepo.upsertByKey as ReturnType<typeof vi.fn>).mock.calls;
+    const invalidCalls = calls.filter(([, key, fields]: [string, string, { value?: string }]) =>
+      key === '' || fields?.value === '',
+    );
+    expect(invalidCalls).toHaveLength(0);
   });
 
   it('rolls back entire transaction when a memory update fails', async () => {
