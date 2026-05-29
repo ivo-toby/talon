@@ -12,6 +12,7 @@ const mockSummarizerRun = vi.fn();
 const makeDeps = (overrides: Partial<ContextRollerDeps> = {}): ContextRollerDeps => ({
   messageRepo: {
     findLatestByThread: vi.fn().mockReturnValue(ok([])),
+    findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
   } as any,
   memoryRepo: {
     insert: vi.fn().mockReturnValue(ok({})),
@@ -71,6 +72,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -104,6 +106,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
       resolveSummarizerRun: vi.fn().mockReturnValue(alternateSummarizerRun),
     });
@@ -135,6 +138,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
       resolveSummarizerRun: vi.fn().mockReturnValue(null),
     });
@@ -182,6 +186,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -216,6 +221,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -257,6 +263,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
       memoryRepo: {
         insert: vi.fn().mockReturnValue(err(new Error('DB full'))),
@@ -292,6 +299,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -360,6 +368,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -388,6 +397,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -418,6 +428,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -447,6 +458,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -476,6 +488,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -506,6 +519,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -534,6 +548,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -603,6 +618,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -651,6 +667,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
       memoryRepo: {
         insert: vi.fn().mockReturnValue(ok({})),
@@ -695,6 +712,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -729,6 +747,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
       memoryRepo: {
         insert: vi.fn().mockReturnValue(ok({})),
@@ -776,6 +795,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
       memoryRepo: {
         insert: vi.fn().mockReturnValue(ok({})),
@@ -820,6 +840,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -856,6 +877,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
       memoryRepo: {
         insert: vi.fn().mockReturnValue(ok({})),
@@ -909,6 +931,7 @@ describe('ContextRoller', () => {
     const deps = makeDeps({
       messageRepo: {
         findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
       } as any,
     });
     const roller = new ContextRoller(deps);
@@ -940,6 +963,7 @@ describe('ContextRoller', () => {
       return makeDeps({
         messageRepo: {
           findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
         } as any,
         resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
           if (name === 'session-observer') return observerRun;
@@ -1435,11 +1459,11 @@ describe('ContextRoller', () => {
       }));
 
       const insertedRecords: Array<{ metadata: string }> = [];
+      const messages = [{ direction: 'inbound', content: JSON.stringify({ body: 'hi' }), created_at: 1_000 }];
       const deps = makeDeps({
         messageRepo: {
-          findLatestByThread: vi.fn().mockReturnValue(ok([
-            { direction: 'inbound', content: JSON.stringify({ body: 'hi' }), created_at: 1_000 },
-          ])),
+          findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok(messages)),
         } as any,
         resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
           if (name === 'session-observer') return observerRun;
@@ -1501,6 +1525,7 @@ describe('ContextRoller', () => {
       const deps = makeDeps({
         messageRepo: {
           findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
         } as any,
         resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
           if (name === 'session-observer') return observerRun;
@@ -1579,6 +1604,7 @@ describe('ContextRoller', () => {
       const deps = makeDeps({
         messageRepo: {
           findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok(messages)),
         } as any,
         resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
           if (name === 'session-observer') return observerRun;
@@ -1661,6 +1687,7 @@ describe('ContextRoller', () => {
       const deps = makeDeps({
         messageRepo: {
           findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok(messages)),
         } as any,
         resolveSummarizerRun: vi.fn().mockImplementation((name: string) => {
           if (name === 'session-observer') return observerRun;
@@ -1751,6 +1778,162 @@ describe('ContextRoller', () => {
       const meta = JSON.parse(insertCall.metadata);
       expect(meta.currentTask).toBe('implementing X');
       expect(meta.suggestedContinuation).toBe('finish step 3 of X');
+    });
+  });
+
+  describe('incremental transcript (no re-observation of already-observed messages)', () => {
+    const highUsage = { ratio: 0.9, inputTokens: 90_000, rawMetric: 90_000, rawMetricName: 'cache_read_input_tokens' };
+
+    const makeMsg = (id: string, ts: number, direction: 'inbound' | 'outbound' = 'outbound') => ({
+      id, thread_id: 'thread-1', direction, content: JSON.stringify({ body: `msg ${id}` }),
+      created_at: ts, updated_at: ts, channel_id: 'ch-1', persona_id: 'p-1',
+      metadata: '{}', message_type: 'text', external_id: null,
+    });
+
+    const makeObservation = (rotatedThroughTs: number) => ({
+      id: 'obs-1', thread_id: 'thread-1', type: 'observation' as const,
+      content: 'Date: 2026-05-28\n- 🔴 09:00 some observation',
+      metadata: JSON.stringify({ rotatedThroughTs }),
+      created_at: rotatedThroughTs + 1000, updated_at: rotatedThroughTs + 1000,
+      embedding_ref: null,
+    });
+
+    it('checkAndRotate: uses findLatestByThread on first roll (no prior summary)', async () => {
+      const msgs = [makeMsg('m1', 1000), makeMsg('m2', 2000)];
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(msgs)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+        } as any,
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockReturnValue(ok([])), // no prior summary
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+      });
+      deps.summarizerRun = vi.fn().mockResolvedValue(ok({ data: { summary: 'S' }, usage: null }));
+
+      await (new ContextRoller(deps)).checkAndRotate('thread-1', 'persona-1', highUsage);
+
+      expect(deps.messageRepo.findLatestByThread).toHaveBeenCalledWith('thread-1', 10_000);
+      expect(deps.messageRepo.findLatestByThreadSince).not.toHaveBeenCalled();
+    });
+
+    it('checkAndRotateOM: uses findLatestByThread on first roll (no prior observations)', async () => {
+      const msgs = [makeMsg('m1', 1000), makeMsg('m2', 2000)];
+      const mockObserverRun = vi.fn().mockResolvedValue(ok({
+        data: { observations: [{ date: '2026-05-29', time: '09:00', priority: 'low', text: 'x' }], taskComplete: true, currentTask: '', suggestedContinuation: '', memoryUpdates: [] },
+        usage: null,
+      }));
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(msgs)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+        } as any,
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockReturnValue(ok([])), // no prior observations
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+        resolveSummarizerRun: () => mockObserverRun,
+      });
+
+      await (new ContextRoller(deps)).checkAndRotateOM('thread-1', 'persona-1', highUsage);
+
+      expect(deps.messageRepo.findLatestByThread).toHaveBeenCalledWith('thread-1', 10_000);
+      expect(deps.messageRepo.findLatestByThreadSince).not.toHaveBeenCalled();
+    });
+
+    it('checkAndRotateOM: uses findLatestByThreadSince on subsequent roll with prior observation', async () => {
+      const prevTs = 5000;
+      const newMsgs = [makeMsg('m3', 6000), makeMsg('m4', 7000)];
+      const mockObserverRun = vi.fn().mockResolvedValue(ok({
+        data: { observations: [{ date: '2026-05-29', time: '09:00', priority: 'low', text: 'x' }], taskComplete: true, currentTask: '', suggestedContinuation: '', memoryUpdates: [] },
+        usage: null,
+      }));
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok([])),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+        } as any,
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockReturnValue(ok([makeObservation(prevTs)])),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+        resolveSummarizerRun: () => mockObserverRun,
+      });
+
+      await (new ContextRoller(deps)).checkAndRotateOM('thread-1', 'persona-1', highUsage);
+
+      expect(deps.messageRepo.findLatestByThread).not.toHaveBeenCalled();
+      expect(deps.messageRepo.findLatestByThreadSince).toHaveBeenCalledWith('thread-1', prevTs, 10_000);
+    });
+
+    it('checkAndRotateOM: falls back to findLatestByThread when prior observation metadata is malformed', async () => {
+      const msgs = [makeMsg('m1', 1000), makeMsg('m2', 2000)];
+      const badObservation = { ...makeObservation(5000), metadata: 'not-json' };
+      const mockObserverRun = vi.fn().mockResolvedValue(ok({
+        data: { observations: [{ date: '2026-05-29', time: '09:00', priority: 'low', text: 'x' }], taskComplete: true, currentTask: '', suggestedContinuation: '', memoryUpdates: [] },
+        usage: null,
+      }));
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(msgs)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+        } as any,
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockReturnValue(ok([badObservation])),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+        resolveSummarizerRun: () => mockObserverRun,
+      });
+
+      await (new ContextRoller(deps)).checkAndRotateOM('thread-1', 'persona-1', highUsage);
+
+      expect(deps.messageRepo.findLatestByThread).toHaveBeenCalledWith('thread-1', 10_000);
+      expect(deps.messageRepo.findLatestByThreadSince).not.toHaveBeenCalled();
+    });
+
+    it('checkAndRotateOM: falls back to findLatestByThread when memoryRepo.findByThread errors', async () => {
+      const msgs = [makeMsg('m1', 1000)];
+      const mockObserverRun = vi.fn().mockResolvedValue(ok({
+        data: { observations: [{ date: '2026-05-29', time: '09:00', priority: 'low', text: 'x' }], taskComplete: true, currentTask: '', suggestedContinuation: '', memoryUpdates: [] },
+        usage: null,
+      }));
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok(msgs)),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+        } as any,
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockReturnValue(ok(null)),
+          findByThread: vi.fn().mockReturnValue(err({ message: 'db error' })),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+        resolveSummarizerRun: () => mockObserverRun,
+      });
+
+      await (new ContextRoller(deps)).checkAndRotateOM('thread-1', 'persona-1', highUsage);
+
+      expect(deps.messageRepo.findLatestByThread).toHaveBeenCalledWith('thread-1', 10_000);
+      expect(deps.messageRepo.findLatestByThreadSince).not.toHaveBeenCalled();
     });
   });
 });

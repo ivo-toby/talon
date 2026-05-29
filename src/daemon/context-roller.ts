@@ -38,6 +38,25 @@ const SCHEDULE_CONTEXT_MESSAGE_LIMIT = 500;
 const SCHEDULE_CONTEXT_WINDOW_MS = 48 * 60 * 60 * 1000;
 const DIRECT_CONVERSATION_SECTION_HEADER = '[Direct conversation context last 48h]';
 const SCHEDULE_HISTORY_SECTION_HEADER = '[Schedule thread history]';
+
+/**
+ * Extracts rotatedThroughTs from the most recent observation's metadata.
+ * Returns null if no valid boundary is found (first-ever roll, or malformed metadata).
+ */
+function extractPreviousRotationBoundary(
+  observations: Array<{ metadata: string; created_at: number }>,
+): number | null {
+  if (observations.length === 0) return null;
+  // Observations are ordered DESC by created_at — [0] is newest.
+  const meta = observations[0].metadata;
+  try {
+    const parsed = JSON.parse(meta) as Record<string, unknown>;
+    const ts = Number(parsed.rotatedThroughTs);
+    return Number.isFinite(ts) && ts > 0 ? ts : null;
+  } catch {
+    return null;
+  }
+}
 const DIRECT_CONTEXT_BUDGET_RATIO = 0.25;
 
 
@@ -81,7 +100,7 @@ export type ReflectorRunFn = SummarizerRunFn;
 export const DEFAULT_MAX_OBSERVATION_CHARS = 40_000;
 
 export interface ContextRollerDeps {
-  messageRepo: Pick<MessageRepository, 'findLatestByThread'>;
+  messageRepo: Pick<MessageRepository, 'findLatestByThread' | 'findLatestByThreadSince'>;
   threadRepo?: Pick<ThreadRepository, 'findByExternalId'>;
   memoryRepo: Pick<MemoryRepository, 'insert' | 'findById' | 'findByThread' | 'upsertByKey' | 'delete' | 'runInTransaction'>;
   sessionTracker: Pick<SessionTracker, 'rotateSession'>;
@@ -347,8 +366,20 @@ export class ContextRoller {
       'context-roller-om: threshold exceeded, creating observations',
     );
 
-    // 1. Reconstruct transcript.
-    const messagesResult = this.deps.messageRepo.findLatestByThread(threadId, 10_000);
+    // 1. Reconstruct transcript — only messages since the previous rotation so
+    //    the observer sees new content rather than re-observing the full thread
+    //    history on every roll. Duplicate observations across rolls bloat the
+    //    observation log and force the reflector to consolidate the same events
+    //    repeatedly.
+    const prevObservations = this.deps.memoryRepo.findByThread(threadId, 'observation');
+    const prevBoundary = prevObservations.isOk()
+      ? extractPreviousRotationBoundary(prevObservations.value)
+      : null;
+
+    const messagesResult = prevBoundary !== null
+      ? this.deps.messageRepo.findLatestByThreadSince(threadId, prevBoundary, 10_000)
+      : this.deps.messageRepo.findLatestByThread(threadId, 10_000);
+
     if (messagesResult.isErr()) {
       this.deps.logger.error(
         { threadId, error: messagesResult.error.message },
