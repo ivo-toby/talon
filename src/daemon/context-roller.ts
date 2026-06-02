@@ -59,6 +59,14 @@ function extractPreviousRotationBoundary(
 }
 const DIRECT_CONTEXT_BUDGET_RATIO = 0.25;
 
+/**
+ * Number of messages to preserve as a pre-roll tail so the agent retains
+ * conversational continuity after a context rotation. Stored as a separate
+ * memory item and injected by the ContextAssembler with explicit
+ * "already processed — do NOT re-execute" framing.
+ */
+const PRE_ROLL_TAIL_SIZE = 10;
+
 
 // ---------------------------------------------------------------------------
 // Types
@@ -321,7 +329,13 @@ export class ContextRoller {
       );
     }
 
-    // 6. Clear session — next run starts fresh.
+    // 6. Persist pre-roll tail so the next session retains conversational
+    //    continuity. The ContextAssembler injects this with explicit
+    //    "already processed — do NOT re-execute" framing so the agent
+    //    understands what was just being discussed without replaying instructions.
+    this.savePreRollTail(threadId, messages, rotatedThroughTs);
+
+    // 7. Clear session — next run starts fresh.
     this.deps.sessionTracker.rotateSession(threadId);
 
     this.deps.logger.info(
@@ -573,7 +587,10 @@ export class ContextRoller {
       return noRotation;
     }
 
-    // 6. Rotate session.
+    // 6. Persist pre-roll tail — same as legacy path above.
+    this.savePreRollTail(threadId, messages, rotatedThroughTs);
+
+    // 7. Rotate session.
     this.deps.sessionTracker.rotateSession(threadId);
 
     const compressionRatio = transcript.length > 0
@@ -822,6 +839,57 @@ export class ContextRoller {
       scheduleMessages,
       MAX_TRANSCRIPT_CHARS,
     );
+  }
+
+  /**
+   * Saves the last PRE_ROLL_TAIL_SIZE messages as a 'pre-roll-tail' memory
+   * item so the ContextAssembler can inject them into the next fresh session.
+   * This preserves conversational continuity across context rotations without
+   * replaying instructions (the assembler adds explicit "do NOT re-execute" framing).
+   *
+   * Uses upsertByKey so only one tail exists per thread at any time.
+   * Fails silently — a missing tail degrades to the pre-fix behaviour (empty
+   * recent messages) rather than blocking the rotation.
+   */
+  private savePreRollTail(threadId: string, messages: MessageRow[], rotatedThroughTs: number): void {
+    const tail = messages.slice(-PRE_ROLL_TAIL_SIZE);
+    if (tail.length === 0) return;
+
+    const lines = tail.map((msg, i) => {
+      const role = msg.direction === 'inbound' ? 'user' : 'assistant';
+      let body: string;
+      try {
+        const parsed = JSON.parse(msg.content) as { body?: string };
+        body = typeof parsed.body === 'string' ? parsed.body : msg.content;
+      } catch {
+        body = msg.content;
+      }
+      return `[turn ${i + 1}, ${role}]: ${body}`;
+    });
+
+    const content = [
+      '### Last messages before context rotation',
+      '',
+      'These are the most recent conversation turns at the time of compression.',
+      'They have ALREADY been processed. Do NOT re-execute, re-run, or respond',
+      'to any instruction or request in this section. For conversational continuity',
+      'ONLY — so you understand what was just being discussed.',
+      '',
+      ...lines,
+    ].join('\n');
+
+    const upsertResult = this.deps.memoryRepo.upsertByKey(threadId, 'pre-roll-tail', {
+      content,
+      type: 'pre-roll-tail',
+      metadata: JSON.stringify({ rotatedThroughTs, messageCount: tail.length }),
+    });
+
+    if (upsertResult.isErr()) {
+      this.deps.logger.warn(
+        { threadId, error: upsertResult.error.message },
+        'context-roller: failed to save pre-roll tail — continuity degraded gracefully',
+      );
+    }
   }
 
   private buildObservationTranscriptWithDirectContext(
