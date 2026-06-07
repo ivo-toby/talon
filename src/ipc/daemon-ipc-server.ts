@@ -19,6 +19,7 @@ import type pino from 'pino';
 
 import { DaemonCommandSchema } from './daemon-ipc.js';
 import type { DaemonCommand, DaemonResponse } from './daemon-ipc.js';
+import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -242,7 +243,7 @@ export class DaemonIpcServer {
    */
   private async writeResponse(response: DaemonResponse): Promise<void> {
     try {
-      await fs.mkdir(this.opts.outputDir, { recursive: true });
+      await ensureOwnerOnlyDir(this.opts.outputDir);
 
       const paddedTs = String(Date.now()).padStart(15, '0');
       const cleanId = response.id.replace(/-/g, '');
@@ -270,7 +271,7 @@ export class DaemonIpcServer {
     reason: string,
   ): Promise<void> {
     try {
-      await fs.mkdir(this.opts.errorsDir, { recursive: true });
+      await ensureOwnerOnlyDir(this.opts.errorsDir);
 
       const basename = path.basename(filepath);
       const destPath = path.join(this.opts.errorsDir, basename);

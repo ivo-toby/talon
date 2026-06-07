@@ -716,6 +716,7 @@ export async function bootstrap(
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
+  backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;
 

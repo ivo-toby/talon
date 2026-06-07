@@ -30,6 +30,7 @@ import type { DaemonState, DaemonHealth } from './daemon-types.js';
 import { DaemonIpcServer } from '../ipc/daemon-ipc-server.js';
 import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
+import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 
 // ---------------------------------------------------------------------------
 // TalondDaemon
@@ -126,6 +127,11 @@ export class TalondDaemon {
 
     // 8. Start IPC server.
     const ipcBase = join(this.ctx.dataDir, 'ipc/daemon');
+    await Promise.all([
+      ensureOwnerOnlyDir(join(ipcBase, 'input')),
+      ensureOwnerOnlyDir(join(ipcBase, 'output')),
+      ensureOwnerOnlyDir(join(ipcBase, 'errors')),
+    ]);
     this.ipcServer = new DaemonIpcServer({
       inputDir: join(ipcBase, 'input'),
       outputDir: join(ipcBase, 'output'),

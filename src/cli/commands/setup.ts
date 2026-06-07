@@ -29,6 +29,7 @@ import writeFileAtomic from 'write-file-atomic';
 import { loadConfigFromString } from '../../core/config/config-loader.js';
 import { createDatabase } from '../../core/database/connection.js';
 import { runMigrations } from '../../core/database/migrations/runner.js';
+import { ensureOwnerOnlyDir } from '../../core/fs/private-paths.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -66,6 +67,11 @@ const DEFAULT_DATA_DIR = 'data';
 
 /** Subdirectories to create under dataDir. */
 const DATA_SUBDIRS = ['ipc', path.join('ipc', 'daemon'), 'backups', 'threads'];
+
+function getExplicitDatabaseDirectory(dbPath: string): string | null {
+  const dbDir = path.normalize(path.dirname(dbPath));
+  return dbDir === '.' ? null : dbDir;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -218,7 +224,7 @@ export async function createDataDirectories(dataDir: string): Promise<SetupCheck
       continue;
     }
     try {
-      await fs.mkdir(dir, { recursive: true });
+      await ensureOwnerOnlyDir(dir);
       created.push(dir);
     } catch (cause) {
       return {
@@ -325,12 +331,14 @@ export async function runDatabaseMigrations(
 
   const dbPath = configResult.value.storage.path;
 
-  // Ensure the directory containing the database exists.
-  const dbDir = path.dirname(dbPath);
-  try {
-    await fs.mkdir(dbDir, { recursive: true });
-  } catch {
-    // Ignore — directory may already exist.
+  const dbDir = getExplicitDatabaseDirectory(dbPath);
+
+  if (dbDir !== null) {
+    try {
+      await ensureOwnerOnlyDir(dbDir);
+    } catch {
+      // Ignore — directory may already exist.
+    }
   }
 
   const dbResult = createDatabase(dbPath);
@@ -339,7 +347,10 @@ export async function runDatabaseMigrations(
       name: 'Database migrations',
       status: 'failed',
       message: `Failed to open database "${dbPath}": ${dbResult.error.message}`,
-      hint: `Ensure the directory "${dbDir}" exists and is writable.`,
+      hint:
+        dbDir === null
+          ? 'Ensure the current working directory is writable.'
+          : `Ensure the directory "${dbDir}" exists and is writable.`,
     };
   }
 

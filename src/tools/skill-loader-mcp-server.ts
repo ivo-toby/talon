@@ -23,18 +23,21 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { TALON_SKILL_LOAD_TOOL_DESCRIPTION } from '../skills/skill-runtime-text.js';
+import { TALOND_BRIDGE_SECRET_ENV } from './host-tools-bridge-auth.js';
 
 /** NDJSON request to bridge. */
 interface BridgeRequest {
   id: string;
   tool: string;
   args: Record<string, unknown>;
+  bridgeSecret: string;
   context: {
     runId: string;
     threadId: string;
     personaId: string;
     requestId: string;
     traceparent?: string;
+    backgroundTaskId?: string;
   };
 }
 
@@ -131,7 +134,14 @@ class SocketClient {
   async sendRequest(
     tool: string,
     args: Record<string, unknown>,
-    context: { runId: string; threadId: string; personaId: string; traceparent?: string },
+    bridgeSecret: string,
+    context: {
+      runId: string;
+      threadId: string;
+      personaId: string;
+      traceparent?: string;
+      backgroundTaskId?: string;
+    },
   ): Promise<BridgeResponse['result']> {
     if (!this.connected) {
       await this.connectedPromise;
@@ -142,12 +152,14 @@ class SocketClient {
       id,
       tool,
       args,
+      bridgeSecret,
       context: {
         runId: context.runId,
         threadId: context.threadId,
         personaId: context.personaId,
         requestId: randomUUID(),
         ...(context.traceparent ? { traceparent: context.traceparent } : {}),
+        ...(context.backgroundTaskId ? { backgroundTaskId: context.backgroundTaskId } : {}),
       },
     };
 
@@ -216,7 +228,9 @@ async function main(): Promise<void> {
   const runId = getEnvRequired('TALOND_RUN_ID');
   const threadId = getEnvRequired('TALOND_THREAD_ID');
   const personaId = getEnvRequired('TALOND_PERSONA_ID');
+  const bridgeSecret = getEnvRequired(TALOND_BRIDGE_SECRET_ENV);
   const traceparent = process.env.TALOND_TRACEPARENT;
+  const backgroundTaskId = process.env.TALOND_BACKGROUND_TASK_ID;
 
   console.error('[skill-loader-mcp] Starting with socket:', socketPath);
   console.error(
@@ -264,12 +278,18 @@ async function main(): Promise<void> {
     }
 
     try {
-      const result = await client.sendRequest('skill.load', args as Record<string, unknown>, {
-        runId,
-        threadId,
-        personaId,
-        traceparent,
-      });
+      const result = await client.sendRequest(
+        'skill.load',
+        args as Record<string, unknown>,
+        bridgeSecret,
+        {
+          runId,
+          threadId,
+          personaId,
+          traceparent,
+          ...(backgroundTaskId ? { backgroundTaskId } : {}),
+        },
+      );
 
       if (!result) {
         return {

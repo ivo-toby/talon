@@ -7,7 +7,7 @@
  */
 
 import { unlinkSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import net from 'node:net';
 import type Database from 'better-sqlite3';
 import type { DaemonContext } from '../daemon/daemon-context.js';
@@ -29,12 +29,18 @@ import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
+import { bridgeSecretsMatch } from './host-tools-bridge-auth.js';
+import {
+  ensureOwnerOnlyDirSync,
+  ensureOwnerOnlyFile,
+} from '../core/fs/private-paths.js';
 
 /** NDJSON request shape from MCP server. */
 interface BridgeRequest {
   id: string;
   tool: string;
   args: Record<string, unknown>;
+  bridgeSecret?: string;
   context: ToolExecutionContext;
 }
 
@@ -48,10 +54,17 @@ interface BridgeResponse {
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
 
+interface RegisteredBridgeAuth {
+  bridgeSecret: string;
+  threadId: string;
+  personaId: string;
+}
+
 export class HostToolsBridge {
   private server: net.Server | null = null;
   private readonly socketPath: string;
   private readonlyDb: Database.Database | null = null;
+  private readonly bridgeAuthByRunId = new Map<string, RegisteredBridgeAuth>();
   private scheduleHandler: ScheduleManageHandler;
   private channelHandler: ChannelSendHandler;
   private personaSendHandler: PersonaSendHandler | null = null;
@@ -165,9 +178,34 @@ export class HostToolsBridge {
     return this.socketPath;
   }
 
+  registerRunAuthentication(input: {
+    runId: string;
+    threadId: string;
+    personaId: string;
+    bridgeSecret: string;
+  }): void {
+    this.bridgeAuthByRunId.set(input.runId, {
+      bridgeSecret: input.bridgeSecret,
+      threadId: input.threadId,
+      personaId: input.personaId,
+    });
+  }
+
+  unregisterRunAuthentication(runId: string): void {
+    this.bridgeAuthByRunId.delete(runId);
+  }
+
   /** Starts listening on the Unix socket. Removes stale socket file if present. */
   start(): void {
     this.ctx.logger.info({ socketPath: this.socketPath }, 'host-tools-bridge: starting');
+    try {
+      ensureOwnerOnlyDirSync(dirname(this.socketPath));
+    } catch (err) {
+      this.ctx.logger.warn(
+        { err, socketPath: this.socketPath },
+        'host-tools-bridge: failed to enforce owner-only socket directory permissions',
+      );
+    }
 
     // Remove stale socket file from previous run.
     if (existsSync(this.socketPath)) {
@@ -179,6 +217,12 @@ export class HostToolsBridge {
     });
 
     this.server.listen(this.socketPath, () => {
+      void ensureOwnerOnlyFile(this.socketPath).catch((err) => {
+        this.ctx.logger.warn(
+          { err, socketPath: this.socketPath },
+          'host-tools-bridge: failed to enforce owner-only socket permissions',
+        );
+      });
       this.ctx.logger.info({ socketPath: this.socketPath }, 'host-tools-bridge: listening');
     });
 
@@ -260,6 +304,12 @@ export class HostToolsBridge {
         error: 'Missing required fields: id, tool, args, context',
       };
       this.sendResponse(socket, errorResponse);
+      return;
+    }
+
+    const authError = this.validateRequestAuthentication(request);
+    if (authError !== null) {
+      this.sendResponse(socket, { id, error: authError });
       return;
     }
 
@@ -359,6 +409,71 @@ export class HostToolsBridge {
 
   private sendResponse(socket: net.Socket, response: BridgeResponse): void {
     socket.write(JSON.stringify(response) + '\n');
+  }
+
+  private validateRequestAuthentication(request: BridgeRequest): string | null {
+    const { bridgeSecret, context } = request;
+    if (typeof bridgeSecret !== 'string' || bridgeSecret.length === 0) {
+      return 'Missing bridge secret';
+    }
+
+    const registered = this.bridgeAuthByRunId.get(context.runId);
+    if (!registered || !bridgeSecretsMatch(registered.bridgeSecret, bridgeSecret)) {
+      this.ctx.logger.warn(
+        {
+          runId: context.runId,
+          threadId: context.threadId,
+          personaId: context.personaId,
+        },
+        'host-tools-bridge: rejected request with invalid bridge secret',
+      );
+      return 'Invalid bridge secret';
+    }
+
+    if (registered.threadId !== context.threadId) {
+      return `Bridge thread mismatch for run "${context.runId}"`;
+    }
+    if (registered.personaId !== context.personaId) {
+      return `Bridge persona mismatch for run "${context.runId}"`;
+    }
+
+    return context.backgroundTaskId
+      ? this.validateBackgroundTaskContext(context.backgroundTaskId, context)
+      : this.validateRunContext(context);
+  }
+
+  private validateRunContext(context: ToolExecutionContext): string | null {
+    const runResult = this.ctx.repos.run.findById(context.runId);
+    if (runResult.isErr() || runResult.value === null) {
+      return `Run not found for bridge request: ${context.runId}`;
+    }
+    if (runResult.value.thread_id !== context.threadId) {
+      return `Bridge thread mismatch for run "${context.runId}"`;
+    }
+    if (runResult.value.persona_id !== context.personaId) {
+      return `Bridge persona mismatch for run "${context.runId}"`;
+    }
+    return null;
+  }
+
+  private validateBackgroundTaskContext(
+    backgroundTaskId: string,
+    context: ToolExecutionContext,
+  ): string | null {
+    const taskResult = this.ctx.repos.backgroundTask.findById(backgroundTaskId);
+    if (taskResult.isErr() || taskResult.value === null) {
+      return `Background task not found for bridge request: ${backgroundTaskId}`;
+    }
+    if (taskResult.value.id !== context.runId) {
+      return `Bridge run mismatch for background task "${backgroundTaskId}"`;
+    }
+    if (taskResult.value.threadId !== context.threadId) {
+      return `Bridge thread mismatch for background task "${backgroundTaskId}"`;
+    }
+    if (taskResult.value.personaId !== context.personaId) {
+      return `Bridge persona mismatch for background task "${backgroundTaskId}"`;
+    }
+    return null;
   }
 
   private resolveSkillContent(personaId: string, skillName: string): string | null {
