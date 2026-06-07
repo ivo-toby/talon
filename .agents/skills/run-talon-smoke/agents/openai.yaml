@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Talon Smoke"
+  short_description: "Run local terminal smoke tests for Talon"
+  default_prompt: "Use $run-talon-smoke to run a real local Talon terminal smoke test."
