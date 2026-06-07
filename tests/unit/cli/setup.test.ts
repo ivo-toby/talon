@@ -174,6 +174,25 @@ describe('createDataDirectories()', () => {
     const result = await createDataDirectories(dataDir);
     expect(result.name).toBe('Data directory structure');
   });
+
+  it('creates data directories with owner-only permissions on POSIX', async () => {
+    const dataDir = join(tmpDir, 'secure-data');
+    const result = await createDataDirectories(dataDir);
+
+    expect(result.status).toBe('passed');
+
+    for (const dir of [
+      dataDir,
+      join(dataDir, 'ipc'),
+      join(dataDir, 'ipc', 'daemon'),
+      join(dataDir, 'backups'),
+      join(dataDir, 'threads'),
+    ]) {
+      const stat = await import('node:fs').then(({ statSync }) => statSync(dir));
+      expect(stat.isDirectory()).toBe(true);
+      expect(stat.mode & 0o777).toBe(0o700);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

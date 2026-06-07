@@ -2648,6 +2648,7 @@ describe('AgentRunner', () => {
         command: 'node',
         args: [expect.stringContaining('dist/tools/skill-loader-mcp-server.js')],
         env: expect.objectContaining({
+          TALOND_BRIDGE_SECRET: expect.any(String),
           TALOND_SOCKET: '/tmp/test-data/host-tools.sock',
           TALOND_RUN_ID: expect.any(String),
           TALOND_THREAD_ID: 'thread-001',
@@ -2655,6 +2656,17 @@ describe('AgentRunner', () => {
           TALOND_TRACEPARENT: GENERATION_TRACEPARENT,
         }),
       });
+    });
+
+    it('injects a per-run bridge secret into the host-tools MCP env', async () => {
+      await runner.run(makeQueueItem());
+
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any> };
+      };
+      expect(queryCall.options.mcpServers.__talond_host_tools.env.TALOND_BRIDGE_SECRET).toEqual(
+        expect.any(String),
+      );
     });
   });
 

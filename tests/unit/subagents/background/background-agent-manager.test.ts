@@ -57,6 +57,10 @@ describe('BackgroundAgentManager', () => {
   let processKill: ReturnType<typeof vi.fn>;
   let processFactory: ReturnType<typeof vi.fn>;
   let completionResolve: ((value: unknown) => void) | null;
+  let hostToolsBridge: {
+    registerRunAuthentication: ReturnType<typeof vi.fn>;
+    unregisterRunAuthentication: ReturnType<typeof vi.fn>;
+  };
 
   afterEach(() => {
     rmSync('/tmp/talon-bg-test', { recursive: true, force: true });
@@ -88,6 +92,10 @@ describe('BackgroundAgentManager', () => {
     }));
     completionResolve = null;
     processKill = vi.fn();
+    hostToolsBridge = {
+      registerRunAuthentication: vi.fn(),
+      unregisterRunAuthentication: vi.fn(),
+    };
     processStart = vi.fn().mockImplementation(() =>
       ok({
         pid: 4242,
@@ -154,6 +162,7 @@ describe('BackgroundAgentManager', () => {
       processFactory,
       isPidAlive: vi.fn().mockReturnValue(false),
       readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
+      hostToolsBridge,
       hostToolsSocketPath: '/tmp/test-host-tools.sock',
       ...overrides,
     });
@@ -250,6 +259,18 @@ describe('BackgroundAgentManager', () => {
     expect(task?.pid).toBe(4242);
   });
 
+  it('stores the worker persona on the background task when a profile persona differs', async () => {
+    const manager = createManager();
+    const result = await manager.spawn({
+      ...spawnInput,
+      personaId: 'persona-spawner',
+      workerPersonaId: 'persona-worker',
+    });
+
+    const task = repository.findById(result._unsafeUnwrap())._unsafeUnwrap();
+    expect(task?.personaId).toBe('persona-worker');
+  });
+
   it('includes __talond_skill_loader in MCP servers when hasSkills is true', async () => {
     const manager = createManager();
 
@@ -261,6 +282,7 @@ describe('BackgroundAgentManager', () => {
       transport: 'stdio',
       command: 'node',
       env: expect.objectContaining({
+        TALOND_BRIDGE_SECRET: expect.any(String),
         TALOND_SOCKET: '/tmp/test-host-tools.sock',
         TALOND_THREAD_ID: 'thread-1',
         TALOND_PERSONA_ID: 'persona-1',
@@ -296,6 +318,19 @@ describe('BackgroundAgentManager', () => {
     const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
     expect(mcpServers['__talond_skill_loader']).toBeDefined();
     expect(mcpServers['__talond_host_tools']).toBeUndefined();
+  });
+
+  it('injects a per-task bridge secret into the host-tools MCP env', async () => {
+    const manager = createManager();
+
+    await manager.spawn({ ...spawnInput, allowedMcpTools: ['channel_send'] });
+
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, any>;
+    expect(mcpServers['__talond_host_tools']).toMatchObject({
+      env: expect.objectContaining({
+        TALOND_BRIDGE_SECRET: expect.any(String),
+      }),
+    });
   });
 
   it('builds the append-system-prompt from persona and task context', async () => {
@@ -717,6 +752,15 @@ describe('BackgroundAgentManager', () => {
     expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('cancelled');
   });
 
+  it('revokes bridge auth immediately when a running task is cancelled', async () => {
+    const manager = createManager();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
+
+    await manager.cancel(taskId);
+
+    expect(hostToolsBridge.unregisterRunAuthentication).toHaveBeenCalledWith(taskId);
+  });
+
   it('cleans up cancelled tasks immediately so shutdown does not clean them twice', async () => {
     const manager = createManager();
     const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
@@ -760,6 +804,15 @@ describe('BackgroundAgentManager', () => {
     expect(processKill).toHaveBeenCalled();
     expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('cancelled');
     expect(existsSync('/tmp/talon-bg-test')).toBe(false);
+  });
+
+  it('revokes bridge auth during shutdown for active tasks', async () => {
+    const manager = createManager();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
+
+    await manager.shutdown();
+
+    expect(hostToolsBridge.unregisterRunAuthentication).toHaveBeenCalledWith(taskId);
   });
 
   it('returns error when providerRegistry.getDefault returns undefined', async () => {

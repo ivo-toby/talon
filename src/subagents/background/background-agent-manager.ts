@@ -21,6 +21,11 @@ import type { ObservabilityService, StartedObservationHandle } from '../../obser
 import type { ExecutionEnvManager } from '../../execution-env/execution-env-manager.js';
 import type { OAuthTokenStore } from '../../auth/oauth-token-store.js';
 import { resolveMcpServers } from '../../mcp/resolve-mcp-servers.js';
+import type { HostToolsBridge } from '../../tools/host-tools-bridge.js';
+import {
+  generateBridgeSecret,
+  TALOND_BRIDGE_SECRET_ENV,
+} from '../../tools/host-tools-bridge-auth.js';
 
 export interface SpawnBackgroundAgentInput {
   prompt: string;
@@ -68,6 +73,7 @@ interface BackgroundAgentManagerDeps {
   observability?: ObservabilityService;
   executionEnvManager?: Pick<ExecutionEnvManager, 'create' | 'upload' | 'destroyOwnedByTask'> | null;
   hostToolsSocketPath?: string;
+  hostToolsBridge?: Pick<HostToolsBridge, 'registerRunAuthentication' | 'unregisterRunAuthentication'>;
   /**
    * Token store used to materialize `Authorization: Bearer …` headers on
    * HTTP MCP servers that declare `auth: { kind: 'oauth2' }`. Optional so
@@ -117,6 +123,12 @@ export class BackgroundAgentManager {
         return null;
       }
     });
+  }
+
+  setHostToolsBridge(
+    hostToolsBridge: Pick<HostToolsBridge, 'registerRunAuthentication' | 'unregisterRunAuthentication'>,
+  ): void {
+    (this.deps as { hostToolsBridge?: typeof hostToolsBridge }).hostToolsBridge = hostToolsBridge;
   }
 
   async spawn(input: SpawnBackgroundAgentInput): Promise<Result<string, BackgroundAgentError>> {
@@ -203,6 +215,7 @@ export class BackgroundAgentManager {
       : undefined;
 
     const childTraceparent = observation?.getTraceparent() ?? undefined;
+    const bridgeSecret = generateBridgeSecret();
 
     const systemPrompt = this.buildSystemPrompt({
       personaPrompt: input.personaPrompt,
@@ -231,6 +244,7 @@ export class BackgroundAgentManager {
       threadId: input.threadId,
       workerPersonaId: input.workerPersonaId,
       allowedMcpTools: input.allowedMcpTools,
+      bridgeSecret,
       ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
       traceparent: childTraceparent,
       sandboxContext,
@@ -272,7 +286,7 @@ export class BackgroundAgentManager {
 
     const createResult = this.deps.repository.create({
       id: taskId,
-      personaId: input.personaId,
+      personaId: input.workerPersonaId,
       providerName: providerEntry.provider.name,
       threadId: input.threadId,
       channelId: input.channelId,
@@ -321,8 +335,16 @@ export class BackgroundAgentManager {
       timeoutMs: invocation.timeoutMs,
     });
 
+    this.deps.hostToolsBridge?.registerRunAuthentication({
+      runId: taskId,
+      threadId: input.threadId,
+      personaId: input.workerPersonaId,
+      bridgeSecret,
+    });
+
     const startResult = processInstance.start();
     if (startResult.isErr()) {
+      this.deps.hostToolsBridge?.unregisterRunAuthentication(taskId);
       observation?.end();
       this.deps.repository.updateStatus(taskId, 'failed', undefined, startResult.error.message);
       this.cleanupPaths(cleanupPaths);
@@ -404,8 +426,6 @@ export class BackgroundAgentManager {
     if (managedProcess) {
       managedProcess.observation?.update({ statusMessage: 'Cancelled by user' });
       managedProcess.observation?.end();
-      this.cleanupPaths(managedProcess.cleanupPaths);
-      this.processes.delete(taskId);
     }
     const updateResult = this.deps.repository.updateStatus(
       taskId,
@@ -413,6 +433,7 @@ export class BackgroundAgentManager {
       undefined,
       'Cancelled by user',
     );
+    this.cleanupTask(taskId);
     await this.destroyOwnedExecutionEnv(taskId);
 
     return updateResult.isOk()
@@ -466,7 +487,7 @@ export class BackgroundAgentManager {
       process.observation?.update({ statusMessage: 'Daemon shutting down' });
       process.observation?.end();
       this.deps.repository.updateStatus(taskId, 'cancelled', undefined, 'Daemon shutting down');
-      this.cleanupPaths(process.cleanupPaths);
+      this.cleanupTask(taskId);
       await this.destroyOwnedExecutionEnv(taskId);
     }
     this.processes.clear();
@@ -641,6 +662,7 @@ export class BackgroundAgentManager {
   }
 
   private cleanupTask(taskId: string): void {
+    this.deps.hostToolsBridge?.unregisterRunAuthentication(taskId);
     const managedProcess = this.processes.get(taskId);
     if (managedProcess) {
       this.cleanupPaths(managedProcess.cleanupPaths);
@@ -703,6 +725,7 @@ export class BackgroundAgentManager {
     threadId: string;
     workerPersonaId: string;
     allowedMcpTools: string[];
+    bridgeSecret: string;
     workingDirectory?: string;
     traceparent?: string;
     sandboxContext: SandboxContext | null;
@@ -724,6 +747,7 @@ export class BackgroundAgentManager {
         args: [join(import.meta.dirname, '../../../dist/tools/host-tools-mcp-server.js')],
         env: {
           ...process.env,
+          [TALOND_BRIDGE_SECRET_ENV]: options.bridgeSecret,
           TALOND_SOCKET: this.deps.hostToolsSocketPath,
           TALOND_RUN_ID: options.taskId,
           TALOND_THREAD_ID: options.threadId,
@@ -751,11 +775,13 @@ export class BackgroundAgentManager {
         args: [join(import.meta.dirname, '../../../dist/tools/skill-loader-mcp-server.js')],
         env: {
           ...process.env,
+          [TALOND_BRIDGE_SECRET_ENV]: options.bridgeSecret,
           TALOND_SOCKET: this.deps.hostToolsSocketPath,
           TALOND_RUN_ID: options.taskId,
           TALOND_THREAD_ID: options.threadId,
           TALOND_PERSONA_ID: options.workerPersonaId,
           TALOND_TRACEPARENT: options.traceparent ?? '',
+          TALOND_BACKGROUND_TASK_ID: options.taskId,
         },
       };
     }

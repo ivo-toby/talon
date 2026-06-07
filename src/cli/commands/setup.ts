@@ -29,6 +29,7 @@ import writeFileAtomic from 'write-file-atomic';
 import { loadConfigFromString } from '../../core/config/config-loader.js';
 import { createDatabase } from '../../core/database/connection.js';
 import { runMigrations } from '../../core/database/migrations/runner.js';
+import { ensureOwnerOnlyDir } from '../../core/fs/private-paths.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -218,7 +219,7 @@ export async function createDataDirectories(dataDir: string): Promise<SetupCheck
       continue;
     }
     try {
-      await fs.mkdir(dir, { recursive: true });
+      await ensureOwnerOnlyDir(dir);
       created.push(dir);
     } catch (cause) {
       return {
@@ -328,7 +329,7 @@ export async function runDatabaseMigrations(
   // Ensure the directory containing the database exists.
   const dbDir = path.dirname(dbPath);
   try {
-    await fs.mkdir(dbDir, { recursive: true });
+    await ensureOwnerOnlyDir(dbDir);
   } catch {
     // Ignore — directory may already exist.
   }

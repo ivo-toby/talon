@@ -25,6 +25,10 @@ import type {
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
+import {
+  generateBridgeSecret,
+  TALOND_BRIDGE_SECRET_ENV,
+} from '../tools/host-tools-bridge-auth.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -236,6 +240,13 @@ export class AgentRunner {
 
     const content = typeof item.payload.content === 'string' ? item.payload.content : '';
     let runFinalized = false;
+    const bridgeSecret = generateBridgeSecret();
+    this.ctx.hostToolsBridge.registerRunAuthentication?.({
+      runId,
+      threadId: item.threadId,
+      personaId,
+      bridgeSecret,
+    });
 
     const runInput = {
       content,
@@ -569,6 +580,7 @@ export class AgentRunner {
                       args: [join(import.meta.dirname, '../../dist/tools/host-tools-mcp-server.js')],
                       env: {
                         ...process.env,
+                        [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
                         TALOND_SOCKET: this.ctx.hostToolsBridge.path,
                         TALOND_RUN_ID: runId,
                         TALOND_THREAD_ID: item.threadId,
@@ -596,6 +608,7 @@ export class AgentRunner {
                       args: [join(import.meta.dirname, '../../dist/tools/skill-loader-mcp-server.js')],
                       env: {
                         ...process.env,
+                        [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
                         TALOND_SOCKET: this.ctx.hostToolsBridge.path,
                         TALOND_RUN_ID: runId,
                         TALOND_THREAD_ID: item.threadId,
@@ -1135,6 +1148,8 @@ export class AgentRunner {
         });
       }
       return err(error);
+    } finally {
+      this.ctx.hostToolsBridge.unregisterRunAuthentication?.(runId);
     }
   }
 
