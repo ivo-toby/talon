@@ -7,6 +7,7 @@ import {
   extractCapabilityPrefix,
   filterAllowedMcpTools,
   filterAllowedTools,
+  getToolPolicyDecision,
   isToolAllowed,
   ALL_HOST_TOOLS,
 } from '../../../src/tools/tool-filter.js';
@@ -235,6 +236,62 @@ describe('isToolAllowed', () => {
     for (const tool of ALL_HOST_TOOLS) {
       expect(isToolAllowed(tool, empty)).toBe(false);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getToolPolicyDecision
+// ---------------------------------------------------------------------------
+
+describe('getToolPolicyDecision', () => {
+  const caps: ResolvedCapabilities = {
+    allow: ['channel.send:TalonMain', 'memory.access'],
+    requireApproval: ['db.query'],
+  };
+
+  it('returns allow for directly allowed tools', () => {
+    expect(getToolPolicyDecision('channel.send', caps)).toBe('allow');
+    expect(getToolPolicyDecision('memory.access', caps)).toBe('allow');
+  });
+
+  it('returns require_approval for approval-gated tools', () => {
+    expect(getToolPolicyDecision('db.query', caps)).toBe('require_approval');
+  });
+
+  it('returns require_approval when an unscoped tool appears in both lists', () => {
+    expect(getToolPolicyDecision('db.query', {
+      allow: ['db.query'],
+      requireApproval: ['db.query'],
+    })).toBe('require_approval');
+  });
+
+  it('uses the requested scope to distinguish allowed and approval-gated channel sends', () => {
+    const scopedCaps: ResolvedCapabilities = {
+      allow: ['channel.send:telegram-main'],
+      requireApproval: ['channel.send:slack-admin'],
+    };
+
+    expect(getToolPolicyDecision('channel.send', scopedCaps, 'telegram-main')).toBe('allow');
+    expect(getToolPolicyDecision('channel.send', scopedCaps, 'slack-admin')).toBe('require_approval');
+    expect(getToolPolicyDecision('channel.send', scopedCaps, 'unknown-channel')).toBe('deny');
+  });
+
+  it('lets an exact allow override a broader approval-gated scope', () => {
+    expect(getToolPolicyDecision('channel.send', {
+      allow: ['channel.send:telegram-main'],
+      requireApproval: ['channel.send:*'],
+    }, 'telegram-main')).toBe('allow');
+  });
+
+  it('lets an exact approval-gated scope override a broader allow', () => {
+    expect(getToolPolicyDecision('channel.send', {
+      allow: ['channel.send:*'],
+      requireApproval: ['channel.send:slack-admin'],
+    }, 'slack-admin')).toBe('require_approval');
+  });
+
+  it('returns deny for disallowed tools', () => {
+    expect(getToolPolicyDecision('net.http', caps)).toBe('deny');
   });
 });
 

@@ -770,6 +770,90 @@ describe('HostToolsBridge', () => {
       expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"error"');
     });
 
+    it('rejects tools that require approval before dispatching them', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: [
+            'schedule.manage',
+            'channel.send:*',
+            'memory.access',
+            'net.http',
+            'execution.env',
+            'subagent.background',
+          ],
+          requireApproval: ['db.query'],
+        },
+      } as any));
+
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      const dispatchSpy = vi.spyOn(bridge as any, 'dispatch');
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-approval',
+          tool: 'db_query',
+          args: { sql: 'select 1' },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-approval',
+          },
+        }),
+        socket,
+      );
+
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"error"');
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('requires approval');
+    });
+
+    it('rejects scoped channel sends that require approval even when another channel is allowed', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: ['channel.send:telegram-main'],
+          requireApproval: ['channel.send:slack-admin'],
+        },
+      } as any));
+
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      const dispatchSpy = vi.spyOn(bridge as any, 'dispatch').mockResolvedValue({
+        requestId: 'req-scope-approval',
+        tool: 'channel.send',
+        status: 'success',
+        result: { sent: true },
+      });
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-scope-approval',
+          tool: 'channel_send',
+          args: { channelId: 'slack-admin', content: 'should not send' },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-scope-approval',
+          },
+        }),
+        socket,
+      );
+
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"error"');
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('requires approval');
+    });
+
     it('records a timeout as the final tool observation outcome', async () => {
       vi.useFakeTimers();
       try {

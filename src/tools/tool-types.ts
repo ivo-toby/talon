@@ -59,7 +59,7 @@ export interface ToolManifest {
  *
  * - `allow`            — proceed without operator intervention
  * - `deny`             — reject immediately (missing capability or default-deny)
- * - `require_approval` — pause and prompt the operator for confirmation
+ * - `require_approval` — block execution until an approval workflow authorizes it
  */
 export type PolicyDecision = 'allow' | 'deny' | 'require_approval';
 

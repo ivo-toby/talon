@@ -24,7 +24,7 @@ import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
 import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/background-agent.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
-import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
+import { getToolPolicyDecision, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
@@ -53,6 +53,15 @@ interface BridgeResponse {
 
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
+
+function getRequestedCapabilityScope(toolName: string, args: Record<string, unknown>): string | undefined {
+  if (toolName === 'channel.send' && typeof args.channelId === 'string') {
+    const channelId = args.channelId.trim();
+    return channelId.length > 0 ? channelId : undefined;
+  }
+
+  return undefined;
+}
 
 interface RegisteredBridgeAuth {
   bridgeSecret: string;
@@ -341,7 +350,9 @@ export class HostToolsBridge {
           // will reject it here. Uses fail-closed semantics — if the persona
           // cannot be resolved, no tools are allowed.
           const resolvedCaps = this.resolvePersonaCapabilities(context.personaId);
-          if (!isToolAllowed(normalizedTool, resolvedCaps)) {
+          const requestedScope = getRequestedCapabilityScope(normalizedTool, args);
+          const policyDecision = getToolPolicyDecision(normalizedTool, resolvedCaps, requestedScope);
+          if (policyDecision === 'deny') {
             const toolResult: ToolCallResult = {
               requestId: context.requestId ?? 'unknown',
               tool: normalizedTool,
@@ -356,6 +367,25 @@ export class HostToolsBridge {
             this.ctx.logger.warn(
               { personaId: context.personaId, tool: normalizedTool },
               'host-tools-bridge: rejected disallowed tool call',
+            );
+            return toolResult;
+          }
+
+          if (policyDecision === 'require_approval') {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: `Tool "${normalizedTool}" requires approval for persona "${context.personaId}"`,
+            };
+            toolObservation.update({
+              output: toolResult,
+              level: 'ERROR',
+              statusMessage: toolResult.error,
+            });
+            this.ctx.logger.warn(
+              { personaId: context.personaId, tool: normalizedTool },
+              'host-tools-bridge: rejected approval-gated tool call without approval',
             );
             return toolResult;
           }

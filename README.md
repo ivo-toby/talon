@@ -187,7 +187,7 @@ backgroundAgent:
 ### Security
 
 - **Default-deny capabilities** — Tools are gated by capability labels (`channel.send`, `schedule.manage`, etc.)
-- **Approval gates** — High-risk actions prompt for user approval in-channel before executing
+- **Approval-required capabilities fail closed** — High-risk actions in `requireApproval` are exposed but blocked until an approval workflow is provided
 - **Secrets management** — Credentials via `${ENV_VAR}` substitution, never hardcoded in config
 - **Audit logging** — Every side-effecting operation recorded with full provenance
 
@@ -973,9 +973,7 @@ flowchart LR
     A[Tool request] --> B{In persona's<br/>allow list?}
     B -->|not listed| C[Reject]
     B -->|allow| D[Execute]
-    B -->|requireApproval| E[Prompt user<br/>in channel]
-    E -->|approved| D
-    E -->|denied/timeout| C
+    B -->|requireApproval| E[Reject as<br/>approval required]
 ```
 
 ---
@@ -2075,7 +2073,7 @@ flowchart TB
     subgraph "talond (policy enforcement)"
         PR[Policy Engine]
         CR[Capability Resolver]
-        AG[Approval Gate]
+        AR[Approval Required]
         EX[Execute Tool]
         AU[Audit Log]
     end
@@ -2084,9 +2082,8 @@ flowchart TB
     PR --> CR
     CR -->|not in allow list| R[Reject + log]
     CR -->|allowed| EX
-    CR -->|requireApproval| AG
-    AG -->|approved| EX
-    AG -->|denied| R
+    CR -->|requireApproval| AR
+    AR --> R
     EX --> AU
     R --> AU
 ```
@@ -2095,7 +2092,7 @@ Every MCP tool call goes through:
 
 1. **Policy Engine** — Validates the tool exists and maps to a capability label
 2. **Capability Resolver** — Checks the persona's `allow` or `requireApproval` lists
-3. **Approval Gate** — For `requireApproval` capabilities, prompts the user in-channel
+3. **Approval Enforcement** — `requireApproval` capabilities are blocked unless an approval workflow explicitly authorizes them
 4. **Audit Log** — Records the decision and result regardless of outcome
 
 ### Database Query Isolation
@@ -2121,7 +2118,7 @@ Complex SQL patterns (UNION, subqueries, CTEs, INTERSECT, EXCEPT) are rejected t
 
 ### Approval Gates
 
-High-risk capabilities can require interactive user approval:
+High-risk capabilities can be marked as requiring approval:
 
 ```yaml
 capabilities:
@@ -2129,10 +2126,10 @@ capabilities:
     - channel.send:telegram
     - memory.access
   requireApproval:
-    - db.query # prompts user in-channel before executing
+    - db.query # exposed to the model but blocked at execution time
 ```
 
-Approval prompts are sent to the originating channel with a configurable timeout.
+Today, approval-required capabilities fail closed. They do not execute unless a separate approval workflow is implemented to authorize them.
 
 ---
 
@@ -2669,10 +2666,9 @@ talon/
         schedule-manage.ts       # Schedule CRUD
         db-query.ts              # Read-only DB queries
         subagent-invoke.ts       # Invoke sub-agents
-      tool-registry.ts           # Tool manifest registry
-      policy-engine.ts           # Capability-based access control
-      capability-resolver.ts     # Label resolution
-      approval-gate.ts           # In-channel approval prompting
+      tool-filter.ts             # Capability-to-host-tool exposure and policy decisions
+      host-tools-bridge.ts       # Authenticated dispatch and fail-closed approval enforcement
+      host-tools-mcp-server.ts   # Provider-facing MCP wrapper for host tools
     usage/
       token-tracker.ts           # Token usage recording + aggregation
   tests/

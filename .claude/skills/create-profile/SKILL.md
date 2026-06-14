@@ -105,9 +105,11 @@ Rules:
 - Write/send capabilities default to `requireApproval`.
 - Users can later promote items to `allow`.
 - If no capability is clearly needed, leave the lists empty.
-- Note: `requireApproval` currently records configuration intent only. Runtime
-  approval enforcement is not yet implemented — tools listed there are still
-  accessible. Mention this when presenting the summary.
+- Note: for Talon host tools, `requireApproval` is a fail-closed execution
+  gate. Tools listed there remain visible to the agent, but host-tool calls are
+  rejected with an approval-required error until an approval workflow authorizes
+  them. Provider-native capabilities still express policy intent and should not
+  be presented as an interactive approval UX.
 
 ### Skills
 
