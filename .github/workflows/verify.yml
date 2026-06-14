@@ -6,6 +6,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      test_scope:
+        description: Test scope to run
+        type: choice
+        default: targeted
+        options:
+          - targeted
+          - full
 
 permissions:
   contents: read
@@ -27,6 +35,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -44,5 +54,39 @@ jobs:
         continue-on-error: true
         run: npm run lint
 
-      - name: Test
-        run: npm test
+      - name: Select tests
+        id: select-tests
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          TEST_SCOPE: ${{ inputs.test_scope || 'targeted' }}
+        run: |
+          if [ "$TEST_SCOPE" = "full" ]; then
+            {
+              echo "should_run=true"
+              echo "reason=Manual full test scope requested."
+              echo "targets=all"
+            } >> "$GITHUB_OUTPUT"
+            {
+              echo '#!/usr/bin/env bash'
+              echo 'set -euo pipefail'
+              echo 'npm test'
+            } > .ci-test-command
+            chmod +x .ci-test-command
+          else
+            node scripts/select-pr-tests.mjs \
+              --base "$BASE_SHA" \
+              --head "$HEAD_SHA" \
+              --github-output "$GITHUB_OUTPUT" \
+              --command-file .ci-test-command
+          fi
+
+      - name: Test selected targets
+        run: |
+          echo "Reason: ${{ steps.select-tests.outputs.reason }}"
+          echo "Targets: ${{ steps.select-tests.outputs.targets }}"
+          if [ "${{ steps.select-tests.outputs.should_run }}" != "true" ]; then
+            echo "No Vitest targets selected for this change."
+            exit 0
+          fi
+          bash .ci-test-command
