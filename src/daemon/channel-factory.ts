@@ -21,6 +21,7 @@ import { EmailConnector } from '../channels/connectors/email/email-connector.js'
 import type { EmailConfig } from '../channels/connectors/email/email-types.js';
 import { TerminalConnector } from '../channels/connectors/terminal/terminal-connector.js';
 import type { TerminalConfig } from '../channels/connectors/terminal/terminal-types.js';
+import { AisdkHttpConnector } from '../channels/connectors/aisdk-http/aisdk-http-connector.js';
 
 /**
  * Creates a channel connector instance for the given type.
@@ -53,6 +54,8 @@ export function createConnector(
       return new EmailConnector(config as unknown as EmailConfig, name, logger);
     case 'terminal':
       return new TerminalConnector(config as unknown as TerminalConfig, name, logger);
+    case 'aisdk-http':
+      return new AisdkHttpConnector(config, name, logger);
     default:
       return null;
   }
