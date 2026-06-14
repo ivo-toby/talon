@@ -2520,6 +2520,17 @@ npm run lint           # ESLint with TypeScript strict rules
 npm run format         # Prettier
 ```
 
+### Pull Request Validation
+
+Pull requests run the `Verify PR` GitHub Actions workflow on Node.js 24. The
+workflow installs dependencies with `npm ci`, then runs `npm run build` and
+`npm test` as required checks. It also runs `npm run lint` as an advisory step
+until the existing lint baseline is clean enough to make blocking. The workflow
+also runs on pushes to `main` and can be started manually from the Actions tab.
+
+For daemon, channel, provider, queue, or execution-environment changes, pair the
+PR workflow with the local Talon smoke harness documented in `AGENTS.md`.
+
 ### Dev Server
 
 ```bash
