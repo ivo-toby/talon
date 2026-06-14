@@ -32,6 +32,7 @@ export class MessageRepository extends BaseRepository {
   private readonly findByIdStmt: Database.Statement;
   private readonly findByThreadStmt: Database.Statement;
   private readonly findLatestByThreadStmt: Database.Statement;
+  private readonly findLatestByThreadSinceStmt: Database.Statement;
   private readonly findByIdempotencyKeyStmt: Database.Statement;
 
   constructor(db: Database.Database) {
@@ -59,6 +60,15 @@ export class MessageRepository extends BaseRepository {
       SELECT * FROM (
         SELECT * FROM messages
         WHERE thread_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      ) sub ORDER BY created_at ASC, id ASC
+    `);
+
+    this.findLatestByThreadSinceStmt = db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM messages
+        WHERE thread_id = ? AND created_at > ?
         ORDER BY created_at DESC, id DESC
         LIMIT ?
       ) sub ORDER BY created_at ASC, id ASC
@@ -140,6 +150,35 @@ export class MessageRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to find latest messages by thread: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Returns the most recent N messages for a thread created strictly AFTER
+   * the given timestamp, in chronological order. Used by ContextAssembler
+   * to include only post-rotation messages in the "Recent Messages" block
+   * so the pre-rotation user instruction is not replayed as an instruction
+   * on the next turn.
+   */
+  findLatestByThreadSince(
+    threadId: string,
+    sinceTimestamp: number,
+    limit: number,
+  ): Result<MessageRow[], DbError> {
+    try {
+      const rows = this.findLatestByThreadSinceStmt.all(
+        threadId,
+        sinceTimestamp,
+        limit,
+      ) as MessageRow[];
+      return ok(rows);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find latest messages by thread since timestamp: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );

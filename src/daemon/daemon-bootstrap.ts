@@ -16,6 +16,7 @@ import type pino from 'pino';
 import { loadConfig } from '../core/config/config-loader.js';
 import { createDatabase } from '../core/database/connection.js';
 import { runMigrations } from '../core/database/migrations/runner.js';
+import { BaseRepository } from '../core/database/repositories/base-repository.js';
 
 import {
   QueueRepository,
@@ -41,6 +42,7 @@ import { registerChannels } from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
+import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
 import { DaemonError, SubAgentError } from '../core/errors/error-types.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
@@ -71,6 +73,7 @@ import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { wrapProviderOptions } from '../subagents/provider-options.js';
+import { OAuthTokenStore } from '../auth/oauth-token-store.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -108,6 +111,14 @@ export async function bootstrap(
 
   logger.info({ logLevel: config.logLevel }, 'bootstrap: config loaded');
 
+  // OAuth token store for HTTP MCP servers. Created early so it can be
+  // handed to both the foreground agent-runner path (via DaemonContext)
+  // and the background agent manager. `talonctl auth-mcp` writes
+  // bundles into <dataDir>/mcp-auth/; the daemon reads + refreshes
+  // them from the same path here, so foreground and background runs
+  // see identical materialized Bearer headers.
+  const oauthTokenStore = new OAuthTokenStore({ dataDir });
+
   // 2. Open database
   const dbResult = createDatabase(config.storage.path);
   if (dbResult.isErr()) {
@@ -130,6 +141,12 @@ export async function bootstrap(
     );
   }
   logger.info({ applied: migrationsResult.value }, 'bootstrap: migrations complete');
+
+  // Seed the monotonic clock counter from the DB so that timestamps issued
+  // in this process are strictly greater than anything the previous process
+  // persisted. Keeps the context-rotation boundary filter safe across
+  // daemon restarts — see BaseRepository.seedMonotonicClockFromDb.
+  BaseRepository.seedMonotonicClockFromDb(db);
 
   // 4. Create repositories
   const repos = {
@@ -335,16 +352,51 @@ export async function bootstrap(
     providerFactories,
   );
 
+  // 9a-guard. Validate that every persona's backgroundProvider is actually
+  // registered in the background provider registry. The config-schema
+  // superRefine already rejects names that aren't enabled in
+  // backgroundAgent.providers, but the ProviderRegistry constructor
+  // silently drops entries that have no matching factory (e.g. a typo in
+  // the provider name key). Without this check the misconfiguration would
+  // only surface at first background-agent spawn, breaking the
+  // "fail loudly at daemon start" invariant.
+  for (const persona of config.personas) {
+    if (
+      persona.backgroundProvider &&
+      !backgroundProviderRegistry.hasProvider(persona.backgroundProvider)
+    ) {
+      const available = backgroundProviderRegistry.listEnabled().join(', ') || '(none)';
+      return err(
+        new DaemonError(
+          `persona "${persona.name}": backgroundProvider "${persona.backgroundProvider}" ` +
+            `is not available in the background agent registry. ` +
+            `Available providers: ${available}.`,
+        ),
+      );
+    }
+  }
+
   // 9b. Context roller (needs configured summarizer sub-agents)
   let contextRoller: ContextRoller | null = null;
   const enabledContextProviders = Object.entries(config.agentRunner.providers)
     .filter(([, providerConfig]) => providerConfig.contextManagement.enabled);
+  const configuredSummarizers = enabledContextProviders
+    .map(([, providerConfig]) => providerConfig.contextManagement.summarizer)
+    .filter((name): name is string => typeof name === 'string' && name.length > 0);
+  const usesObservationalMemory = configuredSummarizers.includes('session-observer');
+  // The observer/reflector path is a pair: once the observation log crosses
+  // MAX_OBSERVATION_CHARS the context-roller calls the reflector to
+  // consolidate. If the reflector isn't bound alongside the observer, the
+  // lookup misses at runtime and the log grows unbounded — the warning
+  // "context-roller-om: reflector not available, skipping consolidation"
+  // indicates this miswiring. Auto-include the reflector whenever any
+  // provider opts into observational memory so a single config key keeps
+  // both halves working.
   const requestedSummarizers = [
-    ...new Set(
-      enabledContextProviders
-        .map(([, providerConfig]) => providerConfig.contextManagement.summarizer)
-        .filter((name): name is string => typeof name === 'string' && name.length > 0),
-    ),
+    ...new Set([
+      ...configuredSummarizers,
+      ...(usesObservationalMemory ? ['session-reflector'] : []),
+    ]),
   ];
 
   if (enabledContextProviders.length === 0) {
@@ -512,6 +564,7 @@ export async function bootstrap(
     if (defaultSummarizer) {
       contextRoller = new ContextRoller({
         messageRepo: repos.message,
+        threadRepo: repos.thread,
         memoryRepo: repos.memory,
         sessionTracker,
         summarizerRun: defaultSummarizer,
@@ -568,6 +621,11 @@ export async function bootstrap(
       providerRegistry: backgroundProviderRegistry,
       executionEnvManager,
       hostToolsSocketPath: resolve(join(dataDir, 'host-tools.sock')),
+      // Share the same token store the foreground path uses so an
+      // `talonctl auth-mcp` run unlocks Glean (etc.) for both run
+      // types — without this, background runs receive raw
+      // `auth: { kind: 'oauth2' }` entries and the MCP server 401s.
+      oauthTokenStore,
       logger,
       observability,
     });
@@ -575,6 +633,16 @@ export async function bootstrap(
   }
 
   // 14. Scheduler
+  // Heal any legacy schedules (pre-dedicated-thread-model, PR #201) before
+  // the scheduler starts ticking so the first fire after upgrade delivers
+  // via the canonical dedicated-thread + origin-external-id path.
+  migrateLegacySchedules({
+    scheduleRepo: repos.schedule,
+    threadRepo: repos.thread,
+    channelRepo: repos.channel,
+    personaRepo: repos.persona,
+    logger,
+  });
   const scheduler = new Scheduler(repos.schedule, queueManager, personaLoader, config.scheduler, logger);
 
   // 15. Message pipeline and channel registration
@@ -607,6 +675,7 @@ export async function bootstrap(
     repos.persona,
     a2aCardRegistry,
     logger,
+    config.a2a,
   );
   const a2aServer = new A2AServer(a2aCardRegistry, a2aTaskMapper, logger);
   logger.info({ personas: [...a2aCardRegistry.keys()] }, 'bootstrap: A2A server initialized');
@@ -635,16 +704,19 @@ export async function bootstrap(
     observability,
     subAgentRunner,
     providerRegistry,
+    backgroundProviderRegistry,
     backgroundAgentManager,
     executionEnvManager,
     contextRoller,
     contextAssembler,
+    oauthTokenStore,
     logger,
     a2aServer,
     a2aTaskMapper,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
+  backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;
 

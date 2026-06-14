@@ -259,6 +259,58 @@ describe('addSchedule()', () => {
       }),
     ).toThrow('Expected exactly 5 fields');
   });
+
+  it('writes {label, promptFile} payload when --prompt-file is supplied', () => {
+    // The scheduler reads payload.promptFile and resolves it through
+    // personaLoader.resolveTaskPrompt at fire time. The CLI must write
+    // that exact field name so existing scheduler logic picks it up.
+    const { personaName, channelName } = seedPersonaAndChannel();
+
+    const result = addSchedule({
+      persona: personaName,
+      channel: channelName,
+      cron: '*/15 6-23 * * *',
+      label: 'braintoss',
+      promptFile: 'braintoss',
+      db,
+    });
+
+    const row = new ScheduleRepository(db).findById(result.id)._unsafeUnwrap();
+    const payload = JSON.parse(row!.payload);
+    expect(payload).toEqual({ label: 'braintoss', promptFile: 'braintoss' });
+    // Must NOT also write `prompt` — that would confuse the scheduler.
+    expect(payload.prompt).toBeUndefined();
+  });
+
+  it('throws when both prompt and promptFile are supplied', () => {
+    const { personaName, channelName } = seedPersonaAndChannel();
+
+    expect(() =>
+      addSchedule({
+        persona: personaName,
+        channel: channelName,
+        cron: '0 9 * * *',
+        label: 'mixed',
+        prompt: 'inline',
+        promptFile: 'something',
+        db,
+      }),
+    ).toThrow('mutually exclusive');
+  });
+
+  it('throws when neither prompt nor promptFile is supplied', () => {
+    const { personaName, channelName } = seedPersonaAndChannel();
+
+    expect(() =>
+      addSchedule({
+        persona: personaName,
+        channel: channelName,
+        cron: '0 9 * * *',
+        label: 'no-prompt',
+        db,
+      }),
+    ).toThrow('one of prompt or promptFile is required');
+  });
 });
 
 // ---------------------------------------------------------------------------

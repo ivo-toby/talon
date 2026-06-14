@@ -46,5 +46,17 @@ talond.yaml
 .worktrees/
 
 # WhatsApp Baileys auth session
-baileys-auth/
+baileys-auth*
 .claude/settings.json
+
+# Local tooling scratch / session state
+.codex
+.sprite
+.playwright-mcp/
+
+# Ad-hoc UI screenshots from local testing
+chat-ui-*.png
+
+# Starter bundle — synced skill dirs are regenerated from .claude/skills/ via
+# scripts/sync-starter-skills.sh. INCLUDED.txt stays tracked.
+starter/.claude/skills/*/

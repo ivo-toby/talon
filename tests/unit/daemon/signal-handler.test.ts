@@ -11,6 +11,10 @@ import { ok, err } from 'neverthrow';
 import pino from 'pino';
 import type { TalondDaemon } from '../../../src/daemon/daemon.js';
 import { DaemonError } from '../../../src/core/errors/index.js';
+import {
+  registerSafeRejectionMatcher,
+  __resetMatchersForTesting,
+} from '../../../src/daemon/unhandled-rejection-shield.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -51,6 +55,7 @@ describe('setupSignalHandlers', () => {
   let processExitSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    __resetMatchersForTesting();
     registeredListeners = new Map();
 
     // Intercept process.on to capture registered handlers without touching
@@ -239,13 +244,45 @@ describe('setupSignalHandlers', () => {
   // unhandledRejection
   // -------------------------------------------------------------------------
 
-  it('calls process.exit(1) when unhandledRejection fires', async () => {
+  it('calls process.exit(1) when unhandledRejection fires with no matcher claim', async () => {
     const { setupSignalHandlers } = await import('../../../src/daemon/signal-handler.js');
     const daemon = makeDaemonStub();
     setupSignalHandlers(daemon, createSilentLogger());
 
     const handler = registeredListeners.get('unhandledRejection')![0];
     (handler as (reason: unknown) => void)(new Error('unhandled'));
+
+    expect(processExitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('does NOT exit when a registered shield matcher claims the rejection', async () => {
+    const { setupSignalHandlers } = await import('../../../src/daemon/signal-handler.js');
+    const daemon = makeDaemonStub();
+    setupSignalHandlers(daemon, createSilentLogger());
+
+    registerSafeRejectionMatcher({
+      name: 'test-shield',
+      matches: (reason) => reason instanceof Error && reason.message === 'shielded',
+    });
+
+    const handler = registeredListeners.get('unhandledRejection')![0];
+    (handler as (reason: unknown) => void)(new Error('shielded'));
+
+    expect(processExitSpy).not.toHaveBeenCalled();
+  });
+
+  it('still exits when shield matchers exist but none claim the rejection', async () => {
+    const { setupSignalHandlers } = await import('../../../src/daemon/signal-handler.js');
+    const daemon = makeDaemonStub();
+    setupSignalHandlers(daemon, createSilentLogger());
+
+    registerSafeRejectionMatcher({
+      name: 'narrow',
+      matches: (reason) => reason instanceof Error && reason.message === 'specific',
+    });
+
+    const handler = registeredListeners.get('unhandledRejection')![0];
+    (handler as (reason: unknown) => void)(new Error('something else'));
 
     expect(processExitSpy).toHaveBeenCalledWith(1);
   });

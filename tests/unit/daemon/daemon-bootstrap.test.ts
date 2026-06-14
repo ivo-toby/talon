@@ -35,7 +35,11 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   BackgroundTaskRepository: vi.fn().mockImplementation(() => ({})),
   ExecutionEnvRepository: vi.fn().mockImplementation(() => ({})),
   ExecutionEnvCheckpointRepository: vi.fn().mockImplementation(() => ({})),
-  ScheduleRepository: vi.fn().mockImplementation(() => ({})),
+  ScheduleRepository: vi.fn().mockImplementation(() => ({
+    // Bootstrap now invokes migrateLegacySchedules() before the scheduler
+    // starts ticking; mock findAll() so the mocked repo satisfies it.
+    findAll: vi.fn().mockReturnValue({ isErr: () => true, isOk: () => false, error: new Error('mock: migration skipped') }),
+  })),
   AuditRepository: vi.fn().mockImplementation(() => ({})),
   MessageRepository: vi.fn().mockImplementation(() => ({})),
   RunRepository: vi.fn().mockImplementation(() => ({})),
@@ -127,6 +131,7 @@ vi.mock('../../../src/subagents/background/background-agent-manager.js', () => (
   BackgroundAgentManager: vi.fn().mockImplementation(() => ({
     recoverOrphanedTasks: vi.fn(),
     shutdown: vi.fn(),
+    setHostToolsBridge: vi.fn(),
   })),
 }));
 
@@ -427,6 +432,63 @@ describe('bootstrap', () => {
       expect(result._unsafeUnwrapErr().message).toContain('Failed to load skills');
       expect(db.close).toHaveBeenCalledOnce();
       expect(observability.shutdown).toHaveBeenCalledOnce();
+    });
+
+    it('returns error when a persona backgroundProvider passes schema validation but has no registered factory', async () => {
+      // Scenario: user writes a provider name that is enabled in
+      // backgroundAgent.providers (so schema validation passes) but whose
+      // key has no matching factory in the ProviderRegistry constructor
+      // (e.g. a typo like "claud-code" instead of "claude-code"). The
+      // registry silently drops it; without this bootstrap-time guard the
+      // misconfiguration would only surface at first background-agent spawn.
+      const config = makeConfig({
+        backgroundAgent: {
+          enabled: true,
+          maxConcurrent: 3,
+          defaultTimeoutMinutes: 30,
+          defaultProvider: 'claude-code',
+          providers: {
+            'claude-code': makeBackgroundProviderConfig(),
+            // "typoed-provider" has enabled:true so schema superRefine
+            // accepts it, but no factory exists for this key, so the
+            // ProviderRegistry drops it silently.
+            'typoed-provider': makeBackgroundProviderConfig({ command: 'nonexistent' }),
+          },
+        },
+        personas: [
+          {
+            name: 'testbot',
+            backgroundProvider: 'typoed-provider',
+          },
+        ],
+      });
+      const db = makeMockDb();
+      const observability = {
+        observe: vi.fn(),
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      };
+      vi.mocked(loadConfig).mockReturnValue(ok(config as any));
+      vi.mocked(createDatabase).mockReturnValue(ok(db as any));
+      vi.mocked(runMigrations).mockReturnValue(ok(1));
+      vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
+      // Restore PersonaLoader and SkillLoader to success — previous failure
+      // tests override these and clearAllMocks does not reset implementations.
+      vi.mocked(PersonaLoader).mockImplementation(() => ({
+        loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+        getByName: vi.fn().mockReturnValue(ok({})),
+      }) as any);
+      vi.mocked(SkillLoader).mockImplementation(() => ({
+        loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
+      }) as any);
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isErr()).toBe(true);
+      const msg = result._unsafeUnwrapErr().message;
+      expect(msg).toContain('testbot');
+      expect(msg).toContain('typoed-provider');
+      expect(msg).toContain('not available in the background agent registry');
     });
   });
 
@@ -1085,6 +1147,117 @@ describe('bootstrap', () => {
           }),
           { transcript: 'hello' },
         );
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-loader.js');
+        vi.doUnmock('../../../src/subagents/model-resolver.js');
+        vi.resetModules();
+      }
+    });
+
+    it('auto-binds session-reflector alongside session-observer for the OM path', async () => {
+      // When a provider opts into observational memory by setting
+      // summarizer: session-observer, bootstrap must also bind
+      // session-reflector so the context-roller can consolidate the
+      // observation log once it crosses MAX_OBSERVATION_CHARS. Without
+      // this the roller logs "reflector not available, skipping
+      // consolidation" and the log grows unbounded. Regression test for
+      // the miswiring observed on the ollama/openai-compatible persona.
+      const observerRun = vi.fn().mockResolvedValue(ok({ summary: 'obs' }));
+      const reflectorRun = vi.fn().mockResolvedValue(ok({ summary: 'reflected' }));
+
+      vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
+        SubAgentLoader: vi.fn().mockImplementation(() => ({
+          loadAll: vi.fn().mockImplementation(async (dir: string) => {
+            if (!dir.includes('subagents/default')) return ok([]);
+            return ok([
+              {
+                manifest: {
+                  name: 'session-observer',
+                  version: '0.1.0',
+                  description: 'Test observer',
+                  model: { provider: 'anthropic', name: 'claude-sonnet-4-6', maxTokens: 8000 },
+                  requiredCapabilities: [],
+                  rootPaths: [],
+                  timeoutMs: 30000,
+                },
+                promptContents: ['Observe.'],
+                run: observerRun,
+                rootDir: '/tmp/session-observer',
+              },
+              {
+                manifest: {
+                  name: 'session-reflector',
+                  version: '0.1.0',
+                  description: 'Test reflector',
+                  model: { provider: 'anthropic', name: 'claude-sonnet-4-6', maxTokens: 8000 },
+                  requiredCapabilities: [],
+                  rootPaths: [],
+                  timeoutMs: 30000,
+                },
+                promptContents: ['Reflect.'],
+                run: reflectorRun,
+                rootDir: '/tmp/session-reflector',
+              },
+            ]);
+          }),
+        })),
+      }));
+      vi.doMock('../../../src/subagents/model-resolver.js', () => ({
+        ModelResolver: vi.fn().mockImplementation(() => ({
+          resolve: vi.fn().mockReturnValue(ok({ provider: 'anthropic', model: 'resolved-model' })),
+        })),
+      }));
+      vi.resetModules();
+
+      try {
+        const { loadConfig: isolatedLoadConfig } = await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } = await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } = await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } = await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } = await import('../../../src/daemon/daemon-bootstrap.js');
+
+        // Configure the provider to use the observer-based OM path.
+        const config = makeConfig({
+          agentRunner: {
+            defaultProvider: 'claude-code',
+            providers: {
+              'claude-code': makeAgentRunnerProviderConfig({
+                contextManagement: makeContextManagementConfig({ summarizer: 'session-observer' }),
+              }),
+            },
+          },
+        });
+        const db = makeMockDb();
+        const observability = {
+          observe: vi.fn(),
+          observeWithTraceparent: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+
+        vi.mocked(isolatedLoadConfig).mockReturnValue(ok(config as any));
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(db as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+        expect(result.isOk()).toBe(true);
+        const ctx = result._unsafeUnwrap();
+        expect(ctx.contextRoller).toBeTruthy();
+
+        const resolver = (ctx.contextRoller as any).deps.resolveSummarizerRun as
+          | ((name: string) => ((threadId: string, personaId: string, input: unknown) => Promise<unknown>) | null)
+          | undefined;
+        expect(resolver).toBeTypeOf('function');
+
+        // Observer IS resolvable (existing behavior).
+        expect(resolver!('session-observer')).toBeTypeOf('function');
+        // Reflector MUST be resolvable too — this is the fix.
+        expect(resolver!('session-reflector')).toBeTypeOf('function');
+
+        // And calling the reflector through the resolver actually reaches
+        // the loaded run function, so reflection will succeed at runtime.
+        await resolver!('session-reflector')!('t', 'p', { observationLog: 'x' });
+        expect(reflectorRun).toHaveBeenCalledOnce();
       } finally {
         vi.doUnmock('../../../src/subagents/subagent-loader.js');
         vi.doUnmock('../../../src/subagents/model-resolver.js');

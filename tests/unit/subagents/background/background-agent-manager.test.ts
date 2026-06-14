@@ -57,6 +57,10 @@ describe('BackgroundAgentManager', () => {
   let processKill: ReturnType<typeof vi.fn>;
   let processFactory: ReturnType<typeof vi.fn>;
   let completionResolve: ((value: unknown) => void) | null;
+  let hostToolsBridge: {
+    registerRunAuthentication: ReturnType<typeof vi.fn>;
+    unregisterRunAuthentication: ReturnType<typeof vi.fn>;
+  };
 
   afterEach(() => {
     rmSync('/tmp/talon-bg-test', { recursive: true, force: true });
@@ -88,6 +92,10 @@ describe('BackgroundAgentManager', () => {
     }));
     completionResolve = null;
     processKill = vi.fn();
+    hostToolsBridge = {
+      registerRunAuthentication: vi.fn(),
+      unregisterRunAuthentication: vi.fn(),
+    };
     processStart = vi.fn().mockImplementation(() =>
       ok({
         pid: 4242,
@@ -154,6 +162,7 @@ describe('BackgroundAgentManager', () => {
       processFactory,
       isPidAlive: vi.fn().mockReturnValue(false),
       readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
+      hostToolsBridge,
       hostToolsSocketPath: '/tmp/test-host-tools.sock',
       ...overrides,
     });
@@ -175,6 +184,70 @@ describe('BackgroundAgentManager', () => {
     allowedMcpTools: [],
   };
 
+  it('materializes OAuth bearers on HTTP MCP entries before invoking the provider (#212 review)', async () => {
+    // Regression guard: the foreground path resolves auth in
+    // agent-runner; the background path was missing that step, so a
+    // background run on the Glean MCP would receive an unresolved
+    // `auth: { kind: "oauth2" }` entry and the server would 401.
+    const tokenStore = {
+      materializeBearer: vi.fn().mockResolvedValue('shiny-access-token'),
+    } as unknown as import('../../../../src/auth/oauth-token-store.js').OAuthTokenStore;
+
+    const manager = createManager({ oauthTokenStore: tokenStore });
+
+    await manager.spawn({
+      ...spawnInput,
+      mcpServers: {
+        glean: {
+          transport: 'http',
+          url: 'https://contentful-be.glean.com/mcp/default',
+          auth: { kind: 'oauth2', tokenStore: 'glean/glean' },
+        },
+      },
+    });
+
+    expect(tokenStore.materializeBearer).toHaveBeenCalledWith('glean/glean');
+    expect(prepareBackgroundInvocation).toHaveBeenCalledTimes(1);
+    const passed = (prepareBackgroundInvocation.mock.calls[0][0] as {
+      mcpServers: Record<string, unknown>;
+    }).mcpServers;
+    expect(passed.glean).toEqual({
+      transport: 'http',
+      url: 'https://contentful-be.glean.com/mcp/default',
+      headers: { Authorization: 'Bearer shiny-access-token' },
+    });
+    // The auth field must be stripped — providers never see it.
+    expect((passed.glean as Record<string, unknown>).auth).toBeUndefined();
+  });
+
+  it('passes server entries through unchanged when no oauthTokenStore is wired', async () => {
+    // The token store is optional so existing test scaffolds + setups
+    // without it keep working. Entries with `auth` still get forwarded;
+    // the provider/MCP server will surface the resulting 401 loudly.
+    const manager = createManager();
+
+    await manager.spawn({
+      ...spawnInput,
+      mcpServers: {
+        glean: {
+          transport: 'http',
+          url: 'https://contentful-be.glean.com/mcp/default',
+          auth: { kind: 'oauth2', tokenStore: 'glean/glean' },
+        },
+      },
+    });
+
+    const passed = (prepareBackgroundInvocation.mock.calls[0][0] as {
+      mcpServers: Record<string, unknown>;
+    }).mcpServers;
+    // Field preserved so the operator sees the MCP fail loudly with a
+    // missing Authorization header — better than silently passing.
+    expect((passed.glean as Record<string, unknown>).auth).toEqual({
+      kind: 'oauth2',
+      tokenStore: 'glean/glean',
+    });
+  });
+
   it('creates a running task and returns its id', async () => {
     const manager = createManager();
     const result = await manager.spawn(spawnInput);
@@ -184,6 +257,18 @@ describe('BackgroundAgentManager', () => {
     const task = repository.findById(taskId)._unsafeUnwrap();
     expect(task?.status).toBe('running');
     expect(task?.pid).toBe(4242);
+  });
+
+  it('stores the worker persona on the background task when a profile persona differs', async () => {
+    const manager = createManager();
+    const result = await manager.spawn({
+      ...spawnInput,
+      personaId: 'persona-spawner',
+      workerPersonaId: 'persona-worker',
+    });
+
+    const task = repository.findById(result._unsafeUnwrap())._unsafeUnwrap();
+    expect(task?.personaId).toBe('persona-worker');
   });
 
   it('includes __talond_skill_loader in MCP servers when hasSkills is true', async () => {
@@ -197,6 +282,7 @@ describe('BackgroundAgentManager', () => {
       transport: 'stdio',
       command: 'node',
       env: expect.objectContaining({
+        TALOND_BRIDGE_SECRET: expect.any(String),
         TALOND_SOCKET: '/tmp/test-host-tools.sock',
         TALOND_THREAD_ID: 'thread-1',
         TALOND_PERSONA_ID: 'persona-1',
@@ -232,6 +318,19 @@ describe('BackgroundAgentManager', () => {
     const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
     expect(mcpServers['__talond_skill_loader']).toBeDefined();
     expect(mcpServers['__talond_host_tools']).toBeUndefined();
+  });
+
+  it('injects a per-task bridge secret into the host-tools MCP env', async () => {
+    const manager = createManager();
+
+    await manager.spawn({ ...spawnInput, allowedMcpTools: ['channel_send'] });
+
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, any>;
+    expect(mcpServers['__talond_host_tools']).toMatchObject({
+      env: expect.objectContaining({
+        TALOND_BRIDGE_SECRET: expect.any(String),
+      }),
+    });
   });
 
   it('builds the append-system-prompt from persona and task context', async () => {
@@ -653,6 +752,15 @@ describe('BackgroundAgentManager', () => {
     expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('cancelled');
   });
 
+  it('revokes bridge auth immediately when a running task is cancelled', async () => {
+    const manager = createManager();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
+
+    await manager.cancel(taskId);
+
+    expect(hostToolsBridge.unregisterRunAuthentication).toHaveBeenCalledWith(taskId);
+  });
+
   it('cleans up cancelled tasks immediately so shutdown does not clean them twice', async () => {
     const manager = createManager();
     const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
@@ -696,6 +804,15 @@ describe('BackgroundAgentManager', () => {
     expect(processKill).toHaveBeenCalled();
     expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('cancelled');
     expect(existsSync('/tmp/talon-bg-test')).toBe(false);
+  });
+
+  it('revokes bridge auth during shutdown for active tasks', async () => {
+    const manager = createManager();
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
+
+    await manager.shutdown();
+
+    expect(hostToolsBridge.unregisterRunAuthentication).toHaveBeenCalledWith(taskId);
   });
 
   it('returns error when providerRegistry.getDefault returns undefined', async () => {
@@ -975,6 +1092,113 @@ describe('BackgroundAgentManager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(observation.end).toHaveBeenCalled();
+  });
+
+  it('starts the observation span with the resolved input.model when provided', async () => {
+    const { manager, observability } = createManagerWithObservability();
+
+    await manager.spawn({ ...spawnInput, model: 'claude-sonnet-4-6' });
+
+    const startCall = observability.startWithTraceparent.mock.calls[0]!;
+    expect(startCall[1]).toEqual(expect.objectContaining({ model: 'claude-sonnet-4-6' }));
+  });
+
+  it('falls back to provider options.defaultModel for the observation model when input.model is unset', async () => {
+    const { observability, observation } = makeObservability();
+    const claudeProvider = {
+      name: 'claude-code',
+      createExecutionStrategy: vi.fn(),
+      prepareBackgroundInvocation,
+      parseBackgroundResult,
+      estimateContextUsage: vi.fn(),
+    };
+    const providerEntry = {
+      provider: claudeProvider,
+      config: {
+        enabled: true,
+        command: 'claude',
+        contextWindowTokens: 200_000,
+        options: { defaultModel: 'claude-sonnet-4-6' },
+      },
+    };
+    const manager = new BackgroundAgentManager({
+      repository,
+      queueManager,
+      maxConcurrent: 2,
+      defaultTimeoutMinutes: 30,
+      defaultProvider: 'claude-code',
+      providerRegistry: {
+        getDefault: vi.fn().mockReturnValue(providerEntry),
+        listEnabled: vi.fn().mockReturnValue(['claude-code']),
+        get: vi.fn((name: string) => (name === 'claude-code' ? providerEntry : undefined)),
+      } as any,
+      logger: makeLogger(),
+      processFactory,
+      isPidAlive: vi.fn().mockReturnValue(false),
+      readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
+      observability,
+    });
+
+    await manager.spawn(spawnInput);
+
+    const startCall = observability.startWithTraceparent.mock.calls[0]!;
+    expect(startCall[1]).toEqual(expect.objectContaining({ model: 'claude-sonnet-4-6' }));
+    // observation handle returned by makeObservability is used internally
+    expect(observation).toBeDefined();
+  });
+
+  it('forwards token usage and cost details to the observation on completion', async () => {
+    const { manager, observation } = createManagerWithObservability();
+    parseBackgroundResult.mockImplementationOnce((raw: any) => ({
+      output: raw.stdout,
+      stderr: raw.stderr,
+      exitCode: raw.exitCode,
+      timedOut: raw.timedOut,
+      usage: {
+        inputTokens: 1234,
+        outputTokens: 567,
+        cacheReadTokens: 89,
+        cacheWriteTokens: 12,
+        totalCostUsd: 0.0042,
+      },
+    }));
+    await manager.spawn(spawnInput);
+
+    completionResolve?.(
+      ok({ stdout: 'Done!', stderr: '', exitCode: 0, signal: null, timedOut: false }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        usageDetails: {
+          input_tokens: 1234,
+          output_tokens: 567,
+          cache_read_input_tokens: 89,
+          cache_creation_input_tokens: 12,
+        },
+        costDetails: { totalCostUsd: 0.0042 },
+      }),
+    );
+  });
+
+  it('does not attach usageDetails when the provider result reports no usage', async () => {
+    const { manager, observation } = createManagerWithObservability();
+    // Default parseBackgroundResult mock omits `usage` — exercises the no-usage branch.
+    await manager.spawn(spawnInput);
+
+    completionResolve?.(
+      ok({ stdout: 'Done!', stderr: '', exitCode: 0, signal: null, timedOut: false }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const updateCall = observation.update.mock.calls.find(
+      (args: unknown[]) => typeof args[0] === 'object' && args[0] !== null && 'output' in (args[0] as Record<string, unknown>),
+    );
+    expect(updateCall).toBeDefined();
+    const payload = updateCall![0] as Record<string, unknown>;
+    expect(payload.usageDetails).toBeUndefined();
+    expect(payload.costDetails).toBeUndefined();
   });
 
   it('works without observability service (backwards compatible)', async () => {

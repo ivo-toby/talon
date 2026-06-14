@@ -1,0 +1,3 @@
+# Custom Talon sub-agents live here. The daemon loads them from /subagents
+# (bind-mounted). Built-in sub-agents ship inside the image; this is for
+# your own additions.

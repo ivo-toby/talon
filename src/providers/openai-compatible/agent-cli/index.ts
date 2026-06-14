@@ -1,15 +1,24 @@
 import { writeFileSync } from 'node:fs';
 import { Agent } from '@mastra/core/agent';
-import type { Tool } from '@mastra/core/tools';
+import { createTool, type Tool } from '@mastra/core/tools';
 import { Workspace, LocalFilesystem, LocalSandbox, type WorkspaceToolsConfig } from '@mastra/core/workspace';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
+import { z } from 'zod';
 import {
   chooseUsage,
-  extractUsage,
+  extractCumulativeUsage,
+  extractPerStepUsage,
   mergeUsage,
   normalizeUsage,
   type UsageSnapshot,
 } from './usage.js';
+import {
+  excerptToolOutput,
+  fetchToolOutputSlice,
+  ToolOutputStore,
+  DEFAULT_TOOL_OUTPUT_CAP,
+  DEFAULT_FETCH_SLICE_CAP,
+} from './tool-output-excerpter.js';
 
 interface WrapperInput {
   prompt: string;
@@ -23,6 +32,14 @@ interface WrapperInput {
   mcpServers: Record<string, SerializableMcpServer>;
   streamEvents?: boolean;
   outputFilePath?: string;
+  /**
+   * Max chars of tool output allowed into the agent's message history.
+   * A head/tail excerpt is injected and the full output is kept in-memory
+   * for the run so the agent can re-fetch ranges via fetch_tool_output.
+   * 0 disables the feature. Defaults to DEFAULT_TOOL_OUTPUT_CAP when
+   * omitted.
+   */
+  toolOutputCap?: number;
 }
 
 type SerializableMcpServer =
@@ -48,6 +65,12 @@ type WrapperEvent =
       input?: unknown;
       output?: unknown;
       isError?: boolean;
+      /** Set when the result was excerpted before entering history. */
+      truncated?: boolean;
+      /** Original payload size in characters (stringified). */
+      originalChars?: number;
+      /** Excerpt size in characters placed into history. */
+      excerptChars?: number;
     }
   | {
       type: 'result';
@@ -165,12 +188,44 @@ async function main(): Promise<void> {
     await workspace.init();
 
     const mcpServers = toMastraMcpServers(input.mcpServers);
-    const mcpTools = Object.keys(mcpServers).length > 0
+    const rawMcpTools = Object.keys(mcpServers).length > 0
       ? await (async (): Promise<Record<string, Tool<unknown, unknown, unknown, unknown>>> => {
           mcpClient = new MCPClient({ servers: mcpServers });
           return mcpClient.listTools();
         })()
       : {};
+
+    // Tool-output excerpting: bound the size of what enters the agent's
+    // message history, retain the full output for this run, expose the
+    // fetch_tool_output synthetic tool so the agent can re-read ranges.
+    // See specs/2026-04-20-tool-output-excerpting-stage1.md.
+    const toolOutputCap = input.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP;
+    const toolOutputStore = new ToolOutputStore();
+    let syntheticToolCallSeq = 0;
+    const mcpTools = toolOutputCap > 0
+      ? wrapToolsWithOutputCap(
+          rawMcpTools,
+          toolOutputCap,
+          toolOutputStore,
+          () => `talond-mcp-${Date.now()}-${++syntheticToolCallSeq}`,
+        )
+      : rawMcpTools;
+
+    const combinedTools: Record<string, Tool<unknown, unknown, unknown, unknown>> = { ...mcpTools };
+    if (toolOutputCap > 0) {
+      // Guard against an MCP server accidentally exposing a tool named
+      // "fetch_tool_output" — our synthetic tool would silently overwrite
+      // it otherwise. Log and skip registration in that case; the agent
+      // loses the re-fetch affordance but keeps the MCP tool working.
+      if (Object.prototype.hasOwnProperty.call(combinedTools, 'fetch_tool_output')) {
+        process.stderr.write(
+          'openai-compatible wrapper: an MCP tool named "fetch_tool_output" is already '
+          + 'registered; skipping synthetic tool registration to avoid shadowing.\n',
+        );
+      } else {
+        combinedTools.fetch_tool_output = buildFetchToolOutputTool(toolOutputStore) as unknown as Tool<unknown, unknown, unknown, unknown>;
+      }
+    }
 
     const agent = new Agent({
       id: 'openai-compatible-cli',
@@ -184,7 +239,7 @@ async function main(): Promise<void> {
         ...(input.headers ? { headers: input.headers } : {}),
       },
       workspace,
-      tools: mcpTools,
+      tools: combinedTools,
     });
 
     // Mastra's default stopWhen is stepCountIs(5), which stalls the stream
@@ -192,15 +247,46 @@ async function main(): Promise<void> {
     // so the agent can do meaningful multi-tool work.
     const stream = await agent.stream(input.prompt, { maxSteps: 25 });
     const shouldStream = input.streamEvents !== false;
-    let streamedUsage: UsageSnapshot | undefined;
+    // Track per-step and cumulative usage in SEPARATE accumulators so we
+    // can surface each to the right consumer downstream:
+    //   - `cumulativeUsage` → reported as the result's `usage` field for
+    //     telemetry/accounting (Langfuse, `runs.input_tokens`, etc).
+    //   - `perStepUsage` → reported as `lastStepUsage` for rotation gating
+    //     in agent-runner. Per-step is what answers "is the next prompt
+    //     going to exceed the model context window?".
+    // Mixing them within one snapshot leads either to inflated rotation
+    // ratios (using cumulative) or under-reported billing (using per-step).
+    let cumulativeUsage: UsageSnapshot | undefined;
+    let perStepUsage: UsageSnapshot | undefined;
+    // Third accumulator: running SUM of per-step values across the agent
+    // loop. Used as a cumulative fallback when the provider/version never
+    // emits a native cumulative shape (no `totalUsage`, no `output.usage`).
+    // For those providers, summed per-step equals what `totalUsage` would
+    // have reported, so it correctly preserves billing accuracy without
+    // leaking back into the per-step accumulator used for rotation gating.
+    const summedPerStep: UsageSnapshot = {
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+    };
+    let sawAnyPerStep = false;
 
     for await (const rawChunk of stream.fullStream as AsyncIterable<unknown>) {
       const chunk = normalizeStreamChunk(rawChunk);
       if (!chunk) continue;
 
-      const chunkUsage = extractUsage(chunk.payload);
-      if (chunkUsage) {
-        streamedUsage = mergeUsage(streamedUsage, chunkUsage);
+      const perStep = extractPerStepUsage(chunk.payload);
+      if (perStep) {
+        perStepUsage = mergeUsage(perStepUsage, perStep);
+        sawAnyPerStep = true;
+        summedPerStep.inputTokens = (summedPerStep.inputTokens ?? 0) + (perStep.inputTokens ?? 0);
+        summedPerStep.outputTokens = (summedPerStep.outputTokens ?? 0) + (perStep.outputTokens ?? 0);
+        summedPerStep.cachedInputTokens =
+          (summedPerStep.cachedInputTokens ?? 0) + (perStep.cachedInputTokens ?? 0);
+      }
+      const cumulative = extractCumulativeUsage(chunk.payload);
+      if (cumulative) {
+        cumulativeUsage = mergeUsage(cumulativeUsage, cumulative);
       }
 
       if (chunk.type === 'text-delta') {
@@ -229,13 +315,27 @@ async function main(): Promise<void> {
 
       if (chunk.type === 'tool-result') {
         if (shouldStream) {
+          const toolUseId = readStringProp(chunk.payload, 'toolCallId');
+          // Enrich the emitted event with excerpting telemetry when the
+          // store has an entry for this toolCallId. Single source of truth
+          // for tool_result events — the wrap helper records to the store
+          // but does NOT emit an event, so downstream consumers don't see
+          // duplicates.
+          const stored = toolUseId ? toolOutputStore.get(toolUseId) : undefined;
           emit({
             type: 'tool_event',
             messageType: 'tool_result',
             tool: readStringProp(chunk.payload, 'toolName'),
-            toolUseId: readStringProp(chunk.payload, 'toolCallId'),
+            toolUseId,
             output: chunk.payload.result,
             isError: readBooleanProp(chunk.payload, 'isError'),
+            ...(stored?.truncated
+              ? {
+                  truncated: true,
+                  originalChars: stored.originalChars,
+                  excerptChars: stored.excerptChars,
+                }
+              : {}),
           });
         }
         continue;
@@ -257,7 +357,34 @@ async function main(): Promise<void> {
     await stream.consumeStream().catch(() => {});
     const [finalText, promiseUsage] = await Promise.all([stream.text, stream.usage]);
     const resolvedText = finalText && finalText.length > 0 ? finalText : aggregatedText;
-    const finalUsage = chooseUsage(streamedUsage, promiseUsage);
+    // `usage` is the cumulative total — what the user was billed for and
+    // what telemetry/accounting expects. Resolution order:
+    //   1. Native cumulative chunks (`totalUsage`, `output.usage`) — most
+    //      authoritative when the provider emits them.
+    //   2. `stream.usage` promise — Mastra's official end-of-stream total.
+    //   3. SUM of per-step chunks across the loop — for providers/versions
+    //      that only emit per-step shapes, the per-step sum equals what
+    //      `totalUsage` would have reported, so it preserves billing
+    //      accuracy. Without this fallback the wrapper would emit
+    //      `{ inputTokens: 0 }` while `lastStepUsage` was populated, and
+    //      Langfuse + `runs.input_tokens` would silently under-report.
+    const cumulativeFallback = sawAnyPerStep ? summedPerStep : undefined;
+    // Chain chooseUsage so that a non-zero source always wins over a zero
+    // one. Without the chain, `chooseUsage(cumulativeUsage, promiseUsage)`
+    // could return `{0, 0}` when the promise settles with zeros after
+    // `fullStream` is externally drained, and a plain `??` wouldn't fall
+    // through to `summedPerStep`.
+    const finalCumulativeUsage = chooseUsage(
+      chooseUsage(cumulativeUsage, promiseUsage),
+      cumulativeFallback,
+    );
+    // `lastStepUsage` is the per-step total from the FINAL model turn —
+    // what context-rotation gating uses to estimate the next prompt size.
+    // No fallback to the promise (which is cumulative); if we never saw a
+    // per-step shape, we omit the field and let agent-runner fall back to
+    // the cumulative usage (degraded signal, but better than nothing).
+    const normalizedCumulative = normalizeUsage(finalCumulativeUsage);
+    const normalizedPerStep = perStepUsage ? normalizeUsage(perStepUsage) : undefined;
 
     if (input.outputFilePath) {
       try {
@@ -274,7 +401,8 @@ async function main(): Promise<void> {
       emit({
         type: 'result',
         output: '',
-        usage: normalizeUsage(finalUsage),
+        usage: normalizedCumulative,
+        ...(normalizedPerStep ? { lastStepUsage: normalizedPerStep } : {}),
       });
       return;
     }
@@ -282,7 +410,8 @@ async function main(): Promise<void> {
     emit({
       type: 'result',
       output: resolvedText,
-      usage: normalizeUsage(finalUsage),
+      usage: normalizedCumulative,
+      ...(normalizedPerStep ? { lastStepUsage: normalizedPerStep } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -345,7 +474,116 @@ function parseInput(raw: string): WrapperInput {
     ...(typeof parsed.outputFilePath === 'string' && parsed.outputFilePath.length > 0
       ? { outputFilePath: parsed.outputFilePath }
       : {}),
+    ...(typeof parsed.toolOutputCap === 'number' ? { toolOutputCap: parsed.toolOutputCap } : {}),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Tool-output excerpting glue
+// ---------------------------------------------------------------------------
+
+/**
+ * Wrap each tool so its `execute` records the full output in the store and
+ * returns a bounded excerpt instead. The downstream stream-chunk handler
+ * (see the `tool-result` branch) is the single source of tool_event
+ * emission — this helper does NOT emit its own event to avoid duplicates.
+ *
+ * The toolCallId comes from the Mastra execution context when available;
+ * otherwise a synthetic id is generated via `idFactory`. Synthetic ids are
+ * still usable with fetch_tool_output within the same run.
+ */
+function wrapToolsWithOutputCap(
+  tools: Record<string, Tool<unknown, unknown, unknown, unknown>>,
+  cap: number,
+  store: ToolOutputStore,
+  idFactory: () => string,
+): Record<string, Tool<unknown, unknown, unknown, unknown>> {
+  const wrapped: Record<string, Tool<unknown, unknown, unknown, unknown>> = {};
+  for (const [name, tool] of Object.entries(tools)) {
+    wrapped[name] = wrapOneToolWithOutputCap(name, tool, cap, store, idFactory);
+  }
+  return wrapped;
+}
+
+function wrapOneToolWithOutputCap(
+  toolName: string,
+  tool: Tool<unknown, unknown, unknown, unknown>,
+  cap: number,
+  store: ToolOutputStore,
+  idFactory: () => string,
+): Tool<unknown, unknown, unknown, unknown> {
+  const originalExecute = tool.execute?.bind(tool);
+  if (!originalExecute) return tool;
+
+  // Proxy preserves the Mastra Tool prototype (instanceof checks, metadata)
+  // while overriding execute. Returning a plain object works too but losing
+  // the marker symbol can break introspection.
+  return new Proxy(tool, {
+    get(target, prop, receiver) {
+      if (prop === 'execute') {
+        return async (input: unknown, ctx?: unknown) => {
+          const rawResult = await (originalExecute as (i: unknown, c?: unknown) => Promise<unknown>)(input, ctx);
+          const toolCallId = extractToolCallIdFromContext(ctx) ?? idFactory();
+          const excerpted = excerptToolOutput(toolCallId, toolName, rawResult, cap);
+
+          // Always record — even when truncation didn't fire — so a
+          // follow-up fetch_tool_output call on a normal-sized output still
+          // works. Keeps semantics simple for the model.
+          store.record(toolCallId, {
+            toolName,
+            fullOutput: excerpted.fullOutputString,
+            originalChars: excerpted.originalChars,
+            truncated: excerpted.truncated,
+            excerptChars: excerpted.excerptChars,
+          });
+
+          return excerpted.excerpt;
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  });
+}
+
+/**
+ * Build the synthetic `fetch_tool_output` tool that lets the agent re-read
+ * a range of a previously-stored tool output.
+ */
+function buildFetchToolOutputTool(store: ToolOutputStore) {
+  return createTool({
+    id: 'fetch_tool_output',
+    description:
+      'Retrieve a range of a previously-truncated tool output. Use this when the excerpt '
+      + 'in the message history contains a "TRUNCATED BY TALON" marker and you need a '
+      + 'specific region of the full content. Each call returns at most '
+      + `${DEFAULT_FETCH_SLICE_CAP} characters; widen ranges carefully to avoid reintroducing the full payload.`,
+    inputSchema: z.object({
+      toolCallId: z.string().describe('The toolCallId from the truncation marker.'),
+      startChar: z.number().int().min(0).optional().describe('0-indexed start (inclusive). Defaults to 0.'),
+      endChar: z.number().int().min(0).optional().describe(`Exclusive end. Defaults to startChar + ${DEFAULT_FETCH_SLICE_CAP}.`),
+    }),
+    execute: async (input) => {
+      const { toolCallId, startChar, endChar } = input;
+      return fetchToolOutputSlice(store, toolCallId, startChar, endChar);
+    },
+  });
+}
+
+/**
+ * Try to read the tool call id from whatever shape Mastra passes as
+ * execution context. Mastra's internal shape evolves; best-effort is fine —
+ * we fall back to a synthetic id when nothing matches.
+ */
+function extractToolCallIdFromContext(ctx: unknown): string | undefined {
+  if (!isRecord(ctx)) return undefined;
+  const direct = readStringProp(ctx, 'toolCallId');
+  if (direct) return direct;
+  const options = ctx.options;
+  if (isRecord(options)) {
+    const fromOptions = readStringProp(options, 'toolCallId');
+    if (fromOptions) return fromOptions;
+  }
+  return undefined;
 }
 
 async function readStdin(): Promise<string> {

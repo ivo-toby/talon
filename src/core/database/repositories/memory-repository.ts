@@ -14,7 +14,7 @@ import { DbError } from '../../errors/index.js';
 import { BaseRepository } from './base-repository.js';
 
 /** Valid memory item type values. */
-export type MemoryType = 'fact' | 'summary' | 'note' | 'embedding_ref';
+export type MemoryType = 'fact' | 'summary' | 'note' | 'embedding_ref' | 'observation' | 'pre-roll-tail';
 
 /** Row shape matching the `memory_items` table exactly. */
 export interface MemoryItemRow {

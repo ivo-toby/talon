@@ -21,7 +21,7 @@ import { ChannelRepository } from '../../core/database/repositories/channel-repo
 import { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
 import { QueueRepository } from '../../core/database/repositories/queue-repository.js';
 import { A2ATaskMapper } from '../../a2a/a2a-task-mapper.js';
-import type { A2AAgentCard, A2ATaskState } from '../../a2a/a2a-types.js';
+import type { A2AAgentCard, A2ATaskState, A2ALimits } from '../../a2a/a2a-types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +50,8 @@ export interface SendA2ATaskOptions {
   targetPersona: string;
   message: string;
   sourcePersona?: string;
+  /** Runtime A2A limits — defaults applied when omitted. */
+  limits?: A2ALimits;
 }
 
 export interface SendA2ATaskResult {
@@ -107,7 +109,7 @@ const CLI_THREAD_EXTERNAL_ID = 'a2a-cli-thread';
  * @throws Error if the target persona is unknown or on DB failure.
  */
 export function sendA2ATask(options: SendA2ATaskOptions): SendA2ATaskResult {
-  const { db, targetPersona, message, sourcePersona = 'cli' } = options;
+  const { db, targetPersona, message, sourcePersona = 'cli', limits } = options;
 
   if (!message.trim()) {
     throw new Error('Message must not be empty');
@@ -198,7 +200,15 @@ export function sendA2ATask(options: SendA2ATaskOptions): SendA2ATaskResult {
   };
 
   const cardRegistry = new Map<string, A2AAgentCard>([[targetPersona, syntheticCard]]);
-  const mapper = new A2ATaskMapper(taskRepo, queueRepo, threadRepo, personaRepo, cardRegistry, silentLogger);
+  const mapper = new A2ATaskMapper(
+    taskRepo,
+    queueRepo,
+    threadRepo,
+    personaRepo,
+    cardRegistry,
+    silentLogger,
+    limits,
+  );
 
   const submitResult = mapper.submitTask({
     sourcePersona,
@@ -225,7 +235,12 @@ function truncate(str: string, maxLen: number): string {
   return str.slice(0, maxLen - 1) + '…';
 }
 
-async function openDb(configPath: string): Promise<Database.Database> {
+interface OpenedDb {
+  db: Database.Database;
+  a2aLimits: A2ALimits;
+}
+
+async function openDb(configPath: string): Promise<OpenedDb> {
   const { loadConfig } = await import('../../core/config/config-loader.js');
   const { createDatabase } = await import('../../core/database/connection.js');
 
@@ -241,7 +256,7 @@ async function openDb(configPath: string): Promise<Database.Database> {
     process.exit(1);
   }
 
-  return dbResult.value;
+  return { db: dbResult.value, a2aLimits: configResult.value.a2a };
 }
 
 /**
@@ -255,7 +270,7 @@ export async function a2aListCommand(options: {
   target?: string;
   limit?: number;
 }): Promise<void> {
-  const db = await openDb(options.configPath ?? 'talond.yaml');
+  const { db } = await openDb(options.configPath ?? 'talond.yaml');
 
   try {
     const tasks = listA2ATasks({
@@ -311,7 +326,7 @@ export async function a2aSendCommand(options: {
   message: string;
   sourcePersona?: string;
 }): Promise<void> {
-  const db = await openDb(options.configPath ?? 'talond.yaml');
+  const { db, a2aLimits } = await openDb(options.configPath ?? 'talond.yaml');
 
   try {
     const result = sendA2ATask({
@@ -319,6 +334,7 @@ export async function a2aSendCommand(options: {
       targetPersona: options.targetPersona,
       message: options.message,
       sourcePersona: options.sourcePersona,
+      limits: a2aLimits,
     });
 
     console.log(`Task submitted successfully.`);

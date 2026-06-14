@@ -52,6 +52,13 @@ interface WrapperPayload {
    * cap cannot truncate away the run's actual output.
    */
   outputFilePath?: string;
+  /**
+   * Max chars of tool output allowed into agent message history before
+   * excerpting. 0 disables the feature. When omitted, the wrapper uses its
+   * internal default. See
+   * specs/2026-04-20-tool-output-excerpting-stage1.md for rationale.
+   */
+  toolOutputCap?: number;
 }
 
 /** NDJSON event shape emitted by the wrapper CLI. */
@@ -65,6 +72,13 @@ type WrapperEvent =
       input?: unknown;
       output?: unknown;
       isError?: boolean;
+      /**
+       * Tool-output excerpting metadata carried across the wrapper→provider
+       * boundary. See specs/2026-04-20-tool-output-excerpting-stage1.md.
+       */
+      truncated?: boolean;
+      originalChars?: number;
+      excerptChars?: number;
     }
   | {
       type: 'result';
@@ -74,11 +88,23 @@ type WrapperEvent =
         outputTokens?: number;
         cacheReadTokens?: number;
       };
+      /**
+       * Per-step usage from the FINAL model turn — distinct from
+       * cumulative `usage`. Forwarded to ProviderResult.lastStepUsage so
+       * context-rotation can gate on per-call prompt size rather than the
+       * inflated sum across the agent loop.
+       */
+      lastStepUsage?: {
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+      };
     }
   | { type: 'error'; message: string };
 
 export class OpenAiCompatibleProvider implements AgentProvider {
   readonly name = 'openai-compatible';
+  readonly skillLoaderTransport = 'stdio' as const;
 
   constructor(
     private readonly config: ProviderConfig,
@@ -178,6 +204,14 @@ export class OpenAiCompatibleProvider implements AgentProvider {
         cacheReadTokens: resultEvent.usage.cacheReadTokens,
       };
     }
+    let lastStepUsage: AgentUsage | undefined;
+    if (resultEvent?.lastStepUsage) {
+      lastStepUsage = {
+        inputTokens: resultEvent.lastStepUsage.inputTokens ?? 0,
+        outputTokens: resultEvent.lastStepUsage.outputTokens ?? 0,
+        cacheReadTokens: resultEvent.lastStepUsage.cacheReadTokens,
+      };
+    }
 
     const failed = raw.exitCode !== 0 || raw.timedOut || errorEvent !== undefined || !resultEvent;
     const combinedStderr = failed
@@ -190,6 +224,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       exitCode: failed && raw.exitCode === 0 ? 1 : raw.exitCode,
       timedOut: raw.timedOut,
       usage,
+      ...(lastStepUsage ? { lastStepUsage } : {}),
     };
   }
 
@@ -301,6 +336,9 @@ export class OpenAiCompatibleProvider implements AgentProvider {
             input: event.input,
             output: event.output,
             isError: event.isError,
+            ...(event.truncated !== undefined ? { truncated: event.truncated } : {}),
+            ...(event.originalChars !== undefined ? { originalChars: event.originalChars } : {}),
+            ...(event.excerptChars !== undefined ? { excerptChars: event.excerptChars } : {}),
           };
         } else if (event.type === 'result') {
           sawResultEvent = true;
@@ -312,12 +350,20 @@ export class OpenAiCompatibleProvider implements AgentProvider {
               cacheReadTokens: event.usage.cacheReadTokens,
             };
           }
+          const lastStepUsage = event.lastStepUsage
+            ? {
+                inputTokens: event.lastStepUsage.inputTokens ?? 0,
+                outputTokens: event.lastStepUsage.outputTokens ?? 0,
+                cacheReadTokens: event.lastStepUsage.cacheReadTokens,
+              }
+            : undefined;
           yield {
             type: 'result',
             result: {
               output: resultOutput,
               sessionId: undefined,
               usage,
+              ...(lastStepUsage ? { lastStepUsage } : {}),
               isError: false,
             },
           };
@@ -432,6 +478,9 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
       streamEvents: options.streamEvents,
       ...(options.outputFilePath ? { outputFilePath: options.outputFilePath } : {}),
+      ...(this.readNumericOption('toolOutputCap') !== undefined
+        ? { toolOutputCap: this.readNumericOption('toolOutputCap') }
+        : {}),
     };
 
     return ok({
@@ -449,6 +498,12 @@ export class OpenAiCompatibleProvider implements AgentProvider {
   private readStringOption(name: string): string | undefined {
     const value = this.config.options?.[name];
     return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
+  }
+
+  private readNumericOption(name: string): number | undefined {
+    const value = this.config.options?.[name];
+    if (typeof value === 'number' && Number.isFinite(value) && value >= 0) return value;
+    return undefined;
   }
 
   private readRecordOption(name: string): Record<string, string> | undefined {

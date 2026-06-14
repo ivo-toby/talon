@@ -26,6 +26,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 
 import { MCP_TO_INTERNAL } from './tool-filter.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
+import { TALOND_BRIDGE_SECRET_ENV } from './host-tools-bridge-auth.js';
 
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
@@ -35,6 +36,7 @@ interface BridgeRequest {
   id: string;
   tool: string;
   args: Record<string, unknown>;
+  bridgeSecret: string;
   context: {
     runId: string;
     threadId: string;
@@ -140,6 +142,7 @@ class SocketClient {
   async sendRequest(
     tool: string,
     args: Record<string, unknown>,
+    bridgeSecret: string,
     context: {
       runId: string;
       threadId: string;
@@ -162,6 +165,7 @@ class SocketClient {
       id,
       tool,
       args,
+      bridgeSecret,
       context: {
         runId: context.runId,
         threadId: context.threadId,
@@ -309,14 +313,15 @@ const TOOLS = [
   },
   {
     name: 'memory_access',
-    description: 'Reads from or writes to the per-thread layered memory store.',
+    description:
+      'Reads from or writes to the per-thread layered memory store. Use operation "read" to retrieve a key, "write" to store a value, "delete" to remove a key, or "list" to enumerate all items.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         operation: {
           type: 'string' as const,
           enum: ['read', 'write', 'delete', 'list'],
-          description: 'Operation to perform',
+          description: 'Operation to perform: "read", "write", "delete", or "list"',
         },
         key: {
           type: 'string' as const,
@@ -592,6 +597,7 @@ async function main(): Promise<void> {
   const runId = getEnvRequired('TALOND_RUN_ID');
   const threadId = getEnvRequired('TALOND_THREAD_ID');
   const personaId = getEnvRequired('TALOND_PERSONA_ID');
+  const bridgeSecret = getEnvRequired(TALOND_BRIDGE_SECRET_ENV);
   const traceparent = process.env.TALOND_TRACEPARENT;
   const a2aTaskId = process.env.TALOND_A2A_TASK_ID;
   const rawA2aHopCount = process.env.TALOND_A2A_HOP_COUNT;
@@ -677,17 +683,23 @@ async function main(): Promise<void> {
     }
 
     try {
-      const result = await client.sendRequest(handlerName, args as Record<string, unknown>, {
-        runId,
-        threadId,
-        personaId,
-        traceparent,
-        ...(a2aTaskId ? { a2aTaskId } : {}),
-        ...(a2aHopCount !== undefined ? { a2aHopCount } : {}),
-        ...(backgroundTaskId ? { backgroundTaskId } : {}),
-        ...(primaryExecutionEnvId ? { primaryExecutionEnvId } : {}),
-        ...(allowedHostRoots ? { allowedHostRoots } : {}),
-      }, getHostToolRequestTimeoutMs(normalizedTool, args as Record<string, unknown>));
+      const result = await client.sendRequest(
+        handlerName,
+        args as Record<string, unknown>,
+        bridgeSecret,
+        {
+          runId,
+          threadId,
+          personaId,
+          traceparent,
+          ...(a2aTaskId ? { a2aTaskId } : {}),
+          ...(a2aHopCount !== undefined ? { a2aHopCount } : {}),
+          ...(backgroundTaskId ? { backgroundTaskId } : {}),
+          ...(primaryExecutionEnvId ? { primaryExecutionEnvId } : {}),
+          ...(allowedHostRoots ? { allowedHostRoots } : {}),
+        },
+        getHostToolRequestTimeoutMs(normalizedTool, args as Record<string, unknown>),
+      );
 
       if (!result) {
         return {

@@ -9,9 +9,8 @@
  * Tool name format (internal): `schedule.manage`, `channel.send`, etc.
  *
  * The mapping uses the domain + action portion of the capability label to
- * match against known host tool names. The scope portion (after `:`) is
- * ignored for tool-level filtering — it is used for finer-grained access
- * control within handlers (e.g., which channels can be sent to).
+ * expose known host tool names. Execution-time policy can also evaluate the
+ * scope portion (after `:`) when the requested tool target is known.
  */
 
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
@@ -167,14 +166,27 @@ export const ALL_CAPABILITY_LABELS = CAPABILITY_DESCRIPTIONS.flatMap(
  * Returns `null` if the label does not match the expected format.
  */
 export function extractCapabilityPrefix(label: string): string | null {
+  return parseCapabilityLabel(label)?.prefix ?? null;
+}
+
+interface ParsedCapabilityLabel {
+  prefix: string;
+  scope: string | null;
+}
+
+function parseCapabilityLabel(label: string): ParsedCapabilityLabel | null {
   const colonIndex = label.indexOf(':');
   const prefix = colonIndex === -1 ? label : label.slice(0, colonIndex);
 
   // Must match `word.word` pattern.
-  if (/^\w+\.\w+$/.test(prefix)) {
-    return prefix;
+  if (!/^\w+\.\w+$/.test(prefix)) {
+    return null;
   }
-  return null;
+
+  return {
+    prefix,
+    scope: colonIndex === -1 ? null : label.slice(colonIndex + 1),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -264,39 +276,71 @@ export function isToolAllowed(toolName: string, capabilities: ResolvedCapabiliti
 /**
  * Returns the execution policy decision for a host tool.
  *
- * - `allow` when the tool is backed by an `allow` capability
- * - `require_approval` when it is only backed by a `requireApproval` capability
+ * - `allow` when the requested tool/scope is backed by an `allow` capability
+ * - `require_approval` when it is backed by a `requireApproval` capability
  * - `deny` when no matching capability is present
+ *
+ * For scoped tools, exact target labels take precedence over broader `*` or
+ * unscoped labels. Approval-required exact scopes fail closed even when a
+ * broader allow exists.
  */
 export function getToolPolicyDecision(
   toolName: string,
   capabilities: ResolvedCapabilities,
+  requestedScope?: string,
 ): PolicyDecision {
-  let requiresApproval = false;
+  const toolPrefixes = getToolCapabilityPrefixes(toolName);
+  if (toolPrefixes.length === 0) {
+    return 'deny';
+  }
 
-  for (const label of capabilities.allow) {
-    const prefix = extractCapabilityPrefix(label);
-    if (prefix === null) continue;
+  const allowMatch = getBestScopeMatch(capabilities.allow, toolPrefixes, requestedScope);
+  const approvalMatch = getBestScopeMatch(capabilities.requireApproval, toolPrefixes, requestedScope);
 
-    const hasMatch = HOST_TOOL_REGISTRY.some(
-      (entry) => entry.capabilityPrefix === prefix && entry.internalName === toolName,
-    );
-    if (hasMatch) {
-      return 'allow';
+  if (requestedScope === undefined) {
+    if (approvalMatch !== 'none') return 'require_approval';
+    if (allowMatch !== 'none') return 'allow';
+    return 'deny';
+  }
+
+  if (approvalMatch === 'exact') return 'require_approval';
+  if (allowMatch === 'exact') return 'allow';
+  if (approvalMatch === 'broad') return 'require_approval';
+  if (allowMatch === 'broad') return 'allow';
+  return 'deny';
+}
+
+type ScopeMatch = 'none' | 'broad' | 'exact';
+
+function getToolCapabilityPrefixes(toolName: string): string[] {
+  return HOST_TOOL_REGISTRY
+    .filter((entry) => entry.internalName === toolName)
+    .map((entry) => entry.capabilityPrefix);
+}
+
+function getBestScopeMatch(
+  labels: readonly string[],
+  toolPrefixes: readonly string[],
+  requestedScope: string | undefined,
+): ScopeMatch {
+  let best: ScopeMatch = 'none';
+
+  for (const label of labels) {
+    const parsed = parseCapabilityLabel(label);
+    if (parsed === null || !toolPrefixes.includes(parsed.prefix)) continue;
+
+    if (requestedScope === undefined) {
+      return 'broad';
+    }
+
+    if (parsed.scope === requestedScope) {
+      return 'exact';
+    }
+
+    if ((parsed.scope === null || parsed.scope === '*') && best === 'none') {
+      best = 'broad';
     }
   }
 
-  for (const label of capabilities.requireApproval) {
-    const prefix = extractCapabilityPrefix(label);
-    if (prefix === null) continue;
-
-    const hasMatch = HOST_TOOL_REGISTRY.some(
-      (entry) => entry.capabilityPrefix === prefix && entry.internalName === toolName,
-    );
-    if (hasMatch) {
-      requiresApproval = true;
-    }
-  }
-
-  return requiresApproval ? 'require_approval' : 'deny';
+  return best;
 }

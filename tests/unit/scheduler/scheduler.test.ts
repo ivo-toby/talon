@@ -235,6 +235,111 @@ describe('Scheduler', () => {
       });
     });
 
+    it('promotes prompt:"file:NAME" to a promptFile alias and resolves it', async () => {
+      // Regression guard: an agent/human that creates a schedule with
+      // `prompt: "file:foo"` (a non-documented convention they invented)
+      // would otherwise ship the literal string to the agent, which then
+      // wastes turns greppingfor the file. The scheduler defensively
+      // recognises the prefix and routes through resolveTaskPrompt.
+      vi.mocked(personaLoader.resolveTaskPrompt).mockResolvedValue(ok('Resolved prompt body'));
+      const payload = { label: 'Braintoss', prompt: 'file:braintoss' };
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify(payload),
+      });
+
+      scheduler.start();
+      await wait(150);
+      scheduler.stop();
+
+      expect(personaLoader.resolveTaskPrompt).toHaveBeenCalledWith(personaId, 'braintoss');
+      const enqueueCalls = (queueStub.enqueue as ReturnType<typeof vi.fn>).mock.calls;
+      expect(enqueueCalls).toHaveLength(1);
+      const enqueued = enqueueCalls[0][2] as Record<string, unknown>;
+      expect(enqueued.content).toBe('Resolved prompt body');
+      // The literal `file:braintoss` string must NOT survive into content
+      // — otherwise the agent would still see it and discover the file.
+      expect(enqueued.content).not.toContain('file:braintoss');
+    });
+
+    it('does NOT promote a prompt whose body legitimately starts with "file:"', async () => {
+      // Regression guard: a prompt like `"file: summarize the latest backup log"`
+      // is real prose, not a promptFile alias. A loose `startsWith("file:")`
+      // check would discard the body and call resolveTaskPrompt() with a
+      // nonexistent alias — leaving the schedule stuck (no enqueue, no
+      // next-run advance). The strict `^file:<name>$` pattern guarantees
+      // only the exact agent-invented shape is promoted.
+      const prose = 'file: summarize the latest backup log';
+      const payload = { label: 'Prose with colon', prompt: prose };
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify(payload),
+      });
+
+      scheduler.start();
+      await wait(150);
+      scheduler.stop();
+
+      expect(personaLoader.resolveTaskPrompt).not.toHaveBeenCalled();
+      const enqueueCalls = (queueStub.enqueue as ReturnType<typeof vi.fn>).mock.calls;
+      expect(enqueueCalls).toHaveLength(1);
+      const enqueued = enqueueCalls[0][2] as Record<string, unknown>;
+      expect(enqueued.content).toBe(prose);
+    });
+
+    it('does NOT promote "file:" followed by content with spaces or special chars', async () => {
+      // A few near-miss patterns that must NOT be treated as aliases:
+      // file:name with space, file:name@host, file:/absolute/path, etc.
+      const nearMisses = [
+        'file:my name',
+        'file:user@host',
+        'file:/etc/passwd',
+        'file:name?query',
+      ];
+
+      for (const prompt of nearMisses) {
+        vi.mocked(personaLoader.resolveTaskPrompt).mockClear();
+        (queueStub.enqueue as ReturnType<typeof vi.fn>).mockClear();
+        const myThread = seedThread(db);
+        seedDueSchedule(db, personaId, myThread, {
+          type: 'one_shot',
+          payload: JSON.stringify({ label: 'near-miss', prompt }),
+        });
+
+        scheduler.start();
+        await wait(150);
+        scheduler.stop();
+
+        expect(personaLoader.resolveTaskPrompt).not.toHaveBeenCalled();
+        const calls = (queueStub.enqueue as ReturnType<typeof vi.fn>).mock.calls;
+        expect(calls.length).toBeGreaterThanOrEqual(1);
+        const last = calls[calls.length - 1][2] as Record<string, unknown>;
+        expect(last.content).toBe(prompt);
+      }
+    });
+
+    it('prefers explicit promptFile over a file:-prefixed prompt when both are set', async () => {
+      // If a schedule somehow has BOTH `promptFile: "real"` and
+      // `prompt: "file:other"`, the explicit promptFile wins — the
+      // defensive promotion is fallback-only, not an override.
+      vi.mocked(personaLoader.resolveTaskPrompt).mockResolvedValue(ok('Real body'));
+      const payload = {
+        label: 'Mixed',
+        promptFile: 'real',
+        prompt: 'file:other',
+      };
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify(payload),
+      });
+
+      scheduler.start();
+      await wait(150);
+      scheduler.stop();
+
+      expect(personaLoader.resolveTaskPrompt).toHaveBeenCalledWith(personaId, 'real');
+    });
+
     it('uses the thread_id of the schedule when enqueuing', async () => {
       const anotherThread = seedThread(db);
       seedDueSchedule(db, personaId, anotherThread, { type: 'one_shot' });

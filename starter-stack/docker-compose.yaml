@@ -1,0 +1,115 @@
+# =============================================================================
+# docker-compose.yaml — Talon + Postgram stack
+# =============================================================================
+# A self-hosted AI agent (Talon) wired to a persistent knowledge store
+# (Postgram) so the agent remembers across conversations out of the box.
+#
+# Do NOT `docker compose up` directly the first time — run ./bootstrap.sh.
+# Postgram API keys must be minted after its server is up; the bootstrap
+# script handles that ordering. See README.md.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Postgram's database — Postgres with the pgvector extension.
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_DB: postgram
+      POSTGRES_USER: postgram
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgram']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Postgram — knowledge store. Serves a REST API and an MCP/SSE endpoint
+  # on :3100. No host port: Talon reaches it over the compose network as
+  # `http://postgram:3100`, and admin tasks run via `docker compose exec`.
+  # ---------------------------------------------------------------------------
+  postgram:
+    image: ghcr.io/ivo-toby/postgram:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://postgram:${POSTGRES_PASSWORD}@postgres:5432/postgram
+      # Embeddings: Postgram defaults to OpenAI. Required for semantic search.
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      PORT: '3100'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:3100/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    restart: unless-stopped
+    # To poke Postgram from the host (or run the postgram-ui separately),
+    # uncomment — loopback-only is the safe default:
+    # ports:
+    #   - '127.0.0.1:3100:3100'
+
+  # ---------------------------------------------------------------------------
+  # Talon — the agent daemon. The bundled `postgram-memory` skill points
+  # its MCP client at the postgram service above.
+  # ---------------------------------------------------------------------------
+  talond:
+    image: ghcr.io/ivo-toby/talond:latest
+    container_name: talond
+    depends_on:
+      postgram:
+        condition: service_healthy
+    restart: unless-stopped
+
+    env_file:
+      - .env
+
+    environment:
+      NODE_ENV: production
+      TALOND_DATA_DIR: /data
+      TALOND_CONFIG_PATH: /config/talond.yaml
+
+    volumes:
+      - ./data:/data
+      - type: bind
+        source: ./config/talond.yaml
+        target: /config/talond.yaml
+      - type: bind
+        source: ./personas
+        target: /personas
+      # Talon skills — carries the postgram-memory skill that wires the
+      # MCP client. bootstrap.sh renders the API key into it.
+      - type: bind
+        source: ./skills
+        target: /skills
+      - type: bind
+        source: ./userdata
+        target: /userdata
+
+    healthcheck:
+      test: ["CMD", "node", "-e", "const fs=require('fs');const p=process.env.TALON_PID_FILE||'/data/talond.pid';if(!fs.existsSync(p)){process.exit(1);}try{process.kill(parseInt(fs.readFileSync(p,'utf8').trim()),0);process.exit(0);}catch{process.exit(1);}"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+
+volumes:
+  pgdata:

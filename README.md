@@ -29,6 +29,43 @@ It is built for single-user or small-team deployments where you want persistent,
 
 ---
 
+## Quick start (Docker)
+
+The fastest way to run Talon — no clone, no build, no toolchain. Download
+the starter bundle, add your tokens, and bring it up:
+
+```bash
+# 1. Download and extract the starter bundle
+curl -fsSL https://github.com/ivo-toby/talon/releases/latest/download/talon-starter.tar.gz | tar xz
+cd talon-starter
+
+# 2. Install the talonctl helper (no sudo)
+./install.sh
+
+# 3. Configure
+cp .env.example .env                              # add your bot token + provider key
+cp config/talond.example.yaml config/talond.yaml  # set allowedChatIds, pick a provider
+
+# 4. Run
+docker compose up -d
+talonctl status
+```
+
+The daemon image is published to `ghcr.io/ivo-toby/talond` — multi-arch
+(linux/amd64 + linux/arm64), `:latest` plus per-release tags. The compose
+file pulls it for you; there is nothing to build.
+
+**Guided setup with Claude Code.** The bundle ships a setup skill — run
+`claude` in the extracted folder and type `/talon-setup-docker` to be
+walked through provider choice, channel config, and first boot
+conversationally.
+
+Full bundle reference: [`starter/README.md`](starter/README.md). Prefer
+running from a source clone as a systemd service? See
+[Quick start (from source)](#quick-start-from-source).
+
+---
+
 ## Features
 
 ### Channels
@@ -242,7 +279,11 @@ sequenceDiagram
 
 ---
 
-## Quick start
+## Quick start (from source)
+
+Run Talon from a clone — the path for native/systemd deployments and
+local development. For the zero-build container path, see
+[Quick start (Docker)](#quick-start-docker) above.
 
 For the full deployment walkthrough, see the [setup guide](docs/setup-guide.md).
 
@@ -469,6 +510,32 @@ backgroundAgent:
 | `defaultTimeoutMinutes` | Default wall-clock timeout when a tool call does not provide one |
 | `defaultProvider`       | Provider used for tasks that do not specify one explicitly       |
 | `providers`             | Per-provider config; mirrors `agentRunner.providers`             |
+
+##### Per-persona override
+
+Personas can route their background agents through a different provider/model than their foreground runtime by setting `backgroundProvider` and (optionally) `backgroundModel`:
+
+```yaml
+personas:
+  - name: assistant
+    model: qwen3-coder:30b
+    provider: openai-compatible    # foreground stays on Ollama
+    backgroundProvider: claude-code   # background runs on Claude Code
+    backgroundModel: claude-sonnet-4-6
+  - name: work-context-manager
+    model: qwen3-coder:30b
+    provider: openai-compatible
+    # no backgroundProvider — falls back to backgroundAgent.defaultProvider
+```
+
+`backgroundProvider` must be enabled under `backgroundAgent.providers`; the daemon refuses to start otherwise. `backgroundModel` is paired with `backgroundProvider` — setting it without `backgroundProvider` is rejected at config load.
+
+Resolution order at spawn time:
+
+1. Provider given explicitly in the `background_agent` tool call (strict)
+2. Persona's `backgroundProvider`
+3. Persona's foreground `provider` — **only** if it is also enabled in `backgroundAgent.providers`
+4. `backgroundAgent.defaultProvider`
 
 ##### Using `openai-compatible` for background agents
 
@@ -961,6 +1028,20 @@ Only skill name and description are included in the agent's system prompt per ru
 
 Background agents use eager loading to ensure full access without calling `skill_load`.
 
+#### Per-skill eager opt-in
+
+Some skills describe reflexive behaviors (e.g. "search memory before answering") that smaller models miss when only the description is available. Mark such a skill `eager: true` in its `SKILL.md` frontmatter (or `skill.yaml`) and its full body is merged into the persona system prompt at startup — the rest of the persona's skills stay lazy.
+
+```yaml
+---
+name: my-skill
+description: Use when …
+eager: true
+---
+```
+
+Defaults to `false`. Useful when a persona runs on a model that doesn't reliably autonomously call `skill_load` for indirect triggers (most open-weight ≤70B-effective models).
+
 ### Skill Resolution
 
 Persona capabilities and skill requirements are intersected at runtime:
@@ -970,6 +1051,61 @@ granted = persona.capabilities ∩ skill.requiredCapabilities
 ```
 
 Skills with unmet capabilities produce a warning at startup and are skipped.
+
+### HTTP MCP Servers and OAuth
+
+For HTTP / SSE MCP servers that require OAuth (e.g. Glean, GitHub Enterprise),
+Talon owns the token lifecycle directly — no `mcp-remote` or other stdio
+bridge process at runtime.
+
+The interactive OAuth dance lives in `talonctl auth-mcp`, runs once per
+server, and writes a refreshable token bundle into Talon's data dir. The
+daemon reads + refreshes that bundle on every agent run and injects the
+resulting `Authorization: Bearer <token>` header into the MCP server config
+before the provider sees it. Providers (claude-code, gemini-cli, codex-cli,
+openai-compatible) stay completely unaware of the OAuth flow.
+
+**Skill config shape:**
+
+```json
+{
+  "name": "glean",
+  "config": {
+    "name": "glean",
+    "transport": "http",
+    "url": "https://contentful-be.glean.com/mcp/default",
+    "auth": { "kind": "oauth2" }
+  }
+}
+```
+
+The skill loader stamps `auth.tokenStore: "<skillName>/<serverName>"` when
+omitted. Token bundles live at `<dataDir>/mcp-auth/<tokenStore>.json` (mode
+0600, atomic temp+rename writes).
+
+**One-time authorisation:**
+
+```bash
+# Interactive (operator's desktop — opens local browser)
+npx talonctl auth-mcp glean:glean
+
+# Headless (operator on the daemon's host over SSH)
+npx talonctl auth-mcp glean:glean --headless
+# Prints the auth URL plus an `ssh -L <port>:localhost:<port> server`
+# command. Run the SSH forward from your local machine, then open the URL
+# in your local browser — the callback comes back over the forward.
+```
+
+The command performs Dynamic Client Registration (RFC 7591) when the
+server advertises a `registration_endpoint`, generates a PKCE challenge,
+runs the standard authorisation-code flow, and persists the resulting
+access + refresh tokens. After it completes, the daemon picks up the new
+bundle on the next agent run — no daemon restart required.
+
+**Refresh:** the daemon automatically refreshes access tokens that fall
+within 60 s of expiry, using the cached `refresh_token` and the OAuth
+provider's `token_endpoint`. If both access and refresh have expired,
+agent runs fail loudly with a "re-run `talonctl auth-mcp`" message.
 
 ---
 
@@ -1070,7 +1206,9 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 | `file-searcher`       | `claude-haiku-4-5`    | Search files by content, return ranked results with snippets |
 | `memory-retriever`    | `claude-haiku-4-5`    | Find relevant memories via keyword pre-filter + LLM rerank  |
 | `memory-groomer`      | `claude-haiku-4-5`    | Prune stale, consolidate duplicate memory items              |
-| `session-summarizer`  | `claude-sonnet-4-6`   | Compress transcripts for rolling context window              |
+| `session-summarizer`  | `claude-sonnet-4-6`   | Compress transcripts for rolling context window (legacy)     |
+| `session-observer`    | `claude-sonnet-4-6`   | Generate dated, prioritized observations for long-term memory |
+| `session-reflector`   | `claude-sonnet-4-6`   | Consolidate observations when log grows too large            |
 | `spark-coder`         | `gpt-5.4-spark`       | Fast single-shot code generation (requires `OPENAI_API_KEY`) |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
@@ -1219,12 +1357,15 @@ Agent run completes → selected trigger metric exceeds threshold?
             4. Clear session → next run starts fresh
                                ↓
             ContextAssembler injects into fresh session:
-            ┌─────────────────────────────────────┐
-            │ ## Previous Context                  │
-            │ [Latest session summary]             │
-            │ ### Recent Messages                  │
-            │ [Last 10 messages verbatim]          │
-            └─────────────────────────────────────┘
+            ┌─────────────────────────────────────────────────────┐
+            │ ## Prior-conversation state (read-only)             │
+            │ [Latest session summary / recent observations,      │
+            │  bounded by a char budget]                          │
+            │ ### Recent Messages                                 │
+            │ [Turns AFTER the most recent rotation, up to        │
+            │  recentMessageCount, tagged as                      │
+            │  "[previous turn, user]: ..."]                      │
+            └─────────────────────────────────────────────────────┘
 ```
 
 **Key design decisions:**
@@ -1233,9 +1374,58 @@ Agent run completes → selected trigger metric exceeds threshold?
 - **Summaries are memory items** — stored as `memory_items` with type `summary`, so they're subject to `memory-groomer` consolidation. Old summaries get merged/pruned automatically.
 - **Daemon-side, not agent-side** — the agent never knows its session was rotated. Context injection happens in the system prompt before the agent sees its first message.
 - **Awaited, not fire-and-forget** — rotation completes before the next queue item is processed, preventing race conditions.
-- **Prompt injection mitigation** — injected historical content is prefixed with a read-only disclaimer to prevent user messages from being treated as instructions.
+- **Prompt injection mitigation** — injected historical content is framed as "prior-conversation state" and replayed turns use bracketed state tags (`[previous turn, user]: …`) rather than `User:` / `Assistant:` role markers, so the main agent doesn't mistake historical context for live instructions. Recent Messages is scoped to turns AFTER the most recent rotation via `metadata.rotatedThroughTs`; pre-rotation turns are already compressed in the summary/observation.
+- **Bounded observation replay** — for the observational-memory path, the ContextAssembler replays observations up to a character budget (~20K) rather than concatenating the full log. This keeps prompt size flat over the thread's lifetime while preserving the newest state snapshot plus recent consolidated history.
+- **Durable completion state** — each observation persists `taskComplete` in metadata. When the observer flags the prior turn as complete, the assembler suppresses "Current task:" / "Next step:" hints so stale task pointers don't survive rotation and cause the agent to re-enter old work.
 
 **Files:** `src/daemon/context-roller.ts`, `src/daemon/context-assembler.ts`
+
+#### Observational memory (long-term context)
+
+The default `session-summarizer` produces a single summary blob that gets overwritten on each rotation — history beyond the last rotation is lost. For long-running conversations (e.g. Telegram threads spanning days), switch to **observational memory** by setting `summarizer: session-observer`.
+
+Instead of overwriting, observations **append** over time as a dated, prioritized decision log:
+
+```
+Date: 2026-04-07
+- 🔴 14:10 User wants to replace openai-compatible provider with Mastra Harness
+- 🔴 14:12 Decision: keep existing provider, add new mastra-code provider alongside
+- 🟡 14:15 LibSQL storage uses separate mastra.db to avoid WAL contention
+- 🟢 14:20 Background invocations not supported yet
+
+Date: 2026-04-07
+- 🔴 16:30 Implemented observational memory for context roller
+- 🟡 16:45 Reflector threshold set at 40K chars
+```
+
+When the observation log exceeds 40K characters, the `session-reflector` sub-agent consolidates — merging related observations, dropping superseded context, and preserving important decisions. This gives the agent long-term memory that survives many rotations. The reflector carries `taskComplete`, `currentTask`, `suggestedContinuation`, and the rotation-snapshot timestamp forward onto the consolidated row.
+
+Each observation also carries `taskComplete`, `currentTask`, and `suggestedContinuation` metadata. When `taskComplete` is true, hints are neither persisted nor surfaced — so the agent resumes only when there is genuinely unfinished work, and stale task pointers don't drift across rotations.
+
+**Priority levels:** 🔴 high (critical decisions, goals, deadlines) · 🟡 medium (questions, preferences, conditional info) · 🟢 low (ephemeral context, minor details)
+
+```yaml
+# 1. Set the provider's summarizer to session-observer
+contextManagement:
+  enabled: true
+  triggerMetric: input_tokens
+  thresholdRatio: 0.75
+  recentMessageCount: 10
+  summarizer: session-observer    # enables observational memory
+  reflectionThresholdChars: 40000 # observation-log size that triggers session-reflector (default 40000)
+
+# 2. Add the observer and reflector to the persona's subagents list
+personas:
+  - name: assistant
+    subagents:
+      - session-observer           # required for observational memory
+      - session-reflector          # required for observation consolidation
+      - memory-groomer
+      - memory-retriever
+      - file-searcher
+```
+
+**Important:** Personas only load sub-agents explicitly listed in their `subagents` config. Without `session-observer` and `session-reflector` in the list, the context-roller won't find them at runtime. You can remove `session-summarizer` from personas using OM since it won't be called.
 
 ### Provider Support
 
@@ -1581,6 +1771,21 @@ Whether you actually see non-zero cache counts depends entirely on the **upstrea
 
 If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens` will stay at 0 and `cache_creation_input_tokens` will equal `input_tokens` — that is the expected degradation, not a bug. Use `triggerMetric: input_tokens` for those endpoints.
 
+### MCP Authentication
+
+| Command | Description |
+|---------|-------------|
+| `auth-mcp <skill>:<server>` | One-time interactive OAuth flow for an HTTP MCP server. See [HTTP MCP Servers and OAuth](#http-mcp-servers-and-oauth). |
+
+**`auth-mcp`** options:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--headless` | Don't try to open a browser. Print the auth URL + suggested SSH forward command. Use this on remote daemons. | off |
+| `--port <port>` | Localhost callback port. Must match the SSH `-L` forward in headless mode. | `8788` |
+| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| `--skills-dir <path>` | Path to the skills directory | `skills` |
+
 ### Scheduling
 
 | Command | Description |
@@ -1597,8 +1802,11 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | `--channel <name>` | Channel to bind the schedule thread to (required) | — |
 | `--cron <expr>` | Cron expression, 5-field (required) | — |
 | `--label <label>` | Human-readable label (required) | — |
-| `--prompt <prompt>` | Prompt text for the agent (required) | — |
+| `--prompt <prompt>` | Inline prompt text. Mutually exclusive with `--prompt-file`. | — |
+| `--prompt-file <name>` | Prompt file basename (without `.md`) under `personas/<persona>/prompts/`. Resolved by the scheduler at fire time. Mutually exclusive with `--prompt`. | — |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
+
+Exactly one of `--prompt` or `--prompt-file` must be provided. `--prompt-file` is preferred for reusable, long-form prompts (e.g. `--prompt-file braintoss` resolves to `personas/<persona>/prompts/braintoss.md` at fire time).
 
 **`list-schedules`** options:
 
@@ -1614,8 +1822,14 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
 ```bash
+# Inline prompt
 npx talonctl add-schedule --persona assistant --channel my-telegram \
   --cron "0 8 * * 1-5" --label "Morning briefing" --prompt "Give me a morning briefing"
+
+# Reusable prompt file (resolves to personas/assistant/prompts/braintoss.md)
+npx talonctl add-schedule --persona assistant --channel my-telegram \
+  --cron "*/15 6-23 * * *" --label "Braintoss inbox" --prompt-file braintoss
+
 npx talonctl list-schedules --persona assistant
 npx talonctl remove-schedule abc123
 ```
@@ -1770,7 +1984,32 @@ The service includes security hardening: `NoNewPrivileges`, `PrivateTmp`, `Prote
 
 ### 2. Containerized Daemon (Docker)
 
-> **Coming soon** — Docker deployment is under active development. The goal is to run provider runtimes inside Docker containers for blast-radius isolation against prompt injection from untrusted input (repos, emails, messages). The host-mode path will remain as fallback. Dockerfiles and Compose config exist in `deploy/` and will be updated for the current architecture.
+The zero-build path — a published multi-arch image plus a starter bundle
+of config templates, a `talonctl` wrapper, and guided setup skills.
+
+```bash
+curl -fsSL https://github.com/ivo-toby/talon/releases/latest/download/talon-starter.tar.gz | tar xz
+cd talon-starter
+./install.sh
+cp .env.example .env                              # fill in secrets
+cp config/talond.example.yaml config/talond.yaml  # edit for your setup
+docker compose up -d
+```
+
+The image is published at `ghcr.io/ivo-toby/talond` (`:latest` and
+per-release tags, linux/amd64 + linux/arm64). The bundle bind-mounts
+`config/`, `personas/`, `data/`, and `userdata/` so you edit everything
+from the host. See [`starter/README.md`](starter/README.md) for the full
+walkthrough, [`starter/docs/providers.md`](starter/docs/providers.md) for
+provider configuration, and
+[`starter/docs/troubleshooting.md`](starter/docs/troubleshooting.md) when
+something misbehaves.
+
+To build the image yourself instead of pulling the published one:
+
+```bash
+docker build -f deploy/Dockerfile -t talond .
+```
 
 ### 3. Wake-Only Mode (Timer)
 
@@ -1834,7 +2073,7 @@ flowchart TB
     subgraph "talond (policy enforcement)"
         PR[Policy Engine]
         CR[Capability Resolver]
-        AG[Approval Gate]
+        AR[Approval Required]
         EX[Execute Tool]
         AU[Audit Log]
     end
@@ -1843,9 +2082,8 @@ flowchart TB
     PR --> CR
     CR -->|not in allow list| R[Reject + log]
     CR -->|allowed| EX
-    CR -->|requireApproval| AG
-    AG -->|approved| EX
-    AG -->|denied| R
+    CR -->|requireApproval| AR
+    AR --> R
     EX --> AU
     R --> AU
 ```
@@ -1971,6 +2209,14 @@ Agents create schedules like:
 | One-shot      | (future)    | Single execution at set time |
 
 Scheduled tasks are enqueued through the standard queue pipeline, subject to the same retry and dead-letter policies as regular messages. Cron expressions evaluate in system local time.
+
+### Dedicated Execution Threads
+
+Schedules created by the agent via `schedule_manage` are stored against a dedicated execution thread keyed by `(persona, channel, origin chat)` — not the live chat thread. This keeps scheduled runs from polluting the live conversation's session state, observational-memory log, and session resumption id.
+
+The dedicated thread records the origin chat's `external_id` in metadata (`kind: "schedule"`, `originExternalId: "<chat id>"`). Outbound delivery (`channel_send`, typing indicators) reads that field and routes messages back to the originating chat, so users still receive scheduled notifications on the channel they set the schedule up from.
+
+List / update / cancel / delete remain persona-scoped rather than thread-scoped, so schedules created from the live chat are still fully visible and editable from the live chat thread.
 
 ### Task Prompt Files
 
@@ -2271,6 +2517,23 @@ npm run lint           # ESLint with TypeScript strict rules
 npm run format         # Prettier
 ```
 
+### Pull Request Validation
+
+Pull requests run the `Verify PR` GitHub Actions workflow on Node.js 24. The
+workflow installs dependencies with `npm ci`, then runs `npm run build` and
+path-targeted Vitest checks selected from changed files by
+`scripts/select-pr-tests.mjs`. It also runs `npm run lint` as an advisory step
+until the existing lint baseline is clean enough to make blocking.
+
+The workflow also runs on pushes to `main` and can be started manually from the
+Actions tab. Manual runs can choose `test_scope=full` when a broad regression
+pass is needed; PRs use `targeted` by default so small documentation, workflow,
+or setup changes do not run the full Talon suite.
+
+For daemon, channel, provider, queue, or execution-environment changes, pair the
+PR workflow with the local Talon smoke harness documented in `AGENTS.md` or a
+Sprite-based full validation run.
+
 ### Dev Server
 
 ```bash
@@ -2389,7 +2652,9 @@ talon/
       subagent-runner.ts         # Execution engine with timeout
       index.ts                   # Barrel export
       default/                   # Built-in sub-agents
-        session-summarizer/      # Transcript compression
+        session-summarizer/      # Transcript compression (legacy)
+        session-observer/        # Observational memory — observation generation
+        session-reflector/       # Observational memory — observation consolidation
         memory-groomer/          # Memory consolidation
         memory-retriever/        # Memory search + LLM reranking
         file-searcher/           # File search (rg/grep/node cascade)
@@ -2401,10 +2666,9 @@ talon/
         schedule-manage.ts       # Schedule CRUD
         db-query.ts              # Read-only DB queries
         subagent-invoke.ts       # Invoke sub-agents
-      tool-registry.ts           # Tool manifest registry
-      policy-engine.ts           # Capability-based access control
-      capability-resolver.ts     # Label resolution
-      approval-gate.ts           # In-channel approval prompting
+      tool-filter.ts             # Capability-to-host-tool exposure and policy decisions
+      host-tools-bridge.ts       # Authenticated dispatch and fail-closed approval enforcement
+      host-tools-mcp-server.ts   # Provider-facing MCP wrapper for host tools
     usage/
       token-tracker.ts           # Token usage recording + aggregation
   tests/
@@ -2543,13 +2807,35 @@ talonctl a2a send software-engineer "Run the test suite" --source james
 
 `a2a send` inserts a task directly into the database and enqueues it for processing. If the daemon is running, the task will be picked up immediately. If not, it will be processed on next daemon start.
 
+### Configuration
+
+A2A runtime limits live under the top-level `a2a:` block in `talond.yaml`. All
+three keys are optional and fall back to the built-in defaults shown below:
+
+```yaml
+a2a:
+  maxHops: 4                # max delegation chain depth (1..32)
+  maxConcurrentPerTarget: 1 # max in-flight tasks per target persona (1..100)
+  maxAttempts: 3            # max queue retries before dead-letter (1..20)
+```
+
+- **`maxHops`** — a task is rejected when its incoming `hopCount >= maxHops`.
+  Raise this if your supervisor/worker chains genuinely need more depth.
+- **`maxConcurrentPerTarget`** — admission control at submission time. Submissions
+  beyond the cap fail with a "Max allowed" error. Raise this to allow parallel
+  fan-out to the same persona.
+- **`maxAttempts`** — retry budget for the `collaboration` queue items that
+  carry A2A tasks. After this many failures the item is dead-lettered.
+
 ### Milestone 1 scope
 
 The current implementation covers:
 
 - Internal-only task routing (no external HTTP exposure)
-- Single-hop and multi-hop delegation (up to 4 hops, configurable via `MAX_HOPS`)
-- Concurrency admission: at most 1 active task per target persona at a time
+- Single-hop and multi-hop delegation (configurable via `a2a.maxHops`, default 4)
+- Concurrency admission per target persona (configurable via
+  `a2a.maxConcurrentPerTarget`, default 1)
+- Configurable queue retry budget (`a2a.maxAttempts`, default 3)
 - Full task lifecycle tracking in `a2a_tasks` table
 - Agent card discovery per persona
 - CLI commands for listing and submitting tasks

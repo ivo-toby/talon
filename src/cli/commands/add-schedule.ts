@@ -28,7 +28,17 @@ export interface AddScheduleOptions {
   channel: string;
   cron: string;
   label: string;
-  prompt: string;
+  /**
+   * Inline prompt text. Mutually exclusive with `promptFile`. Exactly one
+   * of the two MUST be provided — `addSchedule()` throws otherwise.
+   */
+  prompt?: string;
+  /**
+   * Prompt file basename (no `.md`) in the persona's `prompts/` directory.
+   * The scheduler resolves this to file content at fire time via
+   * `personaLoader.resolveTaskPrompt`. Mutually exclusive with `prompt`.
+   */
+  promptFile?: string;
   db: Database.Database;
 }
 
@@ -54,7 +64,19 @@ export interface AddScheduleResult {
  * @throws Error with a descriptive message on any failure.
  */
 export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
-  const { db, persona, channel, cron, label, prompt } = options;
+  const { db, persona, channel, cron, label, prompt, promptFile } = options;
+
+  // --- Validate prompt vs promptFile (exactly one required) ---------------
+  // Match the host-tool contract (schedule-manage.ts buildSchedulePayload):
+  // a schedule needs either inline prompt text OR a promptFile alias —
+  // never both, never neither. Catching this here keeps the DB clean even
+  // when addSchedule() is called programmatically (e.g. from a setup skill).
+  if (prompt !== undefined && promptFile !== undefined) {
+    throw new Error('addSchedule: prompt and promptFile are mutually exclusive');
+  }
+  if (prompt === undefined && promptFile === undefined) {
+    throw new Error('addSchedule: one of prompt or promptFile is required');
+  }
 
   // --- Validate cron expression (must be exactly 5 fields) ----------------
   const cronFields = cron.trim().split(/\s+/);
@@ -119,9 +141,15 @@ export function addSchedule(options: AddScheduleOptions): AddScheduleResult {
   const nextRunAt = nextRunResult.value;
 
   // --- Insert schedule row -----------------------------------------------
+  // Payload shape matches what the scheduler reads at fire time:
+  //   { label, prompt }      — inline text used as-is
+  //   { label, promptFile }  — basename resolved to prompts/<name>.md content
+  // The two are mutually exclusive (validated above).
   const scheduleId = uuidv4();
   const scheduleRepo = new ScheduleRepository(db);
-  const payload = JSON.stringify({ label, prompt });
+  const payload = JSON.stringify(
+    promptFile !== undefined ? { label, promptFile } : { label, prompt },
+  );
 
   const insertResult = scheduleRepo.insert({
     id: scheduleId,
@@ -244,7 +272,8 @@ export async function addScheduleCommand(options: {
   channel: string;
   cron: string;
   label: string;
-  prompt: string;
+  prompt?: string;
+  promptFile?: string;
   configPath?: string;
 }): Promise<void> {
   const { loadConfig } = await import('../../core/config/config-loader.js');
@@ -277,7 +306,8 @@ export async function addScheduleCommand(options: {
       channel: options.channel,
       cron: options.cron,
       label: options.label,
-      prompt: options.prompt,
+      ...(options.prompt !== undefined ? { prompt: options.prompt } : {}),
+      ...(options.promptFile !== undefined ? { promptFile: options.promptFile } : {}),
       db,
     });
 

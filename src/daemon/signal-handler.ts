@@ -4,7 +4,8 @@
  * Registers handlers for the signals that affect daemon lifecycle:
  * - SIGTERM / SIGINT → graceful shutdown
  * - SIGHUP           → config reload
- * - unhandledRejection → log and exit(1)
+ * - unhandledRejection → consult the shield; exit(1) only when no matcher
+ *   claims the rejection as a known connector-internal failure.
  *
  * Guards against double-shutdown: if a signal arrives while the daemon is
  * already stopping, subsequent signals are ignored.
@@ -12,6 +13,7 @@
 
 import type pino from 'pino';
 import type { TalondDaemon } from './daemon.js';
+import { classifyRejection } from './unhandled-rejection-shield.js';
 
 // ---------------------------------------------------------------------------
 // Signal handler setup
@@ -84,9 +86,21 @@ export function setupSignalHandlers(daemon: TalondDaemon, logger: pino.Logger): 
     void handleReload();
   });
 
-  // Unhandled promise rejections — log and exit so the process doesn't
-  // continue in an unknown state.
+  // Unhandled promise rejections. Connectors can register matchers via the
+  // shield to mark rejections from their underlying libraries (e.g. Baileys
+  // WebSocket teardown) as known and non-fatal — those are logged at warn
+  // level and the daemon keeps running. Anything no matcher claims is treated
+  // as a programming bug and crashes the process so it doesn't drift into
+  // an unknown state.
   process.on('unhandledRejection', (reason) => {
+    const classification = classifyRejection(reason);
+    if (!classification.fatal) {
+      logger.warn(
+        { reason, matchedBy: classification.matchedBy },
+        'signal: unhandled promise rejection from non-fatal source — ignoring',
+      );
+      return;
+    }
     logger.fatal({ reason }, 'signal: unhandled promise rejection — exiting');
     process.exit(1);
   });

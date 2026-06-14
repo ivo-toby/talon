@@ -258,11 +258,36 @@ describe('getToolPolicyDecision', () => {
     expect(getToolPolicyDecision('db.query', caps)).toBe('require_approval');
   });
 
-  it('returns allow when a tool appears in both lists', () => {
+  it('returns require_approval when an unscoped tool appears in both lists', () => {
     expect(getToolPolicyDecision('db.query', {
       allow: ['db.query'],
       requireApproval: ['db.query'],
-    })).toBe('allow');
+    })).toBe('require_approval');
+  });
+
+  it('uses the requested scope to distinguish allowed and approval-gated channel sends', () => {
+    const scopedCaps: ResolvedCapabilities = {
+      allow: ['channel.send:telegram-main'],
+      requireApproval: ['channel.send:slack-admin'],
+    };
+
+    expect(getToolPolicyDecision('channel.send', scopedCaps, 'telegram-main')).toBe('allow');
+    expect(getToolPolicyDecision('channel.send', scopedCaps, 'slack-admin')).toBe('require_approval');
+    expect(getToolPolicyDecision('channel.send', scopedCaps, 'unknown-channel')).toBe('deny');
+  });
+
+  it('lets an exact allow override a broader approval-gated scope', () => {
+    expect(getToolPolicyDecision('channel.send', {
+      allow: ['channel.send:telegram-main'],
+      requireApproval: ['channel.send:*'],
+    }, 'telegram-main')).toBe('allow');
+  });
+
+  it('lets an exact approval-gated scope override a broader allow', () => {
+    expect(getToolPolicyDecision('channel.send', {
+      allow: ['channel.send:*'],
+      requireApproval: ['channel.send:slack-admin'],
+    }, 'slack-admin')).toBe('require_approval');
   });
 
   it('returns deny for disallowed tools', () => {

@@ -28,10 +28,10 @@ channels:
     name: personal-telegram
     enabled: true
     config:
-      token: ${TELEGRAM_BOT_TOKEN}
-      allowedUserIds:
-        - 123456789
-      pollIntervalMs: 1000
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      allowedChatIds:
+        - "123456789"
+      pollingTimeoutSec: 30
 
   # WhatsApp Web bridge via Baileys — no Meta Business account required.
   # Authenticate first: npx talonctl whatsapp-auth --auth-dir ./baileys-auth
@@ -85,10 +85,21 @@ personas:
   - name: assistant
     model: claude-sonnet-4-6
     provider: claude-code
+    # Optional: override provider/model for background_agent spawns.
+    # Useful when the foreground stack (e.g. Ollama) is not suitable for
+    # long-running background work. Validated at config load against
+    # backgroundAgent.providers — daemon refuses to start if the named
+    # provider is not enabled there. backgroundModel must be paired with
+    # backgroundProvider.
+    # backgroundProvider: claude-code
+    # backgroundModel: claude-sonnet-4-6
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
-      - session-summarizer
+      - session-summarizer           # legacy single-summary context compression
+      # For observational memory (long-term context), replace session-summarizer with:
+      # - session-observer           # generates dated, prioritized observations
+      # - session-reflector          # consolidates observations when log grows large
       - memory-groomer
       - memory-retriever
       - file-searcher
@@ -132,7 +143,8 @@ agentRunner:
         triggerMetric: cache_read_input_tokens
         thresholdRatio: 0.5
         recentMessageCount: 10
-        summarizer: session-summarizer
+        summarizer: session-summarizer       # or session-observer for observational memory
+        # reflectionThresholdChars: 40000   # OM only: observation log size that triggers session-reflector. Default 40000.
     gemini-cli:
       enabled: false
       command: gemini
@@ -171,6 +183,13 @@ agentRunner:
         baseUrl: http://127.0.0.1:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama
+        # Cap a single tool result's size (in chars) before it enters the
+        # agent's message history. The full output is retained in-memory for
+        # the current run; the model can fetch ranges via the built-in
+        # `fetch_tool_output` tool. Recommended for small-window models
+        # (Ollama 8K-32K). Set to 0 to disable. Defaults to 4000 when the
+        # key is omitted.
+        toolOutputCap: 4000
 
 backgroundAgent:
   enabled: true
@@ -211,6 +230,27 @@ backgroundAgent:
 
 scheduler:
   tickIntervalMs: 5000
+
+# Agent-to-agent (A2A) limits.
+#
+# Talon implements the Google A2A protocol so personas can delegate tasks to
+# each other (see `persona_send` / `persona_task_status` host tools). These
+# knobs cap how aggressive that delegation is allowed to be.
+#
+# Defaults shown below match the built-in values — omit the entire block to
+# accept them.
+a2a:
+  # Maximum chain depth before a delegated task is rejected. Guards against
+  # runaway delegation loops. A task is rejected when `hopCount >= maxHops`.
+  # Bounded to 1..32.
+  maxHops: 4
+  # Maximum in-flight A2A tasks targeting a single persona at once. Additional
+  # submissions are rejected until one finishes. Raise this to allow parallel
+  # delegation to the same target. Bounded to 1..100.
+  maxConcurrentPerTarget: 1
+  # Max queue retry attempts for A2A `collaboration` queue items before they
+  # move to the dead-letter queue. Bounded to 1..20.
+  maxAttempts: 3
 
 auth:
   mode: subscription

@@ -7,7 +7,14 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -174,6 +181,25 @@ describe('createDataDirectories()', () => {
     const result = await createDataDirectories(dataDir);
     expect(result.name).toBe('Data directory structure');
   });
+
+  it('creates data directories with owner-only permissions on POSIX', async () => {
+    const dataDir = join(tmpDir, 'secure-data');
+    const result = await createDataDirectories(dataDir);
+
+    expect(result.status).toBe('passed');
+
+    for (const dir of [
+      dataDir,
+      join(dataDir, 'ipc'),
+      join(dataDir, 'ipc', 'daemon'),
+      join(dataDir, 'backups'),
+      join(dataDir, 'threads'),
+    ]) {
+      const stat = await import('node:fs').then(({ statSync }) => statSync(dir));
+      expect(stat.isDirectory()).toBe(true);
+      expect(stat.mode & 0o777).toBe(0o700);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -235,10 +261,15 @@ describe('generateDefaultConfig()', () => {
 describe('runDatabaseMigrations()', () => {
   let tmpDir: string;
   let migrationsDir: string;
+  const originalCwd = process.cwd();
 
   beforeEach(() => {
     tmpDir = makeTmpDir();
     migrationsDir = makeTmpDir();
+  });
+
+  afterEach(() => {
+    process.chdir(originalCwd);
   });
 
   it('runs migrations when config is valid', async () => {
@@ -289,6 +320,55 @@ describe('runDatabaseMigrations()', () => {
 
     const result = await runDatabaseMigrations(configPath, migrationsDir);
     expect(result.name).toBe('Database migrations');
+  });
+
+  it('does not chmod the current directory for a bare database filename', async () => {
+    const workingDir = join(tmpDir, 'workspace');
+    mkdirSync(workingDir, { recursive: true });
+    chmodSync(workingDir, 0o755);
+    process.chdir(workingDir);
+
+    const configPath = join(workingDir, 'talond.yaml');
+    writeFileSync(configPath, 'storage:\n  path: "talond.sqlite"\nlogLevel: info\n');
+
+    const originalMode = statSync(workingDir).mode & 0o777;
+
+    const result = await runDatabaseMigrations(configPath, migrationsDir);
+
+    expect(result.status).toBe('passed');
+    expect(statSync(workingDir).mode & 0o777).toBe(originalMode);
+  });
+
+  it('does not chmod the current directory for an in-memory database', async () => {
+    const workingDir = join(tmpDir, 'workspace-memory');
+    mkdirSync(workingDir, { recursive: true });
+    chmodSync(workingDir, 0o755);
+    process.chdir(workingDir);
+
+    const configPath = join(workingDir, 'talond.yaml');
+    writeFileSync(configPath, 'storage:\n  path: ":memory:"\nlogLevel: info\n');
+
+    const originalMode = statSync(workingDir).mode & 0o777;
+
+    const result = await runDatabaseMigrations(configPath, migrationsDir);
+
+    expect(result.status).toBe('passed');
+    expect(statSync(workingDir).mode & 0o777).toBe(originalMode);
+  });
+
+  it('hardens an explicit database directory before running migrations', async () => {
+    const dbDir = join(tmpDir, 'explicit-db-dir');
+    mkdirSync(dbDir, { recursive: true });
+    chmodSync(dbDir, 0o755);
+
+    const dbPath = join(dbDir, 'talond.sqlite');
+    const configPath = join(tmpDir, 'talond.yaml');
+    writeFileSync(configPath, `storage:\n  path: "${dbPath}"\nlogLevel: info\n`);
+
+    const result = await runDatabaseMigrations(configPath, migrationsDir);
+
+    expect(result.status).toBe('passed');
+    expect(statSync(dbDir).mode & 0o777).toBe(0o700);
   });
 });
 

@@ -11,6 +11,12 @@
 
 import { z } from 'zod';
 
+import {
+  MAX_HOPS,
+  MAX_CONCURRENT_PER_TARGET,
+  DEFAULT_A2A_MAX_ATTEMPTS,
+} from '../../a2a/a2a-types.js';
+
 // ---------------------------------------------------------------------------
 // Storage
 // ---------------------------------------------------------------------------
@@ -80,6 +86,19 @@ export const PersonaConfigSchema = z.object({
   name: z.string().min(1),
   model: z.string().default('claude-sonnet-4-6'),
   provider: z.string().trim().min(1).optional(),
+  /**
+   * Optional override: when set, background agents spawned by this persona use
+   * this provider instead of the persona's foreground `provider`. Cross-validated
+   * against `backgroundAgent.providers` at root config level.
+   */
+  backgroundProvider: z.string().trim().min(1).optional(),
+  /**
+   * Optional model override paired with `backgroundProvider`. When
+   * `backgroundProvider` is absent, this field is ignored by the runtime
+   * resolution chain (prevents forwarding a non-matching model name like
+   * `gpt-oss` to a claude-code background provider).
+   */
+  backgroundModel: z.string().trim().min(1).optional(),
   systemPromptFile: z.string().optional(),
   /**
    * Maximum time in minutes the agent runner will wait for a single query to complete.
@@ -183,6 +202,11 @@ export const ContextManagementConfigSchema = z
     thresholdRatio: z.number().min(0).max(1).optional(),
     recentMessageCount: z.number().int().min(0).default(10),
     summarizer: z.string().trim().min(1).optional(),
+    // Max combined size, in characters, of the per-thread observation log
+    // before the reflector sub-agent is invoked to consolidate it. Only
+    // applies when `summarizer` is `session-observer` (observational memory
+    // path). Defaults to 40_000 (~10K tokens).
+    reflectionThresholdChars: z.number().int().min(1000).default(40_000),
   })
   .superRefine((value, ctx) => {
     if (!value.enabled) {
@@ -335,6 +359,29 @@ export const LangfuseConfigSchema = z
   });
 
 // ---------------------------------------------------------------------------
+// A2A (agent-to-agent) limits
+// ---------------------------------------------------------------------------
+
+export const A2AConfigSchema = z.object({
+  /**
+   * Maximum hop count before a chained A2A task is rejected. Guards against
+   * runaway delegation loops. Submissions with `hopCount >= maxHops` fail.
+   */
+  maxHops: z.number().int().min(1).max(32).default(MAX_HOPS),
+  /**
+   * Maximum number of in-flight (submitted/working/input-required) A2A tasks
+   * targeting a single persona. Additional submissions are rejected until one
+   * completes. Set higher to allow parallel delegation to the same persona.
+   */
+  maxConcurrentPerTarget: z.number().int().min(1).max(100).default(MAX_CONCURRENT_PER_TARGET),
+  /**
+   * Max queue retry attempts for collaboration queue items before they move
+   * to the dead-letter queue.
+   */
+  maxAttempts: z.number().int().min(1).max(20).default(DEFAULT_A2A_MAX_ATTEMPTS),
+});
+
+// ---------------------------------------------------------------------------
 // Sub-agent overrides
 // ---------------------------------------------------------------------------
 
@@ -356,21 +403,53 @@ export const SubAgentsConfigSchema = z.record(z.string(), SubAgentOverrideSchema
 // Root config
 // ---------------------------------------------------------------------------
 
-export const TalondConfigSchema = z.object({
-  storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
-  sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
-  channels: z.array(ChannelConfigSchema).default([]),
-  personas: z.array(PersonaConfigSchema).default([]),
-  bindings: z.array(BindingConfigSchema).default([]),
-  ipc: IpcConfigSchema.default(() => IpcConfigSchema.parse({})),
-  queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
-  scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),
-  auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
-  agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
-  backgroundAgent: BackgroundAgentConfigSchema.default(() => BackgroundAgentConfigSchema.parse({})),
-  sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
-  langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
-  subagents: SubAgentsConfigSchema.default({}),
-  logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-  dataDir: z.string().default('data'),
-});
+export const TalondConfigSchema = z
+  .object({
+    storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
+    sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
+    channels: z.array(ChannelConfigSchema).default([]),
+    personas: z.array(PersonaConfigSchema).default([]),
+    bindings: z.array(BindingConfigSchema).default([]),
+    ipc: IpcConfigSchema.default(() => IpcConfigSchema.parse({})),
+    queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
+    scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),
+    auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
+    agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
+    backgroundAgent: BackgroundAgentConfigSchema.default(() =>
+      BackgroundAgentConfigSchema.parse({}),
+    ),
+    sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
+    langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
+    subagents: SubAgentsConfigSchema.default({}),
+    a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
+    logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
+    dataDir: z.string().default('data'),
+  })
+  .superRefine((value, ctx) => {
+    const enabledBackgroundProviders = new Set(
+      Object.entries(value.backgroundAgent.providers)
+        .filter(([, p]) => p.enabled)
+        .map(([name]) => name),
+    );
+
+    value.personas.forEach((persona, index) => {
+      if (persona.backgroundProvider) {
+        if (!enabledBackgroundProviders.has(persona.backgroundProvider)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['personas', index, 'backgroundProvider'],
+            message:
+              `persona "${persona.name}": backgroundProvider "${persona.backgroundProvider}" ` +
+              `is not enabled in backgroundAgent.providers. ` +
+              `Enabled providers: ${[...enabledBackgroundProviders].join(', ') || '(none)'}.`,
+          });
+        }
+      } else if (persona.backgroundModel) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['personas', index, 'backgroundModel'],
+          message: `persona "${persona.name}": backgroundModel requires backgroundProvider to be set.`,
+        });
+      }
+    });
+  });

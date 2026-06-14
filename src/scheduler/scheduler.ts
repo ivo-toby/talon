@@ -167,10 +167,40 @@ export class Scheduler {
       }
 
       const schedulePayload = rawPayload as SchedulePayload & Record<string, unknown>;
-      const promptFile =
+      let promptFile =
         typeof schedulePayload.promptFile === 'string' ? schedulePayload.promptFile : undefined;
       let content =
         typeof schedulePayload.prompt === 'string' ? schedulePayload.prompt : '';
+
+      // Defensive: agents and humans sometimes invent `prompt: "file:NAME"`
+      // as if it were a documented convention (it isn't). Without this
+      // promotion, the literal string ships to the agent and it falls back
+      // to grepping for the file itself — expensive and non-deterministic.
+      //
+      // The pattern MUST be strict (`file:` followed by exactly one filename
+      // token and nothing else) to avoid hijacking a legitimate prompt that
+      // happens to start with the word "file:" — e.g.
+      // `"file: summarize the latest backup log"`. A loose match would
+      // discard such a prompt's body and call resolveTaskPrompt against an
+      // alias that does not exist, which fails and stalls the schedule
+      // (early return = no enqueue + no next-run advance).
+      const FILE_ALIAS_RE = /^file:([A-Za-z0-9._-]+)$/;
+      if (!promptFile) {
+        const match = FILE_ALIAS_RE.exec(content.trim());
+        if (match) {
+          const aliased = match[1];
+          this.logger.warn(
+            {
+              scheduleId: schedule.id,
+              personaId: schedule.persona_id,
+              aliased,
+            },
+            'scheduler: prompt matches "file:<name>" — treating as promptFile alias. Update the schedule payload to use {promptFile: "..."} explicitly.',
+          );
+          promptFile = aliased;
+          content = '';
+        }
+      }
 
       if (promptFile) {
         const promptResult = await this.personaLoader.resolveTaskPrompt(schedule.persona_id, promptFile);

@@ -1,0 +1,5 @@
+# Ignore everything in userdata/ except the documentation.
+# Files dropped here are user content — never commit by accident.
+*
+!.gitignore
+!README.md

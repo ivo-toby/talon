@@ -48,6 +48,7 @@ import type { ContextAssembler } from './context-assembler.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
+import type { OAuthTokenStore } from '../auth/oauth-token-store.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -103,7 +104,9 @@ export interface DaemonContext {
   readonly messagePipeline: MessagePipeline;
   readonly observability: ObservabilityService;
   readonly hostToolsBridge: HostToolsBridge;
+  readonly oauthTokenStore: OAuthTokenStore;
   readonly providerRegistry: ProviderRegistry<AgentRunnerProviderConfig>;
+  readonly backgroundProviderRegistry: ProviderRegistry;
   readonly subAgentRunner: SubAgentRunner | null;
   readonly backgroundAgentManager: BackgroundAgentManager | null;
   readonly executionEnvManager: ExecutionEnvManager | null;

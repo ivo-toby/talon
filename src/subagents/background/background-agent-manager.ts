@@ -19,6 +19,13 @@ import type { AgentProvider } from '../../providers/provider.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import type { ObservabilityService, StartedObservationHandle } from '../../observability/langfuse/observability-types.js';
 import type { ExecutionEnvManager } from '../../execution-env/execution-env-manager.js';
+import type { OAuthTokenStore } from '../../auth/oauth-token-store.js';
+import { resolveMcpServers } from '../../mcp/resolve-mcp-servers.js';
+import type { HostToolsBridge } from '../../tools/host-tools-bridge.js';
+import {
+  generateBridgeSecret,
+  TALOND_BRIDGE_SECRET_ENV,
+} from '../../tools/host-tools-bridge-auth.js';
 
 export interface SpawnBackgroundAgentInput {
   prompt: string;
@@ -58,7 +65,7 @@ interface BackgroundAgentManagerDeps {
   maxConcurrent: number;
   defaultTimeoutMinutes: number;
   defaultProvider: string;
-  providerRegistry: Pick<ProviderRegistry, 'get' | 'getDefault' | 'listEnabled'>;
+  providerRegistry: Pick<ProviderRegistry, 'get' | 'getDefault' | 'listEnabled' | 'hasProvider'>;
   logger: pino.Logger;
   processFactory?: (options: BackgroundAgentProcessOptions) => BackgroundAgentProcess;
   isPidAlive?: (pid: number) => boolean;
@@ -66,6 +73,15 @@ interface BackgroundAgentManagerDeps {
   observability?: ObservabilityService;
   executionEnvManager?: Pick<ExecutionEnvManager, 'create' | 'upload' | 'destroyOwnedByTask'> | null;
   hostToolsSocketPath?: string;
+  hostToolsBridge?: Pick<HostToolsBridge, 'registerRunAuthentication' | 'unregisterRunAuthentication'>;
+  /**
+   * Token store used to materialize `Authorization: Bearer …` headers on
+   * HTTP MCP servers that declare `auth: { kind: 'oauth2' }`. Optional so
+   * existing test scaffolds that don't construct one keep working — when
+   * absent, server entries with `auth` set are passed through unresolved
+   * (and the MCP server is expected to 401 loudly).
+   */
+  oauthTokenStore?: OAuthTokenStore;
 }
 
 interface ManagedProcess {
@@ -107,6 +123,12 @@ export class BackgroundAgentManager {
         return null;
       }
     });
+  }
+
+  setHostToolsBridge(
+    hostToolsBridge: Pick<HostToolsBridge, 'registerRunAuthentication' | 'unregisterRunAuthentication'>,
+  ): void {
+    (this.deps as { hostToolsBridge?: typeof hostToolsBridge }).hostToolsBridge = hostToolsBridge;
   }
 
   async spawn(input: SpawnBackgroundAgentInput): Promise<Result<string, BackgroundAgentError>> {
@@ -166,12 +188,25 @@ export class BackgroundAgentManager {
       );
     }
 
+    // Resolve the model name for telemetry: prefer the explicit override the
+    // handler computed (tier 2/3 of the resolution chain), otherwise fall back
+    // to the provider's configured defaultModel. This is the same string the
+    // worker will actually run with, so LangFuse pricing lookups land on the
+    // right model.
+    const providerOptions = providerEntry.config.options;
+    const observationModel =
+      input.model ??
+      (providerOptions && typeof providerOptions['defaultModel'] === 'string'
+        ? (providerOptions['defaultModel'] as string)
+        : undefined);
+
     // Start a LangFuse observation span if observability is available.
     const observation = this.deps.observability
       ? this.deps.observability.startWithTraceparent(input.traceparent ?? null, {
           type: 'agent',
           name: 'background-agent',
           input: { prompt: input.prompt, taskId, threadId: input.threadId },
+          ...(observationModel ? { model: observationModel } : {}),
           trace: {
             userId: undefined,
             tags: ['background-agent', `provider:${providerEntry.provider.name}`],
@@ -180,6 +215,7 @@ export class BackgroundAgentManager {
       : undefined;
 
     const childTraceparent = observation?.getTraceparent() ?? undefined;
+    const bridgeSecret = generateBridgeSecret();
 
     const systemPrompt = this.buildSystemPrompt({
       personaPrompt: input.personaPrompt,
@@ -208,16 +244,31 @@ export class BackgroundAgentManager {
       threadId: input.threadId,
       workerPersonaId: input.workerPersonaId,
       allowedMcpTools: input.allowedMcpTools,
+      bridgeSecret,
       ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
       traceparent: childTraceparent,
       sandboxContext,
       hasSkills: input.hasSkills ?? false,
     });
 
+    // Materialize dynamic auth (OAuth bearers) on HTTP MCP entries the
+    // same way the foreground agent-runner path does in
+    // src/daemon/agent-runner.ts. Without this step a background run
+    // would receive raw `auth: { kind: 'oauth2' }` entries and the
+    // remote MCP would 401 because the Authorization header is never
+    // injected (issue surfaced in PR #212 codex review). When no token
+    // store is provided we pass through unresolved — the MCP server
+    // will surface the failure clearly.
+    const resolvedWorkerMcpServers = this.deps.oauthTokenStore
+      ? await resolveMcpServers(workerMcpServers, {
+          tokenStore: this.deps.oauthTokenStore,
+        })
+      : workerMcpServers;
+
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
       prompt: input.prompt,
       systemPrompt,
-      mcpServers: workerMcpServers,
+      mcpServers: resolvedWorkerMcpServers,
       cwd: sandboxContext?.controlDirectory ?? input.workingDirectory ?? process.cwd(),
       timeoutMs: timeoutMinutes * 60 * 1000,
       traceparent: childTraceparent,
@@ -235,7 +286,7 @@ export class BackgroundAgentManager {
 
     const createResult = this.deps.repository.create({
       id: taskId,
-      personaId: input.personaId,
+      personaId: input.workerPersonaId,
       providerName: providerEntry.provider.name,
       threadId: input.threadId,
       channelId: input.channelId,
@@ -284,8 +335,16 @@ export class BackgroundAgentManager {
       timeoutMs: invocation.timeoutMs,
     });
 
+    this.deps.hostToolsBridge?.registerRunAuthentication({
+      runId: taskId,
+      threadId: input.threadId,
+      personaId: input.workerPersonaId,
+      bridgeSecret,
+    });
+
     const startResult = processInstance.start();
     if (startResult.isErr()) {
+      this.deps.hostToolsBridge?.unregisterRunAuthentication(taskId);
       observation?.end();
       this.deps.repository.updateStatus(taskId, 'failed', undefined, startResult.error.message);
       this.cleanupPaths(cleanupPaths);
@@ -367,8 +426,6 @@ export class BackgroundAgentManager {
     if (managedProcess) {
       managedProcess.observation?.update({ statusMessage: 'Cancelled by user' });
       managedProcess.observation?.end();
-      this.cleanupPaths(managedProcess.cleanupPaths);
-      this.processes.delete(taskId);
     }
     const updateResult = this.deps.repository.updateStatus(
       taskId,
@@ -376,6 +433,7 @@ export class BackgroundAgentManager {
       undefined,
       'Cancelled by user',
     );
+    this.cleanupTask(taskId);
     await this.destroyOwnedExecutionEnv(taskId);
 
     return updateResult.isOk()
@@ -429,7 +487,7 @@ export class BackgroundAgentManager {
       process.observation?.update({ statusMessage: 'Daemon shutting down' });
       process.observation?.end();
       this.deps.repository.updateStatus(taskId, 'cancelled', undefined, 'Daemon shutting down');
-      this.cleanupPaths(process.cleanupPaths);
+      this.cleanupTask(taskId);
       await this.destroyOwnedExecutionEnv(taskId);
     }
     this.processes.clear();
@@ -524,9 +582,27 @@ export class BackgroundAgentManager {
       );
     }
 
+    // Forward provider-reported token usage and cost so LangFuse can show what
+    // the worker actually consumed. Snake_case keys match Anthropic's API
+    // fields and LangFuse's pricing regexes (e.g. "^input" → input_tokens),
+    // mirroring the foreground emit in src/daemon/agent-runner.ts.
+    const usage = parsedResult.usage;
+    const usageDetails = usage
+      ? {
+          input_tokens: usage.inputTokens,
+          output_tokens: usage.outputTokens,
+          cache_read_input_tokens: usage.cacheReadTokens ?? 0,
+          cache_creation_input_tokens: usage.cacheWriteTokens ?? 0,
+        }
+      : undefined;
+    const costDetails =
+      usage?.totalCostUsd !== undefined ? { totalCostUsd: usage.totalCostUsd } : undefined;
+
     managedProcess?.observation?.update({
       output: parsedResult.output?.trim(),
       statusMessage: finalStatusMessage ?? finalStatus,
+      ...(usageDetails ? { usageDetails } : {}),
+      ...(costDetails ? { costDetails } : {}),
     });
     managedProcess?.observation?.end();
 
@@ -586,6 +662,7 @@ export class BackgroundAgentManager {
   }
 
   private cleanupTask(taskId: string): void {
+    this.deps.hostToolsBridge?.unregisterRunAuthentication(taskId);
     const managedProcess = this.processes.get(taskId);
     if (managedProcess) {
       this.cleanupPaths(managedProcess.cleanupPaths);
@@ -648,6 +725,7 @@ export class BackgroundAgentManager {
     threadId: string;
     workerPersonaId: string;
     allowedMcpTools: string[];
+    bridgeSecret: string;
     workingDirectory?: string;
     traceparent?: string;
     sandboxContext: SandboxContext | null;
@@ -669,6 +747,7 @@ export class BackgroundAgentManager {
         args: [join(import.meta.dirname, '../../../dist/tools/host-tools-mcp-server.js')],
         env: {
           ...process.env,
+          [TALOND_BRIDGE_SECRET_ENV]: options.bridgeSecret,
           TALOND_SOCKET: this.deps.hostToolsSocketPath,
           TALOND_RUN_ID: options.taskId,
           TALOND_THREAD_ID: options.threadId,
@@ -696,11 +775,13 @@ export class BackgroundAgentManager {
         args: [join(import.meta.dirname, '../../../dist/tools/skill-loader-mcp-server.js')],
         env: {
           ...process.env,
+          [TALOND_BRIDGE_SECRET_ENV]: options.bridgeSecret,
           TALOND_SOCKET: this.deps.hostToolsSocketPath,
           TALOND_RUN_ID: options.taskId,
           TALOND_THREAD_ID: options.threadId,
           TALOND_PERSONA_ID: options.workerPersonaId,
           TALOND_TRACEPARENT: options.traceparent ?? '',
+          TALOND_BACKGROUND_TASK_ID: options.taskId,
         },
       };
     }

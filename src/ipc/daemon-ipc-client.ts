@@ -13,6 +13,7 @@ import writeFileAtomic from 'write-file-atomic';
 
 import { DaemonResponseSchema } from './daemon-ipc.js';
 import type { DaemonCommand, DaemonCommandType, DaemonResponse } from './daemon-ipc.js';
+import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -98,7 +99,7 @@ export class DaemonIpcClient {
   async send(command: DaemonCommand): Promise<DaemonResponse | null> {
     // --- Write command ---
     try {
-      await fs.mkdir(this.opts.inputDir, { recursive: true });
+      await ensureOwnerOnlyDir(this.opts.inputDir);
       const paddedTs = String(Date.now()).padStart(15, '0');
       const cleanId = command.id.replace(/-/g, '');
       const filename = `${paddedTs}-${cleanId}.json`;

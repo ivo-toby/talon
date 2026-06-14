@@ -20,9 +20,8 @@ import {
   type A2AAgentCard,
   type A2ATaskPayload,
   type A2ATaskStatus,
-  MAX_HOPS,
-  MAX_CONCURRENT_PER_TARGET,
-  DEFAULT_A2A_MAX_ATTEMPTS,
+  type A2ALimits,
+  defaultA2ALimits,
 } from './a2a-types.js';
 
 // ---------------------------------------------------------------------------
@@ -55,6 +54,8 @@ export interface SubmitTaskInput {
  * durable queue and persistence systems.
  */
 export class A2ATaskMapper {
+  private readonly limits: A2ALimits;
+
   constructor(
     private readonly taskRepo: A2ATaskRepository,
     private readonly queueRepo: QueueRepository,
@@ -62,7 +63,10 @@ export class A2ATaskMapper {
     private readonly personaRepo: PersonaRepository,
     private readonly cardRegistry: Map<string, A2AAgentCard>,
     private readonly logger: pino.Logger,
-  ) {}
+    limits?: A2ALimits,
+  ) {
+    this.limits = limits ?? defaultA2ALimits();
+  }
 
   // ---------------------------------------------------------------------------
   // Public API
@@ -92,9 +96,11 @@ export class A2ATaskMapper {
     }
 
     // 2. Check hop limit
-    if (hopCount >= MAX_HOPS) {
+    if (hopCount >= this.limits.maxHops) {
       return err(
-        new A2AError(`Task rejected: hop count ${hopCount} exceeds maximum allowed hops (${MAX_HOPS})`),
+        new A2AError(
+          `Task rejected: hop count ${hopCount} exceeds maximum allowed hops (${this.limits.maxHops})`,
+        ),
       );
     }
 
@@ -141,7 +147,7 @@ export class A2ATaskMapper {
       metadata: {
         agentCardId: card.id,
         traceId,
-        maxHops: MAX_HOPS,
+        maxHops: this.limits.maxHops,
         queueType: 'collaboration',
       },
     };
@@ -161,9 +167,9 @@ export class A2ATaskMapper {
           txError = new A2AError(`Failed to check concurrency for ${targetPersona}: ${activeResult.error.message}`);
           throw activeResult.error;
         }
-        if (activeResult.value >= MAX_CONCURRENT_PER_TARGET) {
+        if (activeResult.value >= this.limits.maxConcurrentPerTarget) {
           txError = new A2AError(
-            `Target persona ${targetPersona} already has ${activeResult.value} active task(s). Max allowed: ${MAX_CONCURRENT_PER_TARGET}`,
+            `Target persona ${targetPersona} already has ${activeResult.value} active task(s). Max allowed: ${this.limits.maxConcurrentPerTarget}`,
           );
           throw new Error(txError.message);
         }
@@ -191,7 +197,7 @@ export class A2ATaskMapper {
           message_id: null,
           type: 'collaboration',
           payload: JSON.stringify(payload),
-          max_attempts: DEFAULT_A2A_MAX_ATTEMPTS,
+          max_attempts: this.limits.maxAttempts,
         });
         if (enqueueResult.isErr()) {
           txError = new A2AError(`Failed to enqueue A2A task ${taskId}: ${enqueueResult.error.message}`);

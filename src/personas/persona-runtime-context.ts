@@ -73,14 +73,28 @@ export function buildPersonaRuntimeContext(
   options: BuildPersonaRuntimeContextOptions,
 ): PersonaRuntimeContext {
   const mode = options.skillLoadingMode ?? 'lazy';
-  const skillPrompt =
-    mode === 'eager'
-      ? options.skillResolver.mergePromptFragments(options.resolvedSkills)
-      : buildSkillIndex(options.resolvedSkills);
+
+  // In `eager` mode every skill is treated as eager (legacy behavior).
+  // In `lazy` mode each skill's `manifest.eager` flag decides individually:
+  // eager skills have their bodies merged into the system prompt up-front,
+  // lazy skills only appear in the index and are loaded via `skill_load`.
+  const eagerSkills = mode === 'eager'
+    ? options.resolvedSkills
+    : options.resolvedSkills.filter((s) => s.manifest.eager === true);
+  const lazySkills = mode === 'eager'
+    ? []
+    : options.resolvedSkills.filter((s) => s.manifest.eager !== true);
+
+  const eagerBodies = eagerSkills.length > 0
+    ? options.skillResolver.mergePromptFragments(eagerSkills)
+    : '';
+  const skillIndex = lazySkills.length > 0 ? buildSkillIndex(lazySkills) : '';
+
   const personaPrompt = [
     options.loadedPersona.systemPromptContent ?? '',
     options.loadedPersona.personalityContent ?? '',
-    skillPrompt,
+    eagerBodies,
+    skillIndex,
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -153,6 +167,12 @@ export function buildPersonaRuntimeContext(
       transport: cfg.transport,
       url: cfg.url,
       ...(Object.keys(resolvedHeaders).length > 0 ? { headers: resolvedHeaders } : {}),
+      // Forward dynamic auth verbatim. `resolveMcpServers()` runs in the
+      // agent-runner and turns this into a materialized Bearer header
+      // before the entry reaches a provider — domain `McpAuthConfig`
+      // and canonical `McpAuthSpec` are structurally identical (same
+      // discriminator + same `tokenStore` field) so a flat copy is safe.
+      ...(cfg.auth ? { auth: cfg.auth } : {}),
     };
   }
 

@@ -9,12 +9,14 @@ import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
+import { resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import {
   TALON_SKILL_LOAD_TOOL_DESCRIPTION,
   formatMissingTalonSkillError,
 } from '../skills/skill-runtime-text.js';
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
+import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import type {
@@ -23,6 +25,10 @@ import type {
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
+import {
+  generateBridgeSecret,
+  TALOND_BRIDGE_SECRET_ENV,
+} from '../tools/host-tools-bridge-auth.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -234,6 +240,13 @@ export class AgentRunner {
 
     const content = typeof item.payload.content === 'string' ? item.payload.content : '';
     let runFinalized = false;
+    const bridgeSecret = generateBridgeSecret();
+    this.ctx.hostToolsBridge.registerRunAuthentication?.({
+      runId,
+      threadId: item.threadId,
+      personaId,
+      bridgeSecret,
+    });
 
     const runInput = {
       content,
@@ -350,8 +363,16 @@ export class AgentRunner {
               channelRow && channelRow.isOk() && channelRow.value
                 ? this.ctx.channelRegistry.get(channelRow.value.name)
                 : undefined;
+            // For dedicated schedule execution threads (kind='schedule'),
+            // the thread's own external_id is a synthetic marker, not a
+            // valid provider recipient. Prefer metadata.originExternalId
+            // so typing indicators and any agent-runner-originated
+            // outbound reach the originating chat (issue #200).
             const externalId =
-              threadResult.isOk() && threadResult.value ? threadResult.value.external_id : undefined;
+              threadResult.isOk() && threadResult.value
+                ? (readScheduleOriginExternalId(threadResult.value.metadata)
+                    ?? threadResult.value.external_id)
+                : undefined;
             const channelConfig =
               channelRow?.isOk() && channelRow.value
                 ? this.ctx.config.channels?.find((c) => c.name === channelRow!.value!.name)
@@ -394,6 +415,7 @@ export class AgentRunner {
                   thresholdRatio: contextManagement.thresholdRatio!,
                   recentMessageCount: contextManagement.recentMessageCount!,
                   summarizer: contextManagement.summarizer!,
+                  reflectionThresholdChars: contextManagement.reflectionThresholdChars,
                 }
               : null;
             // Fresh-session history injection is independent of automatic rotation.
@@ -415,9 +437,16 @@ export class AgentRunner {
                     },
                   },
                   async (retrieverObservation) => {
+                    // Exclude the message being processed (if any) from the
+                    // "Recent Messages" block. That message is already passed
+                    // as the live prompt (`content`), and re-echoing it in
+                    // the system prompt made stateless providers respond
+                    // twice — once to the `[previous turn, user]: …` entry
+                    // and once to the prompt itself.
                     const assembled = this.ctx.contextAssembler.assemble(
                       item.threadId,
                       freshSessionRecentMessageCount,
+                      { excludeMessageId: item.messageId },
                     );
                     retrieverObservation.update({
                       output: assembled.text,
@@ -463,6 +492,7 @@ export class AgentRunner {
               fullOutputText: string;
               resultSessionId: string | undefined;
               usage: AgentUsage;
+              lastStepUsage: AgentUsage | undefined;
             }> => {
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,
@@ -502,7 +532,10 @@ export class AgentRunner {
                 },
                 async (generationObservation) => {
                   const sdkSkillServer: Record<string, CanonicalMcpSdkServer> = {};
-                  if (strategy.type === 'sdk' && skillContentMap.size > 0) {
+                  if (
+                    providerEntry.provider.skillLoaderTransport === 'in-process'
+                    && skillContentMap.size > 0
+                  ) {
                     const skillLoaderServer = createSdkMcpServer({
                       name: '__talond_skill_loader',
                       tools: [
@@ -547,6 +580,7 @@ export class AgentRunner {
                       args: [join(import.meta.dirname, '../../dist/tools/host-tools-mcp-server.js')],
                       env: {
                         ...process.env,
+                        [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
                         TALOND_SOCKET: this.ctx.hostToolsBridge.path,
                         TALOND_RUN_ID: runId,
                         TALOND_THREAD_ID: item.threadId,
@@ -564,13 +598,17 @@ export class AgentRunner {
                     },
                   };
 
-                  if (strategy.type === 'cli' && skillContentMap.size > 0) {
+                  if (
+                    providerEntry.provider.skillLoaderTransport === 'stdio'
+                    && skillContentMap.size > 0
+                  ) {
                     mcpServers.__talond_skill_loader = {
                       transport: 'stdio',
                       command: 'node',
                       args: [join(import.meta.dirname, '../../dist/tools/skill-loader-mcp-server.js')],
                       env: {
                         ...process.env,
+                        [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
                         TALOND_SOCKET: this.ctx.hostToolsBridge.path,
                         TALOND_RUN_ID: runId,
                         TALOND_THREAD_ID: item.threadId,
@@ -599,6 +637,12 @@ export class AgentRunner {
                     inputTokens: 0,
                     outputTokens: 0,
                   };
+                  // Distinct accumulator for per-step usage (final model
+                  // turn only). When the provider reports it, rotation
+                  // gating uses this in preference to the cumulative
+                  // `usage` so multi-tool runs don't trigger spurious
+                  // rotations from inflated cross-turn token sums.
+                  let lastStepUsage: AgentUsage | undefined;
                   let sawEvents = false;
                   const activeProviderToolObservations = new Map<string, StartedObservationHandle>();
                   const ignoredProviderToolUseIds = new Set<string>();
@@ -607,11 +651,21 @@ export class AgentRunner {
                   // streaming events). Events are sequential so FIFO order correctly pairs starts with ends.
                   const pendingNoIdToolObservations: StartedObservationHandle[] = [];
 
+                  // Materialize dynamic auth (OAuth bearers) on HTTP MCP
+                  // entries before handing them to the provider. Providers
+                  // stay completely unaware of `auth` — the resolver
+                  // strips the field and merges Authorization into headers.
+                  // Failure here surfaces with a "run talonctl auth-mcp …"
+                  // message so the operator can fix it without restarting.
+                  const resolvedMcpServers = await resolveMcpServers(mcpServers, {
+                    tokenStore: this.ctx.oauthTokenStore,
+                  });
+
                   const queryInput = {
                     threadId: item.threadId,
                     prompt: content,
                     systemPrompt,
-                    mcpServers,
+                    mcpServers: resolvedMcpServers,
                     cwd: workspaceResult.value,
                     model,
                     maxTurns: 25,
@@ -648,6 +702,7 @@ export class AgentRunner {
                         } else if (event.type === 'result') {
                           resultSessionId = event.result.sessionId;
                           usage = event.result.usage;
+                          lastStepUsage = event.result.lastStepUsage;
 
                           if (!fullOutputText && event.result.output) {
                             outputText = event.result.output;
@@ -732,6 +787,7 @@ export class AgentRunner {
                     fullOutputText = result.output;
                     resultSessionId = result.sessionId;
                     usage = result.usage;
+                    lastStepUsage = result.lastStepUsage;
 
                     if (result.isError) {
                       throw new Error(`CLI provider returned error: ${result.output || 'unknown error'}`);
@@ -794,6 +850,7 @@ export class AgentRunner {
                     fullOutputText: fullOutputText.replace(/\n\n$/, ''),
                     resultSessionId,
                     usage,
+                    lastStepUsage,
                   };
                 },
               );
@@ -806,6 +863,7 @@ export class AgentRunner {
               inputTokens: 0,
               outputTokens: 0,
             };
+            let lastStepUsage: AgentUsage | undefined;
 
             try {
               ({
@@ -813,6 +871,7 @@ export class AgentRunner {
                 fullOutputText,
                 resultSessionId,
                 usage,
+                lastStepUsage,
               } = await executeAgentQuery(existingSessionId));
             } catch (cause) {
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
@@ -830,6 +889,7 @@ export class AgentRunner {
                   fullOutputText,
                   resultSessionId,
                   usage,
+                  lastStepUsage,
                 } = await executeAgentQuery(undefined));
               } else {
                 throw cause;
@@ -885,9 +945,22 @@ export class AgentRunner {
                 'agent-sdk: A2A task completed, result stored (no channel send)',
               );
             } else if (item.type === 'schedule') {
+              // Scheduled prompts must invoke channel.send explicitly to
+              // deliver. The agent's final assistant text on a scheduled
+              // run is a self-narration / wrap-up (e.g. "Silent — lunch
+              // window, items from 11:05 still pending. Log written.")
+              // and is not meant to reach the originating chat.
+              //
+              // The actual #205 bug was a corrupted thread metadata
+              // shape that made channel.send fail with "chat not found".
+              // That is fixed by the migration refusal in
+              // src/scheduler/legacy-schedule-migration.ts plus operator
+              // rebinds onto healthy dedicated threads. With those in
+              // place, channel.send delivers correctly and this skip
+              // remains the right contract for scheduled runs.
               this.ctx.logger.info(
                 { runId, outputLength: fullOutputText.length },
-                'agent-sdk: skipping outbound reply for schedule item (agent already sent via channel_send)',
+                'agent-sdk: skipping outbound reply for schedule item (agent must use channel.send to deliver)',
               );
             } else if (connector !== undefined && externalId && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
@@ -923,7 +996,14 @@ export class AgentRunner {
             // picked up until rotation completes, preserving per-thread ordering.
             // (issue #164)
             if (this.ctx.contextRoller && enabledContextManagement) {
-              const contextUsage = providerEntry.provider.estimateContextUsage(usage);
+              // Gate rotation on per-step usage when the provider reports
+              // it; cumulative `usage` across a multi-tool agent loop can
+              // easily exceed the per-call context window even when each
+              // individual prompt fits, which would trigger spurious
+              // rotations. Telemetry/accounting still uses the cumulative
+              // `usage` further down (it's what the user was billed for).
+              const usageForRotation = lastStepUsage ?? usage;
+              const contextUsage = providerEntry.provider.estimateContextUsage(usageForRotation);
               const selectedMetricValue = contextUsage.metrics[enabledContextManagement.triggerMetric];
               if (selectedMetricValue === undefined) {
                 this.ctx.logger.error(
@@ -937,18 +1017,79 @@ export class AgentRunner {
               } else {
                 try {
                   if (selectedMetricValue > 0) {
-                    await this.ctx.contextRoller.checkAndRotate(
-                      item.threadId,
-                      personaId,
-                      {
-                        ratio: selectedMetricValue / Math.max(1, providerEntry.config.contextWindowTokens),
-                        inputTokens: contextUsage.inputTokens,
-                        rawMetric: selectedMetricValue,
-                        rawMetricName: enabledContextManagement.triggerMetric,
-                      },
-                      enabledContextManagement.thresholdRatio,
-                      enabledContextManagement.summarizer,
-                    );
+                    const contextUsagePayload = {
+                      ratio: selectedMetricValue / Math.max(1, providerEntry.config.contextWindowTokens),
+                      inputTokens: contextUsage.inputTokens,
+                      rawMetric: selectedMetricValue,
+                      rawMetricName: enabledContextManagement.triggerMetric,
+                    };
+                    // Route to observational memory path when configured with
+                    // session-observer; otherwise use the legacy summarizer.
+                    const useOM = enabledContextManagement.summarizer === 'session-observer';
+                    const rotation = useOM
+                      ? await this.ctx.contextRoller.checkAndRotateOM(
+                          item.threadId,
+                          personaId,
+                          contextUsagePayload,
+                          enabledContextManagement.thresholdRatio,
+                          enabledContextManagement.summarizer,
+                          'session-reflector',
+                          enabledContextManagement.reflectionThresholdChars,
+                          threadResult.isOk() && threadResult.value
+                            ? threadResult.value.metadata
+                            : null,
+                          threadResult.isOk() && threadResult.value
+                            ? threadResult.value.channel_id
+                            : undefined,
+                        )
+                      : await this.ctx.contextRoller.checkAndRotate(
+                          item.threadId,
+                          personaId,
+                          contextUsagePayload,
+                          enabledContextManagement.thresholdRatio,
+                          enabledContextManagement.summarizer,
+                        );
+
+                    // For stateless providers (no session resumption), the agent
+                    // loses its in-progress task state after context rotation.
+                    // Only auto-enqueue a continuation when the summarizer found
+                    // open threads — otherwise the task was complete and a
+                    // "continue" would cause the agent to invent work.
+                    if (
+                      rotation.rotated
+                      && rotation.hasOpenThreads
+                      && !strategy.supportsSessionResumption
+                      && !isA2ATask
+                      && item.type !== 'schedule'
+                    ) {
+                      const continueMessageId = uuidv4();
+                      this.ctx.repos.message.insert({
+                        id: continueMessageId,
+                        thread_id: item.threadId,
+                        direction: 'inbound',
+                        content: JSON.stringify({ body: 'continue' }),
+                        idempotency_key: `context-rotation-continue:${runId}`,
+                        provider_id: null,
+                        run_id: null,
+                      });
+                      const enqueueResult = this.ctx.queueManager.enqueue(
+                        item.threadId,
+                        'message',
+                        { personaId, content: 'continue' },
+                        continueMessageId,
+                      );
+                      if (enqueueResult.isOk()) {
+                        this.ctx.logger.info(
+                          { threadId: item.threadId, provider: providerEntry.provider.name },
+                          'agent-runner: auto-enqueued continuation after context rotation for stateless provider',
+                        );
+                      } else {
+                        this.ctx.logger.warn(
+                          { threadId: item.threadId, err: enqueueResult.error.message },
+                          'agent-runner: failed to auto-enqueue continuation after context rotation',
+                        );
+                      }
+                    }
                   }
                 } catch (e: unknown) {
                   this.ctx.logger.error(
@@ -1007,6 +1148,8 @@ export class AgentRunner {
         });
       }
       return err(error);
+    } finally {
+      this.ctx.hostToolsBridge.unregisterRunAuthentication?.(runId);
     }
   }
 

@@ -185,6 +185,23 @@ describe('DaemonIpcClient', () => {
       expect(stat.isDirectory()).toBe(true);
     }, 10_000);
 
+    it('creates inputDir with owner-only permissions on POSIX', async () => {
+      const newInputDir = path.join(tmpDir, 'restricted-input');
+
+      const client = new DaemonIpcClient({
+        inputDir: newInputDir,
+        outputDir,
+        timeoutMs: 150,
+        pollIntervalMs: 50,
+      });
+
+      await client.sendCommand('status');
+
+      const stat = await fs.stat(newInputDir);
+      expect(stat.isDirectory()).toBe(true);
+      expect(stat.mode & 0o777).toBe(0o700);
+    }, 10_000);
+
     it('handles failure response from daemon', async () => {
       const client = new DaemonIpcClient({
         inputDir,

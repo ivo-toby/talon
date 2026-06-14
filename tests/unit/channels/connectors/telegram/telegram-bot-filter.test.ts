@@ -47,7 +47,7 @@ function makeUpdate(
     message: {
       message_id: updateId * 10,
       from,
-      chat: { id: chatId, type: 'group' },
+      chat: { id: chatId, type: 'private' },
       date: 1_700_000_000,
       text,
     },

@@ -175,4 +175,44 @@ describe('ProviderRegistry', () => {
     // Empty preferredOrder — loop body never executes, falls through to insertion-order fallback
     expect(registry.getDefault([])?.provider.name).toBe('claude-code');
   });
+
+  describe('hasProvider', () => {
+    it('returns true for an enabled registered provider', () => {
+      const registry = new ProviderRegistry(
+        { 'claude-code': makeProviderConfig() },
+        { 'claude-code': () => ({ name: 'claude-code' }) as any },
+      );
+      expect(registry.hasProvider('claude-code')).toBe(true);
+    });
+
+    it('returns false for a provider that is not registered', () => {
+      const registry = new ProviderRegistry(
+        { 'claude-code': makeProviderConfig() },
+        { 'claude-code': () => ({ name: 'claude-code' }) as any },
+      );
+      expect(registry.hasProvider('openai-compatible')).toBe(false);
+    });
+
+    it('returns false for a registered but disabled provider', () => {
+      const registry = new ProviderRegistry(
+        {
+          'claude-code': makeProviderConfig(),
+          'codex-cli': makeProviderConfig({ enabled: false, command: 'codex' }),
+        },
+        {
+          'claude-code': () => ({ name: 'claude-code' }) as any,
+          'codex-cli': () => ({ name: 'codex-cli' }) as any,
+        },
+      );
+      expect(registry.hasProvider('codex-cli')).toBe(false);
+    });
+
+    it('returns false for a provider that has no matching factory', () => {
+      const registry = new ProviderRegistry(
+        { 'unknown-provider': makeProviderConfig() },
+        {}, // no factories
+      );
+      expect(registry.hasProvider('unknown-provider')).toBe(false);
+    });
+  });
 });

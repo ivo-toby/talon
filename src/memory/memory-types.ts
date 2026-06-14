@@ -35,7 +35,7 @@ export interface MemoryItem {
   /** Thread this memory belongs to. */
   threadId: string;
   /** Semantic type of the memory entry. */
-  type: 'fact' | 'summary' | 'note' | 'embedding_ref';
+  type: 'fact' | 'summary' | 'note' | 'embedding_ref' | 'observation' | 'pre-roll-tail';
   /** Human-readable (or LLM-generated) content. */
   content: string;
   /** Arbitrary key/value metadata (e.g. source run ID, persona name). */

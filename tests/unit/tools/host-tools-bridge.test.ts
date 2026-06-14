@@ -28,9 +28,13 @@ function sendRequest(
   socketPath: string,
   request: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
+  const requestWithDefaultSecret =
+    request.context !== undefined && request.bridgeSecret === undefined
+      ? { ...request, bridgeSecret: 'bridge-secret-001' }
+      : request;
   return new Promise((resolve, reject) => {
     const client = createConnection(socketPath, () => {
-      client.write(JSON.stringify(request) + '\n');
+      client.write(JSON.stringify(requestWithDefaultSecret) + '\n');
     });
 
     let data = '';
@@ -77,6 +81,16 @@ describe('HostToolsBridge', () => {
   let bridge: HostToolsBridge;
   let mockCtx: DaemonContext;
   let tempDir: string;
+  const validBridgeSecret = 'bridge-secret-001';
+
+  const registerActiveRunAuth = (): void => {
+    bridge.registerRunAuthentication({
+      runId: 'run-001',
+      threadId: 'thread-001',
+      personaId: 'persona-001',
+      bridgeSecret: validBridgeSecret,
+    });
+  };
 
   beforeEach(async () => {
     tempDir = join('/tmp', `host-tools-bridge-test-${randomUUID()}`);
@@ -116,7 +130,32 @@ describe('HostToolsBridge', () => {
         backgroundTask: {} as any,
         audit: {} as any,
         message: {} as any,
-        run: {} as any,
+        run: {
+          findById: vi.fn().mockImplementation((runId: string) => ok(
+            runId === 'run-001'
+              ? {
+                  id: 'run-001',
+                  thread_id: 'thread-001',
+                  persona_id: 'persona-001',
+                  provider_name: 'claude-code',
+                  sandbox_id: null,
+                  session_id: null,
+                  status: 'running',
+                  parent_run_id: null,
+                  queue_item_id: null,
+                  input_tokens: 0,
+                  output_tokens: 0,
+                  cache_read_tokens: 0,
+                  cache_write_tokens: 0,
+                  cost_usd: 0,
+                  error: null,
+                  started_at: 1,
+                  ended_at: null,
+                  created_at: 1,
+                }
+              : null,
+          )),
+        } as any,
         binding: {} as any,
         memory: {
           findById: vi.fn().mockReturnValue(ok(null)),
@@ -217,11 +256,35 @@ describe('HostToolsBridge', () => {
           id: 'thread-001',
           channel_id: 'channel-001',
           external_id: 'telegram-thread-001',
+          metadata: '{}',
+          created_at: 1,
+          updated_at: 1,
         }),
       ),
+      findByExternalId: vi.fn().mockReturnValue(ok(null)),
+      findByChannelId: vi.fn().mockReturnValue(ok([])),
+      insert: vi.fn().mockImplementation((row) =>
+        ok({
+          ...row,
+          created_at: 1,
+          updated_at: 1,
+        }),
+      ),
+      update: vi.fn().mockReturnValue(ok(null)),
     } as any;
     mockCtx.repos.channel = {
-      findById: vi.fn().mockReturnValue(ok({ id: 'channel-001', name: 'telegram-main' })),
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'channel-001',
+          type: 'telegram',
+          name: 'telegram-main',
+          config: '{}',
+          credentials_ref: null,
+          enabled: 1,
+          created_at: 1,
+          updated_at: 1,
+        }),
+      ),
       findEnabled: vi.fn().mockReturnValue(ok([
         { id: 'channel-001', name: 'telegram-main' },
         { id: 'channel-002', name: 'slack-general' },
@@ -264,8 +327,115 @@ describe('HostToolsBridge', () => {
   });
 
   describe('dispatch', () => {
+    it('rejects direct bridge requests without a bridge secret', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
+        const client = createConnection(bridge.path, () => {
+          client.write(JSON.stringify({
+            id: randomUUID(),
+            tool: 'memory_access',
+            args: {
+              operation: 'list',
+            },
+            context: {
+              runId: 'run-001',
+              threadId: 'thread-001',
+              personaId: 'persona-001',
+              requestId: 'req-001',
+            },
+          }) + '\n');
+        });
+
+        let data = '';
+        client.on('data', (chunk) => {
+          data += chunk.toString();
+          const idx = data.indexOf('\n');
+          if (idx !== -1) {
+            client.end();
+            resolve(JSON.parse(data.slice(0, idx)));
+          }
+        });
+
+        client.on('error', reject);
+        setTimeout(() => {
+          client.end();
+          reject(new Error('Timeout'));
+        }, 5000);
+      });
+
+      expect(response.error).toContain('bridge secret');
+    });
+
+    it('rejects requests whose persona does not match the authenticated run context', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: {
+          operation: 'list',
+        },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-999',
+          requestId: 'req-001',
+        },
+      });
+
+      expect(response.error).toContain('persona');
+    });
+
+    it('accepts authenticated wrapper requests for the active run context', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: {
+          operation: 'list',
+        },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-001',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('success');
+    });
+
     it('dispatches schedule.manage create and returns success', async () => {
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
       bridge.start();
       await waitForSocket(bridge.path);
 
@@ -291,6 +461,7 @@ describe('HostToolsBridge', () => {
 
     it('dispatches background_agent spawn when the manager is present', async () => {
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
       bridge.start();
       await waitForSocket(bridge.path);
 
@@ -324,6 +495,7 @@ describe('HostToolsBridge', () => {
 
     it('dispatches execution_env destroy when the manager is present', async () => {
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
       bridge.start();
       await waitForSocket(bridge.path);
 
@@ -349,6 +521,7 @@ describe('HostToolsBridge', () => {
 
     it('returns error for unknown tool', async () => {
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
       bridge.start();
       await waitForSocket(bridge.path);
 
@@ -400,6 +573,7 @@ describe('HostToolsBridge', () => {
 
     it('dispatches memory.access to the memory handler', async () => {
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
       bridge.start();
       await waitForSocket(bridge.path);
 
@@ -421,6 +595,7 @@ describe('HostToolsBridge', () => {
 
     it('wraps tool dispatch in an observation using the incoming traceparent', async () => {
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
       bridge.start();
       await waitForSocket(bridge.path);
 
@@ -472,6 +647,7 @@ describe('HostToolsBridge', () => {
       ] as any;
 
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
 
       const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
       await (bridge as any).handleRequest(
@@ -481,6 +657,7 @@ describe('HostToolsBridge', () => {
           args: {
             name: 'brainstorming',
           },
+          bridgeSecret: validBridgeSecret,
           context: {
             runId: 'run-001',
             threadId: 'thread-001',
@@ -515,6 +692,7 @@ describe('HostToolsBridge', () => {
       ] as any;
 
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
 
       const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
       await (bridge as any).handleRequest(
@@ -524,6 +702,7 @@ describe('HostToolsBridge', () => {
           args: {
             name: 'missing-from-disk',
           },
+          bridgeSecret: validBridgeSecret,
           context: {
             runId: 'run-001',
             threadId: 'thread-001',
@@ -553,6 +732,7 @@ describe('HostToolsBridge', () => {
         }));
 
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
 
       const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
 
@@ -561,6 +741,7 @@ describe('HostToolsBridge', () => {
           id: 'req-001',
           tool: 'unknown_tool',
           args: {},
+          bridgeSecret: validBridgeSecret,
           context: {
             runId: 'run-001',
             threadId: 'thread-001',
@@ -606,6 +787,7 @@ describe('HostToolsBridge', () => {
       } as any));
 
       bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
       const dispatchSpy = vi.spyOn(bridge as any, 'dispatch');
 
       const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
@@ -615,11 +797,53 @@ describe('HostToolsBridge', () => {
           id: 'req-approval',
           tool: 'db_query',
           args: { sql: 'select 1' },
+          bridgeSecret: validBridgeSecret,
           context: {
             runId: 'run-001',
             threadId: 'thread-001',
             personaId: 'persona-001',
             requestId: 'req-approval',
+          },
+        }),
+        socket,
+      );
+
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('"status":"error"');
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('requires approval');
+    });
+
+    it('rejects scoped channel sends that require approval even when another channel is allowed', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: ['channel.send:telegram-main'],
+          requireApproval: ['channel.send:slack-admin'],
+        },
+      } as any));
+
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      const dispatchSpy = vi.spyOn(bridge as any, 'dispatch').mockResolvedValue({
+        requestId: 'req-scope-approval',
+        tool: 'channel.send',
+        status: 'success',
+        result: { sent: true },
+      });
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-scope-approval',
+          tool: 'channel_send',
+          args: { channelId: 'slack-admin', content: 'should not send' },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-scope-approval',
           },
         }),
         socket,
@@ -641,6 +865,7 @@ describe('HostToolsBridge', () => {
           }));
 
         bridge = new HostToolsBridge(mockCtx);
+        registerActiveRunAuth();
 
         let resolveDispatch!: (result: unknown) => void;
         (bridge as any).dispatch = vi.fn().mockImplementation(
@@ -656,6 +881,7 @@ describe('HostToolsBridge', () => {
             id: 'req-timeout',
             tool: 'schedule_manage',
             args: { action: 'list' },
+            bridgeSecret: validBridgeSecret,
             context: {
               runId: 'run-001',
               threadId: 'thread-001',
