@@ -131,6 +131,7 @@ vi.mock('../../../src/subagents/background/background-agent-manager.js', () => (
   BackgroundAgentManager: vi.fn().mockImplementation(() => ({
     recoverOrphanedTasks: vi.fn(),
     shutdown: vi.fn(),
+    setHostToolsBridge: vi.fn(),
   })),
 }));
 
