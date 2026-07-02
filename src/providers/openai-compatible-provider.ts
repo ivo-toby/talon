@@ -35,6 +35,7 @@ interface WrapperPayload {
   baseUrl: string;
   apiKey?: string;
   providerId: string;
+  providerOptions?: Record<string, Record<string, unknown>>;
   headers?: Record<string, string>;
   mcpServers: Record<string, Exclude<CanonicalMcpServer, { transport: 'sdk' }>>;
   /**
@@ -470,14 +471,17 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     }
 
     const scriptArgs = this.resolveWrapperArgs();
+    const providerId = this.readStringOption('providerId') ?? 'openai-compatible';
+    const providerOptions = this.readUnknownRecordOption('providerOptions');
     const payload: WrapperPayload = {
       prompt: input.prompt,
       systemPrompt: input.systemPrompt,
       cwd: input.cwd,
       model,
       baseUrl,
-      providerId: this.readStringOption('providerId') ?? 'openai-compatible',
+      providerId,
       ...(this.runtime.apiKey ? { apiKey: this.runtime.apiKey } : {}),
+      ...(providerOptions ? { providerOptions: { [providerId]: providerOptions } } : {}),
       ...(this.readRecordOption('headers') ? { headers: this.readRecordOption('headers') } : {}),
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
       streamEvents: options.streamEvents,
@@ -518,6 +522,15 @@ export class OpenAiCompatibleProvider implements AgentProvider {
 
     const entries = Object.entries(value).filter(([, entry]) => typeof entry === 'string');
     return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+  }
+
+  private readUnknownRecordOption(name: string): Record<string, unknown> | undefined {
+    const value = this.config.options?.[name];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return undefined;
+    }
+
+    return Object.keys(value).length > 0 ? (value as Record<string, unknown>) : undefined;
   }
 
   private resolveWrapperArgs(): string[] {

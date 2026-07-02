@@ -116,6 +116,45 @@ describe('OpenAiCompatibleProvider', () => {
     expect(payload.toolOutputCap).toBe(2048);
   });
 
+  it('wraps options.providerOptions under the configured providerId', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      type: 'openai-compatible',
+      command: 'node',
+      contextWindowTokens: 128_000,
+      options: {
+        defaultModel: 'qwen3-coder:30b',
+        baseUrl: 'http://mac.local:11434/v1',
+        providerId: 'ollama-mac',
+        providerOptions: {
+          chat_template_kwargs: {
+            enable_thinking: false,
+          },
+        },
+      },
+    });
+
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'hi',
+      systemPrompt: 's',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 10_000,
+      model: 'qwen3-coder:30b',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const payload = JSON.parse(result._unsafeUnwrap().stdin) as Record<string, unknown>;
+    expect(payload.providerId).toBe('ollama-mac');
+    expect(payload.providerOptions).toEqual({
+      'ollama-mac': {
+        chat_template_kwargs: {
+          enable_thinking: false,
+        },
+      },
+    });
+  });
+
   it('creates a stateless streaming SDK execution strategy for foreground runs', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();

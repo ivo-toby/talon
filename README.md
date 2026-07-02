@@ -153,6 +153,9 @@ agentRunner:
         baseUrl: http://mac.local:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama-mac
+        providerOptions:
+          chat_template_kwargs:
+            enable_thinking: false
 
 backgroundAgent:
   enabled: true
@@ -186,6 +189,9 @@ backgroundAgent:
         baseUrl: http://mac.local:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama-mac
+        providerOptions:
+          chat_template_kwargs:
+            enable_thinking: false
 ```
 
 ### Infrastructure
@@ -1458,6 +1464,8 @@ personas:
 
 **Important:** Personas only load sub-agents explicitly listed in their `subagents` config. Without `session-observer` and `session-reflector` in the list, the context-roller won't find them at runtime. You can remove `session-summarizer` from personas using OM since it won't be called.
 
+For multi-step agent providers that expose both cumulative and final-step usage, Talon keeps cumulative usage for accounting and Langfuse, but gates context rotation on the final model step. Codex CLI provides this through its `token_count.last_token_usage` events; this prevents tool-heavy turns from rotating simply because cumulative billed input crossed the threshold.
+
 ### Provider Support
 
 Sub-agents can use any supported AI provider. Configure API keys in `talond.yaml`:
@@ -1788,6 +1796,8 @@ npx talonctl test-provider --name gemini-cli
 ```
 
 For `openai-compatible` (**experimental**), use the canonical provider name `openai-compatible` or add an alias with `type: openai-compatible` when you need multiple endpoints at once. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.ollama-mac`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
+
+OpenAI-compatible entries may set a flat `options.providerOptions` record for vendor-specific request body knobs. Talon wraps it under `options.providerId` before calling Mastra, so disabling Qwen thinking on an `ollama-mac` alias is `providerOptions.chat_template_kwargs.enable_thinking: false`, not a nested `providerOptions.openai` block.
 
 > **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, `maxSteps` override for tool-call limits, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
 

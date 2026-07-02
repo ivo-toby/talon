@@ -208,6 +208,12 @@ agentRunner:
         defaultModel: qwen3-coder:30b
         providerId: ollama-mac
         toolOutputCap: 4000
+        # Flat vendor-specific request body fields. Talon wraps this under
+        # providerId before calling Mastra, so this becomes
+        # providerOptions: { "ollama-mac": { chat_template_kwargs: ... } }.
+        providerOptions:
+          chat_template_kwargs:
+            enable_thinking: false
 
 backgroundAgent:
   enabled: true
@@ -254,6 +260,9 @@ backgroundAgent:
         baseUrl: http://mac.local:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama-mac
+        providerOptions:
+          chat_template_kwargs:
+            enable_thinking: false
 
 scheduler:
   tickIntervalMs: 5000
