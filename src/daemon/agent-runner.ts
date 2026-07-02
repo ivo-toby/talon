@@ -467,9 +467,9 @@ export class AgentRunner {
             };
 
             const suppressCliWaitingMessage =
-              providerEntry.provider.name === 'gemini-cli'
-              || providerEntry.provider.name === 'codex-cli'
-              || providerEntry.provider.name === 'openai-compatible';
+              providerEntry.type === 'gemini-cli'
+              || providerEntry.type === 'codex-cli'
+              || providerEntry.type === 'openai-compatible';
 
             if (
               strategy.type === 'cli'

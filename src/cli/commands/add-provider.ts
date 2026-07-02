@@ -27,6 +27,7 @@ export type TriggerMetric =
 
 export interface AddProviderOptions {
   name: string;
+  type?: string;
   command: string;
   context?: ProviderContext;
   contextWindowTokens?: number;
@@ -37,6 +38,9 @@ export interface AddProviderOptions {
   summarizer?: string;
   enabled?: boolean;
   defaultModel?: string;
+  baseUrl?: string;
+  providerId?: string;
+  toolOutputCap?: number;
   configPath?: string;
 }
 
@@ -50,6 +54,7 @@ export interface ContextManagementEntry {
 
 export interface ProviderEntry {
   enabled: boolean;
+  type?: string;
   command: string;
   contextWindowTokens: number;
   contextManagement?: ContextManagementEntry;
@@ -98,6 +103,14 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
     throw new Error(nameError);
   }
 
+  const providerType = options.type?.trim();
+  if (providerType) {
+    const typeError = validateName(providerType, 'Provider type');
+    if (typeError) {
+      throw new Error(typeError);
+    }
+  }
+
   // Validate command.
   if (!options.command || options.command.trim() === '') {
     throw new Error('Provider command must not be empty.');
@@ -141,6 +154,25 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
     throw new Error('summarizer must not be empty when context management is enabled.');
   }
 
+  const baseUrl = options.baseUrl?.trim();
+  if (options.baseUrl !== undefined && !baseUrl) {
+    throw new Error('baseUrl must not be empty when provided.');
+  }
+
+  const providerId = options.providerId?.trim();
+  if (providerId) {
+    const providerIdError = validateName(providerId, 'Provider ID');
+    if (providerIdError) {
+      throw new Error(providerIdError);
+    }
+  }
+
+  if (options.toolOutputCap !== undefined) {
+    if (!Number.isInteger(options.toolOutputCap) || options.toolOutputCap < 0) {
+      throw new Error('toolOutputCap must be an integer >= 0.');
+    }
+  }
+
   // Read existing config.
   const doc = await readConfig(configPath);
 
@@ -151,8 +183,25 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
     contextWindowTokens,
   };
 
+  if (providerType) {
+    entry.type = providerType;
+  }
+
+  const entryOptions: Record<string, unknown> = {};
   if (options.defaultModel) {
-    entry.options = { defaultModel: options.defaultModel };
+    entryOptions.defaultModel = options.defaultModel;
+  }
+  if (baseUrl) {
+    entryOptions.baseUrl = baseUrl;
+  }
+  if (providerId) {
+    entryOptions.providerId = providerId;
+  }
+  if (options.toolOutputCap !== undefined) {
+    entryOptions.toolOutputCap = options.toolOutputCap;
+  }
+  if (Object.keys(entryOptions).length > 0) {
+    entry.options = entryOptions;
   }
 
   if (contextEnabled && ctx !== 'background') {
@@ -230,7 +279,8 @@ export async function addProviderCommand(options: AddProviderOptions): Promise<v
   try {
     const { entry, contexts } = await addProvider(options);
     const contextList = contexts.join(', ');
-    console.log(`Added provider "${options.name}" (command: ${entry.command}) to context(s): ${contextList} in "${options.configPath ?? DEFAULT_CONFIG_PATH}".`);
+    const typeSuffix = entry.type ? `, type: ${entry.type}` : '';
+    console.log(`Added provider "${options.name}" (command: ${entry.command}${typeSuffix}) to context(s): ${contextList} in "${options.configPath ?? DEFAULT_CONFIG_PATH}".`);
     if (!entry.enabled) {
       console.log(`Note: provider is disabled by default. Set enabled: true in "${options.configPath ?? DEFAULT_CONFIG_PATH}" or use --enabled to enable immediately.`);
     }

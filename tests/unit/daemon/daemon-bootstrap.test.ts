@@ -903,6 +903,96 @@ describe('bootstrap', () => {
       );
     });
 
+    it('registers provider aliases through their configured type', async () => {
+      setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            auth: {
+              mode: 'subscription',
+              providers: {
+                'ollama-mac': {
+                  apiKey: 'local-key',
+                  baseURL: 'http://mac.local:11434/v1',
+                },
+              },
+            },
+            agentRunner: {
+              defaultProvider: 'ollama-mac',
+              providers: {
+                'ollama-mac': {
+                  ...makeAgentRunnerProviderConfig({
+                    type: 'openai-compatible',
+                    command: 'node',
+                    contextWindowTokens: 128000,
+                    contextManagement: makeContextManagementConfig({
+                      triggerMetric: 'input_tokens',
+                      thresholdRatio: 0.75,
+                    }),
+                  }),
+                  options: {
+                    defaultModel: 'qwen3-coder:30b',
+                    providerId: 'ollama-mac',
+                  },
+                },
+              },
+            },
+            backgroundAgent: {
+              enabled: true,
+              maxConcurrent: 3,
+              defaultTimeoutMinutes: 30,
+              defaultProvider: 'ollama-mac',
+              providers: {
+                'ollama-mac': {
+                  ...makeBackgroundProviderConfig({
+                    type: 'openai-compatible',
+                    command: 'node',
+                    contextWindowTokens: 128000,
+                  }),
+                  options: {
+                    defaultModel: 'qwen3-coder:30b',
+                    providerId: 'ollama-mac',
+                  },
+                },
+              },
+            },
+          }) as any,
+        ),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      const foregroundEntry = ctx.providerRegistry.get('ollama-mac');
+      expect(foregroundEntry?.type).toBe('openai-compatible');
+      expect(foregroundEntry?.provider.name).toBe('ollama-mac');
+      expect(ctx.providerRegistry.getDefault(['ollama-mac'])?.provider.name).toBe('ollama-mac');
+
+      const prepared = foregroundEntry!.provider.prepareBackgroundInvocation!({
+        prompt: 'hello',
+        systemPrompt: 'system',
+        mcpServers: {},
+        cwd: '/tmp',
+        timeoutMs: 60_000,
+        model: undefined,
+      });
+      expect(prepared.isOk()).toBe(true);
+      const payload = JSON.parse(prepared._unsafeUnwrap().stdin!) as {
+        providerId: string;
+        baseUrl: string;
+        apiKey: string;
+      };
+      expect(payload.providerId).toBe('ollama-mac');
+      expect(payload.baseUrl).toBe('http://mac.local:11434/v1');
+      expect(payload.apiKey).toBe('local-key');
+
+      const backgroundProviderRegistry = vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0]
+        .providerRegistry;
+      expect(backgroundProviderRegistry.get('ollama-mac')?.type).toBe('openai-compatible');
+      expect(backgroundProviderRegistry.get('ollama-mac')?.provider.name).toBe('ollama-mac');
+    });
+
     it('passes auth.providers["openai-compatible"] credentials to the provider as runtime fallback', async () => {
       setupSuccessfulMocks();
       vi.mocked(loadConfig).mockReturnValue(

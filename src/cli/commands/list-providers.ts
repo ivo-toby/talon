@@ -21,6 +21,7 @@ export interface ListProvidersOptions {
 export interface ProviderInfo {
   context: 'agent-runner' | 'background';
   name: string;
+  type: string;
   enabled: boolean;
   command: string;
   contextWindowTokens: number;
@@ -58,6 +59,7 @@ export async function listProviders(options: ListProvidersOptions = {}): Promise
       results.push({
         context: 'agent-runner',
         name,
+        type: typeof p.type === 'string' && p.type.trim().length > 0 ? p.type.trim() : name,
         enabled: p.enabled !== false,
         command: typeof p.command === 'string' ? p.command : '',
         contextWindowTokens: typeof p.contextWindowTokens === 'number' ? p.contextWindowTokens : 200000,
@@ -81,6 +83,7 @@ export async function listProviders(options: ListProvidersOptions = {}): Promise
       results.push({
         context: 'background',
         name,
+        type: typeof p.type === 'string' && p.type.trim().length > 0 ? p.type.trim() : name,
         enabled: p.enabled !== false,
         command: typeof p.command === 'string' ? p.command : '',
         contextWindowTokens: typeof p.contextWindowTokens === 'number' ? p.contextWindowTokens : 200000,
@@ -108,9 +111,10 @@ export async function listProvidersCommand(options: ListProvidersOptions = {}): 
 
     // Column widths
     const COL_CONTEXT = 14;
-    const COL_NAME = 14;
+    const COL_NAME = Math.max(14, 'NAME'.length, ...providers.map((p) => p.name.length));
+    const COL_TYPE = Math.max(18, 'TYPE'.length, ...providers.map((p) => p.type.length));
     const COL_ENABLED = 7;
-    const COL_COMMAND = 12;
+    const COL_COMMAND = Math.max(12, 'COMMAND'.length, ...providers.map((p) => p.command.length));
     const COL_CW = 14;
     const COL_CONTEXT_MGMT = 8;
     const COL_TRIGGER = 23;
@@ -119,15 +123,15 @@ export async function listProvidersCommand(options: ListProvidersOptions = {}): 
 
     // Header
     console.log(
-      `${'CONTEXT'.padEnd(COL_CONTEXT)} ${'NAME'.padEnd(COL_NAME)} ${'ENABLED'.padEnd(COL_ENABLED)} ${'COMMAND'.padEnd(COL_COMMAND)} ${'CONTEXT WINDOW'.padEnd(COL_CW)} ${'CTX MGMT'.padEnd(COL_CONTEXT_MGMT)} ${'TRIGGER'.padEnd(COL_TRIGGER)} ${'THRESHOLD'.padEnd(COL_THRESHOLD)} DEFAULT`,
+      `${'CONTEXT'.padEnd(COL_CONTEXT)} ${'NAME'.padEnd(COL_NAME)} ${'TYPE'.padEnd(COL_TYPE)} ${'ENABLED'.padEnd(COL_ENABLED)} ${'COMMAND'.padEnd(COL_COMMAND)} ${'CONTEXT WINDOW'.padEnd(COL_CW)} ${'CTX MGMT'.padEnd(COL_CONTEXT_MGMT)} ${'TRIGGER'.padEnd(COL_TRIGGER)} ${'THRESHOLD'.padEnd(COL_THRESHOLD)} DEFAULT`,
     );
     console.log(
-      `${'─'.repeat(COL_CONTEXT)} ${'─'.repeat(COL_NAME)} ${'─'.repeat(COL_ENABLED)} ${'─'.repeat(COL_COMMAND)} ${'─'.repeat(COL_CW)} ${'─'.repeat(COL_CONTEXT_MGMT)} ${'─'.repeat(COL_TRIGGER)} ${'─'.repeat(COL_THRESHOLD)} ${'─'.repeat(COL_DEFAULT)}`,
+      `${'─'.repeat(COL_CONTEXT)} ${'─'.repeat(COL_NAME)} ${'─'.repeat(COL_TYPE)} ${'─'.repeat(COL_ENABLED)} ${'─'.repeat(COL_COMMAND)} ${'─'.repeat(COL_CW)} ${'─'.repeat(COL_CONTEXT_MGMT)} ${'─'.repeat(COL_TRIGGER)} ${'─'.repeat(COL_THRESHOLD)} ${'─'.repeat(COL_DEFAULT)}`,
     );
 
     for (const p of providers) {
       console.log(
-        `${p.context.padEnd(COL_CONTEXT)} ${p.name.padEnd(COL_NAME)} ${(p.enabled ? 'yes' : 'no').padEnd(COL_ENABLED)} ${p.command.padEnd(COL_COMMAND)} ${String(p.contextWindowTokens).padEnd(COL_CW)} ${(p.contextManagementEnabled ? 'yes' : 'no').padEnd(COL_CONTEXT_MGMT)} ${(p.triggerMetric ?? '-').padEnd(COL_TRIGGER)} ${String(p.thresholdRatio ?? '-').padEnd(COL_THRESHOLD)} ${p.isDefault ? 'yes' : 'no'}`,
+        `${p.context.padEnd(COL_CONTEXT)} ${p.name.padEnd(COL_NAME)} ${p.type.padEnd(COL_TYPE)} ${(p.enabled ? 'yes' : 'no').padEnd(COL_ENABLED)} ${p.command.padEnd(COL_COMMAND)} ${String(p.contextWindowTokens).padEnd(COL_CW)} ${(p.contextManagementEnabled ? 'yes' : 'no').padEnd(COL_CONTEXT_MGMT)} ${(p.triggerMetric ?? '-').padEnd(COL_TRIGGER)} ${String(p.thresholdRatio ?? '-').padEnd(COL_THRESHOLD)} ${p.isDefault ? 'yes' : 'no'}`,
       );
     }
   } catch (error) {

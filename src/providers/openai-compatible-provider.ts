@@ -19,6 +19,7 @@ import type {
   PreparedProviderResultFiles,
   ProviderResult,
   ProviderSpawnInput,
+  ProviderName,
 } from './provider-types.js';
 
 interface OpenAiCompatibleProviderRuntime {
@@ -103,13 +104,16 @@ type WrapperEvent =
   | { type: 'error'; message: string };
 
 export class OpenAiCompatibleProvider implements AgentProvider {
-  readonly name = 'openai-compatible';
+  readonly name: ProviderName;
   readonly skillLoaderTransport = 'stdio' as const;
 
   constructor(
     private readonly config: ProviderConfig,
     private readonly runtime: OpenAiCompatibleProviderRuntime = {},
-  ) {}
+    name: ProviderName = 'openai-compatible',
+  ) {
+    this.name = name;
+  }
 
   createExecutionStrategy(): StatelessSDKExecutionStrategy {
     return {

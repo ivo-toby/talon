@@ -202,6 +202,7 @@ export const AuthConfigSchema = z.object({
 
 export const ProviderConfigSchema = z.object({
   enabled: z.boolean().default(false),
+  type: z.string().trim().min(1).optional(),
   command: z.string(),
   contextWindowTokens: z.number().int().min(1000).default(200_000),
   options: z.record(z.string(), z.unknown()).optional(),

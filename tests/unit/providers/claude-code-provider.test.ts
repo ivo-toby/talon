@@ -26,6 +26,19 @@ describe('ClaudeCodeProvider', () => {
     expect(typeof strategy.run).toBe('function');
   });
 
+  it('can report an alias provider name', () => {
+    const aliasedProvider = new ClaudeCodeProvider(
+      {
+        enabled: true,
+        command: 'claude',
+        contextWindowTokens: 200000,
+      },
+      'claude-work',
+    );
+
+    expect(aliasedProvider.name).toBe('claude-work');
+  });
+
   it('prepares background CLI invocations with provider-native config files', () => {
     const result = provider.prepareBackgroundInvocation({
       prompt: 'Refactor the auth module.',
@@ -218,9 +231,8 @@ describe('ClaudeCodeProvider', () => {
     vi.resetModules();
 
     try {
-      const { ClaudeCodeProvider: IsolatedProvider } = await import(
-        '../../../src/providers/claude-code-provider.js'
-      );
+      const { ClaudeCodeProvider: IsolatedProvider } =
+        await import('../../../src/providers/claude-code-provider.js');
       const isolatedProvider = new IsolatedProvider({
         enabled: true,
         command: 'claude',

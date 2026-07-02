@@ -74,6 +74,30 @@ describe('ProviderRegistry', () => {
     expect(registry.get('unknown-provider')).toBeUndefined();
   });
 
+  it('registers an alias through its configured provider type', () => {
+    const registry = new ProviderRegistry(
+      {
+        'ollama-cloud': makeProviderConfig({
+          type: 'openai-compatible',
+          command: 'node',
+        }),
+        'ollama-mac': makeProviderConfig({
+          type: 'openai-compatible',
+          command: 'node',
+        }),
+      },
+      {
+        'openai-compatible': (_config, providerName) => ({ name: providerName }) as any,
+      },
+    );
+
+    expect(registry.listEnabled()).toEqual(['ollama-cloud', 'ollama-mac']);
+    expect(registry.get('ollama-mac')?.name).toBe('ollama-mac');
+    expect(registry.get('ollama-mac')?.type).toBe('openai-compatible');
+    expect(registry.get('ollama-mac')?.provider.name).toBe('ollama-mac');
+    expect(registry.getDefault(['ollama-mac'])?.provider.name).toBe('ollama-mac');
+  });
+
   it('returns empty list and undefined default when all providers are disabled', () => {
     const registry = new ProviderRegistry(
       {

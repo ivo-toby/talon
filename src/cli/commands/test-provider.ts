@@ -44,6 +44,7 @@ export interface TestProviderResult {
 // ---------------------------------------------------------------------------
 
 const SPAWN_TIMEOUT_MS = 30_000;
+const ENV_VAR_PATTERN = /\$\{(\w+)\}/g;
 
 /**
  * Runs a child process and collects stdout/stderr within a timeout.
@@ -107,8 +108,107 @@ function runProcess(
  * Handles formats like "1.2.3", "claude 1.2.3", "gemini 0.33.1", etc.
  */
 function extractVersion(output: string): string | null {
-  const match = output.match(/(\d+\.\d+[\.\d]*)/);
+  const match = output.match(/(\d+\.\d+[.\d]*)/);
   return match ? match[1] : output.trim().split('\n')[0].trim() || null;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const substituted = value.replace(ENV_VAR_PATTERN, (_match, varName: string) => {
+    return process.env[varName] ?? `\${${varName}}`;
+  }).trim();
+  return substituted.length > 0 ? substituted : undefined;
+}
+
+function openAiCompatibleUrl(baseUrl: string): string {
+  return `${baseUrl.replace(/\/+$/u, '')}/chat/completions`;
+}
+
+async function testOpenAiCompatible(options: {
+  doc: Record<string, unknown>;
+  providerEntry: Record<string, unknown>;
+  prompt: string;
+  result: TestProviderResult;
+}): Promise<TestProviderResult> {
+  const providerOptions = readRecord(options.providerEntry.options);
+  const providerId = readString(providerOptions?.providerId) ?? 'openai-compatible';
+  const authProviders = readRecord(readRecord(options.doc.auth)?.providers);
+  const providerAuth = readRecord(authProviders?.[providerId]);
+  const fallbackAuth = readRecord(authProviders?.['openai-compatible']);
+  const baseUrl =
+    readString(providerOptions?.baseUrl)
+    ?? readString(providerAuth?.baseURL)
+    ?? readString(fallbackAuth?.baseURL);
+  const apiKey =
+    readString(providerAuth?.apiKey)
+    ?? readString(fallbackAuth?.apiKey);
+  const model = readString(providerOptions?.defaultModel);
+
+  if (!baseUrl) {
+    options.result.error = 'OpenAI-compatible provider has no options.baseUrl, auth.providers.<providerId>.baseURL, or auth.providers.openai-compatible.baseURL configured.';
+    return options.result;
+  }
+
+  if (!model) {
+    options.result.error = 'OpenAI-compatible provider has no options.defaultModel configured.';
+    return options.result;
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), SPAWN_TIMEOUT_MS);
+  try {
+    const response = await fetch(openAiCompatibleUrl(baseUrl), {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'user', content: options.prompt }],
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      const body = await response.text().catch(() => '');
+      options.result.error = `OpenAI-compatible test query failed: HTTP ${response.status}${body ? ` ${body.slice(0, 200)}` : ''}`;
+      return options.result;
+    }
+
+    const parsed = await response.json() as Record<string, unknown>;
+    const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
+    const firstChoice = readRecord(choices[0]);
+    const message = readRecord(firstChoice?.message);
+    const content = readString(message?.content);
+    const usage = readRecord(parsed.usage);
+
+    if (!content) {
+      options.result.error = 'OpenAI-compatible response did not include choices[0].message.content.';
+      return options.result;
+    }
+
+    options.result.response = content;
+    options.result.jsonValid = true;
+    options.result.inputTokens = typeof usage?.prompt_tokens === 'number' ? usage.prompt_tokens : null;
+    options.result.outputTokens = typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : null;
+    return options.result;
+  } catch (err) {
+    const message = err instanceof Error && err.name === 'AbortError'
+      ? `Process timed out after ${SPAWN_TIMEOUT_MS}ms`
+      : (err as Error).message;
+    options.result.error = `OpenAI-compatible test query failed: ${message}`;
+    return options.result;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -297,12 +397,17 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
     .toLowerCase()
     .replace(/\.(cmd|exe|bat)$/u, '');
   const normalizedName = options.name.trim().toLowerCase();
-  const isCodex = normalizedName.includes('codex')
+  const normalizedType = readString(providerEntry.type)?.toLowerCase();
+  const isCodex = normalizedType === 'codex-cli'
+    || normalizedName.includes('codex')
     || normalizedCommandBase.includes('codex')
     || normalizedCommandFull.includes('codex');
-  const isGemini = normalizedName.includes('gemini')
+  const isGemini = normalizedType === 'gemini-cli'
+    || normalizedName.includes('gemini')
     || normalizedCommandBase.includes('gemini')
     || normalizedCommandFull.includes('gemini');
+  const isOpenAiCompatible = normalizedType === 'openai-compatible'
+    || normalizedName === 'openai-compatible';
   const providerOptions = (
     typeof providerEntry.options === 'object' && providerEntry.options !== null
       ? providerEntry.options
@@ -312,6 +417,15 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
     && providerOptions.defaultModel.trim().length > 0
     ? providerOptions.defaultModel.trim()
     : undefined;
+
+  if (isOpenAiCompatible) {
+    return testOpenAiCompatible({
+      doc,
+      providerEntry,
+      prompt,
+      result,
+    });
+  }
 
   if (isCodex) {
     let tempHome: string | null = null;

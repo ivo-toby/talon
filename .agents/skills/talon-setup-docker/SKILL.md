@@ -118,7 +118,7 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl unbind --persona <p> --channel <c>` | Remove a binding |
 | `talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add an MCP server to a skill |
 | `talonctl list-providers` | Configured AI providers |
-| `talonctl add-provider --name <n> --command <c> [--context both]` | Add a provider |
+| `talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]` | Add a provider |
 | `talonctl set-default-provider --name <n> --context <ctx>` | Set default provider |
 | `talonctl test-provider --name <n>` | Verify a provider connects |
 | `talonctl list-capabilities` | All available capability labels |
@@ -150,7 +150,10 @@ runs in-process.
 
 For (a) ask for nothing else here — defaults work.
 
-For (b) ask three things, **one at a time**:
+For (b) ask four things, **one at a time**:
+- "What should this provider be called? (default: `openai-compatible`; use a
+  distinct name like `ollama-mac` when keeping another OpenAI-compatible
+  endpoint too)"
 - "What's the base URL? (e.g. `https://api.groq.com/openai/v1`,
   `http://host.docker.internal:11434/v1` for local Ollama, etc.)"
 - "What model name does the endpoint serve?
@@ -207,7 +210,7 @@ personas:
 If provider is OpenAI-compatible:
 ```yaml
     model: <model from step 1>
-    provider: openai-compatible
+    provider: <provider name from step 1>
 ```
 
 If Gemini CLI:
@@ -224,8 +227,9 @@ For OpenAI-compatible — replace the `Codex:` block under
 `agentRunner.providers:` with:
 
 ```yaml
-    openai-compatible:
+    <provider name from step 1>:
       enabled: true
+      type: openai-compatible       # omit only when the provider name itself is openai-compatible
       command: node
       contextWindowTokens: 32000
       options:
@@ -237,6 +241,20 @@ For OpenAI-compatible — replace the `Codex:` block under
 
 Apply the same change to `backgroundAgent.providers` (or set
 `backgroundAgent.enabled: false` if you don't need background work).
+
+For post-boot changes, prefer talonctl instead of editing YAML:
+
+```bash
+talonctl add-provider --name <provider name> \
+  --type openai-compatible \
+  --command node \
+  --context both \
+  --context-window 32000 \
+  --default-model <model from step 1> \
+  --base-url <base URL from step 1> \
+  --provider-id <slot name> \
+  --enabled
+```
 
 #### Replace `auth.providers`
 

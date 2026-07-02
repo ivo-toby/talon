@@ -75,6 +75,65 @@ describe('addProvider()', () => {
     expect(contextManagement.enabled).toBe(true);
   });
 
+  it('writes provider type aliases and OpenAI-compatible options', async () => {
+    const p = writeYaml('logLevel: info\nagentRunner:\n  providers: {}\nbackgroundAgent:\n  providers: {}\n');
+
+    await addProvider({
+      name: 'ollama-mac',
+      type: 'openai-compatible',
+      command: 'node',
+      context: 'both',
+      contextWindowTokens: 128_000,
+      enabled: true,
+      contextEnabled: true,
+      triggerMetric: 'input_tokens',
+      thresholdRatio: 0.75,
+      recentMessageCount: 8,
+      summarizer: 'session-observer',
+      defaultModel: 'qwen3-coder:30b',
+      baseUrl: 'http://mac.local:11434/v1',
+      providerId: 'ollama-mac',
+      toolOutputCap: 2048,
+      configPath: p,
+    });
+
+    const doc = readYaml(p);
+    const agentRunner = ((doc.agentRunner as Record<string, unknown>).providers as Record<string, unknown>)['ollama-mac'] as Record<string, unknown>;
+    const backgroundAgent = ((doc.backgroundAgent as Record<string, unknown>).providers as Record<string, unknown>)['ollama-mac'] as Record<string, unknown>;
+
+    expect(agentRunner).toEqual({
+      enabled: true,
+      type: 'openai-compatible',
+      command: 'node',
+      contextWindowTokens: 128_000,
+      options: {
+        defaultModel: 'qwen3-coder:30b',
+        baseUrl: 'http://mac.local:11434/v1',
+        providerId: 'ollama-mac',
+        toolOutputCap: 2048,
+      },
+      contextManagement: {
+        enabled: true,
+        triggerMetric: 'input_tokens',
+        thresholdRatio: 0.75,
+        recentMessageCount: 8,
+        summarizer: 'session-observer',
+      },
+    });
+    expect(backgroundAgent).toEqual({
+      enabled: true,
+      type: 'openai-compatible',
+      command: 'node',
+      contextWindowTokens: 128_000,
+      options: {
+        defaultModel: 'qwen3-coder:30b',
+        baseUrl: 'http://mac.local:11434/v1',
+        providerId: 'ollama-mac',
+        toolOutputCap: 2048,
+      },
+    });
+  });
+
   it('writes contextManagement only to the agent-runner entry when using both contexts', async () => {
     const p = writeYaml('logLevel: info\n');
 
@@ -264,6 +323,7 @@ backgroundAgent:
       {
         context: 'agent-runner',
         name: 'claude-max',
+        type: 'claude-max',
         enabled: true,
         command: 'claude',
         contextWindowTokens: 1_000_000,
@@ -275,6 +335,7 @@ backgroundAgent:
       {
         context: 'background',
         name: 'claude-max',
+        type: 'claude-max',
         enabled: true,
         command: 'claude',
         contextWindowTokens: 1_000_000,

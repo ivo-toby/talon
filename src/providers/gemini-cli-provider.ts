@@ -12,6 +12,7 @@ import type {
   CanonicalMcpServer,
   ContextUsage,
   PreparedProviderInvocation,
+  ProviderName,
   ProviderResult,
   ProviderSpawnInput,
 } from './provider-types.js';
@@ -38,10 +39,15 @@ const GEMINI_JSON_UPGRADE_MESSAGE =
   'Gemini CLI returned non-JSON output despite --output-format json. Upgrade gemini-cli to a compatible version.';
 
 export class GeminiCliProvider implements AgentProvider {
-  readonly name = 'gemini-cli';
+  readonly name: ProviderName;
   readonly skillLoaderTransport = 'stdio' as const;
 
-  constructor(private readonly config: ProviderConfig) {}
+  constructor(
+    private readonly config: ProviderConfig,
+    name: ProviderName = 'gemini-cli',
+  ) {
+    this.name = name;
+  }
 
   createExecutionStrategy() {
     return {

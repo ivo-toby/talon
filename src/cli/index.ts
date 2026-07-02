@@ -579,6 +579,7 @@ program
   .command('add-provider')
   .description('Add a provider to agentRunner, backgroundAgent, or both')
   .requiredOption('--name <name>', 'Provider name (e.g. gemini-cli)')
+  .option('--type <type>', 'Provider implementation type when the provider name is an alias (e.g. openai-compatible)')
   .requiredOption('--command <cmd>', 'CLI binary path (e.g. gemini or /usr/local/bin/gemini)')
   .option('--context <ctx>', 'Context: agent-runner, background, or both', 'both')
   .option('--context-window <tokens>', 'Context window size in tokens', '200000')
@@ -592,9 +593,13 @@ program
   .option('--summarizer <name>', 'Subagent name used for session summarization', 'session-summarizer')
   .option('--enabled', 'Enable the provider immediately (default: disabled)')
   .option('--default-model <model>', 'Set options.defaultModel (e.g. gemini-2.5-pro)')
+  .option('--base-url <url>', 'Set options.baseUrl for OpenAI-compatible providers')
+  .option('--provider-id <id>', 'Set options.providerId for OpenAI-compatible credential lookup')
+  .option('--tool-output-cap <chars>', 'Set options.toolOutputCap for OpenAI-compatible providers')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: {
     name: string;
+    type?: string;
     command: string;
     context: string;
     contextWindow: string;
@@ -605,10 +610,14 @@ program
     summarizer: string;
     enabled?: boolean;
     defaultModel?: string;
+    baseUrl?: string;
+    providerId?: string;
+    toolOutputCap?: string;
     config: string;
   }) => {
     await addProviderCommand({
       name: opts.name,
+      type: opts.type,
       command: opts.command,
       context: opts.context as 'agent-runner' | 'background' | 'both',
       contextWindowTokens: parseInt(opts.contextWindow, 10),
@@ -626,6 +635,9 @@ program
       summarizer: opts.summarizer,
       enabled: opts.enabled ?? false,
       defaultModel: opts.defaultModel,
+      baseUrl: opts.baseUrl,
+      providerId: opts.providerId,
+      toolOutputCap: opts.toolOutputCap === undefined ? undefined : parseInt(opts.toolOutputCap, 10),
       configPath: opts.config,
     });
   });

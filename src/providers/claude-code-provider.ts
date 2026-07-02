@@ -11,16 +11,22 @@ import type {
   CanonicalMcpServer,
   ContextUsage,
   PreparedProviderInvocation,
+  ProviderName,
   ProviderResult,
   ProviderSpawnInput,
 } from './provider-types.js';
 import type { ProviderConfig } from '../core/config/config-types.js';
 
 export class ClaudeCodeProvider implements AgentProvider {
-  readonly name = 'claude-code';
+  readonly name: ProviderName;
   readonly skillLoaderTransport = 'in-process' as const;
 
-  constructor(private readonly config: ProviderConfig) {}
+  constructor(
+    private readonly config: ProviderConfig,
+    name: ProviderName = 'claude-code',
+  ) {
+    this.name = name;
+  }
 
   /**
    * Resolve the executable for background (subprocess) invocations.
@@ -291,7 +297,9 @@ export class ClaudeCodeProvider implements AgentProvider {
             tool: toolMessage.tool ?? toolMessage.name ?? toolMessage.tool_name,
             toolUseId: toolMessage.tool_use_id,
             input: toolMessage.input,
-            output: this.isToolResultMessageType(toolMessage.type) ? toolMessage.content : undefined,
+            output: this.isToolResultMessageType(toolMessage.type)
+              ? toolMessage.content
+              : undefined,
             isError: this.isToolResultMessageType(toolMessage.type)
               ? (toolMessage.is_error ?? false)
               : undefined,
@@ -365,17 +373,9 @@ export class ClaudeCodeProvider implements AgentProvider {
       return null;
     }
 
-    if (
-      this.isToolUseMessageType(messageType)
-    ) {
-      const tool =
-        'name' in block && typeof block.name === 'string'
-          ? block.name
-          : undefined;
-      const toolUseId =
-        'id' in block && typeof block.id === 'string'
-          ? block.id
-          : undefined;
+    if (this.isToolUseMessageType(messageType)) {
+      const tool = 'name' in block && typeof block.name === 'string' ? block.name : undefined;
+      const toolUseId = 'id' in block && typeof block.id === 'string' ? block.id : undefined;
       const serverName =
         'server_name' in block && typeof block.server_name === 'string'
           ? block.server_name

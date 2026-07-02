@@ -31,7 +31,7 @@ describe('CodexCliProvider', () => {
     rmSync(operatorHome, { recursive: true, force: true });
   });
 
-  function makeProvider() {
+  function makeProvider(name = 'codex-cli') {
     return new CodexCliProvider(
       {
         enabled: true,
@@ -45,6 +45,7 @@ describe('CodexCliProvider', () => {
         dataDir: runtimeDir,
         operatorHome,
       },
+      name,
     );
   }
 
@@ -65,6 +66,12 @@ describe('CodexCliProvider', () => {
     expect(strategy.type).toBe('sdk');
     expect(strategy.supportsSessionResumption).toBe(true);
     expect(typeof strategy.run).toBe('function');
+  });
+
+  it('can report an alias provider name', () => {
+    const provider = makeProvider('codex-work');
+
+    expect(provider.name).toBe('codex-work');
   });
 
   it('streams foreground text chunks, tool events, and final result with stable HOME and codex exec args', async () => {
@@ -368,9 +375,9 @@ describe('CodexCliProvider', () => {
     const invocation = result._unsafeUnwrap();
     cleanupPaths.push(...invocation.cleanupPaths);
 
-    expect(invocation.env?.HOME.startsWith(
-      join(runtimeDir, 'providers', 'codex-cli', 'background'),
-    )).toBe(true);
+    expect(
+      invocation.env?.HOME.startsWith(join(runtimeDir, 'providers', 'codex-cli', 'background')),
+    ).toBe(true);
     expect(invocation.env?.HOME.endsWith('/home')).toBe(true);
     expect(invocation.cleanupPaths).toContain(invocation.env!.HOME);
     expect(invocation.resultFiles?.lastMessagePath).toBeDefined();

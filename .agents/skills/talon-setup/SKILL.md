@@ -43,7 +43,7 @@ All config mutations go through these commands:
 | `npx talonctl bind --persona <p> --channel <c>` | Bind persona to channel |
 | `npx talonctl unbind --persona <p> --channel <c>` | Remove binding |
 | `npx talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add MCP server |
-| `npx talonctl add-provider --name <n> --command <c> [--context both]` | Add a provider |
+| `npx talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]` | Add a provider |
 | `npx talonctl set-default-provider --name <n> --context <ctx>` | Set default provider |
 | `npx talonctl test-provider --name <n>` | Test a provider works |
 | `npx talonctl list-providers` | Show all providers |
@@ -162,6 +162,7 @@ Ask: **"Which AI providers do you want to use?"**
 a) Codex only (default)
 b) Gemini CLI only
 c) Both (recommended if both are installed)
+d) OpenAI-compatible / Ollama endpoint
 ```
 
 For each selected provider, run `add-provider`:
@@ -190,6 +191,33 @@ Available models: gemini-3.1-pro-preview, gemini-3-flash-preview, gemini-2.5-pro
 
 If a model is specified, add `--default-model <model>` to the add-provider command.
 
+For an OpenAI-compatible endpoint such as local Ollama, Ollama Cloud, vLLM, or
+Groq, use a unique provider name when multiple endpoints should coexist. Use
+`type: openai-compatible` via the CLI flag so the provider name remains
+distinct for persona routing and run history:
+
+```bash
+npx talonctl add-provider --name <provider-name> \
+  --type openai-compatible \
+  --command node \
+  --context both \
+  --context-window <tokens> \
+  --default-model <model> \
+  --base-url <https-or-http-base-url-ending-in-/v1> \
+  --provider-id <auth-provider-id> \
+  --enabled
+```
+
+Examples:
+- Existing Ollama Cloud can remain named `openai-compatible` with
+  `providerId: ollama`.
+- A separate local Mac endpoint can be named `ollama-mac` with
+  `--type openai-compatible --base-url http://<mac-host>:11434/v1
+  --provider-id ollama-mac`.
+
+Add matching credentials under `auth.providers.<provider-id>` if the endpoint
+requires them. Local Ollama usually does not require an API key.
+
 If both providers are configured, ask: **"Which should be the default for conversations?"**
 
 ```bash
@@ -207,6 +235,7 @@ Test each configured provider:
 ```bash
 npx talonctl test-provider --name Codex
 npx talonctl test-provider --name gemini-cli
+npx talonctl test-provider --name <openai-compatible-alias>
 ```
 
 If a test fails, troubleshoot:

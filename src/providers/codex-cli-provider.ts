@@ -22,6 +22,7 @@ import type {
   ContextUsage,
   PreparedProviderInvocation,
   PreparedProviderResultFiles,
+  ProviderName,
   ProviderResult,
   ProviderSpawnInput,
 } from './provider-types.js';
@@ -44,13 +45,16 @@ interface RenderedCodexConfig {
 }
 
 export class CodexCliProvider implements AgentProvider {
-  readonly name = 'codex-cli';
+  readonly name: ProviderName;
   readonly skillLoaderTransport = 'stdio' as const;
 
   constructor(
     private readonly config: ProviderConfig,
     private readonly runtime: CodexCliProviderRuntime,
-  ) {}
+    name: ProviderName = 'codex-cli',
+  ) {
+    this.name = name;
+  }
 
   createExecutionStrategy(): {
     type: 'sdk';
@@ -101,18 +105,11 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private buildForegroundHome(threadId: string): string {
-    return join(this.runtime.dataDir, 'providers', 'codex-cli', 'threads', threadId, 'home');
+    return join(this.runtime.dataDir, 'providers', this.name, 'threads', threadId, 'home');
   }
 
   private buildBackgroundHome(): string {
-    return join(
-      this.runtime.dataDir,
-      'providers',
-      'codex-cli',
-      'background',
-      randomUUID(),
-      'home',
-    );
+    return join(this.runtime.dataDir, 'providers', this.name, 'background', randomUUID(), 'home');
   }
 
   private operatorCodexDir(): string {
@@ -452,10 +449,10 @@ export class CodexCliProvider implements AgentProvider {
       // Background-only: tolerate a missing turn.completed event when Codex
       // still wrote a non-empty final response file for this run.
       if (
-        hasFinalOutputFile
-        && output.trim().length > 0
-        && parsed.hasThreadStarted
-        && !parsed.hasTurnCompleted
+        hasFinalOutputFile &&
+        output.trim().length > 0 &&
+        parsed.hasThreadStarted &&
+        !parsed.hasTurnCompleted
       ) {
         return {
           output,
@@ -598,7 +595,9 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private isAssistantMessageItemType(itemType: string): boolean {
-    return /(assistant.*message|message.*assistant|assistant_message|agent_message)/u.test(itemType);
+    return /(assistant.*message|message.*assistant|assistant_message|agent_message)/u.test(
+      itemType,
+    );
   }
 
   private extractToolEvent(

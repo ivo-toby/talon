@@ -28,6 +28,19 @@ describe('GeminiCliProvider', () => {
     expect(typeof strategy.run).toBe('function');
   });
 
+  it('can report an alias provider name', () => {
+    const aliasedProvider = new GeminiCliProvider(
+      {
+        enabled: true,
+        command: 'gemini',
+        contextWindowTokens: 1_000_000,
+      },
+      'gemini-fast',
+    );
+
+    expect(aliasedProvider.name).toBe('gemini-fast');
+  });
+
   it('prepares Gemini background invocations with temp settings and env overrides', () => {
     const result = provider.prepareBackgroundInvocation({
       prompt: 'Refactor the auth module.',
@@ -267,9 +280,8 @@ describe('GeminiCliProvider', () => {
     vi.resetModules();
 
     try {
-      const { GeminiCliProvider: IsolatedProvider } = await import(
-        '../../../src/providers/gemini-cli-provider.js'
-      );
+      const { GeminiCliProvider: IsolatedProvider } =
+        await import('../../../src/providers/gemini-cli-provider.js');
       const isolatedProvider = new IsolatedProvider({
         enabled: true,
         command: 'gemini',

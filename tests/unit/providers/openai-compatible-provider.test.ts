@@ -78,6 +78,20 @@ describe('OpenAiCompatibleProvider', () => {
     });
   }
 
+  it('can report an alias provider name', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3-coder:30b',
+        baseUrl: 'http://127.0.0.1:11434/v1',
+      },
+    }, {}, 'ollama-mac');
+
+    expect(provider.name).toBe('ollama-mac');
+  });
+
   it('forwards options.toolOutputCap to the wrapper payload when configured', () => {
     const provider = new OpenAiCompatibleProvider({
       enabled: true,

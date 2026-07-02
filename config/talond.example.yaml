@@ -190,6 +190,24 @@ agentRunner:
         # (Ollama 8K-32K). Set to 0 to disable. Defaults to 4000 when the
         # key is omitted.
         toolOutputCap: 4000
+    # Add more OpenAI-compatible endpoints by giving each provider a unique
+    # name and pointing type at the shared implementation.
+    ollama-mac:
+      enabled: false
+      type: openai-compatible
+      command: node
+      contextWindowTokens: 128000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://mac.local:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama-mac
+        toolOutputCap: 4000
 
 backgroundAgent:
   enabled: true
@@ -227,6 +245,15 @@ backgroundAgent:
         baseUrl: http://127.0.0.1:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama
+    ollama-mac:
+      enabled: false
+      type: openai-compatible
+      command: node
+      contextWindowTokens: 128000
+      options:
+        baseUrl: http://mac.local:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama-mac
 
 scheduler:
   tickIntervalMs: 5000

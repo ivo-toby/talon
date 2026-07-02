@@ -185,9 +185,10 @@ export async function bootstrap(
     // Non-fatal — release will be unset in traces.
   }
 
-  const langfuseConfig = packageVersion && !config.langfuse.release
-    ? { ...config.langfuse, release: packageVersion }
-    : config.langfuse;
+  const langfuseConfig =
+    packageVersion && !config.langfuse.release
+      ? { ...config.langfuse, release: packageVersion }
+      : config.langfuse;
 
   const observability = await createObservabilityService(langfuseConfig, logger);
 
@@ -211,10 +212,7 @@ export async function bootstrap(
   if (loadedSkills.isErr()) {
     await cleanupBootstrapFailure(db, observability, logger);
     return err(
-      new DaemonError(
-        `Failed to load skills: ${loadedSkills.error.message}`,
-        loadedSkills.error,
-      ),
+      new DaemonError(`Failed to load skills: ${loadedSkills.error.message}`, loadedSkills.error),
     );
   }
 
@@ -227,10 +225,7 @@ export async function bootstrap(
   if (toolInstructions.size === 0) {
     toolInstructions = loadToolInstructions(rootToolInstructionsDir);
   }
-  logger.info(
-    { count: toolInstructions.size },
-    'bootstrap: tool instructions loaded',
-  );
+  logger.info({ count: toolInstructions.size }, 'bootstrap: tool instructions loaded');
 
   // 8b. Load sub-agents (optional — if the directory does not exist, skip)
   //     Load from three sources in priority order (later overrides earlier):
@@ -323,10 +318,13 @@ export async function bootstrap(
   const sessionTracker = new SessionTracker();
 
   const providerFactories: ProviderFactoryMap = {
-    'claude-code': (providerConfig) => new ClaudeCodeProvider(providerConfig),
-    'gemini-cli': (providerConfig) => new GeminiCliProvider(providerConfig),
-    'codex-cli': (providerConfig) => new CodexCliProvider(providerConfig, { dataDir }),
-    'openai-compatible': (providerConfig) => {
+    'claude-code': (providerConfig, providerName) =>
+      new ClaudeCodeProvider(providerConfig, providerName),
+    'gemini-cli': (providerConfig, providerName) =>
+      new GeminiCliProvider(providerConfig, providerName),
+    'codex-cli': (providerConfig, providerName) =>
+      new CodexCliProvider(providerConfig, { dataDir }, providerName),
+    'openai-compatible': (providerConfig, providerName) => {
       // Credentials are looked up under auth.providers.<options.providerId>
       // first (e.g. `ollama`, `groq`, `together`), so users can reuse the
       // same credential slot already consumed by the matching sub-agent
@@ -340,10 +338,14 @@ export async function bootstrap(
           : undefined;
       const creds =
         (providerId ? authProviders[providerId] : undefined) ?? authProviders['openai-compatible'];
-      return new OpenAiCompatibleProvider(providerConfig, {
-        apiKey: creds?.apiKey,
-        baseUrl: creds?.baseURL,
-      });
+      return new OpenAiCompatibleProvider(
+        providerConfig,
+        {
+          apiKey: creds?.apiKey,
+          baseUrl: creds?.baseURL,
+        },
+        providerName,
+      );
     },
   };
   const providerRegistry = new ProviderRegistry(config.agentRunner.providers, providerFactories);
@@ -378,8 +380,9 @@ export async function bootstrap(
 
   // 9b. Context roller (needs configured summarizer sub-agents)
   let contextRoller: ContextRoller | null = null;
-  const enabledContextProviders = Object.entries(config.agentRunner.providers)
-    .filter(([, providerConfig]) => providerConfig.contextManagement.enabled);
+  const enabledContextProviders = Object.entries(config.agentRunner.providers).filter(
+    ([, providerConfig]) => providerConfig.contextManagement.enabled,
+  );
   const configuredSummarizers = enabledContextProviders
     .map(([, providerConfig]) => providerConfig.contextManagement.summarizer)
     .filter((name): name is string => typeof name === 'string' && name.length > 0);
@@ -426,7 +429,11 @@ export async function bootstrap(
           timeoutMs: e.timeoutMs ?? summarizerAgent.manifest.timeoutMs,
           source: 'override' as const,
         })),
-        { ...summarizerAgent.manifest.model, timeoutMs: summarizerAgent.manifest.timeoutMs, source: 'manifest' as const },
+        {
+          ...summarizerAgent.manifest.model,
+          timeoutMs: summarizerAgent.manifest.timeoutMs,
+          source: 'manifest' as const,
+        },
       ];
 
       const anyResolvable = await Promise.any(
@@ -459,7 +466,9 @@ export async function bootstrap(
       // places until this is deduplicated.
       // TODO(#159): extract a shared runSubAgentChain helper used by runner + CLI + bootstrap.
       const boundSummarizer: import('./context-roller.js').SummarizerRunFn = async (
-        threadId, personaId, input,
+        threadId,
+        personaId,
+        input,
       ) => {
         const modelChain = [
           ...(overrideConfig?.model ?? []).map((e) => ({
@@ -470,14 +479,23 @@ export async function bootstrap(
             providerOptions: e.providerOptions,
             source: 'override' as const,
           })),
-          { ...summarizerAgent.manifest.model, timeoutMs: summarizerAgent.manifest.timeoutMs, providerOptions: undefined as Record<string, unknown> | undefined, source: 'manifest' as const },
+          {
+            ...summarizerAgent.manifest.model,
+            timeoutMs: summarizerAgent.manifest.timeoutMs,
+            providerOptions: undefined as Record<string, unknown> | undefined,
+            source: 'manifest' as const,
+          },
         ];
 
         for (const entry of modelChain) {
           const modelResult = await modelResolver.resolve(entry);
           if (modelResult.isErr()) {
             logger.warn(
-              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source },
+              {
+                summarizer: summarizerName,
+                model: `${entry.provider}/${entry.name}`,
+                source: entry.source,
+              },
               `bootstrap: summarizer model resolution failed, trying next: ${modelResult.error.message}`,
             );
             continue;
@@ -486,13 +504,12 @@ export async function bootstrap(
           const abortController = new AbortController();
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
           const timeoutPromise = new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(
-              () => {
-                abortController.abort();
-                reject(new Error(`summarizer "${summarizerName}" timed out after ${entry.timeoutMs}ms`));
-              },
-              entry.timeoutMs,
-            );
+            timeoutId = setTimeout(() => {
+              abortController.abort();
+              reject(
+                new Error(`summarizer "${summarizerName}" timed out after ${entry.timeoutMs}ms`),
+              );
+            }, entry.timeoutMs);
           });
 
           const wrappedProviderOptions = wrapProviderOptions(
@@ -536,13 +553,22 @@ export async function bootstrap(
             }
 
             logger.warn(
-              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source },
+              {
+                summarizer: summarizerName,
+                model: `${entry.provider}/${entry.name}`,
+                source: entry.source,
+              },
               `bootstrap: summarizer run failed, trying next: ${result.error.message}`,
             );
           } catch (runError) {
             const msg = runError instanceof Error ? runError.message : String(runError);
             logger.warn(
-              { summarizer: summarizerName, model: `${entry.provider}/${entry.name}`, source: entry.source, timeoutMs: entry.timeoutMs },
+              {
+                summarizer: summarizerName,
+                model: `${entry.provider}/${entry.name}`,
+                source: entry.source,
+                timeoutMs: entry.timeoutMs,
+              },
               `bootstrap: summarizer threw, trying next: ${msg}`,
             );
           } finally {
@@ -558,8 +584,7 @@ export async function bootstrap(
     }
 
     const defaultSummarizer =
-      boundSummarizers.get('session-summarizer')
-      ?? [...boundSummarizers.values()][0];
+      boundSummarizers.get('session-summarizer') ?? [...boundSummarizers.values()][0];
 
     if (defaultSummarizer) {
       contextRoller = new ContextRoller({
@@ -643,7 +668,13 @@ export async function bootstrap(
     personaRepo: repos.persona,
     logger,
   });
-  const scheduler = new Scheduler(repos.schedule, queueManager, personaLoader, config.scheduler, logger);
+  const scheduler = new Scheduler(
+    repos.schedule,
+    queueManager,
+    personaLoader,
+    config.scheduler,
+    logger,
+  );
 
   // 15. Message pipeline and channel registration
   const router = new ChannelRouter(repos.binding, logger);
@@ -733,7 +764,10 @@ async function cleanupBootstrapFailure(
   try {
     await observability.shutdown();
   } catch (error) {
-    logger.warn({ err: error }, 'bootstrap: failed to shut down observability after bootstrap error');
+    logger.warn(
+      { err: error },
+      'bootstrap: failed to shut down observability after bootstrap error',
+    );
   }
 
   db.close();

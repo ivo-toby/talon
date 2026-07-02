@@ -3,10 +3,12 @@ import type { ProviderConfig } from '../core/config/config-types.js';
 import type { ProviderName } from './provider-types.js';
 
 export interface ProviderFactoryMap<Config extends ProviderConfig = ProviderConfig> {
-  [name: string]: (config: Config) => AgentProvider;
+  [name: string]: (config: Config, providerName: ProviderName) => AgentProvider;
 }
 
 export interface ProviderEntry<Config extends ProviderConfig = ProviderConfig> {
+  name: ProviderName;
+  type: ProviderName;
   provider: AgentProvider;
   config: Config;
 }
@@ -23,13 +25,18 @@ export class ProviderRegistry<Config extends ProviderConfig = ProviderConfig> {
         continue;
       }
 
-      const factory = factories[name];
+      const type = typeof config.type === 'string' && config.type.trim().length > 0
+        ? config.type.trim()
+        : name;
+      const factory = factories[type];
       if (!factory) {
         continue;
       }
 
       this.providers.set(name, {
-        provider: factory(config),
+        name,
+        type,
+        provider: factory(config, name),
         config,
       });
     }

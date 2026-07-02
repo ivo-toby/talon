@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   chmodSync,
   mkdirSync,
@@ -27,6 +27,9 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.FAKE_CODEX_LOG;
   delete process.env.FAKE_CODEX_MODE;
+  delete process.env.OLLAMA_MAC_BASE_URL;
+  delete process.env.OLLAMA_MAC_API_KEY;
+  vi.unstubAllGlobals();
 
   if (originalHome === undefined) {
     delete process.env.HOME;
@@ -53,6 +56,33 @@ function writeConfig(providerName: string, command: string, defaultModel?: strin
       '      enabled: true',
       `      command: ${JSON.stringify(command)}`,
       ...optionsLines,
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return configPath;
+}
+
+function writeOpenAiCompatibleConfig(command: string): string {
+  const configPath = join(testDir, 'talond.yaml');
+  writeFileSync(
+    configPath,
+    [
+      'logLevel: info',
+      'auth:',
+      '  providers:',
+      '    ollama-mac:',
+      '      baseURL: ${OLLAMA_MAC_BASE_URL}',
+      '      apiKey: ${OLLAMA_MAC_API_KEY}',
+      'agentRunner:',
+      '  providers:',
+      '    ollama-mac:',
+      '      enabled: true',
+      '      type: openai-compatible',
+      `      command: ${JSON.stringify(command)}`,
+      '      options:',
+      '        defaultModel: qwen3-coder:30b',
+      '        providerId: ollama-mac',
       '',
     ].join('\n'),
     'utf8',
@@ -293,5 +323,60 @@ describe('testProvider() Codex smoke branch', () => {
     const modelFlagIndex = invocation.args.indexOf('--model');
     expect(modelFlagIndex).toBeGreaterThan(-1);
     expect(invocation.args[modelFlagIndex + 1]).toBe('gpt-5.4-mini');
+  });
+});
+
+describe('testProvider() OpenAI-compatible smoke branch', () => {
+  it('recognizes an aliased provider by type and calls chat completions', async () => {
+    const fakeCli = writeFakeExecutable('node-fake');
+    const configPath = writeOpenAiCompatibleConfig(fakeCli);
+    process.env.OLLAMA_MAC_BASE_URL = 'http://mac.local:11434/v1';
+    process.env.OLLAMA_MAC_API_KEY = 'local-key';
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [
+            {
+              message: {
+                content: 'hello',
+              },
+            },
+          ],
+          usage: {
+            prompt_tokens: 12,
+            completion_tokens: 2,
+          },
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await testProvider({
+      name: 'ollama-mac',
+      configPath,
+    });
+
+    expect(result.binaryFound).toBe(true);
+    expect(result.response).toBe('hello');
+    expect(result.jsonValid).toBe(true);
+    expect(result.inputTokens).toBe(12);
+    expect(result.outputTokens).toBe(2);
+    expect(result.error).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://mac.local:11434/v1/chat/completions',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          authorization: 'Bearer local-key',
+        }),
+      }),
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string) as {
+      model: string;
+      messages: Array<{ content: string }>;
+    };
+    expect(body.model).toBe('qwen3-coder:30b');
+    expect(body.messages[0]?.content).toBe('Say hello in one word');
   });
 });

@@ -657,6 +657,33 @@ describe('ProviderConfigSchema', () => {
       });
     }
   });
+
+  it('accepts an implementation type for provider aliases', () => {
+    const result = ProviderConfigSchema.safeParse({
+      enabled: true,
+      type: 'openai-compatible',
+      command: 'node',
+      contextWindowTokens: 128000,
+      options: {
+        baseUrl: 'http://mac.local:11434/v1',
+        defaultModel: 'qwen3-coder:30b',
+        providerId: 'ollama-mac',
+      },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.type).toBe('openai-compatible');
+      expect(result.data.options?.providerId).toBe('ollama-mac');
+    }
+  });
+
+  it('rejects an empty implementation type', () => {
+    const result = ProviderConfigSchema.safeParse({
+      type: '   ',
+      command: 'node',
+    });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('AgentRunnerConfigSchema', () => {

@@ -89,7 +89,7 @@ running from a source clone as a systemd service? See
 
 Agent execution is decoupled from any specific SDK or CLI. A provider layer sits between the daemon core and the actual model runtime, so swapping or adding providers doesn't require changes to the runner, queue, or context management.
 
-Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI, Codex CLI are supported as first-class providers. An **experimental** OpenAI-compatible provider (Mastra-backed) is available for Ollama, vLLM, Groq, and other OpenAI-compatible endpoints.
+Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI, Codex CLI are supported as first-class providers. An **experimental** OpenAI-compatible provider (Mastra-backed) is available for Ollama, vLLM, Groq, and other OpenAI-compatible endpoints. Provider entries may also set `type` to reuse an implementation under a distinct provider name, for example `ollama-mac` with `type: openai-compatible` alongside an existing Ollama Cloud provider.
 
 This matters because it means you can:
 
@@ -138,6 +138,21 @@ agentRunner:
         baseUrl: http://127.0.0.1:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama
+    ollama-mac:                                # alias using the same implementation
+      enabled: false
+      type: openai-compatible
+      command: node
+      contextWindowTokens: 128000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        baseUrl: http://mac.local:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama-mac
 
 backgroundAgent:
   enabled: true
@@ -162,6 +177,15 @@ backgroundAgent:
         baseUrl: http://127.0.0.1:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama
+    ollama-mac:
+      enabled: false
+      type: openai-compatible
+      command: node
+      contextWindowTokens: 128000
+      options:
+        baseUrl: http://mac.local:11434/v1
+        defaultModel: qwen3-coder:30b
+        providerId: ollama-mac
 ```
 
 ### Infrastructure
@@ -1720,6 +1744,7 @@ npx talonctl reset-provider-affinity --channel my-telegram --external-id 1234567
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--name <name>` | Provider name, e.g. `gemini-cli` (required) | — |
+| `--type <type>` | Provider implementation type when `--name` is an alias, e.g. `openai-compatible` | — |
 | `--command <cmd>` | CLI binary path, e.g. `gemini` (required) | — |
 | `--context <ctx>` | Where to add: `agent-runner`, `background`, or `both` | `both` |
 | `--context-window <tokens>` | Context window size in tokens | `200000` |
@@ -1730,6 +1755,9 @@ npx talonctl reset-provider-affinity --channel my-telegram --external-id 1234567
 | `--summarizer <name>` | Subagent name for session summarization | `session-summarizer` |
 | `--enabled` | Enable the provider immediately | disabled |
 | `--default-model <model>` | Set `options.defaultModel` | — |
+| `--base-url <url>` | Set `options.baseUrl` for OpenAI-compatible providers | — |
+| `--provider-id <id>` | Set `options.providerId` for OpenAI-compatible credential lookup | — |
+| `--tool-output-cap <chars>` | Set `options.toolOutputCap` for OpenAI-compatible providers | — |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
 **`set-default-provider`** options:
@@ -1752,11 +1780,14 @@ npx talonctl reset-provider-affinity --channel my-telegram --external-id 1234567
 npx talonctl list-providers
 npx talonctl add-provider --name gemini-cli --command gemini \
   --context-window 1000000 --default-model gemini-2.5-pro --enabled
+npx talonctl add-provider --name ollama-mac --type openai-compatible --command node \
+  --context both --context-window 128000 --default-model qwen3-coder:30b \
+  --base-url http://mac.local:11434/v1 --provider-id ollama-mac --enabled
 npx talonctl set-default-provider --name gemini-cli --context agent-runner
 npx talonctl test-provider --name gemini-cli
 ```
 
-For `openai-compatible` (**experimental**), add the provider entry and then set `options.baseUrl` plus `options.providerId` manually in `talond.yaml`. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
+For `openai-compatible` (**experimental**), use the canonical provider name `openai-compatible` or add an alias with `type: openai-compatible` when you need multiple endpoints at once. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.ollama-mac`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
 
 > **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, `maxSteps` override for tool-call limits, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
 
