@@ -1,19 +1,63 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { ModelResolver } from '../../../src/subagents/model-resolver.js';
 
 describe('ModelResolver', () => {
+  afterEach(() => {
+    delete process.env.ANTHROPIC_BASE_URL;
+  });
+
   it('resolves an anthropic model', async () => {
     const resolver = new ModelResolver({ anthropic: { apiKey: 'sk-ant-test' } });
-    const result = await resolver.resolve({ provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'anthropic',
+      name: 'claude-haiku-4-5-20251001',
+      maxTokens: 2048,
+    });
     expect(result.isOk()).toBe(true);
     const model = result._unsafeUnwrap();
     expect(model).toBeTruthy();
-    expect(model.modelId).toBe('claude-haiku-4-5');
+    expect(model.modelId).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('does not let ambient ANTHROPIC_BASE_URL reroute configured anthropic models', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'http://localhost:11434';
+    const resolver = new ModelResolver({ anthropic: { apiKey: 'sk-ant-test' } });
+
+    const result = await resolver.resolve({
+      provider: 'anthropic',
+      name: 'claude-sonnet-4-6',
+      maxTokens: 2048,
+    });
+
+    expect(result.isOk()).toBe(true);
+    const model = result._unsafeUnwrap() as unknown as { config?: { baseURL?: string } };
+    expect(model.config?.baseURL).toBe('https://api.anthropic.com/v1');
+  });
+
+  it('uses explicit auth.providers.anthropic.baseURL when configured', async () => {
+    process.env.ANTHROPIC_BASE_URL = 'http://localhost:11434';
+    const resolver = new ModelResolver({
+      anthropic: { apiKey: 'sk-ant-test', baseURL: 'https://proxy.example.com/v1' },
+    });
+
+    const result = await resolver.resolve({
+      provider: 'anthropic',
+      name: 'claude-sonnet-4-6',
+      maxTokens: 2048,
+    });
+
+    expect(result.isOk()).toBe(true);
+    const model = result._unsafeUnwrap() as unknown as { config?: { baseURL?: string } };
+    expect(model.config?.baseURL).toBe('https://proxy.example.com/v1');
   });
 
   it('resolves an openai model', async () => {
     const resolver = new ModelResolver({ openai: { apiKey: 'sk-oai-test' } });
-    const result = await resolver.resolve({ provider: 'openai', name: 'gpt-4o-mini', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'openai',
+      name: 'gpt-4o-mini',
+      maxTokens: 2048,
+    });
     expect(result.isOk()).toBe(true);
     const model = result._unsafeUnwrap();
     expect(model.modelId).toBe('gpt-4o-mini');
@@ -21,7 +65,11 @@ describe('ModelResolver', () => {
 
   it('resolves a google model', async () => {
     const resolver = new ModelResolver({ google: { apiKey: 'google-test' } });
-    const result = await resolver.resolve({ provider: 'google', name: 'gemini-2.0-flash', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'google',
+      name: 'gemini-2.0-flash',
+      maxTokens: 2048,
+    });
     expect(result.isOk()).toBe(true);
     const model = result._unsafeUnwrap();
     expect(model.modelId).toBe('gemini-2.0-flash');
@@ -51,7 +99,11 @@ describe('ModelResolver', () => {
         apiKey: 'real-cloud-token',
       },
     });
-    const result = await resolver.resolve({ provider: 'ollama', name: 'qwen3-30b', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'ollama',
+      name: 'qwen3-30b',
+      maxTokens: 2048,
+    });
     expect(result.isOk()).toBe(true);
     const model = result._unsafeUnwrap();
     expect(model.modelId).toBe('qwen3-30b');
@@ -61,12 +113,16 @@ describe('ModelResolver', () => {
     const resolver = new ModelResolver({});
     const result = await resolver.resolve({ provider: 'unknown', name: 'model', maxTokens: 2048 });
     expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr().message).toContain('No credentials');
+    expect(result._unsafeUnwrapErr().message).toContain('Unsupported sub-agent model provider');
   });
 
   it('returns error when provider has no credentials configured', async () => {
     const resolver = new ModelResolver({});
-    const result = await resolver.resolve({ provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'anthropic',
+      name: 'claude-haiku-4-5-20251001',
+      maxTokens: 2048,
+    });
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('credentials');
   });
@@ -78,23 +134,48 @@ describe('ModelResolver', () => {
     expect(result._unsafeUnwrapErr().message).toContain('Unsupported');
   });
 
+  it('explains that agent runtime providers cannot be used for sub-agent models', async () => {
+    const resolver = new ModelResolver({});
+    const result = await resolver.resolve({
+      provider: 'codex-cli',
+      name: 'claude-sonnet-4-6',
+      maxTokens: 2048,
+    });
+    expect(result.isErr()).toBe(true);
+    const message = result._unsafeUnwrapErr().message;
+    expect(message).toContain('Unsupported sub-agent model provider "codex-cli"');
+    expect(message).toContain('Agent runtime providers');
+  });
+
   it('returns error when apiKey is missing for a provider that requires it', async () => {
     const resolver = new ModelResolver({ anthropic: { baseURL: 'https://example.com' } });
-    const result = await resolver.resolve({ provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'anthropic',
+      name: 'claude-haiku-4-5-20251001',
+      maxTokens: 2048,
+    });
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('Missing apiKey');
   });
 
   it('returns error when openai apiKey is missing', async () => {
     const resolver = new ModelResolver({ openai: {} });
-    const result = await resolver.resolve({ provider: 'openai', name: 'gpt-4o-mini', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'openai',
+      name: 'gpt-4o-mini',
+      maxTokens: 2048,
+    });
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('Missing apiKey');
   });
 
   it('returns error when google apiKey is missing', async () => {
     const resolver = new ModelResolver({ google: {} });
-    const result = await resolver.resolve({ provider: 'google', name: 'gemini-2.0-flash', maxTokens: 2048 });
+    const result = await resolver.resolve({
+      provider: 'google',
+      name: 'gemini-2.0-flash',
+      maxTokens: 2048,
+    });
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toContain('Missing apiKey');
   });

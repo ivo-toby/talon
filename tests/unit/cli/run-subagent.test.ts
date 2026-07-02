@@ -46,7 +46,7 @@ function writeSubAgent(root: string, name: string, runBody: string): void {
       `description: "Test agent ${name}"`,
       'model:',
       '  provider: anthropic',
-      '  name: claude-haiku-4-5',
+      '  name: claude-haiku-4-5-20251001',
       '  maxTokens: 1024',
       'requiredCapabilities: []',
       'rootPaths: []',
@@ -251,7 +251,7 @@ describe('runSubAgent()', () => {
           'capture-agent': {
             model: [
               { provider: 'ollama', name: 'qwen3-30b', maxTokens: 4096 },
-              { provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 2048 },
+              { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', maxTokens: 2048 },
             ],
           },
         },
@@ -269,7 +269,7 @@ describe('runSubAgent()', () => {
     it('falls back to the manifest model when all overrides fail', async () => {
       writeCapturingAgent(root, 'capture-agent');
 
-      // All overrides fail; manifest model (anthropic/claude-haiku-4-5) must
+      // All overrides fail; manifest model (anthropic/claude-haiku-4-5-20251001) must
       // still be tried by the CLI and succeed.
       resolveMock.mockImplementationOnce(async () => ({
         isErr: () => true,
@@ -297,7 +297,7 @@ describe('runSubAgent()', () => {
       expect(result.summary).toBe('captured');
       expect(resolveMock).toHaveBeenCalledTimes(2);
       expect(resolveMock.mock.calls[1]![0].provider).toBe('anthropic');
-      expect(resolveMock.mock.calls[1]![0].name).toBe('claude-haiku-4-5');
+      expect(resolveMock.mock.calls[1]![0].name).toBe('claude-haiku-4-5-20251001');
       // Context uses manifest maxTokens (1024 from writeSubAgent default).
       expect((globalThis as any).__lastCtx.maxOutputTokens).toBe(1024);
     });
@@ -379,7 +379,7 @@ describe('runSubAgent()', () => {
           'capture-agent': {
             model: [{
               provider: 'anthropic',
-              name: 'claude-haiku-4-5',
+              name: 'claude-haiku-4-5-20251001',
               providerOptions: { temperature: 0.99, max_tokens: 999999 },
             }],
           },

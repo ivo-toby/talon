@@ -1,6 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ok, err } from 'neverthrow';
-import { SubAgentRunner, type SubAgentInvokeContext } from '../../../src/subagents/subagent-runner.js';
+import {
+  SubAgentRunner,
+  type SubAgentInvokeContext,
+} from '../../../src/subagents/subagent-runner.js';
 import type { LoadedSubAgent, SubAgentServices } from '../../../src/subagents/subagent-types.js';
 import type { ModelResolver } from '../../../src/subagents/model-resolver.js';
 import { SubAgentError } from '../../../src/core/errors/index.js';
@@ -17,7 +20,7 @@ function makeAgent(overrides: Partial<LoadedSubAgent> = {}): LoadedSubAgent {
       name: 'test-agent',
       version: '0.1.0',
       description: 'A test sub-agent',
-      model: { provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 2048 },
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', maxTokens: 2048 },
       requiredCapabilities: ['memory.access'],
       rootPaths: [],
       timeoutMs: 30_000,
@@ -72,9 +75,27 @@ function makeRunner(
   agents: Map<string, LoadedSubAgent> = new Map(),
   resolver: ModelResolver = mockResolver,
   observability: ObservabilityService | undefined = undefined,
-  subagentOverrides: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number; providerOptions?: Record<string, unknown> }> }> = {},
+  subagentOverrides: Record<
+    string,
+    {
+      model: Array<{
+        provider: string;
+        name: string;
+        maxTokens?: number;
+        timeoutMs?: number;
+        providerOptions?: Record<string, unknown>;
+      }>;
+    }
+  > = {},
 ): SubAgentRunner {
-  return new SubAgentRunner(agents, resolver, mockServices, mockLogger, observability, subagentOverrides);
+  return new SubAgentRunner(
+    agents,
+    resolver,
+    mockServices,
+    mockLogger,
+    observability,
+    subagentOverrides,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -84,10 +105,13 @@ function makeRunner(
 describe('SubAgentRunner', () => {
   it('wraps sub-agent execution in an agent observation', async () => {
     const agent = makeAgent();
-    const observe = vi.fn(async (_input, fn) => await fn({
-      update: vi.fn(),
-      getTraceparent: vi.fn().mockReturnValue(null),
-    }));
+    const observe = vi.fn(
+      async (_input, fn) =>
+        await fn({
+          update: vi.fn(),
+          getTraceparent: vi.fn().mockReturnValue(null),
+        }),
+    );
     const observability = {
       observe,
       observeWithTraceparent: vi.fn(),
@@ -107,6 +131,41 @@ describe('SubAgentRunner', () => {
           threadId: 'thread-1',
           personaId: 'assistant',
         }),
+      }),
+      expect.any(Function),
+    );
+  });
+
+  it('nests sub-agent observations under the incoming traceparent', async () => {
+    const agent = makeAgent();
+    const observeWithTraceparent = vi.fn(
+      async (_traceparent, _input, fn) =>
+        await fn({
+          update: vi.fn(),
+          getTraceparent: vi.fn().mockReturnValue(null),
+        }),
+    );
+    const observability = {
+      observe: vi.fn(),
+      observeWithTraceparent,
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ObservabilityService;
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents, mockResolver, observability);
+    const traceparent = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+
+    const result = await runner.execute(
+      'test-agent',
+      { key: 'value' },
+      makeContext({ traceparent }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    expect(observeWithTraceparent).toHaveBeenCalledWith(
+      traceparent,
+      expect.objectContaining({
+        type: 'agent',
+        name: 'subagent:test-agent',
       }),
       expect.any(Function),
     );
@@ -190,9 +249,11 @@ describe('SubAgentRunner', () => {
   });
 
   it('respects timeout on slow sub-agents', async () => {
-    const slowRun = vi.fn().mockImplementation(
-      () => new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000)),
-    );
+    const slowRun = vi
+      .fn()
+      .mockImplementation(
+        () => new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000)),
+      );
     const agent = makeAgent({
       manifest: { ...makeAgent().manifest, timeoutMs: 100 },
       run: slowRun,
@@ -207,9 +268,7 @@ describe('SubAgentRunner', () => {
   });
 
   it('wraps sub-agent run errors in ToolError', async () => {
-    const failingRun = vi.fn().mockResolvedValue(
-      err(new SubAgentError('Something went wrong')),
-    );
+    const failingRun = vi.fn().mockResolvedValue(err(new SubAgentError('Something went wrong')));
     const agent = makeAgent({ run: failingRun });
     const agents = new Map([['test-agent', agent]]);
     const runner = makeRunner(agents);
@@ -323,7 +382,8 @@ describe('SubAgentRunner', () => {
 
       const fallbackModel = {} as any;
       const resolver = {
-        resolve: vi.fn()
+        resolve: vi
+          .fn()
           .mockResolvedValueOnce(err(new ConfigError('No credentials for ollama')))
           .mockResolvedValueOnce(ok(fallbackModel)),
       } as unknown as ModelResolver;
@@ -332,7 +392,7 @@ describe('SubAgentRunner', () => {
         'test-agent': {
           model: [
             { provider: 'ollama', name: 'qwen3-30b' },
-            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
           ],
         },
       });
@@ -351,7 +411,8 @@ describe('SubAgentRunner', () => {
 
       const manifestModel = {} as any;
       const resolver = {
-        resolve: vi.fn()
+        resolve: vi
+          .fn()
           .mockResolvedValueOnce(err(new ConfigError('No credentials for ollama')))
           .mockResolvedValueOnce(ok(manifestModel)),
       } as unknown as ModelResolver;
@@ -369,12 +430,13 @@ describe('SubAgentRunner', () => {
       expect(resolver.resolve).toHaveBeenCalledTimes(2);
       const secondCall = (resolver.resolve as ReturnType<typeof vi.fn>).mock.calls[1][0];
       expect(secondCall.provider).toBe('anthropic');
-      expect(secondCall.name).toBe('claude-haiku-4-5');
+      expect(secondCall.name).toBe('claude-haiku-4-5-20251001');
     });
 
     it('retries with next model when run() throws a runtime error', async () => {
       const agent = makeAgent({
-        run: vi.fn()
+        run: vi
+          .fn()
           .mockRejectedValueOnce(new Error('ECONNREFUSED'))
           .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
       });
@@ -383,16 +445,14 @@ describe('SubAgentRunner', () => {
       const model1 = {} as any;
       const model2 = {} as any;
       const resolver = {
-        resolve: vi.fn()
-          .mockResolvedValueOnce(ok(model1))
-          .mockResolvedValueOnce(ok(model2)),
+        resolve: vi.fn().mockResolvedValueOnce(ok(model1)).mockResolvedValueOnce(ok(model2)),
       } as unknown as ModelResolver;
 
       const runner = makeRunner(agents, resolver, undefined, {
         'test-agent': {
           model: [
             { provider: 'ollama', name: 'qwen3-30b' },
-            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
           ],
         },
       });
@@ -408,7 +468,8 @@ describe('SubAgentRunner', () => {
       const agents = new Map([['test-agent', agent]]);
 
       const resolver = {
-        resolve: vi.fn()
+        resolve: vi
+          .fn()
           .mockResolvedValueOnce(err(new ConfigError('No creds for ollama')))
           .mockResolvedValueOnce(err(new ConfigError('No creds for anthropic'))),
       } as unknown as ModelResolver;
@@ -523,8 +584,12 @@ describe('SubAgentRunner', () => {
     it('fails over to next model on timeout instead of terminating', async () => {
       const agent = makeAgent({
         manifest: { ...makeAgent().manifest, timeoutMs: 50 },
-        run: vi.fn()
-          .mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000)))
+        run: vi
+          .fn()
+          .mockImplementationOnce(
+            () =>
+              new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000)),
+          )
           .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
       });
       const agents = new Map([['test-agent', agent]]);
@@ -532,16 +597,14 @@ describe('SubAgentRunner', () => {
       const model1 = {} as any;
       const model2 = {} as any;
       const resolver = {
-        resolve: vi.fn()
-          .mockResolvedValueOnce(ok(model1))
-          .mockResolvedValueOnce(ok(model2)),
+        resolve: vi.fn().mockResolvedValueOnce(ok(model1)).mockResolvedValueOnce(ok(model2)),
       } as unknown as ModelResolver;
 
       const runner = makeRunner(agents, resolver, undefined, {
         'test-agent': {
           model: [
             { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 50 },
-            { provider: 'anthropic', name: 'claude-haiku-4-5', timeoutMs: 5000 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', timeoutMs: 5000 },
           ],
         },
       });
@@ -556,10 +619,13 @@ describe('SubAgentRunner', () => {
       let capturedSignal: AbortSignal | undefined;
       const agent = makeAgent({
         manifest: { ...makeAgent().manifest, timeoutMs: 50 },
-        run: vi.fn()
+        run: vi
+          .fn()
           .mockImplementationOnce((ctx: any) => {
             capturedSignal = ctx.abortSignal;
-            return new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000));
+            return new Promise((resolve) =>
+              setTimeout(() => resolve(ok({ summary: 'late' })), 10_000),
+            );
           })
           .mockResolvedValueOnce(ok({ summary: 'Done' })),
       });
@@ -572,7 +638,7 @@ describe('SubAgentRunner', () => {
         'test-agent': {
           model: [
             { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 50 },
-            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
           ],
         },
       });
@@ -593,13 +659,15 @@ describe('SubAgentRunner', () => {
 
       const runner = makeRunner(agents, resolver, undefined, {
         'test-agent': {
-          model: [{
-            provider: 'ollama',
-            name: 'qwen',
-            providerOptions: {
-              chat_template_kwargs: { enable_thinking: false },
+          model: [
+            {
+              provider: 'ollama',
+              name: 'qwen',
+              providerOptions: {
+                chat_template_kwargs: { enable_thinking: false },
+              },
             },
-          }],
+          ],
         },
       });
 
@@ -634,13 +702,15 @@ describe('SubAgentRunner', () => {
 
     it('does not leak providerOptions across chain entries on failover', async () => {
       const agent = makeAgent({
-        run: vi.fn()
+        run: vi
+          .fn()
           .mockRejectedValueOnce(new Error('first model blew up'))
           .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
       });
       const agents = new Map([['test-agent', agent]]);
       const resolver = {
-        resolve: vi.fn()
+        resolve: vi
+          .fn()
           .mockResolvedValueOnce(ok({} as any))
           .mockResolvedValueOnce(ok({} as any)),
       } as unknown as ModelResolver;
@@ -653,7 +723,7 @@ describe('SubAgentRunner', () => {
               name: 'qwen',
               providerOptions: { chat_template_kwargs: { enable_thinking: false } },
             },
-            { provider: 'anthropic', name: 'claude-haiku-4-5' },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
           ],
         },
       });
@@ -680,14 +750,16 @@ describe('SubAgentRunner', () => {
 
       const runner = makeRunner(agents, resolver, undefined, {
         'test-agent': {
-          model: [{
-            provider: 'anthropic',
-            name: 'claude-haiku-4-5',
-            // providerOptions on a typed provider is either silently dropped
-            // by the AI SDK or a config-injection vector (temperature /
-            // max_tokens override). Runner must drop it and log a warning.
-            providerOptions: { temperature: 0.99, max_tokens: 999999 },
-          }],
+          model: [
+            {
+              provider: 'anthropic',
+              name: 'claude-haiku-4-5-20251001',
+              // providerOptions on a typed provider is either silently dropped
+              // by the AI SDK or a config-injection vector (temperature /
+              // max_tokens override). Runner must drop it and log a warning.
+              providerOptions: { temperature: 0.99, max_tokens: 999999 },
+            },
+          ],
         },
       });
 

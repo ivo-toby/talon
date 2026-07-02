@@ -16,6 +16,15 @@ import { z } from 'zod';
 // Model configuration
 // ---------------------------------------------------------------------------
 
+export const SUPPORTED_SUBAGENT_MODEL_PROVIDERS = [
+  'anthropic',
+  'openai',
+  'google',
+  'ollama',
+] as const;
+
+export const SubAgentModelProviderSchema = z.enum(SUPPORTED_SUBAGENT_MODEL_PROVIDERS);
+
 /**
  * Zod schema for the `model` block inside a sub-agent manifest.
  *
@@ -23,9 +32,9 @@ import { z } from 'zod';
  */
 export const SubAgentModelSchema = z.object({
   /** AI provider identifier (e.g. `anthropic`, `openai`, `google`). */
-  provider: z.string().min(1, 'model provider must be non-empty'),
+  provider: SubAgentModelProviderSchema,
 
-  /** Model name as understood by the provider (e.g. `claude-haiku-4-5`). */
+  /** Model name as understood by the provider (e.g. `claude-haiku-4-5-20251001`). */
   name: z.string().min(1, 'model name must be non-empty'),
 
   /** Maximum output tokens per generation. Defaults to 2048. */

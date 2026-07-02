@@ -21,7 +21,7 @@ token. Good first choice if you have an Anthropic API key.
 ```yaml
 personas:
   - name: assistant
-    model: claude-sonnet-4-6        # or claude-opus-4-7, claude-haiku-4-5
+    model: claude-sonnet-4-6        # or claude-opus-4-7, claude-haiku-4-5-20251001
     provider: claude-code
 
 agentRunner:

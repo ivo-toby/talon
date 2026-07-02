@@ -4,7 +4,7 @@ description: "Finds relevant memories for a query using keyword pre-filter and L
 
 model:
   provider: anthropic
-  name: claude-haiku-4-5
+  name: claude-haiku-4-5-20251001
   maxTokens: 4096
 
 requiredCapabilities:

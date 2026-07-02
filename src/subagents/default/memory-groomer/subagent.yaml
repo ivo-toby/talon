@@ -4,7 +4,7 @@ description: "Reviews memory entries, consolidates duplicates, prunes stale item
 
 model:
   provider: anthropic
-  name: claude-haiku-4-5
+  name: claude-haiku-4-5-20251001
   maxTokens: 24576
 
 requiredCapabilities:

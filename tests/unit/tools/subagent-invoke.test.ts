@@ -20,9 +20,10 @@ describe('SubAgentInvokeHandler', () => {
   });
 
   it('delegates to runner and returns success result', async () => {
+    const execute = vi.fn().mockResolvedValue(ok({ summary: 'Done', data: { key: 'value' } }));
     const handler = new SubAgentInvokeHandler({
       runner: {
-        execute: vi.fn().mockResolvedValue(ok({ summary: 'Done', data: { key: 'value' } })),
+        execute,
       } as any,
       personaLoader: {
         getByName: vi.fn().mockReturnValue(
@@ -38,11 +39,20 @@ describe('SubAgentInvokeHandler', () => {
 
     const result = await handler.execute(
       { name: 'test-agent', input: { query: 'hello' } },
-      { runId: 'r1', threadId: 't1', personaId: 'p1' },
+      { runId: 'r1', threadId: 't1', personaId: 'p1', traceparent: '00-trace-parent-01' },
     );
 
     expect(result.status).toBe('success');
     expect(result.result).toEqual({ summary: 'Done', data: { key: 'value' } });
+    expect(execute).toHaveBeenCalledWith(
+      'test-agent',
+      { query: 'hello' },
+      expect.objectContaining({
+        threadId: 't1',
+        personaId: 'p1',
+        traceparent: '00-trace-parent-01',
+      }),
+    );
   });
 
   it('returns error when runner rejects', async () => {
@@ -96,10 +106,11 @@ describe('SubAgentInvokeHandler', () => {
       logger: makeLogger(),
     });
 
-    const result = await handler.execute(
-      { input: {} } as any,
-      { runId: 'r1', threadId: 't1', personaId: 'p1' },
-    );
+    const result = await handler.execute({ input: {} } as any, {
+      runId: 'r1',
+      threadId: 't1',
+      personaId: 'p1',
+    });
 
     expect(result.status).toBe('error');
     expect(result.error).toContain('name');
