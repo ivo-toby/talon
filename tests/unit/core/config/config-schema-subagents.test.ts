@@ -8,7 +8,7 @@ describe('TalondConfigSchema — subagents override', () => {
         'memory-groomer': {
           model: [
             { provider: 'ollama', name: 'qwen3-30b' },
-            { provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 4096 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', maxTokens: 4096 },
           ],
         },
       },
@@ -51,6 +51,17 @@ describe('TalondConfigSchema — subagents override', () => {
     expect(result.success).toBe(false);
   });
 
+  it('rejects agent runtime providers in subagent model overrides', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'memory-groomer': {
+          model: [{ provider: 'codex-cli', name: 'claude-sonnet-4-6' }],
+        },
+      },
+    });
+    expect(result.success).toBe(false);
+  });
+
   it('rejects model entry with empty name', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {
@@ -65,7 +76,7 @@ describe('TalondConfigSchema — subagents override', () => {
   it('rejects negative maxTokens', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {
-        'test': {
+        test: {
           model: [{ provider: 'anthropic', name: 'haiku', maxTokens: -1 }],
         },
       },
@@ -79,7 +90,7 @@ describe('TalondConfigSchema — subagents override', () => {
         'memory-groomer': {
           model: [
             { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 120000 },
-            { provider: 'anthropic', name: 'claude-haiku-4-5', timeoutMs: 60000 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', timeoutMs: 60000 },
           ],
         },
       },
@@ -94,7 +105,7 @@ describe('TalondConfigSchema — subagents override', () => {
   it('allows timeoutMs to be omitted (remains undefined)', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {
-        'test': {
+        test: {
           model: [{ provider: 'anthropic', name: 'haiku' }],
         },
       },
@@ -108,7 +119,7 @@ describe('TalondConfigSchema — subagents override', () => {
   it('rejects timeoutMs below 1000', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {
-        'test': {
+        test: {
           model: [{ provider: 'anthropic', name: 'haiku', timeoutMs: 500 }],
         },
       },
@@ -146,7 +157,7 @@ describe('TalondConfigSchema — subagents override', () => {
   it('allows providerOptions to be omitted (remains undefined)', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {
-        'test': { model: [{ provider: 'ollama', name: 'qwen' }] },
+        test: { model: [{ provider: 'ollama', name: 'qwen' }] },
       },
     });
     expect(result.success).toBe(true);
@@ -158,16 +169,18 @@ describe('TalondConfigSchema — subagents override', () => {
   it('accepts deeply nested providerOptions without inner validation', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {
-        'test': {
-          model: [{
-            provider: 'ollama',
-            name: 'qwen',
-            providerOptions: {
-              level1: { level2: { level3: 'deep' } },
-              arrayField: [1, 2, 3],
-              nullField: null,
+        test: {
+          model: [
+            {
+              provider: 'ollama',
+              name: 'qwen',
+              providerOptions: {
+                level1: { level2: { level3: 'deep' } },
+                arrayField: [1, 2, 3],
+                nullField: null,
+              },
             },
-          }],
+          ],
         },
       },
     });

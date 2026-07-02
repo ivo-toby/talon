@@ -387,3 +387,30 @@ langfuse:
 | `exportMode` | `batched \| immediate` | `batched` | Export strategy |
 | `flushAt` | integer ≥ 1 | `20` | Batch size |
 | `flushIntervalSeconds` | integer ≥ 1 | `5` | Flush interval |
+
+---
+
+## `subagents`
+
+```yaml
+subagents:
+  memory-groomer:
+    model:
+      - provider: ollama
+        name: qwen3-30b
+      - provider: anthropic
+        name: claude-haiku-4-5-20251001
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `subagents.<name>.model` | array | — | Ordered model failover chain for a sub-agent |
+| `model[].provider` | `anthropic \| openai \| google \| ollama` | required | AI SDK model provider slot |
+| `model[].name` | string | required | Model name for that provider |
+| `model[].maxTokens` | integer > 0 | manifest value | Optional max output tokens |
+| `model[].timeoutMs` | integer ≥ 1000 | manifest value | Optional per-model timeout |
+| `model[].providerOptions` | object | — | Vendor-specific options, effective only for `ollama` passthrough |
+
+`subagents.*.model[].provider` is not an agent runtime provider. `codex-cli`,
+`claude-code`, `gemini-cli`, and `openai-compatible` are invalid here; use
+`ollama` for OpenAI-compatible sub-agent endpoints.

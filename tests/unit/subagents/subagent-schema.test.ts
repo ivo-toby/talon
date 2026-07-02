@@ -6,7 +6,7 @@ describe('SubAgentManifestSchema', () => {
     name: 'test-agent',
     version: '0.1.0',
     description: 'A test sub-agent',
-    model: { provider: 'anthropic', name: 'claude-haiku-4-5' },
+    model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
   };
 
   it('parses a minimal manifest', () => {
@@ -25,14 +25,17 @@ describe('SubAgentManifestSchema', () => {
       name: 'memory-groomer',
       version: '0.1.0',
       description: 'Grooms memory entries',
-      model: { provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 4096 },
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', maxTokens: 4096 },
       requiredCapabilities: ['memory.read:thread', 'memory.write:thread'],
       rootPaths: ['/home/talon/notes'],
       timeoutMs: 60000,
     });
     expect(result.success).toBe(true);
     if (result.success) {
-      expect(result.data.requiredCapabilities).toEqual(['memory.read:thread', 'memory.write:thread']);
+      expect(result.data.requiredCapabilities).toEqual([
+        'memory.read:thread',
+        'memory.write:thread',
+      ]);
       expect(result.data.rootPaths).toEqual(['/home/talon/notes']);
       expect(result.data.timeoutMs).toBe(60000);
       expect(result.data.model.maxTokens).toBe(4096);
@@ -63,7 +66,15 @@ describe('SubAgentManifestSchema', () => {
   it('rejects empty model provider', () => {
     const result = SubAgentManifestSchema.safeParse({
       ...minimal,
-      model: { provider: '', name: 'claude-haiku-4-5' },
+      model: { provider: '', name: 'claude-haiku-4-5-20251001' },
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects agent runtime providers as model providers', () => {
+    const result = SubAgentManifestSchema.safeParse({
+      ...minimal,
+      model: { provider: 'codex-cli', name: 'claude-sonnet-4-6' },
     });
     expect(result.success).toBe(false);
   });
@@ -81,7 +92,7 @@ describe('SubAgentManifestSchema', () => {
   it('rejects model.maxTokens of 0', () => {
     const result = SubAgentManifestSchema.safeParse({
       ...minimal,
-      model: { provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 0 },
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', maxTokens: 0 },
     });
     expect(result.success).toBe(false);
   });
@@ -89,7 +100,7 @@ describe('SubAgentManifestSchema', () => {
   it('rejects negative model.maxTokens', () => {
     const result = SubAgentManifestSchema.safeParse({
       ...minimal,
-      model: { provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: -100 },
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', maxTokens: -100 },
     });
     expect(result.success).toBe(false);
   });
@@ -97,7 +108,7 @@ describe('SubAgentManifestSchema', () => {
   it('rejects non-integer model.maxTokens', () => {
     const result = SubAgentManifestSchema.safeParse({
       ...minimal,
-      model: { provider: 'anthropic', name: 'claude-haiku-4-5', maxTokens: 1024.5 },
+      model: { provider: 'anthropic', name: 'claude-haiku-4-5-20251001', maxTokens: 1024.5 },
     });
     expect(result.success).toBe(false);
   });

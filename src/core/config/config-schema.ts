@@ -41,8 +41,16 @@ export const SandboxConfigSchema = z.object({
   image: z.string().default('talon-sandbox:latest'),
   maxConcurrent: z.number().int().min(1).default(3),
   networkDefault: z.enum(['off', 'on']).default('off'),
-  idleTimeoutMs: z.number().int().min(0).default(30 * 60 * 1000),
-  hardTimeoutMs: z.number().int().min(0).default(60 * 60 * 1000),
+  idleTimeoutMs: z
+    .number()
+    .int()
+    .min(0)
+    .default(30 * 60 * 1000),
+  hardTimeoutMs: z
+    .number()
+    .int()
+    .min(0)
+    .default(60 * 60 * 1000),
   resourceLimits: ResourceLimitsSchema.default(() => ResourceLimitsSchema.parse({})),
 });
 
@@ -118,7 +126,16 @@ export const PersonaConfigSchema = z.object({
 // ---------------------------------------------------------------------------
 
 export const ChannelConfigSchema = z.object({
-  type: z.enum(['telegram', 'whatsapp', 'whatsappBusiness', 'whatsappBaileys', 'slack', 'email', 'discord', 'terminal']),
+  type: z.enum([
+    'telegram',
+    'whatsapp',
+    'whatsappBusiness',
+    'whatsappBaileys',
+    'slack',
+    'email',
+    'discord',
+    'terminal',
+  ]),
   name: z.string().min(1),
   config: z.record(z.string(), z.unknown()).default({}),
   tokenRef: z.string().optional(),
@@ -193,12 +210,14 @@ export const ProviderConfigSchema = z.object({
 export const ContextManagementConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
-    triggerMetric: z.enum([
-      'input_tokens',
-      'cache_read_input_tokens',
-      'cache_creation_input_tokens',
-      'cache_total_input_tokens',
-    ]).optional(),
+    triggerMetric: z
+      .enum([
+        'input_tokens',
+        'cache_read_input_tokens',
+        'cache_creation_input_tokens',
+        'cache_total_input_tokens',
+      ])
+      .optional(),
     thresholdRatio: z.number().min(0).max(1).optional(),
     recentMessageCount: z.number().int().min(0).default(10),
     summarizer: z.string().trim().min(1).optional(),
@@ -246,7 +265,7 @@ export const AgentRunnerProviderConfigSchema = ProviderConfigSchema.extend({
   ),
 });
 
-function defaultClaudeProviderConfig() {
+function defaultClaudeProviderConfig(): z.infer<typeof ProviderConfigSchema> {
   return ProviderConfigSchema.parse({
     enabled: true,
     command: 'claude',
@@ -254,7 +273,7 @@ function defaultClaudeProviderConfig() {
   });
 }
 
-function defaultClaudeAgentRunnerProviderConfig() {
+function defaultClaudeAgentRunnerProviderConfig(): z.infer<typeof AgentRunnerProviderConfigSchema> {
   return AgentRunnerProviderConfigSchema.parse({
     enabled: true,
     command: 'claude',
@@ -299,7 +318,11 @@ export const SpritesConfigSchema = z
     defaultBaseSnapshot: z.string().optional(),
     workingDirectory: z.string().default('/workspace'),
     createTimeoutMs: z.number().int().min(1000).default(60_000),
-    execTimeoutMs: z.number().int().min(1000).default(20 * 60 * 1000),
+    execTimeoutMs: z
+      .number()
+      .int()
+      .min(1000)
+      .default(20 * 60 * 1000),
     autoDestroyOnCompletion: z.boolean().default(true),
     resourceLimits: ExecutionEnvResourceLimitsSchema.default(() =>
       ExecutionEnvResourceLimitsSchema.parse({}),
@@ -385,8 +408,10 @@ export const A2AConfigSchema = z.object({
 // Sub-agent overrides
 // ---------------------------------------------------------------------------
 
+const SubAgentModelProviderSchema = z.enum(['anthropic', 'openai', 'google', 'ollama']);
+
 export const SubAgentModelOverrideSchema = z.object({
-  provider: z.string().min(1),
+  provider: SubAgentModelProviderSchema,
   name: z.string().min(1),
   maxTokens: z.number().int().positive().optional(),
   timeoutMs: z.number().int().min(1000).optional(),

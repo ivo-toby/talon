@@ -13,10 +13,27 @@ interface ModelConfig {
   maxTokens: number;
 }
 
+const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'ollama'] as const;
+
+function isSupportedProvider(provider: string): provider is (typeof SUPPORTED_PROVIDERS)[number] {
+  return (SUPPORTED_PROVIDERS as readonly string[]).includes(provider);
+}
+
 export class ModelResolver {
   constructor(private readonly providers: Record<string, ProviderCredentials>) {}
 
   async resolve(config: ModelConfig): Promise<Result<LanguageModel, ConfigError>> {
+    if (!isSupportedProvider(config.provider)) {
+      return err(
+        new ConfigError(
+          `Unsupported sub-agent model provider "${config.provider}". ` +
+            `Sub-agents use AI SDK model providers: ${SUPPORTED_PROVIDERS.join(', ')}. ` +
+            `Agent runtime providers such as codex-cli, claude-code, gemini-cli, and openai-compatible cannot be used here; ` +
+            `use "ollama" for OpenAI-compatible sub-agent endpoints.`,
+        ),
+      );
+    }
+
     const creds = this.providers[config.provider];
     if (!creds) {
       return err(
@@ -41,22 +58,23 @@ export class ModelResolver {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       return err(
-        new ConfigError(
-          `Failed to create model for ${config.provider}/${config.name}: ${message}`,
-        ),
+        new ConfigError(`Failed to create model for ${config.provider}/${config.name}: ${message}`),
       );
     }
   }
 
   private async createModel(
-    provider: string,
+    provider: (typeof SUPPORTED_PROVIDERS)[number],
     creds: ProviderCredentials,
     modelName: string,
   ): Promise<LanguageModel> {
     switch (provider) {
       case 'anthropic': {
         const { createAnthropic } = await import('@ai-sdk/anthropic');
-        return createAnthropic({ apiKey: creds.apiKey! })(modelName);
+        return createAnthropic({
+          apiKey: creds.apiKey!,
+          baseURL: creds.baseURL ?? 'https://api.anthropic.com/v1',
+        })(modelName);
       }
       case 'openai': {
         const { createOpenAI } = await import('@ai-sdk/openai');
@@ -84,10 +102,6 @@ export class ModelResolver {
           apiKey: creds.apiKey ?? 'ollama',
         })(modelName);
       }
-      default:
-        throw new Error(
-          `Unsupported provider: "${provider}". Supported: anthropic, openai, google, ollama`,
-        );
     }
   }
 }

@@ -97,6 +97,7 @@ export class SubAgentInvokeHandler {
       personaId: context.personaId,
       personaSubagents: loadedPersona.config.subagents ?? [],
       personaCapabilities: loadedPersona.resolvedCapabilities,
+      traceparent: context.traceparent,
     });
 
     if (result.isErr()) {

@@ -21,7 +21,10 @@ import { ToolError } from '../core/errors/index.js';
 import { extractCapabilityPrefix } from '../tools/tool-filter.js';
 import { createChildLogger } from '../core/logging/index.js';
 import type pino from 'pino';
-import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
+import type {
+  ObservationHandle,
+  ObservabilityService,
+} from '../observability/langfuse/observability-types.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { SubAgentsConfig } from '../core/config/config-types.js';
 import { wrapProviderOptions } from './provider-options.js';
@@ -50,6 +53,7 @@ export interface SubAgentInvokeContext {
   personaId: string;
   personaSubagents: string[];
   personaCapabilities: ResolvedCapabilities;
+  traceparent?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,30 +94,36 @@ export class SubAgentRunner {
     ctx: SubAgentInvokeContext,
   ): Promise<Result<SubAgentResult, ToolError>> {
     try {
-      const result = await this.observability.observe(
-        {
-          type: 'agent',
-          name: `subagent:${name}`,
-          input,
-          metadata: {
-            threadId: ctx.threadId,
-            personaId: ctx.personaId,
-          },
+      const observationInput = {
+        type: 'agent' as const,
+        name: `subagent:${name}`,
+        input,
+        metadata: {
+          threadId: ctx.threadId,
+          personaId: ctx.personaId,
         },
-        async (observation) => {
-          const executeResult = await this.executeInternal(name, input, ctx);
-          if (executeResult.isErr()) {
-            throw executeResult.error;
-          }
-          const { _model, _modelSource, ...value } = executeResult.value;
-          observation.update({
-            output: value,
-            model: _model,
-            metadata: { modelSource: _modelSource },
-          });
-          return value;
-        },
-      );
+      };
+      const observeFn = async (observation: ObservationHandle): Promise<SubAgentResult> => {
+        const executeResult = await this.executeInternal(name, input, ctx);
+        if (executeResult.isErr()) {
+          throw executeResult.error;
+        }
+        const { _model, _modelSource, ...value } = executeResult.value;
+        observation.update({
+          output: value,
+          model: _model,
+          metadata: { modelSource: _modelSource },
+        });
+        return value;
+      };
+
+      const result = ctx.traceparent
+        ? await this.observability.observeWithTraceparent(
+            ctx.traceparent,
+            observationInput,
+            observeFn,
+          )
+        : await this.observability.observe(observationInput, observeFn);
 
       return ok(result);
     } catch (error) {
@@ -140,9 +150,7 @@ export class SubAgentRunner {
     // 2. Sub-agent must be in persona's assignment list
     if (!ctx.personaSubagents.includes(name)) {
       return err(
-        new ToolError(
-          `Sub-agent "${name}" is not assigned to persona "${ctx.personaId}"`,
-        ),
+        new ToolError(`Sub-agent "${name}" is not assigned to persona "${ctx.personaId}"`),
       );
     }
 
@@ -161,7 +169,14 @@ export class SubAgentRunner {
 
     // 4. Build model chain: config overrides (if any) + manifest fallback
     const overrideConfig = this.subagentOverrides[name];
-    const modelChain: Array<{ provider: string; name: string; maxTokens: number; timeoutMs: number; providerOptions?: Record<string, unknown>; source: string }> = [];
+    const modelChain: Array<{
+      provider: string;
+      name: string;
+      maxTokens: number;
+      timeoutMs: number;
+      providerOptions?: Record<string, unknown>;
+      source: string;
+    }> = [];
 
     if (overrideConfig) {
       for (const entry of overrideConfig.model) {
@@ -207,7 +222,11 @@ export class SubAgentRunner {
         const failMsg = `${modelEntry.provider}/${modelEntry.name} (${modelEntry.source}): ${modelResult.error.message}`;
         failures.push(failMsg);
         this.logger.warn(
-          { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}`, source: modelEntry.source },
+          {
+            subagent: name,
+            model: `${modelEntry.provider}/${modelEntry.name}`,
+            source: modelEntry.source,
+          },
           `Model resolution failed, trying next: ${modelResult.error.message}`,
         );
         continue;
@@ -259,7 +278,12 @@ export class SubAgentRunner {
         const modelLabel = `${modelEntry.provider}/${modelEntry.name}`;
         if (failures.length > 0) {
           this.logger.info(
-            { subagent: name, model: modelLabel, source: modelEntry.source, failedAttempts: failures.length },
+            {
+              subagent: name,
+              model: modelLabel,
+              source: modelEntry.source,
+              failedAttempts: failures.length,
+            },
             'Sub-agent succeeded after failover',
           );
         } else {
@@ -277,7 +301,11 @@ export class SubAgentRunner {
 
         if (error instanceof SubAgentTimeoutError) {
           this.logger.warn(
-            { subagent: name, model: `${modelEntry.provider}/${modelEntry.name}`, timeoutMs: modelEntry.timeoutMs },
+            {
+              subagent: name,
+              model: `${modelEntry.provider}/${modelEntry.name}`,
+              timeoutMs: modelEntry.timeoutMs,
+            },
             `Sub-agent timed out, failing over to next model`,
           );
           continue;
@@ -347,13 +375,10 @@ export class SubAgentRunner {
   ): Promise<T> {
     let timeoutId: ReturnType<typeof setTimeout>;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(
-        () => {
-          abortController.abort();
-          reject(new SubAgentTimeoutError(name, timeoutMs));
-        },
-        timeoutMs,
-      );
+      timeoutId = setTimeout(() => {
+        abortController.abort();
+        reject(new SubAgentTimeoutError(name, timeoutMs));
+      }, timeoutMs);
     });
     try {
       return await Promise.race([promise, timeoutPromise]);

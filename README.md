@@ -1140,7 +1140,7 @@ subagents:
         # maxTokens: 4096     # optional — falls back to subagent.yaml default
         # timeoutMs: 120000   # optional per-model wall-clock timeout (min 1000)
       - provider: anthropic
-        name: claude-haiku-4-5
+        name: claude-haiku-4-5-20251001
   session-summarizer:
     model:
       - provider: openai
@@ -1156,6 +1156,11 @@ subagents:
 | `maxTokens`       | Max output tokens; falls back to the manifest value                                                                    |
 | `timeoutMs`       | Per-model wall-clock timeout. On expiry the runner aborts the in-flight AI SDK call and fails over to the next model   |
 | `providerOptions` | Free-form record forwarded verbatim to the AI SDK call. Use this for vendor-specific knobs (see `providerOptions` below) |
+
+Sub-agent model providers are AI SDK provider slots, not foreground/background
+agent runtime providers. Do not use `codex-cli`, `claude-code`, `gemini-cli`,
+or `openai-compatible` under `subagents.*.model`; use `ollama` for
+OpenAI-compatible sub-agent endpoints.
 
 **How failover works:**
 
@@ -1205,9 +1210,9 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 
 | Name                  | Default model         | Description                                                  |
 | --------------------- | --------------------- | ------------------------------------------------------------ |
-| `file-searcher`       | `claude-haiku-4-5`    | Search files by content, return ranked results with snippets |
-| `memory-retriever`    | `claude-haiku-4-5`    | Find relevant memories via keyword pre-filter + LLM rerank  |
-| `memory-groomer`      | `claude-haiku-4-5`    | Prune stale, consolidate duplicate memory items              |
+| `file-searcher`       | `claude-haiku-4-5-20251001`    | Search files by content, return ranked results with snippets |
+| `memory-retriever`    | `claude-haiku-4-5-20251001`    | Find relevant memories via keyword pre-filter + LLM rerank  |
+| `memory-groomer`      | `claude-haiku-4-5-20251001`    | Prune stale, consolidate duplicate memory items              |
 | `session-summarizer`  | `claude-sonnet-4-6`   | Compress transcripts for rolling context window (legacy)     |
 | `session-observer`    | `claude-sonnet-4-6`   | Generate dated, prioritized observations for long-term memory |
 | `session-reflector`   | `claude-sonnet-4-6`   | Consolidate observations when log grows too large            |

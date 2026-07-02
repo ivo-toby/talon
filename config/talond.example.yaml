@@ -308,6 +308,10 @@ langfuse:
 # default as final fallback.
 #
 # Per-model fields:
+#   provider        — required; one of anthropic, openai, google, ollama.
+#                     These are AI SDK model providers, not agent runtime
+#                     providers. Do not use codex-cli, claude-code,
+#                     gemini-cli, or openai-compatible here.
 #   maxTokens       — optional; defaults to the subagent.yaml value
 #   timeoutMs       — optional per-model wall-clock timeout (min 1000).
 #                     On timeout the runner aborts the in-flight call and
@@ -329,7 +333,7 @@ langfuse:
 #         name: qwen3-30b
 #         # maxTokens: 4096     # optional — falls back to subagent.yaml default
 #       - provider: anthropic
-#         name: claude-haiku-4-5
+#         name: claude-haiku-4-5-20251001
 #   session-summarizer:
 #     model:
 #       - provider: openai

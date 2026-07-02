@@ -70,7 +70,7 @@ version: "0.1.0"
 description: A test sub-agent
 model:
   provider: anthropic
-  name: claude-haiku-4-5`;
+  name: claude-haiku-4-5-20251001`;
 
 // ---------------------------------------------------------------------------
 // Tests
