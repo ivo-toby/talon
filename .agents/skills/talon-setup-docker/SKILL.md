@@ -158,6 +158,8 @@ For (b) ask four things, **one at a time**:
   `http://host.docker.internal:11434/v1` for local Ollama, etc.)"
 - "What model name does the endpoint serve?
   (e.g. `qwen3-coder:30b`, `llama-3.3-70b-versatile`)"
+- "Is this oMLX with `/v1/responses` support?" → if yes, remember to add
+  `--omlx-responses` or `options.omlxResponses: true`
 - "Does the endpoint need an API key?" → if yes, ask the env var name
   to use (default: `OPENAI_COMPATIBLE_API_KEY`)
 
@@ -236,6 +238,9 @@ For OpenAI-compatible — replace the `Codex:` block under
         baseUrl: <base URL from step 1>
         defaultModel: <model from step 1>
         providerId: <a short slot name, e.g. "groq" or "ollama">
+        # oMLX only: enable /v1/responses + previous_response_id chaining.
+        # Omit for Ollama, vLLM, Groq, Together, and chat-completions-only endpoints.
+        # omlxResponses: true
         toolOutputCap: 4000
 ```
 
@@ -255,6 +260,9 @@ talonctl add-provider --name <provider name> \
   --provider-id <slot name> \
   --enabled
 ```
+
+For oMLX endpoints that expose `/v1/responses`, append `--omlx-responses`.
+This is oMLX-specific; leave it off for generic OpenAI-compatible servers.
 
 #### Replace `auth.providers`
 

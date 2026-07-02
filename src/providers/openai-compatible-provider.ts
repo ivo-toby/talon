@@ -9,6 +9,7 @@ import type {
   AgentProvider,
   AgentRunInput,
   AgentStreamEvent,
+  SDKExecutionStrategy,
   StatelessSDKExecutionStrategy,
 } from './provider.js';
 import type {
@@ -30,6 +31,7 @@ interface OpenAiCompatibleProviderRuntime {
 interface WrapperPayload {
   prompt: string;
   systemPrompt: string;
+  threadId?: string;
   cwd: string;
   model: string;
   baseUrl: string;
@@ -54,6 +56,9 @@ interface WrapperPayload {
    * cap cannot truncate away the run's actual output.
    */
   outputFilePath?: string;
+  omlxResponses?: boolean;
+  previousResponseId?: string;
+  maxSteps?: number;
   /**
    * Max chars of tool output allowed into agent message history before
    * excerpting. 0 disables the feature. When omitted, the wrapper uses its
@@ -84,6 +89,7 @@ type WrapperEvent =
     }
   | {
       type: 'result';
+      sessionId?: string;
       output: string;
       usage?: {
         inputTokens?: number;
@@ -116,7 +122,15 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     this.name = name;
   }
 
-  createExecutionStrategy(): StatelessSDKExecutionStrategy {
+  createExecutionStrategy(): SDKExecutionStrategy | StatelessSDKExecutionStrategy {
+    if (this.isOmlxResponsesMode()) {
+      return {
+        type: 'sdk' as const,
+        supportsSessionResumption: true as const,
+        run: (input: AgentRunInput) => this.streamForeground(input),
+      };
+    }
+
     return {
       type: 'sdk' as const,
       supportsSessionResumption: false as const,
@@ -260,10 +274,13 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       {
         prompt: input.prompt,
         systemPrompt: input.systemPrompt,
+        threadId: input.threadId,
         mcpServers: input.mcpServers,
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         model: input.model,
+        sessionId: input.sessionId,
+        maxTurns: input.maxTurns,
       },
       { streamEvents: true, cleanupPaths: [] },
     );
@@ -292,16 +309,18 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       child.kill('SIGKILL');
     }, invocation.timeoutMs);
 
-    const closePromise = new Promise<{ exitCode: number | null }>((resolvePromise, rejectPromise) => {
-      child.on('error', (error) => {
-        clearTimeout(timeout);
-        rejectPromise(error);
-      });
-      child.on('close', (exitCode) => {
-        clearTimeout(timeout);
-        resolvePromise({ exitCode });
-      });
-    });
+    const closePromise = new Promise<{ exitCode: number | null }>(
+      (resolvePromise, rejectPromise) => {
+        child.on('error', (error) => {
+          clearTimeout(timeout);
+          rejectPromise(error);
+        });
+        child.on('close', (exitCode) => {
+          clearTimeout(timeout);
+          resolvePromise({ exitCode });
+        });
+      },
+    );
     // Attach a no-op handler so an unobserved rejection (consumer cancels
     // the generator before the normal post-stream await) does not surface
     // as an unhandled promise rejection. The real rejection is still
@@ -347,7 +366,8 @@ export class OpenAiCompatibleProvider implements AgentProvider {
           };
         } else if (event.type === 'result') {
           sawResultEvent = true;
-          const resultOutput = event.output && event.output.length > 0 ? event.output : aggregatedOutput;
+          const resultOutput =
+            event.output && event.output.length > 0 ? event.output : aggregatedOutput;
           if (event.usage) {
             usage = {
               inputTokens: event.usage.inputTokens ?? 0,
@@ -366,7 +386,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
             type: 'result',
             result: {
               output: resultOutput,
-              sessionId: undefined,
+              sessionId: event.sessionId,
               usage,
               ...(lastStepUsage ? { lastStepUsage } : {}),
               isError: false,
@@ -444,7 +464,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
   }
 
   private prepareInvocation(
-    input: ProviderSpawnInput,
+    input: ProviderSpawnInput & { sessionId?: string; maxTurns?: number; threadId?: string },
     options: {
       streamEvents: boolean;
       outputFilePath?: string;
@@ -473,9 +493,12 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     const scriptArgs = this.resolveWrapperArgs();
     const providerId = this.readStringOption('providerId') ?? 'openai-compatible';
     const providerOptions = this.readUnknownRecordOption('providerOptions');
+    const omlxResponses = this.isOmlxResponsesMode();
+    const sessionInput = input as ProviderSpawnInput & { sessionId?: string; maxTurns?: number };
     const payload: WrapperPayload = {
       prompt: input.prompt,
       systemPrompt: input.systemPrompt,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
       cwd: input.cwd,
       model,
       baseUrl,
@@ -483,6 +506,11 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       ...(this.runtime.apiKey ? { apiKey: this.runtime.apiKey } : {}),
       ...(providerOptions ? { providerOptions: { [providerId]: providerOptions } } : {}),
       ...(this.readRecordOption('headers') ? { headers: this.readRecordOption('headers') } : {}),
+      ...(omlxResponses ? { omlxResponses: true } : {}),
+      ...(omlxResponses && sessionInput.sessionId
+        ? { previousResponseId: sessionInput.sessionId }
+        : {}),
+      ...(sessionInput.maxTurns ? { maxSteps: sessionInput.maxTurns } : {}),
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
       streamEvents: options.streamEvents,
       ...(options.outputFilePath ? { outputFilePath: options.outputFilePath } : {}),
@@ -514,6 +542,11 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     return undefined;
   }
 
+  private readBooleanOption(name: string): boolean | undefined {
+    const value = this.config.options?.[name];
+    return typeof value === 'boolean' ? value : undefined;
+  }
+
   private readRecordOption(name: string): Record<string, string> | undefined {
     const value = this.config.options?.[name];
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -531,6 +564,10 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     }
 
     return Object.keys(value).length > 0 ? (value as Record<string, unknown>) : undefined;
+  }
+
+  private isOmlxResponsesMode(): boolean {
+    return this.readBooleanOption('omlxResponses') === true;
   }
 
   private resolveWrapperArgs(): string[] {

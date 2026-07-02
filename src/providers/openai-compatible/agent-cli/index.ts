@@ -1,8 +1,15 @@
 import { writeFileSync } from 'node:fs';
 import type { JSONObject } from '@ai-sdk/provider';
 import { Agent } from '@mastra/core/agent';
+import { RequestContext, MASTRA_THREAD_ID_KEY } from '@mastra/core/di';
 import { createTool, type Tool } from '@mastra/core/tools';
-import { Workspace, LocalFilesystem, LocalSandbox, type WorkspaceToolsConfig } from '@mastra/core/workspace';
+import {
+  Workspace,
+  LocalFilesystem,
+  LocalSandbox,
+  createWorkspaceTools,
+  type WorkspaceToolsConfig,
+} from '@mastra/core/workspace';
 import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
 import { z } from 'zod';
 import {
@@ -20,10 +27,12 @@ import {
   DEFAULT_TOOL_OUTPUT_CAP,
   DEFAULT_FETCH_SLICE_CAP,
 } from './tool-output-excerpter.js';
+import { runOmlxResponsesLoop } from './omlx-responses.js';
 
 interface WrapperInput {
   prompt: string;
   systemPrompt: string;
+  threadId?: string;
   cwd: string;
   model: string;
   baseUrl: string;
@@ -34,6 +43,16 @@ interface WrapperInput {
   mcpServers: Record<string, SerializableMcpServer>;
   streamEvents?: boolean;
   outputFilePath?: string;
+  /**
+   * Use oMLX's Responses-compatible endpoint instead of the default
+   * Mastra chat-completions stream. This unlocks `previous_response_id`
+   * session chaining for local oMLX KV/prefix cache reuse.
+   */
+  omlxResponses?: boolean;
+  /** Prior oMLX response id to resume with `previous_response_id`. */
+  previousResponseId?: string;
+  /** Max model/tool-call steps for the run. Defaults to 25. */
+  maxSteps?: number;
   /**
    * Max chars of tool output allowed into the agent's message history.
    * A head/tail excerpt is injected and the full output is kept in-memory
@@ -79,7 +98,13 @@ type WrapperEvent =
   | {
       type: 'result';
       output: string;
+      sessionId?: string;
       usage: {
+        inputTokens: number;
+        outputTokens: number;
+        cacheReadTokens?: number;
+      };
+      lastStepUsage?: {
         inputTokens: number;
         outputTokens: number;
         cacheReadTokens?: number;
@@ -115,11 +140,7 @@ function installStreamOptionsInterceptor(baseUrl: string): void {
     init?: RequestInit,
   ): Promise<Response> {
     const url =
-      typeof input === 'string'
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url;
+      typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 
     if (url.startsWith(baseUrl) && url.includes('/chat/completions')) {
       return originalFetch(input, injectStreamOptions(init));
@@ -190,14 +211,19 @@ async function main(): Promise<void> {
       tools: workspaceToolsConfig,
     });
     await workspace.init();
+    const workspaceTools = createWorkspaceTools(workspace) as Record<
+      string,
+      Tool<unknown, unknown, unknown, unknown>
+    >;
 
     const mcpServers = toMastraMcpServers(input.mcpServers);
-    const rawMcpTools = Object.keys(mcpServers).length > 0
-      ? await (async (): Promise<Record<string, Tool<unknown, unknown, unknown, unknown>>> => {
-          mcpClient = new MCPClient({ servers: mcpServers });
-          return mcpClient.listTools();
-        })()
-      : {};
+    const rawMcpTools =
+      Object.keys(mcpServers).length > 0
+        ? await (async (): Promise<Record<string, Tool<unknown, unknown, unknown, unknown>>> => {
+            mcpClient = new MCPClient({ servers: mcpServers });
+            return mcpClient.listTools();
+          })()
+        : {};
 
     // Tool-output excerpting: bound the size of what enters the agent's
     // message history, retain the full output for this run, expose the
@@ -206,14 +232,15 @@ async function main(): Promise<void> {
     const toolOutputCap = input.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP;
     const toolOutputStore = new ToolOutputStore();
     let syntheticToolCallSeq = 0;
-    const mcpTools = toolOutputCap > 0
-      ? wrapToolsWithOutputCap(
-          rawMcpTools,
-          toolOutputCap,
-          toolOutputStore,
-          () => `talond-mcp-${Date.now()}-${++syntheticToolCallSeq}`,
-        )
-      : rawMcpTools;
+    const mcpTools =
+      toolOutputCap > 0
+        ? wrapToolsWithOutputCap(
+            rawMcpTools,
+            toolOutputCap,
+            toolOutputStore,
+            () => `talond-mcp-${Date.now()}-${++syntheticToolCallSeq}`,
+          )
+        : rawMcpTools;
 
     const combinedTools: Record<string, Tool<unknown, unknown, unknown, unknown>> = { ...mcpTools };
     if (toolOutputCap > 0) {
@@ -223,12 +250,74 @@ async function main(): Promise<void> {
       // loses the re-fetch affordance but keeps the MCP tool working.
       if (Object.prototype.hasOwnProperty.call(combinedTools, 'fetch_tool_output')) {
         process.stderr.write(
-          'openai-compatible wrapper: an MCP tool named "fetch_tool_output" is already '
-          + 'registered; skipping synthetic tool registration to avoid shadowing.\n',
+          'openai-compatible wrapper: an MCP tool named "fetch_tool_output" is already ' +
+            'registered; skipping synthetic tool registration to avoid shadowing.\n',
         );
       } else {
-        combinedTools.fetch_tool_output = buildFetchToolOutputTool(toolOutputStore) as unknown as Tool<unknown, unknown, unknown, unknown>;
+        combinedTools.fetch_tool_output = buildFetchToolOutputTool(toolOutputStore);
       }
+    }
+
+    if (input.omlxResponses === true) {
+      const shouldStream = input.streamEvents !== false;
+      const providerId = input.providerId ?? 'openai-compatible';
+      const requestContext = new RequestContext();
+      if (input.threadId) {
+        requestContext.set(MASTRA_THREAD_ID_KEY, input.threadId);
+      }
+      const result = await runOmlxResponsesLoop({
+        prompt: input.prompt,
+        systemPrompt: input.systemPrompt,
+        model: input.model,
+        baseUrl: input.baseUrl,
+        ...(input.apiKey ? { apiKey: input.apiKey } : {}),
+        ...(input.headers ? { headers: input.headers } : {}),
+        ...(input.previousResponseId ? { previousResponseId: input.previousResponseId } : {}),
+        ...(input.providerOptions?.[providerId]
+          ? { providerOptions: input.providerOptions[providerId] as Record<string, unknown> }
+          : {}),
+        tools: { ...combinedTools, ...workspaceTools },
+        executionContext: {
+          workspace,
+          requestContext,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+        },
+        maxSteps: input.maxSteps ?? 25,
+        streamEvents: shouldStream,
+        emit,
+        getToolOutputMetadata: (toolCallId) => toolOutputStore.get(toolCallId),
+      });
+
+      if (input.outputFilePath) {
+        try {
+          writeFileSync(input.outputFilePath, result.output, { encoding: 'utf8', mode: 0o600 });
+        } catch (cause) {
+          const message = cause instanceof Error ? cause.message : String(cause);
+          emit({
+            type: 'error',
+            message: `OpenAI-compatible wrapper failed to write output file: ${message}`,
+          });
+          process.exitCode = 1;
+          return;
+        }
+        emit({
+          type: 'result',
+          output: '',
+          ...(result.responseId ? { sessionId: result.responseId } : {}),
+          usage: result.usage,
+          ...(result.lastStepUsage ? { lastStepUsage: result.lastStepUsage } : {}),
+        });
+        return;
+      }
+
+      emit({
+        type: 'result',
+        output: result.output,
+        ...(result.responseId ? { sessionId: result.responseId } : {}),
+        usage: result.usage,
+        ...(result.lastStepUsage ? { lastStepUsage: result.lastStepUsage } : {}),
+      });
+      return;
     }
 
     const agent = new Agent({
@@ -287,7 +376,8 @@ async function main(): Promise<void> {
         perStepUsage = mergeUsage(perStepUsage, perStep);
         sawAnyPerStep = true;
         summedPerStep.inputTokens = (summedPerStep.inputTokens ?? 0) + (perStep.inputTokens ?? 0);
-        summedPerStep.outputTokens = (summedPerStep.outputTokens ?? 0) + (perStep.outputTokens ?? 0);
+        summedPerStep.outputTokens =
+          (summedPerStep.outputTokens ?? 0) + (perStep.outputTokens ?? 0);
         summedPerStep.cachedInputTokens =
           (summedPerStep.cachedInputTokens ?? 0) + (perStep.cachedInputTokens ?? 0);
       }
@@ -350,11 +440,12 @@ async function main(): Promise<void> {
 
       if (chunk.type === 'error') {
         const errorValue = chunk.payload.error;
-        const message = errorValue instanceof Error
-          ? errorValue.message
-          : typeof errorValue === 'string'
-            ? errorValue
-            : JSON.stringify(errorValue);
+        const message =
+          errorValue instanceof Error
+            ? errorValue.message
+            : typeof errorValue === 'string'
+              ? errorValue
+              : JSON.stringify(errorValue);
         emit({ type: 'error', message });
         process.exitCode = 1;
         return;
@@ -464,12 +555,15 @@ function readBooleanProp(record: Record<string, unknown>, key: string): boolean 
 function parseInput(raw: string): WrapperInput {
   const parsed: unknown = JSON.parse(raw);
   if (!isWrapperInput(parsed)) {
-    throw new Error('OpenAI-compatible wrapper requires prompt, systemPrompt, cwd, model, and baseUrl');
+    throw new Error(
+      'OpenAI-compatible wrapper requires prompt, systemPrompt, cwd, model, and baseUrl',
+    );
   }
 
   return {
     prompt: parsed.prompt,
     systemPrompt: parsed.systemPrompt,
+    ...(parsed.threadId ? { threadId: parsed.threadId } : {}),
     cwd: parsed.cwd,
     model: parsed.model,
     baseUrl: parsed.baseUrl,
@@ -482,6 +576,11 @@ function parseInput(raw: string): WrapperInput {
     ...(typeof parsed.outputFilePath === 'string' && parsed.outputFilePath.length > 0
       ? { outputFilePath: parsed.outputFilePath }
       : {}),
+    ...(typeof parsed.omlxResponses === 'boolean' ? { omlxResponses: parsed.omlxResponses } : {}),
+    ...(typeof parsed.previousResponseId === 'string' && parsed.previousResponseId.length > 0
+      ? { previousResponseId: parsed.previousResponseId }
+      : {}),
+    ...(typeof parsed.maxSteps === 'number' ? { maxSteps: parsed.maxSteps } : {}),
     ...(typeof parsed.toolOutputCap === 'number' ? { toolOutputCap: parsed.toolOutputCap } : {}),
   };
 }
@@ -527,10 +626,12 @@ function wrapOneToolWithOutputCap(
   // while overriding execute. Returning a plain object works too but losing
   // the marker symbol can break introspection.
   return new Proxy(tool, {
-    get(target, prop, receiver) {
+    get(target, prop, receiver): unknown {
       if (prop === 'execute') {
         return async (input: unknown, ctx?: unknown) => {
-          const rawResult = await (originalExecute as (i: unknown, c?: unknown) => Promise<unknown>)(input, ctx);
+          const rawResult = await (
+            originalExecute as (i: unknown, c?: unknown) => Promise<unknown>
+          )(input, ctx);
           const toolCallId = extractToolCallIdFromContext(ctx) ?? idFactory();
           const excerpted = excerptToolOutput(toolCallId, toolName, rawResult, cap);
 
@@ -548,7 +649,7 @@ function wrapOneToolWithOutputCap(
           return excerpted.excerpt;
         };
       }
-      return Reflect.get(target, prop, receiver);
+      return Reflect.get(target, prop, receiver) as unknown;
     },
   });
 }
@@ -557,24 +658,36 @@ function wrapOneToolWithOutputCap(
  * Build the synthetic `fetch_tool_output` tool that lets the agent re-read
  * a range of a previously-stored tool output.
  */
-function buildFetchToolOutputTool(store: ToolOutputStore) {
+function buildFetchToolOutputTool(
+  store: ToolOutputStore,
+): Tool<unknown, unknown, unknown, unknown> {
   return createTool({
     id: 'fetch_tool_output',
     description:
-      'Retrieve a range of a previously-truncated tool output. Use this when the excerpt '
-      + 'in the message history contains a "TRUNCATED BY TALON" marker and you need a '
-      + 'specific region of the full content. Each call returns at most '
-      + `${DEFAULT_FETCH_SLICE_CAP} characters; widen ranges carefully to avoid reintroducing the full payload.`,
+      'Retrieve a range of a previously-truncated tool output. Use this when the excerpt ' +
+      'in the message history contains a "TRUNCATED BY TALON" marker and you need a ' +
+      'specific region of the full content. Each call returns at most ' +
+      `${DEFAULT_FETCH_SLICE_CAP} characters; widen ranges carefully to avoid reintroducing the full payload.`,
     inputSchema: z.object({
       toolCallId: z.string().describe('The toolCallId from the truncation marker.'),
-      startChar: z.number().int().min(0).optional().describe('0-indexed start (inclusive). Defaults to 0.'),
-      endChar: z.number().int().min(0).optional().describe(`Exclusive end. Defaults to startChar + ${DEFAULT_FETCH_SLICE_CAP}.`),
+      startChar: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe('0-indexed start (inclusive). Defaults to 0.'),
+      endChar: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe(`Exclusive end. Defaults to startChar + ${DEFAULT_FETCH_SLICE_CAP}.`),
     }),
-    execute: async (input) => {
+    execute: (input): Promise<string> => {
       const { toolCallId, startChar, endChar } = input;
-      return fetchToolOutputSlice(store, toolCallId, startChar, endChar);
+      return Promise.resolve(fetchToolOutputSlice(store, toolCallId, startChar, endChar));
     },
-  });
+  }) as unknown as Tool<unknown, unknown, unknown, unknown>;
 }
 
 /**
@@ -659,15 +772,18 @@ function isSerializableMcpServer(value: unknown): value is SerializableMcpServer
 
   if (value.transport === 'stdio') {
     return (
-      typeof value.command === 'string'
-      && Array.isArray(value.args)
-      && value.args.every((entry) => typeof entry === 'string')
-      && (value.env === undefined || isStringRecord(value.env))
+      typeof value.command === 'string' &&
+      Array.isArray(value.args) &&
+      value.args.every((entry) => typeof entry === 'string') &&
+      (value.env === undefined || isStringRecord(value.env))
     );
   }
 
   if (value.transport === 'http' || value.transport === 'sse') {
-    return typeof value.url === 'string' && (value.headers === undefined || isStringRecord(value.headers));
+    return (
+      typeof value.url === 'string' &&
+      (value.headers === undefined || isStringRecord(value.headers))
+    );
   }
 
   return false;
@@ -679,11 +795,12 @@ function isWrapperInput(value: unknown): value is WrapperInput {
   }
 
   if (
-    typeof value.prompt !== 'string'
-    || typeof value.systemPrompt !== 'string'
-    || typeof value.cwd !== 'string'
-    || typeof value.model !== 'string'
-    || typeof value.baseUrl !== 'string'
+    typeof value.prompt !== 'string' ||
+    typeof value.systemPrompt !== 'string' ||
+    (value.threadId !== undefined && typeof value.threadId !== 'string') ||
+    typeof value.cwd !== 'string' ||
+    typeof value.model !== 'string' ||
+    typeof value.baseUrl !== 'string'
   ) {
     return false;
   }
@@ -713,6 +830,21 @@ function isWrapperInput(value: unknown): value is WrapperInput {
   }
 
   if (value.outputFilePath !== undefined && typeof value.outputFilePath !== 'string') {
+    return false;
+  }
+
+  if (value.omlxResponses !== undefined && typeof value.omlxResponses !== 'boolean') {
+    return false;
+  }
+
+  if (value.previousResponseId !== undefined && typeof value.previousResponseId !== 'string') {
+    return false;
+  }
+
+  if (
+    value.maxSteps !== undefined &&
+    (typeof value.maxSteps !== 'number' || !Number.isInteger(value.maxSteps) || value.maxSteps <= 0)
+  ) {
     return false;
   }
 

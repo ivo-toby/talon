@@ -41,6 +41,7 @@ export interface AddProviderOptions {
   baseUrl?: string;
   providerId?: string;
   toolOutputCap?: number;
+  omlxResponses?: boolean;
   configPath?: string;
 }
 
@@ -87,7 +88,9 @@ function inferDefaultTriggerMetric(name: string, command: string): TriggerMetric
  * @returns The provider entry that was added.
  * @throws Error with a user-facing message on any failure.
  */
-export async function addProvider(options: AddProviderOptions): Promise<{ entry: ProviderEntry; contexts: ProviderContext[] }> {
+export async function addProvider(
+  options: AddProviderOptions,
+): Promise<{ entry: ProviderEntry; contexts: ProviderContext[] }> {
   const configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
   const ctx = options.context ?? 'both';
 
@@ -123,17 +126,22 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
   }
 
   if (ctx === 'background' && options.contextEnabled === true) {
-    throw new Error('Background providers do not support context management. See the README for agentRunner-only context management.');
+    throw new Error(
+      'Background providers do not support context management. See the README for agentRunner-only context management.',
+    );
   }
 
-  const contextEnabled = options.contextEnabled ?? (ctx !== 'background');
-  const triggerMetric = options.triggerMetric ?? inferDefaultTriggerMetric(options.name, options.command);
-  if (![
-    'input_tokens',
-    'cache_read_input_tokens',
-    'cache_creation_input_tokens',
-    'cache_total_input_tokens',
-  ].includes(triggerMetric)) {
+  const contextEnabled = options.contextEnabled ?? ctx !== 'background';
+  const triggerMetric =
+    options.triggerMetric ?? inferDefaultTriggerMetric(options.name, options.command);
+  if (
+    ![
+      'input_tokens',
+      'cache_read_input_tokens',
+      'cache_creation_input_tokens',
+      'cache_total_input_tokens',
+    ].includes(triggerMetric)
+  ) {
     throw new Error(
       'triggerMetric must be one of: input_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_total_input_tokens.',
     );
@@ -200,6 +208,9 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
   if (options.toolOutputCap !== undefined) {
     entryOptions.toolOutputCap = options.toolOutputCap;
   }
+  if (options.omlxResponses === true) {
+    entryOptions.omlxResponses = true;
+  }
   if (Object.keys(entryOptions).length > 0) {
     entry.options = entryOptions;
   }
@@ -243,7 +254,9 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
       );
     }
 
-    const sectionEntry = includeContextManagement ? { ...entry } : { ...entry, contextManagement: undefined };
+    const sectionEntry = includeContextManagement
+      ? { ...entry }
+      : { ...entry, contextManagement: undefined };
     if (!includeContextManagement) {
       delete sectionEntry.contextManagement;
     }
@@ -280,9 +293,13 @@ export async function addProviderCommand(options: AddProviderOptions): Promise<v
     const { entry, contexts } = await addProvider(options);
     const contextList = contexts.join(', ');
     const typeSuffix = entry.type ? `, type: ${entry.type}` : '';
-    console.log(`Added provider "${options.name}" (command: ${entry.command}${typeSuffix}) to context(s): ${contextList} in "${options.configPath ?? DEFAULT_CONFIG_PATH}".`);
+    console.log(
+      `Added provider "${options.name}" (command: ${entry.command}${typeSuffix}) to context(s): ${contextList} in "${options.configPath ?? DEFAULT_CONFIG_PATH}".`,
+    );
     if (!entry.enabled) {
-      console.log(`Note: provider is disabled by default. Set enabled: true in "${options.configPath ?? DEFAULT_CONFIG_PATH}" or use --enabled to enable immediately.`);
+      console.log(
+        `Note: provider is disabled by default. Set enabled: true in "${options.configPath ?? DEFAULT_CONFIG_PATH}" or use --enabled to enable immediately.`,
+      );
     }
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);

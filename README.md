@@ -1766,6 +1766,7 @@ npx talonctl reset-provider-affinity --channel my-telegram --external-id 1234567
 | `--base-url <url>` | Set `options.baseUrl` for OpenAI-compatible providers | — |
 | `--provider-id <id>` | Set `options.providerId` for OpenAI-compatible credential lookup | — |
 | `--tool-output-cap <chars>` | Set `options.toolOutputCap` for OpenAI-compatible providers | — |
+| `--omlx-responses` | Set `options.omlxResponses: true` for oMLX `/v1/responses` session/cache chaining | off |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
 **`set-default-provider`** options:
@@ -1791,6 +1792,7 @@ npx talonctl add-provider --name gemini-cli --command gemini \
 npx talonctl add-provider --name ollama-mac --type openai-compatible --command node \
   --context both --context-window 128000 --default-model qwen3-coder:30b \
   --base-url http://mac.local:11434/v1 --provider-id ollama-mac --enabled
+# For oMLX specifically, add --omlx-responses and point base-url at oMLX's /v1.
 npx talonctl set-default-provider --name gemini-cli --context agent-runner
 npx talonctl test-provider --name gemini-cli
 ```
@@ -1798,6 +1800,8 @@ npx talonctl test-provider --name gemini-cli
 For `openai-compatible` (**experimental**), use the canonical provider name `openai-compatible` or add an alias with `type: openai-compatible` when you need multiple endpoints at once. Credentials are looked up under `auth.providers.<options.providerId>.{apiKey,baseURL}` (e.g. `auth.providers.ollama`, `auth.providers.ollama-mac`, `auth.providers.groq`), so the same slot can be reused by the matching sub-agent provider. If no entry matches `providerId`, the provider falls back to `auth.providers.openai-compatible.{apiKey,baseURL}`. The provider streams text deltas, tool calls, and tool results via a Mastra-backed wrapper CLI, so users see incremental responses and tool activity in the connected channel (no "Thinking..." placeholder).
 
 OpenAI-compatible entries may set a flat `options.providerOptions` record for vendor-specific request body knobs. Talon wraps it under `options.providerId` before calling Mastra, so disabling Qwen thinking on an `ollama-mac` alias is `providerOptions.chat_template_kwargs.enable_thinking: false`, not a nested `providerOptions.openai` block.
+
+For oMLX, set `options.omlxResponses: true` (or pass `talonctl add-provider --omlx-responses`) to use oMLX's `/v1/responses` endpoint instead of the default Mastra chat-completions path. In this mode Talon stores the returned response id as the provider session id and resumes later turns with `previous_response_id`, so oMLX can reuse its response-state chain and prefix/KV cache across tool-call steps. Use this only for oMLX endpoints that implement `/v1/responses`; leave it off for Ollama, vLLM, Groq, Together, and ordinary OpenAI-compatible chat-completions servers.
 
 > **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, `maxSteps` override for tool-call limits, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
 
@@ -1816,6 +1820,7 @@ Whether you actually see non-zero cache counts depends entirely on the **upstrea
 | OpenRouter                                   | depends on underlying model |
 | **Ollama (self-hosted or Cloud)**            | ❌ no — KV-cache is internal, not surfaced in the OpenAI-compatible usage object |
 | Groq / Together / Fireworks                  | ❌ no                       |
+| **oMLX with `options.omlxResponses: true`**   | ✅ yes when `/v1/responses` usage includes cached token details; even when usage omits them, `previous_response_id` still avoids Talon reinjecting prior turns |
 
 If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens` will stay at 0 and `cache_creation_input_tokens` will equal `input_tokens` — that is the expected degradation, not a bug. Use `triggerMetric: input_tokens` for those endpoints.
 

@@ -57,7 +57,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 - **neverthrow `Result<T, E>`** everywhere — expected errors are typed, no raw throws across module boundaries. All repository methods return `Result`.
 - **SQLite (better-sqlite3)** with WAL mode — single-file, no external DB dependency. Repository pattern allows future migration.
-- **Provider runtime runs on host** (not in container) — AgentRunner executes the configured provider strategy. Codex uses the SDK path with `sessionId` persistence; Gemini and Codex use CLI strategies.
+- **Provider runtime runs on host** (not in container) — AgentRunner executes the configured provider strategy. Codex uses the SDK path with `sessionId` persistence; Gemini and Codex use CLI strategies. OpenAI-compatible is normally a stateless Mastra chat-completions wrapper, but `options.omlxResponses: true` switches that implementation to oMLX `/v1/responses` with `previous_response_id` session resumption.
 - **Provider names can alias implementation types** — provider config keys remain the names personas select and the names persisted in run history. Optional `providers.<name>.type` selects the implementation factory (for example `ollama-mac` with `type: openai-compatible`) so multiple OpenAI-compatible endpoints can coexist.
 - **Capability-based security** — default-deny. Persona `capabilities.allow` lists what tools/channels are accessible. `requireApproval` triggers human confirmation.
 - **Skills are declarative** — two formats: `skill.yaml` + `prompts/*.md` (legacy) or single `SKILL.md` with YAML frontmatter (preferred). No executable code in skills.

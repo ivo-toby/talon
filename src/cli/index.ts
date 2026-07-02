@@ -56,7 +56,9 @@ if (existsSync(envPath)) {
   try {
     process.loadEnvFile(envPath);
   } catch (cause) {
-    process.stderr.write(`warning: failed to parse ${envPath}: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+    process.stderr.write(
+      `warning: failed to parse ${envPath}: ${cause instanceof Error ? cause.message : String(cause)}\n`,
+    );
   }
 }
 
@@ -84,10 +86,7 @@ function parseCommaSeparatedOption(value: string): string[] {
     .filter((item) => item.length > 0);
 }
 
-program
-  .name('talonctl')
-  .description('CLI for managing the talond daemon')
-  .version('0.1.0');
+program.name('talonctl').description('CLI for managing the talond daemon').version('0.1.0');
 
 program
   .command('status')
@@ -175,36 +174,49 @@ program
   .option('--templates-dir <path>', 'Path to templates directory', 'templates')
   .option('--model <model>', 'Model name')
   .option('--provider <provider>', 'Provider name')
-  .option('--capabilities <caps>', 'Comma-separated capabilities allow list', parseCommaSeparatedOption)
-  .option('--require-approval <caps>', 'Comma-separated capabilities requiring approval', parseCommaSeparatedOption)
+  .option(
+    '--capabilities <caps>',
+    'Comma-separated capabilities allow list',
+    parseCommaSeparatedOption,
+  )
+  .option(
+    '--require-approval <caps>',
+    'Comma-separated capabilities requiring approval',
+    parseCommaSeparatedOption,
+  )
   .option('--skills <skills>', 'Comma-separated skill names', parseCommaSeparatedOption)
   .option('--system-prompt-file <path>', 'Path to a system prompt markdown file')
-  .option('--description <text>', 'Short description of what this persona does (written to system.md frontmatter)')
-  .action(async (opts: {
-    name: string;
-    config: string;
-    templatesDir: string;
-    model?: string;
-    provider?: string;
-    description?: string;
-    capabilities?: string[];
-    requireApproval?: string[];
-    skills?: string[];
-    systemPromptFile?: string;
-  }) => {
-    await addPersonaCommand({
-      name: opts.name,
-      description: opts.description,
-      configPath: opts.config,
-      templatesDir: opts.templatesDir,
-      model: opts.model,
-      provider: opts.provider,
-      capabilities: opts.capabilities,
-      requireApproval: opts.requireApproval,
-      skills: opts.skills,
-      systemPromptFile: opts.systemPromptFile,
-    });
-  });
+  .option(
+    '--description <text>',
+    'Short description of what this persona does (written to system.md frontmatter)',
+  )
+  .action(
+    async (opts: {
+      name: string;
+      config: string;
+      templatesDir: string;
+      model?: string;
+      provider?: string;
+      description?: string;
+      capabilities?: string[];
+      requireApproval?: string[];
+      skills?: string[];
+      systemPromptFile?: string;
+    }) => {
+      await addPersonaCommand({
+        name: opts.name,
+        description: opts.description,
+        configPath: opts.config,
+        templatesDir: opts.templatesDir,
+        model: opts.model,
+        provider: opts.provider,
+        capabilities: opts.capabilities,
+        requireApproval: opts.requireApproval,
+        skills: opts.skills,
+        systemPromptFile: opts.systemPromptFile,
+      });
+    },
+  );
 
 program
   .command('add-skill')
@@ -231,7 +243,10 @@ program
   .description('Purge queue items by status (default: pending, failed, completed)')
   .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
   .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
-  .option('--statuses <list>', 'Comma-separated statuses to purge (pending,failed,completed,dead_letter,claimed,processing)')
+  .option(
+    '--statuses <list>',
+    'Comma-separated statuses to purge (pending,failed,completed,dead_letter,claimed,processing)',
+  )
   .option('--all', 'Purge all statuses including in-flight items')
   .action(async (opts: { ipcDir?: string; timeout: string; statuses?: string; all?: boolean }) => {
     await queuePurgeCommand({
@@ -251,21 +266,30 @@ program
   .option('--client-id <id>', 'Client identity for persistent threads')
   .option('--persona <name>', 'Persona to connect to (overrides channel default)')
   .option('--tls', 'Use wss:// (TLS) instead of ws://')
-  .action(async (opts: { host: string; port: string; token?: string; clientId?: string; persona?: string; tls?: boolean }) => {
-    const token = opts.token ?? process.env.TERMINAL_TOKEN;
-    if (!token) {
-      console.error('Error: --token is required (or set TERMINAL_TOKEN env var).');
-      process.exit(1);
-    }
-    await chatCommand({
-      host: opts.host,
-      port: parseInt(opts.port, 10),
-      token,
-      clientId: opts.clientId,
-      persona: opts.persona,
-      tls: opts.tls,
-    });
-  });
+  .action(
+    async (opts: {
+      host: string;
+      port: string;
+      token?: string;
+      clientId?: string;
+      persona?: string;
+      tls?: boolean;
+    }) => {
+      const token = opts.token ?? process.env.TERMINAL_TOKEN;
+      if (!token) {
+        console.error('Error: --token is required (or set TERMINAL_TOKEN env var).');
+        process.exit(1);
+      }
+      await chatCommand({
+        host: opts.host,
+        port: parseInt(opts.port, 10),
+        token,
+        clientId: opts.clientId,
+        persona: opts.persona,
+        tls: opts.tls,
+      });
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // New commands (CLI-008 through CLI-017)
@@ -313,25 +337,27 @@ program
   .option('--require-approval <labels>', 'Replace requireApproval list (comma-separated)')
   .option('--show', 'Show current capabilities without modifying')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: {
-    persona: string;
-    allow?: string;
-    add?: string;
-    remove?: string;
-    requireApproval?: string;
-    show?: boolean;
-    config: string;
-  }) => {
-    await setCapabilitiesCommand({
-      persona: opts.persona,
-      allow: opts.allow,
-      add: opts.add,
-      remove: opts.remove,
-      requireApproval: opts.requireApproval,
-      show: opts.show,
-      configPath: opts.config,
-    });
-  });
+  .action(
+    async (opts: {
+      persona: string;
+      allow?: string;
+      add?: string;
+      remove?: string;
+      requireApproval?: string;
+      show?: boolean;
+      config: string;
+    }) => {
+      await setCapabilitiesCommand({
+        persona: opts.persona,
+        allow: opts.allow,
+        add: opts.add,
+        remove: opts.remove,
+        requireApproval: opts.requireApproval,
+        show: opts.show,
+        configPath: opts.config,
+      });
+    },
+  );
 
 program
   .command('bind')
@@ -364,25 +390,36 @@ program
   .option('--url <url>', 'Server URL (required for sse/http)')
   .option('--env <pairs>', 'Environment variables (KEY=VAL,KEY2=VAL2)')
   .option('--skills-dir <path>', 'Skills directory', 'skills')
-  .action(async (opts: { skill: string; name: string; transport: string; command?: string; args?: string[]; url?: string; env?: string; skillsDir: string }) => {
-    const envPairs: Record<string, string> = {};
-    if (opts.env) {
-      for (const pair of opts.env.split(',')) {
-        const [k, ...vParts] = pair.split('=');
-        if (k) envPairs[k] = vParts.join('=');
+  .action(
+    async (opts: {
+      skill: string;
+      name: string;
+      transport: string;
+      command?: string;
+      args?: string[];
+      url?: string;
+      env?: string;
+      skillsDir: string;
+    }) => {
+      const envPairs: Record<string, string> = {};
+      if (opts.env) {
+        for (const pair of opts.env.split(',')) {
+          const [k, ...vParts] = pair.split('=');
+          if (k) envPairs[k] = vParts.join('=');
+        }
       }
-    }
-    await addMcpCommand({
-      skillName: opts.skill,
-      name: opts.name,
-      transport: opts.transport as 'stdio' | 'sse' | 'http',
-      command: opts.command,
-      args: opts.args,
-      url: opts.url,
-      env: Object.keys(envPairs).length > 0 ? envPairs : undefined,
-      skillsDir: opts.skillsDir,
-    });
-  });
+      await addMcpCommand({
+        skillName: opts.skill,
+        name: opts.name,
+        transport: opts.transport as 'stdio' | 'sse' | 'http',
+        command: opts.command,
+        args: opts.args,
+        url: opts.url,
+        env: Object.keys(envPairs).length > 0 ? envPairs : undefined,
+        skillsDir: opts.skillsDir,
+      });
+    },
+  );
 
 program
   .command('env-check')
@@ -433,38 +470,40 @@ program
   .option('--prompt <prompt>', 'Inline prompt text (mutually exclusive with --prompt-file)')
   .option(
     '--prompt-file <name>',
-    'Prompt file basename in the persona\'s prompts/ dir (without .md), resolved by the scheduler at fire time',
+    "Prompt file basename in the persona's prompts/ dir (without .md), resolved by the scheduler at fire time",
   )
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: {
-    persona: string;
-    channel: string;
-    cron: string;
-    label: string;
-    prompt?: string;
-    promptFile?: string;
-    config: string;
-  }) => {
-    if (opts.prompt && opts.promptFile) {
-      console.error('Error: --prompt and --prompt-file are mutually exclusive');
-      process.exit(1);
-      return;
-    }
-    if (!opts.prompt && !opts.promptFile) {
-      console.error('Error: provide one of --prompt or --prompt-file');
-      process.exit(1);
-      return;
-    }
-    await addScheduleCommand({
-      persona: opts.persona,
-      channel: opts.channel,
-      cron: opts.cron,
-      label: opts.label,
-      ...(opts.prompt !== undefined ? { prompt: opts.prompt } : {}),
-      ...(opts.promptFile !== undefined ? { promptFile: opts.promptFile } : {}),
-      configPath: opts.config,
-    });
-  });
+  .action(
+    async (opts: {
+      persona: string;
+      channel: string;
+      cron: string;
+      label: string;
+      prompt?: string;
+      promptFile?: string;
+      config: string;
+    }) => {
+      if (opts.prompt && opts.promptFile) {
+        console.error('Error: --prompt and --prompt-file are mutually exclusive');
+        process.exit(1);
+        return;
+      }
+      if (!opts.prompt && !opts.promptFile) {
+        console.error('Error: provide one of --prompt or --prompt-file');
+        process.exit(1);
+        return;
+      }
+      await addScheduleCommand({
+        persona: opts.persona,
+        channel: opts.channel,
+        cron: opts.cron,
+        label: opts.label,
+        ...(opts.prompt !== undefined ? { prompt: opts.prompt } : {}),
+        ...(opts.promptFile !== undefined ? { promptFile: opts.promptFile } : {}),
+        configPath: opts.config,
+      });
+    },
+  );
 
 program
   .command('list-schedules')
@@ -482,57 +521,52 @@ program
 program
   .command('auth-mcp')
   .description('One-time interactive OAuth dance for an HTTP MCP server')
-  .argument(
-    '<selector>',
-    'Skill + server in "<skill>:<server>" form (e.g. "glean:glean")',
-  )
+  .argument('<selector>', 'Skill + server in "<skill>:<server>" form (e.g. "glean:glean")')
   .option(
     '--headless',
     'Headless mode: print the auth URL + SSH forward command; do not open a browser',
     false,
   )
-  .option(
-    '--port <port>',
-    'Localhost callback port (default 8788)',
-    (v) => Number.parseInt(v, 10),
-  )
+  .option('--port <port>', 'Localhost callback port (default 8788)', (v) => Number.parseInt(v, 10))
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--skills-dir <path>', 'Path to the skills/ directory', 'skills')
-  .action(async (
-    selector: string,
-    opts: { headless: boolean; port?: number; config: string; skillsDir: string },
-  ) => {
-    const { loadConfig } = await import('../core/config/config-loader.js');
-    const configResult = loadConfig(opts.config);
-    if (configResult.isErr()) {
-      console.error(`Error loading config: ${configResult.error.message}`);
-      process.exit(1);
-      return;
-    }
-    // Resolve `dataDir` from the exact same config field the daemon uses
-    // in daemon-bootstrap.ts (`resolve(config.dataDir)`). Using a
-    // different source (e.g. derived from `storage.path`) would cause
-    // talonctl to write tokens to one directory and the daemon to read
-    // from another, producing "no cached tokens" failures at runtime
-    // even after a successful auth flow.
-    const dataDir = resolve(configResult.value.dataDir);
-    try {
-      await authMcp({
-        selector,
-        dataDir,
-        skillsDir: opts.skillsDir,
-        headless: opts.headless,
-        ...(opts.port !== undefined ? { callbackPort: opts.port } : {}),
-      });
-    } catch (cause) {
-      if (cause instanceof AuthMcpError) {
-        console.error(`auth-mcp: ${cause.message}`);
-      } else {
-        console.error(`auth-mcp: ${(cause as Error).message ?? String(cause)}`);
+  .action(
+    async (
+      selector: string,
+      opts: { headless: boolean; port?: number; config: string; skillsDir: string },
+    ) => {
+      const { loadConfig } = await import('../core/config/config-loader.js');
+      const configResult = loadConfig(opts.config);
+      if (configResult.isErr()) {
+        console.error(`Error loading config: ${configResult.error.message}`);
+        process.exit(1);
+        return;
       }
-      process.exit(1);
-    }
-  });
+      // Resolve `dataDir` from the exact same config field the daemon uses
+      // in daemon-bootstrap.ts (`resolve(config.dataDir)`). Using a
+      // different source (e.g. derived from `storage.path`) would cause
+      // talonctl to write tokens to one directory and the daemon to read
+      // from another, producing "no cached tokens" failures at runtime
+      // even after a successful auth flow.
+      const dataDir = resolve(configResult.value.dataDir);
+      try {
+        await authMcp({
+          selector,
+          dataDir,
+          skillsDir: opts.skillsDir,
+          headless: opts.headless,
+          ...(opts.port !== undefined ? { callbackPort: opts.port } : {}),
+        });
+      } catch (cause) {
+        if (cause instanceof AuthMcpError) {
+          console.error(`auth-mcp: ${cause.message}`);
+        } else {
+          console.error(`auth-mcp: ${(cause as Error).message ?? String(cause)}`);
+        }
+        process.exit(1);
+      }
+    },
+  );
 
 program
   .command('remove-schedule')
@@ -579,68 +613,83 @@ program
   .command('add-provider')
   .description('Add a provider to agentRunner, backgroundAgent, or both')
   .requiredOption('--name <name>', 'Provider name (e.g. gemini-cli)')
-  .option('--type <type>', 'Provider implementation type when the provider name is an alias (e.g. openai-compatible)')
+  .option(
+    '--type <type>',
+    'Provider implementation type when the provider name is an alias (e.g. openai-compatible)',
+  )
   .requiredOption('--command <cmd>', 'CLI binary path (e.g. gemini or /usr/local/bin/gemini)')
   .option('--context <ctx>', 'Context: agent-runner, background, or both', 'both')
   .option('--context-window <tokens>', 'Context window size in tokens', '200000')
-  .option('--context-enabled <enabled>', 'Enable context management for agent-runner providers (true/false)')
+  .option(
+    '--context-enabled <enabled>',
+    'Enable context management for agent-runner providers (true/false)',
+  )
   .option(
     '--trigger-metric <metric>',
     'Context rotation trigger metric (input_tokens, cache_read_input_tokens, cache_creation_input_tokens, or cache_total_input_tokens)',
   )
   .option('--threshold-ratio <ratio>', 'Context rotation threshold ratio 0-1 float', '0.5')
   .option('--recent-message-count <count>', 'Recent messages to preserve in fresh sessions', '10')
-  .option('--summarizer <name>', 'Subagent name used for session summarization', 'session-summarizer')
+  .option(
+    '--summarizer <name>',
+    'Subagent name used for session summarization',
+    'session-summarizer',
+  )
   .option('--enabled', 'Enable the provider immediately (default: disabled)')
   .option('--default-model <model>', 'Set options.defaultModel (e.g. gemini-2.5-pro)')
   .option('--base-url <url>', 'Set options.baseUrl for OpenAI-compatible providers')
   .option('--provider-id <id>', 'Set options.providerId for OpenAI-compatible credential lookup')
   .option('--tool-output-cap <chars>', 'Set options.toolOutputCap for OpenAI-compatible providers')
+  .option('--omlx-responses', 'Use oMLX /v1/responses with previous_response_id session chaining')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: {
-    name: string;
-    type?: string;
-    command: string;
-    context: string;
-    contextWindow: string;
-    contextEnabled?: string;
-    triggerMetric?: string;
-    thresholdRatio: string;
-    recentMessageCount: string;
-    summarizer: string;
-    enabled?: boolean;
-    defaultModel?: string;
-    baseUrl?: string;
-    providerId?: string;
-    toolOutputCap?: string;
-    config: string;
-  }) => {
-    await addProviderCommand({
-      name: opts.name,
-      type: opts.type,
-      command: opts.command,
-      context: opts.context as 'agent-runner' | 'background' | 'both',
-      contextWindowTokens: parseInt(opts.contextWindow, 10),
-      contextEnabled: opts.contextEnabled === undefined
-        ? undefined
-        : parseBooleanOption(opts.contextEnabled),
-      triggerMetric: opts.triggerMetric as
-        | 'input_tokens'
-        | 'cache_read_input_tokens'
-        | 'cache_creation_input_tokens'
-        | 'cache_total_input_tokens'
-        | undefined,
-      thresholdRatio: parseFloat(opts.thresholdRatio),
-      recentMessageCount: parseInt(opts.recentMessageCount, 10),
-      summarizer: opts.summarizer,
-      enabled: opts.enabled ?? false,
-      defaultModel: opts.defaultModel,
-      baseUrl: opts.baseUrl,
-      providerId: opts.providerId,
-      toolOutputCap: opts.toolOutputCap === undefined ? undefined : parseInt(opts.toolOutputCap, 10),
-      configPath: opts.config,
-    });
-  });
+  .action(
+    async (opts: {
+      name: string;
+      type?: string;
+      command: string;
+      context: string;
+      contextWindow: string;
+      contextEnabled?: string;
+      triggerMetric?: string;
+      thresholdRatio: string;
+      recentMessageCount: string;
+      summarizer: string;
+      enabled?: boolean;
+      defaultModel?: string;
+      baseUrl?: string;
+      providerId?: string;
+      toolOutputCap?: string;
+      omlxResponses?: boolean;
+      config: string;
+    }) => {
+      await addProviderCommand({
+        name: opts.name,
+        type: opts.type,
+        command: opts.command,
+        context: opts.context as 'agent-runner' | 'background' | 'both',
+        contextWindowTokens: parseInt(opts.contextWindow, 10),
+        contextEnabled:
+          opts.contextEnabled === undefined ? undefined : parseBooleanOption(opts.contextEnabled),
+        triggerMetric: opts.triggerMetric as
+          | 'input_tokens'
+          | 'cache_read_input_tokens'
+          | 'cache_creation_input_tokens'
+          | 'cache_total_input_tokens'
+          | undefined,
+        thresholdRatio: parseFloat(opts.thresholdRatio),
+        recentMessageCount: parseInt(opts.recentMessageCount, 10),
+        summarizer: opts.summarizer,
+        enabled: opts.enabled ?? false,
+        defaultModel: opts.defaultModel,
+        baseUrl: opts.baseUrl,
+        providerId: opts.providerId,
+        toolOutputCap:
+          opts.toolOutputCap === undefined ? undefined : parseInt(opts.toolOutputCap, 10),
+        omlxResponses: opts.omlxResponses ?? false,
+        configPath: opts.config,
+      });
+    },
+  );
 
 program
   .command('set-default-provider')
@@ -672,7 +721,9 @@ program
 
 program
   .command('list-threads')
-  .description('List persisted threads for a channel, including external IDs and latest provider info')
+  .description(
+    'List persisted threads for a channel, including external IDs and latest provider info',
+  )
   .requiredOption('--channel <name>', 'Channel name')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(async (opts: { channel: string; config: string }) => {
@@ -684,31 +735,44 @@ program
 
 program
   .command('reset-provider-affinity')
-  .description('Reset provider affinity for channel threads. Use --all for all threads or --external-id for one.')
+  .description(
+    'Reset provider affinity for channel threads. Use --all for all threads or --external-id for one.',
+  )
   .requiredOption('--channel <name>', 'Channel name')
-  .option('--external-id <id>', 'Thread external ID. Use `talonctl list-threads --channel <name>` to discover values.')
+  .option(
+    '--external-id <id>',
+    'Thread external ID. Use `talonctl list-threads --channel <name>` to discover values.',
+  )
   .option('--all', 'Reset affinity for all threads on this channel')
   .option('--yes', 'Bypass the confirmation prompt')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { channel: string; externalId?: string; all?: boolean; yes?: boolean; config: string }) => {
-    if (!opts.all && !opts.externalId) {
-      console.error('Error: specify --external-id <id> or --all');
-      process.exit(1);
-      return;
-    }
-    if (opts.all && opts.externalId) {
-      console.error('Error: --all and --external-id are mutually exclusive');
-      process.exit(1);
-      return;
-    }
-    await resetProviderAffinityCommand({
-      channel: opts.channel,
-      externalId: opts.externalId,
-      all: opts.all,
-      yes: opts.yes,
-      configPath: opts.config,
-    });
-  });
+  .action(
+    async (opts: {
+      channel: string;
+      externalId?: string;
+      all?: boolean;
+      yes?: boolean;
+      config: string;
+    }) => {
+      if (!opts.all && !opts.externalId) {
+        console.error('Error: specify --external-id <id> or --all');
+        process.exit(1);
+        return;
+      }
+      if (opts.all && opts.externalId) {
+        console.error('Error: --all and --external-id are mutually exclusive');
+        process.exit(1);
+        return;
+      }
+      await resetProviderAffinityCommand({
+        channel: opts.channel,
+        externalId: opts.externalId,
+        all: opts.all,
+        yes: opts.yes,
+        configPath: opts.config,
+      });
+    },
+  );
 
 // ---------------------------------------------------------------------------
 // WhatsApp Baileys authentication
@@ -749,7 +813,10 @@ const a2a = program
 a2a
   .command('list')
   .description('List A2A tasks with optional filters')
-  .option('--status <state>', 'Filter by task state (submitted, working, completed, failed, canceled)')
+  .option(
+    '--status <state>',
+    'Filter by task state (submitted, working, completed, failed, canceled)',
+  )
   .option('--target <persona>', 'Filter by target persona name')
   .option('--limit <n>', 'Maximum number of tasks to show', '20')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
@@ -772,13 +839,15 @@ a2a
   .description('Submit a manual A2A task to a persona (for testing)')
   .option('--source <persona>', 'Source persona name (defaults to "cli")', 'cli')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (targetPersona: string, message: string, opts: { source: string; config: string }) => {
-    await a2aSendCommand({
-      configPath: opts.config,
-      targetPersona,
-      message,
-      sourcePersona: opts.source,
-    });
-  });
+  .action(
+    async (targetPersona: string, message: string, opts: { source: string; config: string }) => {
+      await a2aSendCommand({
+        configPath: opts.config,
+        targetPersona,
+        message,
+        sourcePersona: opts.source,
+      });
+    },
+  );
 
 program.parse();

@@ -214,6 +214,27 @@ agentRunner:
         providerOptions:
           chat_template_kwargs:
             enable_thinking: false
+    omlx-local:
+      enabled: false
+      type: openai-compatible
+      command: node
+      contextWindowTokens: 128000
+      contextManagement:
+        enabled: true
+        triggerMetric: input_tokens
+        thresholdRatio: 0.75
+        recentMessageCount: 10
+        summarizer: session-summarizer
+      options:
+        # oMLX's OpenAI-compatible base URL, including /v1.
+        baseUrl: http://mac.local:8000/v1
+        defaultModel: qwen3.5-9b-optiq-4bit
+        providerId: omlx-local
+        # oMLX-specific: use /v1/responses and resume with
+        # previous_response_id so oMLX can reuse response state and its
+        # prefix/KV cache across tool-call steps and later messages.
+        omlxResponses: true
+        toolOutputCap: 4000
 
 backgroundAgent:
   enabled: true
@@ -263,6 +284,16 @@ backgroundAgent:
         providerOptions:
           chat_template_kwargs:
             enable_thinking: false
+    omlx-local:
+      enabled: false
+      type: openai-compatible
+      command: node
+      contextWindowTokens: 128000
+      options:
+        baseUrl: http://mac.local:8000/v1
+        defaultModel: qwen3.5-9b-optiq-4bit
+        providerId: omlx-local
+        omlxResponses: true
 
 scheduler:
   tickIntervalMs: 5000

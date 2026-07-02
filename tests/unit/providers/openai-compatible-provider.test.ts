@@ -79,15 +79,19 @@ describe('OpenAiCompatibleProvider', () => {
   }
 
   it('can report an alias provider name', () => {
-    const provider = new OpenAiCompatibleProvider({
-      enabled: true,
-      command: 'node',
-      contextWindowTokens: 256_000,
-      options: {
-        defaultModel: 'qwen3-coder:30b',
-        baseUrl: 'http://127.0.0.1:11434/v1',
+    const provider = new OpenAiCompatibleProvider(
+      {
+        enabled: true,
+        command: 'node',
+        contextWindowTokens: 256_000,
+        options: {
+          defaultModel: 'qwen3-coder:30b',
+          baseUrl: 'http://127.0.0.1:11434/v1',
+        },
       },
-    }, {}, 'ollama-mac');
+      {},
+      'ollama-mac',
+    );
 
     expect(provider.name).toBe('ollama-mac');
   });
@@ -162,6 +166,83 @@ describe('OpenAiCompatibleProvider', () => {
     expect(strategy.type).toBe('sdk');
     expect(strategy.supportsSessionResumption).toBe(false);
     expect(typeof strategy.run).toBe('function');
+  });
+
+  it('creates a resumable SDK strategy when oMLX Responses mode is enabled', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        omlxResponses: true,
+      },
+    });
+
+    const strategy = provider.createExecutionStrategy();
+
+    expect(strategy.type).toBe('sdk');
+    expect(strategy.supportsSessionResumption).toBe(true);
+  });
+
+  it('passes oMLX Responses mode and previous response ids to the wrapper payload', async () => {
+    const capturedStdin: string[] = [];
+    vi.mocked(mockedSpawn).mockImplementation((() => {
+      const child = makeFakeChild({
+        stdoutLines: [
+          JSON.stringify({
+            type: 'result',
+            output: 'ok',
+            sessionId: 'resp-new',
+            usage: { inputTokens: 5, outputTokens: 1 },
+          }),
+        ],
+      });
+      child.stdin.on('data', (chunk: Buffer) => {
+        capturedStdin.push(chunk.toString('utf8'));
+      });
+      return child;
+    }) as unknown as typeof mockedSpawn);
+
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        omlxResponses: true,
+      },
+    });
+    const strategy = provider.createExecutionStrategy();
+    const events: AgentStreamEvent[] = [];
+
+    for await (const event of strategy.run({
+      threadId: 'thread-test',
+      prompt: 'continue',
+      systemPrompt: 'system',
+      mcpServers: {},
+      cwd: '/tmp',
+      model: 'qwen3.5-9b-optiq-4bit',
+      maxTurns: 10,
+      timeoutMs: 5_000,
+      sessionId: 'resp-prev',
+    })) {
+      events.push(event);
+    }
+
+    const payload = JSON.parse(capturedStdin.join('')) as Record<string, unknown>;
+    expect(payload.omlxResponses).toBe(true);
+    expect(payload.previousResponseId).toBe('resp-prev');
+    expect(payload.maxSteps).toBe(10);
+    expect(payload.threadId).toBe('thread-test');
+
+    const resultEvent = events.find((event) => event.type === 'result');
+    expect(resultEvent).toBeDefined();
+    if (resultEvent?.type === 'result') {
+      expect(resultEvent.result.sessionId).toBe('resp-new');
+    }
   });
 
   it('returns an error when neither input.model nor defaultModel is configured', () => {
@@ -592,16 +673,18 @@ describe('OpenAiCompatibleProvider', () => {
     try {
       const provider = makeProvider();
       const strategy = provider.createExecutionStrategy();
-      const iterator = strategy.run({
-        threadId: 'thread-test',
-        prompt: 'hello',
-        systemPrompt: 'system',
-        mcpServers: {},
-        cwd: '/tmp',
-        model: 'qwen3-coder:30b',
-        maxTurns: 10,
-        timeoutMs: 5_000,
-      })[Symbol.asyncIterator]();
+      const iterator = strategy
+        .run({
+          threadId: 'thread-test',
+          prompt: 'hello',
+          systemPrompt: 'system',
+          mcpServers: {},
+          cwd: '/tmp',
+          model: 'qwen3-coder:30b',
+          maxTurns: 10,
+          timeoutMs: 5_000,
+        })
+        [Symbol.asyncIterator]();
 
       const first = await iterator.next();
       expect(first.done).toBe(false);

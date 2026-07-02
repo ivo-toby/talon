@@ -208,12 +208,21 @@ npx talonctl add-provider --name <provider-name> \
   --enabled
 ```
 
+If the endpoint is oMLX and its base URL exposes `/v1/responses`, add
+`--omlx-responses`. That makes Talon resume conversations with
+`previous_response_id` so oMLX can reuse its response-state chain and
+prefix/KV cache. Do not add it for Ollama, vLLM, Groq, or ordinary
+chat-completions-only endpoints.
+
 Examples:
 - Existing Ollama Cloud can remain named `openai-compatible` with
   `providerId: ollama`.
 - A separate local Mac endpoint can be named `ollama-mac` with
   `--type openai-compatible --base-url http://<mac-host>:11434/v1
   --provider-id ollama-mac`.
+- A local oMLX endpoint can be named `omlx-local` with
+  `--type openai-compatible --base-url http://<mac-host>:8000/v1
+  --provider-id omlx-local --omlx-responses`.
 
 Add matching credentials under `auth.providers.<provider-id>` if the endpoint
 requires them. Local Ollama usually does not require an API key.
