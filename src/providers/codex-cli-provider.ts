@@ -37,6 +37,7 @@ interface CodexParsedOutput {
   hasTurnCompleted: boolean;
   threadId?: string;
   usage?: AgentUsage;
+  lastStepUsage?: AgentUsage;
 }
 
 interface RenderedCodexConfig {
@@ -378,6 +379,7 @@ export class CodexCliProvider implements AgentProvider {
         output: parsed.output,
         sessionId: parsedJsonl.threadId,
         usage: parsed.usage ?? { inputTokens: 0, outputTokens: 0 },
+        ...(parsed.lastStepUsage ? { lastStepUsage: parsed.lastStepUsage } : {}),
         isError: parsed.exitCode !== 0 || parsed.timedOut,
       },
     };
@@ -460,6 +462,7 @@ export class CodexCliProvider implements AgentProvider {
           exitCode: raw.exitCode,
           timedOut: raw.timedOut,
           usage: parsed.usage,
+          ...(parsed.lastStepUsage ? { lastStepUsage: parsed.lastStepUsage } : {}),
         };
       }
 
@@ -469,6 +472,7 @@ export class CodexCliProvider implements AgentProvider {
         exitCode: 1,
         timedOut: raw.timedOut,
         usage: parsed.usage,
+        ...(parsed.lastStepUsage ? { lastStepUsage: parsed.lastStepUsage } : {}),
       };
     }
 
@@ -478,6 +482,7 @@ export class CodexCliProvider implements AgentProvider {
       exitCode: raw.exitCode,
       timedOut: raw.timedOut,
       usage: parsed.usage,
+      ...(parsed.lastStepUsage ? { lastStepUsage: parsed.lastStepUsage } : {}),
     };
   }
 
@@ -499,29 +504,7 @@ export class CodexCliProvider implements AgentProvider {
         continue;
       }
 
-      if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
-        result.hasThreadStarted = true;
-        result.threadId = event.thread_id;
-      } else if (event.type === 'thread.started') {
-        result.hasThreadStarted = true;
-      }
-
-      if (event.type === 'turn.completed') {
-        result.hasTurnCompleted = true;
-        if (typeof event.usage === 'object' && event.usage !== null) {
-          const usage = event.usage as {
-            input_tokens?: unknown;
-            cached_input_tokens?: unknown;
-            output_tokens?: unknown;
-          };
-          result.usage = {
-            inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
-            cacheReadTokens:
-              typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : undefined,
-            outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
-          };
-        }
-      }
+      this.updateParsedState(result, event);
     }
 
     return result;
@@ -561,20 +544,67 @@ export class CodexCliProvider implements AgentProvider {
 
     if (event.type === 'turn.completed') {
       parsed.hasTurnCompleted = true;
-      if (typeof event.usage === 'object' && event.usage !== null) {
-        const usage = event.usage as {
-          input_tokens?: unknown;
-          cached_input_tokens?: unknown;
-          output_tokens?: unknown;
-        };
-        parsed.usage = {
-          inputTokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
-          cacheReadTokens:
-            typeof usage.cached_input_tokens === 'number' ? usage.cached_input_tokens : undefined,
-          outputTokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
-        };
+      const usage = this.parseTokenUsage(event.usage);
+      if (usage) {
+        parsed.usage = usage;
       }
     }
+
+    const tokenCountInfo = this.readTokenCountInfo(event);
+    if (!tokenCountInfo) {
+      return;
+    }
+
+    const totalUsage = this.parseTokenUsage(tokenCountInfo.total_token_usage);
+    if (totalUsage) {
+      parsed.usage = totalUsage;
+    }
+
+    const lastUsage = this.parseTokenUsage(tokenCountInfo.last_token_usage);
+    if (lastUsage) {
+      parsed.lastStepUsage = lastUsage;
+    }
+  }
+
+  private readTokenCountInfo(event: Record<string, unknown>): Record<string, unknown> | null {
+    if (event.type === 'token_count' && typeof event.info === 'object' && event.info !== null) {
+      return event.info as Record<string, unknown>;
+    }
+
+    if (event.type !== 'event_msg' || typeof event.payload !== 'object' || event.payload === null) {
+      return null;
+    }
+
+    const payload = event.payload as Record<string, unknown>;
+    if (
+      payload.type !== 'token_count' ||
+      typeof payload.info !== 'object' ||
+      payload.info === null
+    ) {
+      return null;
+    }
+
+    return payload.info as Record<string, unknown>;
+  }
+
+  private parseTokenUsage(value: unknown): AgentUsage | undefined {
+    if (typeof value !== 'object' || value === null) {
+      return undefined;
+    }
+
+    const usage = value as Record<string, unknown>;
+    const inputTokens = this.readNumber(usage.input_tokens);
+    const cacheReadTokens = this.readNumber(usage.cached_input_tokens);
+    const outputTokens = this.readNumber(usage.output_tokens);
+    if (inputTokens === undefined && cacheReadTokens === undefined && outputTokens === undefined) {
+      return undefined;
+    }
+
+    return {
+      inputTokens: inputTokens ?? 0,
+      ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+      outputTokens: outputTokens ?? 0,
+    };
   }
 
   private extractTextEvents(
@@ -707,6 +737,10 @@ export class CodexCliProvider implements AgentProvider {
 
   private readBoolean(value: unknown): boolean | undefined {
     return typeof value === 'boolean' ? value : undefined;
+  }
+
+  private readNumber(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
   }
 
   private buildValidationError(

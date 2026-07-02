@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import type { JSONObject } from '@ai-sdk/provider';
 import { Agent } from '@mastra/core/agent';
 import { createTool, type Tool } from '@mastra/core/tools';
 import { Workspace, LocalFilesystem, LocalSandbox, type WorkspaceToolsConfig } from '@mastra/core/workspace';
@@ -28,6 +29,7 @@ interface WrapperInput {
   baseUrl: string;
   apiKey?: string;
   providerId?: string;
+  providerOptions?: ProviderOptionsPayload;
   headers?: Record<string, string>;
   mcpServers: Record<string, SerializableMcpServer>;
   streamEvents?: boolean;
@@ -54,6 +56,8 @@ type SerializableMcpServer =
       url: string;
       headers?: Record<string, string>;
     };
+
+type ProviderOptionsPayload = Record<string, JSONObject>;
 
 type WrapperEvent =
   | { type: 'text'; content: string }
@@ -245,7 +249,10 @@ async function main(): Promise<void> {
     // Mastra's default stopWhen is stepCountIs(5), which stalls the stream
     // after ~5 tool calls. Match the agent-runner's maxTurns (default 25)
     // so the agent can do meaningful multi-tool work.
-    const stream = await agent.stream(input.prompt, { maxSteps: 25 });
+    const stream = await agent.stream(input.prompt, {
+      maxSteps: 25,
+      ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+    });
     const shouldStream = input.streamEvents !== false;
     // Track per-step and cumulative usage in SEPARATE accumulators so we
     // can surface each to the right consumer downstream:
@@ -468,6 +475,7 @@ function parseInput(raw: string): WrapperInput {
     baseUrl: parsed.baseUrl,
     ...(parsed.apiKey ? { apiKey: parsed.apiKey } : {}),
     ...(parsed.providerId ? { providerId: parsed.providerId } : {}),
+    ...(parsed.providerOptions ? { providerOptions: parsed.providerOptions } : {}),
     ...(parsed.headers ? { headers: parsed.headers } : {}),
     mcpServers: parsed.mcpServers ?? {},
     ...(typeof parsed.streamEvents === 'boolean' ? { streamEvents: parsed.streamEvents } : {}),
@@ -692,6 +700,10 @@ function isWrapperInput(value: unknown): value is WrapperInput {
     return false;
   }
 
+  if (value.providerOptions !== undefined && !isProviderOptions(value.providerOptions)) {
+    return false;
+  }
+
   if (!isRecord(value.mcpServers)) {
     return false;
   }
@@ -705,6 +717,10 @@ function isWrapperInput(value: unknown): value is WrapperInput {
   }
 
   return Object.values(value.mcpServers).every(isSerializableMcpServer);
+}
+
+function isProviderOptions(value: unknown): value is ProviderOptionsPayload {
+  return isRecord(value) && Object.values(value).every(isRecord);
 }
 
 void main();

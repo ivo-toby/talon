@@ -85,6 +85,7 @@ describe('CodexCliProvider', () => {
           yield '{"type":"item.completed","item":{"type":"assistant_message","content":[{"type":"output_text","text":"Hello "} ]}}\n';
           yield '{"type":"item.completed","item":{"type":"mcp_tool_call","server_name":"brave","name":"search","call_id":"tool-1","arguments":{"q":"latest"}}}\n';
           yield '{"type":"item.completed","item":{"type":"assistant_message","content":[{"type":"output_text","text":"world"}]}}\n';
+          yield '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":111,"cached_input_tokens":42,"output_tokens":7},"last_token_usage":{"input_tokens":55,"cached_input_tokens":30,"output_tokens":3},"model_context_window":258400}}}\n';
           yield '{"type":"turn.completed","usage":{"input_tokens":111,"cached_input_tokens":42,"output_tokens":7}}\n';
         }
         return {
@@ -204,6 +205,11 @@ describe('CodexCliProvider', () => {
               inputTokens: 111,
               cacheReadTokens: 42,
               outputTokens: 7,
+            },
+            lastStepUsage: {
+              inputTokens: 55,
+              cacheReadTokens: 30,
+              outputTokens: 3,
             },
             isError: false,
           },
@@ -499,6 +505,7 @@ describe('CodexCliProvider', () => {
       {
         stdout: [
           '{"type":"thread.started","thread_id":"codex-thread-009"}',
+          '{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":14813,"cached_input_tokens":9000,"output_tokens":16},"last_token_usage":{"input_tokens":7312,"cached_input_tokens":4096,"output_tokens":5},"model_context_window":258400}}}',
           '{"type":"turn.completed","usage":{"input_tokens":14813,"cached_input_tokens":9000,"output_tokens":16}}',
         ].join('\n'),
         stderr: '',
@@ -517,6 +524,11 @@ describe('CodexCliProvider', () => {
         inputTokens: 14813,
         cacheReadTokens: 9000,
         outputTokens: 16,
+      },
+      lastStepUsage: {
+        inputTokens: 7312,
+        cacheReadTokens: 4096,
+        outputTokens: 5,
       },
     });
   });
