@@ -293,7 +293,6 @@ backgroundAgent:
         baseUrl: http://mac.local:8000/v1
         defaultModel: qwen3.5-9b-optiq-4bit
         providerId: omlx-local
-        omlxResponses: true
 
 scheduler:
   tickIntervalMs: 5000

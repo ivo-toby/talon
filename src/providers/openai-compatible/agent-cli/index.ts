@@ -29,6 +29,8 @@ import {
 } from './tool-output-excerpter.js';
 import { runOmlxResponsesLoop } from './omlx-responses.js';
 
+const DEFAULT_MAX_STEPS = 1000;
+
 interface WrapperInput {
   prompt: string;
   systemPrompt: string;
@@ -51,7 +53,7 @@ interface WrapperInput {
   omlxResponses?: boolean;
   /** Prior oMLX response id to resume with `previous_response_id`. */
   previousResponseId?: string;
-  /** Max model/tool-call steps for the run. Defaults to 25. */
+  /** High safety net for model/tool-call steps. Defaults to DEFAULT_MAX_STEPS. */
   maxSteps?: number;
   /**
    * Max chars of tool output allowed into the agent's message history.
@@ -282,7 +284,7 @@ async function main(): Promise<void> {
           requestContext,
           ...(input.threadId ? { threadId: input.threadId } : {}),
         },
-        maxSteps: input.maxSteps ?? 25,
+        maxSteps: input.maxSteps ?? DEFAULT_MAX_STEPS,
         streamEvents: shouldStream,
         emit,
         getToolOutputMetadata: (toolCallId) => toolOutputStore.get(toolCallId),
@@ -336,10 +338,10 @@ async function main(): Promise<void> {
     });
 
     // Mastra's default stopWhen is stepCountIs(5), which stalls the stream
-    // after ~5 tool calls. Match the agent-runner's maxTurns (default 25)
-    // so the agent can do meaningful multi-tool work.
+    // after ~5 tool calls. Use a high safety net and let the model stop
+    // naturally once it emits a no-tool-calls turn.
     const stream = await agent.stream(input.prompt, {
-      maxSteps: 25,
+      maxSteps: input.maxSteps ?? DEFAULT_MAX_STEPS,
       ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
     });
     const shouldStream = input.streamEvents !== false;

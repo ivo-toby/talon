@@ -162,6 +162,7 @@ async function postResponsesRequest(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: input.executionContext?.abortSignal,
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => '');

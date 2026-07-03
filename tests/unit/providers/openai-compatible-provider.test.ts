@@ -168,7 +168,7 @@ describe('OpenAiCompatibleProvider', () => {
     expect(typeof strategy.run).toBe('function');
   });
 
-  it('creates a resumable SDK strategy when oMLX Responses mode is enabled', () => {
+  it('creates a resumable SDK strategy that continues after rotation when oMLX Responses mode is enabled', () => {
     const provider = new OpenAiCompatibleProvider({
       enabled: true,
       command: 'node',
@@ -184,6 +184,7 @@ describe('OpenAiCompatibleProvider', () => {
 
     expect(strategy.type).toBe('sdk');
     expect(strategy.supportsSessionResumption).toBe(true);
+    expect(strategy.requiresContinuationAfterContextRotation).toBe(true);
   });
 
   it('passes oMLX Responses mode and previous response ids to the wrapper payload', async () => {
@@ -235,7 +236,7 @@ describe('OpenAiCompatibleProvider', () => {
     const payload = JSON.parse(capturedStdin.join('')) as Record<string, unknown>;
     expect(payload.omlxResponses).toBe(true);
     expect(payload.previousResponseId).toBe('resp-prev');
-    expect(payload.maxSteps).toBe(10);
+    expect(payload).not.toHaveProperty('maxSteps');
     expect(payload.threadId).toBe('thread-test');
 
     const resultEvent = events.find((event) => event.type === 'result');
@@ -610,6 +611,7 @@ describe('OpenAiCompatibleProvider', () => {
     expect(stdinJoined.length).toBeGreaterThan(0);
     const payload = JSON.parse(stdinJoined) as Record<string, unknown>;
     expect(payload.streamEvents).toBe(true);
+    expect(payload).not.toHaveProperty('maxSteps');
   });
 
   it('emits an error stream event containing stderr when the wrapper exits non-zero', async () => {

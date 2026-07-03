@@ -21,6 +21,8 @@ import { buildTimeContext } from '../core/time-context.js';
 import { formatToolCall } from './tool-name-formatter.js';
 import type {
   AgentUsage,
+  ContextUsage,
+  ContextMetricName,
   CanonicalMcpSdkServer,
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
@@ -72,9 +74,13 @@ export class AgentRunner {
 
     // Detect A2A task collaboration items and flag for special handling.
     // isA2ATask is only true when taskId is a non-empty string, preventing null ID updates.
+    const payloadTaskId = item.payload?.taskId;
     const a2aTaskId =
-      item.type === 'collaboration' && item.payload?.kind === 'a2a_task' && item.payload?.taskId
-        ? String(item.payload.taskId)
+      item.type === 'collaboration'
+      && item.payload?.kind === 'a2a_task'
+      && typeof payloadTaskId === 'string'
+      && payloadTaskId.length > 0
+        ? payloadTaskId
         : null;
     const isA2ATask = a2aTaskId !== null;
 
@@ -373,10 +379,11 @@ export class AgentRunner {
                 ? (readScheduleOriginExternalId(threadResult.value.metadata)
                     ?? threadResult.value.external_id)
                 : undefined;
-            const channelConfig =
-              channelRow?.isOk() && channelRow.value
-                ? this.ctx.config.channels?.find((c) => c.name === channelRow!.value!.name)
-                : undefined;
+            const channelName =
+              channelRow?.isOk() && channelRow.value ? channelRow.value.name : undefined;
+            const channelConfig = channelName
+              ? this.ctx.config.channels?.find((c) => c.name === channelName)
+              : undefined;
             const showToolCalls = channelConfig?.showToolCalls ?? false;
 
             // Send typing indicator and keep it alive every 4s while the agent works.
@@ -411,10 +418,10 @@ export class AgentRunner {
             }
             const enabledContextManagement = contextManagement?.enabled
               ? {
-                  triggerMetric: contextManagement.triggerMetric!,
-                  thresholdRatio: contextManagement.thresholdRatio!,
-                  recentMessageCount: contextManagement.recentMessageCount!,
-                  summarizer: contextManagement.summarizer!,
+                  triggerMetric: contextManagement.triggerMetric,
+                  thresholdRatio: contextManagement.thresholdRatio,
+                  recentMessageCount: contextManagement.recentMessageCount,
+                  summarizer: contextManagement.summarizer,
                   reflectionThresholdChars: contextManagement.reflectionThresholdChars,
                 }
               : null;
@@ -436,7 +443,7 @@ export class AgentRunner {
                       threadId: item.threadId,
                     },
                   },
-                  async (retrieverObservation) => {
+                  (retrieverObservation) => {
                     // Exclude the message being processed (if any) from the
                     // "Recent Messages" block. That message is already passed
                     // as the live prompt (`content`), and re-echoing it in
@@ -544,6 +551,7 @@ export class AgentRunner {
                           TALON_SKILL_LOAD_TOOL_DESCRIPTION,
                           { name: z.string().describe('Skill name') },
                           async (args) => {
+                            await Promise.resolve();
                             const content = skillContentMap.get(args.name);
                             if (content === undefined) {
                               return {
@@ -692,9 +700,9 @@ export class AgentRunner {
 
                       // Manually drive the iterator so the catch block can abort this exact instance
                       for (;;) {
-                        const { value, done } = await iterator.next();
-                        if (done) break;
-                        const event = value;
+                        const next = await iterator.next();
+                        if (next.done) break;
+                        const event = next.value;
                         sawEvents = true;
                         if (event.type === 'text') {
                           outputText += event.content;
@@ -1003,8 +1011,10 @@ export class AgentRunner {
               // rotations. Telemetry/accounting still uses the cumulative
               // `usage` further down (it's what the user was billed for).
               const usageForRotation = lastStepUsage ?? usage;
-              const contextUsage = providerEntry.provider.estimateContextUsage(usageForRotation);
-              const selectedMetricValue = contextUsage.metrics[enabledContextManagement.triggerMetric];
+              const contextUsage: ContextUsage =
+                providerEntry.provider.estimateContextUsage(usageForRotation);
+              const triggerMetric = enabledContextManagement.triggerMetric as ContextMetricName;
+              const selectedMetricValue: number | undefined = contextUsage.metrics[triggerMetric];
               if (selectedMetricValue === undefined) {
                 this.ctx.logger.error(
                   {
@@ -1021,7 +1031,7 @@ export class AgentRunner {
                       ratio: selectedMetricValue / Math.max(1, providerEntry.config.contextWindowTokens),
                       inputTokens: contextUsage.inputTokens,
                       rawMetric: selectedMetricValue,
-                      rawMetricName: enabledContextManagement.triggerMetric,
+                      rawMetricName: triggerMetric,
                     };
                     // Route to observational memory path when configured with
                     // session-observer; otherwise use the legacy summarizer.
@@ -1050,15 +1060,21 @@ export class AgentRunner {
                           enabledContextManagement.summarizer,
                         );
 
-                    // For stateless providers (no session resumption), the agent
-                    // loses its in-progress task state after context rotation.
-                    // Only auto-enqueue a continuation when the summarizer found
-                    // open threads — otherwise the task was complete and a
+                    // Some providers need a fresh turn after context rotation
+                    // to continue open work. Stateless providers need it
+                    // because rotation clears model history; oMLX Responses
+                    // also opts in because rotation intentionally drops the
+                    // previous_response_id chain.
+                    // Only auto-enqueue when the summarizer found open
+                    // threads — otherwise the task was complete and a
                     // "continue" would cause the agent to invent work.
+                    const needsContinuationAfterRotation =
+                      !strategy.supportsSessionResumption ||
+                      strategy.requiresContinuationAfterContextRotation === true;
                     if (
                       rotation.rotated
                       && rotation.hasOpenThreads
-                      && !strategy.supportsSessionResumption
+                      && needsContinuationAfterRotation
                       && !isA2ATask
                       && item.type !== 'schedule'
                     ) {

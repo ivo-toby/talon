@@ -686,6 +686,7 @@ describe('AgentRunner', () => {
         get: vi.fn().mockImplementation((name: string) => (
           name === 'gemini-cli'
             ? {
+                type: 'gemini-cli',
                 provider: {
                   name: 'gemini-cli',
                   createExecutionStrategy: () => ({
@@ -714,6 +715,7 @@ describe('AgentRunner', () => {
             : undefined
         )),
         getDefault: vi.fn().mockImplementation(() => ({
+          type: 'gemini-cli',
           provider: {
             name: 'gemini-cli',
             createExecutionStrategy: () => ({
@@ -831,6 +833,7 @@ describe('AgentRunner', () => {
         get: vi.fn().mockImplementation((name: string) => (
           name === 'openai-compatible'
             ? {
+                type: 'openai-compatible',
                 provider: {
                   name: 'openai-compatible',
                   createExecutionStrategy: () => ({
@@ -859,6 +862,7 @@ describe('AgentRunner', () => {
             : undefined
         )),
         getDefault: vi.fn().mockImplementation(() => ({
+          type: 'openai-compatible',
           provider: {
             name: 'openai-compatible',
             createExecutionStrategy: () => ({
@@ -917,6 +921,73 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('auto-enqueues continuation after rotation for resumable providers that opt in', async () => {
+      const sdkRun = vi.fn().mockReturnValue(makeProviderStream({
+        usage: { inputTokens: 210_000, outputTokens: 90 },
+      }));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
+        config: {
+          model: 'qwen3.5-9b-optiq-4bit',
+          provider: 'openai-compatible',
+          skills: [],
+          capabilities: { allow: [] },
+        },
+        systemPromptContent: 'You are an OpenAI-compatible test bot.',
+        resolvedCapabilities: {
+          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      } as any));
+      ctx.queueManager = {
+        enqueue: vi.fn().mockReturnValue(ok({})),
+      } as any;
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue({
+          rotated: true,
+          hasOpenThreads: true,
+        }),
+      } as any;
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'openai-compatible',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              requiresContinuationAfterContextRotation: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 210_000,
+              metrics: {
+                input_tokens: 210_000,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.queueManager.enqueue).toHaveBeenCalledWith(
+        'thread-001',
+        'message',
+        { personaId: 'persona-001', content: 'continue' },
+        expect.any(String),
+      );
+    });
+
     it('logs and skips rotation when the configured trigger metric is unavailable', async () => {
       ctx.contextRoller = {
         checkAndRotate: vi.fn().mockResolvedValue(undefined),
@@ -924,6 +995,7 @@ describe('AgentRunner', () => {
       const connector = ctx.channelRegistry.get('test-channel')!;
       ctx.providerRegistry = {
         getDefault: vi.fn().mockReturnValue({
+          type: 'gemini-cli',
           provider: {
             name: 'gemini-cli',
             createExecutionStrategy: () => ({
@@ -1507,6 +1579,7 @@ describe('AgentRunner', () => {
       ctx.providerRegistry = {
         get: vi.fn().mockReturnValue(undefined),
         getDefault: vi.fn().mockReturnValue({
+          type: 'codex-cli',
           provider: {
             name: 'codex-cli',
             createExecutionStrategy: () => ({

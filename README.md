@@ -1766,7 +1766,7 @@ npx talonctl reset-provider-affinity --channel my-telegram --external-id 1234567
 | `--base-url <url>` | Set `options.baseUrl` for OpenAI-compatible providers | — |
 | `--provider-id <id>` | Set `options.providerId` for OpenAI-compatible credential lookup | — |
 | `--tool-output-cap <chars>` | Set `options.toolOutputCap` for OpenAI-compatible providers | — |
-| `--omlx-responses` | Set `options.omlxResponses: true` for oMLX `/v1/responses` session/cache chaining | off |
+| `--omlx-responses` | Set `agentRunner.providers.*.options.omlxResponses: true` for oMLX `/v1/responses` session/cache chaining | off |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
 **`set-default-provider`** options:
@@ -1801,9 +1801,9 @@ For `openai-compatible` (**experimental**), use the canonical provider name `ope
 
 OpenAI-compatible entries may set a flat `options.providerOptions` record for vendor-specific request body knobs. Talon wraps it under `options.providerId` before calling Mastra, so disabling Qwen thinking on an `ollama-mac` alias is `providerOptions.chat_template_kwargs.enable_thinking: false`, not a nested `providerOptions.openai` block.
 
-For oMLX, set `options.omlxResponses: true` (or pass `talonctl add-provider --omlx-responses`) to use oMLX's `/v1/responses` endpoint instead of the default Mastra chat-completions path. In this mode Talon stores the returned response id as the provider session id and resumes later turns with `previous_response_id`, so oMLX can reuse its response-state chain and prefix/KV cache across tool-call steps. Use this only for oMLX endpoints that implement `/v1/responses`; leave it off for Ollama, vLLM, Groq, Together, and ordinary OpenAI-compatible chat-completions servers.
+For oMLX, set `agentRunner.providers.<name>.options.omlxResponses: true` (or pass `talonctl add-provider --omlx-responses`) to use oMLX's `/v1/responses` endpoint instead of the default Mastra chat-completions path. In this mode Talon stores the returned response id as the provider session id and resumes later turns with `previous_response_id`, so oMLX can reuse its response-state chain and prefix/KV cache across tool-call steps. Use this only for foreground agent-runner oMLX endpoints that implement `/v1/responses`; leave it off for background providers, Ollama, vLLM, Groq, Together, and ordinary OpenAI-compatible chat-completions servers.
 
-> **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, `maxSteps` override for tool-call limits, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
+> **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, a high `maxSteps` safety net to avoid Mastra's low default tool-call limit, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
 
 ##### Prompt caching with `openai-compatible`
 

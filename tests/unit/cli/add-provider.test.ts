@@ -138,9 +138,27 @@ describe('addProvider()', () => {
         baseUrl: 'http://mac.local:11434/v1',
         providerId: 'ollama-mac',
         toolOutputCap: 2048,
-        omlxResponses: true,
       },
     });
+  });
+
+  it('rejects oMLX Responses mode for background-only providers', async () => {
+    const p = writeYaml('logLevel: info\nbackgroundAgent:\n  providers: {}\n');
+
+    await expect(
+      addProvider({
+        name: 'omlx-background',
+        type: 'openai-compatible',
+        command: 'node',
+        context: 'background',
+        contextWindowTokens: 128_000,
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://mac.local:8000/v1',
+        providerId: 'omlx-local',
+        omlxResponses: true,
+        configPath: p,
+      }),
+    ).rejects.toThrow('--omlx-responses is only supported for agent-runner providers.');
   });
 
   it('writes contextManagement only to the agent-runner entry when using both contexts', async () => {

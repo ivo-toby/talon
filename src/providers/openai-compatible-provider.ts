@@ -58,7 +58,6 @@ interface WrapperPayload {
   outputFilePath?: string;
   omlxResponses?: boolean;
   previousResponseId?: string;
-  maxSteps?: number;
   /**
    * Max chars of tool output allowed into agent message history before
    * excerpting. 0 disables the feature. When omitted, the wrapper uses its
@@ -127,6 +126,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       return {
         type: 'sdk' as const,
         supportsSessionResumption: true as const,
+        requiresContinuationAfterContextRotation: true as const,
         run: (input: AgentRunInput) => this.streamForeground(input),
       };
     }
@@ -494,7 +494,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     const providerId = this.readStringOption('providerId') ?? 'openai-compatible';
     const providerOptions = this.readUnknownRecordOption('providerOptions');
     const omlxResponses = this.isOmlxResponsesMode();
-    const sessionInput = input as ProviderSpawnInput & { sessionId?: string; maxTurns?: number };
+    const sessionInput = input as ProviderSpawnInput & { sessionId?: string };
     const payload: WrapperPayload = {
       prompt: input.prompt,
       systemPrompt: input.systemPrompt,
@@ -510,7 +510,6 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       ...(omlxResponses && sessionInput.sessionId
         ? { previousResponseId: sessionInput.sessionId }
         : {}),
-      ...(sessionInput.maxTurns ? { maxSteps: sessionInput.maxTurns } : {}),
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
       streamEvents: options.streamEvents,
       ...(options.outputFilePath ? { outputFilePath: options.outputFilePath } : {}),

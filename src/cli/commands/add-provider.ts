@@ -99,6 +99,9 @@ export async function addProvider(
   if (!validContexts.includes(ctx)) {
     throw new Error(`Invalid context "${ctx}". Must be one of: ${validContexts.join(', ')}.`);
   }
+  if (options.omlxResponses === true && ctx === 'background') {
+    throw new Error('--omlx-responses is only supported for agent-runner providers.');
+  }
 
   // Validate name.
   const nameError = validateName(options.name, 'Provider');
@@ -257,8 +260,17 @@ export async function addProvider(
     const sectionEntry = includeContextManagement
       ? { ...entry }
       : { ...entry, contextManagement: undefined };
+    if (entry.options) {
+      sectionEntry.options = { ...entry.options };
+    }
     if (!includeContextManagement) {
       delete sectionEntry.contextManagement;
+    }
+    if (sectionKey === 'backgroundAgent' && sectionEntry.options) {
+      delete sectionEntry.options.omlxResponses;
+      if (Object.keys(sectionEntry.options).length === 0) {
+        delete sectionEntry.options;
+      }
     }
 
     providers[options.name] = sectionEntry;

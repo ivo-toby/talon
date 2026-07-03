@@ -71,24 +71,28 @@ export type AgentStreamEvent =
 export interface SDKExecutionStrategy {
   readonly type: 'sdk';
   readonly supportsSessionResumption: true;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): AsyncIterable<AgentStreamEvent>;
 }
 
 export interface StatelessSDKExecutionStrategy {
   readonly type: 'sdk';
   readonly supportsSessionResumption: false;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): AsyncIterable<AgentStreamEvent>;
 }
 
 export interface CLIExecutionStrategy {
   readonly type: 'cli';
   readonly supportsSessionResumption: true;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): Promise<AgentRunResult>;
 }
 
 export interface StatelessCLIExecutionStrategy {
   readonly type: 'cli';
   readonly supportsSessionResumption: false;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): Promise<AgentRunResult>;
 }
 

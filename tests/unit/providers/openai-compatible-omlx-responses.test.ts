@@ -159,6 +159,42 @@ describe('openai-compatible oMLX Responses runner', () => {
     ]);
   });
 
+  it('passes the abort signal into Responses API fetch calls', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      expect(init?.signal).toBe(controller.signal);
+      return new Response(
+        JSON.stringify({
+          id: 'resp-final',
+          output_text: 'done',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 2,
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    const result = await runOmlxResponsesLoop({
+      prompt: 'Say done',
+      systemPrompt: 'You are a coding agent.',
+      model: 'qwen3.5-9b-optiq-4bit',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      tools: {},
+      executionContext: {
+        abortSignal: controller.signal,
+      },
+      maxSteps: 5,
+      streamEvents: false,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      emit: vi.fn(),
+    });
+
+    expect(result.output).toBe('done');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('returns invalid JSON tool arguments as a tool error without executing the tool', async () => {
     const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
