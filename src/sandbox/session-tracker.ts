@@ -6,9 +6,10 @@
  * rather than starting fresh, enabling multi-turn conversations without
  * re-sending the full message history.
  *
- * SessionTracker is a lightweight in-memory store that maps threadId ->
- * sessionId. Entries are evicted after a configurable TTL (default 24h) to
- * prevent unbounded memory growth in long-running daemon processes.
+ * SessionTracker is a lightweight in-memory store keyed by thread, provider,
+ * and optionally model. Entries are evicted after a configurable TTL
+ * (default 24h) to prevent unbounded memory growth in long-running daemon
+ * processes.
  *
  * If the daemon restarts, sessions are forgotten and agents start fresh (the
  * conversation history can be reconstructed from the DB if needed by a future
@@ -47,7 +48,8 @@ export class SessionTracker {
     this.ttlMs = ttlMs;
   }
 
-  private makeKey(threadId: string, providerName?: string): string {
+  private makeKey(threadId: string, providerName?: string, modelName?: string): string {
+    if (providerName && modelName) return `${threadId}::${providerName}::${modelName}`;
     return providerName ? `${threadId}::${providerName}` : threadId;
   }
 
@@ -61,12 +63,13 @@ export class SessionTracker {
    * @param threadId - The thread identifier.
    * @returns The stored session ID, or `undefined`.
    */
-  getSessionId(threadId: string, providerName?: string): string | undefined {
-    const entry = this.sessions.get(this.makeKey(threadId, providerName));
+  getSessionId(threadId: string, providerName?: string, modelName?: string): string | undefined {
+    const key = this.makeKey(threadId, providerName, modelName);
+    const entry = this.sessions.get(key);
     if (!entry) return undefined;
 
     if (this.isExpired(entry)) {
-      this.sessions.delete(this.makeKey(threadId, providerName));
+      this.sessions.delete(key);
       return undefined;
     }
 
@@ -84,8 +87,8 @@ export class SessionTracker {
    * @param threadId  - The thread identifier.
    * @param sessionId - The SDK session ID returned by the completed run.
    */
-  setSessionId(threadId: string, sessionId: string, providerName?: string): void {
-    this.sessions.set(this.makeKey(threadId, providerName), { sessionId, lastUsedAt: Date.now() });
+  setSessionId(threadId: string, sessionId: string, providerName?: string, modelName?: string): void {
+    this.sessions.set(this.makeKey(threadId, providerName, modelName), { sessionId, lastUsedAt: Date.now() });
   }
 
   /**
@@ -100,9 +103,19 @@ export class SessionTracker {
    *
    * @param threadId - The thread whose session should be cleared.
    */
-  clearSession(threadId: string, providerName?: string): void {
+  clearSession(threadId: string, providerName?: string, modelName?: string): void {
+    if (providerName && modelName) {
+      this.sessions.delete(this.makeKey(threadId, providerName, modelName));
+      return;
+    }
+
     if (providerName) {
-      this.sessions.delete(this.makeKey(threadId, providerName));
+      const providerPrefix = `${threadId}::${providerName}::`;
+      for (const key of this.sessions.keys()) {
+        if (key === this.makeKey(threadId, providerName) || key.startsWith(providerPrefix)) {
+          this.sessions.delete(key);
+        }
+      }
       return;
     }
 

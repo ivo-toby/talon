@@ -27,9 +27,11 @@ import {
   DEFAULT_TOOL_OUTPUT_CAP,
   DEFAULT_FETCH_SLICE_CAP,
 } from './tool-output-excerpter.js';
-import { runOmlxResponsesLoop } from './omlx-responses.js';
+import { runResponsesLoop } from './responses-api.js';
 
 const DEFAULT_MAX_STEPS = 1000;
+type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
+type OpenAiCompatibleSessionMode = 'none' | 'previous_response_id';
 
 interface WrapperInput {
   prompt: string;
@@ -46,12 +48,19 @@ interface WrapperInput {
   streamEvents?: boolean;
   outputFilePath?: string;
   /**
-   * Use oMLX's Responses-compatible endpoint instead of the default
-   * Mastra chat-completions stream. This unlocks `previous_response_id`
-   * session chaining for local oMLX KV/prefix cache reuse.
+   * Use the OpenAI-compatible Responses endpoint instead of the default
+   * Mastra chat-completions stream.
    */
+  apiMode?: OpenAiCompatibleApiMode;
+  /**
+   * Cross-run session resumption mode. `previous_response_id` stores and
+   * resumes the prior response id when the endpoint supports stateful
+   * Responses chains.
+   */
+  sessionMode?: OpenAiCompatibleSessionMode;
+  /** @deprecated Use apiMode: responses + sessionMode: previous_response_id. */
   omlxResponses?: boolean;
-  /** Prior oMLX response id to resume with `previous_response_id`. */
+  /** Prior response id to resume with `previous_response_id`. */
   previousResponseId?: string;
   /** High safety net for model/tool-call steps. Defaults to DEFAULT_MAX_STEPS. */
   maxSteps?: number;
@@ -260,21 +269,25 @@ async function main(): Promise<void> {
       }
     }
 
-    if (input.omlxResponses === true) {
+    const apiMode = resolveApiMode(input);
+    const sessionMode = resolveSessionMode(input);
+    if (apiMode === 'responses') {
       const shouldStream = input.streamEvents !== false;
       const providerId = input.providerId ?? 'openai-compatible';
       const requestContext = new RequestContext();
       if (input.threadId) {
         requestContext.set(MASTRA_THREAD_ID_KEY, input.threadId);
       }
-      const result = await runOmlxResponsesLoop({
+      const result = await runResponsesLoop({
         prompt: input.prompt,
         systemPrompt: input.systemPrompt,
         model: input.model,
         baseUrl: input.baseUrl,
         ...(input.apiKey ? { apiKey: input.apiKey } : {}),
         ...(input.headers ? { headers: input.headers } : {}),
-        ...(input.previousResponseId ? { previousResponseId: input.previousResponseId } : {}),
+        ...(sessionMode === 'previous_response_id' && input.previousResponseId
+          ? { previousResponseId: input.previousResponseId }
+          : {}),
         ...(input.providerOptions?.[providerId]
           ? { providerOptions: input.providerOptions[providerId] as Record<string, unknown> }
           : {}),
@@ -554,6 +567,22 @@ function readBooleanProp(record: Record<string, unknown>, key: string): boolean 
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function isApiMode(value: unknown): value is OpenAiCompatibleApiMode {
+  return value === 'chat-completions' || value === 'responses';
+}
+
+function isSessionMode(value: unknown): value is OpenAiCompatibleSessionMode {
+  return value === 'none' || value === 'previous_response_id';
+}
+
+function resolveApiMode(input: WrapperInput): OpenAiCompatibleApiMode {
+  return input.apiMode ?? (input.omlxResponses === true ? 'responses' : 'chat-completions');
+}
+
+function resolveSessionMode(input: WrapperInput): OpenAiCompatibleSessionMode {
+  return input.sessionMode ?? (input.omlxResponses === true ? 'previous_response_id' : 'none');
+}
+
 function parseInput(raw: string): WrapperInput {
   const parsed: unknown = JSON.parse(raw);
   if (!isWrapperInput(parsed)) {
@@ -578,6 +607,8 @@ function parseInput(raw: string): WrapperInput {
     ...(typeof parsed.outputFilePath === 'string' && parsed.outputFilePath.length > 0
       ? { outputFilePath: parsed.outputFilePath }
       : {}),
+    ...(isApiMode(parsed.apiMode) ? { apiMode: parsed.apiMode } : {}),
+    ...(isSessionMode(parsed.sessionMode) ? { sessionMode: parsed.sessionMode } : {}),
     ...(typeof parsed.omlxResponses === 'boolean' ? { omlxResponses: parsed.omlxResponses } : {}),
     ...(typeof parsed.previousResponseId === 'string' && parsed.previousResponseId.length > 0
       ? { previousResponseId: parsed.previousResponseId }
@@ -832,6 +863,14 @@ function isWrapperInput(value: unknown): value is WrapperInput {
   }
 
   if (value.outputFilePath !== undefined && typeof value.outputFilePath !== 'string') {
+    return false;
+  }
+
+  if (value.apiMode !== undefined && !isApiMode(value.apiMode)) {
+    return false;
+  }
+
+  if (value.sessionMode !== undefined && !isSessionMode(value.sessionMode)) {
     return false;
   }
 

@@ -8,11 +8,11 @@ import { createWorkspaceTools, LocalFilesystem, Workspace } from '@mastra/core/w
 import { z } from 'zod';
 import {
   buildResponsesTools,
-  runOmlxResponsesLoop,
-  type OmlxResponsesWrapperEvent,
-} from '../../../src/providers/openai-compatible/agent-cli/omlx-responses.js';
+  runResponsesLoop,
+  type ResponsesWrapperEvent,
+} from '../../../src/providers/openai-compatible/agent-cli/responses-api.js';
 
-describe('openai-compatible oMLX Responses runner', () => {
+describe('openai-compatible Responses API runner', () => {
   it('uses the executable tool map key as the Responses tool name', () => {
     const tool = createTool({
       id: 'internal_id',
@@ -76,7 +76,7 @@ describe('openai-compatible oMLX Responses runner', () => {
       );
     });
 
-    const events: OmlxResponsesWrapperEvent[] = [];
+    const events: ResponsesWrapperEvent[] = [];
     const readFile = createTool({
       id: 'read_file',
       description: 'Read a file',
@@ -86,7 +86,7 @@ describe('openai-compatible oMLX Responses runner', () => {
       execute: async (input) => `contents of ${input.path}`,
     });
 
-    const result = await runOmlxResponsesLoop({
+    const result = await runResponsesLoop({
       prompt: 'Read README.md',
       systemPrompt: 'You are a coding agent.',
       model: 'qwen3.5-9b-optiq-4bit',
@@ -176,7 +176,7 @@ describe('openai-compatible oMLX Responses runner', () => {
       );
     });
 
-    const result = await runOmlxResponsesLoop({
+    const result = await runResponsesLoop({
       prompt: 'Say done',
       systemPrompt: 'You are a coding agent.',
       model: 'qwen3.5-9b-optiq-4bit',
@@ -224,9 +224,9 @@ describe('openai-compatible oMLX Responses runner', () => {
       );
     });
     const execute = vi.fn(async () => 'should not run');
-    const events: OmlxResponsesWrapperEvent[] = [];
+    const events: ResponsesWrapperEvent[] = [];
 
-    await runOmlxResponsesLoop({
+    await runResponsesLoop({
       prompt: 'Read README.md',
       systemPrompt: 'You are a coding agent.',
       model: 'qwen3.5-9b-optiq-4bit',
@@ -294,7 +294,7 @@ describe('openai-compatible oMLX Responses runner', () => {
     });
     const execute = vi.fn(async () => 'should not run');
 
-    await runOmlxResponsesLoop({
+    await runResponsesLoop({
       prompt: 'Read README.md',
       systemPrompt: 'You are a coding agent.',
       model: 'qwen3.5-9b-optiq-4bit',
@@ -352,7 +352,7 @@ describe('openai-compatible oMLX Responses runner', () => {
       );
     });
 
-    await runOmlxResponsesLoop({
+    await runResponsesLoop({
       prompt: 'Inspect context',
       systemPrompt: 'You are a coding agent.',
       model: 'qwen3.5-9b-optiq-4bit',
@@ -395,7 +395,7 @@ describe('openai-compatible oMLX Responses runner', () => {
   });
 
   it('executes Mastra workspace tools with workspace context', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'talon-omlx-workspace-'));
+    const dir = mkdtempSync(join(tmpdir(), 'talon-responses-workspace-'));
     const workspace = new Workspace({
       filesystem: new LocalFilesystem({ basePath: dir, contained: false }),
     });
@@ -430,7 +430,7 @@ describe('openai-compatible oMLX Responses runner', () => {
     });
 
     try {
-      await runOmlxResponsesLoop({
+      await runResponsesLoop({
         prompt: 'Read README.md',
         systemPrompt: 'You are a coding agent.',
         model: 'qwen3.5-9b-optiq-4bit',
@@ -470,7 +470,7 @@ describe('openai-compatible oMLX Responses runner', () => {
       );
     });
 
-    const result = await runOmlxResponsesLoop({
+    const result = await runResponsesLoop({
       prompt: 'Continue',
       systemPrompt: 'System prompt that is already in the chain.',
       model: 'qwen3.5-9b-optiq-4bit',

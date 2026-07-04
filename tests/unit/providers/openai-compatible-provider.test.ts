@@ -168,7 +168,46 @@ describe('OpenAiCompatibleProvider', () => {
     expect(typeof strategy.run).toBe('function');
   });
 
-  it('creates a resumable SDK strategy that continues after rotation when oMLX Responses mode is enabled', () => {
+  it('creates a resumable SDK strategy when previous-response session mode is enabled', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        apiMode: 'responses',
+        sessionMode: 'previous_response_id',
+      },
+    });
+
+    const strategy = provider.createExecutionStrategy();
+
+    expect(strategy.type).toBe('sdk');
+    expect(strategy.supportsSessionResumption).toBe(true);
+    expect(strategy.requiresContinuationAfterContextRotation).toBe(true);
+  });
+
+  it('does not mark stateless Responses API mode as session-resumable', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        apiMode: 'responses',
+        sessionMode: 'none',
+      },
+    });
+
+    const strategy = provider.createExecutionStrategy();
+
+    expect(strategy.type).toBe('sdk');
+    expect(strategy.supportsSessionResumption).toBe(false);
+  });
+
+  it('treats legacy omlxResponses as stateful Responses API mode', () => {
     const provider = new OpenAiCompatibleProvider({
       enabled: true,
       command: 'node',
@@ -184,10 +223,9 @@ describe('OpenAiCompatibleProvider', () => {
 
     expect(strategy.type).toBe('sdk');
     expect(strategy.supportsSessionResumption).toBe(true);
-    expect(strategy.requiresContinuationAfterContextRotation).toBe(true);
   });
 
-  it('passes oMLX Responses mode and previous response ids to the wrapper payload', async () => {
+  it('passes Responses API mode and previous response ids to the wrapper payload', async () => {
     const capturedStdin: string[] = [];
     vi.mocked(mockedSpawn).mockImplementation((() => {
       const child = makeFakeChild({
@@ -213,7 +251,8 @@ describe('OpenAiCompatibleProvider', () => {
       options: {
         defaultModel: 'qwen3.5-9b-optiq-4bit',
         baseUrl: 'http://127.0.0.1:8000/v1',
-        omlxResponses: true,
+        apiMode: 'responses',
+        sessionMode: 'previous_response_id',
       },
     });
     const strategy = provider.createExecutionStrategy();
@@ -234,7 +273,9 @@ describe('OpenAiCompatibleProvider', () => {
     }
 
     const payload = JSON.parse(capturedStdin.join('')) as Record<string, unknown>;
-    expect(payload.omlxResponses).toBe(true);
+    expect(payload.apiMode).toBe('responses');
+    expect(payload.sessionMode).toBe('previous_response_id');
+    expect(payload).not.toHaveProperty('omlxResponses');
     expect(payload.previousResponseId).toBe('resp-prev');
     expect(payload).not.toHaveProperty('maxSteps');
     expect(payload.threadId).toBe('thread-test');

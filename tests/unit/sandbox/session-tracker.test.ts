@@ -70,6 +70,16 @@ describe('SessionTracker', () => {
       expect(tracker.getSessionId('thread-1')).toBeUndefined();
     });
 
+    it('scopes sessions by model when a model name is supplied', () => {
+      tracker.setSessionId('thread-1', 'qwen-small-session', 'ollama-mac', 'Qwen3.5-9B-OptiQ-4bit');
+      tracker.setSessionId('thread-1', 'qwen-large-session', 'ollama-mac', 'Qwen3-30B-A3B-Instruct-2507-4bit');
+
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'Qwen3.5-9B-OptiQ-4bit')).toBe('qwen-small-session');
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'Qwen3-30B-A3B-Instruct-2507-4bit')).toBe('qwen-large-session');
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'gemma-4-12B-it-4bit')).toBeUndefined();
+      expect(tracker.getSessionId('thread-1', 'ollama-mac')).toBeUndefined();
+    });
+
     it('returns undefined for an expired session', () => {
       tracker.setSessionId('thread-1', 'ses-abc');
       // Advance past the default 24h TTL.
@@ -120,6 +130,14 @@ describe('SessionTracker', () => {
       expect(tracker.getSessionId('thread-1', 'claude-code')).toBe('claude-session');
       expect(tracker.getSessionId('thread-1', 'codex-cli')).toBe('codex-session');
     });
+
+    it('stores separate sessions per provider model on the same thread', () => {
+      tracker.setSessionId('thread-1', 'small-session', 'ollama-mac', 'small-model');
+      tracker.setSessionId('thread-1', 'large-session', 'ollama-mac', 'large-model');
+
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'small-model')).toBe('small-session');
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'large-model')).toBe('large-session');
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -150,6 +168,28 @@ describe('SessionTracker', () => {
       tracker.setSessionId('thread-2', 'ses-2');
       tracker.clearSession('thread-1');
       expect(tracker.size()).toBe(1);
+    });
+
+    it('clears all model sessions for a provider when only provider is supplied', () => {
+      tracker.setSessionId('thread-1', 'small-session', 'ollama-mac', 'small-model');
+      tracker.setSessionId('thread-1', 'large-session', 'ollama-mac', 'large-model');
+      tracker.setSessionId('thread-1', 'codex-session', 'codex-cli', 'gpt-5.4');
+
+      tracker.clearSession('thread-1', 'ollama-mac');
+
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'small-model')).toBeUndefined();
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'large-model')).toBeUndefined();
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4')).toBe('codex-session');
+    });
+
+    it('clears one model session when provider and model are supplied', () => {
+      tracker.setSessionId('thread-1', 'small-session', 'ollama-mac', 'small-model');
+      tracker.setSessionId('thread-1', 'large-session', 'ollama-mac', 'large-model');
+
+      tracker.clearSession('thread-1', 'ollama-mac', 'small-model');
+
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'small-model')).toBeUndefined();
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'large-model')).toBe('large-session');
     });
   });
 

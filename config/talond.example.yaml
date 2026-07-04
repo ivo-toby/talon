@@ -230,10 +230,13 @@ agentRunner:
         baseUrl: http://mac.local:8000/v1
         defaultModel: qwen3.5-9b-optiq-4bit
         providerId: omlx-local
-        # oMLX-specific: use /v1/responses and resume with
-        # previous_response_id so oMLX can reuse response state and its
-        # prefix/KV cache across tool-call steps and later messages.
-        omlxResponses: true
+        # Responses API mode can be enabled for OpenAI-compatible endpoints
+        # that expose /v1/responses. For stateful oMLX-style endpoints, pair
+        # it with previous_response_id session mode so Talon stores response
+        # ids and resumes by provider + model. Omit sessionMode or set it to
+        # none for endpoints that do not support cross-run response chaining.
+        apiMode: responses
+        sessionMode: previous_response_id
         toolOutputCap: 4000
 
 backgroundAgent:

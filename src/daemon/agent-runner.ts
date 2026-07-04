@@ -107,6 +107,7 @@ export class AgentRunner {
       loadedPersona.config.queryTimeoutMinutes !== undefined
         ? loadedPersona.config.queryTimeoutMinutes * 60 * 1000
         : this.queryTimeoutMs;
+    const model = loadedPersona.config.model;
 
     const threadResult = this.ctx.repos.thread.findById(item.threadId);
     const providerAffinityResetAt =
@@ -168,6 +169,7 @@ export class AgentRunner {
       const sessionLookupOptions =
         {
           excludeCollaboration: true,
+          modelName: model,
           ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
         };
 
@@ -183,10 +185,10 @@ export class AgentRunner {
         if (!hasPostResetSession) {
           this.ctx.sessionTracker.clearSession(item.threadId, sessionProviderName);
         } else {
-          resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName);
+          resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName, model);
         }
       } else {
-        resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName);
+        resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName, model);
       }
       if (!resolvedSessionId && !this.ctx.sessionTracker.wasRotated(item.threadId)) {
         const dbSessionResult = this.ctx.repos.run.getLatestSessionId(
@@ -212,6 +214,7 @@ export class AgentRunner {
       thread_id: item.threadId,
       persona_id: personaId,
       provider_name: providerEntry.provider.name,
+      model_name: model,
       sandbox_id: null,
       session_id: resolvedSessionId ?? null,
       status: 'running',
@@ -309,8 +312,6 @@ export class AgentRunner {
               skillResolver: this.ctx.skillResolver,
               logger: this.ctx.logger,
             });
-
-            const model = loadedPersona.config.model;
 
             // Build channel context so the agent knows which channels are available.
             const threadRow = this.ctx.repos.thread.findById(item.threadId);
@@ -908,7 +909,7 @@ export class AgentRunner {
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
             if (resultSessionId && !isA2ATask) {
-              this.ctx.sessionTracker.setSessionId(item.threadId, resultSessionId, sessionProviderName);
+              this.ctx.sessionTracker.setSessionId(item.threadId, resultSessionId, sessionProviderName, model);
               this.ctx.repos.run.updateSessionId(runId, resultSessionId);
             }
 
@@ -1062,9 +1063,9 @@ export class AgentRunner {
 
                     // Some providers need a fresh turn after context rotation
                     // to continue open work. Stateless providers need it
-                    // because rotation clears model history; oMLX Responses
-                    // also opts in because rotation intentionally drops the
-                    // previous_response_id chain.
+                    // because rotation clears model history; stateful
+                    // Responses API providers also opt in because rotation
+                    // intentionally drops the previous_response_id chain.
                     // Only auto-enqueue when the summarizer found open
                     // threads — otherwise the task was complete and a
                     // "continue" would cause the agent to invent work.

@@ -96,7 +96,8 @@ describe('addProvider()', () => {
       baseUrl: 'http://mac.local:11434/v1',
       providerId: 'ollama-mac',
       toolOutputCap: 2048,
-      omlxResponses: true,
+      apiMode: 'responses',
+      sessionMode: 'previous_response_id',
       configPath: p,
     });
 
@@ -118,7 +119,8 @@ describe('addProvider()', () => {
         baseUrl: 'http://mac.local:11434/v1',
         providerId: 'ollama-mac',
         toolOutputCap: 2048,
-        omlxResponses: true,
+        apiMode: 'responses',
+        sessionMode: 'previous_response_id',
       },
       contextManagement: {
         enabled: true,
@@ -138,11 +140,12 @@ describe('addProvider()', () => {
         baseUrl: 'http://mac.local:11434/v1',
         providerId: 'ollama-mac',
         toolOutputCap: 2048,
+        apiMode: 'responses',
       },
     });
   });
 
-  it('rejects oMLX Responses mode for background-only providers', async () => {
+  it('rejects legacy Responses session mode for background-only providers', async () => {
     const p = writeYaml('logLevel: info\nbackgroundAgent:\n  providers: {}\n');
 
     await expect(
@@ -159,6 +162,36 @@ describe('addProvider()', () => {
         configPath: p,
       }),
     ).rejects.toThrow('--omlx-responses is only supported for agent-runner providers.');
+  });
+
+  it('maps legacy omlxResponses to Responses API session mode', async () => {
+    const p = writeYaml('logLevel: info\nagentRunner:\n  providers: {}\n');
+
+    await addProvider({
+      name: 'omlx-local',
+      type: 'openai-compatible',
+      command: 'node',
+      context: 'agent-runner',
+      contextWindowTokens: 128_000,
+      defaultModel: 'qwen3.5-9b-optiq-4bit',
+      baseUrl: 'http://mac.local:8000/v1',
+      providerId: 'omlx-local',
+      omlxResponses: true,
+      configPath: p,
+    });
+
+    const doc = readYaml(p);
+    const provider = (
+      (doc.agentRunner as Record<string, unknown>).providers as Record<string, unknown>
+    )['omlx-local'] as Record<string, unknown>;
+
+    expect(provider.options).toEqual({
+      defaultModel: 'qwen3.5-9b-optiq-4bit',
+      baseUrl: 'http://mac.local:8000/v1',
+      providerId: 'omlx-local',
+      apiMode: 'responses',
+      sessionMode: 'previous_response_id',
+    });
   });
 
   it('writes contextManagement only to the agent-runner entry when using both contexts', async () => {

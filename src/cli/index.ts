@@ -640,7 +640,18 @@ program
   .option('--base-url <url>', 'Set options.baseUrl for OpenAI-compatible providers')
   .option('--provider-id <id>', 'Set options.providerId for OpenAI-compatible credential lookup')
   .option('--tool-output-cap <chars>', 'Set options.toolOutputCap for OpenAI-compatible providers')
-  .option('--omlx-responses', 'Use oMLX /v1/responses with previous_response_id session chaining')
+  .option(
+    '--api-mode <mode>',
+    'OpenAI-compatible API mode: chat-completions or responses',
+  )
+  .option(
+    '--session-mode <mode>',
+    'OpenAI-compatible session mode: none or previous_response_id',
+  )
+  .option(
+    '--omlx-responses',
+    'Deprecated alias for --api-mode responses --session-mode previous_response_id',
+  )
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .action(
     async (opts: {
@@ -659,6 +670,8 @@ program
       baseUrl?: string;
       providerId?: string;
       toolOutputCap?: string;
+      apiMode?: string;
+      sessionMode?: string;
       omlxResponses?: boolean;
       config: string;
     }) => {
@@ -685,6 +698,8 @@ program
         providerId: opts.providerId,
         toolOutputCap:
           opts.toolOutputCap === undefined ? undefined : parseInt(opts.toolOutputCap, 10),
+        apiMode: opts.apiMode,
+        sessionMode: opts.sessionMode,
         omlxResponses: opts.omlxResponses ?? false,
         configPath: opts.config,
       });

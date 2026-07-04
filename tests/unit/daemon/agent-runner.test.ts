@@ -398,6 +398,7 @@ describe('AgentRunner', () => {
         'thread-001',
         'session-abc-123',
         'claude-code',
+        'claude-sonnet-4-20250514',
       );
       expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
         expect.any(String),
@@ -1295,7 +1296,7 @@ describe('AgentRunner', () => {
       expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
         'thread-001',
         'claude-code',
-        { excludeCollaboration: true },
+        { excludeCollaboration: true, modelName: 'claude-sonnet-4-20250514' },
       );
       expect(ctx.observability.observe).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
@@ -1317,6 +1318,7 @@ describe('AgentRunner', () => {
         'thread-001',
         'session-abc-123',
         'claude-code',
+        'claude-sonnet-4-20250514',
       );
     });
 
@@ -1610,11 +1612,11 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli', 'gpt-5.4');
       expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
         'thread-001',
         'codex-cli',
-        { excludeCollaboration: true },
+        { excludeCollaboration: true, modelName: 'gpt-5.4' },
       );
       expect(cliRun).toHaveBeenCalledWith(expect.not.objectContaining({
         sessionId: expect.anything(),
@@ -1670,11 +1672,15 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'resumable-cli',
+        'claude-sonnet-4-20250514',
+      );
       expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
         'thread-001',
         'resumable-cli',
-        { excludeCollaboration: true },
+        { excludeCollaboration: true, modelName: 'claude-sonnet-4-20250514' },
       );
       expect(cliRun).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1741,6 +1747,7 @@ describe('AgentRunner', () => {
         'thread-001',
         'resumable-cli-session-123',
         'resumable-cli',
+        'claude-sonnet-4-20250514',
       );
       expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
         expect.any(String),
@@ -2013,6 +2020,7 @@ describe('AgentRunner', () => {
         'thread-001',
         'session-abc-123',
         'claude-code',
+        'claude-sonnet-4-20250514',
       );
       expect(
         vi.mocked(ctx.observability.observe).mock.calls.filter(

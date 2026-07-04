@@ -6,7 +6,7 @@ import type { AgentUsage } from '../../provider-types.js';
 type ToolLike = Tool<unknown, unknown, unknown, unknown>;
 type ToolWriter = NonNullable<ToolExecutionContext['writer']>;
 
-export interface OmlxToolExecutionContextInput {
+export interface ResponsesToolExecutionContextInput {
   workspace?: Workspace;
   requestContext?: RequestContext;
   abortSignal?: AbortSignal;
@@ -16,7 +16,7 @@ export interface OmlxToolExecutionContextInput {
   resourceId?: string;
 }
 
-export type OmlxResponsesWrapperEvent =
+export type ResponsesWrapperEvent =
   | { type: 'text'; content: string }
   | {
       type: 'tool_event';
@@ -37,7 +37,7 @@ export interface ToolOutputMetadata {
   excerptChars: number;
 }
 
-export interface OmlxResponsesLoopInput {
+export interface ResponsesLoopInput {
   prompt: string;
   systemPrompt: string;
   model: string;
@@ -47,15 +47,15 @@ export interface OmlxResponsesLoopInput {
   previousResponseId?: string;
   providerOptions?: Record<string, unknown>;
   tools: Record<string, ToolLike>;
-  executionContext?: OmlxToolExecutionContextInput;
+  executionContext?: ResponsesToolExecutionContextInput;
   maxSteps: number;
   streamEvents: boolean;
   fetchImpl?: typeof fetch;
-  emit: (event: OmlxResponsesWrapperEvent) => void;
+  emit: (event: ResponsesWrapperEvent) => void;
   getToolOutputMetadata?: (toolCallId: string) => ToolOutputMetadata | undefined;
 }
 
-export interface OmlxResponsesLoopResult {
+export interface ResponsesLoopResult {
   output: string;
   responseId?: string;
   usage: AgentUsage;
@@ -75,9 +75,7 @@ interface FunctionCallOutput {
   output: string;
 }
 
-export async function runOmlxResponsesLoop(
-  input: OmlxResponsesLoopInput,
-): Promise<OmlxResponsesLoopResult> {
+export async function runResponsesLoop(input: ResponsesLoopInput): Promise<ResponsesLoopResult> {
   const fetchImpl = input.fetchImpl ?? fetch;
   const endpoint = `${input.baseUrl.replace(/\/+$/u, '')}/responses`;
   const toolDefinitions = buildResponsesTools(input.tools);
@@ -130,7 +128,7 @@ export async function runOmlxResponsesLoop(
     nextInput = await executeFunctionCalls(calls, input);
   }
 
-  throw new Error(`oMLX Responses run exceeded maxSteps (${input.maxSteps})`);
+  throw new Error(`Responses API run exceeded maxSteps (${input.maxSteps})`);
 }
 
 export function buildResponsesTools(
@@ -147,7 +145,7 @@ export function buildResponsesTools(
 async function postResponsesRequest(
   endpoint: string,
   body: Record<string, unknown>,
-  input: OmlxResponsesLoopInput,
+  input: ResponsesLoopInput,
   fetchImpl: typeof fetch,
 ): Promise<Record<string, unknown>> {
   const headers = new Headers({
@@ -167,20 +165,20 @@ async function postResponsesRequest(
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
     throw new Error(
-      `oMLX Responses API request failed with HTTP ${response.status}: ${detail || response.statusText}`,
+      `Responses API request failed with HTTP ${response.status}: ${detail || response.statusText}`,
     );
   }
 
   const json: unknown = await response.json();
   if (!isRecord(json)) {
-    throw new Error('oMLX Responses API returned a non-object response');
+    throw new Error('Responses API returned a non-object response');
   }
   return json;
 }
 
 async function executeFunctionCalls(
   calls: FunctionCall[],
-  input: OmlxResponsesLoopInput,
+  input: ResponsesLoopInput,
 ): Promise<FunctionCallOutput[]> {
   const outputs: FunctionCallOutput[] = [];
 
@@ -261,7 +259,7 @@ async function executeTool(
   tool: ToolLike,
   toolInput: unknown,
   toolCallId: string,
-  contextInput?: OmlxToolExecutionContextInput,
+  contextInput?: ResponsesToolExecutionContextInput,
 ): Promise<unknown> {
   const execute = tool.execute as unknown as (
     value: unknown,
@@ -285,7 +283,7 @@ async function executeTool(
       ...(contextInput?.threadId ? { threadId: contextInput.threadId } : {}),
       ...(contextInput?.resourceId ? { resourceId: contextInput.resourceId } : {}),
       suspend: () =>
-        Promise.reject(new Error('Tool suspension is not supported in oMLX Responses mode.')),
+        Promise.reject(new Error('Tool suspension is not supported in Responses API mode.')),
     },
   });
 }

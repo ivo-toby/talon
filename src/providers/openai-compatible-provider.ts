@@ -28,6 +28,9 @@ interface OpenAiCompatibleProviderRuntime {
   baseUrl?: string;
 }
 
+type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
+type OpenAiCompatibleSessionMode = 'none' | 'previous_response_id';
+
 interface WrapperPayload {
   prompt: string;
   systemPrompt: string;
@@ -56,6 +59,9 @@ interface WrapperPayload {
    * cap cannot truncate away the run's actual output.
    */
   outputFilePath?: string;
+  apiMode?: OpenAiCompatibleApiMode;
+  sessionMode?: OpenAiCompatibleSessionMode;
+  /** @deprecated Use apiMode: responses + sessionMode: previous_response_id. */
   omlxResponses?: boolean;
   previousResponseId?: string;
   /**
@@ -122,7 +128,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
   }
 
   createExecutionStrategy(): SDKExecutionStrategy | StatelessSDKExecutionStrategy {
-    if (this.isOmlxResponsesMode()) {
+    if (this.usesResponseSessionResumption()) {
       return {
         type: 'sdk' as const,
         supportsSessionResumption: true as const,
@@ -493,7 +499,10 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     const scriptArgs = this.resolveWrapperArgs();
     const providerId = this.readStringOption('providerId') ?? 'openai-compatible';
     const providerOptions = this.readUnknownRecordOption('providerOptions');
-    const omlxResponses = this.isOmlxResponsesMode();
+    const apiMode = this.resolveApiMode();
+    const sessionMode = this.resolveSessionMode();
+    const useResponseSessionResumption =
+      apiMode === 'responses' && sessionMode === 'previous_response_id';
     const sessionInput = input as ProviderSpawnInput & { sessionId?: string };
     const payload: WrapperPayload = {
       prompt: input.prompt,
@@ -506,8 +515,9 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       ...(this.runtime.apiKey ? { apiKey: this.runtime.apiKey } : {}),
       ...(providerOptions ? { providerOptions: { [providerId]: providerOptions } } : {}),
       ...(this.readRecordOption('headers') ? { headers: this.readRecordOption('headers') } : {}),
-      ...(omlxResponses ? { omlxResponses: true } : {}),
-      ...(omlxResponses && sessionInput.sessionId
+      ...(apiMode !== 'chat-completions' ? { apiMode } : {}),
+      ...(sessionMode !== 'none' ? { sessionMode } : {}),
+      ...(useResponseSessionResumption && sessionInput.sessionId
         ? { previousResponseId: sessionInput.sessionId }
         : {}),
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
@@ -565,8 +575,37 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     return Object.keys(value).length > 0 ? (value as Record<string, unknown>) : undefined;
   }
 
-  private isOmlxResponsesMode(): boolean {
+  private isLegacyOmlxResponsesMode(): boolean {
     return this.readBooleanOption('omlxResponses') === true;
+  }
+
+  private resolveApiMode(): OpenAiCompatibleApiMode {
+    const value = this.readStringOption('apiMode');
+    if (value === 'responses' || value === 'chat-completions') {
+      return value;
+    }
+    if (this.isLegacyOmlxResponsesMode()) {
+      return 'responses';
+    }
+    return 'chat-completions';
+  }
+
+  private resolveSessionMode(): OpenAiCompatibleSessionMode {
+    const value = this.readStringOption('sessionMode');
+    if (value === 'previous_response_id' || value === 'none') {
+      return value;
+    }
+    if (this.isLegacyOmlxResponsesMode()) {
+      return 'previous_response_id';
+    }
+    return 'none';
+  }
+
+  private usesResponseSessionResumption(): boolean {
+    return (
+      this.resolveApiMode() === 'responses' &&
+      this.resolveSessionMode() === 'previous_response_id'
+    );
   }
 
   private resolveWrapperArgs(): string[] {
