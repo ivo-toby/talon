@@ -76,7 +76,9 @@ describe('addProvider()', () => {
   });
 
   it('writes provider type aliases and OpenAI-compatible options', async () => {
-    const p = writeYaml('logLevel: info\nagentRunner:\n  providers: {}\nbackgroundAgent:\n  providers: {}\n');
+    const p = writeYaml(
+      'logLevel: info\nagentRunner:\n  providers: {}\nbackgroundAgent:\n  providers: {}\n',
+    );
 
     await addProvider({
       name: 'ollama-mac',
@@ -94,12 +96,18 @@ describe('addProvider()', () => {
       baseUrl: 'http://mac.local:11434/v1',
       providerId: 'ollama-mac',
       toolOutputCap: 2048,
+      apiMode: 'responses',
+      sessionMode: 'previous_response_id',
       configPath: p,
     });
 
     const doc = readYaml(p);
-    const agentRunner = ((doc.agentRunner as Record<string, unknown>).providers as Record<string, unknown>)['ollama-mac'] as Record<string, unknown>;
-    const backgroundAgent = ((doc.backgroundAgent as Record<string, unknown>).providers as Record<string, unknown>)['ollama-mac'] as Record<string, unknown>;
+    const agentRunner = (
+      (doc.agentRunner as Record<string, unknown>).providers as Record<string, unknown>
+    )['ollama-mac'] as Record<string, unknown>;
+    const backgroundAgent = (
+      (doc.backgroundAgent as Record<string, unknown>).providers as Record<string, unknown>
+    )['ollama-mac'] as Record<string, unknown>;
 
     expect(agentRunner).toEqual({
       enabled: true,
@@ -111,6 +119,8 @@ describe('addProvider()', () => {
         baseUrl: 'http://mac.local:11434/v1',
         providerId: 'ollama-mac',
         toolOutputCap: 2048,
+        apiMode: 'responses',
+        sessionMode: 'previous_response_id',
       },
       contextManagement: {
         enabled: true,
@@ -130,7 +140,57 @@ describe('addProvider()', () => {
         baseUrl: 'http://mac.local:11434/v1',
         providerId: 'ollama-mac',
         toolOutputCap: 2048,
+        apiMode: 'responses',
       },
+    });
+  });
+
+  it('rejects legacy Responses session mode for background-only providers', async () => {
+    const p = writeYaml('logLevel: info\nbackgroundAgent:\n  providers: {}\n');
+
+    await expect(
+      addProvider({
+        name: 'omlx-background',
+        type: 'openai-compatible',
+        command: 'node',
+        context: 'background',
+        contextWindowTokens: 128_000,
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://mac.local:8000/v1',
+        providerId: 'omlx-local',
+        omlxResponses: true,
+        configPath: p,
+      }),
+    ).rejects.toThrow('--omlx-responses is only supported for agent-runner providers.');
+  });
+
+  it('maps legacy omlxResponses to Responses API session mode', async () => {
+    const p = writeYaml('logLevel: info\nagentRunner:\n  providers: {}\n');
+
+    await addProvider({
+      name: 'omlx-local',
+      type: 'openai-compatible',
+      command: 'node',
+      context: 'agent-runner',
+      contextWindowTokens: 128_000,
+      defaultModel: 'qwen3.5-9b-optiq-4bit',
+      baseUrl: 'http://mac.local:8000/v1',
+      providerId: 'omlx-local',
+      omlxResponses: true,
+      configPath: p,
+    });
+
+    const doc = readYaml(p);
+    const provider = (
+      (doc.agentRunner as Record<string, unknown>).providers as Record<string, unknown>
+    )['omlx-local'] as Record<string, unknown>;
+
+    expect(provider.options).toEqual({
+      defaultModel: 'qwen3.5-9b-optiq-4bit',
+      baseUrl: 'http://mac.local:8000/v1',
+      providerId: 'omlx-local',
+      apiMode: 'responses',
+      sessionMode: 'previous_response_id',
     });
   });
 
@@ -152,8 +212,12 @@ describe('addProvider()', () => {
     });
 
     const doc = readYaml(p);
-    const agentRunner = ((doc.agentRunner as Record<string, unknown>).providers as Record<string, unknown>)['claude-shared'] as Record<string, unknown>;
-    const backgroundAgent = ((doc.backgroundAgent as Record<string, unknown>).providers as Record<string, unknown>)['claude-shared'] as Record<string, unknown>;
+    const agentRunner = (
+      (doc.agentRunner as Record<string, unknown>).providers as Record<string, unknown>
+    )['claude-shared'] as Record<string, unknown>;
+    const backgroundAgent = (
+      (doc.backgroundAgent as Record<string, unknown>).providers as Record<string, unknown>
+    )['claude-shared'] as Record<string, unknown>;
 
     expect(agentRunner.contextManagement).toEqual({
       enabled: true,
@@ -219,77 +283,87 @@ describe('addProvider()', () => {
   it('rejects an invalid threshold ratio', async () => {
     const p = writeYaml('logLevel: info\n');
 
-    await expect(addProvider({
-      name: 'claude-max',
-      command: 'claude',
-      context: 'agent-runner',
-      contextEnabled: true,
-      triggerMetric: 'cache_read_input_tokens',
-      thresholdRatio: 1.2,
-      recentMessageCount: 10,
-      summarizer: 'session-summarizer',
-      configPath: p,
-    })).rejects.toThrow(/thresholdRatio/);
+    await expect(
+      addProvider({
+        name: 'claude-max',
+        command: 'claude',
+        context: 'agent-runner',
+        contextEnabled: true,
+        triggerMetric: 'cache_read_input_tokens',
+        thresholdRatio: 1.2,
+        recentMessageCount: 10,
+        summarizer: 'session-summarizer',
+        configPath: p,
+      }),
+    ).rejects.toThrow(/thresholdRatio/);
   });
 
   it('rejects an unsupported trigger metric', async () => {
     const p = writeYaml('logLevel: info\n');
 
-    await expect(addProvider({
-      name: 'claude-max',
-      command: 'claude',
-      context: 'agent-runner',
-      contextEnabled: true,
-      triggerMetric: 'output_tokens' as 'input_tokens',
-      thresholdRatio: 0.5,
-      recentMessageCount: 10,
-      summarizer: 'session-summarizer',
-      configPath: p,
-    })).rejects.toThrow(/triggerMetric/);
+    await expect(
+      addProvider({
+        name: 'claude-max',
+        command: 'claude',
+        context: 'agent-runner',
+        contextEnabled: true,
+        triggerMetric: 'output_tokens' as 'input_tokens',
+        thresholdRatio: 0.5,
+        recentMessageCount: 10,
+        summarizer: 'session-summarizer',
+        configPath: p,
+      }),
+    ).rejects.toThrow(/triggerMetric/);
   });
 
   it('rejects a negative recent message count', async () => {
     const p = writeYaml('logLevel: info\n');
 
-    await expect(addProvider({
-      name: 'claude-max',
-      command: 'claude',
-      context: 'agent-runner',
-      contextEnabled: true,
-      triggerMetric: 'cache_read_input_tokens',
-      thresholdRatio: 0.5,
-      recentMessageCount: -1,
-      summarizer: 'session-summarizer',
-      configPath: p,
-    })).rejects.toThrow(/recentMessageCount/);
+    await expect(
+      addProvider({
+        name: 'claude-max',
+        command: 'claude',
+        context: 'agent-runner',
+        contextEnabled: true,
+        triggerMetric: 'cache_read_input_tokens',
+        thresholdRatio: 0.5,
+        recentMessageCount: -1,
+        summarizer: 'session-summarizer',
+        configPath: p,
+      }),
+    ).rejects.toThrow(/recentMessageCount/);
   });
 
   it('rejects an empty summarizer when context management is enabled', async () => {
     const p = writeYaml('logLevel: info\n');
 
-    await expect(addProvider({
-      name: 'claude-max',
-      command: 'claude',
-      context: 'agent-runner',
-      contextEnabled: true,
-      triggerMetric: 'cache_read_input_tokens',
-      thresholdRatio: 0.5,
-      recentMessageCount: 10,
-      summarizer: '   ',
-      configPath: p,
-    })).rejects.toThrow(/summarizer/);
+    await expect(
+      addProvider({
+        name: 'claude-max',
+        command: 'claude',
+        context: 'agent-runner',
+        contextEnabled: true,
+        triggerMetric: 'cache_read_input_tokens',
+        thresholdRatio: 0.5,
+        recentMessageCount: 10,
+        summarizer: '   ',
+        configPath: p,
+      }),
+    ).rejects.toThrow(/summarizer/);
   });
 
   it('rejects background providers with context management enabled', async () => {
     const p = writeYaml('logLevel: info\n');
 
-    await expect(addProvider({
-      name: 'claude-background',
-      command: 'claude',
-      context: 'background',
-      contextEnabled: true,
-      configPath: p,
-    })).rejects.toThrow(/background.*context management/i);
+    await expect(
+      addProvider({
+        name: 'claude-background',
+        command: 'claude',
+        context: 'background',
+        contextEnabled: true,
+        configPath: p,
+      }),
+    ).rejects.toThrow(/background.*context management/i);
   });
 });
 

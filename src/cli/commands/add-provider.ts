@@ -24,6 +24,8 @@ export type TriggerMetric =
   | 'cache_read_input_tokens'
   | 'cache_creation_input_tokens'
   | 'cache_total_input_tokens';
+export type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
+export type OpenAiCompatibleSessionMode = 'none' | 'previous_response_id';
 
 export interface AddProviderOptions {
   name: string;
@@ -41,6 +43,10 @@ export interface AddProviderOptions {
   baseUrl?: string;
   providerId?: string;
   toolOutputCap?: number;
+  apiMode?: string;
+  sessionMode?: string;
+  /** @deprecated Use apiMode + sessionMode. */
+  omlxResponses?: boolean;
   configPath?: string;
 }
 
@@ -74,6 +80,24 @@ function inferDefaultTriggerMetric(name: string, command: string): TriggerMetric
   return 'input_tokens';
 }
 
+function parseApiMode(value: string | undefined): OpenAiCompatibleApiMode | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (normalized === 'chat-completions' || normalized === 'responses') {
+    return normalized;
+  }
+  throw new Error('apiMode must be one of: chat-completions, responses.');
+}
+
+function parseSessionMode(value: string | undefined): OpenAiCompatibleSessionMode | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  if (normalized === 'none' || normalized === 'previous_response_id') {
+    return normalized;
+  }
+  throw new Error('sessionMode must be one of: none, previous_response_id.');
+}
+
 // ---------------------------------------------------------------------------
 // Core logic (importable)
 // ---------------------------------------------------------------------------
@@ -87,7 +111,9 @@ function inferDefaultTriggerMetric(name: string, command: string): TriggerMetric
  * @returns The provider entry that was added.
  * @throws Error with a user-facing message on any failure.
  */
-export async function addProvider(options: AddProviderOptions): Promise<{ entry: ProviderEntry; contexts: ProviderContext[] }> {
+export async function addProvider(
+  options: AddProviderOptions,
+): Promise<{ entry: ProviderEntry; contexts: ProviderContext[] }> {
   const configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
   const ctx = options.context ?? 'both';
 
@@ -95,6 +121,29 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
   const validContexts: ProviderContext[] = ['agent-runner', 'background', 'both'];
   if (!validContexts.includes(ctx)) {
     throw new Error(`Invalid context "${ctx}". Must be one of: ${validContexts.join(', ')}.`);
+  }
+
+  const explicitApiMode = options.apiMode !== undefined;
+  let apiMode = parseApiMode(options.apiMode);
+  let sessionMode = parseSessionMode(options.sessionMode);
+  if (options.omlxResponses === true) {
+    if (apiMode && apiMode !== 'responses') {
+      throw new Error('--omlx-responses cannot be combined with --api-mode chat-completions.');
+    }
+    if (sessionMode && sessionMode !== 'previous_response_id') {
+      throw new Error('--omlx-responses cannot be combined with --session-mode none.');
+    }
+    apiMode = 'responses';
+    sessionMode = 'previous_response_id';
+  }
+  if (apiMode !== 'responses' && sessionMode === 'previous_response_id') {
+    throw new Error('sessionMode previous_response_id requires apiMode responses.');
+  }
+  if (sessionMode === 'previous_response_id' && ctx === 'background') {
+    if (options.omlxResponses === true) {
+      throw new Error('--omlx-responses is only supported for agent-runner providers.');
+    }
+    throw new Error('--session-mode previous_response_id is only supported for agent-runner providers.');
   }
 
   // Validate name.
@@ -123,17 +172,22 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
   }
 
   if (ctx === 'background' && options.contextEnabled === true) {
-    throw new Error('Background providers do not support context management. See the README for agentRunner-only context management.');
+    throw new Error(
+      'Background providers do not support context management. See the README for agentRunner-only context management.',
+    );
   }
 
-  const contextEnabled = options.contextEnabled ?? (ctx !== 'background');
-  const triggerMetric = options.triggerMetric ?? inferDefaultTriggerMetric(options.name, options.command);
-  if (![
-    'input_tokens',
-    'cache_read_input_tokens',
-    'cache_creation_input_tokens',
-    'cache_total_input_tokens',
-  ].includes(triggerMetric)) {
+  const contextEnabled = options.contextEnabled ?? ctx !== 'background';
+  const triggerMetric =
+    options.triggerMetric ?? inferDefaultTriggerMetric(options.name, options.command);
+  if (
+    ![
+      'input_tokens',
+      'cache_read_input_tokens',
+      'cache_creation_input_tokens',
+      'cache_total_input_tokens',
+    ].includes(triggerMetric)
+  ) {
     throw new Error(
       'triggerMetric must be one of: input_tokens, cache_read_input_tokens, cache_creation_input_tokens, cache_total_input_tokens.',
     );
@@ -200,6 +254,12 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
   if (options.toolOutputCap !== undefined) {
     entryOptions.toolOutputCap = options.toolOutputCap;
   }
+  if (apiMode) {
+    entryOptions.apiMode = apiMode;
+  }
+  if (sessionMode) {
+    entryOptions.sessionMode = sessionMode;
+  }
   if (Object.keys(entryOptions).length > 0) {
     entry.options = entryOptions;
   }
@@ -243,9 +303,26 @@ export async function addProvider(options: AddProviderOptions): Promise<{ entry:
       );
     }
 
-    const sectionEntry = includeContextManagement ? { ...entry } : { ...entry, contextManagement: undefined };
+    const sectionEntry = includeContextManagement
+      ? { ...entry }
+      : { ...entry, contextManagement: undefined };
+    if (entry.options) {
+      sectionEntry.options = { ...entry.options };
+    }
     if (!includeContextManagement) {
       delete sectionEntry.contextManagement;
+    }
+    if (sectionKey === 'backgroundAgent' && sectionEntry.options) {
+      delete sectionEntry.options.omlxResponses;
+      if (sectionEntry.options.sessionMode === 'previous_response_id') {
+        delete sectionEntry.options.sessionMode;
+      }
+      if (options.omlxResponses === true && !explicitApiMode) {
+        delete sectionEntry.options.apiMode;
+      }
+      if (Object.keys(sectionEntry.options).length === 0) {
+        delete sectionEntry.options;
+      }
     }
 
     providers[options.name] = sectionEntry;
@@ -280,9 +357,13 @@ export async function addProviderCommand(options: AddProviderOptions): Promise<v
     const { entry, contexts } = await addProvider(options);
     const contextList = contexts.join(', ');
     const typeSuffix = entry.type ? `, type: ${entry.type}` : '';
-    console.log(`Added provider "${options.name}" (command: ${entry.command}${typeSuffix}) to context(s): ${contextList} in "${options.configPath ?? DEFAULT_CONFIG_PATH}".`);
+    console.log(
+      `Added provider "${options.name}" (command: ${entry.command}${typeSuffix}) to context(s): ${contextList} in "${options.configPath ?? DEFAULT_CONFIG_PATH}".`,
+    );
     if (!entry.enabled) {
-      console.log(`Note: provider is disabled by default. Set enabled: true in "${options.configPath ?? DEFAULT_CONFIG_PATH}" or use --enabled to enable immediately.`);
+      console.log(
+        `Note: provider is disabled by default. Set enabled: true in "${options.configPath ?? DEFAULT_CONFIG_PATH}" or use --enabled to enable immediately.`,
+      );
     }
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);

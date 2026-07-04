@@ -61,6 +61,7 @@ describe('RunRepository', () => {
       thread_id: threadId,
       persona_id: personaId,
       provider_name: 'claude-code',
+      model_name: 'claude-sonnet-4-6',
       sandbox_id: null,
       session_id: null,
       status: 'pending' as const,
@@ -218,6 +219,35 @@ describe('RunRepository', () => {
 
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toBe('codex-session-1');
+    });
+
+    it('only returns a session_id for the requested model when modelName is supplied', () => {
+      const older = repo.insert(makeRun({
+        provider_name: 'ollama-mac',
+        model_name: 'Qwen3.5-9B-OptiQ-4bit',
+        session_id: 'old-model-session',
+        status: 'completed',
+      }))._unsafeUnwrap();
+      const newer = repo.insert(makeRun({
+        provider_name: 'ollama-mac',
+        model_name: 'Qwen3-30B-A3B-Instruct-2507-4bit',
+        session_id: 'new-model-session',
+        status: 'completed',
+      }))._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
+
+      const oldModel = repo.getLatestSessionId(threadId, 'ollama-mac', {
+        modelName: 'Qwen3.5-9B-OptiQ-4bit',
+      });
+      const missingModel = repo.getLatestSessionId(threadId, 'ollama-mac', {
+        modelName: 'gemma-4-12B-it-4bit',
+      });
+
+      expect(oldModel.isOk()).toBe(true);
+      expect(oldModel._unsafeUnwrap()).toBe('old-model-session');
+      expect(missingModel.isOk()).toBe(true);
+      expect(missingModel._unsafeUnwrap()).toBeNull();
     });
 
     it('ignores sessions older than the provided lower bound', () => {

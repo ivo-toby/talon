@@ -158,6 +158,11 @@ For (b) ask four things, **one at a time**:
   `http://host.docker.internal:11434/v1` for local Ollama, etc.)"
 - "What model name does the endpoint serve?
   (e.g. `qwen3-coder:30b`, `llama-3.3-70b-versatile`)"
+- "Does this foreground provider expose `/v1/responses`, and does it support
+  stateful `previous_response_id` chaining?" → if yes to both, remember to add
+  `--api-mode responses --session-mode previous_response_id` or
+  `agentRunner.providers.*.options.apiMode: responses` plus
+  `agentRunner.providers.*.options.sessionMode: previous_response_id`
 - "Does the endpoint need an API key?" → if yes, ask the env var name
   to use (default: `OPENAI_COMPATIBLE_API_KEY`)
 
@@ -236,6 +241,12 @@ For OpenAI-compatible — replace the `Codex:` block under
         baseUrl: <base URL from step 1>
         defaultModel: <model from step 1>
         providerId: <a short slot name, e.g. "groq" or "ollama">
+        # OpenAI-compatible /v1/responses endpoints only.
+        # Add sessionMode only for stateful previous_response_id chaining.
+        # Stored response ids are scoped by provider + model, so model swaps start fresh.
+        # Omit sessionMode for Ollama, vLLM, Groq, Together, and chat-completions-only endpoints.
+        # apiMode: responses
+        # sessionMode: previous_response_id
         toolOutputCap: 4000
 ```
 
@@ -255,6 +266,12 @@ talonctl add-provider --name <provider name> \
   --provider-id <slot name> \
   --enabled
 ```
+
+For foreground endpoints that expose `/v1/responses`, append
+`--api-mode responses`. Add `--session-mode previous_response_id` only when the
+endpoint supports stateful response-id chaining. Talon scopes stored response
+ids by provider and model, so changing the model on the same provider starts a
+fresh session and replays assembled prior-conversation state.
 
 #### Replace `auth.providers`
 

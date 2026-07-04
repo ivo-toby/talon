@@ -29,6 +29,7 @@ export interface RunRow {
   thread_id: string;
   persona_id: string;
   provider_name: string;
+  model_name: string | null;
   sandbox_id: string | null;
   session_id: string | null;
   status: RunStatus;
@@ -46,7 +47,9 @@ export interface RunRow {
 }
 
 /** Fields accepted when inserting a new run. */
-export type InsertRunInput = Omit<RunRow, 'created_at'>;
+export type InsertRunInput = Omit<RunRow, 'created_at' | 'model_name'> & {
+  model_name?: string | null;
+};
 
 /** Token usage and cost fields that can be updated. */
 export interface UpdateTokensInput {
@@ -60,6 +63,7 @@ export interface UpdateTokensInput {
 interface RunLookupOptions {
   sinceCreatedAt?: number;
   excludeCollaboration?: boolean;
+  modelName?: string;
 }
 
 /** Repository for reading and writing run records. */
@@ -75,12 +79,12 @@ export class RunRepository extends BaseRepository {
 
     this.insertStmt = db.prepare(`
       INSERT INTO runs
-        (id, thread_id, persona_id, provider_name, sandbox_id, session_id, status,
+        (id, thread_id, persona_id, provider_name, model_name, sandbox_id, session_id, status,
          parent_run_id, queue_item_id, input_tokens, output_tokens,
          cache_read_tokens, cache_write_tokens, cost_usd, error,
          started_at, ended_at, created_at)
       VALUES
-        (@id, @thread_id, @persona_id, @provider_name, @sandbox_id, @session_id, @status,
+        (@id, @thread_id, @persona_id, @provider_name, @model_name, @sandbox_id, @session_id, @status,
          @parent_run_id, @queue_item_id, @input_tokens, @output_tokens,
          @cache_read_tokens, @cache_write_tokens, @cost_usd, @error,
          @started_at, @ended_at, @created_at)
@@ -104,7 +108,7 @@ export class RunRepository extends BaseRepository {
   /** Inserts a new run row. */
   insert(input: InsertRunInput): Result<RunRow, DbError> {
     try {
-      const row: RunRow = { ...input, created_at: this.now() };
+      const row: RunRow = { ...input, model_name: input.model_name ?? null, created_at: this.now() };
       this.insertStmt.run(row);
       return ok(row);
     } catch (cause) {
@@ -212,50 +216,40 @@ export class RunRepository extends BaseRepository {
     try {
       const sinceCreatedAt = options?.sinceCreatedAt;
       const excludeCollaboration = options?.excludeCollaboration === true;
+      const modelName = options?.modelName;
       const joinClause = excludeCollaboration
         ? 'LEFT JOIN queue_items qi ON qi.id = runs.queue_item_id'
         : '';
       const collaborationClause = excludeCollaboration
         ? "AND (qi.type IS NULL OR qi.type != 'collaboration')"
         : '';
-      const stmt = providerName
-        ? sinceCreatedAt !== undefined
-          ? this.db.prepare(`
-              SELECT runs.session_id FROM runs
-              ${joinClause}
-              WHERE runs.thread_id = ? AND runs.provider_name = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed' AND runs.created_at >= ?
-              ${collaborationClause}
-              ORDER BY runs.created_at DESC LIMIT 1
-            `)
-          : this.db.prepare(`
-              SELECT runs.session_id FROM runs
-              ${joinClause}
-              WHERE runs.thread_id = ? AND runs.provider_name = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed'
-              ${collaborationClause}
-              ORDER BY runs.created_at DESC LIMIT 1
-            `)
-        : sinceCreatedAt !== undefined
-          ? this.db.prepare(`
-              SELECT runs.session_id FROM runs
-              ${joinClause}
-              WHERE runs.thread_id = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed' AND runs.created_at >= ?
-              ${collaborationClause}
-              ORDER BY runs.created_at DESC LIMIT 1
-            `)
-          : this.db.prepare(`
-              SELECT runs.session_id FROM runs
-              ${joinClause}
-              WHERE runs.thread_id = ? AND runs.session_id IS NOT NULL AND runs.status = 'completed'
-              ${collaborationClause}
-              ORDER BY runs.created_at DESC LIMIT 1
-            `);
-      const row = (providerName
-        ? sinceCreatedAt !== undefined
-          ? stmt.get(threadId, providerName, sinceCreatedAt)
-          : stmt.get(threadId, providerName)
-        : sinceCreatedAt !== undefined
-          ? stmt.get(threadId, sinceCreatedAt)
-          : stmt.get(threadId)) as { session_id: string } | undefined;
+      const where = [
+        'runs.thread_id = ?',
+        'runs.session_id IS NOT NULL',
+        "runs.status = 'completed'",
+      ];
+      const params: Array<string | number> = [threadId];
+      if (providerName) {
+        where.push('runs.provider_name = ?');
+        params.push(providerName);
+      }
+      if (modelName !== undefined) {
+        where.push('runs.model_name = ?');
+        params.push(modelName);
+      }
+      if (sinceCreatedAt !== undefined) {
+        where.push('runs.created_at >= ?');
+        params.push(sinceCreatedAt);
+      }
+
+      const stmt = this.db.prepare(`
+        SELECT runs.session_id FROM runs
+        ${joinClause}
+        WHERE ${where.join(' AND ')}
+        ${collaborationClause}
+        ORDER BY runs.created_at DESC LIMIT 1
+      `);
+      const row = stmt.get(...params) as { session_id: string } | undefined;
       return ok(row?.session_id ?? null);
     } catch (cause) {
       return err(new DbError(`Failed to get latest session_id: ${String(cause)}`, cause instanceof Error ? cause : undefined));
