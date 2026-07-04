@@ -47,7 +47,9 @@ export interface RunRow {
 }
 
 /** Fields accepted when inserting a new run. */
-export type InsertRunInput = Omit<RunRow, 'created_at'>;
+export type InsertRunInput = Omit<RunRow, 'created_at' | 'model_name'> & {
+  model_name?: string | null;
+};
 
 /** Token usage and cost fields that can be updated. */
 export interface UpdateTokensInput {
@@ -106,7 +108,7 @@ export class RunRepository extends BaseRepository {
   /** Inserts a new run row. */
   insert(input: InsertRunInput): Result<RunRow, DbError> {
     try {
-      const row: RunRow = { ...input, created_at: this.now() };
+      const row: RunRow = { ...input, model_name: input.model_name ?? null, created_at: this.now() };
       this.insertStmt.run(row);
       return ok(row);
     } catch (cause) {
