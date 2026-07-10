@@ -1,0 +1,253 @@
+{
+  "schemaVersion": 1,
+  "kind": "micro_wave_state",
+  "profile": "micro",
+  "work": {
+    "id": "WORK-reasoning-effort-config",
+    "title": "Per-Persona Reasoning Effort Configuration",
+    "targetBranch": "main",
+    "baseBranch": "work/reasoning-effort-config",
+    "adapterLinks": {
+      "githubIssue": "https://github.com/ivo-toby/talon/issues/253"
+    }
+  },
+  "configuration": {
+    "reviewMode": "risk_based",
+    "monitoringMode": "adaptive",
+    "maxParallelTasks": 5
+  },
+  "strategy": {
+    "profile": "micro",
+    "executionMode": "bundled",
+    "reviewMode": "risk_based",
+    "monitoringMode": "adaptive",
+    "recommendedBy": "wdd-plan-work",
+    "confirmedBy": "user-request",
+    "requiresUserConfirmation": false,
+    "confidence": "medium",
+    "rationale": [
+      "Issue #253 is bounded enough for a micro-wave because it has one feature goal and a finite acceptance list.",
+      "Bundled execution is recommended because shared provider contracts and agent-runner session plumbing are upstream dependencies for every provider-specific task.",
+      "Parallel branches would likely conflict in src/daemon/agent-runner.ts, provider type definitions, and adjacent provider tests."
+    ],
+    "bundleGroups": [
+      {
+        "id": "BUNDLE-001",
+        "tasks": [
+          "TASK-001-config-runtime-contract",
+          "TASK-002-session-effort-identity",
+          "TASK-003-codex-cli-effort",
+          "TASK-004-openai-compatible-effort",
+          "TASK-005-docs-examples"
+        ],
+        "branch": "work/WORK-reasoning-effort-config-bundle",
+        "workerWorktree": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+        "worktreeStatus": "cleanup_blocked",
+        "cleanup": {
+          "status": "cleanup_blocked",
+          "path": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+          "reason": "Bundle worktree contains unpushed local commit 6be941c and an untracked copied WDD work packet. Keep it until the branch is pushed/merged or the patch is otherwise accepted, then remove the worktree and prune stale entries.",
+          "owner": "controller",
+          "followUp": "After branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, remove the worktree and prune stale entries."
+        },
+        "workerThreadId": "019f4b8f-ac5e-7c81-948c-e35f282e675a",
+        "reviewThreadId": "019f4bac-5552-7372-99b2-159248fd662b",
+        "currentGate": "merge_ready"
+      }
+    ],
+    "overrideHistory": []
+  },
+  "tasks": [
+    {
+      "id": "TASK-001-config-runtime-contract",
+      "path": "tasks/TASK-001-config-runtime-contract.md",
+      "status": "done",
+      "branch": "work/WORK-reasoning-effort-config-bundle",
+      "workerThreadId": "019f4b8f-ac5e-7c81-948c-e35f282e675a",
+      "workerWorktree": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+      "worktreeStatus": "cleanup_blocked",
+      "cleanup": {
+        "status": "cleanup_blocked",
+        "path": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+        "reason": "Bundle worktree contains unpushed local commit 6be941c and an untracked copied WDD work packet. Keep it until the branch is pushed/merged or the patch is otherwise accepted, then remove the worktree and prune stale entries.",
+        "owner": "controller",
+        "followUp": "After branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, remove the worktree and prune stale entries."
+      },
+      "currentGate": "merge_ready",
+      "risk": "medium",
+      "reviewRequired": true,
+      "dependsOn": [],
+      "pr": null,
+      "latestCommit": "6be941ce9e15d01ed0123398bc8e0ff17c9f3042",
+      "verification": {
+        "expected": [
+          "npx vitest run tests/unit/core/config/config-schema.test.ts tests/unit/personas/persona-loader.test.ts tests/unit/daemon/agent-runner.test.ts"
+        ],
+        "evidence": "RED: combined focused Vitest command exited 1 before implementation with missing schema/runtime propagation failures. GREEN: npx vitest run tests/unit/core/config/config-schema.test.ts tests/unit/personas/persona-loader.test.ts tests/unit/daemon/agent-runner.test.ts exited 0 (214 tests). Background propagation: npx vitest run tests/unit/tools/background-agent.test.ts tests/unit/subagents/background/background-agent-manager.test.ts exited 0 (79 tests)."
+      }
+    },
+    {
+      "id": "TASK-002-session-effort-identity",
+      "path": "tasks/TASK-002-session-effort-identity.md",
+      "status": "done",
+      "branch": "work/WORK-reasoning-effort-config-bundle",
+      "workerThreadId": "019f4b8f-ac5e-7c81-948c-e35f282e675a",
+      "workerWorktree": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+      "worktreeStatus": "cleanup_blocked",
+      "cleanup": {
+        "status": "cleanup_blocked",
+        "path": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+        "reason": "Bundle worktree contains unpushed local commit 6be941c and an untracked copied WDD work packet. Keep it until the branch is pushed/merged or the patch is otherwise accepted, then remove the worktree and prune stale entries.",
+        "owner": "controller",
+        "followUp": "After branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, remove the worktree and prune stale entries."
+      },
+      "currentGate": "merge_ready",
+      "risk": "medium",
+      "reviewRequired": true,
+      "dependsOn": [
+        "TASK-001-config-runtime-contract"
+      ],
+      "pr": null,
+      "latestCommit": "6be941ce9e15d01ed0123398bc8e0ff17c9f3042",
+      "verification": {
+        "expected": [
+          "npx vitest run tests/unit/sandbox/session-tracker.test.ts tests/unit/core/database/repositories/run-repository.test.ts tests/unit/daemon/agent-runner.test.ts"
+        ],
+        "evidence": "RED: combined focused Vitest command exited 1 before implementation with session identity/run metadata failures; SQLite tests initially exposed a better-sqlite3 ABI mismatch. Environment: npm --prefix /home/ivo/workspace/talon run rebuild:sqlite exited 0. GREEN: npx vitest run tests/unit/sandbox/session-tracker.test.ts tests/unit/core/database/repositories/run-repository.test.ts tests/unit/daemon/agent-runner.test.ts exited 0 (154 tests). REVIEW P2 FIX RED: npx vitest run tests/unit/daemon/agent-runner.test.ts -t \"does not restore an explicit-effort DB session when persona omits reasoningEffort\" exited 1 because a no-effort persona resumed explicit-effort-session. REVIEW P2 FIX GREEN: npx vitest run tests/unit/sandbox/session-tracker.test.ts tests/unit/core/database/repositories/run-repository.test.ts tests/unit/daemon/agent-runner.test.ts exited 0 (155 tests)."
+      }
+    },
+    {
+      "id": "TASK-003-codex-cli-effort",
+      "path": "tasks/TASK-003-codex-cli-effort.md",
+      "status": "done",
+      "branch": "work/WORK-reasoning-effort-config-bundle",
+      "workerThreadId": "019f4b8f-ac5e-7c81-948c-e35f282e675a",
+      "workerWorktree": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+      "worktreeStatus": "cleanup_blocked",
+      "cleanup": {
+        "status": "cleanup_blocked",
+        "path": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+        "reason": "Bundle worktree contains unpushed local commit 6be941c and an untracked copied WDD work packet. Keep it until the branch is pushed/merged or the patch is otherwise accepted, then remove the worktree and prune stale entries.",
+        "owner": "controller",
+        "followUp": "After branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, remove the worktree and prune stale entries."
+      },
+      "currentGate": "merge_ready",
+      "risk": "medium",
+      "reviewRequired": true,
+      "dependsOn": [
+        "TASK-001-config-runtime-contract"
+      ],
+      "pr": null,
+      "latestCommit": "6be941ce9e15d01ed0123398bc8e0ff17c9f3042",
+      "verification": {
+        "expected": [
+          "npx vitest run tests/unit/providers/codex-cli-provider.test.ts"
+        ],
+        "evidence": "RED: combined focused Vitest command exited 1 before implementation because Codex generated config omitted model_reasoning_effort. GREEN: npx vitest run tests/unit/providers/codex-cli-provider.test.ts exited 0 (25 tests)."
+      }
+    },
+    {
+      "id": "TASK-004-openai-compatible-effort",
+      "path": "tasks/TASK-004-openai-compatible-effort.md",
+      "status": "done",
+      "branch": "work/WORK-reasoning-effort-config-bundle",
+      "workerThreadId": "019f4b8f-ac5e-7c81-948c-e35f282e675a",
+      "workerWorktree": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+      "worktreeStatus": "cleanup_blocked",
+      "cleanup": {
+        "status": "cleanup_blocked",
+        "path": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+        "reason": "Bundle worktree contains unpushed local commit 6be941c and an untracked copied WDD work packet. Keep it until the branch is pushed/merged or the patch is otherwise accepted, then remove the worktree and prune stale entries.",
+        "owner": "controller",
+        "followUp": "After branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, remove the worktree and prune stale entries."
+      },
+      "currentGate": "merge_ready",
+      "risk": "medium",
+      "reviewRequired": true,
+      "dependsOn": [
+        "TASK-001-config-runtime-contract"
+      ],
+      "pr": null,
+      "latestCommit": "6be941ce9e15d01ed0123398bc8e0ff17c9f3042",
+      "verification": {
+        "expected": [
+          "npx vitest run tests/unit/providers/openai-compatible-provider.test.ts tests/unit/providers/openai-compatible-responses-api.test.ts"
+        ],
+        "evidence": "RED: combined focused Vitest command exited 1 before implementation because OpenAI-compatible wrapper/Responses/chat-completions behavior was missing. GREEN: npx vitest run tests/unit/providers/openai-compatible-provider.test.ts tests/unit/providers/openai-compatible-responses-api.test.ts exited 0 (35 tests). Also fixed async createWorkspaceTools handling in the wrapper. REVIEW P2 FIX RED: npx vitest run tests/unit/providers/openai-compatible-provider.test.ts -t \"passes persona reasoningEffort to foreground Responses wrapper payload\" exited 1 because foreground wrapper payload reasoningEffort was undefined. REVIEW P2 FIX GREEN: npx vitest run tests/unit/providers/openai-compatible-provider.test.ts tests/unit/providers/openai-compatible-responses-api.test.ts exited 0 (36 tests)."
+      }
+    },
+    {
+      "id": "TASK-005-docs-examples",
+      "path": "tasks/TASK-005-docs-examples.md",
+      "status": "done",
+      "branch": "work/WORK-reasoning-effort-config-bundle",
+      "workerThreadId": "019f4b8f-ac5e-7c81-948c-e35f282e675a",
+      "workerWorktree": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+      "worktreeStatus": "cleanup_blocked",
+      "cleanup": {
+        "status": "cleanup_blocked",
+        "path": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+        "reason": "Bundle worktree contains unpushed local commit 6be941c and an untracked copied WDD work packet. Keep it until the branch is pushed/merged or the patch is otherwise accepted, then remove the worktree and prune stale entries.",
+        "owner": "controller",
+        "followUp": "After branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, remove the worktree and prune stale entries."
+      },
+      "currentGate": "merge_ready",
+      "risk": "low",
+      "reviewRequired": true,
+      "dependsOn": [
+        "TASK-001-config-runtime-contract",
+        "TASK-002-session-effort-identity",
+        "TASK-003-codex-cli-effort",
+        "TASK-004-openai-compatible-effort"
+      ],
+      "pr": null,
+      "latestCommit": "6be941ce9e15d01ed0123398bc8e0ff17c9f3042",
+      "verification": {
+        "expected": [
+          "git diff --check"
+        ],
+        "evidence": "Docs updated in README.md, config/talond.example.yaml, .agents/skills/create-profile/SKILL.md, and AGENTS.md. npm run build exited 0. npm run lint exited 1 with existing unrelated repo lint debt (130 problems: 98 errors, 32 warnings); patch-local source eslint exited 0 with 3 explicit-return warnings in background-agent-manager.ts. git diff --check exited 0 after WDD evidence updates."
+      }
+    }
+  ],
+  "monitoring": {
+    "mode": "manual",
+    "cadence": "adaptive",
+    "status": "inactive",
+    "lastCheckedAt": "2026-07-10T13:29:59+02:00",
+    "nextCheckDueAt": null,
+    "schedulerRef": null,
+    "fallbackPrompt": "Micro-wave finished and merge-ready at commit 6be941c. Cleanup remains blocked until branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, then remove /home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle and run git worktree prune if needed."
+  },
+  "finish": {
+    "result": "merge_ready",
+    "finishedAt": "2026-07-10T13:29:59+02:00",
+    "branch": "work/WORK-reasoning-effort-config-bundle",
+    "commit": "6be941ce9e15d01ed0123398bc8e0ff17c9f3042",
+    "review": {
+      "reviewerThreadId": "019f4bac-5552-7372-99b2-159248fd662b",
+      "result": "cleared",
+      "summary": "Initial GPT-5.4 review found two P2 blockers; worker fixed both with focused RED/GREEN tests. Follow-up review found no P1/P2/P3 issues."
+    },
+    "verification": {
+      "build": "Final committed-branch rerun: npm run build exited 0",
+      "focusedTests": [
+        "config/persona/agent-runner: 214 tests passed",
+        "session/run-repository/agent-runner: 155 tests passed after review fix",
+        "background-agent/background-manager: 79 tests passed",
+        "codex-cli-provider: 25 tests passed",
+        "openai-compatible provider/responses: 36 tests passed after review fix",
+        "final committed-branch combined focused rerun: 10 files passed, 420 tests passed"
+      ],
+      "lint": "npm run lint exited 1 because of existing unrelated repo lint debt; patch-local changed-source eslint exited 0 with 3 explicit-return warnings in background-agent-manager.ts.",
+      "diffCheck": "git diff --check exited 0"
+    },
+    "cleanup": {
+      "status": "cleanup_blocked",
+      "path": "/home/ivo/workspace/talon/.worktrees/work-reasoning-effort-config-bundle",
+      "reason": "Bundle worktree contains unpushed local commit 6be941c and an untracked copied WDD work packet. Keep it until the branch is pushed/merged or the patch is otherwise accepted, then remove the worktree and prune stale entries.",
+      "owner": "controller",
+      "followUp": "After branch work/WORK-reasoning-effort-config-bundle is pushed/merged or accepted, remove the worktree and prune stale entries."
+    }
+  }
+}
