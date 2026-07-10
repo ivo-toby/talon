@@ -1,5 +1,7 @@
 export type ProviderName = string;
 
+import type { ReasoningEffort } from '../core/config/config-types.js';
+
 export interface AgentUsage {
   inputTokens: number;
   outputTokens: number;
@@ -105,6 +107,8 @@ export interface ProviderSpawnInput {
   traceparent?: string;
   /** Optional model override (e.g. "claude-opus-4-6"). Provider-specific — ignored when not applicable. */
   model?: string;
+  /** Optional persona-level OpenAI/Codex reasoning effort. Provider-specific. */
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface PreparedProviderInvocation {

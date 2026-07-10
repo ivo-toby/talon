@@ -248,7 +248,30 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.queryTimeoutMinutes).toBe(10);
       expect(result.data.maxConcurrent).toBeUndefined();
       expect(result.data.executionEnv).toBeUndefined();
+      expect(Object.keys(result.data)).not.toContain('reasoningEffort');
     }
+  });
+
+  it('accepts all supported persona reasoningEffort values', () => {
+    const values = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+    for (const reasoningEffort of values) {
+      const result = PersonaConfigSchema.safeParse({ name: 'assistant', reasoningEffort });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.reasoningEffort).toBe(reasoningEffort);
+      }
+    }
+  });
+
+  it('rejects unsupported persona reasoningEffort values', () => {
+    expect(
+      PersonaConfigSchema.safeParse({ name: 'assistant', reasoningEffort: 'extreme' }).success,
+    ).toBe(false);
+    expect(
+      PersonaConfigSchema.safeParse({ name: 'assistant', reasoningEffort: 'gpt-5.4:xhigh' })
+        .success,
+    ).toBe(false);
   });
 
   it('accepts a fully-specified persona', () => {
@@ -256,6 +279,7 @@ describe('PersonaConfigSchema', () => {
       name: 'researcher',
       model: 'claude-opus-4-6',
       provider: 'gemini-cli',
+      reasoningEffort: 'high',
       systemPromptFile: '/prompts/researcher.md',
       queryTimeoutMinutes: 45,
       skills: ['web-search', 'code-runner'],
@@ -276,6 +300,7 @@ describe('PersonaConfigSchema', () => {
     if (result.success) {
       expect(result.data.name).toBe('researcher');
       expect(result.data.provider).toBe('gemini-cli');
+      expect(result.data.reasoningEffort).toBe('high');
       expect(result.data.queryTimeoutMinutes).toBe(45);
       expect(result.data.maxConcurrent).toBe(2);
       expect(result.data.mounts).toHaveLength(1);
@@ -298,12 +323,12 @@ describe('PersonaConfigSchema', () => {
   });
 
   it('rejects queryTimeoutMinutes outside the supported range', () => {
-    expect(
-      PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 0 }).success,
-    ).toBe(false);
-    expect(
-      PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 481 }).success,
-    ).toBe(false);
+    expect(PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 0 }).success).toBe(
+      false,
+    );
+    expect(PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 481 }).success).toBe(
+      false,
+    );
   });
 
   describe('PersonaConfigSchema — background overrides', () => {
@@ -330,9 +355,7 @@ describe('PersonaConfigSchema', () => {
     });
 
     it('rejects empty string backgroundModel', () => {
-      expect(() =>
-        PersonaConfigSchema.parse({ name: 'assistant', backgroundModel: '' }),
-      ).toThrow();
+      expect(() => PersonaConfigSchema.parse({ name: 'assistant', backgroundModel: '' })).toThrow();
     });
 
     it('accepts backgroundModel without backgroundProvider at the schema level (cross-validation deferred to TalondConfigSchema)', () => {
@@ -885,7 +908,6 @@ describe('AgentRunnerConfigSchema', () => {
     expect(result.success).toBe(false);
   });
 });
-
 
 // ---------------------------------------------------------------------------
 // TalondConfigSchema (root)

@@ -35,29 +35,29 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 ### Source Layout
 
-| Module    | Path                       | Purpose                                                             |
-| --------- | -------------------------- | ------------------------------------------------------------------- |
-| Daemon    | `src/daemon/`              | Lifecycle state machine, agent runner, bootstrap, watchdog          |
-| Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal |
-| Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                  |
-| Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter   |
-| Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                               |
-| Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly             |
-| Tools     | `src/tools/`               | 11 host-tools + capability-based filtering via `tool-filter.ts`     |
-| MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |
-| Personas  | `src/personas/`            | Persona config loading + capability merging                         |
+| Module    | Path                       | Purpose                                                                                                                    |
+| --------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Daemon    | `src/daemon/`              | Lifecycle state machine, agent runner, bootstrap, watchdog                                                                 |
+| Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal                                 |
+| Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                                                                         |
+| Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter                                                          |
+| Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                                                                                      |
+| Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly                                                                    |
+| Tools     | `src/tools/`               | 11 host-tools + capability-based filtering via `tool-filter.ts`                                                            |
+| MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                                                                          |
+| Personas  | `src/personas/`            | Persona config loading + capability merging                                                                                |
 | Skills    | `src/skills/`              | Declarative skill bundles with lazy loading (metadata-only in system prompt, full content on demand via `skill_load` tool) |
-| SubAgents | `src/subagents/`           | Loader, model resolver, runner with per-subagent model overrides and failover |
-| Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema) |
-| Database  | `src/core/database/`       | better-sqlite3 wrapper, 14 repositories, SQL migrations             |
-| IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                |
-| CLI       | `src/cli/`                 | 36 talonctl commands (Commander.js)                                 |
+| SubAgents | `src/subagents/`           | Loader, model resolver, runner with per-subagent model overrides and failover                                              |
+| Config    | `src/core/config/`         | Zod-validated YAML config loader (`config-schema.ts` is the schema)                                                        |
+| Database  | `src/core/database/`       | better-sqlite3 wrapper, 14 repositories, SQL migrations                                                                    |
+| IPC       | `src/ipc/`                 | Unix socket daemon↔CLI communication                                                                                       |
+| CLI       | `src/cli/`                 | 36 talonctl commands (Commander.js)                                                                                        |
 
 ### Key Architectural Decisions
 
 - **neverthrow `Result<T, E>`** everywhere — expected errors are typed, no raw throws across module boundaries. All repository methods return `Result`.
 - **SQLite (better-sqlite3)** with WAL mode — single-file, no external DB dependency. Repository pattern allows future migration.
-- **Provider runtime runs on host** (not in container) — AgentRunner executes the configured provider strategy. Codex uses the SDK path with `sessionId` persistence; Gemini and Codex use CLI strategies. OpenAI-compatible is normally a stateless Mastra chat-completions wrapper; `options.apiMode: responses` switches that implementation to `/v1/responses`, and `options.sessionMode: previous_response_id` enables stateful response-id session resumption. Persisted resumable sessions are scoped by thread, provider, and model; changing models starts a fresh session and re-injects compressed context instead of resuming an old model's chain.
+- **Provider runtime runs on host** (not in container) — AgentRunner executes the configured provider strategy. Codex uses the SDK path with `sessionId` persistence; Gemini and Codex use CLI strategies. OpenAI-compatible is normally a stateless Mastra chat-completions wrapper; `options.apiMode: responses` switches that implementation to `/v1/responses`, and `options.sessionMode: previous_response_id` enables stateful response-id session resumption. Persisted resumable sessions are scoped by thread, provider, model, and configured reasoning effort; changing models or effort starts a fresh session and re-injects compressed context instead of resuming an old chain.
 - **Provider names can alias implementation types** — provider config keys remain the names personas select and the names persisted in run history. Optional `providers.<name>.type` selects the implementation factory (for example `ollama-mac` with `type: openai-compatible`) so multiple OpenAI-compatible endpoints can coexist.
 - **Capability-based security** — default-deny. Persona `capabilities.allow` lists what tools/channels are accessible. `requireApproval` triggers human confirmation.
 - **Skills are declarative** — two formats: `skill.yaml` + `prompts/*.md` (legacy) or single `SKILL.md` with YAML frontmatter (preferred). No executable code in skills.

@@ -120,6 +120,7 @@ describe('CodexCliProvider', () => {
           },
           cwd: '/workspace/repo',
           model: 'gpt-5.4',
+          reasoningEffort: 'high',
           maxTurns: 25,
           timeoutMs: 60_000,
         }),
@@ -172,6 +173,7 @@ describe('CodexCliProvider', () => {
       expect(existsSync(configPath)).toBe(true);
       const configToml = readFileSync(configPath, 'utf8');
       expect(configToml).toContain('model = "gpt-5.4"');
+      expect(configToml).toContain('model_reasoning_effort = "high"');
       expect(configToml).toContain('[projects."/workspace/repo"]');
       expect(configToml).toContain('trust_level = "trusted"');
       expect(configToml).toContain('[mcp_servers."hostTools"]');
@@ -375,6 +377,7 @@ describe('CodexCliProvider', () => {
       cwd: '/workspace/repo',
       timeoutMs: 60_000,
       model: 'gpt-5.4',
+      reasoningEffort: 'xhigh',
     });
 
     expect(result.isOk()).toBe(true);
@@ -402,6 +405,7 @@ describe('CodexCliProvider', () => {
     const configPath = join(invocation.env!.HOME, '.codex', 'config.toml');
     expect(existsSync(configPath)).toBe(true);
     const configToml = readFileSync(configPath, 'utf8');
+    expect(configToml).toContain('model_reasoning_effort = "xhigh"');
     expect(configToml).toContain('[mcp_servers."hostTools"]');
     expect(configToml).toContain('command = "node"');
     expect(configToml).toContain('[mcp_servers."remoteBrowser"]');

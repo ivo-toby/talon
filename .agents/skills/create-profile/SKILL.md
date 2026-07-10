@@ -6,12 +6,12 @@ description: |
   "new background agent", "create a persona", "add a profile", or
   "background agent profile".
 triggers:
-  - "create a profile"
-  - "add a persona"
-  - "new background agent"
-  - "create a persona"
-  - "add a profile"
-  - "background agent profile"
+  - 'create a profile'
+  - 'add a persona'
+  - 'new background agent'
+  - 'create a persona'
+  - 'add a profile'
+  - 'background agent profile'
 ---
 
 # Create Profile
@@ -67,15 +67,17 @@ Examples:
 - Infer a tier first, then map it to a provider-specific model.
 - If unclear, default to `balanced`.
 
-| Tier | Use when intent suggests | Codex provider | Gemini provider |
-|---|---|---|---|
-| `strong` | review, audit, analyze, plan, architect | `Codex-opus-4-6` | `gemini-2.5-pro` |
+| Tier       | Use when intent suggests                    | Codex provider     | Gemini provider    |
+| ---------- | ------------------------------------------- | ------------------ | ------------------ |
+| `strong`   | review, audit, analyze, plan, architect     | `Codex-opus-4-6`   | `gemini-2.5-pro`   |
 | `balanced` | summarize, draft, write, general assistance | `Codex-sonnet-4-6` | `gemini-2.5-flash` |
-| `fast` | classify, tag, triage, quick, simple | `Codex-haiku-4-5` | `gemini-2.5-flash` |
+| `fast`     | classify, tag, triage, quick, simple        | `Codex-haiku-4-5`  | `gemini-2.5-flash` |
 
-**`backgroundProvider`** *(optional)* — provider used when this persona spawns a background agent. Resolution order: explicit tool arg → `backgroundProvider` → persona's foreground `provider` (only if it is also enabled under `backgroundAgent.providers`) → `backgroundAgent.defaultProvider`. Set when the foreground provider is unsuitable for background work (e.g. local Ollama running short-context models). Must be enabled under `backgroundAgent.providers` — the daemon refuses to start otherwise.
+**`backgroundProvider`** _(optional)_ — provider used when this persona spawns a background agent. Resolution order: explicit tool arg → `backgroundProvider` → persona's foreground `provider` (only if it is also enabled under `backgroundAgent.providers`) → `backgroundAgent.defaultProvider`. Set when the foreground provider is unsuitable for background work (e.g. local Ollama running short-context models). Must be enabled under `backgroundAgent.providers` — the daemon refuses to start otherwise.
 
-**`backgroundModel`** *(optional)* — model passed to the background provider. Paired with `backgroundProvider`; the daemon refuses to start if `backgroundModel` is set without `backgroundProvider`. Useful for sending background work to a more capable model than the foreground.
+**`backgroundModel`** _(optional)_ — model passed to the background provider. Paired with `backgroundProvider`; the daemon refuses to start if `backgroundModel` is set without `backgroundProvider`. Useful for sending background work to a more capable model than the foreground.
+
+**`reasoningEffort`** _(optional)_ — persona-level effort for Codex CLI and OpenAI-compatible Responses models. Valid values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Use the base model name; do not invent model-name suffix aliases. Only suggest this for `codex-cli` or `openai-compatible` providers configured with `options.apiMode: responses`; OpenAI-compatible chat-completions mode rejects it with a clear provider error. `talonctl add-persona` does not expose a flag for this field, so mention the config key in the summary instead of adding a command-line option.
 
 ### Capabilities
 
@@ -83,22 +85,22 @@ Use these exact labels.
 
 **Host tools**
 
-| Intent hints | `allow` | `requireApproval` |
-|---|---|---|
-| memory, remember, context, knowledge | `memory.access:*` | |
-| message, notify, send, communicate | | `channel.send:*` |
-| search, fetch, http, api | `net.http` | |
-| queue async work, background jobs | `subagent.background` | |
-| ask another agent inline, specialist consultation | `subagent.invoke` | |
-| schedule, cron, recurring tasks | | `schedule.manage` |
-| query, database, SQL | | `db.query` |
+| Intent hints                                      | `allow`               | `requireApproval` |
+| ------------------------------------------------- | --------------------- | ----------------- |
+| memory, remember, context, knowledge              | `memory.access:*`     |                   |
+| message, notify, send, communicate                |                       | `channel.send:*`  |
+| search, fetch, http, api                          | `net.http`            |                   |
+| queue async work, background jobs                 | `subagent.background` |                   |
+| ask another agent inline, specialist consultation | `subagent.invoke`     |                   |
+| schedule, cron, recurring tasks                   |                       | `schedule.manage` |
+| query, database, SQL                              |                       | `db.query`        |
 
 **Provider-native**
 
-| Intent hints | `allow` | `requireApproval` |
-|---|---|---|
-| code, review, file, read, analyze source | `fs.read:*` | |
-| write, edit, fix, refactor, implement | `fs.read:*` | `fs.write:workspace` |
+| Intent hints                             | `allow`     | `requireApproval`    |
+| ---------------------------------------- | ----------- | -------------------- |
+| code, review, file, read, analyze source | `fs.read:*` |                      |
+| write, edit, fix, refactor, implement    | `fs.read:*` | `fs.write:workspace` |
 
 Rules:
 
@@ -132,7 +134,7 @@ The system prompt file (`system.md`) uses YAML frontmatter for metadata:
 
 ```markdown
 ---
-description: "<the description from above>"
+description: '<the description from above>'
 ---
 
 # <name> — System Prompt

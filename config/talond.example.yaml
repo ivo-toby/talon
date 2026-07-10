@@ -30,7 +30,7 @@ channels:
     config:
       botToken: ${TELEGRAM_BOT_TOKEN}
       allowedChatIds:
-        - "123456789"
+        - '123456789'
       pollingTimeoutSec: 30
 
   # WhatsApp Web bridge via Baileys — no Meta Business account required.
@@ -96,7 +96,7 @@ personas:
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
-      - session-summarizer           # legacy single-summary context compression
+      - session-summarizer # legacy single-summary context compression
       # For observational memory (long-term context), replace session-summarizer with:
       # - session-observer           # generates dated, prioritized observations
       # - session-reflector          # consolidates observations when log grows large
@@ -121,6 +121,20 @@ personas:
         mode: rw
     maxConcurrent: 2
 
+  # Example OpenAI/Codex reasoning persona. Use the base model name; do not
+  # encode effort as a model-name suffix. Valid values are:
+  # none, minimal, low, medium, high, xhigh.
+  # - name: deep-researcher
+  #   model: gpt-5.4
+  #   provider: codex-cli
+  #   reasoningEffort: high
+  #   systemPromptFile: personas/deep-researcher/system.md
+  #   skills: []
+  #   capabilities:
+  #     allow:
+  #       - fs.read:*
+  #       - subagent.background
+
 ipc:
   pollIntervalMs: 500
   daemonSocketDir: data/ipc/daemon
@@ -143,7 +157,7 @@ agentRunner:
         triggerMetric: cache_read_input_tokens
         thresholdRatio: 0.5
         recentMessageCount: 10
-        summarizer: session-summarizer       # or session-observer for observational memory
+        summarizer: session-summarizer # or session-observer for observational memory
         # reflectionThresholdChars: 40000   # OM only: observation log size that triggers session-reflector. Default 40000.
     gemini-cli:
       enabled: false
@@ -163,7 +177,7 @@ agentRunner:
       contextWindowTokens: 1048576
       contextManagement:
         enabled: true
-        triggerMetric: input_tokens          # OpenAI input_tokens = total context; use this, not cache metrics
+        triggerMetric: input_tokens # OpenAI input_tokens = total context; use this, not cache metrics
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer

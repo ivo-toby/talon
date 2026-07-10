@@ -159,6 +159,75 @@ describe('OpenAiCompatibleProvider', () => {
     });
   });
 
+  it('passes persona reasoningEffort to Responses wrapper payload while preserving provider reasoning options', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      type: 'openai-compatible',
+      command: 'node',
+      contextWindowTokens: 128_000,
+      options: {
+        defaultModel: 'gpt-5.4',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        providerId: 'openai',
+        apiMode: 'responses',
+        providerOptions: {
+          reasoning: {
+            effort: 'medium',
+            summary: 'auto',
+          },
+          text: {
+            verbosity: 'low',
+          },
+        },
+      },
+    });
+
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'hi',
+      systemPrompt: 's',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 10_000,
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const payload = JSON.parse(result._unsafeUnwrap().stdin) as Record<string, unknown>;
+    expect(payload.apiMode).toBe('responses');
+    expect(payload.reasoningEffort).toBe('high');
+    expect(payload.providerOptions).toEqual({
+      openai: {
+        reasoning: {
+          effort: 'medium',
+          summary: 'auto',
+        },
+        text: {
+          verbosity: 'low',
+        },
+      },
+    });
+  });
+
+  it('returns a deterministic error for reasoningEffort with chat-completions mode', () => {
+    const provider = makeProvider();
+
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'hi',
+      systemPrompt: 's',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 10_000,
+      model: 'qwen3-coder:30b',
+      reasoningEffort: 'low',
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain(
+      'reasoningEffort requires openai-compatible apiMode: responses',
+    );
+  });
+
   it('creates a stateless streaming SDK execution strategy for foreground runs', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
@@ -285,6 +354,56 @@ describe('OpenAiCompatibleProvider', () => {
     if (resultEvent?.type === 'result') {
       expect(resultEvent.result.sessionId).toBe('resp-new');
     }
+  });
+
+  it('passes persona reasoningEffort to foreground Responses wrapper payload', async () => {
+    const capturedStdin: string[] = [];
+    vi.mocked(mockedSpawn).mockImplementation((() => {
+      const child = makeFakeChild({
+        stdoutLines: [
+          JSON.stringify({
+            type: 'result',
+            output: 'ok',
+            sessionId: 'resp-new',
+            usage: { inputTokens: 5, outputTokens: 1 },
+          }),
+        ],
+      });
+      child.stdin.on('data', (chunk: Buffer) => {
+        capturedStdin.push(chunk.toString('utf8'));
+      });
+      return child;
+    }) as unknown as typeof mockedSpawn);
+
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'gpt-5.4',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        apiMode: 'responses',
+      },
+    });
+    const strategy = provider.createExecutionStrategy();
+
+    for await (const _event of strategy.run({
+      threadId: 'thread-test',
+      prompt: 'continue',
+      systemPrompt: 'system',
+      mcpServers: {},
+      cwd: '/tmp',
+      model: 'gpt-5.4',
+      maxTurns: 10,
+      timeoutMs: 5_000,
+      reasoningEffort: 'xhigh',
+    })) {
+      // Exhaust the stream so stdin is captured.
+    }
+
+    const payload = JSON.parse(capturedStdin.join('')) as Record<string, unknown>;
+    expect(payload.apiMode).toBe('responses');
+    expect(payload.reasoningEffort).toBe('xhigh');
   });
 
   it('returns an error when neither input.model nor defaultModel is configured', () => {

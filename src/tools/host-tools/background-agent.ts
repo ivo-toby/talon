@@ -16,7 +16,6 @@ import { BackgroundAgentError } from '../../core/errors/error-types.js';
 import { filterAllowedMcpTools } from '../tool-filter.js';
 import { resolveToolInstructions } from '../tool-instructions.js';
 import { buildTimeContext } from '../../core/time-context.js';
-import type { PersonaExecutionEnvConfig } from '../../core/config/config-types.js';
 
 const DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT = 10;
 
@@ -153,7 +152,10 @@ export class BackgroundAgentHandler {
           `Profile "${profileName}" not found. Available profiles: ${available}`,
         );
       }
-      return this.errorResult(requestId, `Loaded persona not found: ${personaRowResult.value.name}`);
+      return this.errorResult(
+        requestId,
+        `Loaded persona not found: ${personaRowResult.value.name}`,
+      );
     }
 
     const threadResult = this.deps.threadRepository.findById(context.threadId);
@@ -206,10 +208,11 @@ export class BackgroundAgentHandler {
 
     let previousContext: string | undefined;
     try {
-      previousContext = this.deps.contextAssembler.assemble(
-        context.threadId,
-        DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT,
-      ).text || undefined;
+      previousContext =
+        this.deps.contextAssembler.assemble(
+          context.threadId,
+          DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT,
+        ).text || undefined;
     } catch (cause) {
       this.deps.logger.warn(
         {
@@ -281,6 +284,10 @@ export class BackgroundAgentHandler {
         resolvedModel = loadedPersona.config.model;
       }
     }
+    const resolvedReasoningEffort =
+      !explicitProvider && resolvedModel && loadedPersona.config.reasoningEffort
+        ? loadedPersona.config.reasoningEffort
+        : undefined;
 
     const toolInstructionsBlock = resolveToolInstructions(
       this.deps.toolInstructions,
@@ -304,9 +311,10 @@ export class BackgroundAgentHandler {
       provider: resolvedProvider,
       allowedMcpTools,
       sandbox,
-      executionEnvDefaults: loadedPersona.config.executionEnv as PersonaExecutionEnvConfig,
+      executionEnvDefaults: loadedPersona.config.executionEnv,
       ...(profileName ? { profileName } : {}),
       ...(resolvedModel ? { model: resolvedModel } : {}),
+      ...(resolvedReasoningEffort ? { reasoningEffort: resolvedReasoningEffort } : {}),
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.timeoutMinutes ? { timeoutMinutes: args.timeoutMinutes } : {}),
       traceparent: context.traceparent,
@@ -324,11 +332,11 @@ export class BackgroundAgentHandler {
     };
   }
 
-  private async status(
+  private status(
     args: BackgroundAgentArgs,
     context: ToolExecutionContext,
     requestId: string,
-  ): Promise<ToolCallResult> {
+  ): ToolCallResult {
     if (!args.taskId) {
       const tasksResult = this.deps.backgroundAgentManager.listTasksForThread(context.threadId);
       if (tasksResult.isErr()) {
@@ -383,11 +391,11 @@ export class BackgroundAgentHandler {
     };
   }
 
-  private async result(
+  private result(
     args: BackgroundAgentArgs,
     context: ToolExecutionContext,
     requestId: string,
-  ): Promise<ToolCallResult> {
+  ): ToolCallResult {
     if (!args.taskId || typeof args.taskId !== 'string' || args.taskId.trim() === '') {
       return this.errorResult(requestId, 'Missing required field: taskId');
     }

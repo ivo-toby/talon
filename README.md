@@ -124,7 +124,7 @@ agentRunner:
         summarizer: session-summarizer
       options:
         defaultModel: gpt-5.4
-    openai-compatible:                         # experimental
+    openai-compatible: # experimental
       enabled: false
       command: node
       contextWindowTokens: 256000
@@ -138,7 +138,7 @@ agentRunner:
         baseUrl: http://127.0.0.1:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama
-    ollama-mac:                                # alias using the same implementation
+    ollama-mac: # alias using the same implementation
       enabled: false
       type: openai-compatible
       command: node
@@ -204,7 +204,7 @@ backgroundAgent:
 - **Sandboxed execution environments** — Isolate background agent work in persistent Firecracker VMs via [Sprites.dev](https://sprites.dev), with file transfer, checkpointing, and automatic cleanup
 - **Hot reload** — Change config, personas, and skills without restarting the daemon
 - **Systemd integration** — Watchdog heartbeat, graceful shutdown, timer-based wake-only mode
-- **Session persistence** — Resumable agent sessions resume across messages in the same thread, scoped by provider and model so model swaps start fresh
+- **Session persistence** — Resumable agent sessions resume across messages in the same thread, scoped by provider, model, and configured reasoning effort so model or effort swaps start fresh
 - **Provider-scoped context management** — Per-provider session rotation policy for latency or cost control, with compressed history injection into fresh sessions
 
 ### Observability (Langfuse)
@@ -441,7 +441,7 @@ agentRunner:
         thresholdRatio: 0.5
         recentMessageCount: 10
         summarizer: session-summarizer
-    openai-compatible:                         # experimental
+    openai-compatible: # experimental
       enabled: false
       command: node
       contextWindowTokens: 256000
@@ -549,8 +549,8 @@ Personas can route their background agents through a different provider/model th
 personas:
   - name: assistant
     model: qwen3-coder:30b
-    provider: openai-compatible    # foreground stays on Ollama
-    backgroundProvider: claude-code   # background runs on Claude Code
+    provider: openai-compatible # foreground stays on Ollama
+    backgroundProvider: claude-code # background runs on Claude Code
     backgroundModel: claude-sonnet-4-6
   - name: work-context-manager
     model: qwen3-coder:30b
@@ -558,7 +558,7 @@ personas:
     # no backgroundProvider — falls back to backgroundAgent.defaultProvider
 ```
 
-`backgroundProvider` must be enabled under `backgroundAgent.providers`; the daemon refuses to start otherwise. `backgroundModel` is paired with `backgroundProvider` — setting it without `backgroundProvider` is rejected at config load.
+`backgroundProvider` must be enabled under `backgroundAgent.providers`; the daemon refuses to start otherwise. `backgroundModel` is paired with `backgroundProvider` — setting it without `backgroundProvider` is rejected at config load. When a background run resolves its provider/model from persona configuration, Talon also forwards that persona's `reasoningEffort`; explicitly supplied background provider/model tool arguments do not inherit it.
 
 Resolution order at spawn time:
 
@@ -576,16 +576,16 @@ backgroundAgent:
   enabled: true
   maxConcurrent: 2
   defaultTimeoutMinutes: 30
-  defaultProvider: openai-compatible     # or keep claude-code and opt in per task
+  defaultProvider: openai-compatible # or keep claude-code and opt in per task
   providers:
     openai-compatible:
       enabled: true
-      command: node                      # the bundled wrapper runs under node
+      command: node # the bundled wrapper runs under node
       contextWindowTokens: 256000
       options:
-        baseUrl: ${OLLAMA_BASE_URL}      # e.g. https://ollama.com/v1
+        baseUrl: ${OLLAMA_BASE_URL} # e.g. https://ollama.com/v1
         defaultModel: ${OLLAMA_AGENT_MODEL}
-        providerId: ollama               # triggers auth.providers.ollama lookup
+        providerId: ollama # triggers auth.providers.ollama lookup
 ```
 
 Notes:
@@ -949,6 +949,10 @@ personas:
   - name: alfred
     description: Personal assistant
     model: claude-sonnet-4-6
+    provider: claude-code
+    # Optional for Codex CLI and OpenAI-compatible Responses personas.
+    # Valid values: none, minimal, low, medium, high, xhigh.
+    # reasoningEffort: medium
     systemPromptFile: personas/alfred/system.md
     skills:
       - web-search
@@ -971,6 +975,8 @@ bindings:
     channel: my-slack
     isDefault: true
 ```
+
+`reasoningEffort` is a persona-level knob for OpenAI/Codex reasoning models. When configured, Talon passes it to the provider runtime input, writes `model_reasoning_effort = "<effort>"` into generated Codex CLI config, and sends `reasoning: { effort: "<effort>" }` for OpenAI-compatible Responses API requests. Use the base model name in `model`; Talon does not support model-name suffix aliases for effort levels. Unsupported provider paths either ignore the field or, for `openai-compatible` chat-completions mode, return a deterministic configuration error instead of silently dropping it.
 
 ### Persona templates
 
@@ -1179,12 +1185,12 @@ subagents:
 
 **Per-model fields:**
 
-| Field             | Purpose                                                                                                                |
-| ----------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `provider`        | Provider slot: `anthropic`, `openai`, `google`, or `ollama` (required)                                                 |
-| `name`            | Model name as the provider expects it (required)                                                                       |
-| `maxTokens`       | Max output tokens; falls back to the manifest value                                                                    |
-| `timeoutMs`       | Per-model wall-clock timeout. On expiry the runner aborts the in-flight AI SDK call and fails over to the next model   |
+| Field             | Purpose                                                                                                                  |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `provider`        | Provider slot: `anthropic`, `openai`, `google`, or `ollama` (required)                                                   |
+| `name`            | Model name as the provider expects it (required)                                                                         |
+| `maxTokens`       | Max output tokens; falls back to the manifest value                                                                      |
+| `timeoutMs`       | Per-model wall-clock timeout. On expiry the runner aborts the in-flight AI SDK call and fails over to the next model     |
 | `providerOptions` | Free-form record forwarded verbatim to the AI SDK call. Use this for vendor-specific knobs (see `providerOptions` below) |
 
 Sub-agent model providers are AI SDK provider slots, not foreground/background
@@ -1216,7 +1222,7 @@ Sub-agents with no entry in `subagents:` use their manifest model unchanged. All
 auth:
   providers:
     ollama:
-      baseURL: http://localhost:8080/v1   # llama.cpp OpenAI-compatible endpoint
+      baseURL: http://localhost:8080/v1 # llama.cpp OpenAI-compatible endpoint
 
 subagents:
   session-summarizer:
@@ -1238,15 +1244,15 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 
 **Built-in sub-agent names** (use these as keys under `subagents:` in `talond.yaml`):
 
-| Name                  | Default model         | Description                                                  |
-| --------------------- | --------------------- | ------------------------------------------------------------ |
-| `file-searcher`       | `claude-haiku-4-5-20251001`    | Search files by content, return ranked results with snippets |
-| `memory-retriever`    | `claude-haiku-4-5-20251001`    | Find relevant memories via keyword pre-filter + LLM rerank  |
-| `memory-groomer`      | `claude-haiku-4-5-20251001`    | Prune stale, consolidate duplicate memory items              |
-| `session-summarizer`  | `claude-sonnet-4-6`   | Compress transcripts for rolling context window (legacy)     |
-| `session-observer`    | `claude-sonnet-4-6`   | Generate dated, prioritized observations for long-term memory |
-| `session-reflector`   | `claude-sonnet-4-6`   | Consolidate observations when log grows too large            |
-| `spark-coder`         | `gpt-5.4-spark`       | Fast single-shot code generation (requires `OPENAI_API_KEY`) |
+| Name                 | Default model               | Description                                                   |
+| -------------------- | --------------------------- | ------------------------------------------------------------- |
+| `file-searcher`      | `claude-haiku-4-5-20251001` | Search files by content, return ranked results with snippets  |
+| `memory-retriever`   | `claude-haiku-4-5-20251001` | Find relevant memories via keyword pre-filter + LLM rerank    |
+| `memory-groomer`     | `claude-haiku-4-5-20251001` | Prune stale, consolidate duplicate memory items               |
+| `session-summarizer` | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)      |
+| `session-observer`   | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory |
+| `session-reflector`  | `claude-sonnet-4-6`         | Consolidate observations when log grows too large             |
+| `spark-coder`        | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)  |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
@@ -1278,7 +1284,7 @@ export async function run(ctx, input) {
     prompt: '...',
     maxOutputTokens: ctx.maxOutputTokens,
     experimental_telemetry: ctx.telemetry,
-    abortSignal: ctx.abortSignal,       // REQUIRED — see below
+    abortSignal: ctx.abortSignal, // REQUIRED — see below
     providerOptions: ctx.providerOptions, // REQUIRED — for ollama passthrough
   });
   // ...
@@ -1448,15 +1454,15 @@ contextManagement:
   triggerMetric: input_tokens
   thresholdRatio: 0.75
   recentMessageCount: 10
-  summarizer: session-observer    # enables observational memory
+  summarizer: session-observer # enables observational memory
   reflectionThresholdChars: 40000 # observation-log size that triggers session-reflector (default 40000)
 
 # 2. Add the observer and reflector to the persona's subagents list
 personas:
   - name: assistant
     subagents:
-      - session-observer           # required for observational memory
-      - session-reflector          # required for observation consolidation
+      - session-observer # required for observational memory
+      - session-reflector # required for observation consolidation
       - memory-groomer
       - memory-retriever
       - file-searcher
@@ -1541,29 +1547,29 @@ Custom sub-agents override built-in ones if they share the same name (dataDir ta
 
 ### Daemon Management
 
-| Command | Description |
-|---------|-------------|
+| Command  | Description                                                   |
+| -------- | ------------------------------------------------------------- |
 | `status` | Show daemon health, active channels, queue depth, token usage |
-| `reload` | Hot-reload config without restarting the daemon |
-| `chat` | Connect to a persona via the terminal channel |
+| `reload` | Hot-reload config without restarting the daemon               |
+| `chat`   | Connect to a persona via the terminal channel                 |
 
 **`status`** / **`reload`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
+| Option             | Description                              | Default     |
+| ------------------ | ---------------------------------------- | ----------- |
 | `--ipc-dir <path>` | IPC directory (overrides config default) | from config |
-| `--timeout <ms>` | Response timeout in milliseconds | `5000` |
+| `--timeout <ms>`   | Response timeout in milliseconds         | `5000`      |
 
 **`chat`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--host <host>` | Terminal connector host | `127.0.0.1` |
-| `--port <port>` | Terminal connector port | `7700` |
-| `--token <token>` | Authentication token (or set `TERMINAL_TOKEN` env var) | required |
-| `--client-id <id>` | Client identity for persistent threads | — |
-| `--persona <name>` | Persona to connect to (overrides channel default) | — |
-| `--tls` | Use `wss://` (TLS) instead of `ws://` | off |
+| Option             | Description                                            | Default     |
+| ------------------ | ------------------------------------------------------ | ----------- |
+| `--host <host>`    | Terminal connector host                                | `127.0.0.1` |
+| `--port <port>`    | Terminal connector port                                | `7700`      |
+| `--token <token>`  | Authentication token (or set `TERMINAL_TOKEN` env var) | required    |
+| `--client-id <id>` | Client identity for persistent threads                 | —           |
+| `--persona <name>` | Persona to connect to (overrides channel default)      | —           |
+| `--tls`            | Use `wss://` (TLS) instead of `ws://`                  | off         |
 
 ```bash
 npx talonctl status --timeout 5000
@@ -1573,65 +1579,65 @@ npx talonctl chat --token mytoken --persona assistant
 
 ### Setup and Configuration
 
-| Command | Description |
-|---------|-------------|
-| `setup` | First-time interactive setup (checks environment, creates dirs, generates config) |
-| `add-channel` | Add a channel connector to config |
-| `add-persona` | Scaffold a persona directory and add to config |
-| `add-skill` | Scaffold a skill and attach to a persona |
-| `add-mcp` | Add an MCP server to a skill |
+| Command       | Description                                                                       |
+| ------------- | --------------------------------------------------------------------------------- |
+| `setup`       | First-time interactive setup (checks environment, creates dirs, generates config) |
+| `add-channel` | Add a channel connector to config                                                 |
+| `add-persona` | Scaffold a persona directory and add to config                                    |
+| `add-skill`   | Scaffold a skill and attach to a persona                                          |
+| `add-mcp`     | Add an MCP server to a skill                                                      |
 
 **`setup`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--config <path>` | Path to write talond.yaml | `talond.yaml` |
-| `--data-dir <path>` | Data directory path | `data` |
+| Option              | Description               | Default       |
+| ------------------- | ------------------------- | ------------- |
+| `--config <path>`   | Path to write talond.yaml | `talond.yaml` |
+| `--data-dir <path>` | Data directory path       | `data`        |
 
 **`add-channel`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Unique channel name (required) | — |
-| `--type <type>` | Connector type: telegram, slack, discord, whatsappBaileys, whatsappBusiness, email, terminal (required) | — |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option            | Description                                                                                             | Default       |
+| ----------------- | ------------------------------------------------------------------------------------------------------- | ------------- |
+| `--name <name>`   | Unique channel name (required)                                                                          | —             |
+| `--type <type>`   | Connector type: telegram, slack, discord, whatsappBaileys, whatsappBusiness, email, terminal (required) | —             |
+| `--config <path>` | Path to talond.yaml                                                                                     | `talond.yaml` |
 
 **`add-persona`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Persona name (required) | — |
-| `--model <model>` | Model name | — |
-| `--provider <provider>` | Provider name | — |
-| `--capabilities <caps>` | Comma-separated capabilities allow list | — |
-| `--require-approval <caps>` | Comma-separated capabilities requiring approval | — |
-| `--skills <skills>` | Comma-separated skill names | — |
-| `--system-prompt-file <path>` | Path to a system prompt markdown file | — |
-| `--description <text>` | Short description (written to system.md frontmatter) | — |
-| `--templates-dir <path>` | Path to templates directory | `templates` |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option                        | Description                                          | Default       |
+| ----------------------------- | ---------------------------------------------------- | ------------- |
+| `--name <name>`               | Persona name (required)                              | —             |
+| `--model <model>`             | Model name                                           | —             |
+| `--provider <provider>`       | Provider name                                        | —             |
+| `--capabilities <caps>`       | Comma-separated capabilities allow list              | —             |
+| `--require-approval <caps>`   | Comma-separated capabilities requiring approval      | —             |
+| `--skills <skills>`           | Comma-separated skill names                          | —             |
+| `--system-prompt-file <path>` | Path to a system prompt markdown file                | —             |
+| `--description <text>`        | Short description (written to system.md frontmatter) | —             |
+| `--templates-dir <path>`      | Path to templates directory                          | `templates`   |
+| `--config <path>`             | Path to talond.yaml                                  | `talond.yaml` |
 
 **`add-skill`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Skill name (required) | — |
-| `--persona <persona>` | Persona to attach the skill to (required) | — |
-| `--format <format>` | Skill format: `yaml` or `skillmd` | `yaml` |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option                | Description                               | Default       |
+| --------------------- | ----------------------------------------- | ------------- |
+| `--name <name>`       | Skill name (required)                     | —             |
+| `--persona <persona>` | Persona to attach the skill to (required) | —             |
+| `--format <format>`   | Skill format: `yaml` or `skillmd`         | `yaml`        |
+| `--config <path>`     | Path to talond.yaml                       | `talond.yaml` |
 
 **`add-mcp`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--skill <name>` | Skill name (required) | — |
-| `--name <name>` | MCP server name (required) | — |
-| `--transport <type>` | Transport type: `stdio`, `sse`, or `http` (required) | — |
-| `--command <cmd>` | Command to run (required for stdio) | — |
-| `--args <args...>` | Command arguments (space-separated) | — |
-| `--url <url>` | Server URL (required for sse/http) | — |
-| `--env <pairs>` | Environment variables (`KEY=VAL,KEY2=VAL2`) | — |
-| `--skills-dir <path>` | Skills directory | `skills` |
+| Option                | Description                                          | Default  |
+| --------------------- | ---------------------------------------------------- | -------- |
+| `--skill <name>`      | Skill name (required)                                | —        |
+| `--name <name>`       | MCP server name (required)                           | —        |
+| `--transport <type>`  | Transport type: `stdio`, `sse`, or `http` (required) | —        |
+| `--command <cmd>`     | Command to run (required for stdio)                  | —        |
+| `--args <args...>`    | Command arguments (space-separated)                  | —        |
+| `--url <url>`         | Server URL (required for sse/http)                   | —        |
+| `--env <pairs>`       | Environment variables (`KEY=VAL,KEY2=VAL2`)          | —        |
+| `--skills-dir <path>` | Skills directory                                     | `skills` |
 
 ```bash
 npx talonctl setup --config talond.yaml --data-dir data
@@ -1645,45 +1651,45 @@ npx talonctl add-mcp --skill web-search --name tavily \
 
 ### Channel and Persona Management
 
-| Command | Description |
-|---------|-------------|
-| `list-channels` | List all configured channels |
-| `list-personas` | List all configured personas |
-| `list-skills` | List all configured skills (optionally filter by persona) |
-| `list-capabilities` | List all available capability labels for persona config |
-| `set-capabilities` | Set capability labels on a persona |
-| `bind` | Bind a persona to a channel (first binding becomes default) |
-| `unbind` | Remove a persona-channel binding |
-| `remove-channel` | Remove a channel and its bindings |
-| `remove-persona` | Remove a persona, its directory, and bindings |
-| `env-check` | Audit config for `${ENV_VAR}` placeholders and report missing env vars |
-| `config-show` | Display resolved config with secrets masked |
+| Command             | Description                                                            |
+| ------------------- | ---------------------------------------------------------------------- |
+| `list-channels`     | List all configured channels                                           |
+| `list-personas`     | List all configured personas                                           |
+| `list-skills`       | List all configured skills (optionally filter by persona)              |
+| `list-capabilities` | List all available capability labels for persona config                |
+| `set-capabilities`  | Set capability labels on a persona                                     |
+| `bind`              | Bind a persona to a channel (first binding becomes default)            |
+| `unbind`            | Remove a persona-channel binding                                       |
+| `remove-channel`    | Remove a channel and its bindings                                      |
+| `remove-persona`    | Remove a persona, its directory, and bindings                          |
+| `env-check`         | Audit config for `${ENV_VAR}` placeholders and report missing env vars |
+| `config-show`       | Display resolved config with secrets masked                            |
 
 **`list-skills`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--persona <name>` | Filter skills by persona name | all |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option             | Description                   | Default       |
+| ------------------ | ----------------------------- | ------------- |
+| `--persona <name>` | Filter skills by persona name | all           |
+| `--config <path>`  | Path to talond.yaml           | `talond.yaml` |
 
 **`set-capabilities`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--persona <name>` | Persona name (required) | — |
-| `--allow <labels>` | Replace allow list (comma-separated) | — |
-| `--add <labels>` | Add to allow list (comma-separated) | — |
-| `--remove <labels>` | Remove from allow list (comma-separated) | — |
-| `--require-approval <labels>` | Replace requireApproval list (comma-separated) | — |
-| `--show` | Show current capabilities without modifying | — |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option                        | Description                                    | Default       |
+| ----------------------------- | ---------------------------------------------- | ------------- |
+| `--persona <name>`            | Persona name (required)                        | —             |
+| `--allow <labels>`            | Replace allow list (comma-separated)           | —             |
+| `--add <labels>`              | Add to allow list (comma-separated)            | —             |
+| `--remove <labels>`           | Remove from allow list (comma-separated)       | —             |
+| `--require-approval <labels>` | Replace requireApproval list (comma-separated) | —             |
+| `--show`                      | Show current capabilities without modifying    | —             |
+| `--config <path>`             | Path to talond.yaml                            | `talond.yaml` |
 
 **`config-show`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--show-secrets` | Show secret values instead of masking them | off |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option            | Description                                | Default       |
+| ----------------- | ------------------------------------------ | ------------- |
+| `--show-secrets`  | Show secret values instead of masking them | off           |
+| `--config <path>` | Path to talond.yaml                        | `talond.yaml` |
 
 ```bash
 npx talonctl list-channels
@@ -1701,28 +1707,28 @@ npx talonctl config-show --show-secrets
 
 ### Thread and Provider Affinity
 
-| Command | Description |
-|---------|-------------|
-| `list-threads` | List persisted threads for a channel, including external IDs and provider info |
-| `reset-provider-affinity` | Reset provider affinity for one channel thread |
+| Command                   | Description                                                                    |
+| ------------------------- | ------------------------------------------------------------------------------ |
+| `list-threads`            | List persisted threads for a channel, including external IDs and provider info |
+| `reset-provider-affinity` | Reset provider affinity for one channel thread                                 |
 
 **`list-threads`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--channel <name>` | Channel name (required) | — |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option             | Description             | Default       |
+| ------------------ | ----------------------- | ------------- |
+| `--channel <name>` | Channel name (required) | —             |
+| `--config <path>`  | Path to talond.yaml     | `talond.yaml` |
 
 **`reset-provider-affinity`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--channel <name>` | Channel name (required) | — |
-| `--external-id <id>` | Thread external ID (required). Use `list-threads` to discover values. | — |
-| `--yes` | Bypass the confirmation prompt | off |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option               | Description                                                           | Default       |
+| -------------------- | --------------------------------------------------------------------- | ------------- |
+| `--channel <name>`   | Channel name (required)                                               | —             |
+| `--external-id <id>` | Thread external ID (required). Use `list-threads` to discover values. | —             |
+| `--yes`              | Bypass the confirmation prompt                                        | off           |
+| `--config <path>`    | Path to talond.yaml                                                   | `talond.yaml` |
 
-Foreground conversations are sticky by default: once a thread has run on one provider, Talon keeps using that provider for subsequent messages on the same thread. This preserves session continuity for resumable providers like Claude Code and Codex CLI. Resumable sessions are restored only for the same provider and model; changing the configured model starts a fresh provider session so Talon can inject the compressed session-observer/session-summarizer context. `reset-provider-affinity` does not rewrite run history — it stores a reset marker on the thread, which also prevents older persisted sessions from being restored after the reset.
+Foreground conversations are sticky by default: once a thread has run on one provider, Talon keeps using that provider for subsequent messages on the same thread. This preserves session continuity for resumable providers like Claude Code and Codex CLI. Resumable sessions are restored only for the same provider, model, and configured `reasoningEffort`; changing the configured model or effort starts a fresh provider session so Talon can inject the compressed session-observer/session-summarizer context. `reset-provider-affinity` does not rewrite run history — it stores a reset marker on the thread, which also prevents older persisted sessions from being restored after the reset.
 
 The `external-id` value is connector-specific:
 
@@ -1740,52 +1746,52 @@ npx talonctl reset-provider-affinity --channel my-telegram --external-id 1234567
 
 ### Provider Management
 
-| Command | Description |
-|---------|-------------|
-| `list-providers` | List all configured providers from agentRunner and backgroundAgent |
-| `add-provider` | Add a provider to agentRunner, backgroundAgent, or both |
-| `set-default-provider` | Switch the default provider for a context |
-| `test-provider` | Test a provider by running a version check and minimal prompt |
+| Command                | Description                                                        |
+| ---------------------- | ------------------------------------------------------------------ |
+| `list-providers`       | List all configured providers from agentRunner and backgroundAgent |
+| `add-provider`         | Add a provider to agentRunner, backgroundAgent, or both            |
+| `set-default-provider` | Switch the default provider for a context                          |
+| `test-provider`        | Test a provider by running a version check and minimal prompt      |
 
 **`add-provider`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Provider name, e.g. `gemini-cli` (required) | — |
-| `--type <type>` | Provider implementation type when `--name` is an alias, e.g. `openai-compatible` | — |
-| `--command <cmd>` | CLI binary path, e.g. `gemini` (required) | — |
-| `--context <ctx>` | Where to add: `agent-runner`, `background`, or `both` | `both` |
-| `--context-window <tokens>` | Context window size in tokens | `200000` |
-| `--context-enabled <bool>` | Enable context management (true/false) | — |
-| `--trigger-metric <metric>` | Context rotation trigger metric | — |
-| `--threshold-ratio <ratio>` | Context rotation threshold (0-1) | `0.5` |
-| `--recent-message-count <n>` | Recent messages to preserve in fresh sessions | `10` |
-| `--summarizer <name>` | Subagent name for session summarization | `session-summarizer` |
-| `--enabled` | Enable the provider immediately | disabled |
-| `--default-model <model>` | Set `options.defaultModel` | — |
-| `--base-url <url>` | Set `options.baseUrl` for OpenAI-compatible providers | — |
-| `--provider-id <id>` | Set `options.providerId` for OpenAI-compatible credential lookup | — |
-| `--tool-output-cap <chars>` | Set `options.toolOutputCap` for OpenAI-compatible providers | — |
-| `--api-mode <mode>` | Set `options.apiMode` (`chat-completions` or `responses`) | — |
-| `--session-mode <mode>` | Set `options.sessionMode` (`none` or `previous_response_id`) | — |
-| `--omlx-responses` | Deprecated alias for `--api-mode responses --session-mode previous_response_id` | off |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option                       | Description                                                                      | Default              |
+| ---------------------------- | -------------------------------------------------------------------------------- | -------------------- |
+| `--name <name>`              | Provider name, e.g. `gemini-cli` (required)                                      | —                    |
+| `--type <type>`              | Provider implementation type when `--name` is an alias, e.g. `openai-compatible` | —                    |
+| `--command <cmd>`            | CLI binary path, e.g. `gemini` (required)                                        | —                    |
+| `--context <ctx>`            | Where to add: `agent-runner`, `background`, or `both`                            | `both`               |
+| `--context-window <tokens>`  | Context window size in tokens                                                    | `200000`             |
+| `--context-enabled <bool>`   | Enable context management (true/false)                                           | —                    |
+| `--trigger-metric <metric>`  | Context rotation trigger metric                                                  | —                    |
+| `--threshold-ratio <ratio>`  | Context rotation threshold (0-1)                                                 | `0.5`                |
+| `--recent-message-count <n>` | Recent messages to preserve in fresh sessions                                    | `10`                 |
+| `--summarizer <name>`        | Subagent name for session summarization                                          | `session-summarizer` |
+| `--enabled`                  | Enable the provider immediately                                                  | disabled             |
+| `--default-model <model>`    | Set `options.defaultModel`                                                       | —                    |
+| `--base-url <url>`           | Set `options.baseUrl` for OpenAI-compatible providers                            | —                    |
+| `--provider-id <id>`         | Set `options.providerId` for OpenAI-compatible credential lookup                 | —                    |
+| `--tool-output-cap <chars>`  | Set `options.toolOutputCap` for OpenAI-compatible providers                      | —                    |
+| `--api-mode <mode>`          | Set `options.apiMode` (`chat-completions` or `responses`)                        | —                    |
+| `--session-mode <mode>`      | Set `options.sessionMode` (`none` or `previous_response_id`)                     | —                    |
+| `--omlx-responses`           | Deprecated alias for `--api-mode responses --session-mode previous_response_id`  | off                  |
+| `--config <path>`            | Path to talond.yaml                                                              | `talond.yaml`        |
 
 **`set-default-provider`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Provider name to set as default (required) | — |
-| `--context <ctx>` | Context: `agent-runner` or `background` (required) | — |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option            | Description                                        | Default       |
+| ----------------- | -------------------------------------------------- | ------------- |
+| `--name <name>`   | Provider name to set as default (required)         | —             |
+| `--context <ctx>` | Context: `agent-runner` or `background` (required) | —             |
+| `--config <path>` | Path to talond.yaml                                | `talond.yaml` |
 
 **`test-provider`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Provider name to test (required) | — |
+| Option            | Description                             | Default        |
+| ----------------- | --------------------------------------- | -------------- |
+| `--name <name>`   | Provider name to test (required)        | —              |
 | `--context <ctx>` | Context: `agent-runner` or `background` | `agent-runner` |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| `--config <path>` | Path to talond.yaml                     | `talond.yaml`  |
 
 ```bash
 npx talonctl list-providers
@@ -1804,7 +1810,9 @@ For `openai-compatible` (**experimental**), use the canonical provider name `ope
 
 OpenAI-compatible entries may set a flat `options.providerOptions` record for vendor-specific request body knobs. Talon wraps it under `options.providerId` before calling Mastra, so disabling Qwen thinking on an `ollama-mac` alias is `providerOptions.chat_template_kwargs.enable_thinking: false`, not a nested `providerOptions.openai` block.
 
-For endpoints that expose OpenAI-compatible `/v1/responses`, set `agentRunner.providers.<name>.options.apiMode: responses` to use the Responses API instead of the default Mastra chat-completions path. If the endpoint also supports stateful `previous_response_id` chaining, set `options.sessionMode: previous_response_id` (or pass `talonctl add-provider --api-mode responses --session-mode previous_response_id`). In this mode Talon stores the returned response id as the provider session id and resumes later turns with `previous_response_id`, so stateful oMLX-style endpoints can reuse their response-state chain and prefix/KV cache across tool-call steps. Stored response ids are scoped by provider and model; if you test a different model on the same provider, Talon starts a fresh session and injects the assembled prior-conversation state instead of resuming the old model's chain. Use `sessionMode: previous_response_id` only for foreground agent-runner endpoints that implement stateful `/v1/responses`; leave it off for background providers, Ollama, vLLM, Groq, Together, and ordinary OpenAI-compatible chat-completions servers. The old `options.omlxResponses: true` and `talonctl add-provider --omlx-responses` forms are still accepted as deprecated aliases for `apiMode: responses` plus `sessionMode: previous_response_id`.
+For endpoints that expose OpenAI-compatible `/v1/responses`, set `agentRunner.providers.<name>.options.apiMode: responses` to use the Responses API instead of the default Mastra chat-completions path. If the endpoint also supports stateful `previous_response_id` chaining, set `options.sessionMode: previous_response_id` (or pass `talonctl add-provider --api-mode responses --session-mode previous_response_id`). In this mode Talon stores the returned response id as the provider session id and resumes later turns with `previous_response_id`, so stateful oMLX-style endpoints can reuse their response-state chain and prefix/KV cache across tool-call steps. Stored response ids are scoped by provider, model, and configured reasoning effort; if you test a different model or effort on the same provider, Talon starts a fresh session and injects the assembled prior-conversation state instead of resuming the old chain. Use `sessionMode: previous_response_id` only for foreground agent-runner endpoints that implement stateful `/v1/responses`; leave it off for background providers, Ollama, vLLM, Groq, Together, and ordinary OpenAI-compatible chat-completions servers. The old `options.omlxResponses: true` and `talonctl add-provider --omlx-responses` forms are still accepted as deprecated aliases for `apiMode: responses` plus `sessionMode: previous_response_id`.
+
+For OpenAI-compatible Responses requests, persona `reasoningEffort` is merged as `reasoning.effort` after provider options, so it wins over `options.providerOptions.reasoning.effort` while preserving other provider-level `reasoning` fields such as `summary`. In chat-completions mode, configuring `reasoningEffort` is rejected with a clear provider error because there is no deterministic cross-server chat-completions request shape for this field.
 
 > **Experimental provider.** `openai-compatible` uses a Mastra-backed wrapper with several workarounds for Mastra/AI-SDK gaps: fetch-level `stream_options` injection for usage reporting, a high `maxSteps` safety net to avoid Mastra's low default tool-call limit, and workspace tool output caps to prevent stalls from large directory listings. These workarounds may break with future Mastra versions. If you encounter issues, pin your `@mastra/core` version and report the problem.
 
@@ -1814,67 +1822,67 @@ The provider already reads `prompt_tokens_details.cached_tokens` from the upstre
 
 Whether you actually see non-zero cache counts depends entirely on the **upstream server**, not on Talon:
 
-| Endpoint                                     | Emits cached token counts? |
-| -------------------------------------------- | -------------------------- |
-| OpenAI (`api.openai.com/v1`)                 | ✅ yes, automatic           |
-| DeepSeek (`api.deepseek.com/v1`)             | ✅ yes                      |
-| Zhipu GLM-4.5 / GLM-5 (`open.bigmodel.cn`)   | ✅ yes (paid tier)          |
-| vLLM (`--enable-prefix-caching`)             | ✅ yes                      |
-| OpenRouter                                   | depends on underlying model |
-| **Ollama (self-hosted or Cloud)**            | ❌ no — KV-cache is internal, not surfaced in the OpenAI-compatible usage object |
-| Groq / Together / Fireworks                  | ❌ no                       |
+| Endpoint                                                            | Emits cached token counts?                                                                                                                                     |
+| ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OpenAI (`api.openai.com/v1`)                                        | ✅ yes, automatic                                                                                                                                              |
+| DeepSeek (`api.deepseek.com/v1`)                                    | ✅ yes                                                                                                                                                         |
+| Zhipu GLM-4.5 / GLM-5 (`open.bigmodel.cn`)                          | ✅ yes (paid tier)                                                                                                                                             |
+| vLLM (`--enable-prefix-caching`)                                    | ✅ yes                                                                                                                                                         |
+| OpenRouter                                                          | depends on underlying model                                                                                                                                    |
+| **Ollama (self-hosted or Cloud)**                                   | ❌ no — KV-cache is internal, not surfaced in the OpenAI-compatible usage object                                                                               |
+| Groq / Together / Fireworks                                         | ❌ no                                                                                                                                                          |
 | **Stateful Responses API with `sessionMode: previous_response_id`** | ✅ yes when `/v1/responses` usage includes cached token details; even when usage omits them, `previous_response_id` still avoids Talon reinjecting prior turns |
 
 If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens` will stay at 0 and `cache_creation_input_tokens` will equal `input_tokens` — that is the expected degradation, not a bug. Use `triggerMetric: input_tokens` for those endpoints.
 
 ### MCP Authentication
 
-| Command | Description |
-|---------|-------------|
+| Command                     | Description                                                                                                            |
+| --------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `auth-mcp <skill>:<server>` | One-time interactive OAuth flow for an HTTP MCP server. See [HTTP MCP Servers and OAuth](#http-mcp-servers-and-oauth). |
 
 **`auth-mcp`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--headless` | Don't try to open a browser. Print the auth URL + suggested SSH forward command. Use this on remote daemons. | off |
-| `--port <port>` | Localhost callback port. Must match the SSH `-L` forward in headless mode. | `8788` |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
-| `--skills-dir <path>` | Path to the skills directory | `skills` |
+| Option                | Description                                                                                                  | Default       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ | ------------- |
+| `--headless`          | Don't try to open a browser. Print the auth URL + suggested SSH forward command. Use this on remote daemons. | off           |
+| `--port <port>`       | Localhost callback port. Must match the SSH `-L` forward in headless mode.                                   | `8788`        |
+| `--config <path>`     | Path to talond.yaml                                                                                          | `talond.yaml` |
+| `--skills-dir <path>` | Path to the skills directory                                                                                 | `skills`      |
 
 ### Scheduling
 
-| Command | Description |
-|---------|-------------|
-| `add-schedule` | Create a scheduled task for a persona |
-| `list-schedules` | List all scheduled tasks |
-| `remove-schedule` | Permanently delete a scheduled task |
+| Command           | Description                           |
+| ----------------- | ------------------------------------- |
+| `add-schedule`    | Create a scheduled task for a persona |
+| `list-schedules`  | List all scheduled tasks              |
+| `remove-schedule` | Permanently delete a scheduled task   |
 
 **`add-schedule`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--persona <name>` | Persona name (required) | — |
-| `--channel <name>` | Channel to bind the schedule thread to (required) | — |
-| `--cron <expr>` | Cron expression, 5-field (required) | — |
-| `--label <label>` | Human-readable label (required) | — |
-| `--prompt <prompt>` | Inline prompt text. Mutually exclusive with `--prompt-file`. | — |
-| `--prompt-file <name>` | Prompt file basename (without `.md`) under `personas/<persona>/prompts/`. Resolved by the scheduler at fire time. Mutually exclusive with `--prompt`. | — |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option                 | Description                                                                                                                                           | Default       |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `--persona <name>`     | Persona name (required)                                                                                                                               | —             |
+| `--channel <name>`     | Channel to bind the schedule thread to (required)                                                                                                     | —             |
+| `--cron <expr>`        | Cron expression, 5-field (required)                                                                                                                   | —             |
+| `--label <label>`      | Human-readable label (required)                                                                                                                       | —             |
+| `--prompt <prompt>`    | Inline prompt text. Mutually exclusive with `--prompt-file`.                                                                                          | —             |
+| `--prompt-file <name>` | Prompt file basename (without `.md`) under `personas/<persona>/prompts/`. Resolved by the scheduler at fire time. Mutually exclusive with `--prompt`. | —             |
+| `--config <path>`      | Path to talond.yaml                                                                                                                                   | `talond.yaml` |
 
 Exactly one of `--prompt` or `--prompt-file` must be provided. `--prompt-file` is preferred for reusable, long-form prompts (e.g. `--prompt-file braintoss` resolves to `personas/<persona>/prompts/braintoss.md` at fire time).
 
 **`list-schedules`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--persona <name>` | Filter by persona name | all |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option             | Description            | Default       |
+| ------------------ | ---------------------- | ------------- |
+| `--persona <name>` | Filter by persona name | all           |
+| `--config <path>`  | Path to talond.yaml    | `talond.yaml` |
 
 **`remove-schedule`** takes a positional `<schedule-id>` argument:
 
-| Option | Description | Default |
-|--------|-------------|---------|
+| Option            | Description         | Default       |
+| ----------------- | ------------------- | ------------- |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
 ```bash
@@ -1892,18 +1900,18 @@ npx talonctl remove-schedule abc123
 
 ### Sub-Agent Testing
 
-| Command | Description |
-|---------|-------------|
+| Command        | Description                                      |
+| -------------- | ------------------------------------------------ |
 | `run-subagent` | Invoke a sub-agent directly (no daemon required) |
 
 **`run-subagent`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--name <name>` | Sub-agent name (required) | — |
-| `--input <json>` | JSON input for the sub-agent (required) | — |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
-| `--subagents-dir <path>` | Sub-agents directory (overrides default 3-source loading) | — |
+| Option                   | Description                                               | Default       |
+| ------------------------ | --------------------------------------------------------- | ------------- |
+| `--name <name>`          | Sub-agent name (required)                                 | —             |
+| `--input <json>`         | JSON input for the sub-agent (required)                   | —             |
+| `--config <path>`        | Path to talond.yaml                                       | `talond.yaml` |
+| `--subagents-dir <path>` | Sub-agents directory (overrides default 3-source loading) | —             |
 
 ```bash
 npx talonctl run-subagent --name session-summarizer \
@@ -1915,28 +1923,28 @@ npx talonctl run-subagent --name my-agent --input '{}' --subagents-dir ./subagen
 
 ### Database and Operations
 
-| Command | Description |
-|---------|-------------|
-| `migrate` | Apply pending database migrations |
-| `backup` | Backup database, config, personas, and skills |
-| `doctor` | Run diagnostic checks on environment, config, and dependencies |
-| `queue-purge` | Purge queue items by status |
+| Command       | Description                                                    |
+| ------------- | -------------------------------------------------------------- |
+| `migrate`     | Apply pending database migrations                              |
+| `backup`      | Backup database, config, personas, and skills                  |
+| `doctor`      | Run diagnostic checks on environment, config, and dependencies |
+| `queue-purge` | Purge queue items by status                                    |
 
 **`backup`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option            | Description             | Default        |
+| ----------------- | ----------------------- | -------------- |
+| `--config <path>` | Path to talond.yaml     | `talond.yaml`  |
 | `--output <path>` | Backup output directory | auto-generated |
 
 **`queue-purge`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--ipc-dir <path>` | IPC directory (overrides config default) | from config |
-| `--timeout <ms>` | Response timeout in milliseconds | `5000` |
+| Option              | Description                                                                                      | Default                  |
+| ------------------- | ------------------------------------------------------------------------------------------------ | ------------------------ |
+| `--ipc-dir <path>`  | IPC directory (overrides config default)                                                         | from config              |
+| `--timeout <ms>`    | Response timeout in milliseconds                                                                 | `5000`                   |
 | `--statuses <list>` | Comma-separated statuses to purge (pending, failed, completed, dead_letter, claimed, processing) | pending,failed,completed |
-| `--all` | Purge all statuses including in-flight items | off |
+| `--all`             | Purge all statuses including in-flight items                                                     | off                      |
 
 ```bash
 npx talonctl migrate --config talond.yaml
@@ -1949,16 +1957,16 @@ npx talonctl queue-purge --all
 
 ### WhatsApp Authentication
 
-| Command | Description |
-|---------|-------------|
+| Command         | Description                                                   |
+| --------------- | ------------------------------------------------------------- |
 | `whatsapp-auth` | Authenticate a WhatsApp Baileys channel by scanning a QR code |
 
 **`whatsapp-auth`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--auth-dir <path>` | Directory to store auth credentials | `./baileys-auth` |
-| `--timeout <seconds>` | Seconds to wait for QR scan | `120` |
+| Option                | Description                         | Default          |
+| --------------------- | ----------------------------------- | ---------------- |
+| `--auth-dir <path>`   | Directory to store auth credentials | `./baileys-auth` |
+| `--timeout <seconds>` | Seconds to wait for QR scan         | `120`            |
 
 ```bash
 npx talonctl whatsapp-auth --auth-dir ./baileys-auth
@@ -1967,26 +1975,26 @@ npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
 
 ### A2A (Agent-to-Agent)
 
-| Command | Description |
-|---------|-------------|
-| `a2a list` | List A2A tasks with optional filters |
+| Command                       | Description                                         |
+| ----------------------------- | --------------------------------------------------- |
+| `a2a list`                    | List A2A tasks with optional filters                |
 | `a2a send <target> <message>` | Submit a manual A2A task to a persona (for testing) |
 
 **`a2a list`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--status <state>` | Filter by task state (submitted, working, completed, failed, canceled) | all |
-| `--target <persona>` | Filter by target persona name | all |
-| `--limit <n>` | Maximum number of tasks to show | `20` |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option               | Description                                                            | Default       |
+| -------------------- | ---------------------------------------------------------------------- | ------------- |
+| `--status <state>`   | Filter by task state (submitted, working, completed, failed, canceled) | all           |
+| `--target <persona>` | Filter by target persona name                                          | all           |
+| `--limit <n>`        | Maximum number of tasks to show                                        | `20`          |
+| `--config <path>`    | Path to talond.yaml                                                    | `talond.yaml` |
 
 **`a2a send`** options:
 
-| Option | Description | Default |
-|--------|-------------|---------|
-| `--source <persona>` | Source persona name | `cli` |
-| `--config <path>` | Path to talond.yaml | `talond.yaml` |
+| Option               | Description         | Default       |
+| -------------------- | ------------------- | ------------- |
+| `--source <persona>` | Source persona name | `cli`         |
+| `--config <path>`    | Path to talond.yaml | `talond.yaml` |
 
 ```bash
 npx talonctl a2a list
@@ -2872,9 +2880,9 @@ three keys are optional and fall back to the built-in defaults shown below:
 
 ```yaml
 a2a:
-  maxHops: 4                # max delegation chain depth (1..32)
+  maxHops: 4 # max delegation chain depth (1..32)
   maxConcurrentPerTarget: 1 # max in-flight tasks per target persona (1..100)
-  maxAttempts: 3            # max queue retries before dead-letter (1..20)
+  maxAttempts: 3 # max queue retries before dead-letter (1..20)
 ```
 
 - **`maxHops`** — a task is rejected when its incoming `hopCount >= maxHops`.

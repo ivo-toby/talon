@@ -13,7 +13,7 @@ import {
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
-import type { ProviderConfig } from '../core/config/config-types.js';
+import type { ProviderConfig, ReasoningEffort } from '../core/config/config-types.js';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
 import type { AgentProvider, AgentRunInput, AgentStreamEvent } from './provider.js';
 import type {
@@ -122,6 +122,7 @@ export class CodexCliProvider implements AgentProvider {
     cwd: string,
     mcpServers: Record<string, CanonicalMcpServer>,
     model: string | undefined,
+    reasoningEffort: ReasoningEffort | undefined,
   ): Result<{ configEnv: Record<string, string> }, BackgroundAgentError> {
     try {
       const codexDir = join(homeDir, '.codex');
@@ -147,7 +148,12 @@ export class CodexCliProvider implements AgentProvider {
         }
       }
 
-      const renderedConfig = this.renderConfigToml({ cwd, model, mcpServers });
+      const renderedConfig = this.renderConfigToml({
+        cwd,
+        model,
+        reasoningEffort,
+        mcpServers,
+      });
       writeFileSync(join(codexDir, 'config.toml'), renderedConfig.toml, {
         encoding: 'utf8',
         mode: 0o600,
@@ -178,6 +184,7 @@ export class CodexCliProvider implements AgentProvider {
   private renderConfigToml(input: {
     cwd: string;
     model?: string;
+    reasoningEffort?: ReasoningEffort;
     mcpServers: Record<string, CanonicalMcpServer>;
   }): RenderedCodexConfig {
     const lines: string[] = [];
@@ -185,6 +192,11 @@ export class CodexCliProvider implements AgentProvider {
 
     if (input.model) {
       lines.push(`model = ${JSON.stringify(input.model)}`);
+      lines.push('');
+    }
+
+    if (input.reasoningEffort) {
+      lines.push(`model_reasoning_effort = ${JSON.stringify(input.reasoningEffort)}`);
       lines.push('');
     }
 
@@ -308,7 +320,13 @@ export class CodexCliProvider implements AgentProvider {
     const model = input.model ?? this.readDefaultModel();
     rmSync(lastMessagePath, { force: true });
 
-    const seedResult = this.seedCodexHome(homeDir, input.cwd, input.mcpServers, model);
+    const seedResult = this.seedCodexHome(
+      homeDir,
+      input.cwd,
+      input.mcpServers,
+      model,
+      input.reasoningEffort,
+    );
     if (seedResult.isErr()) {
       throw seedResult.error;
     }
@@ -391,7 +409,13 @@ export class CodexCliProvider implements AgentProvider {
     const homeDir = this.buildBackgroundHome();
     const resultFiles = { lastMessagePath: join(homeDir, 'last-message.txt') };
     const model = input.model ?? this.readDefaultModel();
-    const seedResult = this.seedCodexHome(homeDir, input.cwd, input.mcpServers, model);
+    const seedResult = this.seedCodexHome(
+      homeDir,
+      input.cwd,
+      input.mcpServers,
+      model,
+      input.reasoningEffort,
+    );
     if (seedResult.isErr()) {
       rmSync(homeDir, { recursive: true, force: true });
       return err(seedResult.error);

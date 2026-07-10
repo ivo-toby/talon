@@ -83,6 +83,8 @@ export const MountConfigSchema = z.object({
 // Persona
 // ---------------------------------------------------------------------------
 
+export const ReasoningEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+
 const PersonaExecutionEnvSchema = z.object({
   sandboxDefault: z.boolean().default(false),
   baseSnapshot: z.string().optional(),
@@ -94,6 +96,7 @@ export const PersonaConfigSchema = z.object({
   name: z.string().min(1),
   model: z.string().default('claude-sonnet-4-6'),
   provider: z.string().trim().min(1).optional(),
+  reasoningEffort: ReasoningEffortSchema.optional(),
   /**
    * Optional override: when set, background agents spawned by this persona use
    * this provider instead of the persona's foreground `provider`. Cross-validated

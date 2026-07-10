@@ -9,6 +9,7 @@ import type Database from 'better-sqlite3';
 import { ok, err, type Result } from 'neverthrow';
 import { DbError } from '../../errors/index.js';
 import { BaseRepository } from './base-repository.js';
+import type { ReasoningEffort } from '../../config/config-types.js';
 
 /** Valid run status values. */
 export type RunStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
@@ -30,6 +31,7 @@ export interface RunRow {
   persona_id: string;
   provider_name: string;
   model_name: string | null;
+  reasoning_effort: ReasoningEffort | null;
   sandbox_id: string | null;
   session_id: string | null;
   status: RunStatus;
@@ -47,8 +49,9 @@ export interface RunRow {
 }
 
 /** Fields accepted when inserting a new run. */
-export type InsertRunInput = Omit<RunRow, 'created_at' | 'model_name'> & {
+export type InsertRunInput = Omit<RunRow, 'created_at' | 'model_name' | 'reasoning_effort'> & {
   model_name?: string | null;
+  reasoning_effort?: ReasoningEffort | null;
 };
 
 /** Token usage and cost fields that can be updated. */
@@ -64,6 +67,7 @@ interface RunLookupOptions {
   sinceCreatedAt?: number;
   excludeCollaboration?: boolean;
   modelName?: string;
+  reasoningEffort?: ReasoningEffort | null;
 }
 
 /** Repository for reading and writing run records. */
@@ -79,12 +83,12 @@ export class RunRepository extends BaseRepository {
 
     this.insertStmt = db.prepare(`
       INSERT INTO runs
-        (id, thread_id, persona_id, provider_name, model_name, sandbox_id, session_id, status,
+        (id, thread_id, persona_id, provider_name, model_name, reasoning_effort, sandbox_id, session_id, status,
          parent_run_id, queue_item_id, input_tokens, output_tokens,
          cache_read_tokens, cache_write_tokens, cost_usd, error,
          started_at, ended_at, created_at)
       VALUES
-        (@id, @thread_id, @persona_id, @provider_name, @model_name, @sandbox_id, @session_id, @status,
+        (@id, @thread_id, @persona_id, @provider_name, @model_name, @reasoning_effort, @sandbox_id, @session_id, @status,
          @parent_run_id, @queue_item_id, @input_tokens, @output_tokens,
          @cache_read_tokens, @cache_write_tokens, @cost_usd, @error,
          @started_at, @ended_at, @created_at)
@@ -108,11 +112,21 @@ export class RunRepository extends BaseRepository {
   /** Inserts a new run row. */
   insert(input: InsertRunInput): Result<RunRow, DbError> {
     try {
-      const row: RunRow = { ...input, model_name: input.model_name ?? null, created_at: this.now() };
+      const row: RunRow = {
+        ...input,
+        model_name: input.model_name ?? null,
+        reasoning_effort: input.reasoning_effort ?? null,
+        created_at: this.now(),
+      };
       this.insertStmt.run(row);
       return ok(row);
     } catch (cause) {
-      return err(new DbError(`Failed to insert run: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to insert run: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -122,7 +136,12 @@ export class RunRepository extends BaseRepository {
       const row = this.findByIdStmt.get(id) as RunRow | undefined;
       return ok(row ?? null);
     } catch (cause) {
-      return err(new DbError(`Failed to find run by id: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to find run by id: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -132,7 +151,12 @@ export class RunRepository extends BaseRepository {
       const rows = this.findByThreadStmt.all(threadId) as RunRow[];
       return ok(rows);
     } catch (cause) {
-      return err(new DbError(`Failed to find runs by thread: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to find runs by thread: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -142,7 +166,12 @@ export class RunRepository extends BaseRepository {
       const rows = this.findByParentStmt.all(parentRunId) as RunRow[];
       return ok(rows);
     } catch (cause) {
-      return err(new DbError(`Failed to find child runs: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to find child runs: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -164,7 +193,12 @@ export class RunRepository extends BaseRepository {
       const row = this.findLatestByThreadStmt.get(threadId) as RunRow | undefined;
       return ok(row ?? null);
     } catch (cause) {
-      return err(new DbError(`Failed to find latest run by thread: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to find latest run by thread: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -192,7 +226,12 @@ export class RunRepository extends BaseRepository {
       });
       return this.findById(id);
     } catch (cause) {
-      return err(new DbError(`Failed to update run status: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to update run status: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -203,7 +242,12 @@ export class RunRepository extends BaseRepository {
       stmt.run({ id, sessionId });
       return ok(undefined);
     } catch (cause) {
-      return err(new DbError(`Failed to update run session_id: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to update run session_id: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -217,6 +261,9 @@ export class RunRepository extends BaseRepository {
       const sinceCreatedAt = options?.sinceCreatedAt;
       const excludeCollaboration = options?.excludeCollaboration === true;
       const modelName = options?.modelName;
+      const hasReasoningEffortFilter =
+        options !== undefined && Object.prototype.hasOwnProperty.call(options, 'reasoningEffort');
+      const reasoningEffort = options?.reasoningEffort;
       const joinClause = excludeCollaboration
         ? 'LEFT JOIN queue_items qi ON qi.id = runs.queue_item_id'
         : '';
@@ -237,6 +284,14 @@ export class RunRepository extends BaseRepository {
         where.push('runs.model_name = ?');
         params.push(modelName);
       }
+      if (hasReasoningEffortFilter && reasoningEffort !== undefined) {
+        if (reasoningEffort === null) {
+          where.push('runs.reasoning_effort IS NULL');
+        } else {
+          where.push('runs.reasoning_effort = ?');
+          params.push(reasoningEffort);
+        }
+      }
       if (sinceCreatedAt !== undefined) {
         where.push('runs.created_at >= ?');
         params.push(sinceCreatedAt);
@@ -252,7 +307,12 @@ export class RunRepository extends BaseRepository {
       const row = stmt.get(...params) as { session_id: string } | undefined;
       return ok(row?.session_id ?? null);
     } catch (cause) {
-      return err(new DbError(`Failed to get latest session_id: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to get latest session_id: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -270,27 +330,33 @@ export class RunRepository extends BaseRepository {
       const collaborationClause = excludeCollaboration
         ? "AND (qi.type IS NULL OR qi.type != 'collaboration')"
         : '';
-      const stmt = sinceCreatedAt !== undefined
-        ? this.db.prepare(`
+      const stmt =
+        sinceCreatedAt !== undefined
+          ? this.db.prepare(`
             SELECT runs.provider_name FROM runs
             ${joinClause}
             WHERE runs.thread_id = ? AND runs.provider_name IS NOT NULL AND runs.created_at >= ?
             ${collaborationClause}
             ORDER BY runs.created_at DESC LIMIT 1
           `)
-        : this.db.prepare(`
+          : this.db.prepare(`
             SELECT runs.provider_name FROM runs
             ${joinClause}
             WHERE runs.thread_id = ? AND runs.provider_name IS NOT NULL
             ${collaborationClause}
             ORDER BY runs.created_at DESC LIMIT 1
           `);
-      const row = (sinceCreatedAt !== undefined
-        ? stmt.get(threadId, sinceCreatedAt)
-        : stmt.get(threadId)) as { provider_name: string } | undefined;
+      const row = (
+        sinceCreatedAt !== undefined ? stmt.get(threadId, sinceCreatedAt) : stmt.get(threadId)
+      ) as { provider_name: string } | undefined;
       return ok(row?.provider_name ?? null);
     } catch (cause) {
-      return err(new DbError(`Failed to get latest provider_name: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to get latest provider_name: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -305,7 +371,11 @@ export class RunRepository extends BaseRepository {
    * @param since - Optional lower bound timestamp (Unix epoch ms, inclusive).
    * @param until - Optional upper bound timestamp (Unix epoch ms, inclusive).
    */
-  aggregateByPersona(personaId: string, since?: number, until?: number): Result<TokenAggregateRow, DbError> {
+  aggregateByPersona(
+    personaId: string,
+    since?: number,
+    until?: number,
+  ): Result<TokenAggregateRow, DbError> {
     return this._aggregate({ personaId, since, until });
   }
 
@@ -316,7 +386,11 @@ export class RunRepository extends BaseRepository {
    * @param since - Optional lower bound timestamp (Unix epoch ms, inclusive).
    * @param until - Optional upper bound timestamp (Unix epoch ms, inclusive).
    */
-  aggregateByThread(threadId: string, since?: number, until?: number): Result<TokenAggregateRow, DbError> {
+  aggregateByThread(
+    threadId: string,
+    since?: number,
+    until?: number,
+  ): Result<TokenAggregateRow, DbError> {
     return this._aggregate({ threadId, since, until });
   }
 
@@ -382,7 +456,12 @@ export class RunRepository extends BaseRepository {
       const row = stmt.get(...params) as TokenAggregateRow;
       return ok(row);
     } catch (cause) {
-      return err(new DbError(`Failed to aggregate token usage: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to aggregate token usage: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
@@ -408,7 +487,12 @@ export class RunRepository extends BaseRepository {
       });
       return this.findById(id);
     } catch (cause) {
-      return err(new DbError(`Failed to update run tokens: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+      return err(
+        new DbError(
+          `Failed to update run tokens: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 }
