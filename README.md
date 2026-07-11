@@ -951,7 +951,8 @@ personas:
     model: claude-sonnet-4-6
     provider: claude-code
     # Optional for Codex CLI and OpenAI-compatible Responses personas.
-    # Valid values: none, minimal, low, medium, high, xhigh.
+    # OpenAI Responses: none, minimal, low, medium, high, xhigh.
+    # Codex CLI: minimal, low, medium, high, xhigh.
     # reasoningEffort: medium
     systemPromptFile: personas/alfred/system.md
     skills:
@@ -976,7 +977,7 @@ bindings:
     isDefault: true
 ```
 
-`reasoningEffort` is a persona-level knob for OpenAI/Codex reasoning models. When configured, Talon passes it to the provider runtime input, writes `model_reasoning_effort = "<effort>"` into generated Codex CLI config, and sends `reasoning: { effort: "<effort>" }` for OpenAI-compatible Responses API requests. Use the base model name in `model`; Talon does not support model-name suffix aliases for effort levels. Unsupported provider paths either ignore the field or, for `openai-compatible` chat-completions mode, return a deterministic configuration error instead of silently dropping it.
+`reasoningEffort` is a persona-level knob for Codex CLI and OpenAI-compatible Responses providers. Talon rejects it at config load for unsupported providers and OpenAI-compatible chat-completions mode. Codex CLI accepts `minimal`, `low`, `medium`, `high`, and `xhigh`; omit the field to use the provider default because Codex CLI does not support `none`. OpenAI-compatible Responses also accepts `none`. Use the base model name in `model`; Talon does not support model-name suffix aliases for effort levels.
 
 ### Persona templates
 

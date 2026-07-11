@@ -77,7 +77,7 @@ Examples:
 
 **`backgroundModel`** _(optional)_ — model passed to the background provider. Paired with `backgroundProvider`; the daemon refuses to start if `backgroundModel` is set without `backgroundProvider`. Useful for sending background work to a more capable model than the foreground.
 
-**`reasoningEffort`** _(optional)_ — persona-level effort for Codex CLI and OpenAI-compatible Responses models. Valid values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh`. Use the base model name; do not invent model-name suffix aliases. Only suggest this for `codex-cli` or `openai-compatible` providers configured with `options.apiMode: responses`; OpenAI-compatible chat-completions mode rejects it with a clear provider error. `talonctl add-persona` does not expose a flag for this field, so mention the config key in the summary instead of adding a command-line option.
+**`reasoningEffort`** _(optional)_ — persona-level effort for Codex CLI and OpenAI-compatible Responses models. Codex CLI accepts `minimal`, `low`, `medium`, `high`, and `xhigh`; omit the field to use its default because it does not support `none`. OpenAI-compatible Responses additionally accepts `none`. Use the base model name; do not invent model-name suffix aliases. Only suggest this for `codex-cli` or `openai-compatible` providers configured with `options.apiMode: responses`; invalid combinations are rejected at config load. `talonctl add-persona` does not expose a flag for this field, so mention the config key in the summary instead of adding a command-line option.
 
 ### Capabilities
 

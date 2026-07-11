@@ -1214,4 +1214,110 @@ describe('TalondConfigSchema', () => {
       expect(() => TalondConfigSchema.parse(cfg)).toThrow(/Enabled providers:.*?\(none\)/i);
     });
   });
+
+  describe('TalondConfigSchema — reasoningEffort cross-validation', () => {
+    it('rejects reasoningEffort for unsupported provider implementations', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'assistant', provider: 'gemini-cli', reasoningEffort: 'high' }],
+          agentRunner: {
+            defaultProvider: 'gemini-cli',
+            providers: {
+              'gemini-cli': { enabled: true, command: 'gemini' },
+            },
+          },
+        }),
+      ).toThrow(/reasoningEffort is not supported by provider/i);
+    });
+
+    it('resolves aliased provider implementations when validating reasoningEffort', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'assistant', provider: 'codex-work', reasoningEffort: 'high' }],
+          agentRunner: {
+            defaultProvider: 'codex-work',
+            providers: {
+              'codex-work': { enabled: true, type: 'codex-cli', command: 'codex' },
+            },
+          },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects reasoningEffort none for Codex CLI', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'assistant', provider: 'codex-cli', reasoningEffort: 'none' }],
+          agentRunner: {
+            defaultProvider: 'codex-cli',
+            providers: {
+              'codex-cli': { enabled: true, command: 'codex' },
+            },
+          },
+        }),
+      ).toThrow(/reasoningEffort \\"none\\" is not supported by codex-cli/i);
+    });
+
+    it('requires Responses mode for OpenAI-compatible reasoningEffort', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [
+            { name: 'assistant', provider: 'openai-compatible', reasoningEffort: 'medium' },
+          ],
+          agentRunner: {
+            defaultProvider: 'openai-compatible',
+            providers: {
+              'openai-compatible': { enabled: true, command: 'openai-compatible' },
+            },
+          },
+        }),
+      ).toThrow(/requires openai-compatible options.apiMode: responses/i);
+    });
+
+    it('accepts reasoningEffort none for OpenAI-compatible Responses mode', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [
+            { name: 'assistant', provider: 'openai-compatible', reasoningEffort: 'none' },
+          ],
+          agentRunner: {
+            defaultProvider: 'openai-compatible',
+            providers: {
+              'openai-compatible': {
+                enabled: true,
+                command: 'openai-compatible',
+                options: { apiMode: 'responses' },
+              },
+            },
+          },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects reasoningEffort when a configured backgroundProvider cannot consume it', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [
+            {
+              name: 'assistant',
+              provider: 'codex-cli',
+              reasoningEffort: 'high',
+              backgroundProvider: 'claude-code',
+            },
+          ],
+          agentRunner: {
+            defaultProvider: 'codex-cli',
+            providers: {
+              'codex-cli': { enabled: true, command: 'codex' },
+            },
+          },
+          backgroundAgent: {
+            providers: {
+              'claude-code': { enabled: true, command: 'claude' },
+            },
+          },
+        }),
+      ).toThrow(/reasoningEffort is not supported by backgroundProvider/i);
+    });
+  });
 });

@@ -285,7 +285,7 @@ export class BackgroundAgentHandler {
       }
     }
     const resolvedReasoningEffort =
-      !explicitProvider && resolvedModel && loadedPersona.config.reasoningEffort
+      !explicitProvider && resolvedProvider && loadedPersona.config.reasoningEffort
         ? loadedPersona.config.reasoningEffort
         : undefined;
 

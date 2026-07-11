@@ -462,6 +462,60 @@ export const TalondConfigSchema = z
     );
 
     value.personas.forEach((persona, index) => {
+      if (persona.reasoningEffort) {
+        const validateProvider = (
+          providerName: string,
+          provider: z.infer<typeof ProviderConfigSchema> | undefined,
+          usage: string,
+        ): void => {
+          const providerType = provider?.type ?? providerName;
+
+          if (providerType !== 'codex-cli' && providerType !== 'openai-compatible') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['personas', index, 'reasoningEffort'],
+              message:
+                `persona "${persona.name}": reasoningEffort is not supported by ${usage} ` +
+                `"${providerName}" (type "${providerType}").`,
+            });
+          } else if (providerType === 'codex-cli' && persona.reasoningEffort === 'none') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['personas', index, 'reasoningEffort'],
+              message:
+                `persona "${persona.name}": reasoningEffort "none" is not supported by ` +
+                'codex-cli; omit reasoningEffort to use the provider default.',
+            });
+          } else if (
+            providerType === 'openai-compatible' &&
+            provider?.options?.apiMode !== 'responses'
+          ) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['personas', index, 'reasoningEffort'],
+              message:
+                `persona "${persona.name}": reasoningEffort requires openai-compatible ` +
+                'options.apiMode: responses.',
+            });
+          }
+        };
+
+        const foregroundProviderName = persona.provider ?? value.agentRunner.defaultProvider;
+        validateProvider(
+          foregroundProviderName,
+          value.agentRunner.providers[foregroundProviderName],
+          'provider',
+        );
+
+        if (persona.backgroundProvider) {
+          validateProvider(
+            persona.backgroundProvider,
+            value.backgroundAgent.providers[persona.backgroundProvider],
+            'backgroundProvider',
+          );
+        }
+      }
+
       if (persona.backgroundProvider) {
         if (!enabledBackgroundProviders.has(persona.backgroundProvider)) {
           ctx.addIssue({

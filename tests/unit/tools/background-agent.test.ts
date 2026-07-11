@@ -1124,6 +1124,44 @@ describe('background-agent model resolution chain', () => {
     );
   });
 
+  it('forwards persona reasoningEffort when the provider supplies the default model', async () => {
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation((name: string) => name === 'codex-cli'),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'codex-cli',
+              reasoningEffort: 'high',
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'codex-cli',
+        reasoningEffort: 'high',
+      }),
+    );
+    expect(backgroundAgentManager.spawn.mock.calls[0][0].model).toBeUndefined();
+  });
+
   it('does NOT forward any model when persona.provider is dropped (not in background registry)', async () => {
     const backgroundProviderRegistry = {
       hasProvider: vi.fn().mockImplementation((name: string) => name === 'claude-code'),
@@ -1132,7 +1170,12 @@ describe('background-agent model resolution chain', () => {
       personaLoader: {
         getByName: vi.fn().mockReturnValue(
           ok({
-            config: { skills: [], provider: 'openai-compatible', model: 'gpt-oss' },
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              model: 'gpt-oss',
+              reasoningEffort: 'high',
+            },
             resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
           }),
         ),
@@ -1152,6 +1195,7 @@ describe('background-agent model resolution chain', () => {
     const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
     expect(spawnArgs.provider).toBeUndefined();
     expect(spawnArgs.model).toBeUndefined();
+    expect(spawnArgs.reasoningEffort).toBeUndefined();
   });
 
   it('does NOT forward model when args.provider is explicitly given', async () => {

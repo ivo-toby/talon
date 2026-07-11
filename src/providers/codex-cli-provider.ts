@@ -195,7 +195,7 @@ export class CodexCliProvider implements AgentProvider {
       lines.push('');
     }
 
-    if (input.reasoningEffort) {
+    if (input.reasoningEffort && input.reasoningEffort !== 'none') {
       lines.push(`model_reasoning_effort = ${JSON.stringify(input.reasoningEffort)}`);
       lines.push('');
     }

@@ -74,6 +74,17 @@ describe('CodexCliProvider', () => {
     expect(provider.name).toBe('codex-work');
   });
 
+  it('does not render unsupported reasoning effort none into Codex config', () => {
+    const provider = makeProvider();
+    const rendered = (provider as any).renderConfigToml({
+      cwd: '/workspace/repo',
+      reasoningEffort: 'none',
+      mcpServers: {},
+    });
+
+    expect(rendered.toml).not.toContain('model_reasoning_effort');
+  });
+
   it('streams foreground text chunks, tool events, and final result with stable HOME and codex exec args', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
