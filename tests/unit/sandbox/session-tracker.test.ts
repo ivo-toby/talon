@@ -72,12 +72,32 @@ describe('SessionTracker', () => {
 
     it('scopes sessions by model when a model name is supplied', () => {
       tracker.setSessionId('thread-1', 'qwen-small-session', 'ollama-mac', 'Qwen3.5-9B-OptiQ-4bit');
-      tracker.setSessionId('thread-1', 'qwen-large-session', 'ollama-mac', 'Qwen3-30B-A3B-Instruct-2507-4bit');
+      tracker.setSessionId(
+        'thread-1',
+        'qwen-large-session',
+        'ollama-mac',
+        'Qwen3-30B-A3B-Instruct-2507-4bit',
+      );
 
-      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'Qwen3.5-9B-OptiQ-4bit')).toBe('qwen-small-session');
-      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'Qwen3-30B-A3B-Instruct-2507-4bit')).toBe('qwen-large-session');
+      expect(tracker.getSessionId('thread-1', 'ollama-mac', 'Qwen3.5-9B-OptiQ-4bit')).toBe(
+        'qwen-small-session',
+      );
+      expect(
+        tracker.getSessionId('thread-1', 'ollama-mac', 'Qwen3-30B-A3B-Instruct-2507-4bit'),
+      ).toBe('qwen-large-session');
       expect(tracker.getSessionId('thread-1', 'ollama-mac', 'gemma-4-12B-it-4bit')).toBeUndefined();
       expect(tracker.getSessionId('thread-1', 'ollama-mac')).toBeUndefined();
+    });
+
+    it('scopes sessions by reasoning effort when supplied', () => {
+      tracker.setSessionId('thread-1', 'low-session', 'codex-cli', 'gpt-5.4', 'low');
+      tracker.setSessionId('thread-1', 'high-session', 'codex-cli', 'gpt-5.4', 'high');
+      tracker.setSessionId('thread-1', 'no-effort-session', 'codex-cli', 'gpt-5.4');
+
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4', 'low')).toBe('low-session');
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4', 'high')).toBe('high-session');
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4')).toBe('no-effort-session');
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4', 'medium')).toBeUndefined();
     });
 
     it('returns undefined for an expired session', () => {
@@ -138,6 +158,18 @@ describe('SessionTracker', () => {
       expect(tracker.getSessionId('thread-1', 'ollama-mac', 'small-model')).toBe('small-session');
       expect(tracker.getSessionId('thread-1', 'ollama-mac', 'large-model')).toBe('large-session');
     });
+
+    it('stores separate sessions per provider model and reasoning effort', () => {
+      tracker.setSessionId('thread-1', 'minimal-session', 'codex-cli', 'gpt-5.4', 'minimal');
+      tracker.setSessionId('thread-1', 'xhigh-session', 'codex-cli', 'gpt-5.4', 'xhigh');
+
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4', 'minimal')).toBe(
+        'minimal-session',
+      );
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4', 'xhigh')).toBe(
+        'xhigh-session',
+      );
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -190,6 +222,16 @@ describe('SessionTracker', () => {
 
       expect(tracker.getSessionId('thread-1', 'ollama-mac', 'small-model')).toBeUndefined();
       expect(tracker.getSessionId('thread-1', 'ollama-mac', 'large-model')).toBe('large-session');
+    });
+
+    it('clears one effort-specific session when provider, model, and effort are supplied', () => {
+      tracker.setSessionId('thread-1', 'low-session', 'codex-cli', 'gpt-5.4', 'low');
+      tracker.setSessionId('thread-1', 'high-session', 'codex-cli', 'gpt-5.4', 'high');
+
+      tracker.clearSession('thread-1', 'codex-cli', 'gpt-5.4', 'low');
+
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4', 'low')).toBeUndefined();
+      expect(tracker.getSessionId('thread-1', 'codex-cli', 'gpt-5.4', 'high')).toBe('high-session');
     });
   });
 

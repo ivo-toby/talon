@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ok } from 'neverthrow';
 import { BackgroundAgentHandler } from '../../../src/tools/host-tools/background-agent.js';
-import type { BackgroundTask, BackgroundTaskResult } from '../../../src/subagents/background/background-agent-types.js';
+import type {
+  BackgroundTask,
+  BackgroundTaskResult,
+} from '../../../src/subagents/background/background-agent-types.js';
 
 function makeLogger() {
   return {
@@ -102,11 +105,7 @@ function createHandler(overrides: Record<string, unknown> = {}) {
           name: 'telegram-main',
         }),
       ),
-      findEnabled: vi.fn().mockReturnValue(
-        ok([
-          { id: 'channel-1', name: 'telegram-main' },
-        ]),
-      ),
+      findEnabled: vi.fn().mockReturnValue(ok([{ id: 'channel-1', name: 'telegram-main' }])),
     } as any,
     skillResolver: {
       mergePromptFragments: vi.fn().mockReturnValue('Skill instructions.'),
@@ -217,9 +216,7 @@ describe('BackgroundAgentHandler', () => {
       'Friendly personality.',
     );
     // Lazy mode: skill index (name only) is in prompt, not full eager content
-    expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).toContain(
-      'search-skill',
-    );
+    expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).toContain('search-skill');
     expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).not.toContain(
       'Skill instructions.',
     );
@@ -471,7 +468,12 @@ describe('BackgroundAgentHandler', () => {
   describe('profile parameter', () => {
     it('spawns with profile persona when a valid profile name is given', async () => {
       const profilePersona = {
-        config: { name: 'code-reviewer', skills: [], provider: 'gemini-cli', model: 'gemini-2.5-pro' },
+        config: {
+          name: 'code-reviewer',
+          skills: [],
+          provider: 'gemini-cli',
+          model: 'gemini-2.5-pro',
+        },
         systemPromptContent: 'You are a code reviewer.',
         personalityContent: 'Terse and critical.',
         resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
@@ -557,7 +559,12 @@ describe('BackgroundAgentHandler', () => {
 
     it('does not pass model when provider is explicitly overridden', async () => {
       const profilePersona = {
-        config: { name: 'code-reviewer', skills: [], provider: 'gemini-cli', model: 'gemini-2.5-pro' },
+        config: {
+          name: 'code-reviewer',
+          skills: [],
+          provider: 'gemini-cli',
+          model: 'gemini-2.5-pro',
+        },
         systemPromptContent: 'You are a code reviewer.',
         personalityContent: null,
         resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
@@ -639,7 +646,12 @@ describe('BackgroundAgentHandler', () => {
 
       deps.personaLoader.getByName = vi.fn().mockReturnValue(
         ok({
-          config: { name: 'software-engineer', skills: [], provider: 'codex-cli', model: 'gpt-5.4' },
+          config: {
+            name: 'software-engineer',
+            skills: [],
+            provider: 'codex-cli',
+            model: 'gpt-5.4',
+          },
           systemPromptContent: 'You are an engineer.',
           personalityContent: null,
           resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
@@ -793,7 +805,9 @@ describe('BackgroundAgentHandler', () => {
         allowedMcpTools: expect.arrayContaining(['execution_env', 'channel_send']),
       }),
     );
-    expect(backgroundAgentManager.spawn.mock.calls[0][0].allowedMcpTools).not.toContain('background_agent');
+    expect(backgroundAgentManager.spawn.mock.calls[0][0].allowedMcpTools).not.toContain(
+      'background_agent',
+    );
   });
 
   it('uses the profile sandbox default when sandbox is omitted', async () => {
@@ -980,7 +994,11 @@ describe('background-agent provider resolution chain', () => {
       personaLoader: {
         getByName: vi.fn().mockReturnValue(
           ok({
-            config: { skills: [], provider: 'openai-compatible', backgroundProvider: 'claude-code' },
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              backgroundProvider: 'claude-code',
+            },
             resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
           }),
         ),
@@ -1067,6 +1085,83 @@ describe('background-agent model resolution chain', () => {
     );
   });
 
+  it('forwards persona reasoningEffort when persona.provider and persona.model resolve', async () => {
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation((name: string) => name === 'codex-cli'),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'codex-cli',
+              model: 'gpt-5.4',
+              reasoningEffort: 'xhigh',
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'codex-cli',
+        model: 'gpt-5.4',
+        reasoningEffort: 'xhigh',
+      }),
+    );
+  });
+
+  it('forwards persona reasoningEffort when the provider supplies the default model', async () => {
+    const backgroundProviderRegistry = {
+      hasProvider: vi.fn().mockImplementation((name: string) => name === 'codex-cli'),
+    };
+    const { backgroundAgentManager, deps } = createHandler({
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: {
+              skills: [],
+              provider: 'codex-cli',
+              reasoningEffort: 'high',
+            },
+            resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      backgroundProviderRegistry: backgroundProviderRegistry as any,
+    });
+    const handler = new BackgroundAgentHandler({
+      ...deps,
+      backgroundAgentManager: backgroundAgentManager as any,
+    } as any);
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'work' },
+      { runId: 'r', threadId: 'thread-1', personaId: 'persona-1', requestId: 'q' },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: 'codex-cli',
+        reasoningEffort: 'high',
+      }),
+    );
+    expect(backgroundAgentManager.spawn.mock.calls[0][0].model).toBeUndefined();
+  });
+
   it('does NOT forward any model when persona.provider is dropped (not in background registry)', async () => {
     const backgroundProviderRegistry = {
       hasProvider: vi.fn().mockImplementation((name: string) => name === 'claude-code'),
@@ -1075,7 +1170,12 @@ describe('background-agent model resolution chain', () => {
       personaLoader: {
         getByName: vi.fn().mockReturnValue(
           ok({
-            config: { skills: [], provider: 'openai-compatible', model: 'gpt-oss' },
+            config: {
+              skills: [],
+              provider: 'openai-compatible',
+              model: 'gpt-oss',
+              reasoningEffort: 'high',
+            },
             resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
           }),
         ),
@@ -1095,6 +1195,7 @@ describe('background-agent model resolution chain', () => {
     const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
     expect(spawnArgs.provider).toBeUndefined();
     expect(spawnArgs.model).toBeUndefined();
+    expect(spawnArgs.reasoningEffort).toBeUndefined();
   });
 
   it('does NOT forward model when args.provider is explicitly given', async () => {
@@ -1127,6 +1228,7 @@ describe('background-agent model resolution chain', () => {
     const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
     expect(spawnArgs.provider).toBe('gemini-cli');
     expect(spawnArgs.model).toBeUndefined();
+    expect(spawnArgs.reasoningEffort).toBeUndefined();
   });
 
   it('does NOT forward a model when backgroundProvider is set but backgroundModel is absent', async () => {
@@ -1169,9 +1271,9 @@ describe('regression: openai-compatible persona spawning background agents', () 
     // Before the fix, openai-compatible was forwarded as an "explicit" provider
     // and tripped the manager's strict registry check.
     const backgroundProviderRegistry = {
-      hasProvider: vi.fn().mockImplementation(
-        (name: string) => name === 'claude-code' || name === 'codex-cli',
-      ),
+      hasProvider: vi
+        .fn()
+        .mockImplementation((name: string) => name === 'claude-code' || name === 'codex-cli'),
     };
     const { backgroundAgentManager, deps } = createHandler({
       personaLoader: {
@@ -1201,6 +1303,6 @@ describe('regression: openai-compatible persona spawning background agents', () 
     expect(result.status).toBe('success');
     const spawnArgs = backgroundAgentManager.spawn.mock.calls[0][0];
     expect(spawnArgs.provider).toBeUndefined(); // manager picks defaultProvider
-    expect(spawnArgs.model).toBeUndefined();    // no cross-provider model leak
+    expect(spawnArgs.model).toBeUndefined(); // no cross-provider model leak
   });
 });

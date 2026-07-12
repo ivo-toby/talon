@@ -159,6 +159,54 @@ describe('openai-compatible Responses API runner', () => {
     ]);
   });
 
+  it('merges reasoningEffort into Responses requests with persona precedence', async () => {
+    const requests: Array<{ body: Record<string, unknown> }> = [];
+    const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      requests.push({ body: JSON.parse(String(init?.body)) as Record<string, unknown> });
+      return new Response(
+        JSON.stringify({
+          id: 'resp-final',
+          output_text: 'done',
+          usage: {
+            input_tokens: 12,
+            output_tokens: 2,
+          },
+        }),
+        { status: 200 },
+      );
+    });
+
+    await runResponsesLoop({
+      prompt: 'Say done',
+      systemPrompt: 'You are a coding agent.',
+      model: 'gpt-5.4',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      providerOptions: {
+        reasoning: {
+          effort: 'medium',
+          summary: 'auto',
+        },
+        text: {
+          verbosity: 'low',
+        },
+      },
+      reasoningEffort: 'xhigh',
+      tools: {},
+      maxSteps: 5,
+      streamEvents: false,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      emit: vi.fn(),
+    });
+
+    expect(requests[0]?.body.reasoning).toEqual({
+      effort: 'xhigh',
+      summary: 'auto',
+    });
+    expect(requests[0]?.body.text).toEqual({
+      verbosity: 'low',
+    });
+  });
+
   it('passes the abort signal into Responses API fetch calls', async () => {
     const controller = new AbortController();
     const fetchImpl = vi.fn(async (_url: string | URL, init?: RequestInit) => {
@@ -435,7 +483,7 @@ describe('openai-compatible Responses API runner', () => {
         systemPrompt: 'You are a coding agent.',
         model: 'qwen3.5-9b-optiq-4bit',
         baseUrl: 'http://127.0.0.1:8000/v1',
-        tools: createWorkspaceTools(workspace),
+        tools: await createWorkspaceTools(workspace),
         maxSteps: 5,
         streamEvents: false,
         executionContext: {

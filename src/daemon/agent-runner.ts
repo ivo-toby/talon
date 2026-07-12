@@ -27,10 +27,7 @@ import type {
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
-import {
-  generateBridgeSecret,
-  TALOND_BRIDGE_SECRET_ENV,
-} from '../tools/host-tools-bridge-auth.js';
+import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-tools-bridge-auth.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
@@ -76,17 +73,21 @@ export class AgentRunner {
     // isA2ATask is only true when taskId is a non-empty string, preventing null ID updates.
     const payloadTaskId = item.payload?.taskId;
     const a2aTaskId =
-      item.type === 'collaboration'
-      && item.payload?.kind === 'a2a_task'
-      && typeof payloadTaskId === 'string'
-      && payloadTaskId.length > 0
+      item.type === 'collaboration' &&
+      item.payload?.kind === 'a2a_task' &&
+      typeof payloadTaskId === 'string' &&
+      payloadTaskId.length > 0
         ? payloadTaskId
         : null;
     const isA2ATask = a2aTaskId !== null;
 
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {
-      this.failA2ATask(a2aTaskId, 'MISSING_PERSONA_ID', `queue item ${item.id} is missing payload.personaId`);
+      this.failA2ATask(
+        a2aTaskId,
+        'MISSING_PERSONA_ID',
+        `queue item ${item.id} is missing payload.personaId`,
+      );
       return err(new Error(`queue item ${item.id} is missing payload.personaId`));
     }
 
@@ -99,7 +100,11 @@ export class AgentRunner {
     const personaName = personaRowResult.value.name;
     const loadedPersonaResult = this.ctx.personaLoader.getByName(personaName);
     if (loadedPersonaResult.isErr() || loadedPersonaResult.value === undefined) {
-      this.failA2ATask(a2aTaskId, 'PERSONA_LOAD_FAILED', `loaded persona not found for ${personaName}`);
+      this.failA2ATask(
+        a2aTaskId,
+        'PERSONA_LOAD_FAILED',
+        `loaded persona not found for ${personaName}`,
+      );
       return err(new Error(`loaded persona not found for ${personaName}`));
     }
     const loadedPersona = loadedPersonaResult.value;
@@ -108,6 +113,7 @@ export class AgentRunner {
         ? loadedPersona.config.queryTimeoutMinutes * 60 * 1000
         : this.queryTimeoutMs;
     const model = loadedPersona.config.model;
+    const reasoningEffort = loadedPersona.config.reasoningEffort;
 
     const threadResult = this.ctx.repos.thread.findById(item.threadId);
     const providerAffinityResetAt =
@@ -115,13 +121,10 @@ export class AgentRunner {
         ? getProviderAffinityResetAt(threadResult.value.metadata)
         : undefined;
 
-    const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(
-      item.threadId,
-      {
-        excludeCollaboration: true,
-        ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
-      },
-    );
+    const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(item.threadId, {
+      excludeCollaboration: true,
+      ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
+    });
     const affinityProviderName =
       affinityProviderResult.isOk() && affinityProviderResult.value
         ? affinityProviderResult.value
@@ -140,11 +143,7 @@ export class AgentRunner {
             personaProviderName,
             configuredDefaultProvider,
           ]
-        : [
-            affinityProviderName,
-            personaProviderName,
-            configuredDefaultProvider,
-          ]
+        : [affinityProviderName, personaProviderName, configuredDefaultProvider]
     ).filter((name): name is string => typeof name === 'string' && name.length > 0);
 
     const providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
@@ -166,12 +165,14 @@ export class AgentRunner {
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
     if (strategy.supportsSessionResumption && !isA2ATask) {
-      const sessionLookupOptions =
-        {
-          excludeCollaboration: true,
-          modelName: model,
-          ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
-        };
+      const sessionLookupOptions = {
+        excludeCollaboration: true,
+        modelName: model,
+        reasoningEffort: reasoningEffort ?? null,
+        ...(providerAffinityResetAt !== undefined
+          ? { sinceCreatedAt: providerAffinityResetAt }
+          : {}),
+      };
 
       if (providerAffinityResetAt !== undefined) {
         const latestPostResetSessionResult = this.ctx.repos.run.getLatestSessionId(
@@ -179,16 +180,32 @@ export class AgentRunner {
           sessionProviderName,
           sessionLookupOptions,
         );
-        const hasPostResetSession = latestPostResetSessionResult.isOk()
-          && latestPostResetSessionResult.value !== null;
+        const hasPostResetSession =
+          latestPostResetSessionResult.isOk() && latestPostResetSessionResult.value !== null;
 
         if (!hasPostResetSession) {
           this.ctx.sessionTracker.clearSession(item.threadId, sessionProviderName);
         } else {
-          resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName, model);
+          resolvedSessionId =
+            reasoningEffort !== undefined
+              ? this.ctx.sessionTracker.getSessionId(
+                  item.threadId,
+                  sessionProviderName,
+                  model,
+                  reasoningEffort,
+                )
+              : this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName, model);
         }
       } else {
-        resolvedSessionId = this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName, model);
+        resolvedSessionId =
+          reasoningEffort !== undefined
+            ? this.ctx.sessionTracker.getSessionId(
+                item.threadId,
+                sessionProviderName,
+                model,
+                reasoningEffort,
+              )
+            : this.ctx.sessionTracker.getSessionId(item.threadId, sessionProviderName, model);
       }
       if (!resolvedSessionId && !this.ctx.sessionTracker.wasRotated(item.threadId)) {
         const dbSessionResult = this.ctx.repos.run.getLatestSessionId(
@@ -215,6 +232,7 @@ export class AgentRunner {
       persona_id: personaId,
       provider_name: providerEntry.provider.name,
       model_name: model,
+      reasoning_effort: reasoningEffort ?? null,
       sandbox_id: null,
       session_id: resolvedSessionId ?? null,
       status: 'running',
@@ -233,9 +251,14 @@ export class AgentRunner {
     if (runInsert.isErr()) {
       // Mark A2A task as failed — run record creation failed, so the task cannot proceed.
       if (isA2ATask && a2aTaskId) {
-        this.ctx.repos.a2aTask.markFailed(a2aTaskId, 'RUN_INSERT_ERROR', runInsert.error.message).mapErr((e) => {
-          this.ctx.logger.warn({ a2aTaskId, err: e.message }, 'agent-runner: failed to mark A2A task as failed after run insert error');
-        });
+        this.ctx.repos.a2aTask
+          .markFailed(a2aTaskId, 'RUN_INSERT_ERROR', runInsert.error.message)
+          .mapErr((e) => {
+            this.ctx.logger.warn(
+              { a2aTaskId, err: e.message },
+              'agent-runner: failed to mark A2A task as failed after run insert error',
+            );
+          });
       }
       return err(new Error(`failed to create run record: ${runInsert.error.message}`));
     }
@@ -243,7 +266,10 @@ export class AgentRunner {
     // Mark A2A task as 'working' now that a run record exists.
     if (isA2ATask && a2aTaskId) {
       this.ctx.repos.a2aTask.markWorking(a2aTaskId, runId).mapErr((e) => {
-        this.ctx.logger.warn({ a2aTaskId, runId, err: e.message }, 'agent-runner: failed to mark A2A task as working');
+        this.ctx.logger.warn(
+          { a2aTaskId, runId, err: e.message },
+          'agent-runner: failed to mark A2A task as working',
+        );
       });
     }
 
@@ -323,9 +349,7 @@ export class AgentRunner {
               currentChannelRow && currentChannelRow.isOk() && currentChannelRow.value
                 ? currentChannelRow.value.name
                 : undefined;
-            const allChannels = this.ctx.channelRegistry
-              .listAll()
-              .map((c) => c.name);
+            const allChannels = this.ctx.channelRegistry.listAll().map((c) => c.name);
 
             const channelContext = [
               'Available channels for channel_send tool:',
@@ -341,7 +365,9 @@ export class AgentRunner {
 
             // Generate a cache-friendly time context (10-min window instead of exact timestamp).
             const timeContext = buildTimeContext();
-            const existingSessionId = strategy.supportsSessionResumption ? resolvedSessionId : undefined;
+            const existingSessionId = strategy.supportsSessionResumption
+              ? resolvedSessionId
+              : undefined;
 
             const baseMcpServers: Record<string, CanonicalMcpServer> = {
               ...personaRuntimeContext.mcpServers,
@@ -352,7 +378,9 @@ export class AgentRunner {
               loadedPersona.resolvedCapabilities ?? { allow: [], requireApproval: [] },
             );
             if (!this.ctx.backgroundAgentManager) {
-              allowedMcpTools = allowedMcpTools.filter((toolName) => toolName !== 'background_agent');
+              allowedMcpTools = allowedMcpTools.filter(
+                (toolName) => toolName !== 'background_agent',
+              );
             }
 
             this.ctx.logger.info(
@@ -377,8 +405,8 @@ export class AgentRunner {
             // outbound reach the originating chat (issue #200).
             const externalId =
               threadResult.isOk() && threadResult.value
-                ? (readScheduleOriginExternalId(threadResult.value.metadata)
-                    ?? threadResult.value.external_id)
+                ? (readScheduleOriginExternalId(threadResult.value.metadata) ??
+                  threadResult.value.external_id)
                 : undefined;
             const channelName =
               channelRow?.isOk() && channelRow.value ? channelRow.value.name : undefined;
@@ -405,13 +433,11 @@ export class AgentRunner {
             let previousContext: AssembledContext | undefined;
             const contextManagement = providerEntry.config.contextManagement;
             if (
-              contextManagement?.enabled
-              && (
-                contextManagement.triggerMetric === undefined
-                || contextManagement.thresholdRatio === undefined
-                || contextManagement.recentMessageCount === undefined
-                || contextManagement.summarizer === undefined
-              )
+              contextManagement?.enabled &&
+              (contextManagement.triggerMetric === undefined ||
+                contextManagement.thresholdRatio === undefined ||
+                contextManagement.recentMessageCount === undefined ||
+                contextManagement.summarizer === undefined)
             ) {
               throw new Error(
                 `Provider "${providerEntry.provider.name}" has incomplete contextManagement configuration. Check agentRunner.providers.${providerEntry.provider.name}.contextManagement.`,
@@ -475,27 +501,32 @@ export class AgentRunner {
             };
 
             const suppressCliWaitingMessage =
-              providerEntry.type === 'gemini-cli'
-              || providerEntry.type === 'codex-cli'
-              || providerEntry.type === 'openai-compatible';
+              providerEntry.type === 'gemini-cli' ||
+              providerEntry.type === 'codex-cli' ||
+              providerEntry.type === 'openai-compatible';
 
             if (
-              strategy.type === 'cli'
-              && !suppressCliWaitingMessage
-              && !isA2ATask
-              && connector
-              && externalId
-              && item.payload.type !== 'schedule'
+              strategy.type === 'cli' &&
+              !suppressCliWaitingMessage &&
+              !isA2ATask &&
+              connector &&
+              externalId &&
+              item.payload.type !== 'schedule'
             ) {
               const waitingResult = await connector.send(externalId, {
                 body: 'Thinking...',
               });
               if (waitingResult.isErr()) {
-                this.ctx.logger.debug({ err: waitingResult.error }, 'agent-runner: waiting notification failed');
+                this.ctx.logger.debug(
+                  { err: waitingResult.error },
+                  'agent-runner: waiting notification failed',
+                );
               }
             }
 
-            const executeAgentQuery = async (resumeSessionId?: string): Promise<{
+            const executeAgentQuery = async (
+              resumeSessionId?: string,
+            ): Promise<{
               outputText: string;
               fullOutputText: string;
               resultSessionId: string | undefined;
@@ -541,8 +572,8 @@ export class AgentRunner {
                 async (generationObservation) => {
                   const sdkSkillServer: Record<string, CanonicalMcpSdkServer> = {};
                   if (
-                    providerEntry.provider.skillLoaderTransport === 'in-process'
-                    && skillContentMap.size > 0
+                    providerEntry.provider.skillLoaderTransport === 'in-process' &&
+                    skillContentMap.size > 0
                   ) {
                     const skillLoaderServer = createSdkMcpServer({
                       name: '__talond_skill_loader',
@@ -586,7 +617,9 @@ export class AgentRunner {
                     __talond_host_tools: {
                       transport: 'stdio',
                       command: 'node',
-                      args: [join(import.meta.dirname, '../../dist/tools/host-tools-mcp-server.js')],
+                      args: [
+                        join(import.meta.dirname, '../../dist/tools/host-tools-mcp-server.js'),
+                      ],
                       env: {
                         ...process.env,
                         [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
@@ -597,24 +630,30 @@ export class AgentRunner {
                         TALOND_ALLOWED_TOOLS: allowedMcpTools.join(','),
                         TALOND_ALLOWED_HOST_ROOTS: JSON.stringify([workspaceResult.value]),
                         TALOND_TRACEPARENT: generationObservation.getTraceparent() ?? '',
-                        ...(isA2ATask && a2aTaskId ? {
-                          TALOND_A2A_TASK_ID: a2aTaskId,
-                          TALOND_A2A_HOP_COUNT: String(
-                            typeof item.payload?.hopCount === 'number' ? item.payload.hopCount : 0
-                          ),
-                        } : {}),
+                        ...(isA2ATask && a2aTaskId
+                          ? {
+                              TALOND_A2A_TASK_ID: a2aTaskId,
+                              TALOND_A2A_HOP_COUNT: String(
+                                typeof item.payload?.hopCount === 'number'
+                                  ? item.payload.hopCount
+                                  : 0,
+                              ),
+                            }
+                          : {}),
                       },
                     },
                   };
 
                   if (
-                    providerEntry.provider.skillLoaderTransport === 'stdio'
-                    && skillContentMap.size > 0
+                    providerEntry.provider.skillLoaderTransport === 'stdio' &&
+                    skillContentMap.size > 0
                   ) {
                     mcpServers.__talond_skill_loader = {
                       transport: 'stdio',
                       command: 'node',
-                      args: [join(import.meta.dirname, '../../dist/tools/skill-loader-mcp-server.js')],
+                      args: [
+                        join(import.meta.dirname, '../../dist/tools/skill-loader-mcp-server.js'),
+                      ],
                       env: {
                         ...process.env,
                         [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
@@ -653,7 +692,10 @@ export class AgentRunner {
                   // rotations from inflated cross-turn token sums.
                   let lastStepUsage: AgentUsage | undefined;
                   let sawEvents = false;
-                  const activeProviderToolObservations = new Map<string, StartedObservationHandle>();
+                  const activeProviderToolObservations = new Map<
+                    string,
+                    StartedObservationHandle
+                  >();
                   const ignoredProviderToolUseIds = new Set<string>();
                   const pendingProviderToolTasks: Array<Promise<void>> = [];
                   // FIFO queue for tool events that lack a toolUseId (e.g. claude-code tool_use/tool_result
@@ -679,9 +721,8 @@ export class AgentRunner {
                     model,
                     maxTurns: 25,
                     timeoutMs: queryTimeoutMs,
-                    ...(resumeSessionId
-                      ? { sessionId: resumeSessionId }
-                      : {}),
+                    ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+                    ...(resumeSessionId ? { sessionId: resumeSessionId } : {}),
                   };
 
                   let activeIterator: AsyncIterator<unknown> | undefined;
@@ -731,19 +772,30 @@ export class AgentRunner {
                             event.messageType === 'tool_use' ||
                             event.messageType === 'server_tool_use' ||
                             event.messageType === 'mcp_tool_use';
-                          if (isToolUse && item.type !== 'schedule' && !isA2ATask && connector !== undefined && externalId) {
+                          if (
+                            isToolUse &&
+                            item.type !== 'schedule' &&
+                            !isA2ATask &&
+                            connector !== undefined &&
+                            externalId
+                          ) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
                             if (outputText) {
-                              const flushResult = await connector.send(externalId, { body: outputText });
+                              const flushResult = await connector.send(externalId, {
+                                body: outputText,
+                              });
                               if (flushResult.isErr()) {
-                                throw new Error(`channel send failed: ${flushResult.error.message}`);
+                                throw new Error(
+                                  `channel send failed: ${flushResult.error.message}`,
+                                );
                               }
                               outputText = '';
                               fullOutputText += '\n\n';
                             }
                             // Optionally send human-readable tool description after preceding text (issue #108).
                             const isInternalServer =
-                              event.messageType === 'mcp_tool_use' && event.serverName?.startsWith('__talond_');
+                              event.messageType === 'mcp_tool_use' &&
+                              event.serverName?.startsWith('__talond_');
                             if (showToolCalls && !isInternalServer) {
                               const toolCallId =
                                 event.messageType === 'mcp_tool_use' && event.serverName
@@ -799,14 +851,17 @@ export class AgentRunner {
                     lastStepUsage = result.lastStepUsage;
 
                     if (result.isError) {
-                      throw new Error(`CLI provider returned error: ${result.output || 'unknown error'}`);
+                      throw new Error(
+                        `CLI provider returned error: ${result.output || 'unknown error'}`,
+                      );
                     }
                   })();
 
                   let timeoutId: ReturnType<typeof setTimeout>;
                   const timeoutPromise = new Promise<never>((_, reject) => {
                     timeoutId = setTimeout(
-                      () => reject(new Error(`Agent query timed out after ${queryTimeoutMs / 1000}s`)),
+                      () =>
+                        reject(new Error(`Agent query timed out after ${queryTimeoutMs / 1000}s`)),
                       queryTimeoutMs,
                     );
                   });
@@ -818,10 +873,14 @@ export class AgentRunner {
                     if (activeIterator?.return) {
                       activeIterator.return(undefined).catch(() => {});
                     }
-                    this.finishProviderToolObservations(activeProviderToolObservations, pendingNoIdToolObservations, {
-                      level: 'ERROR',
-                      statusMessage: cause instanceof Error ? cause.message : String(cause),
-                    });
+                    this.finishProviderToolObservations(
+                      activeProviderToolObservations,
+                      pendingNoIdToolObservations,
+                      {
+                        level: 'ERROR',
+                        statusMessage: cause instanceof Error ? cause.message : String(cause),
+                      },
+                    );
                     ignoredProviderToolUseIds.clear();
                     await Promise.allSettled(pendingProviderToolTasks);
                     const message = cause instanceof Error ? cause.message : String(cause);
@@ -830,7 +889,10 @@ export class AgentRunner {
                     clearTimeout(timeoutId!);
                   }
 
-                  this.finishProviderToolObservations(activeProviderToolObservations, pendingNoIdToolObservations);
+                  this.finishProviderToolObservations(
+                    activeProviderToolObservations,
+                    pendingNoIdToolObservations,
+                  );
                   ignoredProviderToolUseIds.clear();
                   await Promise.allSettled(pendingProviderToolTasks);
 
@@ -875,13 +937,8 @@ export class AgentRunner {
             let lastStepUsage: AgentUsage | undefined;
 
             try {
-              ({
-                outputText,
-                fullOutputText,
-                resultSessionId,
-                usage,
-                lastStepUsage,
-              } = await executeAgentQuery(existingSessionId));
+              ({ outputText, fullOutputText, resultSessionId, usage, lastStepUsage } =
+                await executeAgentQuery(existingSessionId));
             } catch (cause) {
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
                 this.ctx.sessionTracker.rotateSession(item.threadId);
@@ -893,13 +950,8 @@ export class AgentRunner {
                   },
                   'agent-sdk: resumed session failed before any events, retrying fresh session',
                 );
-                ({
-                  outputText,
-                  fullOutputText,
-                  resultSessionId,
-                  usage,
-                  lastStepUsage,
-                } = await executeAgentQuery(undefined));
+                ({ outputText, fullOutputText, resultSessionId, usage, lastStepUsage } =
+                  await executeAgentQuery(undefined));
               } else {
                 throw cause;
               }
@@ -909,7 +961,22 @@ export class AgentRunner {
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
             if (resultSessionId && !isA2ATask) {
-              this.ctx.sessionTracker.setSessionId(item.threadId, resultSessionId, sessionProviderName, model);
+              if (reasoningEffort !== undefined) {
+                this.ctx.sessionTracker.setSessionId(
+                  item.threadId,
+                  resultSessionId,
+                  sessionProviderName,
+                  model,
+                  reasoningEffort,
+                );
+              } else {
+                this.ctx.sessionTracker.setSessionId(
+                  item.threadId,
+                  resultSessionId,
+                  sessionProviderName,
+                  model,
+                );
+              }
               this.ctx.repos.run.updateSessionId(runId, resultSessionId);
             }
 
@@ -938,7 +1005,10 @@ export class AgentRunner {
               cost_usd: usage.totalCostUsd ?? 0,
             });
             if (tokenResult.isErr()) {
-              this.ctx.logger.error({ runId, err: tokenResult.error }, 'agent-runner: failed to persist token usage');
+              this.ctx.logger.error(
+                { runId, err: tokenResult.error },
+                'agent-runner: failed to persist token usage',
+              );
             }
 
             if (isA2ATask && a2aTaskId) {
@@ -1029,7 +1099,8 @@ export class AgentRunner {
                 try {
                   if (selectedMetricValue > 0) {
                     const contextUsagePayload = {
-                      ratio: selectedMetricValue / Math.max(1, providerEntry.config.contextWindowTokens),
+                      ratio:
+                        selectedMetricValue / Math.max(1, providerEntry.config.contextWindowTokens),
                       inputTokens: contextUsage.inputTokens,
                       rawMetric: selectedMetricValue,
                       rawMetricName: triggerMetric,
@@ -1073,11 +1144,11 @@ export class AgentRunner {
                       !strategy.supportsSessionResumption ||
                       strategy.requiresContinuationAfterContextRotation === true;
                     if (
-                      rotation.rotated
-                      && rotation.hasOpenThreads
-                      && needsContinuationAfterRotation
-                      && !isA2ATask
-                      && item.type !== 'schedule'
+                      rotation.rotated &&
+                      rotation.hasOpenThreads &&
+                      needsContinuationAfterRotation &&
+                      !isA2ATask &&
+                      item.type !== 'schedule'
                     ) {
                       const continueMessageId = uuidv4();
                       this.ctx.repos.message.insert({
@@ -1142,12 +1213,14 @@ export class AgentRunner {
             });
             // Mark A2A task as failed on agent execution error.
             if (isA2ATask && a2aTaskId) {
-              this.ctx.repos.a2aTask.markFailed(a2aTaskId, 'EXECUTION_ERROR', error.message).mapErr((e) => {
-                this.ctx.logger.warn(
-                  { a2aTaskId, runId, err: e.message },
-                  'agent-runner: failed to mark A2A task as failed',
-                );
-              });
+              this.ctx.repos.a2aTask
+                .markFailed(a2aTaskId, 'EXECUTION_ERROR', error.message)
+                .mapErr((e) => {
+                  this.ctx.logger.warn(
+                    { a2aTaskId, runId, err: e.message },
+                    'agent-runner: failed to mark A2A task as failed',
+                  );
+                });
             }
             runFinalized = true;
             throw error;
@@ -1307,11 +1380,10 @@ export class AgentRunner {
     messageType: string;
     serverName?: string;
   }): boolean {
-    return event.messageType === 'mcp_tool_use'
-      && (
-        event.serverName === '__talond_host_tools'
-        || event.serverName === '__talond_skill_loader'
-      );
+    return (
+      event.messageType === 'mcp_tool_use' &&
+      (event.serverName === '__talond_host_tools' || event.serverName === '__talond_skill_loader')
+    );
   }
 
   private isProviderToolStartEvent(messageType: string): boolean {
@@ -1383,22 +1455,10 @@ export class AgentRunner {
       return null;
     }
 
-    const kind =
-      typeof item.payload.kind === 'string'
-        ? item.payload.kind
-        : null;
-    const content =
-      typeof item.payload.content === 'string'
-        ? item.payload.content
-        : null;
-    const taskId =
-      typeof item.payload.taskId === 'string'
-        ? item.payload.taskId
-        : null;
-    const status =
-      typeof item.payload.status === 'string'
-        ? item.payload.status
-        : null;
+    const kind = typeof item.payload.kind === 'string' ? item.payload.kind : null;
+    const content = typeof item.payload.content === 'string' ? item.payload.content : null;
+    const taskId = typeof item.payload.taskId === 'string' ? item.payload.taskId : null;
+    const status = typeof item.payload.status === 'string' ? item.payload.status : null;
 
     if (
       kind !== 'background_task_notification' ||

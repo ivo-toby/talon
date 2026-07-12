@@ -5,10 +5,13 @@ import { join } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import type pino from 'pino';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
-import type { PersonaExecutionEnvConfig } from '../../core/config/config-types.js';
+import type { PersonaExecutionEnvConfig, ReasoningEffort } from '../../core/config/config-types.js';
 import type { QueueManager } from '../../queue/queue-manager.js';
 import type { BackgroundTask, BackgroundTaskResult } from './background-agent-types.js';
-import { BackgroundAgentProcess, type BackgroundAgentProcessOptions } from './background-agent-process.js';
+import {
+  BackgroundAgentProcess,
+  type BackgroundAgentProcessOptions,
+} from './background-agent-process.js';
 import type { BackgroundTaskRepository } from '../../core/database/repositories/background-task-repository.js';
 import type {
   CanonicalMcpServer,
@@ -17,7 +20,10 @@ import type {
 } from '../../providers/provider-types.js';
 import type { AgentProvider } from '../../providers/provider.js';
 import type { ProviderRegistry } from '../../providers/provider-registry.js';
-import type { ObservabilityService, StartedObservationHandle } from '../../observability/langfuse/observability-types.js';
+import type {
+  ObservabilityService,
+  StartedObservationHandle,
+} from '../../observability/langfuse/observability-types.js';
 import type { ExecutionEnvManager } from '../../execution-env/execution-env-manager.js';
 import type { OAuthTokenStore } from '../../auth/oauth-token-store.js';
 import { resolveMcpServers } from '../../mcp/resolve-mcp-servers.js';
@@ -50,6 +56,8 @@ export interface SpawnBackgroundAgentInput {
   profileName?: string;
   /** Model override for the provider (e.g. "claude-opus-4-6"). Passed through to the provider. */
   model?: string;
+  /** Optional persona-level OpenAI/Codex reasoning effort. Passed through to capable providers. */
+  reasoningEffort?: ReasoningEffort;
   workingDirectory?: string;
   timeoutMinutes?: number;
   traceparent?: string;
@@ -71,9 +79,15 @@ interface BackgroundAgentManagerDeps {
   isPidAlive?: (pid: number) => boolean;
   readProcessCommandLine?: (pid: number) => string | null;
   observability?: ObservabilityService;
-  executionEnvManager?: Pick<ExecutionEnvManager, 'create' | 'upload' | 'destroyOwnedByTask'> | null;
+  executionEnvManager?: Pick<
+    ExecutionEnvManager,
+    'create' | 'upload' | 'destroyOwnedByTask'
+  > | null;
   hostToolsSocketPath?: string;
-  hostToolsBridge?: Pick<HostToolsBridge, 'registerRunAuthentication' | 'unregisterRunAuthentication'>;
+  hostToolsBridge?: Pick<
+    HostToolsBridge,
+    'registerRunAuthentication' | 'unregisterRunAuthentication'
+  >;
   /**
    * Token store used to materialize `Authorization: Bearer …` headers on
    * HTTP MCP servers that declare `auth: { kind: 'oauth2' }`. Optional so
@@ -101,32 +115,41 @@ interface SandboxContext {
 const MAX_STORED_OUTPUT = 100 * 1024;
 
 export class BackgroundAgentManager {
-  private readonly processFactory: (options: BackgroundAgentProcessOptions) => BackgroundAgentProcess;
+  private readonly processFactory: (
+    options: BackgroundAgentProcessOptions,
+  ) => BackgroundAgentProcess;
   private readonly isPidAlive: (pid: number) => boolean;
   private readonly readProcessCommandLine: (pid: number) => string | null;
   private readonly processes = new Map<string, ManagedProcess>();
 
   constructor(private readonly deps: BackgroundAgentManagerDeps) {
     this.processFactory = deps.processFactory ?? ((options) => new BackgroundAgentProcess(options));
-    this.isPidAlive = deps.isPidAlive ?? ((pid) => {
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    this.readProcessCommandLine = deps.readProcessCommandLine ?? ((pid) => {
-      try {
-        return readFileSync(`/proc/${pid}/cmdline`, 'utf8');
-      } catch {
-        return null;
-      }
-    });
+    this.isPidAlive =
+      deps.isPidAlive ??
+      ((pid) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    this.readProcessCommandLine =
+      deps.readProcessCommandLine ??
+      ((pid) => {
+        try {
+          return readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+        } catch {
+          return null;
+        }
+      });
   }
 
   setHostToolsBridge(
-    hostToolsBridge: Pick<HostToolsBridge, 'registerRunAuthentication' | 'unregisterRunAuthentication'>,
+    hostToolsBridge: Pick<
+      HostToolsBridge,
+      'registerRunAuthentication' | 'unregisterRunAuthentication'
+    >,
   ): void {
     (this.deps as { hostToolsBridge?: typeof hostToolsBridge }).hostToolsBridge = hostToolsBridge;
   }
@@ -144,9 +167,10 @@ export class BackgroundAgentManager {
       );
     }
 
-    const requestedProvider = typeof input.provider === 'string' && input.provider.trim().length > 0
-      ? input.provider.trim()
-      : undefined;
+    const requestedProvider =
+      typeof input.provider === 'string' && input.provider.trim().length > 0
+        ? input.provider.trim()
+        : undefined;
 
     // Explicit provider requests (from tool args) must be honored strictly.
     // If the requested provider is unavailable, fail with a clear error rather
@@ -197,7 +221,7 @@ export class BackgroundAgentManager {
     const observationModel =
       input.model ??
       (providerOptions && typeof providerOptions['defaultModel'] === 'string'
-        ? (providerOptions['defaultModel'] as string)
+        ? providerOptions['defaultModel']
         : undefined);
 
     // Start a LangFuse observation span if observability is available.
@@ -273,6 +297,7 @@ export class BackgroundAgentManager {
       timeoutMs: timeoutMinutes * 60 * 1000,
       traceparent: childTraceparent,
       ...(input.model ? { model: input.model } : {}),
+      ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
     });
     if (invocationResult.isErr()) {
       observation?.end();
@@ -368,7 +393,10 @@ export class BackgroundAgentManager {
     void completion
       .then((result) => this.handleCompletion(taskId, result))
       .catch((cause) => {
-        this.deps.logger.error({ err: cause, taskId }, 'background-agent: completion handling failed');
+        this.deps.logger.error(
+          { err: cause, taskId },
+          'background-agent: completion handling failed',
+        );
       });
 
     return ok(taskId);
@@ -400,7 +428,9 @@ export class BackgroundAgentManager {
     }
 
     const durationSeconds =
-      task.completedAt && task.startedAt ? Math.max(0, Math.round((task.completedAt - task.startedAt) / 1000)) : 0;
+      task.completedAt && task.startedAt
+        ? Math.max(0, Math.round((task.completedAt - task.startedAt) / 1000))
+        : 0;
 
     return ok({
       taskId: task.id,
@@ -444,29 +474,47 @@ export class BackgroundAgentManager {
   async recoverOrphanedTasks(): Promise<void> {
     const result = this.deps.repository.findActive();
     if (result.isErr()) {
-      this.deps.logger.error({ err: result.error }, 'background-agent: failed to load active tasks');
+      this.deps.logger.error(
+        { err: result.error },
+        'background-agent: failed to load active tasks',
+      );
       return;
     }
 
     for (const task of result.value) {
       if (!task.pid) {
-        this.deps.repository.updateStatus(task.id, 'failed', undefined, 'daemon restarted during execution');
+        this.deps.repository.updateStatus(
+          task.id,
+          'failed',
+          undefined,
+          'daemon restarted during execution',
+        );
         await this.destroyOwnedExecutionEnv(task.id);
         continue;
       }
 
       if (!this.isPidAlive(task.pid)) {
-        this.deps.repository.updateStatus(task.id, 'failed', undefined, 'daemon restarted during execution');
+        this.deps.repository.updateStatus(
+          task.id,
+          'failed',
+          undefined,
+          'daemon restarted during execution',
+        );
         await this.destroyOwnedExecutionEnv(task.id);
         continue;
       }
 
       const commandLine = this.readProcessCommandLine(task.pid);
       if (
-        !commandLine
-        || !this.enabledProviderCommands().some((command) => commandLine.includes(command))
+        !commandLine ||
+        !this.enabledProviderCommands().some((command) => commandLine.includes(command))
       ) {
-        this.deps.repository.updateStatus(task.id, 'failed', undefined, 'daemon restarted during execution (pid reused)');
+        this.deps.repository.updateStatus(
+          task.id,
+          'failed',
+          undefined,
+          'daemon restarted during execution (pid reused)',
+        );
         await this.destroyOwnedExecutionEnv(task.id);
         continue;
       }
@@ -493,7 +541,10 @@ export class BackgroundAgentManager {
     this.processes.clear();
   }
 
-  private async handleCompletion(taskId: string, result: Result<unknown, BackgroundAgentError>): Promise<void> {
+  private async handleCompletion(
+    taskId: string,
+    result: Result<unknown, BackgroundAgentError>,
+  ): Promise<void> {
     const currentTaskResult = this.deps.repository.findById(taskId);
     if (currentTaskResult.isErr() || !currentTaskResult.value) {
       this.cleanupTask(taskId);
@@ -506,7 +557,12 @@ export class BackgroundAgentManager {
     }
 
     if (result.isErr()) {
-      this.deps.repository.updateStatus(taskId, 'failed', undefined, this.truncate(result.error.message));
+      this.deps.repository.updateStatus(
+        taskId,
+        'failed',
+        undefined,
+        this.truncate(result.error.message),
+      );
       this.enqueueNotification(taskId);
       const failedProcess = this.processes.get(taskId);
       failedProcess?.observation?.update({ statusMessage: result.error.message });
@@ -526,12 +582,15 @@ export class BackgroundAgentManager {
     let parsedResult: ProviderResult;
     try {
       parsedResult = managedProcess
-        ? managedProcess.provider.parseBackgroundResult({
-            stdout: processResult.stdout,
-            stderr: processResult.stderr,
-            exitCode: processResult.exitCode,
-            timedOut: processResult.timedOut,
-          }, managedProcess.resultFiles)
+        ? managedProcess.provider.parseBackgroundResult(
+            {
+              stdout: processResult.stdout,
+              stderr: processResult.stderr,
+              exitCode: processResult.exitCode,
+              timedOut: processResult.timedOut,
+            },
+            managedProcess.resultFiles,
+          )
         : {
             output: processResult.stdout,
             stderr: processResult.stderr,
@@ -540,9 +599,10 @@ export class BackgroundAgentManager {
           };
     } catch (cause) {
       const message = cause instanceof Error ? cause.message : String(cause);
-      const debugOutput = processResult.stderr.trim().length > 0
-        ? `${processResult.stdout}\n\nstderr:\n${processResult.stderr}`
-        : processResult.stdout;
+      const debugOutput =
+        processResult.stderr.trim().length > 0
+          ? `${processResult.stdout}\n\nstderr:\n${processResult.stderr}`
+          : processResult.stdout;
       this.deps.repository.updateStatus(
         taskId,
         'failed',
@@ -573,7 +633,8 @@ export class BackgroundAgentManager {
       this.deps.repository.updateStatus(taskId, 'completed', this.truncate(parsedResult.output));
     } else {
       finalStatus = 'failed';
-      finalStatusMessage = parsedResult.stderr || `Process exited with code ${parsedResult.exitCode}`;
+      finalStatusMessage =
+        parsedResult.stderr || `Process exited with code ${parsedResult.exitCode}`;
       this.deps.repository.updateStatus(
         taskId,
         'failed',
@@ -622,7 +683,9 @@ export class BackgroundAgentManager {
     const preview = task.prompt.length > 80 ? `${task.prompt.slice(0, 77)}...` : task.prompt;
     const summary = this.notificationSummary(task).slice(0, 500);
     const durationSeconds =
-      task.completedAt && task.startedAt ? Math.max(0, Math.round((task.completedAt - task.startedAt) / 1000)) : 0;
+      task.completedAt && task.startedAt
+        ? Math.max(0, Math.round((task.completedAt - task.startedAt) / 1000))
+        : 0;
 
     const content = [
       `[Background Task ${title}] Task ${task.id}: "${preview}"`,
@@ -688,8 +751,8 @@ export class BackgroundAgentManager {
       );
     }
 
-    const controlDirectory = input.controlDirectory
-      ?? mkdtempSync(join(tmpdir(), `talon-bg-control-${taskId}-`));
+    const controlDirectory =
+      input.controlDirectory ?? mkdtempSync(join(tmpdir(), `talon-bg-control-${taskId}-`));
     mkdirSync(controlDirectory, { recursive: true, mode: 0o700 });
 
     const envResult = await this.deps.executionEnvManager.create({
@@ -755,10 +818,10 @@ export class BackgroundAgentManager {
           TALOND_ALLOWED_TOOLS: options.allowedMcpTools.join(','),
           TALOND_TRACEPARENT: options.traceparent ?? '',
           TALOND_BACKGROUND_TASK_ID: options.taskId,
-          ...(this.buildAllowedHostRootsEnv({
+          ...this.buildAllowedHostRootsEnv({
             workingDirectory: options.workingDirectory,
             sandboxContext: options.sandboxContext,
-          })),
+          }),
           ...(options.sandboxContext
             ? { TALOND_PRIMARY_EXECUTION_ENV_ID: options.sandboxContext.primaryExecutionEnvId }
             : {}),

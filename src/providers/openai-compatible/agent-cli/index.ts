@@ -32,6 +32,7 @@ import { runResponsesLoop } from './responses-api.js';
 const DEFAULT_MAX_STEPS = 1000;
 type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
 type OpenAiCompatibleSessionMode = 'none' | 'previous_response_id';
+type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
 interface WrapperInput {
   prompt: string;
@@ -43,6 +44,7 @@ interface WrapperInput {
   apiKey?: string;
   providerId?: string;
   providerOptions?: ProviderOptionsPayload;
+  reasoningEffort?: ReasoningEffort;
   headers?: Record<string, string>;
   mcpServers: Record<string, SerializableMcpServer>;
   streamEvents?: boolean;
@@ -222,7 +224,7 @@ async function main(): Promise<void> {
       tools: workspaceToolsConfig,
     });
     await workspace.init();
-    const workspaceTools = createWorkspaceTools(workspace) as Record<
+    const workspaceTools = (await createWorkspaceTools(workspace)) as Record<
       string,
       Tool<unknown, unknown, unknown, unknown>
     >;
@@ -291,6 +293,7 @@ async function main(): Promise<void> {
         ...(input.providerOptions?.[providerId]
           ? { providerOptions: input.providerOptions[providerId] as Record<string, unknown> }
           : {}),
+        ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         tools: { ...combinedTools, ...workspaceTools },
         executionContext: {
           workspace,
@@ -575,6 +578,17 @@ function isSessionMode(value: unknown): value is OpenAiCompatibleSessionMode {
   return value === 'none' || value === 'previous_response_id';
 }
 
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return (
+    value === 'none' ||
+    value === 'minimal' ||
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh'
+  );
+}
+
 function resolveApiMode(input: WrapperInput): OpenAiCompatibleApiMode {
   return input.apiMode ?? (input.omlxResponses === true ? 'responses' : 'chat-completions');
 }
@@ -601,6 +615,9 @@ function parseInput(raw: string): WrapperInput {
     ...(parsed.apiKey ? { apiKey: parsed.apiKey } : {}),
     ...(parsed.providerId ? { providerId: parsed.providerId } : {}),
     ...(parsed.providerOptions ? { providerOptions: parsed.providerOptions } : {}),
+    ...(isReasoningEffort(parsed.reasoningEffort)
+      ? { reasoningEffort: parsed.reasoningEffort }
+      : {}),
     ...(parsed.headers ? { headers: parsed.headers } : {}),
     mcpServers: parsed.mcpServers ?? {},
     ...(typeof parsed.streamEvents === 'boolean' ? { streamEvents: parsed.streamEvents } : {}),
@@ -851,6 +868,10 @@ function isWrapperInput(value: unknown): value is WrapperInput {
   }
 
   if (value.providerOptions !== undefined && !isProviderOptions(value.providerOptions)) {
+    return false;
+  }
+
+  if (value.reasoningEffort !== undefined && !isReasoningEffort(value.reasoningEffort)) {
     return false;
   }
 

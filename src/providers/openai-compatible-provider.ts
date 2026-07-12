@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
-import type { ProviderConfig } from '../core/config/config-types.js';
+import type { ProviderConfig, ReasoningEffort } from '../core/config/config-types.js';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
 import type {
   AgentProvider,
@@ -41,6 +41,7 @@ interface WrapperPayload {
   apiKey?: string;
   providerId: string;
   providerOptions?: Record<string, Record<string, unknown>>;
+  reasoningEffort?: ReasoningEffort;
   headers?: Record<string, string>;
   mcpServers: Record<string, Exclude<CanonicalMcpServer, { transport: 'sdk' }>>;
   /**
@@ -285,6 +286,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         model: input.model,
+        reasoningEffort: input.reasoningEffort,
         sessionId: input.sessionId,
         maxTurns: input.maxTurns,
       },
@@ -501,6 +503,13 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     const providerOptions = this.readUnknownRecordOption('providerOptions');
     const apiMode = this.resolveApiMode();
     const sessionMode = this.resolveSessionMode();
+    if (input.reasoningEffort && apiMode !== 'responses') {
+      return err(
+        new BackgroundAgentError(
+          'OpenAI-compatible provider reasoningEffort requires openai-compatible apiMode: responses',
+        ),
+      );
+    }
     const useResponseSessionResumption =
       apiMode === 'responses' && sessionMode === 'previous_response_id';
     const sessionInput = input as ProviderSpawnInput & { sessionId?: string };
@@ -514,6 +523,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       providerId,
       ...(this.runtime.apiKey ? { apiKey: this.runtime.apiKey } : {}),
       ...(providerOptions ? { providerOptions: { [providerId]: providerOptions } } : {}),
+      ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
       ...(this.readRecordOption('headers') ? { headers: this.readRecordOption('headers') } : {}),
       ...(apiMode !== 'chat-completions' ? { apiMode } : {}),
       ...(sessionMode !== 'none' ? { sessionMode } : {}),
@@ -603,8 +613,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
 
   private usesResponseSessionResumption(): boolean {
     return (
-      this.resolveApiMode() === 'responses' &&
-      this.resolveSessionMode() === 'previous_response_id'
+      this.resolveApiMode() === 'responses' && this.resolveSessionMode() === 'previous_response_id'
     );
   }
 

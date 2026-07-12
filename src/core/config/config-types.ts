@@ -29,6 +29,7 @@ import type {
   SubAgentsConfigSchema,
   SubAgentModelOverrideSchema,
   A2AConfigSchema,
+  ReasoningEffortSchema,
 } from './config-schema.js';
 
 /** The full daemon configuration, validated and frozen at startup. */
@@ -54,6 +55,9 @@ export type MountConfig = z.infer<typeof MountConfigSchema>;
 
 /** Persona definition as declared in the config file. */
 export type PersonaConfig = z.infer<typeof PersonaConfigSchema>;
+
+/** Supported persona-level OpenAI/Codex reasoning effort values. */
+export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
 
 /** Optional persona-level execution-environment defaults. */
 export type PersonaExecutionEnvConfig = PersonaConfig['executionEnv'];

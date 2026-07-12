@@ -1,6 +1,7 @@
 import type { RequestContext } from '@mastra/core/di';
 import type { Tool, ToolExecutionContext } from '@mastra/core/tools';
 import type { Workspace } from '@mastra/core/workspace';
+import type { ReasoningEffort } from '../../../core/config/config-types.js';
 import type { AgentUsage } from '../../provider-types.js';
 
 type ToolLike = Tool<unknown, unknown, unknown, unknown>;
@@ -46,6 +47,7 @@ export interface ResponsesLoopInput {
   headers?: Record<string, string>;
   previousResponseId?: string;
   providerOptions?: Record<string, unknown>;
+  reasoningEffort?: ReasoningEffort;
   tools: Record<string, ToolLike>;
   executionContext?: ResponsesToolExecutionContextInput;
   maxSteps: number;
@@ -88,7 +90,7 @@ export async function runResponsesLoop(input: ResponsesLoopInput): Promise<Respo
 
   for (let step = 0; step < input.maxSteps; step++) {
     const body: Record<string, unknown> = {
-      ...(input.providerOptions ?? {}),
+      ...mergeReasoningEffort(input.providerOptions, input.reasoningEffort),
       model: input.model,
       input: nextInput,
       stream: false,
@@ -129,6 +131,25 @@ export async function runResponsesLoop(input: ResponsesLoopInput): Promise<Respo
   }
 
   throw new Error(`Responses API run exceeded maxSteps (${input.maxSteps})`);
+}
+
+function mergeReasoningEffort(
+  providerOptions: Record<string, unknown> | undefined,
+  reasoningEffort: ReasoningEffort | undefined,
+): Record<string, unknown> {
+  if (!reasoningEffort) {
+    return providerOptions ?? {};
+  }
+
+  const reasoning = isRecord(providerOptions?.reasoning) ? providerOptions.reasoning : {};
+
+  return {
+    ...(providerOptions ?? {}),
+    reasoning: {
+      ...reasoning,
+      effort: reasoningEffort,
+    },
+  };
 }
 
 export function buildResponsesTools(
