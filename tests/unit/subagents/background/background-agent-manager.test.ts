@@ -76,14 +76,16 @@ describe('BackgroundAgentManager', () => {
 
     mkdirSync('/tmp/talon-bg-test', { recursive: true });
 
-    prepareBackgroundInvocation = vi.fn().mockReturnValue(ok({
-      command: 'claude',
-      args: ['--print', '--output-format', 'json'],
-      stdin: 'Refactor the auth module',
-      cwd: '/workspace/repo',
-      timeoutMs: 30 * 60 * 1000,
-      cleanupPaths: ['/tmp/talon-bg-test'],
-    }));
+    prepareBackgroundInvocation = vi.fn().mockReturnValue(
+      ok({
+        command: 'claude',
+        args: ['--print', '--output-format', 'json'],
+        stdin: 'Refactor the auth module',
+        cwd: '/workspace/repo',
+        timeoutMs: 30 * 60 * 1000,
+        cleanupPaths: ['/tmp/talon-bg-test'],
+      }),
+    );
     parseBackgroundResult = vi.fn().mockImplementation((raw) => ({
       output: raw.stdout,
       stderr: raw.stderr,
@@ -208,9 +210,11 @@ describe('BackgroundAgentManager', () => {
 
     expect(tokenStore.materializeBearer).toHaveBeenCalledWith('glean/glean');
     expect(prepareBackgroundInvocation).toHaveBeenCalledTimes(1);
-    const passed = (prepareBackgroundInvocation.mock.calls[0][0] as {
-      mcpServers: Record<string, unknown>;
-    }).mcpServers;
+    const passed = (
+      prepareBackgroundInvocation.mock.calls[0][0] as {
+        mcpServers: Record<string, unknown>;
+      }
+    ).mcpServers;
     expect(passed.glean).toEqual({
       transport: 'http',
       url: 'https://contentful-be.glean.com/mcp/default',
@@ -237,9 +241,11 @@ describe('BackgroundAgentManager', () => {
       },
     });
 
-    const passed = (prepareBackgroundInvocation.mock.calls[0][0] as {
-      mcpServers: Record<string, unknown>;
-    }).mcpServers;
+    const passed = (
+      prepareBackgroundInvocation.mock.calls[0][0] as {
+        mcpServers: Record<string, unknown>;
+      }
+    ).mcpServers;
     // Field preserved so the operator sees the MCP fail loudly with a
     // missing Authorization header — better than silently passing.
     expect((passed.glean as Record<string, unknown>).auth).toEqual({
@@ -276,7 +282,10 @@ describe('BackgroundAgentManager', () => {
 
     await manager.spawn({ ...spawnInput, hasSkills: true, allowedMcpTools: ['channel_send'] });
 
-    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<
+      string,
+      unknown
+    >;
     expect(mcpServers['__talond_skill_loader']).toBeDefined();
     expect(mcpServers['__talond_skill_loader']).toMatchObject({
       transport: 'stdio',
@@ -295,7 +304,10 @@ describe('BackgroundAgentManager', () => {
 
     await manager.spawn({ ...spawnInput, hasSkills: false, allowedMcpTools: ['channel_send'] });
 
-    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<
+      string,
+      unknown
+    >;
     expect(mcpServers['__talond_skill_loader']).toBeUndefined();
   });
 
@@ -304,7 +316,10 @@ describe('BackgroundAgentManager', () => {
 
     await manager.spawn({ ...spawnInput, allowedMcpTools: ['channel_send'] });
 
-    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<
+      string,
+      unknown
+    >;
     expect(mcpServers['__talond_skill_loader']).toBeUndefined();
   });
 
@@ -315,7 +330,10 @@ describe('BackgroundAgentManager', () => {
 
     await manager.spawn({ ...spawnInput, hasSkills: true, allowedMcpTools: [] });
 
-    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, unknown>;
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<
+      string,
+      unknown
+    >;
     expect(mcpServers['__talond_skill_loader']).toBeDefined();
     expect(mcpServers['__talond_host_tools']).toBeUndefined();
   });
@@ -325,7 +343,10 @@ describe('BackgroundAgentManager', () => {
 
     await manager.spawn({ ...spawnInput, allowedMcpTools: ['channel_send'] });
 
-    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<string, any>;
+    const mcpServers = prepareBackgroundInvocation.mock.calls[0]?.[0]?.mcpServers as Record<
+      string,
+      any
+    >;
     expect(mcpServers['__talond_host_tools']).toMatchObject({
       env: expect.objectContaining({
         TALOND_BRIDGE_SECRET: expect.any(String),
@@ -360,12 +381,30 @@ describe('BackgroundAgentManager', () => {
     expect(options.stdin).toBe('Refactor the auth module');
   });
 
+  it('passes reasoningEffort through to the provider invocation', async () => {
+    const manager = createManager();
+
+    await manager.spawn({
+      ...spawnInput,
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+    });
+
+    expect(prepareBackgroundInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5.4',
+        reasoningEffort: 'high',
+      }),
+    );
+  });
+
   it('includes channelContext in the system prompt when provided', async () => {
     const manager = createManager();
 
     await manager.spawn({
       ...spawnInput,
-      channelContext: 'Available channels for channel_send tool:\n  - telegram-main (current thread)\n  - slack-general\nWhen sending messages, use channelId: "telegram-main".',
+      channelContext:
+        'Available channels for channel_send tool:\n  - telegram-main (current thread)\n  - slack-general\nWhen sending messages, use channelId: "telegram-main".',
     });
 
     const systemPrompt = prepareBackgroundInvocation.mock.calls[0]?.[0]?.systemPrompt as string;
@@ -398,29 +437,33 @@ describe('BackgroundAgentManager', () => {
 
   it('provisions a sandbox env, injects host tools, and uses the control directory as cwd', async () => {
     const executionEnvManager = {
-      create: vi.fn().mockResolvedValue(ok({
-        id: 'env-1',
-        provider: 'sprites',
-        spriteId: 'sprite-1',
-        threadId: 'thread-1',
-        personaId: 'persona-1',
-        ownerTaskId: null,
-        status: 'ready',
-        workingDirectory: '/workspace',
-        baseSnapshot: 'node-22-bookworm',
-        autoDestroy: true,
-        resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
-        createdAt: 1,
-        updatedAt: 1,
-        destroyedAt: null,
-      })),
-      upload: vi.fn().mockResolvedValue(ok({
-        direction: 'upload',
-        envId: 'env-1',
-        sourcePath: '/workspace/repo',
-        destinationPath: '/workspace',
-        bytes: 123,
-      })),
+      create: vi.fn().mockResolvedValue(
+        ok({
+          id: 'env-1',
+          provider: 'sprites',
+          spriteId: 'sprite-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          ownerTaskId: null,
+          status: 'ready',
+          workingDirectory: '/workspace',
+          baseSnapshot: 'node-22-bookworm',
+          autoDestroy: true,
+          resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+          createdAt: 1,
+          updatedAt: 1,
+          destroyedAt: null,
+        }),
+      ),
+      upload: vi.fn().mockResolvedValue(
+        ok({
+          direction: 'upload',
+          envId: 'env-1',
+          sourcePath: '/workspace/repo',
+          destinationPath: '/workspace',
+          bytes: 123,
+        }),
+      ),
       destroyOwnedByTask: vi.fn().mockResolvedValue(undefined),
       destroy: vi.fn().mockResolvedValue(ok(undefined)),
     };
@@ -504,39 +547,45 @@ describe('BackgroundAgentManager', () => {
 
   it('destroys owned execution env when a sandboxed task is cancelled', async () => {
     const executionEnvManager = {
-      create: vi.fn().mockResolvedValue(ok({
-        id: 'env-1',
-        provider: 'sprites',
-        spriteId: 'sprite-1',
-        threadId: 'thread-1',
-        personaId: 'persona-1',
-        ownerTaskId: null,
-        status: 'ready',
-        workingDirectory: '/workspace',
-        baseSnapshot: null,
-        autoDestroy: true,
-        resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
-        createdAt: 1,
-        updatedAt: 1,
-        destroyedAt: null,
-      })),
-      upload: vi.fn().mockResolvedValue(ok({
-        direction: 'upload',
-        envId: 'env-1',
-        sourcePath: '/workspace/repo',
-        destinationPath: '/workspace',
-        bytes: 123,
-      })),
+      create: vi.fn().mockResolvedValue(
+        ok({
+          id: 'env-1',
+          provider: 'sprites',
+          spriteId: 'sprite-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          ownerTaskId: null,
+          status: 'ready',
+          workingDirectory: '/workspace',
+          baseSnapshot: null,
+          autoDestroy: true,
+          resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+          createdAt: 1,
+          updatedAt: 1,
+          destroyedAt: null,
+        }),
+      ),
+      upload: vi.fn().mockResolvedValue(
+        ok({
+          direction: 'upload',
+          envId: 'env-1',
+          sourcePath: '/workspace/repo',
+          destinationPath: '/workspace',
+          bytes: 123,
+        }),
+      ),
       destroyOwnedByTask: vi.fn().mockResolvedValue(undefined),
       destroy: vi.fn().mockResolvedValue(ok(undefined)),
     };
     const manager = createManager({ executionEnvManager });
-    const taskId = (await manager.spawn({
-      ...spawnInput,
-      sandbox: true as any,
-      allowedMcpTools: ['execution_env'],
-      controlDirectory: '/tmp/talon-bg-control',
-    } as any))._unsafeUnwrap();
+    const taskId = (
+      await manager.spawn({
+        ...spawnInput,
+        sandbox: true as any,
+        allowedMcpTools: ['execution_env'],
+        controlDirectory: '/tmp/talon-bg-control',
+      } as any)
+    )._unsafeUnwrap();
 
     const result = await manager.cancel(taskId);
 
@@ -614,15 +663,18 @@ describe('BackgroundAgentManager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const task = repository.findById(taskId)._unsafeUnwrap();
-    expect(parseBackgroundResult).toHaveBeenCalledWith({
-      stdout: 'Done!',
-      stderr: '',
-      exitCode: 0,
-      timedOut: false,
-    }, undefined);
+    expect(parseBackgroundResult).toHaveBeenCalledWith(
+      {
+        stdout: 'Done!',
+        stderr: '',
+        exitCode: 0,
+        timedOut: false,
+      },
+      undefined,
+    );
     expect(task?.status).toBe('completed');
     expect(task?.output).toBe('Done!');
-    expect((queueManager.enqueue as any)).toHaveBeenNthCalledWith(
+    expect(queueManager.enqueue as any).toHaveBeenNthCalledWith(
       1,
       'thread-1',
       'collaboration',
@@ -634,7 +686,7 @@ describe('BackgroundAgentManager', () => {
         content: expect.stringContaining('Background Task Complete'),
       }),
     );
-    expect((queueManager.enqueue as any)).toHaveBeenNthCalledWith(
+    expect(queueManager.enqueue as any).toHaveBeenNthCalledWith(
       2,
       'thread-1',
       'message',
@@ -647,15 +699,17 @@ describe('BackgroundAgentManager', () => {
 
   it('passes resultFiles metadata into parseBackgroundResult before cleanup', async () => {
     const lastMessagePath = '/tmp/talon-bg-test/last-message.json';
-    prepareBackgroundInvocation.mockReturnValueOnce(ok({
-      command: 'claude',
-      args: ['--print', '--output-format', 'json'],
-      stdin: 'Refactor the auth module',
-      cwd: '/workspace/repo',
-      timeoutMs: 30 * 60 * 1000,
-      cleanupPaths: ['/tmp/talon-bg-test'],
-      resultFiles: { lastMessagePath },
-    }));
+    prepareBackgroundInvocation.mockReturnValueOnce(
+      ok({
+        command: 'claude',
+        args: ['--print', '--output-format', 'json'],
+        stdin: 'Refactor the auth module',
+        cwd: '/workspace/repo',
+        timeoutMs: 30 * 60 * 1000,
+        cleanupPaths: ['/tmp/talon-bg-test'],
+        resultFiles: { lastMessagePath },
+      }),
+    );
     parseBackgroundResult.mockImplementationOnce((_raw, resultFiles) => {
       expect(resultFiles).toEqual({ lastMessagePath });
       expect(existsSync(lastMessagePath)).toBe(true);
@@ -697,15 +751,17 @@ describe('BackgroundAgentManager', () => {
 
   it('marks task failed and cleans up when parseBackgroundResult throws after receiving resultFiles', async () => {
     const lastMessagePath = '/tmp/talon-bg-test/last-message.json';
-    prepareBackgroundInvocation.mockReturnValueOnce(ok({
-      command: 'claude',
-      args: ['--print', '--output-format', 'json'],
-      stdin: 'Refactor the auth module',
-      cwd: '/workspace/repo',
-      timeoutMs: 30 * 60 * 1000,
-      cleanupPaths: ['/tmp/talon-bg-test'],
-      resultFiles: { lastMessagePath },
-    }));
+    prepareBackgroundInvocation.mockReturnValueOnce(
+      ok({
+        command: 'claude',
+        args: ['--print', '--output-format', 'json'],
+        stdin: 'Refactor the auth module',
+        cwd: '/workspace/repo',
+        timeoutMs: 30 * 60 * 1000,
+        cleanupPaths: ['/tmp/talon-bg-test'],
+        resultFiles: { lastMessagePath },
+      }),
+    );
     parseBackgroundResult.mockImplementationOnce((_raw, resultFiles) => {
       expect(resultFiles).toEqual({ lastMessagePath });
       expect(existsSync(lastMessagePath)).toBe(true);
@@ -837,7 +893,9 @@ describe('BackgroundAgentManager', () => {
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr()).toBeInstanceOf(BackgroundAgentError);
-    expect(result._unsafeUnwrapErr().message).toContain('No enabled background agent provider found');
+    expect(result._unsafeUnwrapErr().message).toContain(
+      'No enabled background agent provider found',
+    );
     // No task should have been created
     expect(repository.findByThread('thread-1')._unsafeUnwrap()).toHaveLength(0);
   });
@@ -1193,7 +1251,10 @@ describe('BackgroundAgentManager', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     const updateCall = observation.update.mock.calls.find(
-      (args: unknown[]) => typeof args[0] === 'object' && args[0] !== null && 'output' in (args[0] as Record<string, unknown>),
+      (args: unknown[]) =>
+        typeof args[0] === 'object' &&
+        args[0] !== null &&
+        'output' in (args[0] as Record<string, unknown>),
     );
     expect(updateCall).toBeDefined();
     const payload = updateCall![0] as Record<string, unknown>;
@@ -1212,17 +1273,19 @@ describe('BackgroundAgentManager', () => {
   });
 
   it('uses an explicit provider override, persists provider_name, and forwards env overrides', async () => {
-    prepareBackgroundInvocation.mockReturnValueOnce(ok({
-      command: 'gemini',
-      args: ['--approval-mode', 'yolo', '--output-format', 'json', 'Refactor the auth module'],
-      stdin: '',
-      env: {
-        GEMINI_CLI_SYSTEM_SETTINGS_PATH: '/tmp/talon-bg-test/settings.json',
-      },
-      cwd: '/workspace/repo',
-      timeoutMs: 30 * 60 * 1000,
-      cleanupPaths: ['/tmp/talon-bg-test'],
-    }));
+    prepareBackgroundInvocation.mockReturnValueOnce(
+      ok({
+        command: 'gemini',
+        args: ['--approval-mode', 'yolo', '--output-format', 'json', 'Refactor the auth module'],
+        stdin: '',
+        env: {
+          GEMINI_CLI_SYSTEM_SETTINGS_PATH: '/tmp/talon-bg-test/settings.json',
+        },
+        cwd: '/workspace/repo',
+        timeoutMs: 30 * 60 * 1000,
+        cleanupPaths: ['/tmp/talon-bg-test'],
+      }),
+    );
     const manager = createManager();
 
     const result = await manager.spawn({
@@ -1245,17 +1308,19 @@ describe('BackgroundAgentManager', () => {
   });
 
   it('uses openai-compatible as an explicit background provider override', async () => {
-    prepareBackgroundInvocation.mockReturnValueOnce(ok({
-      command: 'node',
-      args: ['/workspace/talon/dist/providers/openai-compatible/agent-cli/index.js'],
-      stdin: '{"prompt":"Refactor the auth module"}',
-      env: {
-        TALOND_TRACEPARENT: '00-test',
-      },
-      cwd: '/workspace/repo',
-      timeoutMs: 30 * 60 * 1000,
-      cleanupPaths: [],
-    }));
+    prepareBackgroundInvocation.mockReturnValueOnce(
+      ok({
+        command: 'node',
+        args: ['/workspace/talon/dist/providers/openai-compatible/agent-cli/index.js'],
+        stdin: '{"prompt":"Refactor the auth module"}',
+        env: {
+          TALOND_TRACEPARENT: '00-test',
+        },
+        cwd: '/workspace/repo',
+        timeoutMs: 30 * 60 * 1000,
+        cleanupPaths: [],
+      }),
+    );
     const manager = createManager({
       providerRegistry: {
         getDefault: vi.fn().mockReturnValue({

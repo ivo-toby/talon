@@ -79,15 +79,19 @@ describe('OpenAiCompatibleProvider', () => {
   }
 
   it('can report an alias provider name', () => {
-    const provider = new OpenAiCompatibleProvider({
-      enabled: true,
-      command: 'node',
-      contextWindowTokens: 256_000,
-      options: {
-        defaultModel: 'qwen3-coder:30b',
-        baseUrl: 'http://127.0.0.1:11434/v1',
+    const provider = new OpenAiCompatibleProvider(
+      {
+        enabled: true,
+        command: 'node',
+        contextWindowTokens: 256_000,
+        options: {
+          defaultModel: 'qwen3-coder:30b',
+          baseUrl: 'http://127.0.0.1:11434/v1',
+        },
       },
-    }, {}, 'ollama-mac');
+      {},
+      'ollama-mac',
+    );
 
     expect(provider.name).toBe('ollama-mac');
   });
@@ -155,6 +159,75 @@ describe('OpenAiCompatibleProvider', () => {
     });
   });
 
+  it('passes persona reasoningEffort to Responses wrapper payload while preserving provider reasoning options', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      type: 'openai-compatible',
+      command: 'node',
+      contextWindowTokens: 128_000,
+      options: {
+        defaultModel: 'gpt-5.4',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        providerId: 'openai',
+        apiMode: 'responses',
+        providerOptions: {
+          reasoning: {
+            effort: 'medium',
+            summary: 'auto',
+          },
+          text: {
+            verbosity: 'low',
+          },
+        },
+      },
+    });
+
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'hi',
+      systemPrompt: 's',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 10_000,
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const payload = JSON.parse(result._unsafeUnwrap().stdin) as Record<string, unknown>;
+    expect(payload.apiMode).toBe('responses');
+    expect(payload.reasoningEffort).toBe('high');
+    expect(payload.providerOptions).toEqual({
+      openai: {
+        reasoning: {
+          effort: 'medium',
+          summary: 'auto',
+        },
+        text: {
+          verbosity: 'low',
+        },
+      },
+    });
+  });
+
+  it('returns a deterministic error for reasoningEffort with chat-completions mode', () => {
+    const provider = makeProvider();
+
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'hi',
+      systemPrompt: 's',
+      mcpServers: {},
+      cwd: '/tmp',
+      timeoutMs: 10_000,
+      model: 'qwen3-coder:30b',
+      reasoningEffort: 'low',
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain(
+      'reasoningEffort requires openai-compatible apiMode: responses',
+    );
+  });
+
   it('creates a stateless streaming SDK execution strategy for foreground runs', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
@@ -162,6 +235,175 @@ describe('OpenAiCompatibleProvider', () => {
     expect(strategy.type).toBe('sdk');
     expect(strategy.supportsSessionResumption).toBe(false);
     expect(typeof strategy.run).toBe('function');
+  });
+
+  it('creates a resumable SDK strategy when previous-response session mode is enabled', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        apiMode: 'responses',
+        sessionMode: 'previous_response_id',
+      },
+    });
+
+    const strategy = provider.createExecutionStrategy();
+
+    expect(strategy.type).toBe('sdk');
+    expect(strategy.supportsSessionResumption).toBe(true);
+    expect(strategy.requiresContinuationAfterContextRotation).toBe(true);
+  });
+
+  it('does not mark stateless Responses API mode as session-resumable', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        apiMode: 'responses',
+        sessionMode: 'none',
+      },
+    });
+
+    const strategy = provider.createExecutionStrategy();
+
+    expect(strategy.type).toBe('sdk');
+    expect(strategy.supportsSessionResumption).toBe(false);
+  });
+
+  it('treats legacy omlxResponses as stateful Responses API mode', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        omlxResponses: true,
+      },
+    });
+
+    const strategy = provider.createExecutionStrategy();
+
+    expect(strategy.type).toBe('sdk');
+    expect(strategy.supportsSessionResumption).toBe(true);
+  });
+
+  it('passes Responses API mode and previous response ids to the wrapper payload', async () => {
+    const capturedStdin: string[] = [];
+    vi.mocked(mockedSpawn).mockImplementation((() => {
+      const child = makeFakeChild({
+        stdoutLines: [
+          JSON.stringify({
+            type: 'result',
+            output: 'ok',
+            sessionId: 'resp-new',
+            usage: { inputTokens: 5, outputTokens: 1 },
+          }),
+        ],
+      });
+      child.stdin.on('data', (chunk: Buffer) => {
+        capturedStdin.push(chunk.toString('utf8'));
+      });
+      return child;
+    }) as unknown as typeof mockedSpawn);
+
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'qwen3.5-9b-optiq-4bit',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        apiMode: 'responses',
+        sessionMode: 'previous_response_id',
+      },
+    });
+    const strategy = provider.createExecutionStrategy();
+    const events: AgentStreamEvent[] = [];
+
+    for await (const event of strategy.run({
+      threadId: 'thread-test',
+      prompt: 'continue',
+      systemPrompt: 'system',
+      mcpServers: {},
+      cwd: '/tmp',
+      model: 'qwen3.5-9b-optiq-4bit',
+      maxTurns: 10,
+      timeoutMs: 5_000,
+      sessionId: 'resp-prev',
+    })) {
+      events.push(event);
+    }
+
+    const payload = JSON.parse(capturedStdin.join('')) as Record<string, unknown>;
+    expect(payload.apiMode).toBe('responses');
+    expect(payload.sessionMode).toBe('previous_response_id');
+    expect(payload).not.toHaveProperty('omlxResponses');
+    expect(payload.previousResponseId).toBe('resp-prev');
+    expect(payload).not.toHaveProperty('maxSteps');
+    expect(payload.threadId).toBe('thread-test');
+
+    const resultEvent = events.find((event) => event.type === 'result');
+    expect(resultEvent).toBeDefined();
+    if (resultEvent?.type === 'result') {
+      expect(resultEvent.result.sessionId).toBe('resp-new');
+    }
+  });
+
+  it('passes persona reasoningEffort to foreground Responses wrapper payload', async () => {
+    const capturedStdin: string[] = [];
+    vi.mocked(mockedSpawn).mockImplementation((() => {
+      const child = makeFakeChild({
+        stdoutLines: [
+          JSON.stringify({
+            type: 'result',
+            output: 'ok',
+            sessionId: 'resp-new',
+            usage: { inputTokens: 5, outputTokens: 1 },
+          }),
+        ],
+      });
+      child.stdin.on('data', (chunk: Buffer) => {
+        capturedStdin.push(chunk.toString('utf8'));
+      });
+      return child;
+    }) as unknown as typeof mockedSpawn);
+
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      command: 'node',
+      contextWindowTokens: 256_000,
+      options: {
+        defaultModel: 'gpt-5.4',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        apiMode: 'responses',
+      },
+    });
+    const strategy = provider.createExecutionStrategy();
+
+    for await (const _event of strategy.run({
+      threadId: 'thread-test',
+      prompt: 'continue',
+      systemPrompt: 'system',
+      mcpServers: {},
+      cwd: '/tmp',
+      model: 'gpt-5.4',
+      maxTurns: 10,
+      timeoutMs: 5_000,
+      reasoningEffort: 'xhigh',
+    })) {
+      // Exhaust the stream so stdin is captured.
+    }
+
+    const payload = JSON.parse(capturedStdin.join('')) as Record<string, unknown>;
+    expect(payload.apiMode).toBe('responses');
+    expect(payload.reasoningEffort).toBe('xhigh');
   });
 
   it('returns an error when neither input.model nor defaultModel is configured', () => {
@@ -529,6 +771,7 @@ describe('OpenAiCompatibleProvider', () => {
     expect(stdinJoined.length).toBeGreaterThan(0);
     const payload = JSON.parse(stdinJoined) as Record<string, unknown>;
     expect(payload.streamEvents).toBe(true);
+    expect(payload).not.toHaveProperty('maxSteps');
   });
 
   it('emits an error stream event containing stderr when the wrapper exits non-zero', async () => {
@@ -592,16 +835,18 @@ describe('OpenAiCompatibleProvider', () => {
     try {
       const provider = makeProvider();
       const strategy = provider.createExecutionStrategy();
-      const iterator = strategy.run({
-        threadId: 'thread-test',
-        prompt: 'hello',
-        systemPrompt: 'system',
-        mcpServers: {},
-        cwd: '/tmp',
-        model: 'qwen3-coder:30b',
-        maxTurns: 10,
-        timeoutMs: 5_000,
-      })[Symbol.asyncIterator]();
+      const iterator = strategy
+        .run({
+          threadId: 'thread-test',
+          prompt: 'hello',
+          systemPrompt: 'system',
+          mcpServers: {},
+          cwd: '/tmp',
+          model: 'qwen3-coder:30b',
+          maxTurns: 10,
+          timeoutMs: 5_000,
+        })
+        [Symbol.asyncIterator]();
 
       const first = await iterator.next();
       expect(first.done).toBe(false);

@@ -3,12 +3,13 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
-import type { ProviderConfig } from '../core/config/config-types.js';
+import type { ProviderConfig, ReasoningEffort } from '../core/config/config-types.js';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
 import type {
   AgentProvider,
   AgentRunInput,
   AgentStreamEvent,
+  SDKExecutionStrategy,
   StatelessSDKExecutionStrategy,
 } from './provider.js';
 import type {
@@ -27,15 +28,20 @@ interface OpenAiCompatibleProviderRuntime {
   baseUrl?: string;
 }
 
+type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
+type OpenAiCompatibleSessionMode = 'none' | 'previous_response_id';
+
 interface WrapperPayload {
   prompt: string;
   systemPrompt: string;
+  threadId?: string;
   cwd: string;
   model: string;
   baseUrl: string;
   apiKey?: string;
   providerId: string;
   providerOptions?: Record<string, Record<string, unknown>>;
+  reasoningEffort?: ReasoningEffort;
   headers?: Record<string, string>;
   mcpServers: Record<string, Exclude<CanonicalMcpServer, { transport: 'sdk' }>>;
   /**
@@ -54,6 +60,11 @@ interface WrapperPayload {
    * cap cannot truncate away the run's actual output.
    */
   outputFilePath?: string;
+  apiMode?: OpenAiCompatibleApiMode;
+  sessionMode?: OpenAiCompatibleSessionMode;
+  /** @deprecated Use apiMode: responses + sessionMode: previous_response_id. */
+  omlxResponses?: boolean;
+  previousResponseId?: string;
   /**
    * Max chars of tool output allowed into agent message history before
    * excerpting. 0 disables the feature. When omitted, the wrapper uses its
@@ -84,6 +95,7 @@ type WrapperEvent =
     }
   | {
       type: 'result';
+      sessionId?: string;
       output: string;
       usage?: {
         inputTokens?: number;
@@ -116,7 +128,16 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     this.name = name;
   }
 
-  createExecutionStrategy(): StatelessSDKExecutionStrategy {
+  createExecutionStrategy(): SDKExecutionStrategy | StatelessSDKExecutionStrategy {
+    if (this.usesResponseSessionResumption()) {
+      return {
+        type: 'sdk' as const,
+        supportsSessionResumption: true as const,
+        requiresContinuationAfterContextRotation: true as const,
+        run: (input: AgentRunInput) => this.streamForeground(input),
+      };
+    }
+
     return {
       type: 'sdk' as const,
       supportsSessionResumption: false as const,
@@ -260,10 +281,14 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       {
         prompt: input.prompt,
         systemPrompt: input.systemPrompt,
+        threadId: input.threadId,
         mcpServers: input.mcpServers,
         cwd: input.cwd,
         timeoutMs: input.timeoutMs,
         model: input.model,
+        reasoningEffort: input.reasoningEffort,
+        sessionId: input.sessionId,
+        maxTurns: input.maxTurns,
       },
       { streamEvents: true, cleanupPaths: [] },
     );
@@ -292,16 +317,18 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       child.kill('SIGKILL');
     }, invocation.timeoutMs);
 
-    const closePromise = new Promise<{ exitCode: number | null }>((resolvePromise, rejectPromise) => {
-      child.on('error', (error) => {
-        clearTimeout(timeout);
-        rejectPromise(error);
-      });
-      child.on('close', (exitCode) => {
-        clearTimeout(timeout);
-        resolvePromise({ exitCode });
-      });
-    });
+    const closePromise = new Promise<{ exitCode: number | null }>(
+      (resolvePromise, rejectPromise) => {
+        child.on('error', (error) => {
+          clearTimeout(timeout);
+          rejectPromise(error);
+        });
+        child.on('close', (exitCode) => {
+          clearTimeout(timeout);
+          resolvePromise({ exitCode });
+        });
+      },
+    );
     // Attach a no-op handler so an unobserved rejection (consumer cancels
     // the generator before the normal post-stream await) does not surface
     // as an unhandled promise rejection. The real rejection is still
@@ -347,7 +374,8 @@ export class OpenAiCompatibleProvider implements AgentProvider {
           };
         } else if (event.type === 'result') {
           sawResultEvent = true;
-          const resultOutput = event.output && event.output.length > 0 ? event.output : aggregatedOutput;
+          const resultOutput =
+            event.output && event.output.length > 0 ? event.output : aggregatedOutput;
           if (event.usage) {
             usage = {
               inputTokens: event.usage.inputTokens ?? 0,
@@ -366,7 +394,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
             type: 'result',
             result: {
               output: resultOutput,
-              sessionId: undefined,
+              sessionId: event.sessionId,
               usage,
               ...(lastStepUsage ? { lastStepUsage } : {}),
               isError: false,
@@ -444,7 +472,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
   }
 
   private prepareInvocation(
-    input: ProviderSpawnInput,
+    input: ProviderSpawnInput & { sessionId?: string; maxTurns?: number; threadId?: string },
     options: {
       streamEvents: boolean;
       outputFilePath?: string;
@@ -473,16 +501,35 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     const scriptArgs = this.resolveWrapperArgs();
     const providerId = this.readStringOption('providerId') ?? 'openai-compatible';
     const providerOptions = this.readUnknownRecordOption('providerOptions');
+    const apiMode = this.resolveApiMode();
+    const sessionMode = this.resolveSessionMode();
+    if (input.reasoningEffort && apiMode !== 'responses') {
+      return err(
+        new BackgroundAgentError(
+          'OpenAI-compatible provider reasoningEffort requires openai-compatible apiMode: responses',
+        ),
+      );
+    }
+    const useResponseSessionResumption =
+      apiMode === 'responses' && sessionMode === 'previous_response_id';
+    const sessionInput = input as ProviderSpawnInput & { sessionId?: string };
     const payload: WrapperPayload = {
       prompt: input.prompt,
       systemPrompt: input.systemPrompt,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
       cwd: input.cwd,
       model,
       baseUrl,
       providerId,
       ...(this.runtime.apiKey ? { apiKey: this.runtime.apiKey } : {}),
       ...(providerOptions ? { providerOptions: { [providerId]: providerOptions } } : {}),
+      ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
       ...(this.readRecordOption('headers') ? { headers: this.readRecordOption('headers') } : {}),
+      ...(apiMode !== 'chat-completions' ? { apiMode } : {}),
+      ...(sessionMode !== 'none' ? { sessionMode } : {}),
+      ...(useResponseSessionResumption && sessionInput.sessionId
+        ? { previousResponseId: sessionInput.sessionId }
+        : {}),
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
       streamEvents: options.streamEvents,
       ...(options.outputFilePath ? { outputFilePath: options.outputFilePath } : {}),
@@ -514,6 +561,11 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     return undefined;
   }
 
+  private readBooleanOption(name: string): boolean | undefined {
+    const value = this.config.options?.[name];
+    return typeof value === 'boolean' ? value : undefined;
+  }
+
   private readRecordOption(name: string): Record<string, string> | undefined {
     const value = this.config.options?.[name];
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -531,6 +583,38 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     }
 
     return Object.keys(value).length > 0 ? (value as Record<string, unknown>) : undefined;
+  }
+
+  private isLegacyOmlxResponsesMode(): boolean {
+    return this.readBooleanOption('omlxResponses') === true;
+  }
+
+  private resolveApiMode(): OpenAiCompatibleApiMode {
+    const value = this.readStringOption('apiMode');
+    if (value === 'responses' || value === 'chat-completions') {
+      return value;
+    }
+    if (this.isLegacyOmlxResponsesMode()) {
+      return 'responses';
+    }
+    return 'chat-completions';
+  }
+
+  private resolveSessionMode(): OpenAiCompatibleSessionMode {
+    const value = this.readStringOption('sessionMode');
+    if (value === 'previous_response_id' || value === 'none') {
+      return value;
+    }
+    if (this.isLegacyOmlxResponsesMode()) {
+      return 'previous_response_id';
+    }
+    return 'none';
+  }
+
+  private usesResponseSessionResumption(): boolean {
+    return (
+      this.resolveApiMode() === 'responses' && this.resolveSessionMode() === 'previous_response_id'
+    );
   }
 
   private resolveWrapperArgs(): string[] {

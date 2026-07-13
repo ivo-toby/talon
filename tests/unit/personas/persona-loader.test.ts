@@ -119,6 +119,17 @@ describe('PersonaLoader', () => {
       expect(personas[0].config.name).toBe('alfred');
     });
 
+    it('preserves persona reasoningEffort on the loaded runtime config', async () => {
+      const config = makePersonaConfig({ name: 'deep-thinker', reasoningEffort: 'xhigh' });
+      const result = await loader.loadFromConfig([config]);
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap()[0].config.reasoningEffort).toBe('xhigh');
+      expect(loader.getByName('deep-thinker')._unsafeUnwrap()?.config.reasoningEffort).toBe(
+        'xhigh',
+      );
+    });
+
     it('systemPromptContent is undefined when no file specified', async () => {
       const config = makePersonaConfig({ name: 'sherlock' });
       const result = await loader.loadFromConfig([config]);
@@ -159,10 +170,7 @@ describe('PersonaLoader', () => {
     });
 
     it('inserts all personas into the database', async () => {
-      const configs = [
-        makePersonaConfig({ name: 'dave' }),
-        makePersonaConfig({ name: 'eve' }),
-      ];
+      const configs = [makePersonaConfig({ name: 'dave' }), makePersonaConfig({ name: 'eve' })];
       await loader.loadFromConfig(configs);
       expect(repo.findByName('dave')._unsafeUnwrap()).not.toBeNull();
       expect(repo.findByName('eve')._unsafeUnwrap()).not.toBeNull();
@@ -467,9 +475,7 @@ describe('PersonaLoader', () => {
   describe('loadFromConfig — DB error handling', () => {
     it('returns Err when DB findByName fails', async () => {
       const mockRepo = {
-        findByName: vi.fn().mockReturnValue(
-          err(new DbError('lookup failed')),
-        ),
+        findByName: vi.fn().mockReturnValue(err(new DbError('lookup failed'))),
         insert: vi.fn(),
         update: vi.fn(),
         findAll: vi.fn(),
@@ -487,9 +493,7 @@ describe('PersonaLoader', () => {
     it('returns Err when DB insert fails', async () => {
       const mockRepo = {
         findByName: vi.fn().mockReturnValue(ok(null)),
-        insert: vi.fn().mockReturnValue(
-          err(new DbError('insert failed')),
-        ),
+        insert: vi.fn().mockReturnValue(err(new DbError('insert failed'))),
         update: vi.fn(),
         findAll: vi.fn(),
         findById: vi.fn(),
@@ -520,9 +524,7 @@ describe('PersonaLoader', () => {
       const mockRepo = {
         findByName: vi.fn().mockReturnValue(ok(existingRow)),
         insert: vi.fn(),
-        update: vi.fn().mockReturnValue(
-          err(new DbError('update failed')),
-        ),
+        update: vi.fn().mockReturnValue(err(new DbError('update failed'))),
         findAll: vi.fn(),
         findById: vi.fn(),
         delete: vi.fn(),
@@ -656,15 +658,18 @@ describe('PersonaLoader', () => {
 
     it('parses description from YAML frontmatter', async () => {
       const promptFile = join(tmpDir, 'system.md');
-      await writeFile(promptFile, [
-        '---',
-        'description: "Deep web research agent"',
-        '---',
-        '',
-        '# researcher',
-        '',
-        'You are a researcher.',
-      ].join('\n'));
+      await writeFile(
+        promptFile,
+        [
+          '---',
+          'description: "Deep web research agent"',
+          '---',
+          '',
+          '# researcher',
+          '',
+          'You are a researcher.',
+        ].join('\n'),
+      );
 
       const config = makePersonaConfig({ name: 'researcher', systemPromptFile: promptFile });
       const result = await loader.loadFromConfig([config]);
@@ -677,13 +682,10 @@ describe('PersonaLoader', () => {
 
     it('strips frontmatter from system prompt content', async () => {
       const promptFile = join(tmpDir, 'system.md');
-      await writeFile(promptFile, [
-        '---',
-        'description: "Butler"',
-        '---',
-        '',
-        'You are James.',
-      ].join('\n'));
+      await writeFile(
+        promptFile,
+        ['---', 'description: "Butler"', '---', '', 'You are James.'].join('\n'),
+      );
 
       const config = makePersonaConfig({ name: 'james', systemPromptFile: promptFile });
       const result = await loader.loadFromConfig([config]);

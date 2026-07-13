@@ -1,5 +1,6 @@
 import type { Result } from 'neverthrow';
 import type { BackgroundAgentError } from '../core/errors/error-types.js';
+import type { ReasoningEffort } from '../core/config/config-types.js';
 import type {
   AgentUsage,
   CanonicalMcpServer,
@@ -21,6 +22,7 @@ export interface AgentRunInput {
   maxTurns: number;
   timeoutMs: number;
   sessionId?: string;
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface AgentRunResult {
@@ -71,24 +73,28 @@ export type AgentStreamEvent =
 export interface SDKExecutionStrategy {
   readonly type: 'sdk';
   readonly supportsSessionResumption: true;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): AsyncIterable<AgentStreamEvent>;
 }
 
 export interface StatelessSDKExecutionStrategy {
   readonly type: 'sdk';
   readonly supportsSessionResumption: false;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): AsyncIterable<AgentStreamEvent>;
 }
 
 export interface CLIExecutionStrategy {
   readonly type: 'cli';
   readonly supportsSessionResumption: true;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): Promise<AgentRunResult>;
 }
 
 export interface StatelessCLIExecutionStrategy {
   readonly type: 'cli';
   readonly supportsSessionResumption: false;
+  readonly requiresContinuationAfterContextRotation?: boolean;
   run(input: AgentRunInput): Promise<AgentRunResult>;
 }
 
@@ -123,12 +129,17 @@ export interface AgentProvider {
   readonly name: ProviderName;
   readonly skillLoaderTransport: SkillLoaderTransport;
   createExecutionStrategy(): ExecutionStrategy;
-  prepareBackgroundInvocation(input: ProviderSpawnInput): Result<PreparedProviderInvocation, BackgroundAgentError>;
-  parseBackgroundResult(raw: {
-    stdout: string;
-    stderr: string;
-    exitCode: number | null;
-    timedOut: boolean;
-  }, resultFiles?: PreparedProviderResultFiles): ProviderResult;
+  prepareBackgroundInvocation(
+    input: ProviderSpawnInput,
+  ): Result<PreparedProviderInvocation, BackgroundAgentError>;
+  parseBackgroundResult(
+    raw: {
+      stdout: string;
+      stderr: string;
+      exitCode: number | null;
+      timedOut: boolean;
+    },
+    resultFiles?: PreparedProviderResultFiles,
+  ): ProviderResult;
   estimateContextUsage(usage: AgentUsage): ContextUsage;
 }

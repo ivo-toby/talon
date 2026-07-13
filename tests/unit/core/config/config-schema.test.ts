@@ -248,7 +248,30 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.queryTimeoutMinutes).toBe(10);
       expect(result.data.maxConcurrent).toBeUndefined();
       expect(result.data.executionEnv).toBeUndefined();
+      expect(Object.keys(result.data)).not.toContain('reasoningEffort');
     }
+  });
+
+  it('accepts all supported persona reasoningEffort values', () => {
+    const values = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+
+    for (const reasoningEffort of values) {
+      const result = PersonaConfigSchema.safeParse({ name: 'assistant', reasoningEffort });
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(result.data.reasoningEffort).toBe(reasoningEffort);
+      }
+    }
+  });
+
+  it('rejects unsupported persona reasoningEffort values', () => {
+    expect(
+      PersonaConfigSchema.safeParse({ name: 'assistant', reasoningEffort: 'extreme' }).success,
+    ).toBe(false);
+    expect(
+      PersonaConfigSchema.safeParse({ name: 'assistant', reasoningEffort: 'gpt-5.4:xhigh' })
+        .success,
+    ).toBe(false);
   });
 
   it('accepts a fully-specified persona', () => {
@@ -256,6 +279,7 @@ describe('PersonaConfigSchema', () => {
       name: 'researcher',
       model: 'claude-opus-4-6',
       provider: 'gemini-cli',
+      reasoningEffort: 'high',
       systemPromptFile: '/prompts/researcher.md',
       queryTimeoutMinutes: 45,
       skills: ['web-search', 'code-runner'],
@@ -276,6 +300,7 @@ describe('PersonaConfigSchema', () => {
     if (result.success) {
       expect(result.data.name).toBe('researcher');
       expect(result.data.provider).toBe('gemini-cli');
+      expect(result.data.reasoningEffort).toBe('high');
       expect(result.data.queryTimeoutMinutes).toBe(45);
       expect(result.data.maxConcurrent).toBe(2);
       expect(result.data.mounts).toHaveLength(1);
@@ -298,12 +323,12 @@ describe('PersonaConfigSchema', () => {
   });
 
   it('rejects queryTimeoutMinutes outside the supported range', () => {
-    expect(
-      PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 0 }).success,
-    ).toBe(false);
-    expect(
-      PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 481 }).success,
-    ).toBe(false);
+    expect(PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 0 }).success).toBe(
+      false,
+    );
+    expect(PersonaConfigSchema.safeParse({ name: 'bot', queryTimeoutMinutes: 481 }).success).toBe(
+      false,
+    );
   });
 
   describe('PersonaConfigSchema — background overrides', () => {
@@ -330,9 +355,7 @@ describe('PersonaConfigSchema', () => {
     });
 
     it('rejects empty string backgroundModel', () => {
-      expect(() =>
-        PersonaConfigSchema.parse({ name: 'assistant', backgroundModel: '' }),
-      ).toThrow();
+      expect(() => PersonaConfigSchema.parse({ name: 'assistant', backgroundModel: '' })).toThrow();
     });
 
     it('accepts backgroundModel without backgroundProvider at the schema level (cross-validation deferred to TalondConfigSchema)', () => {
@@ -886,7 +909,6 @@ describe('AgentRunnerConfigSchema', () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // TalondConfigSchema (root)
 // ---------------------------------------------------------------------------
@@ -1190,6 +1212,112 @@ describe('TalondConfigSchema', () => {
       cfg.backgroundAgent.providers = {} as any;
       cfg.personas[0] = { name: 'assistant', backgroundProvider: 'claude-code' } as any;
       expect(() => TalondConfigSchema.parse(cfg)).toThrow(/Enabled providers:.*?\(none\)/i);
+    });
+  });
+
+  describe('TalondConfigSchema — reasoningEffort cross-validation', () => {
+    it('rejects reasoningEffort for unsupported provider implementations', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'assistant', provider: 'gemini-cli', reasoningEffort: 'high' }],
+          agentRunner: {
+            defaultProvider: 'gemini-cli',
+            providers: {
+              'gemini-cli': { enabled: true, command: 'gemini' },
+            },
+          },
+        }),
+      ).toThrow(/reasoningEffort is not supported by provider/i);
+    });
+
+    it('resolves aliased provider implementations when validating reasoningEffort', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'assistant', provider: 'codex-work', reasoningEffort: 'high' }],
+          agentRunner: {
+            defaultProvider: 'codex-work',
+            providers: {
+              'codex-work': { enabled: true, type: 'codex-cli', command: 'codex' },
+            },
+          },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects reasoningEffort none for Codex CLI', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'assistant', provider: 'codex-cli', reasoningEffort: 'none' }],
+          agentRunner: {
+            defaultProvider: 'codex-cli',
+            providers: {
+              'codex-cli': { enabled: true, command: 'codex' },
+            },
+          },
+        }),
+      ).toThrow(/reasoningEffort \\"none\\" is not supported by codex-cli/i);
+    });
+
+    it('requires Responses mode for OpenAI-compatible reasoningEffort', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [
+            { name: 'assistant', provider: 'openai-compatible', reasoningEffort: 'medium' },
+          ],
+          agentRunner: {
+            defaultProvider: 'openai-compatible',
+            providers: {
+              'openai-compatible': { enabled: true, command: 'openai-compatible' },
+            },
+          },
+        }),
+      ).toThrow(/requires openai-compatible options.apiMode: responses/i);
+    });
+
+    it('accepts reasoningEffort none for OpenAI-compatible Responses mode', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [
+            { name: 'assistant', provider: 'openai-compatible', reasoningEffort: 'none' },
+          ],
+          agentRunner: {
+            defaultProvider: 'openai-compatible',
+            providers: {
+              'openai-compatible': {
+                enabled: true,
+                command: 'openai-compatible',
+                options: { apiMode: 'responses' },
+              },
+            },
+          },
+        }),
+      ).not.toThrow();
+    });
+
+    it('rejects reasoningEffort when a configured backgroundProvider cannot consume it', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [
+            {
+              name: 'assistant',
+              provider: 'codex-cli',
+              reasoningEffort: 'high',
+              backgroundProvider: 'claude-code',
+            },
+          ],
+          agentRunner: {
+            defaultProvider: 'codex-cli',
+            providers: {
+              'codex-cli': { enabled: true, command: 'codex' },
+            },
+          },
+          backgroundAgent: {
+            providers: {
+              'claude-code': { enabled: true, command: 'claude' },
+            },
+          },
+        }),
+      ).toThrow(/reasoningEffort is not supported by backgroundProvider/i);
     });
   });
 });

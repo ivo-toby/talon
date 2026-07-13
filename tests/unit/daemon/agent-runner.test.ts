@@ -102,7 +102,9 @@ function makeContextManagement(overrides: Record<string, unknown> = {}): Record<
   };
 }
 
-function makeAgentRunnerProviderConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeAgentRunnerProviderConfig(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     enabled: true,
     command: 'claude',
@@ -136,23 +138,29 @@ function makeMockContext(): DaemonContext {
     repos: {
       queue: {} as any,
       thread: {
-        findById: vi.fn().mockReturnValue(ok({
-          id: 'thread-001',
-          channel_id: 'chan-001',
-          external_id: 'ext-001',
-        })),
+        findById: vi.fn().mockReturnValue(
+          ok({
+            id: 'thread-001',
+            channel_id: 'chan-001',
+            external_id: 'ext-001',
+          }),
+        ),
       } as any,
       channel: {
-        findById: vi.fn().mockReturnValue(ok({
-          id: 'chan-001',
-          name: 'test-channel',
-        })),
+        findById: vi.fn().mockReturnValue(
+          ok({
+            id: 'chan-001',
+            name: 'test-channel',
+          }),
+        ),
       } as any,
       persona: {
-        findById: vi.fn().mockReturnValue(ok({
-          id: 'persona-001',
-          name: 'TestBot',
-        })),
+        findById: vi.fn().mockReturnValue(
+          ok({
+            id: 'persona-001',
+            name: 'TestBot',
+          }),
+        ),
       } as any,
       schedule: {} as any,
       audit: {} as any,
@@ -175,26 +183,25 @@ function makeMockContext(): DaemonContext {
         send: vi.fn().mockResolvedValue(ok(undefined)),
         sendTyping: vi.fn().mockResolvedValue(undefined),
       }),
-      listAll: vi.fn().mockReturnValue([
-        { name: 'test-channel' },
-        { name: 'other-channel' },
-      ]),
+      listAll: vi.fn().mockReturnValue([{ name: 'test-channel' }, { name: 'other-channel' }]),
     } as any,
     queueManager: {} as any,
     scheduler: {} as any,
     personaLoader: {
-      getByName: vi.fn().mockReturnValue(ok({
-        config: {
-          model: 'claude-sonnet-4-20250514',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      })),
+      getByName: vi.fn().mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        }),
+      ),
     } as any,
     sessionTracker: {
       getSessionId: vi.fn().mockReturnValue(undefined),
@@ -229,8 +236,9 @@ function makeMockContext(): DaemonContext {
       }),
       start: vi.fn(() => makeStartedObservationHandle(null)),
       startWithTraceparent: vi.fn(() => makeStartedObservationHandle(null)),
-      observeWithTraceparent: vi.fn(async (_traceparent, _input, fn) =>
-        await fn(makeObservationHandle(null))),
+      observeWithTraceparent: vi.fn(
+        async (_traceparent, _input, fn) => await fn(makeObservationHandle(null)),
+      ),
       shutdown: vi.fn().mockResolvedValue(undefined),
     } as any,
     hostToolsBridge: {
@@ -346,9 +354,7 @@ describe('AgentRunner', () => {
     });
 
     it('returns error when run insert fails', async () => {
-      vi.mocked(ctx.repos.run.insert).mockReturnValue(
-        err(new Error('DB write failed') as any),
-      );
+      vi.mocked(ctx.repos.run.insert).mockReturnValue(err(new Error('DB write failed') as any));
       const item = makeQueueItem();
 
       const result = await runner.run(item);
@@ -398,10 +404,120 @@ describe('AgentRunner', () => {
         'thread-001',
         'session-abc-123',
         'claude-code',
+        'claude-sonnet-4-20250514',
       );
       expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
         expect.any(String),
         'session-abc-123',
+      );
+    });
+
+    it('uses persona reasoningEffort in provider input, run metadata, and session keys', async () => {
+      const sdkRun = vi.fn().mockReturnValue(makeProviderStream());
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gpt-5.4',
+            provider: 'codex-cli',
+            reasoningEffort: 'high',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a Codex test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      ctx.config.agentRunner.defaultProvider = 'codex-cli';
+      ctx.providerRegistry = {
+        get: vi.fn().mockImplementation((name: string) =>
+          name === 'codex-cli'
+            ? {
+                type: 'codex-cli',
+                provider: {
+                  name: 'codex-cli',
+                  skillLoaderTransport: 'stdio',
+                  createExecutionStrategy: () => ({
+                    type: 'sdk' as const,
+                    supportsSessionResumption: true as const,
+                    run: sdkRun,
+                  }),
+                  prepareBackgroundInvocation: vi.fn(),
+                  parseBackgroundResult: vi.fn(),
+                  estimateContextUsage: vi.fn().mockReturnValue({
+                    inputTokens: 100,
+                    metrics: { input_tokens: 100 },
+                  }),
+                },
+                config: makeAgentRunnerProviderConfig({
+                  command: 'codex',
+                  contextWindowTokens: 400_000,
+                }),
+              }
+            : undefined,
+        ),
+        getDefault: vi.fn().mockImplementation(() => ({
+          type: 'codex-cli',
+          provider: {
+            name: 'codex-cli',
+            skillLoaderTransport: 'stdio',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 100,
+              metrics: { input_tokens: 100 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'codex',
+            contextWindowTokens: 400_000,
+          }),
+        })),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(sdkRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-5.4',
+          reasoningEffort: 'high',
+        }),
+      );
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider_name: 'codex-cli',
+          model_name: 'gpt-5.4',
+          reasoning_effort: 'high',
+        }),
+      );
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'codex-cli',
+        'gpt-5.4',
+        'high',
+      );
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'codex-cli',
+        expect.objectContaining({
+          modelName: 'gpt-5.4',
+          reasoningEffort: 'high',
+        }),
+      );
+      expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'session-abc-123',
+        'codex-cli',
+        'gpt-5.4',
+        'high',
       );
     });
 
@@ -531,7 +647,6 @@ describe('AgentRunner', () => {
       );
     });
 
-
     it('reports usageDetails with snake_case keys for LangFuse pricing lookup', async () => {
       mockQuery.mockReturnValue(
         makeAgentStream({
@@ -545,12 +660,17 @@ describe('AgentRunner', () => {
       );
 
       let generationHandle: ReturnType<typeof makeObservationHandle> | undefined;
-      ctx.observability.observe = vi.fn(async (input: { type: string }, fn: (h: ReturnType<typeof makeObservationHandle>) => Promise<unknown>) => {
-        const traceparent = input.type === 'generation' ? GENERATION_TRACEPARENT : null;
-        const handle = makeObservationHandle(traceparent);
-        if (input.type === 'generation') generationHandle = handle;
-        return await fn(handle);
-      });
+      ctx.observability.observe = vi.fn(
+        async (
+          input: { type: string },
+          fn: (h: ReturnType<typeof makeObservationHandle>) => Promise<unknown>,
+        ) => {
+          const traceparent = input.type === 'generation' ? GENERATION_TRACEPARENT : null;
+          const handle = makeObservationHandle(traceparent);
+          if (input.type === 'generation') generationHandle = handle;
+          return await fn(handle);
+        },
+      );
       runner = new AgentRunner(ctx);
 
       await runner.run(makeQueueItem());
@@ -668,24 +788,27 @@ describe('AgentRunner', () => {
       ctx.contextRoller = {
         checkAndRotate: vi.fn().mockResolvedValue(undefined),
       } as any;
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'gemini-2.5-pro',
-          provider: 'gemini-cli',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a Gemini test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gemini-2.5-pro',
+            provider: 'gemini-cli',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a Gemini test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
       ctx.config.agentRunner.defaultProvider = 'gemini-cli';
       ctx.providerRegistry = {
-        get: vi.fn().mockImplementation((name: string) => (
+        get: vi.fn().mockImplementation((name: string) =>
           name === 'gemini-cli'
             ? {
+                type: 'gemini-cli',
                 provider: {
                   name: 'gemini-cli',
                   createExecutionStrategy: () => ({
@@ -711,9 +834,10 @@ describe('AgentRunner', () => {
                   }),
                 }),
               }
-            : undefined
-        )),
+            : undefined,
+        ),
         getDefault: vi.fn().mockImplementation(() => ({
+          type: 'gemini-cli',
           provider: {
             name: 'gemini-cli',
             createExecutionStrategy: () => ({
@@ -813,24 +937,27 @@ describe('AgentRunner', () => {
       ctx.contextRoller = {
         checkAndRotate: vi.fn().mockResolvedValue(undefined),
       } as any;
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'qwen3-coder:30b',
-          provider: 'openai-compatible',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are an OpenAI-compatible test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'qwen3-coder:30b',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are an OpenAI-compatible test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
       ctx.config.agentRunner.defaultProvider = 'openai-compatible';
       ctx.providerRegistry = {
-        get: vi.fn().mockImplementation((name: string) => (
+        get: vi.fn().mockImplementation((name: string) =>
           name === 'openai-compatible'
             ? {
+                type: 'openai-compatible',
                 provider: {
                   name: 'openai-compatible',
                   createExecutionStrategy: () => ({
@@ -856,9 +983,10 @@ describe('AgentRunner', () => {
                   }),
                 }),
               }
-            : undefined
-        )),
+            : undefined,
+        ),
         getDefault: vi.fn().mockImplementation(() => ({
+          type: 'openai-compatible',
           provider: {
             name: 'openai-compatible',
             createExecutionStrategy: () => ({
@@ -890,19 +1018,18 @@ describe('AgentRunner', () => {
 
       expect(result.isOk()).toBe(true);
       expect(ctx.sessionTracker.getSessionId).not.toHaveBeenCalled();
-      expect(cliRun).toHaveBeenCalledWith(expect.objectContaining({
-        model: 'qwen3-coder:30b',
-      }));
+      expect(cliRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'qwen3-coder:30b',
+        }),
+      );
       const sendCalls = vi.mocked(connector.send).mock.calls;
       const thinkingCalls = sendCalls.filter(
         ([, body]) => (body as { body: string }).body === 'Thinking...',
       );
       expect(thinkingCalls).toHaveLength(0);
       expect(sendCalls).toHaveLength(1);
-      expect(sendCalls[0]).toEqual([
-        'ext-001',
-        { body: 'OpenAI-compatible result' },
-      ]);
+      expect(sendCalls[0]).toEqual(['ext-001', { body: 'OpenAI-compatible result' }]);
       expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
         'thread-001',
         'persona-001',
@@ -917,6 +1044,77 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('auto-enqueues continuation after rotation for resumable providers that opt in', async () => {
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 210_000, outputTokens: 90 },
+        }),
+      );
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'qwen3.5-9b-optiq-4bit',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are an OpenAI-compatible test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      ctx.queueManager = {
+        enqueue: vi.fn().mockReturnValue(ok({})),
+      } as any;
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue({
+          rotated: true,
+          hasOpenThreads: true,
+        }),
+      } as any;
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'openai-compatible',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              requiresContinuationAfterContextRotation: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 210_000,
+              metrics: {
+                input_tokens: 210_000,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.queueManager.enqueue).toHaveBeenCalledWith(
+        'thread-001',
+        'message',
+        { personaId: 'persona-001', content: 'continue' },
+        expect.any(String),
+      );
+    });
+
     it('logs and skips rotation when the configured trigger metric is unavailable', async () => {
       ctx.contextRoller = {
         checkAndRotate: vi.fn().mockResolvedValue(undefined),
@@ -924,6 +1122,7 @@ describe('AgentRunner', () => {
       const connector = ctx.channelRegistry.get('test-channel')!;
       ctx.providerRegistry = {
         getDefault: vi.fn().mockReturnValue({
+          type: 'gemini-cli',
           provider: {
             name: 'gemini-cli',
             createExecutionStrategy: () => ({
@@ -1162,17 +1361,19 @@ describe('AgentRunner', () => {
       // marker, metadata.originExternalId is the real chat recipient.
       // Retained for symmetry with the live-run tests that this thread
       // shape exercises.
-      ctx.repos.thread.findById = vi.fn().mockReturnValue(ok({
-        id: 'thread-001',
-        channel_id: 'chan-001',
-        external_id: 'schedule:work-context-manager:Telegram-workContext:74575531',
-        metadata: JSON.stringify({
-          kind: 'schedule',
-          originExternalId: '74575531',
-          personaName: 'work-context-manager',
-          channelName: 'Telegram-workContext',
+      ctx.repos.thread.findById = vi.fn().mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: 'schedule:work-context-manager:Telegram-workContext:74575531',
+          metadata: JSON.stringify({
+            kind: 'schedule',
+            originExternalId: '74575531',
+            personaName: 'work-context-manager',
+            channelName: 'Telegram-workContext',
+          }),
         }),
-      })) as any;
+      ) as any;
     });
 
     it('does not implicit-deliver the final assistant message for schedule items — agent must use channel.send', async () => {
@@ -1181,9 +1382,11 @@ describe('AgentRunner', () => {
       // ("Silent — lunch window..."), does NOT invoke channel.send.
       // Auto-delivering that wrap-up would re-introduce the noise the
       // pre-existing schedule-skip was added to prevent.
-      mockQuery.mockReturnValue(makeAgentStream({
-        result: 'Silent — lunch window, items from 11:05 still pending. Log written.',
-      }));
+      mockQuery.mockReturnValue(
+        makeAgentStream({
+          result: 'Silent — lunch window, items from 11:05 still pending. Log written.',
+        }),
+      );
 
       const connector = ctx.channelRegistry.get('test-channel')!;
       const item = makeQueueItem({ type: 'schedule' });
@@ -1220,14 +1423,44 @@ describe('AgentRunner', () => {
       // Should have passed the DB session to the agent SDK
       const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
       expect(queryCall.options.resume).toBe('session-from-db');
-      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
-        'thread-001',
-        'claude-code',
-        { excludeCollaboration: true },
-      );
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'claude-code', {
+        excludeCollaboration: true,
+        modelName: 'claude-sonnet-4-20250514',
+        reasoningEffort: null,
+      });
       expect(ctx.observability.observe).not.toHaveBeenCalledWith(
         expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
         expect.any(Function),
+      );
+    });
+
+    it('does not restore an explicit-effort DB session when persona omits reasoningEffort', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockImplementation(
+        (_threadId: string, _providerName?: string, options?: { reasoningEffort?: unknown }) => {
+          const hasNoEffortFilter =
+            options !== undefined &&
+            Object.prototype.hasOwnProperty.call(options, 'reasoningEffort') &&
+            options.reasoningEffort === null;
+          return ok(hasNoEffortFilter ? null : 'explicit-effort-session');
+        },
+      );
+      const item = makeQueueItem();
+
+      await runner.run(item);
+
+      const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
+      expect(queryCall.options.resume).toBeUndefined();
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'claude-code', {
+        excludeCollaboration: true,
+        modelName: 'claude-sonnet-4-20250514',
+        reasoningEffort: null,
+      });
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          session_id: null,
+          reasoning_effort: null,
+        }),
       );
     });
 
@@ -1245,6 +1478,7 @@ describe('AgentRunner', () => {
         'thread-001',
         'session-abc-123',
         'claude-code',
+        'claude-sonnet-4-20250514',
       );
     });
 
@@ -1304,69 +1538,71 @@ describe('AgentRunner', () => {
         },
         isError: false,
       });
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'gemini-2.5-pro',
-          provider: 'claude-code',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gemini-2.5-pro',
+            provider: 'claude-code',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
       vi.mocked(ctx.repos.run.getLatestProviderName).mockReturnValue(ok('gemini-cli'));
       const getProvider = vi.fn().mockImplementation((name: string) => {
-          if (name === 'gemini-cli') {
-            return {
-              provider: {
-                name: 'gemini-cli',
-                createExecutionStrategy: () => ({
-                  type: 'cli' as const,
-                  supportsSessionResumption: false as const,
-                  run: cliRun,
-                }),
-                prepareBackgroundInvocation: vi.fn(),
-                parseBackgroundResult: vi.fn(),
-                estimateContextUsage: vi.fn().mockReturnValue({
-                  inputTokens: 250_000,
-                  metrics: {
-                    input_tokens: 250_000,
-                  },
-                }),
-              },
-              config: makeAgentRunnerProviderConfig({
-                command: 'gemini',
-                contextWindowTokens: 1_000_000,
-                contextManagement: makeContextManagement({
-                  triggerMetric: 'input_tokens',
-                  thresholdRatio: 0.8,
-                }),
-              }),
-            };
-          }
+        if (name === 'gemini-cli') {
           return {
             provider: {
-              name: 'claude-code',
+              name: 'gemini-cli',
               createExecutionStrategy: () => ({
-                type: 'sdk' as const,
-                supportsSessionResumption: true as const,
-                run: () => makeAgentStream(),
+                type: 'cli' as const,
+                supportsSessionResumption: false as const,
+                run: cliRun,
               }),
               prepareBackgroundInvocation: vi.fn(),
               parseBackgroundResult: vi.fn(),
               estimateContextUsage: vi.fn().mockReturnValue({
-                inputTokens: 0,
+                inputTokens: 250_000,
                 metrics: {
-                  cache_read_input_tokens: 0,
+                  input_tokens: 250_000,
                 },
               }),
             },
-            config: makeAgentRunnerProviderConfig(),
+            config: makeAgentRunnerProviderConfig({
+              command: 'gemini',
+              contextWindowTokens: 1_000_000,
+              contextManagement: makeContextManagement({
+                triggerMetric: 'input_tokens',
+                thresholdRatio: 0.8,
+              }),
+            }),
           };
-        });
+        }
+        return {
+          provider: {
+            name: 'claude-code',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              run: () => makeAgentStream(),
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 0,
+              metrics: {
+                cache_read_input_tokens: 0,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig(),
+        };
+      });
       ctx.providerRegistry = {
         get: getProvider,
         getDefault: vi.fn().mockImplementation((preferred: string[]) => {
@@ -1392,12 +1628,14 @@ describe('AgentRunner', () => {
     });
 
     it('ignores pre-reset affinity and stale in-memory sessions', async () => {
-      vi.mocked(ctx.repos.thread.findById).mockReturnValue(ok({
-        id: 'thread-001',
-        channel_id: 'chan-001',
-        external_id: 'ext-001',
-        metadata: '{"providerAffinityResetAt":500}',
-      }) as any);
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: 'ext-001',
+          metadata: '{"providerAffinityResetAt":500}',
+        }) as any,
+      );
       vi.mocked(ctx.repos.run.getLatestProviderName).mockReturnValue(ok(null));
       vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(null));
       vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-session');
@@ -1405,10 +1643,10 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.repos.run.getLatestProviderName).toHaveBeenCalledWith(
-        'thread-001',
-        { sinceCreatedAt: 500, excludeCollaboration: true },
-      );
+      expect(ctx.repos.run.getLatestProviderName).toHaveBeenCalledWith('thread-001', {
+        sinceCreatedAt: 500,
+        excludeCollaboration: true,
+      });
       expect(ctx.sessionTracker.clearSession).toHaveBeenCalledWith('thread-001', 'claude-code');
       expect(ctx.sessionTracker.getSessionId).not.toHaveBeenCalled();
       const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
@@ -1452,18 +1690,20 @@ describe('AgentRunner', () => {
         }),
       });
 
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'gemini-2.5-pro',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a Gemini test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gemini-2.5-pro',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a Gemini test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
       ctx.config.agentRunner.defaultProvider = 'gemini-cli';
       ctx.providerRegistry = {
         get: vi.fn().mockReturnValue(undefined),
@@ -1487,26 +1727,30 @@ describe('AgentRunner', () => {
         isError: false,
       });
 
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'gpt-5.4',
-          provider: 'codex-cli',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a Codex test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      } as any));
-      vi.mocked(ctx.sessionTracker.getSessionId).mockImplementation((_threadId: string, providerName?: string) => (
-        providerName === 'claude-code' ? 'claude-session-uuid' : undefined
-      ));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gpt-5.4',
+            provider: 'codex-cli',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a Codex test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      vi.mocked(ctx.sessionTracker.getSessionId).mockImplementation(
+        (_threadId: string, providerName?: string) =>
+          providerName === 'claude-code' ? 'claude-session-uuid' : undefined,
+      );
       vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(null));
       ctx.providerRegistry = {
         get: vi.fn().mockReturnValue(undefined),
         getDefault: vi.fn().mockReturnValue({
+          type: 'codex-cli',
           provider: {
             name: 'codex-cli',
             createExecutionStrategy: () => ({
@@ -1537,15 +1781,21 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli');
-      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith(
         'thread-001',
         'codex-cli',
-        { excludeCollaboration: true },
+        'gpt-5.4',
       );
-      expect(cliRun).toHaveBeenCalledWith(expect.not.objectContaining({
-        sessionId: expect.anything(),
-      }));
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'codex-cli', {
+        excludeCollaboration: true,
+        modelName: 'gpt-5.4',
+        reasoningEffort: null,
+      });
+      expect(cliRun).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          sessionId: expect.anything(),
+        }),
+      );
       const connector = ctx.channelRegistry.get('test-channel')!;
       expect(vi.mocked(connector.send).mock.calls).toEqual([
         ['ext-001', { body: 'Codex fresh result' }],
@@ -1597,12 +1847,16 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli');
-      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith(
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith(
         'thread-001',
         'resumable-cli',
-        { excludeCollaboration: true },
+        'claude-sonnet-4-20250514',
       );
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'resumable-cli', {
+        excludeCollaboration: true,
+        modelName: 'claude-sonnet-4-20250514',
+        reasoningEffort: null,
+      });
       expect(cliRun).toHaveBeenCalledWith(
         expect.objectContaining({
           threadId: 'thread-001',
@@ -1668,6 +1922,7 @@ describe('AgentRunner', () => {
         'thread-001',
         'resumable-cli-session-123',
         'resumable-cli',
+        'claude-sonnet-4-20250514',
       );
       expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
         expect.any(String),
@@ -1742,7 +1997,10 @@ describe('AgentRunner', () => {
       expect(ctx.repos.run.getLatestSessionId).not.toHaveBeenCalled();
       expect(ctx.sessionTracker.setSessionId).not.toHaveBeenCalled();
       expect(ctx.repos.run.updateSessionId).not.toHaveBeenCalled();
-      expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith('a2a-task-1', 'A2A worker output');
+      expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith(
+        'a2a-task-1',
+        'A2A worker output',
+      );
     });
 
     it('ignores source-thread provider affinity for A2A tasks and uses the delegated persona provider', async () => {
@@ -1760,19 +2018,21 @@ describe('AgentRunner', () => {
         markCompleted: vi.fn().mockReturnValue(ok(undefined)),
         markFailed: vi.fn().mockReturnValue(ok(undefined)),
       };
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'claude-sonnet-4-6',
-          provider: 'claude-code',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a delegated Claude worker.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-6',
+            provider: 'claude-code',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a delegated Claude worker.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
       vi.mocked(ctx.repos.run.getLatestProviderName).mockReturnValue(ok('codex-cli'));
       const getProvider = vi.fn().mockImplementation((name: string) => {
         if (name === 'codex-cli') {
@@ -1853,7 +2113,10 @@ describe('AgentRunner', () => {
           provider_name: 'claude-code',
         }),
       );
-      expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith('a2a-task-2', 'Hello from the agent!');
+      expect((ctx.repos as any).a2aTask.markCompleted).toHaveBeenCalledWith(
+        'a2a-task-2',
+        'Hello from the agent!',
+      );
     });
 
     it('ignores collaboration runs when selecting provider affinity for normal messages', async () => {
@@ -1888,10 +2151,9 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.repos.run.getLatestProviderName).toHaveBeenCalledWith(
-        'thread-001',
-        { excludeCollaboration: true },
-      );
+      expect(ctx.repos.run.getLatestProviderName).toHaveBeenCalledWith('thread-001', {
+        excludeCollaboration: true,
+      });
       expect(getDefault).toHaveBeenCalledWith(['claude-code']);
     });
   });
@@ -1940,11 +2202,12 @@ describe('AgentRunner', () => {
         'thread-001',
         'session-abc-123',
         'claude-code',
+        'claude-sonnet-4-20250514',
       );
       expect(
-        vi.mocked(ctx.observability.observe).mock.calls.filter(
-          ([input]) => input.type === 'generation',
-        ),
+        vi
+          .mocked(ctx.observability.observe)
+          .mock.calls.filter(([input]) => input.type === 'generation'),
       ).toHaveLength(2);
     });
 
@@ -2192,19 +2455,21 @@ describe('AgentRunner', () => {
           }),
         }),
       } as any;
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'claude-sonnet-4-20250514',
-          skills: [],
-          capabilities: { allow: [] },
-          queryTimeoutMinutes: 45,
-        },
-        systemPromptContent: 'You are a test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      }));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: [],
+            capabilities: { allow: [] },
+            queryTimeoutMinutes: 45,
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        }),
+      );
 
       await runner.run(makeQueueItem());
 
@@ -2228,7 +2493,10 @@ describe('AgentRunner', () => {
               callCount += 1;
               if (callCount === 1) {
                 // Emit one event so the iterator is "active"
-                return Promise.resolve({ done: false, value: { type: 'text', content: 'partial' } });
+                return Promise.resolve({
+                  done: false,
+                  value: { type: 'text', content: 'partial' },
+                });
               }
               // Stall indefinitely — simulates a slow provider
               return new Promise(() => {});
@@ -2291,7 +2559,9 @@ describe('AgentRunner', () => {
       const result = await runner.run(item);
 
       expect(result.isErr()).toBe(true);
-      expect(result._unsafeUnwrapErr().message).toContain('No enabled agent runner provider is configured');
+      expect(result._unsafeUnwrapErr().message).toContain(
+        'No enabled agent runner provider is configured',
+      );
       expect(ctx.repos.run.insert).not.toHaveBeenCalled();
       expect(ctx.repos.run.updateStatus).not.toHaveBeenCalled();
     });
@@ -2322,7 +2592,9 @@ describe('AgentRunner', () => {
       expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
         expect.any(String),
         'failed',
-        expect.objectContaining({ error: expect.stringContaining('upstream connection reset mid-stream') }),
+        expect.objectContaining({
+          error: expect.stringContaining('upstream connection reset mid-stream'),
+        }),
       );
     });
 
@@ -2412,19 +2684,21 @@ describe('AgentRunner', () => {
 
     it('includes personalityContent between system prompt and channel context', async () => {
       // Override personaLoader to return a persona with personalityContent.
-      (runner as any).ctx.personaLoader.getByName.mockReturnValue(ok({
-        config: {
-          model: 'claude-sonnet-4-20250514',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a test bot.',
-        personalityContent: 'Be witty and concise.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
-          requireApproval: [],
-        },
-      }));
+      (runner as any).ctx.personaLoader.getByName.mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          personalityContent: 'Be witty and concise.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        }),
+      );
 
       const item = makeQueueItem();
       await runner.run(item);
@@ -2448,18 +2722,20 @@ describe('AgentRunner', () => {
 
   describe('background-agent tool exposure', () => {
     it('does not list background_agent in TALOND_ALLOWED_TOOLS when the manager is unavailable', async () => {
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'claude-sonnet-4-20250514',
-          skills: [],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*', 'subagent.background'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'subagent.background'],
+            requireApproval: [],
+          },
+        } as any),
+      );
 
       const item = makeQueueItem();
       await runner.run(item);
@@ -2467,9 +2743,10 @@ describe('AgentRunner', () => {
       const queryCall = mockQuery.mock.calls[0]![0] as {
         options: { mcpServers: Record<string, any> };
       };
-      const allowedTools = queryCall.options.mcpServers.__talond_host_tools.env.TALOND_ALLOWED_TOOLS
-        .split(',')
-        .filter(Boolean);
+      const allowedTools =
+        queryCall.options.mcpServers.__talond_host_tools.env.TALOND_ALLOWED_TOOLS.split(',').filter(
+          Boolean,
+        );
 
       expect(allowedTools).toContain('channel_send');
       expect(allowedTools).not.toContain('background_agent');
@@ -2498,18 +2775,20 @@ describe('AgentRunner', () => {
     });
 
     it('injects an in-process skill_load MCP server for SDK providers', async () => {
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'claude-sonnet-4-20250514',
-          skills: ['brainstorming', 'empty'],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: ['brainstorming', 'empty'],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*'],
+            requireApproval: [],
+          },
+        } as any),
+      );
 
       (ctx as any).loadedSkills = [
         {
@@ -2583,19 +2862,21 @@ describe('AgentRunner', () => {
         isError: false,
       });
 
-      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          model: 'gemini-2.5-pro',
-          provider: 'gemini-cli',
-          skills: ['brainstorming'],
-          capabilities: { allow: [] },
-        },
-        systemPromptContent: 'You are a Gemini test bot.',
-        resolvedCapabilities: {
-          allow: ['channel.send:*'],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gemini-2.5-pro',
+            provider: 'gemini-cli',
+            skills: ['brainstorming'],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a Gemini test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*'],
+            requireApproval: [],
+          },
+        } as any),
+      );
       ctx.config.agentRunner.defaultProvider = 'gemini-cli';
       ctx.providerRegistry = {
         getDefault: vi.fn().mockReturnValue({
@@ -2786,7 +3067,11 @@ describe('AgentRunner', () => {
       const github = queryCall.options.mcpServers['github'];
       expect(github.headers).toEqual({ Authorization: 'Bearer ' });
       expect(ctx.logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({ mcpServer: 'github', header: 'Authorization', variable: 'MISSING_VAR' }),
+        expect.objectContaining({
+          mcpServer: 'github',
+          header: 'Authorization',
+          variable: 'MISSING_VAR',
+        }),
         expect.stringContaining('unresolved env var'),
       );
 
@@ -3069,10 +3354,10 @@ describe('AgentRunner', () => {
       const toolObservation = makeStartedObservationHandle(null);
       ctx.observability.startWithTraceparent = vi.fn((tp, input) => {
         // Generation observation returns GENERATION_TRACEPARENT; tool observations get null.
-        if (input.type === 'generation') return makeStartedObservationHandle(GENERATION_TRACEPARENT);
+        if (input.type === 'generation')
+          return makeStartedObservationHandle(GENERATION_TRACEPARENT);
         return toolObservation;
       });
-
 
       async function* streamWithToolUse() {
         yield { type: 'tool_use', tool: 'Read', subtype: undefined };
@@ -3124,13 +3409,20 @@ describe('AgentRunner', () => {
     it('ends no-toolUseId tool observation with ERROR when tool_result is an error', async () => {
       const toolObservation = makeStartedObservationHandle(null);
       ctx.observability.startWithTraceparent = vi.fn((tp, input) => {
-        if (input.type === 'generation') return makeStartedObservationHandle(GENERATION_TRACEPARENT);
+        if (input.type === 'generation')
+          return makeStartedObservationHandle(GENERATION_TRACEPARENT);
         return toolObservation;
       });
 
       async function* streamWithErrorResult() {
         yield { type: 'tool_use', tool: 'Bash', subtype: undefined };
-        yield { type: 'tool_result', tool: 'Bash', subtype: 'error', is_error: true, content: 'command failed' };
+        yield {
+          type: 'tool_result',
+          tool: 'Bash',
+          subtype: 'error',
+          is_error: true,
+          content: 'command failed',
+        };
         yield {
           type: 'result',
           subtype: 'success',
@@ -3229,9 +3521,9 @@ describe('AgentRunner', () => {
 
       await runner.run(item);
 
-      const streamingEventCalls = vi.mocked(ctx.logger.debug).mock.calls.filter(
-        (call) => call[1] === 'agent-sdk: streaming event',
-      );
+      const streamingEventCalls = vi
+        .mocked(ctx.logger.debug)
+        .mock.calls.filter((call) => call[1] === 'agent-sdk: streaming event');
       expect(streamingEventCalls).toHaveLength(0);
     });
   });
@@ -3249,9 +3541,9 @@ describe('AgentRunner', () => {
 
       await runner.run(item);
 
-      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
-        ([, body]) => (body as { body: string }).body !== 'Thinking...',
-      );
+      const sendCalls = vi
+        .mocked(connector.send)
+        .mock.calls.filter(([, body]) => (body as { body: string }).body !== 'Thinking...');
       expect(sendCalls).toHaveLength(1);
       expect(sendCalls[0]![1]).toEqual({ body: 'Hello from the agent!' });
     });
@@ -3297,16 +3589,18 @@ describe('AgentRunner', () => {
 
       await runner.run(item);
 
-      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
-        ([, body]) => (body as { body: string }).body !== 'Thinking...',
-      );
+      const sendCalls = vi
+        .mocked(connector.send)
+        .mock.calls.filter(([, body]) => (body as { body: string }).body !== 'Thinking...');
       expect(sendCalls).toHaveLength(2);
       expect(sendCalls[0]![1]).toEqual({ body: 'Before tool.' });
       expect(sendCalls[1]![1]).toEqual({ body: 'After tool.' });
 
       // Verify DB persistence stores the full transcript with block separators
       expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
-      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as { content: string };
+      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as {
+        content: string;
+      };
       const persisted = JSON.parse(insertCall.content);
       expect(persisted.body).toBe('Before tool.\n\nAfter tool.');
     });
@@ -3364,9 +3658,9 @@ describe('AgentRunner', () => {
 
       await runner.run(item);
 
-      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
-        ([, body]) => (body as { body: string }).body !== 'Thinking...',
-      );
+      const sendCalls = vi
+        .mocked(connector.send)
+        .mock.calls.filter(([, body]) => (body as { body: string }).body !== 'Thinking...');
       expect(sendCalls).toHaveLength(3);
       expect(sendCalls[0]![1]).toEqual({ body: 'Block 1.' });
       expect(sendCalls[1]![1]).toEqual({ body: 'Block 2.' });
@@ -3374,7 +3668,9 @@ describe('AgentRunner', () => {
 
       // Verify DB persistence stores the full transcript with block separators
       expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
-      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as { content: string };
+      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as {
+        content: string;
+      };
       const persisted = JSON.parse(insertCall.content);
       expect(persisted.body).toBe('Block 1.\n\nBlock 2.\n\nBlock 3.');
     });
@@ -3386,10 +3682,7 @@ describe('AgentRunner', () => {
         yield {
           type: 'assistant',
           message: {
-            content: [
-              { text: 'Part A. ' },
-              { text: 'Part B.' },
-            ],
+            content: [{ text: 'Part A. ' }, { text: 'Part B.' }],
           },
         };
         yield {
@@ -3409,9 +3702,9 @@ describe('AgentRunner', () => {
 
       await runner.run(item);
 
-      const sendCalls = vi.mocked(connector.send).mock.calls.filter(
-        ([, body]) => (body as { body: string }).body !== 'Thinking...',
-      );
+      const sendCalls = vi
+        .mocked(connector.send)
+        .mock.calls.filter(([, body]) => (body as { body: string }).body !== 'Thinking...');
       expect(sendCalls).toHaveLength(1);
       expect(sendCalls[0]![1]).toEqual({ body: 'Part A. Part B.' });
     });
@@ -3465,9 +3758,9 @@ describe('AgentRunner', () => {
 
       await runner.run(makeQueueItem());
 
-      const sendBodies = vi.mocked(connector.send).mock.calls.map(
-        ([, body]) => (body as { body: string }).body,
-      );
+      const sendBodies = vi
+        .mocked(connector.send)
+        .mock.calls.map(([, body]) => (body as { body: string }).body);
       // preceding text → tool description → post-tool text
       expect(sendBodies).toContain('💾 Using Memory Access');
       const toolCallIndex = sendBodies.indexOf('💾 Using Memory Access');
@@ -3489,9 +3782,9 @@ describe('AgentRunner', () => {
 
       await runner.run(makeQueueItem());
 
-      const sendBodies = vi.mocked(connector.send).mock.calls.map(
-        ([, body]) => (body as { body: string }).body,
-      );
+      const sendBodies = vi
+        .mocked(connector.send)
+        .mock.calls.map(([, body]) => (body as { body: string }).body);
       expect(sendBodies).not.toContain('💾 Using Memory Access');
     });
 
@@ -3502,9 +3795,9 @@ describe('AgentRunner', () => {
 
       await runner.run(makeQueueItem());
 
-      const sendBodies = vi.mocked(connector.send).mock.calls.map(
-        ([, body]) => (body as { body: string }).body,
-      );
+      const sendBodies = vi
+        .mocked(connector.send)
+        .mock.calls.map(([, body]) => (body as { body: string }).body);
       expect(sendBodies).not.toContain('💾 Using Memory Access');
     });
 
@@ -3556,9 +3849,9 @@ describe('AgentRunner', () => {
 
       await runner.run(makeQueueItem());
 
-      const sendBodies = vi.mocked(connector.send).mock.calls.map(
-        ([, body]) => (body as { body: string }).body,
-      );
+      const sendBodies = vi
+        .mocked(connector.send)
+        .mock.calls.map(([, body]) => (body as { body: string }).body);
       expect(sendBodies).toContain('🌐 Using Brave Search: web search');
     });
 
@@ -3610,13 +3903,12 @@ describe('AgentRunner', () => {
 
       await runner.run(makeQueueItem());
 
-      const sendBodies = vi.mocked(connector.send).mock.calls.map(
-        ([, body]) => (body as { body: string }).body,
-      );
+      const sendBodies = vi
+        .mocked(connector.send)
+        .mock.calls.map(([, body]) => (body as { body: string }).body);
       // Internal tools should NOT produce a tool call description
       const toolDescriptions = sendBodies.filter((b) => b.startsWith('💾') || b.startsWith('🔧'));
       expect(toolDescriptions).toHaveLength(0);
     });
   });
-
 });

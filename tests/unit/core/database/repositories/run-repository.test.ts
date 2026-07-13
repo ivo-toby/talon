@@ -61,6 +61,8 @@ describe('RunRepository', () => {
       thread_id: threadId,
       persona_id: personaId,
       provider_name: 'claude-code',
+      model_name: 'claude-sonnet-4-6',
+      reasoning_effort: null,
       sandbox_id: null,
       session_id: null,
       status: 'pending' as const,
@@ -80,14 +82,16 @@ describe('RunRepository', () => {
 
   function makeQueueItem(type: 'message' | 'schedule' | 'collaboration') {
     const queue = new QueueRepository(db);
-    return queue.enqueue({
-      id: uuid(),
-      thread_id: threadId,
-      message_id: null,
-      type,
-      payload: '{}',
-      max_attempts: 3,
-    })._unsafeUnwrap();
+    return queue
+      .enqueue({
+        id: uuid(),
+        thread_id: threadId,
+        message_id: null,
+        type,
+        payload: '{}',
+        max_attempts: 3,
+      })
+      ._unsafeUnwrap();
   }
 
   describe('insert', () => {
@@ -98,6 +102,16 @@ describe('RunRepository', () => {
       expect(result._unsafeUnwrap().id).toBe(input.id);
       expect(result._unsafeUnwrap().provider_name).toBe('claude-code');
       expect(result._unsafeUnwrap().status).toBe('pending');
+    });
+
+    it('stores reasoning_effort when provided', () => {
+      const result = repo.insert(makeRun({ reasoning_effort: 'high' }));
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().reasoning_effort).toBe('high');
+      expect(repo.findById(result._unsafeUnwrap().id)._unsafeUnwrap()?.reasoning_effort).toBe(
+        'high',
+      );
     });
 
     it('returns err for unknown thread_id (FK)', () => {
@@ -178,14 +192,22 @@ describe('RunRepository', () => {
     it('can exclude collaboration runs from provider affinity lookup', () => {
       const messageQueue = makeQueueItem('message');
       const collaborationQueue = makeQueueItem('collaboration');
-      const messageRun = repo.insert(makeRun({
-        provider_name: 'claude-code',
-        queue_item_id: messageQueue.id,
-      }))._unsafeUnwrap();
-      const collaborationRun = repo.insert(makeRun({
-        provider_name: 'codex-cli',
-        queue_item_id: collaborationQueue.id,
-      }))._unsafeUnwrap();
+      const messageRun = repo
+        .insert(
+          makeRun({
+            provider_name: 'claude-code',
+            queue_item_id: messageQueue.id,
+          }),
+        )
+        ._unsafeUnwrap();
+      const collaborationRun = repo
+        .insert(
+          makeRun({
+            provider_name: 'codex-cli',
+            queue_item_id: collaborationQueue.id,
+          }),
+        )
+        ._unsafeUnwrap();
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, messageRun.id);
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, collaborationRun.id);
 
@@ -198,21 +220,27 @@ describe('RunRepository', () => {
 
   describe('getLatestSessionId', () => {
     it('returns the most recent session_id for a specific provider when requested', () => {
-      repo.insert(makeRun({
-        provider_name: 'claude-code',
-        session_id: 'claude-session-1',
-        status: 'completed',
-      }));
-      repo.insert(makeRun({
-        provider_name: 'codex-cli',
-        session_id: 'codex-session-1',
-        status: 'completed',
-      }));
-      repo.insert(makeRun({
-        provider_name: 'claude-code',
-        session_id: 'claude-session-2',
-        status: 'completed',
-      }));
+      repo.insert(
+        makeRun({
+          provider_name: 'claude-code',
+          session_id: 'claude-session-1',
+          status: 'completed',
+        }),
+      );
+      repo.insert(
+        makeRun({
+          provider_name: 'codex-cli',
+          session_id: 'codex-session-1',
+          status: 'completed',
+        }),
+      );
+      repo.insert(
+        makeRun({
+          provider_name: 'claude-code',
+          session_id: 'claude-session-2',
+          status: 'completed',
+        }),
+      );
 
       const result = repo.getLatestSessionId(threadId, 'codex-cli');
 
@@ -220,17 +248,115 @@ describe('RunRepository', () => {
       expect(result._unsafeUnwrap()).toBe('codex-session-1');
     });
 
+    it('only returns a session_id for the requested model when modelName is supplied', () => {
+      const older = repo
+        .insert(
+          makeRun({
+            provider_name: 'ollama-mac',
+            model_name: 'Qwen3.5-9B-OptiQ-4bit',
+            session_id: 'old-model-session',
+            status: 'completed',
+          }),
+        )
+        ._unsafeUnwrap();
+      const newer = repo
+        .insert(
+          makeRun({
+            provider_name: 'ollama-mac',
+            model_name: 'Qwen3-30B-A3B-Instruct-2507-4bit',
+            session_id: 'new-model-session',
+            status: 'completed',
+          }),
+        )
+        ._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
+
+      const oldModel = repo.getLatestSessionId(threadId, 'ollama-mac', {
+        modelName: 'Qwen3.5-9B-OptiQ-4bit',
+      });
+      const missingModel = repo.getLatestSessionId(threadId, 'ollama-mac', {
+        modelName: 'gemma-4-12B-it-4bit',
+      });
+
+      expect(oldModel.isOk()).toBe(true);
+      expect(oldModel._unsafeUnwrap()).toBe('old-model-session');
+      expect(missingModel.isOk()).toBe(true);
+      expect(missingModel._unsafeUnwrap()).toBeNull();
+    });
+
+    it('only returns a session_id for the requested reasoning effort when supplied', () => {
+      const noEffort = repo
+        .insert(
+          makeRun({
+            provider_name: 'codex-cli',
+            model_name: 'gpt-5.4',
+            reasoning_effort: null,
+            session_id: 'no-effort-session',
+            status: 'completed',
+          }),
+        )
+        ._unsafeUnwrap();
+      const low = repo
+        .insert(
+          makeRun({
+            provider_name: 'codex-cli',
+            model_name: 'gpt-5.4',
+            reasoning_effort: 'low',
+            session_id: 'low-session',
+            status: 'completed',
+          }),
+        )
+        ._unsafeUnwrap();
+      const high = repo
+        .insert(
+          makeRun({
+            provider_name: 'codex-cli',
+            model_name: 'gpt-5.4',
+            reasoning_effort: 'high',
+            session_id: 'high-session',
+            status: 'completed',
+          }),
+        )
+        ._unsafeUnwrap();
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, noEffort.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, low.id);
+      db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(300, high.id);
+
+      const lowResult = repo.getLatestSessionId(threadId, 'codex-cli', {
+        modelName: 'gpt-5.4',
+        reasoningEffort: 'low',
+      });
+      const noEffortResult = repo.getLatestSessionId(threadId, 'codex-cli', {
+        modelName: 'gpt-5.4',
+        reasoningEffort: null,
+      });
+
+      expect(lowResult.isOk()).toBe(true);
+      expect(lowResult._unsafeUnwrap()).toBe('low-session');
+      expect(noEffortResult.isOk()).toBe(true);
+      expect(noEffortResult._unsafeUnwrap()).toBe('no-effort-session');
+    });
+
     it('ignores sessions older than the provided lower bound', () => {
-      const older = repo.insert(makeRun({
-        provider_name: 'claude-code',
-        session_id: 'claude-session-1',
-        status: 'completed',
-      }))._unsafeUnwrap();
-      const newer = repo.insert(makeRun({
-        provider_name: 'claude-code',
-        session_id: 'claude-session-2',
-        status: 'completed',
-      }))._unsafeUnwrap();
+      const older = repo
+        .insert(
+          makeRun({
+            provider_name: 'claude-code',
+            session_id: 'claude-session-1',
+            status: 'completed',
+          }),
+        )
+        ._unsafeUnwrap();
+      const newer = repo
+        .insert(
+          makeRun({
+            provider_name: 'claude-code',
+            session_id: 'claude-session-2',
+            status: 'completed',
+          }),
+        )
+        ._unsafeUnwrap();
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
 
@@ -243,38 +369,52 @@ describe('RunRepository', () => {
     it('can exclude collaboration runs from session lookup', () => {
       const messageQueue = makeQueueItem('message');
       const collaborationQueue = makeQueueItem('collaboration');
-      const messageRun = repo.insert(makeRun({
-        provider_name: 'claude-code',
-        session_id: 'claude-session-1',
-        status: 'completed',
-        queue_item_id: messageQueue.id,
-      }))._unsafeUnwrap();
-      const collaborationRun = repo.insert(makeRun({
-        provider_name: 'claude-code',
-        session_id: 'claude-session-2',
-        status: 'completed',
-        queue_item_id: collaborationQueue.id,
-      }))._unsafeUnwrap();
+      const messageRun = repo
+        .insert(
+          makeRun({
+            provider_name: 'claude-code',
+            session_id: 'claude-session-1',
+            status: 'completed',
+            queue_item_id: messageQueue.id,
+          }),
+        )
+        ._unsafeUnwrap();
+      const collaborationRun = repo
+        .insert(
+          makeRun({
+            provider_name: 'claude-code',
+            session_id: 'claude-session-2',
+            status: 'completed',
+            queue_item_id: collaborationQueue.id,
+          }),
+        )
+        ._unsafeUnwrap();
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, messageRun.id);
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, collaborationRun.id);
 
-      const result = repo.getLatestSessionId(threadId, 'claude-code', { excludeCollaboration: true });
+      const result = repo.getLatestSessionId(threadId, 'claude-code', {
+        excludeCollaboration: true,
+      });
 
       expect(result.isOk()).toBe(true);
       expect(result._unsafeUnwrap()).toBe('claude-session-1');
     });
 
     it('falls back to thread-wide lookup when provider is omitted', () => {
-      repo.insert(makeRun({
-        provider_name: 'claude-code',
-        session_id: 'claude-session-1',
-        status: 'completed',
-      }));
-      repo.insert(makeRun({
-        provider_name: 'codex-cli',
-        session_id: 'codex-session-1',
-        status: 'completed',
-      }));
+      repo.insert(
+        makeRun({
+          provider_name: 'claude-code',
+          session_id: 'claude-session-1',
+          status: 'completed',
+        }),
+      );
+      repo.insert(
+        makeRun({
+          provider_name: 'codex-cli',
+          session_id: 'codex-session-1',
+          status: 'completed',
+        }),
+      );
 
       const result = repo.getLatestSessionId(threadId);
 
@@ -285,8 +425,12 @@ describe('RunRepository', () => {
 
   describe('findLatestByThread', () => {
     it('returns the most recent run row for the thread', () => {
-      const older = repo.insert(makeRun({ provider_name: 'claude-code', status: 'completed' }))._unsafeUnwrap();
-      const newer = repo.insert(makeRun({ provider_name: 'codex-cli', status: 'failed' }))._unsafeUnwrap();
+      const older = repo
+        .insert(makeRun({ provider_name: 'claude-code', status: 'completed' }))
+        ._unsafeUnwrap();
+      const newer = repo
+        .insert(makeRun({ provider_name: 'codex-cli', status: 'failed' }))
+        ._unsafeUnwrap();
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, older.id);
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, newer.id);
 
@@ -300,16 +444,24 @@ describe('RunRepository', () => {
     it('can exclude collaboration runs when selecting the latest run', () => {
       const messageQueue = makeQueueItem('message');
       const collaborationQueue = makeQueueItem('collaboration');
-      const messageRun = repo.insert(makeRun({
-        provider_name: 'claude-code',
-        status: 'completed',
-        queue_item_id: messageQueue.id,
-      }))._unsafeUnwrap();
-      const collaborationRun = repo.insert(makeRun({
-        provider_name: 'codex-cli',
-        status: 'completed',
-        queue_item_id: collaborationQueue.id,
-      }))._unsafeUnwrap();
+      const messageRun = repo
+        .insert(
+          makeRun({
+            provider_name: 'claude-code',
+            status: 'completed',
+            queue_item_id: messageQueue.id,
+          }),
+        )
+        ._unsafeUnwrap();
+      const collaborationRun = repo
+        .insert(
+          makeRun({
+            provider_name: 'codex-cli',
+            status: 'completed',
+            queue_item_id: collaborationQueue.id,
+          }),
+        )
+        ._unsafeUnwrap();
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(100, messageRun.id);
       db.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run(200, collaborationRun.id);
 
