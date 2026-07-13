@@ -4,7 +4,7 @@
 
 # Talon
 
-**Resilient, secure, extensible autonomous agent daemon.**
+**Self-hosted AI agents that work where you do.**
 
 [![Tests](https://img.shields.io/badge/tests-2135%20passing-brightgreen)](#testing)
 [![Node](https://img.shields.io/badge/node-%3E%3D24-blue)](https://nodejs.org)
@@ -15,17 +15,17 @@
 
 ## What is Talon?
 
-Talon is a self-hosted daemon that orchestrates autonomous AI agents across multiple communication channels. You configure personas — each with their own system prompt, tools, and security policy — and bind them to channels like Telegram, Slack, Discord, WhatsApp, or email. Messages flow in, get routed to the right persona, executed by the configured provider runtime, and responses flow back out.
+Talon is an open-source runtime for long-lived AI workflows. Connect a persona to the channels and tools you already use, choose its model provider and tool boundaries, and run it on infrastructure you control.
 
-It is built for single-user or small-team deployments where you want persistent, always-on AI agents that you fully control — no cloud platform, no vendor lock-in, just a daemon on your server.
+It is for operators who want more than another chat window: a personal or small-team assistant that can retain context, run scheduled work, and use explicitly configured integrations. Talon is self-hosted software, not a hosted AI service. External model providers and MCP servers receive only the data you choose to send to them.
 
 ### Why Talon?
 
-- **Self-hosted**: runs on your own hardware, your data stays with you
-- **Resilient**: durable message queue survives crashes, automatic retry with exponential backoff, dead-letter handling
-- **Secure**: capability-based access control — every tool call is policy-checked and audit-logged
-- **Multi-channel**: one daemon handles Telegram, Slack, Discord, WhatsApp, email, and terminal simultaneously
-- **Multi-persona**: different agents with different personalities, tools, and permissions on different channels
+- **Useful across your existing tools** — connect chat channels, schedules, skills, and MCP integrations around one assistant.
+- **Runs where you choose** — deploy Talon yourself and select the model endpoint and integrations that fit your needs.
+- **Built to keep working** — a durable queue, persistent threads, and background execution support work that outlives a single message.
+- **Explicit boundaries** — personas receive only configured host-tool capabilities; host-side effects are audit logged.
+- **Composable by design** — use one persona for one job or route work among specialised personas when the workflow warrants it.
 
 ---
 
@@ -64,6 +64,13 @@ Full bundle reference: [`starter/README.md`](starter/README.md). Prefer
 running from a source clone as a systemd service? See
 [Quick start (from source)](#quick-start-from-source).
 
+### Is Talon a fit?
+
+Talon is a good fit if you are comfortable operating self-hosted software and
+want to connect AI to your own channels and services. It is not a consumer
+assistant, a hosted SaaS, or a guarantee that an external model provider,
+integration, or automation is safe without your configuration and review.
+
 ---
 
 ## Features
@@ -83,13 +90,15 @@ running from a source clone as a systemd service? See
 - **Provider-based execution** — Agents run through the configured provider runtime (Claude uses the Anthropic SDK path; Gemini and Codex use CLI strategies)
 - **Per-thread memory** — Each conversation thread gets its own workspace with transcript, working memory, and artifacts
 - **Skills** — Modular prompt and tool bundles with lazy loading (metadata-only in system prompt, full content on demand)
-- **MCP integration** — Connect external MCP tool servers via stdio, policy-enforced through host-tools bridge
+- **MCP integration** — Connect external MCP tool servers via stdio, HTTP, or SSE; Talon applies persona policy to its own host-tools bridge
 
-### Provider abstraction
+### Provider choice
 
-Agent execution is decoupled from any specific SDK or CLI. A provider layer sits between the daemon core and the actual model runtime, so swapping or adding providers doesn't require changes to the runner, queue, or context management.
+Choose the model runtime that fits your deployment. Talon keeps personas, channels, scheduling, and host-tool policy in its own layer while provider adapters execute the model call.
 
-Each provider implements a small interface: prepare execution invocations, parse output, estimate context usage, and create a runtime execution strategy. The daemon resolves which provider to use from config, both for the main agent runner and for background agents independently. Claude Code is the default provider, and Gemini CLI, Codex CLI are supported as first-class providers. An **experimental** OpenAI-compatible provider (Mastra-backed) is available for Ollama, vLLM, Groq, and other OpenAI-compatible endpoints. Provider entries may also set `type` to reuse an implementation under a distinct provider name, for example `ollama-mac` with `type: openai-compatible` alongside an existing Ollama Cloud provider.
+Under the hood, the provider layer separates the daemon from the model runtime, so changing or adding a provider does not require changes to the runner, queue, or context management. Each provider prepares an execution invocation, parses output, estimates context usage, and creates a runtime strategy. The daemon resolves providers separately for foreground and background agents.
+
+The current provider matrix is deliberately implementation detail: Claude Code is the default; Gemini CLI and Codex CLI are supported; and the **experimental** Mastra-backed OpenAI-compatible provider can use Ollama, vLLM, Groq, and other compatible endpoints. Provider entries can set `type` to reuse an implementation under another name, such as `ollama-mac` alongside an Ollama Cloud entry.
 
 This matters because it means you can:
 
@@ -217,7 +226,7 @@ backgroundAgent:
 ### Security
 
 - **Default-deny capabilities** — Tools are gated by capability labels (`channel.send`, `schedule.manage`, etc.)
-- **Approval gates** — High-risk actions prompt for user approval in-channel before executing
+- **Scoped host-tool access** — Personas expose only the configured host tools
 - **Secrets management** — Credentials via `${ENV_VAR}` substitution, never hardcoded in config
 - **Audit logging** — Every side-effecting operation recorded with full provenance
 
@@ -403,8 +412,6 @@ personas:
         - memory.access:*
         - subagent.invoke:*
         - subagent.background
-      requireApproval:
-        - fs.write:workspace
     maxConcurrent: 2
 
 channels:
@@ -960,8 +967,7 @@ personas:
         - net.http
         - schedule.manage
         - memory.access
-      requireApproval:
-        - db.query
+        - db.query:own
 
 bindings:
   - persona: alfred
@@ -980,7 +986,11 @@ When creating a persona, `add-persona` checks `templates/<name>/system.md` first
 
 ### Capability Labels
 
-Tools are gated by scoped capability labels. Capabilities are listed in `allow` or `requireApproval` arrays — anything not listed is denied by default.
+Tools are gated by scoped capability labels. Anything not listed in a persona's
+capability configuration is denied by default. Today, tools listed in either
+`allow` or `requireApproval` are exposed to the provider runtime. The latter
+field is reserved for bridge-level approval enforcement; it does not currently
+prompt a user or block execution.
 
 | Capability               | Description                                                                 |
 | ------------------------ | --------------------------------------------------------------------------- |
@@ -1000,12 +1010,9 @@ When an agent requests a tool:
 
 ```mermaid
 flowchart LR
-    A[Tool request] --> B{In persona's<br/>allow list?}
+    A[Tool request] --> B{In persona's<br/>capability configuration?}
     B -->|not listed| C[Reject]
-    B -->|allow| D[Execute]
-    B -->|requireApproval| E[Prompt user<br/>in channel]
-    E -->|approved| D
-    E -->|denied/timeout| C
+    B -->|allow or requireApproval| D[Expose tool to provider runtime]
 ```
 
 ---
@@ -1604,7 +1611,7 @@ npx talonctl chat --token mytoken --persona assistant
 | `--model <model>` | Model name | — |
 | `--provider <provider>` | Provider name | — |
 | `--capabilities <caps>` | Comma-separated capabilities allow list | — |
-| `--require-approval <caps>` | Comma-separated capabilities requiring approval | — |
+| `--require-approval <caps>` | Set the `requireApproval` capability list (not currently bridge-enforced) | — |
 | `--skills <skills>` | Comma-separated skill names | — |
 | `--system-prompt-file <path>` | Path to a system prompt markdown file | — |
 | `--description <text>` | Short description (written to system.md frontmatter) | — |
@@ -1674,7 +1681,7 @@ npx talonctl add-mcp --skill web-search --name tavily \
 | `--allow <labels>` | Replace allow list (comma-separated) | — |
 | `--add <labels>` | Add to allow list (comma-separated) | — |
 | `--remove <labels>` | Remove from allow list (comma-separated) | — |
-| `--require-approval <labels>` | Replace requireApproval list (comma-separated) | — |
+| `--require-approval <labels>` | Replace `requireApproval` list (not currently bridge-enforced) | — |
 | `--show` | Show current capabilities without modifying | — |
 | `--config <path>` | Path to talond.yaml | `talond.yaml` |
 
@@ -2090,7 +2097,11 @@ Default: wakes every 5 minutes. Adjust `OnUnitActiveSec` in `talond.timer`.
 
 ## Security Model
 
-Talon implements defense in depth through capability-based access control, host-mediated side effects, and audit logging. Docker container isolation for agent sandboxing is coming soon — wrapping provider execution in containers with provider-specific network policies for defense-in-depth against prompt injection.
+Talon applies capability-based access control to its host tools and records
+side effects in its audit log. That limits what Talon exposes through its MCP
+bridge; it does not sandbox a provider runtime or make an external model or
+MCP server safe by itself. Docker container isolation for agent sandboxing is
+planned as an additional layer.
 
 ### Host-Tools MCP Bridge
 
@@ -2121,18 +2132,14 @@ flowchart TB
     subgraph "talond (policy enforcement)"
         PR[Policy Engine]
         CR[Capability Resolver]
-        AG[Approval Gate]
         EX[Execute Tool]
         AU[Audit Log]
     end
 
     Agent --> PR
     PR --> CR
-    CR -->|not in allow list| R[Reject + log]
-    CR -->|allowed| EX
-    CR -->|requireApproval| AG
-    AG -->|approved| EX
-    AG -->|denied| R
+    CR -->|not configured| R[Reject + log]
+    CR -->|configured| EX
     EX --> AU
     R --> AU
 ```
@@ -2140,9 +2147,8 @@ flowchart TB
 Every MCP tool call goes through:
 
 1. **Policy Engine** — Validates the tool exists and maps to a capability label
-2. **Capability Resolver** — Checks the persona's `allow` or `requireApproval` lists
-3. **Approval Gate** — For `requireApproval` capabilities, prompts the user in-channel
-4. **Audit Log** — Records the decision and result regardless of outcome
+2. **Capability Resolver** — Checks the persona's configured capability labels
+3. **Audit Log** — Records the decision and result regardless of outcome
 
 ### Database Query Isolation
 
@@ -2165,9 +2171,9 @@ Complex SQL patterns (UNION, subqueries, CTEs, INTERSECT, EXCEPT) are rejected t
 - `talonctl config-show` masks all secret values in output
 - `talonctl env-check` audits for missing environment variables
 
-### Approval Gates
+### `requireApproval` configuration
 
-High-risk capabilities can require interactive user approval:
+The schema supports a `requireApproval` capability list:
 
 ```yaml
 capabilities:
@@ -2175,10 +2181,14 @@ capabilities:
     - channel.send:telegram
     - memory.access
   requireApproval:
-    - db.query # prompts user in-channel before executing
+    - db.query:own
 ```
 
-Approval prompts are sent to the originating channel with a configurable timeout.
+It is not an approval control today. The host-tool filter exposes tools listed
+in `requireApproval` in the same way as tools listed in `allow`; bridge-level
+approval enforcement is future work. Use the `allow` list to grant only the
+capabilities you are prepared to expose, and keep high-risk integrations out
+of a persona until their policy is implemented and verified.
 
 ---
 
@@ -2718,7 +2728,6 @@ talon/
       tool-registry.ts           # Tool manifest registry
       policy-engine.ts           # Capability-based access control
       capability-resolver.ts     # Label resolution
-      approval-gate.ts           # In-channel approval prompting
     usage/
       token-tracker.ts           # Token usage recording + aggregation
   tests/
