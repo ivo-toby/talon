@@ -13,13 +13,18 @@ conflict_domains:
   - "src/lifecycle/handler-registry.ts"
   - "src/core/config/config-schema.ts"
 assigned_model_class: codexHigh
+actual_model: gpt-5.4
+feedback_fix_model: gpt-5.6-terra
+feedback_fix_reasoning_effort: high
 review_model_class: reviewGate
+review_thread: 019f672f-5bfb-7872-a964-bcb2d0fabb78
+feedback_fix_thread: 019f6736-a9cf-7b32-9da4-54cf0f18d08f
 branch: task/TASK-001-lifecycle-contracts-registry
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry
 worktree_status: active
-pr: null
-current_gate: no_pr
-branch_freshness: current_at_cee1477_at_dispatch
+pr: https://github.com/ivo-toby/talon/pull/257
+current_gate: feedback_fix_in_progress
+branch_freshness: behind_b77a620_by_one_controller_artifact_commit
 verification:
   - "npx vitest run tests/unit/lifecycle/handler-registry.test.ts tests/unit/core/config/config-schema.test.ts"
   - "npm run build"
@@ -100,11 +105,11 @@ task/TASK-001-lifecycle-contracts-registry
 
 ## Worker Worktree
 
-/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry (active on task/TASK-001-lifecycle-contracts-registry; created from activation head e28d331, advanced through readiness head cee1477, and dispatched from cee1477).
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry (active on task/TASK-001-lifecycle-contracts-registry at implementation head d68929f; created from activation head e28d331 and currently one controller-artifact commit behind b77a620).
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+Draft PR #257 targets epic/durable-lifecycle-pipeline: https://github.com/ivo-toby/talon/pull/257
 
 ## RED-GREEN TDD Plan
 
@@ -126,7 +131,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Do not switch branches in the controller checkout or start dependent work.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
-- Request reviewGate/GPT-5.4 review before commit; resolve all P1/P2 or Critical/High/Medium findings.
+- Request reviewGate/`gpt-5.6-sol` review with high reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings.
 
 ## Review Focus
 
@@ -155,22 +160,27 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- Before controller feedback: 104 focused tests passed, `npm run build` passed, `git diff --check` passed, and the GitHub Verify PR job passed.
+- Repo-wide lint retained unrelated baseline failures; no lifecycle-file lint failures were reported.
+- Feedback-fix verification and independent Sol/high re-review remain pending.
 
 ## Review Feedback
 
 ### P1
 
-- None.
+- High: complete the frozen runtime envelopes and typed result contracts required by downstream lifecycle tasks.
 
 ### P2
 
-- None.
+- Medium: support safe explicit fail-open and fail-closed semantics.
+- Medium: reject unknown event contracts and unresolved implementation references by default.
+- Medium: keep expected registry construction failures behind the public `Result` factory.
 
 ### P3
 
-- None.
+- Use portable equal-priority ordering and add focused signal/interceptor/override coverage.
+- Documentation is intentionally deferred to TASK-020, the epic-owned documentation and adoption task.
 
 ## Completion Notes
 
-- None yet.
+Controller Sol/high review comment: https://github.com/ivo-toby/talon/pull/257#issuecomment-4984410897. Fresh Terra/high feedback-fix worker is active; the controller owns artifact reconciliation and merge.

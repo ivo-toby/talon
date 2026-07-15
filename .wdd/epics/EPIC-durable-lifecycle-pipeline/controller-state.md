@@ -46,19 +46,19 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 - Cadence: adaptive
 - Status: active
 - Scheduler: `talon-issue-256-wdd-wave-1-heartbeat`
-- Last checked: 2026-07-15T20:33:03+02:00
-- Next check due: 2026-07-15T20:48:03+02:00
+- Last checked: 2026-07-15T21:23:40+02:00
+- Next check due: 2026-07-15T21:38:40+02:00
 - Fallback: run subagent-pr-orchestration for the active wave, verify synced activation state, inspect every worker/reviewer/PR gate, route P1/P2 feedback, and stop when ready for wdd-reconcile-wave.
 
 ## Current Task Gates
 
-- TASK-001-lifecycle-contracts-registry: no_pr; replacement worker `019f670d-1288-7130-b85a-dac3bb6d7a87` active.
+- TASK-001-lifecycle-contracts-registry: feedback_fix_in_progress; draft PR #257 at `d68929f`; fresh Terra/high worker `019f6736-a9cf-7b32-9da4-54cf0f18d08f` active.
 - The other 19 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
 
-- WAVE-001 / TASK-001: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`; branch `task/TASK-001-lifecycle-contracts-registry`; status active at dispatch head `cee1477`.
+- WAVE-001 / TASK-001: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`; branch `task/TASK-001-lifecycle-contracts-registry`; status active at implementation head `d68929f` with feedback fixes in progress.
 
 ## Gate Definitions
 
@@ -71,15 +71,18 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 
 ## Branch Freshness
 
-TASK-001 branch/worktree were current at dispatch head `cee1477`. The controller branch will advance with this worker/monitor checkpoint, so refresh and reverify before merge.
+TASK-001 branch is one controller-artifact commit behind `b77a620`. Refresh from the epic branch and rerun affected verification/review after feedback fixes and before merge.
 
 ## Open P1/P2 Feedback
 
-- None.
+- P1/High: complete the frozen runtime envelopes and typed result contracts.
+- P2/Medium: support safe explicit fail-open/fail-closed semantics.
+- P2/Medium: reject unknown event contracts and unresolved implementations.
+- P2/Medium: keep expected registry construction failures behind `Result`.
 
 ## Verification Status
 
-- WAVE-001 activated; implementation checks have not started.
+- Before controller feedback, 104 focused tests, build, diff check, and GitHub Verify PR passed. Feedback-fix verification and independent Sol/high re-review are pending.
 
 ## Shared Context Reconciliation
 
@@ -96,7 +99,10 @@ TASK-001 branch/worktree were current at dispatch head `cee1477`. The controller
 - 2026-07-15T20:31:18+02:00: Requested `gpt-5.3-codex-high` worker `019f670b-0ef0-79b0-892c-0fd9439334a1` failed before editing because that model is unsupported for this ChatGPT account.
 - 2026-07-15T20:33:03+02:00: Replacement worker `019f670d-1288-7130-b85a-dac3bb6d7a87` dispatched at head `cee1477` with `gpt-5.4` xhigh as the recorded `controllerCurrent` substitution.
 - 2026-07-15T20:33:03+02:00: Active 15-minute thread heartbeat created and pointed at the replacement worker as `talon-issue-256-wdd-wave-1-heartbeat`.
+- 2026-07-15T21:09:44+02:00: User selected `gpt-5.6-sol` with high reasoning as the review gate; constitution amendment 2.0.0 and active epic review references prepared.
+- 2026-07-15T21:16:52+02:00: Controller review `019f672f-5bfb-7872-a964-bcb2d0fabb78` blocked PR #257 with one High and three Medium findings; feedback was recorded on the PR.
+- 2026-07-15T21:17:44+02:00: Fresh feedback-fix worker `019f6736-a9cf-7b32-9da4-54cf0f18d08f` dispatched with `gpt-5.6-terra` high; Sol/high review is required before its commit.
 
 ## Next Action
 
-Monitor the active worker for a draft PR, then run the separate review, freshness, verification, and merge gates.
+Monitor the feedback-fix worker, rerun the independent Sol/high review after its push, then clear freshness, verification, and merge gates.

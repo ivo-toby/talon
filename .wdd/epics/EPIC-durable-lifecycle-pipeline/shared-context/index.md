@@ -46,7 +46,7 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
 
 - Preserve existing configs through explicit compatibility translation and
   deprecation.
-- Follow `neverthrow`, audit logging, RED/GREEN TDD, GPT-5.4 pre-commit review,
+- Follow `neverthrow`, audit logging, RED/GREEN TDD, `gpt-5.6-sol`/high pre-commit review,
   task PR, documentation, and runtime-smoke requirements.
 - Issue #70 is an optional evidence dependency, not a core-pipeline blocker.
 
