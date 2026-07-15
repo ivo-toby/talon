@@ -1,10 +1,10 @@
 ---
 id: WDD-CONSTITUTION
 kind: constitution
-version: 1.0.0
+version: 2.0.0
 status: active
 ratified: 2026-07-10
-last_amended: 2026-07-10
+last_amended: 2026-07-15
 ---
 
 # Talon WDD Constitution
@@ -41,8 +41,8 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 {
   "availableAliases": {
     "controllerCurrent": "active Codex session for controller, planning, and local edits",
-    "codexHigh": "GPT-5.3-codex-high for well-defined, tightly scoped offloaded coding tasks when available",
-    "reviewGate": "GPT-5.4 for required pre-commit review when available"
+    "codexHigh": "gpt-5.6-terra at high reasoning for well-defined, tightly scoped offloaded coding tasks",
+    "reviewGate": "gpt-5.6-sol at high reasoning for required pre-commit, task, reconciliation, and epic-validation review"
   },
   "models": {
     "epicDefinition": "controllerCurrent",
@@ -84,7 +84,7 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 
 ## Review Policy
 
-- Before every commit, the controller must request a GPT-5.4 review when that model is available.
+- Before every commit, the controller must request a `gpt-5.6-sol` review with high reasoning.
 - Critical, high, and medium review issues block commit and merge until addressed or explicitly deemed invalid with written rationale.
 - P1 findings block merge.
 - P2 findings block merge.

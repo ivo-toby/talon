@@ -49,7 +49,7 @@ updated_at: 2026-07-15
 
 ## Review And Merge Gates
 
-- [x] reviewGate/GPT-5.4 pre-commit review and P1/P2 blocking are explicit.
+- [x] reviewGate/`gpt-5.6-sol` high-reasoning pre-commit review and P1/P2 blocking are explicit.
 - [x] Workers do not merge and may not switch the controller checkout.
 - [x] Task PRs target the epic branch; freshness revalidation is required.
 - [x] Full suite remains user-approved; runtime smoke is an epic gate.
