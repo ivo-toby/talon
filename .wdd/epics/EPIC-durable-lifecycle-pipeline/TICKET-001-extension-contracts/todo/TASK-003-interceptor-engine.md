@@ -10,6 +10,7 @@ status: todo
 depends_on: ["TASK-001-lifecycle-contracts-registry"]
 conflict_domains:
   - "src/lifecycle/interceptors/**"
+  - "src/lifecycle/contracts/interceptor-contract.ts"
   - "src/core/logging/audit-logger.ts"
 assigned_model_class: codexHigh
 review_model_class: reviewGate
@@ -50,6 +51,8 @@ Implement deterministic allow, deny, approval, and transform composition with st
 - Enforce time budgets and typed fail-open/fail-closed behavior.
 - Audit handler identity, decision, reason, duration, and bounded transform metadata.
 - Ship deterministic native example handlers.
+- Reject root and nested proxy-valued interceptor JSON before any reflection,
+  including object and array proxies, and prove validation executes zero traps.
 
 ## Non-Scope
 
@@ -74,6 +77,7 @@ No boundary wiring and no model-backed security boundary.
 ## Likely Files / Areas
 
 - src/lifecycle/interceptors/**
+- src/lifecycle/contracts/interceptor-contract.ts
 - src/core/logging/audit-logger.ts
 - tests/unit/lifecycle/interceptor-engine.test.ts
 
@@ -84,6 +88,7 @@ No boundary wiring and no model-backed security boundary.
 ## Conflict Domains
 
 - src/lifecycle/interceptors/**
+- src/lifecycle/contracts/interceptor-contract.ts
 - src/core/logging/audit-logger.ts
 
 ## Assigned Model Class
@@ -106,7 +111,9 @@ None. The task PR targets epic/durable-lifecycle-pipeline.
 
 ### RED
 
-Failing tests for order, composition, short-circuit, approval, timeouts, errors, failure policy, recursion, and audit redaction.
+Failing tests for order, composition, short-circuit, approval, timeouts, errors,
+failure policy, recursion, audit redaction, and root/nested object/array proxy
+rejection with zero trap execution.
 
 ### GREEN
 
@@ -122,6 +129,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Do not switch branches in the controller checkout or start dependent work.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
+- Treat the TASK-001 carried Low as part of this task: call `types.isProxy()`
+  before `Array.isArray`, prototype lookup, own-key enumeration, or descriptor
+  inspection for every bounded interceptor JSON container.
 - Request reviewGate/`gpt-5.6-sol` review with high reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings.
 
 ## Review Focus

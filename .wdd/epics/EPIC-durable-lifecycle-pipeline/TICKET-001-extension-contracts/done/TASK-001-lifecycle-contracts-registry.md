@@ -6,7 +6,7 @@ ticket: TICKET-001-extension-contracts
 wave: WAVE-001
 slug: lifecycle-contracts-registry
 title: Define lifecycle contracts, configuration, and handler registry
-status: in_progress
+status: done
 depends_on: []
 conflict_domains:
   - "src/lifecycle/contracts/**"
@@ -17,14 +17,14 @@ actual_model: gpt-5.4
 feedback_fix_model: gpt-5.6-terra
 feedback_fix_reasoning_effort: high
 review_model_class: reviewGate
-review_thread: 019f6800-bd99-7523-b542-55e884c482b8
+review_thread: 019f681a-1b1b-7491-8a06-cebdf067e245
 feedback_fix_thread: 019f67fb-cc15-74b1-a730-486a4499b7c7
 branch: task/TASK-001-lifecycle-contracts-registry
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry
-worktree_status: active
+worktree_status: cleaned_up
 pr: https://github.com/ivo-toby/talon/pull/257
-current_gate: controller_checkpoint_review_pending
-branch_freshness: behind_8b317e8_by_two_controller_artifact_commits
+current_gate: merged
+branch_freshness: merged_current_at_e5fda2a
 verification:
   - "npx vitest run tests/unit/lifecycle/handler-registry.test.ts tests/unit/core/config/config-schema.test.ts"
   - "npm run build"
@@ -36,7 +36,7 @@ verification:
 
 ## Status
 
-in_progress
+done
 
 ## Parent Ticket
 
@@ -105,11 +105,17 @@ task/TASK-001-lifecycle-contracts-registry
 
 ## Worker Worktree
 
-/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry (active on task/TASK-001-lifecycle-contracts-registry at implementation head d68929f; created from activation head e28d331 and currently two controller-artifact commits behind epic head 8b317e8).
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`
+was clean and removed during WAVE-001 reconciliation after PR #257 merged.
 
 ## PR / Patch Reference
 
-Draft PR #257 targets epic/durable-lifecycle-pipeline: https://github.com/ivo-toby/talon/pull/257
+PR #257 merged into `epic/durable-lifecycle-pipeline`:
+https://github.com/ivo-toby/talon/pull/257
+
+- Implementation commits: `d68929f`, `1e8526f`
+- Epic refresh merge: `ff3e561`
+- Epic merge commit: `e5fda2a`
 
 ## RED-GREEN TDD Plan
 
@@ -145,11 +151,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -179,6 +185,15 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Sol/high review `019f67f2-3e83-7253-afd9-8a51e8b5c9f1` failed with 0 Critical, 0 High, 2 Medium, and 0 Low findings. Inherited iterator completion could register a terminal value as runtime authority, and lifecycle-omitted legacy configs received lifecycle-specific duplicate-name validation. Fresh Terra/high worker `019f67fb-cc15-74b1-a730-486a4499b7c7` is addressing both before another review.
 - Terra/high worker `019f67fb-cc15-74b1-a730-486a4499b7c7` completed both findings. Controller verification passed 130 focused tests, build, TypeScript, cumulative source lint/Prettier, diff/no-WDD checks, and confirmed inherited completion, accessor/proxy non-execution, omitted/disabled compatibility, and enabled duplicate rejection. Fresh Sol/high review `019f6800-bd99-7523-b542-55e884c482b8` is active.
 - Sol/high review `019f6800-bd99-7523-b542-55e884c482b8` passed the code commit gate with 0 Critical, 0 High, 0 Medium, and 1 Low finding after independently confirming both remediations. The Low records in-process proxy hardening for bounded interceptor JSON and does not block the repository commit gate.
+- The reviewed remediation was committed as `1e8526f`; Terra/high then verified the
+  controller-owned refresh from epic head `999772d` with 130/130 focused tests,
+  build, TypeScript, scoped ESLint, Prettier, merge-fidelity, and diff checks.
+- Sol/high cumulative committed-code review `019f6813-c22e-7681-9d6b-625427b63232`
+  passed 0C/0H/0M/1L. Sol/high merge-state review
+  `019f681a-1b1b-7491-8a06-cebdf067e245` also passed 0C/0H/0M/1L.
+- GitHub Verify PR run `29458737878` completed successfully, with build and
+  selected tests green. PR #257 had no unresolved review threads and merged at
+  `e5fda2a`.
 
 ## Review Feedback
 
@@ -215,8 +230,12 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Structurally validate and normalize direct public registry-factory input so unsupported handler versions return `LifecycleError`.
 - Bound lifecycle handler, persona subscription, and subscription-target collections.
 - Reject Unicode C1 control characters in runtime names.
-- Reject proxy-valued bounded interceptor JSON before reflection, including nested arrays/objects, and assert zero proxy traps; this is a non-blocking in-process hardening follow-up.
+- Reject proxy-valued bounded interceptor JSON before reflection, including nested arrays/objects, and assert zero proxy traps; this non-blocking in-process hardening follow-up is routed to TASK-003.
 
 ## Completion Notes
 
-Controller Sol/high review comments: https://github.com/ivo-toby/talon/pull/257#issuecomment-4984410897 and https://github.com/ivo-toby/talon/pull/257#issuecomment-4984865082. Terra/high worker `019f67fb-cc15-74b1-a730-486a4499b7c7` fixed both findings from Sol/high review `019f67f2-3e83-7253-afd9-8a51e8b5c9f1`; Sol/high review `019f6800-bd99-7523-b542-55e884c482b8` passed 0C/0H/0M/1L over the independently verified 130-test patch. Documentation remains deferred to TASK-020. The controller owns artifact reconciliation and merge.
+TASK-001 is complete. Controller Sol/high review comments are recorded on PR
+#257, all Critical/High/Medium findings were resolved, the final carried Low is
+routed to TASK-003, and documentation remains deferred to TASK-020. Reconciled
+authority, causality, compatibility, and bounded-input rules are recorded in
+`shared-context/resources/task-findings.md`.

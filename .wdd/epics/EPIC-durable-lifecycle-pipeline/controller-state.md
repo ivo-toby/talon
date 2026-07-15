@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: WAVE-001
+active_wave: null
 status: in_progress
 updated_at: 2026-07-16
 ---
@@ -18,13 +18,13 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 - Branch: epic/durable-lifecycle-pipeline
 - Target: main
 - Verified locally: yes
-- Planning and activation artifacts committed/synced: yes; latest pushed controller checkpoint `8b317e8`
+- Planning and activation artifacts committed/synced: yes; current pushed epic head `e5fda2a`
 
 ## Pending Waves
 
 | Wave | Tasks | Strategy | Confirmation | Status |
 |------|-------|----------|--------------|--------|
-| WAVE-001 | TASK-001-lifecycle-contracts-registry | full / bundled / risk_based / adaptive | explicit user implementation request | in_progress |
+| WAVE-001 | TASK-001-lifecycle-contracts-registry | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
@@ -38,27 +38,35 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 
 ## Active Wave
 
-WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registry. Its task branch/worktree were created from synced activation head `e28d331`, advanced through readiness head `cee1477`, and dispatched from that head.
+No wave is active during the reconciliation boundary. WAVE-001 completed with
+TASK-001 merged through PR #257 at `e5fda2a`. WAVE-002 is the next eligible wave.
 
 ## Monitoring
 
 - Mode: codex_thread_heartbeat
 - Cadence: adaptive
-- Status: active
+- Status: stopped
 - Scheduler: `talon-issue-256-wdd-wave-1-heartbeat`
-- Last checked: 2026-07-16T01:12:35+02:00
-- Next check due: 2026-07-16T01:27:35+02:00
-- Fallback: run subagent-pr-orchestration for the active wave, verify synced activation state, inspect every worker/reviewer/PR gate, route P1/P2 feedback, and stop when ready for wdd-reconcile-wave.
+- Last checked: 2026-07-16T01:34:25+02:00
+- Next check due: none
+- Stop reason: WAVE-001 task PR merged and reconciliation began.
+- Automation state: paused in Codex after the stop condition was met.
 
 ## Current Task Gates
 
-- TASK-001-lifecycle-contracts-registry: controller_checkpoint_review_pending; draft PR #257 at `d68929f`; Sol/high review `019f6800-bd99-7523-b542-55e884c482b8` passed the code commit gate 0C/0H/0M/1L after independently confirming both Medium fixes.
+- TASK-001-lifecycle-contracts-registry: merged; PR #257 merged into the epic
+  branch at `e5fda2a` after task head `ff3e561` passed branch refresh,
+  verification, CI, and Sol/high review gates.
 - The other 19 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
 
-- WAVE-001 / TASK-001: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`; branch `task/TASK-001-lifecycle-contracts-registry`; status active at implementation head `d68929f` with remediation complete and controller checkpoint review pending.
+- WAVE-001 / TASK-001: branch
+  `task/TASK-001-lifecycle-contracts-registry`; the clean merged worktree at
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`
+  was removed and pruned during reconciliation. The superseded worker evidence
+  stash was reconciled and dropped.
 
 ## Gate Definitions
 
@@ -71,19 +79,36 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 
 ## Branch Freshness
 
-TASK-001 branch is two controller-artifact commits behind epic head `8b317e8`. Refresh from the epic branch and rerun affected verification/review after feedback fixes and before merge.
+TASK-001 was refreshed from epic head `999772d` at merge commit `ff3e561`.
+Epic head `999772d` was verified as an ancestor before PR merge; PR #257 then
+merged at `e5fda2a`.
 
 ## Open P1/P2 Feedback
 
-- None. The code commit gate is clean; controller artifacts still require their own Sol/high review before checkpoint commit.
+- None. All Critical, High, and Medium findings were resolved before merge.
+  The remaining Low—reject proxy-valued bounded interceptor JSON before any
+  reflection—is non-blocking and routed to TASK-003.
 
 ## Verification Status
 
-- Before controller feedback, 104 focused tests, build, diff check, and GitHub Verify PR passed. The current patch passes 130 focused tests, build, TypeScript, cumulative task source lint/Prettier, and diff/no-WDD checks. Tests confirm inherited completion terminates without registering authority; inherited accessors/proxy paths are not executed; omitted/disabled duplicate owner names retain legacy acceptance; enabled lifecycle still rejects them. Sol/high independently confirmed both remediations and passed 0C/0H/0M/1L.
+- Final task and refresh verification passed 130/130 focused tests, build,
+  TypeScript, cumulative task-source ESLint, changed-TS Prettier, diff checks,
+  branch-refresh fidelity, and GitHub Verify PR run `29458737878`.
+- Sol/high cumulative committed-code review
+  `019f6813-c22e-7681-9d6b-625427b63232` passed 0C/0H/0M/1L.
+  Sol/high refreshed merge-state review
+  `019f681a-1b1b-7491-8a06-cebdf067e245` passed 0C/0H/0M/1L.
+- Tests cover exact runtime authority, bounded iterable cleanup, proxy/accessor
+  non-execution at authority boundaries, causal signals, immutable snapshots,
+  omitted/disabled legacy compatibility, and enabled duplicate-owner rejection.
 
 ## Shared Context Reconciliation
 
-- No pending task findings.
+- TASK-001 authority, contract, causality, bounded-input, and compatibility
+  findings were reconciled into `shared-context/resources/task-findings.md`.
+- TASK-003 was updated to own the remaining proxy-valued interceptor JSON
+  zero-trap hardening. No architecture or dependency drift changes WAVE-002
+  parallel readiness.
 
 ## Event Log
 
@@ -135,7 +160,15 @@ TASK-001 branch is two controller-artifact commits behind epic head `8b317e8`. R
 - 2026-07-16T00:57:31+02:00: Terra/high remediation completed both findings with 130 focused tests and all requested build, TypeScript, cumulative lint/Prettier, diff/no-WDD, inherited completion, accessor/proxy non-execution, and legacy compatibility gates passing.
 - 2026-07-16T00:58:27+02:00: Fresh independent Sol/high pre-commit review `019f6800-bd99-7523-b542-55e884c482b8` started against the full cumulative task diff.
 - 2026-07-16T01:07:09+02:00: Sol/high review `019f6800-bd99-7523-b542-55e884c482b8` passed the code commit gate 0C/0H/0M/1L after independently confirming inherited completion safety and omitted/disabled legacy compatibility; the non-blocking Low records in-process interceptor-JSON proxy hardening.
+- 2026-07-16T01:17:06+02:00: Reviewed remediation committed as `1e8526f`; the task branch was refreshed from epic head `999772d` at `ff3e561` after Terra/high verification and Sol/high merge-state review passed.
+- 2026-07-16T01:31:34+02:00: GitHub Verify PR run `29458737878` passed build, advisory lint, and selected tests at refreshed head `ff3e561`.
+- 2026-07-16T01:32:04+02:00: PR #257 merged into `epic/durable-lifecycle-pipeline` at `e5fda2a` with no unresolved review threads.
+- 2026-07-16T01:34:25+02:00: WAVE-001 heartbeat paused; shared findings reconciled, carried Low routed to TASK-003, superseded stash dropped, and clean task worktree removed/pruned.
+- 2026-07-16T01:45:00+02:00: Sol/high reconciliation review `019f6826-1d74-7113-a293-07ea922ca9da` failed 0C/0H/2M/1L because TASK-003's contract conflict was absent from authoritative inventories and no explicit staging boundary protected unrelated `.minispec/` files.
+- 2026-07-16T01:48:11+02:00: Reconciliation remediation added the TASK-003 contract conflict everywhere authoritative, clarified checkpoint state, and explicitly staged only the WDD reconciliation paths; `.minispec/` remains untracked and excluded.
 
 ## Next Action
 
-Run the required Sol/high review over the controller's `.wdd` checkpoint diff. If clean, commit and push only the three controller artifacts, excluding `.minispec`, before committing the task patch.
+If the reconciliation checkpoint is not yet synced, require a clean Sol/high
+review, then commit and push only the staged WDD paths. Once synced, run
+`wdd-start-wave` for WAVE-002.

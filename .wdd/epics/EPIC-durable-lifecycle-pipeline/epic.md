@@ -4,9 +4,9 @@ kind: epic
 type: feature
 slug: durable-lifecycle-pipeline
 title: Durable Lifecycle Pipeline and Pluggable Handlers
-status: planned
+status: in_progress
 created_at: 2026-07-15
-updated_at: 2026-07-15
+updated_at: 2026-07-16
 target_branch: main
 epic_branch: epic/durable-lifecycle-pipeline
 profile: full

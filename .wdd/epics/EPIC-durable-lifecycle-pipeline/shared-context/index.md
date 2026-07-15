@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-SHARED-CONTEXT
 kind: shared_context_index
 epic: EPIC-durable-lifecycle-pipeline
-updated_at: 2026-07-15
+updated_at: 2026-07-16
 ---
 
 # Shared Context: EPIC-durable-lifecycle-pipeline
@@ -39,6 +39,11 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
 - Do not place transcripts, secrets, or complete tool payloads in event rows.
 - Do not reuse handler display names as unstable idempotency identities.
 - Do not let model-backed handlers mutate repositories directly.
+- Do not treat configured handler declarations as runtime authority; native and
+  sub-agent handlers must exactly match bootstrap- or loader-owned capability
+  catalogs materialized into canonical snapshots.
+- Reject proxy/accessor/callable-proxy paths before reflection or invocation at
+  lifecycle trust boundaries.
 - Do not break continuation, rotation-boundary, or observational-memory reducer
   semantics while removing name-based special cases.
 
@@ -54,3 +59,8 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
 
 - No directly relevant durable Postgram memory was found; live repository and
   issue state are the source of truth.
+
+## Reconciled Waves
+
+- WAVE-001 / TASK-001 merged in PR #257. See `resources/task-findings.md` for
+  the frozen contract, authority, causality, compatibility, and follow-up rules.

@@ -4,7 +4,7 @@ kind: wave_plan
 epic: EPIC-durable-lifecycle-pipeline
 status: in_progress
 created_at: 2026-07-15
-updated_at: 2026-07-15
+updated_at: 2026-07-16
 ---
 
 # Wave Plan: EPIC-durable-lifecycle-pipeline
@@ -13,9 +13,9 @@ updated_at: 2026-07-15
 
 | Task | Ticket | Depends On | Conflict Domains | Status |
 |------|--------|------------|------------------|--------|
-| TASK-001-lifecycle-contracts-registry | TICKET-001-extension-contracts | None | lifecycle contracts, config schema | in_progress |
+| TASK-001-lifecycle-contracts-registry | TICKET-001-extension-contracts | None | lifecycle contracts, config schema | done |
 | TASK-002-lifecycle-event-persistence | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry | database migrations, lifecycle repositories | todo |
-| TASK-003-interceptor-engine | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle interceptors, audit logger | todo |
+| TASK-003-interceptor-engine | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle interceptors, interceptor contract, audit logger | todo |
 | TASK-004-subagent-lifecycle-adapter | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle adapters, subagent runner, personas | todo |
 | TASK-005-transactional-event-bus | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence | event bus, database transaction helpers | todo |
 | TASK-006-durable-event-dispatcher | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | dispatcher, handler executor | todo |
@@ -80,7 +80,9 @@ The dependency graph is acyclic. Contracts and persistence precede consumers; co
 
 ### WAVE-001
 
-Status: in_progress
+Status: done
+
+Completed: 2026-07-16
 
 Tasks:
 
@@ -110,6 +112,24 @@ Stop condition:
 
 - All active tasks are done, blocked, cancelled, or explicitly closed.
 - Reviews, verification, freshness, shared-context reconciliation, and wdd-reconcile-wave complete before the next wave.
+
+Outcome:
+
+- TASK-001 merged through PR #257 at epic merge commit `e5fda2a` after the
+  task branch was refreshed from epic head `999772d`.
+- Focused verification passed 130 tests, build, TypeScript, scoped ESLint,
+  Prettier, merge-fidelity, and GitHub Verify PR checks.
+- Sol/high task and merge-state reviews passed with no Critical, High, or
+  Medium findings; one non-blocking proxy-reflection hardening item was routed
+  to TASK-003.
+- The clean task worktree was removed after final evidence reconciliation.
+
+Drift notes:
+
+- No architecture or dependency drift changes the planned WAVE-002 parallel
+  strategy.
+- TASK-003 now owns rejection of proxy-valued interceptor JSON before any
+  reflection, including nested arrays and objects, with zero-trap tests.
 
 ### WAVE-002
 
@@ -458,7 +478,7 @@ Stop condition:
 
 ## Activation Rules
 
-- WAVE-001 is active; WAVE-002 is next after reconciliation.
+- WAVE-001 is done; WAVE-002 is next and ready for `wdd-start-wave`.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

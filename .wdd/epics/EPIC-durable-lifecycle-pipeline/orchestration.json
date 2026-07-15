@@ -62,7 +62,7 @@
   "waves": [
     {
       "id": "WAVE-001",
-      "status": "in_progress",
+      "status": "done",
       "strategy": {
         "profile": "full",
         "executionMode": "bundled",
@@ -87,8 +87,8 @@
         {
           "id": "TASK-001-lifecycle-contracts-registry",
           "ticket": "TICKET-001-extension-contracts",
-          "path": "TICKET-001-extension-contracts/in-progress/TASK-001-lifecycle-contracts-registry.md",
-          "status": "in_progress",
+          "path": "TICKET-001-extension-contracts/done/TASK-001-lifecycle-contracts-registry.md",
+          "status": "done",
           "dependsOn": [],
           "conflictDomains": [
             "lifecycle contracts",
@@ -99,22 +99,27 @@
           "modelSubstitutionReason": "gpt-5.3-codex-high is unsupported for the authenticated ChatGPT account; controllerCurrent gpt-5.4 xhigh substituted",
           "reviewModel": "reviewGate",
           "workerThreadId": "019f670d-1288-7130-b85a-dac3bb6d7a87",
-          "reviewThreadId": "019f6800-bd99-7523-b542-55e884c482b8",
+          "reviewThreadId": "019f681a-1b1b-7491-8a06-cebdf067e245",
           "feedbackFixModel": "gpt-5.6-terra",
           "feedbackFixReasoningEffort": "high",
           "feedbackFixThreadId": "019f67fb-cc15-74b1-a730-486a4499b7c7",
           "branch": "task/TASK-001-lifecycle-contracts-registry",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
-          "worktreeStatus": "active",
-          "cleanup": null,
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T01:34:25+02:00",
+            "worktreeRemoved": true,
+            "stashDropped": "c4c7a83ac4cd89813d990da3d9cde066a99d9227"
+          },
           "pr": "https://github.com/ivo-toby/talon/pull/257",
-          "latestCommit": "d68929f",
-          "branchFreshness": "behind_8b317e8_by_two_controller_artifact_commits",
+          "latestCommit": "ff3e561717a5880417fc3e28c840428a37c8e567",
+          "branchFreshness": "merged_current_at_e5fda2a",
           "blockingFeedback": [],
           "verification": {
             "focusedTests": "104 passed before controller review",
             "build": "passed",
-            "githubVerifyPr": "passed",
+            "initialGithubVerifyPr": "passed",
             "diffCheck": "passed",
             "firstFeedbackFixFocusedTests": "108 passed",
             "firstFeedbackFixBuild": "passed",
@@ -201,9 +206,22 @@
             "inheritedCompletionLegacyCompatibilityPrettier": "passed for cumulative task TypeScript files",
             "inheritedCompletionLegacyCompatibilityDiffCheck": "passed with no .wdd changes",
             "freshInheritedCompletionLegacyCompatibilitySolReview": "passed commit gate: 0 Critical, 0 High, 0 Medium, 1 Low; session 019f6800-bd99-7523-b542-55e884c482b8",
-            "freshInheritedCompletionLegacyCompatibilitySolFinding": "Low: reject proxy-valued bounded interceptor JSON before reflection, including nested arrays and objects"
+            "freshInheritedCompletionLegacyCompatibilitySolFinding": "Low: reject proxy-valued bounded interceptor JSON before reflection, including nested arrays and objects",
+            "finalFocusedTests": "130 passed",
+            "finalBuild": "passed",
+            "finalTypeScript": "passed",
+            "finalScopedLint": "passed for cumulative task source files",
+            "finalPrettier": "passed for cumulative task TypeScript files",
+            "finalDiffCheck": "passed",
+            "cumulativeSolHighReview": "passed: 0 Critical, 0 High, 0 Medium, 1 Low; session 019f6813-c22e-7681-9d6b-625427b63232",
+            "refreshVerification": "passed by Terra/high; session 019f6818-8b12-75c0-bcbc-1530518ca2f7",
+            "refreshSolHighReview": "passed: 0 Critical, 0 High, 0 Medium, 1 Low; session 019f681a-1b1b-7491-8a06-cebdf067e245",
+            "githubVerifyPr": "passed; run 29458737878",
+            "taskHead": "ff3e561717a5880417fc3e28c840428a37c8e567",
+            "epicMerge": "e5fda2af1d25b19f42b1f61ac14092dd08de37b4",
+            "carriedLow": "routed to TASK-003-interceptor-engine for root and nested proxy rejection before reflection with zero-trap assertions"
           },
-          "currentGate": "controller_checkpoint_review_pending"
+          "currentGate": "merged"
         }
       ],
       "bundleState": {
@@ -213,11 +231,16 @@
         ],
         "branch": "task/TASK-001-lifecycle-contracts-registry",
         "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
-        "worktreeStatus": "active",
+        "worktreeStatus": "cleaned_up",
         "workerThreadId": "019f670d-1288-7130-b85a-dac3bb6d7a87",
-        "reviewThreadId": "019f6800-bd99-7523-b542-55e884c482b8",
-        "currentGate": "controller_checkpoint_review_pending",
-        "cleanup": null
+        "reviewThreadId": "019f681a-1b1b-7491-8a06-cebdf067e245",
+        "currentGate": "merged",
+        "cleanup": {
+          "status": "cleaned_up",
+          "at": "2026-07-16T01:34:25+02:00",
+          "worktreeRemoved": true,
+          "stashDropped": "c4c7a83ac4cd89813d990da3d9cde066a99d9227"
+        }
       }
     },
     {
@@ -287,6 +310,7 @@
           ],
           "conflictDomains": [
             "lifecycle interceptors",
+            "interceptor contract",
             "audit logger"
           ],
           "assignedModel": "codexHigh",
@@ -1073,7 +1097,7 @@
     "pendingReconciliation": []
   },
   "controller": {
-    "activeWave": "WAVE-001",
+    "activeWave": null,
     "nextWave": "WAVE-002",
     "epicBranchVerified": true,
     "activationArtifactsSynced": true
@@ -1081,11 +1105,12 @@
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "active",
-    "lastCheckedAt": "2026-07-16T01:12:35+02:00",
-    "nextCheckDueAt": "2026-07-16T01:27:35+02:00",
+    "status": "stopped",
+    "lastCheckedAt": "2026-07-16T01:34:25+02:00",
+    "nextCheckDueAt": null,
     "schedulerRef": "talon-issue-256-wdd-wave-1-heartbeat",
     "fallbackPrompt": "Run subagent-pr-orchestration for EPIC-durable-lifecycle-pipeline and the active wave. Read orchestration.json and controller-state.md, verify activation artifacts are committed on the epic branch before task worktrees branch, inspect every worker/reviewer/PR gate, route P1/P2 feedback, update freshness and verification, and stop when all active tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
-    "stopCondition": "All active-wave tasks are closed and ready for wdd-reconcile-wave."
+    "stopCondition": "All active-wave tasks are closed and ready for wdd-reconcile-wave.",
+    "stopReason": "WAVE-001 PR #257 merged and task execution completed; heartbeat paused during reconciliation checkpointing before WAVE-002 activation."
   }
 }
