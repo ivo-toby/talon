@@ -38,7 +38,7 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 
 ## Active Wave
 
-WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registry. Its task worktree is allocated below and must be created from the synced activation commit before dispatch.
+WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registry. Its task branch/worktree were created from synced activation head `e28d331` and must be fast-forwarded through this readiness checkpoint before dispatch.
 
 ## Monitoring
 
@@ -46,8 +46,8 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 - Cadence: adaptive
 - Status: active
 - Scheduler: none
-- Last checked: 2026-07-15T20:15:22+02:00
-- Next check due: 2026-07-15T20:30:22+02:00
+- Last checked: 2026-07-15T20:19:44+02:00
+- Next check due: 2026-07-15T20:34:44+02:00
 - Fallback: run subagent-pr-orchestration for the active wave, verify synced activation state, inspect every worker/reviewer/PR gate, route P1/P2 feedback, and stop when ready for wdd-reconcile-wave.
 
 ## Current Task Gates
@@ -58,7 +58,7 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 
 ## Worker Worktrees
 
-- WAVE-001 / TASK-001: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`; status pending_creation.
+- WAVE-001 / TASK-001: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`; branch `task/TASK-001-lifecycle-contracts-registry`; status ready at activation head `e28d331`.
 
 ## Gate Definitions
 
@@ -71,7 +71,7 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 
 ## Branch Freshness
 
-TASK-001 branch is allocated but not created yet. Check freshness after worktree creation and before merge; rerun affected gates after material refresh.
+TASK-001 branch/worktree are current at activation head `e28d331`. Check freshness again before merge; rerun affected gates after material refresh.
 
 ## Open P1/P2 Feedback
 
@@ -92,7 +92,8 @@ TASK-001 branch is allocated but not created yet. Check freshness after worktree
 - 2026-07-15: GPT-5.4 pre-commit review moved documentation after final verification and made full-suite/smoke ownership explicit.
 - 2026-07-15T20:04:43+02:00: WAVE-001 activated as bundle BUNDLE-WAVE-001; TASK-001 worktree allocated pending creation from the synced activation commit.
 - 2026-07-15T20:15:22+02:00: Activation checkpoint `c41455b` pushed; sync marker and generated-file EOF hygiene prepared before worktree creation.
+- 2026-07-15T20:19:44+02:00: Bundle worktree and task branch created from pushed activation head `e28d331`; required task and controller artifacts verified present.
 
 ## Next Action
 
-Commit and push this sync marker, then create and verify the allocated TASK-001 worktree before dispatching its codexHigh worker.
+Commit and push this worktree-readiness state, fast-forward the task branch to that controller checkpoint, then dispatch its codexHigh worker.

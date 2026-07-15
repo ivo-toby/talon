@@ -57,4 +57,4 @@ updated_at: 2026-07-15
 
 ## Next Phase
 
-- [x] WAVE-001 is active and its activation checkpoint is pushed; bundle worktree creation is next.
+- [x] WAVE-001 is active; its bundle worktree exists at the pushed activation head, and readiness sync/worker dispatch are next.

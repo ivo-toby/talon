@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-001-lifecycle-contracts-registry
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry
-worktree_status: pending_creation
+worktree_status: ready
 pr: null
 current_gate: not_started
-branch_freshness: unknown
+branch_freshness: current_at_e28d331
 verification:
   - "npx vitest run tests/unit/lifecycle/handler-registry.test.ts tests/unit/core/config/config-schema.test.ts"
   - "npm run build"
@@ -100,7 +100,7 @@ task/TASK-001-lifecycle-contracts-registry
 
 ## Worker Worktree
 
-/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry (pending creation from the synced epic branch).
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry (verified on task/TASK-001-lifecycle-contracts-registry at activation head e28d331).
 
 ## PR / Patch Reference
 
