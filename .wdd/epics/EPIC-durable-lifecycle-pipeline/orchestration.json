@@ -1,0 +1,995 @@
+{
+  "schemaVersion": 1,
+  "epic": {
+    "id": "EPIC-durable-lifecycle-pipeline",
+    "name": "Durable Lifecycle Pipeline and Pluggable Handlers",
+    "targetBranch": "main",
+    "baseBranch": "epic/durable-lifecycle-pipeline"
+  },
+  "configuration": {
+    "storageMode": "local-markdown",
+    "profile": "full",
+    "reviewMode": "risk_based",
+    "monitoringMode": "adaptive",
+    "models": {
+      "planning": "controllerCurrent",
+      "implementationSimple": "controllerCurrent",
+      "implementationComplex": "codexHigh",
+      "review": "reviewGate",
+      "feedbackFix": "controllerCurrent",
+      "epicValidation": "reviewGate",
+      "prDescription": "controllerCurrent"
+    },
+    "reviewPolicy": {
+      "preCommitReviewRequired": true,
+      "p1BlocksMerge": true,
+      "p2BlocksMerge": true,
+      "p3CreatesFollowUp": true
+    },
+    "branching": {
+      "epicBranchConvention": "epic/[epic-slug]",
+      "taskBranchConvention": "task/[task-id]-[task-slug]",
+      "taskPrTarget": "epic branch",
+      "finalPrTarget": "main",
+      "epicBranchRequiredBeforeWorkerDispatch": true,
+      "activationArtifactsSyncedBeforeTaskWorktrees": true,
+      "isolatedWorktreePerRepositoryTask": true,
+      "workersMaySwitchControllerCheckout": false
+    }
+  },
+  "taskOrder": [
+    "TASK-001-lifecycle-contracts-registry",
+    "TASK-002-lifecycle-event-persistence",
+    "TASK-003-interceptor-engine",
+    "TASK-004-subagent-lifecycle-adapter",
+    "TASK-005-transactional-event-bus",
+    "TASK-006-durable-event-dispatcher",
+    "TASK-007-daemon-message-queue-schedule-events",
+    "TASK-008-run-tool-outbound-events",
+    "TASK-009-context-contracts-projector",
+    "TASK-010-behavior-ledger-persistence",
+    "TASK-011-context-lifecycle-migration",
+    "TASK-012-feedback-detector-subagent",
+    "TASK-013-handler-telemetry-correlation",
+    "TASK-014-lifecycle-retention-reload-replay",
+    "TASK-015-behavior-signal-projector",
+    "TASK-016-lifecycle-operator-cli",
+    "TASK-017-behavior-review-reducers",
+    "TASK-018-governed-prompt-promotion",
+    "TASK-019-lifecycle-end-to-end-verification",
+    "TASK-020-lifecycle-documentation-adoption"
+  ],
+  "waves": [
+    {
+      "id": "WAVE-001",
+      "status": "in_progress",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "The shared contracts and configuration identity must freeze before all consumers.",
+          "One worker keeps the public extension surface coherent."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-001-lifecycle-contracts-registry"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-001-lifecycle-contracts-registry",
+          "ticket": "TICKET-001-extension-contracts",
+          "path": "TICKET-001-extension-contracts/in-progress/TASK-001-lifecycle-contracts-registry.md",
+          "status": "in_progress",
+          "dependsOn": [],
+          "conflictDomains": [
+            "lifecycle contracts",
+            "config schema"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-001-lifecycle-contracts-registry",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
+          "worktreeStatus": "pending_creation",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-001",
+        "taskIds": [
+          "TASK-001-lifecycle-contracts-registry"
+        ],
+        "branch": "task/TASK-001-lifecycle-contracts-registry",
+        "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
+        "worktreeStatus": "pending_creation",
+        "workerThreadId": null,
+        "reviewThreadId": null,
+        "currentGate": "not_started",
+        "cleanup": null
+      }
+    },
+    {
+      "id": "WAVE-002",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Persistence, interceptor execution, and sub-agent adaptation consume frozen contracts but have separate primary conflicts.",
+          "Three isolated workers provide real speedup."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-002-lifecycle-event-persistence"
+          ],
+          [
+            "TASK-003-interceptor-engine"
+          ],
+          [
+            "TASK-004-subagent-lifecycle-adapter"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-002-lifecycle-event-persistence",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/todo/TASK-002-lifecycle-event-persistence.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry"
+          ],
+          "conflictDomains": [
+            "database migrations",
+            "lifecycle repositories"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-002-lifecycle-event-persistence",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-003-interceptor-engine",
+          "ticket": "TICKET-001-extension-contracts",
+          "path": "TICKET-001-extension-contracts/todo/TASK-003-interceptor-engine.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry"
+          ],
+          "conflictDomains": [
+            "lifecycle interceptors",
+            "audit logger"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-003-interceptor-engine",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-004-subagent-lifecycle-adapter",
+          "ticket": "TICKET-001-extension-contracts",
+          "path": "TICKET-001-extension-contracts/todo/TASK-004-subagent-lifecycle-adapter.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry"
+          ],
+          "conflictDomains": [
+            "lifecycle adapters",
+            "subagent runner",
+            "personas"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-004-subagent-lifecycle-adapter",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-003",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Publication and dispatch use separate tested interfaces over the same frozen repositories.",
+          "Daemon wiring is deliberately deferred."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-005-transactional-event-bus"
+          ],
+          [
+            "TASK-006-durable-event-dispatcher"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-005-transactional-event-bus",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/todo/TASK-005-transactional-event-bus.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry",
+            "TASK-002-lifecycle-event-persistence"
+          ],
+          "conflictDomains": [
+            "event bus",
+            "database transaction helpers"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-005-transactional-event-bus",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-006-durable-event-dispatcher",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/todo/TASK-006-durable-event-dispatcher.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry",
+            "TASK-002-lifecycle-event-persistence",
+            "TASK-003-interceptor-engine",
+            "TASK-004-subagent-lifecycle-adapter"
+          ],
+          "conflictDomains": [
+            "dispatcher",
+            "handler executor"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-006-durable-event-dispatcher",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-004",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Daemon composition and message/queue/schedule transitions share bootstrap and transaction ownership.",
+          "A single loop reduces shutdown and state/event coupling risk."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-007-daemon-message-queue-schedule-events"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-007-daemon-message-queue-schedule-events",
+          "ticket": "TICKET-003-core-boundary-integration",
+          "path": "TICKET-003-core-boundary-integration/todo/TASK-007-daemon-message-queue-schedule-events.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-005-transactional-event-bus",
+            "TASK-006-durable-event-dispatcher"
+          ],
+          "conflictDomains": [
+            "daemon bootstrap",
+            "message pipeline",
+            "queue",
+            "scheduler"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-007-daemon-message-queue-schedule-events",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-005",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Run/tool/outbound integration, context projection, and behavior persistence have separate primary domains.",
+          "All three are prerequisites for later migrations."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-008-run-tool-outbound-events"
+          ],
+          [
+            "TASK-009-context-contracts-projector"
+          ],
+          [
+            "TASK-010-behavior-ledger-persistence"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-008-run-tool-outbound-events",
+          "ticket": "TICKET-003-core-boundary-integration",
+          "path": "TICKET-003-core-boundary-integration/todo/TASK-008-run-tool-outbound-events.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-007-daemon-message-queue-schedule-events"
+          ],
+          "conflictDomains": [
+            "AgentRunner",
+            "host tools",
+            "outbound delivery"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-008-run-tool-outbound-events",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-009-context-contracts-projector",
+          "ticket": "TICKET-004-context-migration",
+          "path": "TICKET-004-context-migration/todo/TASK-009-context-contracts-projector.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-004-subagent-lifecycle-adapter",
+            "TASK-005-transactional-event-bus"
+          ],
+          "conflictDomains": [
+            "lifecycle context",
+            "ContextRoller",
+            "memory repository"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-009-context-contracts-projector",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-010-behavior-ledger-persistence",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/todo/TASK-010-behavior-ledger-persistence.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-002-lifecycle-event-persistence"
+          ],
+          "conflictDomains": [
+            "database migrations",
+            "behavior repositories"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-010-behavior-ledger-persistence",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-006",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Context migration, detector implementation, and telemetry are isolated after prerequisites merge.",
+          "Each has a focused high-risk review boundary."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-011-context-lifecycle-migration"
+          ],
+          [
+            "TASK-012-feedback-detector-subagent"
+          ],
+          [
+            "TASK-013-handler-telemetry-correlation"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-011-context-lifecycle-migration",
+          "ticket": "TICKET-004-context-migration",
+          "path": "TICKET-004-context-migration/todo/TASK-011-context-lifecycle-migration.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-008-run-tool-outbound-events",
+            "TASK-009-context-contracts-projector"
+          ],
+          "conflictDomains": [
+            "AgentRunner",
+            "ContextRoller",
+            "daemon bootstrap",
+            "config schema",
+            "queue"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-011-context-lifecycle-migration",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-012-feedback-detector-subagent",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/todo/TASK-012-feedback-detector-subagent.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-004-subagent-lifecycle-adapter",
+            "TASK-010-behavior-ledger-persistence"
+          ],
+          "conflictDomains": [
+            "behavior contracts",
+            "default detector subagent"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-012-feedback-detector-subagent",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-013-handler-telemetry-correlation",
+          "ticket": "TICKET-003-core-boundary-integration",
+          "path": "TICKET-003-core-boundary-integration/todo/TASK-013-handler-telemetry-correlation.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-006-durable-event-dispatcher",
+            "TASK-008-run-tool-outbound-events"
+          ],
+          "conflictDomains": [
+            "observability",
+            "audit logger",
+            "lifecycle telemetry"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-013-handler-telemetry-correlation",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-007",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Lifecycle retention/reload reliability and behavior projection use separate services.",
+          "Both must land before operator and reducer workflows."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-014-lifecycle-retention-reload-replay"
+          ],
+          [
+            "TASK-015-behavior-signal-projector"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-014-lifecycle-retention-reload-replay",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/todo/TASK-014-lifecycle-retention-reload-replay.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-006-durable-event-dispatcher",
+            "TASK-013-handler-telemetry-correlation"
+          ],
+          "conflictDomains": [
+            "lifecycle admin/retention",
+            "lifecycle repositories",
+            "daemon reload"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-014-lifecycle-retention-reload-replay",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-015-behavior-signal-projector",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/todo/TASK-015-behavior-signal-projector.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-007-daemon-message-queue-schedule-events",
+            "TASK-010-behavior-ledger-persistence",
+            "TASK-012-feedback-detector-subagent"
+          ],
+          "conflictDomains": [
+            "lifecycle behavior",
+            "config schema",
+            "behavior integration tests"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-015-behavior-signal-projector",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-008",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Operator IPC/CLI and behavior review reducers touch distinct CLI versus sub-agent/scheduler domains.",
+          "Stable replay and projection semantics make this parallelism safe."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-016-lifecycle-operator-cli"
+          ],
+          [
+            "TASK-017-behavior-review-reducers"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-016-lifecycle-operator-cli",
+          "ticket": "TICKET-006-operations-adoption",
+          "path": "TICKET-006-operations-adoption/todo/TASK-016-lifecycle-operator-cli.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-014-lifecycle-retention-reload-replay",
+            "TASK-015-behavior-signal-projector"
+          ],
+          "conflictDomains": [
+            "CLI registration",
+            "IPC",
+            "daemon admin handlers"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-016-lifecycle-operator-cli",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        },
+        {
+          "id": "TASK-017-behavior-review-reducers",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/todo/TASK-017-behavior-review-reducers.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-013-handler-telemetry-correlation",
+            "TASK-015-behavior-signal-projector"
+          ],
+          "conflictDomains": [
+            "behavior review",
+            "default reviewer subagents",
+            "scheduler"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-017-behavior-review-reducers",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-009",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Prompt mutation, evaluation, reload, and rollback form one sensitive transaction boundary.",
+          "Bundled execution keeps governance evidence and failure recovery coherent."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-018-governed-prompt-promotion"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-018-governed-prompt-promotion",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/todo/TASK-018-governed-prompt-promotion.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-016-lifecycle-operator-cli",
+            "TASK-017-behavior-review-reducers"
+          ],
+          "conflictDomains": [
+            "lifecycle behavior",
+            "personas",
+            "daemon reload",
+            "lifecycle CLI"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-018-governed-prompt-promotion",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-010",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Final black-box verification must settle behavior before adoption documentation begins.",
+          "One focused verification worker owns the full-suite approval and runtime-smoke evidence."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-019-lifecycle-end-to-end-verification"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-019-lifecycle-end-to-end-verification",
+          "ticket": "TICKET-006-operations-adoption",
+          "path": "TICKET-006-operations-adoption/todo/TASK-019-lifecycle-end-to-end-verification.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-018-governed-prompt-promotion"
+          ],
+          "conflictDomains": [
+            "integration tests",
+            "fixtures",
+            "defect-fix hotspots"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-019-lifecycle-end-to-end-verification",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-011",
+      "status": "planned",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Documentation, example configuration, starter assets, and setup skills must reflect the verified final implementation.",
+          "Sequencing after TASK-019 prevents documentation from becoming stale during verification fixes."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-020-lifecycle-documentation-adoption"
+          ]
+        ],
+        "overrideHistory": [
+          {
+            "at": "2026-07-15",
+            "source": "reviewGate",
+            "reason": "GPT-5.4 pre-commit review required documentation to follow final verification."
+          }
+        ]
+      },
+      "tasks": [
+        {
+          "id": "TASK-020-lifecycle-documentation-adoption",
+          "ticket": "TICKET-006-operations-adoption",
+          "path": "TICKET-006-operations-adoption/todo/TASK-020-lifecycle-documentation-adoption.md",
+          "status": "todo",
+          "dependsOn": [
+            "TASK-019-lifecycle-end-to-end-verification"
+          ],
+          "conflictDomains": [
+            "README",
+            "selfdoc",
+            "AGENTS",
+            "example config",
+            "starter assets",
+            "agent skills"
+          ],
+          "assignedModel": "controllerCurrent",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-020-lifecycle-documentation-adoption",
+          "workerWorktree": null,
+          "worktreeStatus": "unassigned",
+          "cleanup": null,
+          "pr": null,
+          "latestCommit": null,
+          "branchFreshness": "unknown",
+          "blockingFeedback": [],
+          "verification": null,
+          "currentGate": "not_started"
+        }
+      ]
+    }
+  ],
+  "sharedContext": {
+    "index": "shared-context/index.md",
+    "resources": [
+      "shared-context/resources/architecture.md",
+      "shared-context/resources/design-decisions.md",
+      "shared-context/resources/testing-strategy.md",
+      "shared-context/resources/task-findings.md"
+    ],
+    "pendingReconciliation": []
+  },
+  "controller": {
+    "activeWave": "WAVE-001",
+    "nextWave": "WAVE-002",
+    "epicBranchVerified": true,
+    "activationArtifactsSynced": false
+  },
+  "monitoring": {
+    "mode": "manual",
+    "cadence": "adaptive",
+    "status": "active",
+    "lastCheckedAt": "2026-07-15T20:04:43+02:00",
+    "nextCheckDueAt": "2026-07-15T20:19:43+02:00",
+    "schedulerRef": null,
+    "fallbackPrompt": "Run subagent-pr-orchestration for EPIC-durable-lifecycle-pipeline and the active wave. Read orchestration.json and controller-state.md, verify activation artifacts are committed on the epic branch before task worktrees branch, inspect every worker/reviewer/PR gate, route P1/P2 feedback, update freshness and verification, and stop when all active tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "stopCondition": "All active-wave tasks are closed and ready for wdd-reconcile-wave."
+  }
+}
