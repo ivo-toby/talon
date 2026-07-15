@@ -980,14 +980,14 @@
     "activeWave": "WAVE-001",
     "nextWave": "WAVE-002",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": false
+    "activationArtifactsSynced": true
   },
   "monitoring": {
     "mode": "manual",
     "cadence": "adaptive",
     "status": "active",
-    "lastCheckedAt": "2026-07-15T20:04:43+02:00",
-    "nextCheckDueAt": "2026-07-15T20:19:43+02:00",
+    "lastCheckedAt": "2026-07-15T20:15:22+02:00",
+    "nextCheckDueAt": "2026-07-15T20:30:22+02:00",
     "schedulerRef": null,
     "fallbackPrompt": "Run subagent-pr-orchestration for EPIC-durable-lifecycle-pipeline and the active wave. Read orchestration.json and controller-state.md, verify activation artifacts are committed on the epic branch before task worktrees branch, inspect every worker/reviewer/PR gate, route P1/P2 feedback, update freshness and verification, and stop when all active tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopCondition": "All active-wave tasks are closed and ready for wdd-reconcile-wave."

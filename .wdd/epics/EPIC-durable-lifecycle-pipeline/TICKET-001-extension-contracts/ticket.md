@@ -76,4 +76,3 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 - [ ] All child task review and verification gates are resolved.
 - [ ] Shared-context updates are reconciled.
 - [ ] Ticket status matches child task state.
-

@@ -18,7 +18,7 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 - Branch: epic/durable-lifecycle-pipeline
 - Target: main
 - Verified locally: yes
-- Planning and activation artifacts committed/synced: pending the activation checkpoint described below
+- Planning and activation artifacts committed/synced: yes; pushed checkpoint `c41455b`
 
 ## Pending Waves
 
@@ -46,8 +46,8 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 - Cadence: adaptive
 - Status: active
 - Scheduler: none
-- Last checked: 2026-07-15T20:04:43+02:00
-- Next check due: 2026-07-15T20:19:43+02:00
+- Last checked: 2026-07-15T20:15:22+02:00
+- Next check due: 2026-07-15T20:30:22+02:00
 - Fallback: run subagent-pr-orchestration for the active wave, verify synced activation state, inspect every worker/reviewer/PR gate, route P1/P2 feedback, and stop when ready for wdd-reconcile-wave.
 
 ## Current Task Gates
@@ -91,7 +91,8 @@ TASK-001 branch is allocated but not created yet. Check freshness after worktree
 - 2026-07-15: Explicit implementation-with-WDD request recorded as strategy confirmation.
 - 2026-07-15: GPT-5.4 pre-commit review moved documentation after final verification and made full-suite/smoke ownership explicit.
 - 2026-07-15T20:04:43+02:00: WAVE-001 activated as bundle BUNDLE-WAVE-001; TASK-001 worktree allocated pending creation from the synced activation commit.
+- 2026-07-15T20:15:22+02:00: Activation checkpoint `c41455b` pushed; sync marker and generated-file EOF hygiene prepared before worktree creation.
 
 ## Next Action
 
-Commit and push this activation checkpoint, record that activation artifacts are synced, commit and push that sync marker, then create and verify the allocated TASK-001 worktree before dispatching its codexHigh worker.
+Commit and push this sync marker, then create and verify the allocated TASK-001 worktree before dispatching its codexHigh worker.

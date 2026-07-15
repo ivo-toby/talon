@@ -57,4 +57,4 @@ updated_at: 2026-07-15
 
 ## Next Phase
 
-- [x] Ready for wdd-start-wave WAVE-001.
+- [x] WAVE-001 is active and its activation checkpoint is pushed; bundle worktree creation is next.
