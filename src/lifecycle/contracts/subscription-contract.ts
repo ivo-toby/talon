@@ -1,15 +1,19 @@
 import { z } from 'zod';
 
-import { LifecycleContractVersionSchema, LifecycleIdentifierSchema, LifecyclePrioritySchema } from './common.js';
+import {
+  LifecycleContractVersionSchema,
+  LifecycleIdentifierSchema,
+  LifecyclePrioritySchema,
+} from './common.js';
 import { LifecycleBudgetContractSchema } from './budget-contract.js';
 import { LifecycleEventContractSchema } from './event-contract.js';
 import { LifecycleFailurePolicyContractSchema } from './failure-policy-contract.js';
-import {
-  LifecycleInterceptorContractSchema,
-} from './interceptor-contract.js';
+import { LifecycleInterceptorContractSchema } from './interceptor-contract.js';
 import { LifecycleFilterContractSchema } from './filter-contract.js';
 import { LifecycleHandlerContractSchema } from './handler-contract.js';
 import { LifecycleSignalContractSchema } from './signal-contract.js';
+
+const MAX_LIFECYCLE_ATTACHMENTS = 32;
 
 const LifecycleSubscriptionBaseSchema = z
   .object({
@@ -20,18 +24,18 @@ const LifecycleSubscriptionBaseSchema = z
 
 export const LifecycleEventSubscriptionContractSchema = LifecycleSubscriptionBaseSchema.extend({
   kind: z.literal('event'),
-  events: z.array(LifecycleEventContractSchema).min(1),
+  events: z.array(LifecycleEventContractSchema).min(1).max(MAX_LIFECYCLE_ATTACHMENTS),
 }).strict();
 
 export const LifecycleSignalSubscriptionContractSchema = LifecycleSubscriptionBaseSchema.extend({
   kind: z.literal('signal'),
-  signals: z.array(LifecycleSignalContractSchema).min(1),
+  signals: z.array(LifecycleSignalContractSchema).min(1).max(MAX_LIFECYCLE_ATTACHMENTS),
 }).strict();
 
 export const LifecycleInterceptorSubscriptionContractSchema =
   LifecycleSubscriptionBaseSchema.extend({
     kind: z.literal('interceptor'),
-    interceptors: z.array(LifecycleInterceptorContractSchema).min(1),
+    interceptors: z.array(LifecycleInterceptorContractSchema).min(1).max(MAX_LIFECYCLE_ATTACHMENTS),
   }).strict();
 
 export const LifecycleSubscriptionContractSchema = z.discriminatedUnion('kind', [
@@ -53,14 +57,17 @@ export const PersonaLifecycleSubscriptionSchema = z
 
 export const PersonaLifecycleConfigSchema = z
   .object({
-    subscriptions: z.array(PersonaLifecycleSubscriptionSchema).default([]),
+    subscriptions: z
+      .array(PersonaLifecycleSubscriptionSchema)
+      .max(MAX_LIFECYCLE_ATTACHMENTS)
+      .default([]),
   })
   .strict();
 
 export const LifecycleConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
-    handlers: z.array(LifecycleHandlerContractSchema).default([]),
+    handlers: z.array(LifecycleHandlerContractSchema).max(MAX_LIFECYCLE_ATTACHMENTS).default([]),
   })
   .strict();
 

@@ -1,11 +1,14 @@
-export {
-  LifecycleBudgetContractSchema,
-  type LifecycleBudgetContract,
-} from './budget-contract.js';
+export { LifecycleBudgetContractSchema, type LifecycleBudgetContract } from './budget-contract.js';
 export {
   LifecycleContractVersionSchema,
   LifecycleHandlerModeSchema,
+  LifecycleDisplayNameSchema,
+  LifecycleFilterOwnerNameSchema,
   LifecycleIdentifierSchema,
+  LifecycleEventTypeSchema,
+  LifecycleRuntimeIdSchema,
+  LifecycleRuntimeNameSchema,
+  LifecycleSignalTypeSchema,
   LifecycleItemOriginSchema,
   LifecycleItemTypeSchema,
   LifecycleMessageSourceSchema,
@@ -17,34 +20,77 @@ export {
   type LifecycleItemType,
   type LifecycleMessageSource,
   type LifecycleScheduleSource,
+  type LifecycleEventType,
+  type LifecycleSignalType,
 } from './common.js';
 export {
+  LifecycleAggregateIdentitySchema,
+  LifecycleBoundedPayloadSchema,
+  LifecycleEventEnvelopeSchema,
   LifecycleEventContractSchema,
+  LifecycleExecutionContextSchema,
+  LifecycleProvenanceSchema,
+  LifecycleRecursionMetadataSchema,
+  LifecycleReferenceSchema,
+  type LifecycleAggregateIdentity,
+  type LifecycleBoundedPayload,
   type LifecycleEventContract,
+  type LifecycleEventEnvelope,
+  type LifecycleExecutionContext,
+  type LifecycleProvenance,
+  type LifecycleRecursionMetadata,
+  type LifecycleReference,
 } from './event-contract.js';
 export {
   LifecycleFailurePolicyContractSchema,
   LifecycleFailurePolicyModeSchema,
   type LifecycleFailurePolicyContract,
 } from './failure-policy-contract.js';
-export {
-  LifecycleFilterContractSchema,
-  type LifecycleFilterContract,
-} from './filter-contract.js';
+export { LifecycleFilterContractSchema, type LifecycleFilterContract } from './filter-contract.js';
 export {
   LifecycleHandlerContractSchema,
   LifecycleHandlerIdentityContractSchema,
+  LifecycleAdvisoryInterceptorHandlerResultSchema,
+  LifecycleEnforcingInterceptorHandlerResultSchema,
+  LIFECYCLE_ADVISORY_INTERCEPTOR_OUTPUT_CONTRACT,
+  LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
+  LIFECYCLE_EVENT_INPUT_CONTRACT,
+  LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
+  LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+  LIFECYCLE_SIGNAL_INPUT_CONTRACT,
+  getEffectiveInterceptorSafety,
+  parseLifecycleHandlerResult,
+  resolveLifecycleHandlerContract,
   type LifecycleHandlerContract,
   type LifecycleHandlerIdentityContract,
+  LifecycleHandlerErrorResultSchema,
+  LifecycleHandlerResultSchema,
+  LifecycleHandlerSuccessResultSchema,
+  type LifecycleHandlerErrorResult,
+  type LifecycleHandlerResult,
+  type LifecycleHandlerSuccessResult,
+  type LifecycleAdvisoryInterceptorHandlerResult,
+  type LifecycleEnforcingInterceptorHandlerResult,
 } from './handler-contract.js';
 export {
   LifecycleInterceptorContractSchema,
+  LifecycleInterceptorEnvelopeSchema,
   LifecycleInterceptorHookSchema,
+  LifecycleInterceptorResultSchema,
+  LifecycleAdvisoryInterceptorResultSchema,
+  LifecycleEnforcingInterceptorResultSchema,
+  LifecycleInterceptorTransformSchema,
   type LifecycleInterceptorContract,
+  type LifecycleInterceptorEnvelope,
+  type LifecycleInterceptorResult,
+  type LifecycleAdvisoryInterceptorResult,
+  type LifecycleEnforcingInterceptorResult,
 } from './interceptor-contract.js';
 export {
   LifecycleSignalContractSchema,
+  LifecycleSignalEnvelopeSchema,
   type LifecycleSignalContract,
+  type LifecycleSignalEnvelope,
 } from './signal-contract.js';
 export {
   LifecycleConfigSchema,
