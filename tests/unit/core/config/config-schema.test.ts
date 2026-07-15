@@ -982,6 +982,7 @@ describe('TalondConfigSchema', () => {
         flushAt: 20,
         flushIntervalSeconds: 5,
       });
+      expect(Object.keys(result.data)).not.toContain('lifecycle');
     }
   });
 
@@ -1215,6 +1216,551 @@ describe('TalondConfigSchema', () => {
     });
   });
 
+  describe('TalondConfigSchema — lifecycle contracts and attachments', () => {
+    it('accepts lifecycle omission without changing legacy config behavior', () => {
+      const result = TalondConfigSchema.safeParse({
+        personas: [{ name: 'assistant' }],
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(Object.keys(result.data)).not.toContain('lifecycle');
+        expect(Object.keys(result.data.personas[0] ?? {})).not.toContain('lifecycle');
+      }
+    });
+
+    it('preserves duplicate owner names unless lifecycle registry validation is enabled', () => {
+      const duplicateOwnerNames = {
+        channels: [
+          { type: 'terminal' as const, name: 'legacy-terminal' },
+          { type: 'terminal' as const, name: 'legacy-terminal' },
+        ],
+        personas: [{ name: 'legacy-assistant' }, { name: 'legacy-assistant' }],
+      };
+
+      expect(TalondConfigSchema.safeParse(duplicateOwnerNames).success).toBe(true);
+      expect(
+        TalondConfigSchema.safeParse({
+          ...duplicateOwnerNames,
+          lifecycle: { enabled: false, handlers: [] },
+        }).success,
+      ).toBe(true);
+
+      const enabledResult = TalondConfigSchema.safeParse({
+        ...duplicateOwnerNames,
+        lifecycle: { enabled: true, handlers: [] },
+      });
+      expect(enabledResult.success).toBe(false);
+      if (!enabledResult.success) {
+        expect(enabledResult.error.issues.map((issue) => issue.message)).toEqual(
+          expect.arrayContaining([
+            expect.stringMatching(/duplicate persona name "legacy-assistant"/i),
+            expect.stringMatching(/duplicate channel name "legacy-terminal"/i),
+          ]),
+        );
+      }
+    });
+
+    it('accepts globally defined handlers with explicit persona subscriptions', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'context-projector',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'context-projector',
+                implementationVersion: '1.0.0',
+              },
+              failurePolicy: {
+                version: 'v1',
+                mode: 'preserve_session',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'context-projector',
+                  priority: 100,
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'run.completed.v1' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('keeps implementation availability out of structural config validation', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'manifest-loaded-agent',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'subagent',
+                ref: 'manifest-loaded-agent',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('does not let YAML declare a native implementation catalog', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          trustedNativeImplementations: ['yaml-self-authorized'],
+          handlers: [],
+        },
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects duplicate lifecycle handler ids', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'signal',
+              inputContract: 'talon.lifecycle.signal.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-signal',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /duplicate lifecycle handler id "audit-log"/i,
+        );
+      }
+    });
+
+    it('rejects persona subscriptions that reference missing handlers', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'missing-handler',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /references unknown lifecycle handler "missing-handler"/i,
+        );
+      }
+    });
+
+    it('rejects incompatible handler modes and subscription kinds', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'signal',
+                    signals: [{ version: 'v1', type: 'context.rotate.requested.v1' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /handler "audit-log" has mode "event" but subscription kind is "signal"/i,
+        );
+      }
+    });
+
+    it('rejects strict filter objects with arbitrary expressions', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                    filter: {
+                      version: 'v1',
+                      expression: 'channel == "terminal"',
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects lifecycle channel filters that reference unknown channels', () => {
+      const result = TalondConfigSchema.safeParse({
+        channels: [{ type: 'terminal', name: 'local-terminal' }],
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                    filter: {
+                      version: 'v1',
+                      channels: ['terminal'],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /lifecycle filter references unknown channel "terminal"/i,
+        );
+      }
+    });
+
+    it('rejects lifecycle persona filters that do not match the attached persona', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          { name: 'assistant' },
+          { name: 'observer' },
+          {
+            name: 'analyst',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                    filter: {
+                      version: 'v1',
+                      personas: ['observer'],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /does not match the attached persona "analyst"/i,
+        );
+      }
+    });
+
+    it('preserves bounded opaque names from persona, channel, and runtime owners', () => {
+      const result = TalondConfigSchema.safeParse({
+        channels: [{ type: 'terminal', name: 'Terminal.Main:V2' }],
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'Native.Audit/Log:V2',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'Ops/Agent:Blue',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                    filter: {
+                      version: 'v1',
+                      channels: ['Terminal.Main:V2'],
+                      personas: ['Ops/Agent:Blue'],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects unsafe fail-open lifecycle policies', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          lifecycle: {
+            enabled: true,
+            handlers: [
+              {
+                version: 'v1',
+                id: 'native-interceptor',
+                mode: 'interceptor',
+                interceptorSafety: 'enforcing',
+                inputContract: 'talon.lifecycle.interceptor.input.v1',
+                outputContract: 'talon.lifecycle.enforcing.interceptor.output.v1',
+                runtime: {
+                  kind: 'native',
+                  ref: 'native-interceptor',
+                  implementationVersion: '1.0.0',
+                },
+                failurePolicy: {
+                  version: 'v1',
+                  mode: 'fail_open',
+                },
+              },
+            ],
+          },
+          personas: [
+            {
+              name: 'assistant',
+              lifecycle: {
+                subscriptions: [
+                  {
+                    version: 'v1',
+                    handler: 'native-interceptor',
+                    subscription: {
+                      version: 'v1',
+                      kind: 'interceptor',
+                      interceptors: [{ version: 'v1', hook: 'message.before_persist' }],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ).toThrow(/enforcing native interceptors must use fail_closed/i);
+    });
+
+    it('rejects interceptor safety outside native interceptor declarations', () => {
+      const eventSafety = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'event-with-interceptor-safety',
+              mode: 'event',
+              interceptorSafety: 'advisory',
+              inputContract: 'talon.lifecycle.event.envelope.v1',
+              outputContract: 'talon.lifecycle.signal.envelopes.v1',
+              runtime: {
+                kind: 'native',
+                ref: 'event-handler',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [{ name: 'assistant' }],
+      });
+      expect(eventSafety.success).toBe(false);
+
+      const subagentEnforcement = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'subagent-enforcer',
+              mode: 'interceptor',
+              interceptorSafety: 'enforcing',
+              inputContract: 'talon.lifecycle.interceptor.input.v1',
+              outputContract: 'talon.lifecycle.enforcing.interceptor.output.v1',
+              runtime: {
+                kind: 'subagent',
+                ref: 'review-agent',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [{ name: 'assistant' }],
+      });
+      expect(subagentEnforcement.success).toBe(false);
+    });
+  });
+
   describe('TalondConfigSchema — reasoningEffort cross-validation', () => {
     it('rejects reasoningEffort for unsupported provider implementations', () => {
       expect(() =>
@@ -1277,9 +1823,7 @@ describe('TalondConfigSchema', () => {
     it('accepts reasoningEffort none for OpenAI-compatible Responses mode', () => {
       expect(() =>
         TalondConfigSchema.parse({
-          personas: [
-            { name: 'assistant', provider: 'openai-compatible', reasoningEffort: 'none' },
-          ],
+          personas: [{ name: 'assistant', provider: 'openai-compatible', reasoningEffort: 'none' }],
           agentRunner: {
             defaultProvider: 'openai-compatible',
             providers: {

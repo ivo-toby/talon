@@ -16,6 +16,11 @@ import {
   MAX_CONCURRENT_PER_TARGET,
   DEFAULT_A2A_MAX_ATTEMPTS,
 } from '../../a2a/a2a-types.js';
+import {
+  LifecycleConfigSchema,
+  PersonaLifecycleConfigSchema,
+} from '../../lifecycle/contracts/index.js';
+import { collectLifecycleValidationIssues } from '../../lifecycle/handler-registry.js';
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -122,6 +127,7 @@ export const PersonaConfigSchema = z.object({
   mounts: z.array(MountConfigSchema).default([]),
   maxConcurrent: z.number().int().min(1).optional(),
   executionEnv: PersonaExecutionEnvSchema.optional(),
+  lifecycle: PersonaLifecycleConfigSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -436,6 +442,7 @@ export const TalondConfigSchema = z
   .object({
     storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
     sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
+    lifecycle: LifecycleConfigSchema.optional(),
     channels: z.array(ChannelConfigSchema).default([]),
     personas: z.array(PersonaConfigSchema).default([]),
     bindings: z.array(BindingConfigSchema).default([]),
@@ -535,4 +542,18 @@ export const TalondConfigSchema = z
         });
       }
     });
+
+    const lifecycleIssues = collectLifecycleValidationIssues({
+      lifecycle: value.lifecycle,
+      channels: value.channels,
+      personas: value.personas,
+    });
+
+    for (const issue of lifecycleIssues) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: issue.path,
+        message: issue.message,
+      });
+    }
   });
