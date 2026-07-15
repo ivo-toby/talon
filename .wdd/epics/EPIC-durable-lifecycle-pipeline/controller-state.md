@@ -38,27 +38,27 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 
 ## Active Wave
 
-WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registry. Its task branch/worktree were created from synced activation head `e28d331` and must be fast-forwarded through this readiness checkpoint before dispatch.
+WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registry. Its task branch/worktree were created from synced activation head `e28d331`, advanced through readiness head `cee1477`, and dispatched from that head.
 
 ## Monitoring
 
-- Mode: manual
+- Mode: codex_thread_heartbeat
 - Cadence: adaptive
 - Status: active
-- Scheduler: none
-- Last checked: 2026-07-15T20:19:44+02:00
-- Next check due: 2026-07-15T20:34:44+02:00
+- Scheduler: `talon-issue-256-wdd-wave-1-heartbeat`
+- Last checked: 2026-07-15T20:33:03+02:00
+- Next check due: 2026-07-15T20:48:03+02:00
 - Fallback: run subagent-pr-orchestration for the active wave, verify synced activation state, inspect every worker/reviewer/PR gate, route P1/P2 feedback, and stop when ready for wdd-reconcile-wave.
 
 ## Current Task Gates
 
-- TASK-001-lifecycle-contracts-registry: not_started; allocated but not dispatched.
+- TASK-001-lifecycle-contracts-registry: no_pr; replacement worker `019f670d-1288-7130-b85a-dac3bb6d7a87` active.
 - The other 19 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
 
-- WAVE-001 / TASK-001: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`; branch `task/TASK-001-lifecycle-contracts-registry`; status ready at activation head `e28d331`.
+- WAVE-001 / TASK-001: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`; branch `task/TASK-001-lifecycle-contracts-registry`; status active at dispatch head `cee1477`.
 
 ## Gate Definitions
 
@@ -71,7 +71,7 @@ WAVE-001 is active as one bundle containing TASK-001-lifecycle-contracts-registr
 
 ## Branch Freshness
 
-TASK-001 branch/worktree are current at activation head `e28d331`. Check freshness again before merge; rerun affected gates after material refresh.
+TASK-001 branch/worktree were current at dispatch head `cee1477`. The controller branch will advance with this worker/monitor checkpoint, so refresh and reverify before merge.
 
 ## Open P1/P2 Feedback
 
@@ -93,7 +93,10 @@ TASK-001 branch/worktree are current at activation head `e28d331`. Check freshne
 - 2026-07-15T20:04:43+02:00: WAVE-001 activated as bundle BUNDLE-WAVE-001; TASK-001 worktree allocated pending creation from the synced activation commit.
 - 2026-07-15T20:15:22+02:00: Activation checkpoint `c41455b` pushed; sync marker and generated-file EOF hygiene prepared before worktree creation.
 - 2026-07-15T20:19:44+02:00: Bundle worktree and task branch created from pushed activation head `e28d331`; required task and controller artifacts verified present.
+- 2026-07-15T20:31:18+02:00: Requested `gpt-5.3-codex-high` worker `019f670b-0ef0-79b0-892c-0fd9439334a1` failed before editing because that model is unsupported for this ChatGPT account.
+- 2026-07-15T20:33:03+02:00: Replacement worker `019f670d-1288-7130-b85a-dac3bb6d7a87` dispatched at head `cee1477` with `gpt-5.4` xhigh as the recorded `controllerCurrent` substitution.
+- 2026-07-15T20:33:03+02:00: Active 15-minute thread heartbeat created and pointed at the replacement worker as `talon-issue-256-wdd-wave-1-heartbeat`.
 
 ## Next Action
 
-Commit and push this worktree-readiness state, fast-forward the task branch to that controller checkpoint, then dispatch its codexHigh worker.
+Monitor the active worker for a draft PR, then run the separate review, freshness, verification, and merge gates.

@@ -95,19 +95,21 @@
             "config schema"
           ],
           "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.4",
+          "modelSubstitutionReason": "gpt-5.3-codex-high is unsupported for the authenticated ChatGPT account; controllerCurrent gpt-5.4 xhigh substituted",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
+          "workerThreadId": "019f670d-1288-7130-b85a-dac3bb6d7a87",
           "reviewThreadId": null,
           "branch": "task/TASK-001-lifecycle-contracts-registry",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
-          "worktreeStatus": "ready",
+          "worktreeStatus": "active",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "current_at_e28d331",
+          "branchFreshness": "current_at_cee1477_at_dispatch",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "no_pr"
         }
       ],
       "bundleState": {
@@ -117,10 +119,10 @@
         ],
         "branch": "task/TASK-001-lifecycle-contracts-registry",
         "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
-        "worktreeStatus": "ready",
-        "workerThreadId": null,
+        "worktreeStatus": "active",
+        "workerThreadId": "019f670d-1288-7130-b85a-dac3bb6d7a87",
         "reviewThreadId": null,
-        "currentGate": "not_started",
+        "currentGate": "no_pr",
         "cleanup": null
       }
     },
@@ -983,12 +985,12 @@
     "activationArtifactsSynced": true
   },
   "monitoring": {
-    "mode": "manual",
+    "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
     "status": "active",
-    "lastCheckedAt": "2026-07-15T20:19:44+02:00",
-    "nextCheckDueAt": "2026-07-15T20:34:44+02:00",
-    "schedulerRef": null,
+    "lastCheckedAt": "2026-07-15T20:33:03+02:00",
+    "nextCheckDueAt": "2026-07-15T20:48:03+02:00",
+    "schedulerRef": "talon-issue-256-wdd-wave-1-heartbeat",
     "fallbackPrompt": "Run subagent-pr-orchestration for EPIC-durable-lifecycle-pipeline and the active wave. Read orchestration.json and controller-state.md, verify activation artifacts are committed on the epic branch before task worktrees branch, inspect every worker/reviewer/PR gate, route P1/P2 feedback, update freshness and verification, and stop when all active tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopCondition": "All active-wave tasks are closed and ready for wdd-reconcile-wave."
   }
