@@ -31,6 +31,10 @@ import type {
   A2AConfigSchema,
   ReasoningEffortSchema,
 } from './config-schema.js';
+import type {
+  LifecycleConfigSchema,
+  PersonaLifecycleConfigSchema,
+} from '../../lifecycle/contracts/index.js';
 
 /** The full daemon configuration, validated and frozen at startup. */
 export type TalondConfig = z.infer<typeof TalondConfigSchema>;
@@ -55,6 +59,9 @@ export type MountConfig = z.infer<typeof MountConfigSchema>;
 
 /** Persona definition as declared in the config file. */
 export type PersonaConfig = z.infer<typeof PersonaConfigSchema>;
+
+/** Optional lifecycle subscriptions attached to a persona. */
+export type PersonaLifecycleConfig = z.infer<typeof PersonaLifecycleConfigSchema>;
 
 /** Supported persona-level OpenAI/Codex reasoning effort values. */
 export type ReasoningEffort = z.infer<typeof ReasoningEffortSchema>;
@@ -106,3 +113,6 @@ export type SubAgentModelOverride = z.infer<typeof SubAgentModelOverrideSchema>;
 
 /** Agent-to-agent runtime limits. */
 export type A2AConfig = z.infer<typeof A2AConfigSchema>;
+
+/** Optional root lifecycle configuration. */
+export type LifecycleConfig = z.infer<typeof LifecycleConfigSchema>;

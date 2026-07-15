@@ -133,3 +133,8 @@ export class A2AError extends TalonError {
 export class ExecutionEnvError extends TalonError {
   readonly code = 'EXECUTION_ENV_ERROR' as const;
 }
+
+/** Lifecycle contract, registry, or policy error. */
+export class LifecycleError extends TalonError {
+  readonly code = 'LIFECYCLE_ERROR' as const;
+}

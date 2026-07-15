@@ -29,6 +29,7 @@ export {
   BackgroundAgentError,
   A2AError,
   ExecutionEnvError,
+  LifecycleError,
 } from './error-types.js';
 
 export { ErrorCodes } from './error-codes.js';

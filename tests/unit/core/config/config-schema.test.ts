@@ -982,6 +982,7 @@ describe('TalondConfigSchema', () => {
         flushAt: 20,
         flushIntervalSeconds: 5,
       });
+      expect(Object.keys(result.data)).not.toContain('lifecycle');
     }
   });
 
@@ -1212,6 +1213,368 @@ describe('TalondConfigSchema', () => {
       cfg.backgroundAgent.providers = {} as any;
       cfg.personas[0] = { name: 'assistant', backgroundProvider: 'claude-code' } as any;
       expect(() => TalondConfigSchema.parse(cfg)).toThrow(/Enabled providers:.*?\(none\)/i);
+    });
+  });
+
+  describe('TalondConfigSchema — lifecycle contracts and attachments', () => {
+    it('accepts lifecycle omission without changing legacy config behavior', () => {
+      const result = TalondConfigSchema.safeParse({
+        personas: [{ name: 'assistant' }],
+      });
+
+      expect(result.success).toBe(true);
+      if (result.success) {
+        expect(Object.keys(result.data)).not.toContain('lifecycle');
+        expect(Object.keys(result.data.personas[0] ?? {})).not.toContain('lifecycle');
+      }
+    });
+
+    it('accepts globally defined handlers with explicit persona subscriptions', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'context-projector',
+              mode: 'event',
+              runtime: {
+                kind: 'native',
+                ref: 'context-projector',
+                implementationVersion: '1.0.0',
+              },
+              failurePolicy: {
+                version: 'v1',
+                mode: 'preserve_session',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'context-projector',
+                  priority: 100,
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'run.completed.v1' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects duplicate lifecycle handler ids', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'signal',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-signal',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(/duplicate lifecycle handler id "audit-log"/i);
+      }
+    });
+
+    it('rejects persona subscriptions that reference missing handlers', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'missing-handler',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /references unknown lifecycle handler "missing-handler"/i,
+        );
+      }
+    });
+
+    it('rejects incompatible handler modes and subscription kinds', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'signal',
+                    signals: [{ version: 'v1', type: 'context.rotate.requested.v1' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /handler "audit-log" has mode "event" but subscription kind is "signal"/i,
+        );
+      }
+    });
+
+    it('rejects strict filter objects with arbitrary expressions', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                    filter: {
+                      version: 'v1',
+                      expression: 'channel == "terminal"',
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects lifecycle channel filters that reference unknown channels', () => {
+      const result = TalondConfigSchema.safeParse({
+        channels: [{ type: 'terminal', name: 'local-terminal' }],
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                    filter: {
+                      version: 'v1',
+                      channels: ['terminal'],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /lifecycle filter references unknown channel "terminal"/i,
+        );
+      }
+    });
+
+    it('rejects lifecycle persona filters that do not match the attached persona', () => {
+      const result = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'audit-log',
+              mode: 'event',
+              runtime: {
+                kind: 'native',
+                ref: 'audit-log',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          { name: 'assistant' },
+          { name: 'observer' },
+          {
+            name: 'analyst',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'audit-log',
+                  subscription: {
+                    version: 'v1',
+                    kind: 'event',
+                    events: [{ version: 'v1', type: 'message.persisted.v1' }],
+                    filter: {
+                      version: 'v1',
+                      personas: ['observer'],
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      });
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0]?.message).toMatch(
+          /does not match the attached persona "analyst"/i,
+        );
+      }
+    });
+
+    it('rejects unsafe fail-open lifecycle policies', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          lifecycle: {
+            enabled: true,
+            handlers: [
+              {
+                version: 'v1',
+                id: 'native-interceptor',
+                mode: 'interceptor',
+                runtime: {
+                  kind: 'native',
+                  ref: 'native-interceptor',
+                  implementationVersion: '1.0.0',
+                },
+                failurePolicy: {
+                  version: 'v1',
+                  mode: 'fail_open',
+                },
+              },
+            ],
+          },
+          personas: [
+            {
+              name: 'assistant',
+              lifecycle: {
+                subscriptions: [
+                  {
+                    version: 'v1',
+                    handler: 'native-interceptor',
+                    subscription: {
+                      version: 'v1',
+                      kind: 'interceptor',
+                      interceptors: [{ version: 'v1', hook: 'message.before_persist' }],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+      ).toThrow(/fail_open is not allowed/i);
     });
   });
 
