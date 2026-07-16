@@ -125,6 +125,22 @@ export class CodexCliProvider implements AgentProvider {
     reasoningEffort: ReasoningEffort | undefined,
   ): Result<{ configEnv: Record<string, string> }, BackgroundAgentError> {
     try {
+      // Write an empty AGENTS.md into the codex working directory to block
+      // codex CLI's walk-up AGENTS.md discovery. Without this, codex finds
+      // the repo-root AGENTS.md (e.g. /home/talon/talon/AGENTS.md) and
+      // injects it into base_instructions AND as a separate user message —
+      // duplicating unrelated repo-level guidance into every agent turn.
+      // Codex stops at the first AGENTS.md it finds, so a zero-byte stub
+      // at cwd fully suppresses ancestor injection. Verified against
+      // codex-cli 0.144.4.
+      const agentsStubPath = join(cwd, 'AGENTS.md');
+      try {
+        writeFileSync(agentsStubPath, '', { encoding: 'utf-8' });
+      } catch {
+        /* non-fatal — if cwd isn't writable, codex will still run,
+           just with whatever AGENTS.md it discovers up the tree. */
+      }
+
       const codexDir = join(homeDir, '.codex');
       mkdirSync(codexDir, { recursive: true, mode: 0o700 });
 
