@@ -45,7 +45,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-004-subagent-lifecycle-adapter | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle adapters, subagent runner, personas | done |
 | TASK-005-transactional-event-bus | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence | event bus, database transaction helpers | done |
 | TASK-006-durable-event-dispatcher | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | dispatcher, handler executor, lifecycle delivery repository/migration/tests | done |
-| TASK-007-daemon-message-queue-schedule-events | TICKET-003-core-boundary-integration | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | daemon bootstrap, message pipeline, queue, scheduler | in_progress |
+| TASK-007-daemon-message-queue-schedule-events | TICKET-003-core-boundary-integration | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | daemon bootstrap, message pipeline, queue, scheduler | done |
 | TASK-008-run-tool-outbound-events | TICKET-003-core-boundary-integration | TASK-007-daemon-message-queue-schedule-events | AgentRunner, host tools, outbound delivery | todo |
 | TASK-009-context-contracts-projector | TICKET-004-context-migration | TASK-004-subagent-lifecycle-adapter, TASK-005-transactional-event-bus | lifecycle context, ContextRoller, memory repository | todo |
 | TASK-010-behavior-ledger-persistence | TICKET-005-behavior-learning | TASK-002-lifecycle-event-persistence | database migrations, behavior repositories | todo |
@@ -288,9 +288,13 @@ Drift notes:
 
 ### WAVE-004
 
-Status: in_progress
+Status: done
 
 Activated: 2026-07-16
+
+Completed: 2026-07-16
+
+Reconciled: 2026-07-16
 
 Tasks:
 
@@ -326,16 +330,38 @@ Activation rule:
   source run only, is now expired, and is explicitly unauthorized for redispatch
   because TASK-007 source is complete.
 
-Current execution state:
+Outcome:
 
-- TASK-007 source work is complete, reviewed, committed, and pushed at
-  `8a994ea`; only the amended WDD checkpoint, exact epic refresh, task PR,
-  merge, cleanup, and WAVE-004 reconciliation remain.
-- The user replaced the model policy on 2026-07-16: no new GPT-5.6 use,
-  GPT-5.5/high at most for implementation or remediation, and GPT-5.5/xhigh for
-  every review.
-- Pause after WAVE-004 reconciliation. Do not activate WAVE-005 without new
-  user direction.
+- TASK-007 final commit `fab94953a41e34520ce216f4bec7acc92c449fa8`
+  passed Verify PR run `29511783210`; prior PR Agent run `29507211075` passed
+  with no review threads and only its non-actionable failed-suggestions issue
+  comment.
+- Final GPT-5.5/xhigh substantive review
+  `019f6b7d-fd1b-78c3-ba7f-7cade5ca636b`, integrity adjudication
+  `019f6b85-a9ac-74f3-9fcd-b10c566acdb8`, and WDD marker review
+  `019f6b8a-afe5-7d02-ac39-c4f07fab5173` all cleared with no unresolved
+  Critical/High/Medium findings. The final marker fingerprint was
+  `f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4`.
+- The branch was fresh when PR #263 merged on 2026-07-16T15:37:10Z at epic
+  merge commit `67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`. The clean task
+  worktree was removed and pruned.
+
+Drift notes:
+
+- Daemon bootstrap now owns one shared optional lifecycle runtime. Omitted or
+  disabled lifecycle configuration keeps null wiring and legacy behavior.
+- Inbound message persistence, routed publication, and enqueue are atomic;
+  queue lifecycle scope is database-owned and terminal events publish only from
+  claimed transitions. Scheduler work is generation-bound with finite drain.
+- Migrations 016/017 add durable signal handoff and queue scope; a v14 database
+  now applies 015-017 and reaches `user_version` 17.
+- Hot reload rejects lifecycle configuration and lifecycle-attached subscription,
+  sub-agent assignment, or capability-authority changes before mutation. TASK-014
+  must test and extend this restart-required baseline rather than assuming live
+  lifecycle runtime reconstruction already exists.
+- WAVE-005 remains planned and inactive. The epic is paused after this
+  reconciliation; `nextWaveActivationAllowed` remains false until new user
+  direction.
 
 Stop condition:
 
@@ -587,11 +613,11 @@ Stop condition:
 
 ## Activation Rules
 
-- WAVE-001 through WAVE-003 are done. WAVE-003 merged PRs #261 and #262 and its
+- WAVE-001 through WAVE-004 are done. WAVE-003 merged PRs #261 and #262 and its
   reconciliation passed Sol/high review 0C/0H/0M/2L before commit `7e3402c`
-  was pushed. WAVE-004 is active after TASK-007 source completion at reviewed
-  and pushed task commit `8a994ea`; the amended WDD checkpoint, exact epic
-  refresh, task PR, merge, cleanup, and reconciliation remain.
+  was pushed. WAVE-004 TASK-007 final commit `fab9495` merged through PR #263 at
+  epic commit `67e93ac`; its clean worktree was removed and pruned, and WAVE-004
+  reconciliation completed.
 - Reconciliation of WAVE-004 is the terminal action for this run. WAVE-005 must
   remain planned and inactive until the user explicitly resumes the epic.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.

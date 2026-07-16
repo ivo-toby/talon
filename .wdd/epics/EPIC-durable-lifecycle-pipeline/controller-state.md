@@ -2,8 +2,8 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: WAVE-004
-status: in_progress
+active_wave: null
+status: paused
 updated_at: 2026-07-16
 ---
 
@@ -59,8 +59,14 @@ Every task advances independently as soon as its gates clear.
 - WAVE-004 TASK-007 refresh merge: GPT-5.5/xhigh reviewed 0C/0H/0M/0L in
   session `019f6b54-ded2-7201-8ef8-cbfdf63c35cd` on fingerprint
   `e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1`,
-  committed, and pushed at `f695bf4`; PR #263 is open against
+  committed, and pushed at `f695bf4`; PR #263 was opened against
   `epic/durable-lifecycle-pipeline`
+- WAVE-004 implementation head: TASK-007 final task commit `fab9495` passed
+  Verify PR run `29511783210` and PR Agent run `29507211075`; PR #263 merged
+  fresh into the epic branch at `67e93ac` on `2026-07-16T15:37:10Z`
+- WAVE-004 reconciliation draft: task/shared-context/wave/controller state is
+  reconciled at epic head `67e93ac`; fresh GPT-5.5/xhigh checkpoint review and
+  push remain, followed by automation deactivation and the requested pause
 
 ## Pending Waves
 
@@ -69,7 +75,7 @@ Every task advances independently as soon as its gates clear.
 | WAVE-001 | TASK-001-lifecycle-contracts-registry | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | in_progress |
+| WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-006 | TASK-011-context-lifecycle-migration, TASK-012-feedback-detector-subagent, TASK-013-handler-telemetry-correlation | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-007 | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
@@ -80,69 +86,38 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-004 is active as one bundled TASK-007 review batch. TASK-007 completed
-exactly six bounded Terra/high remediation passes. Final controller verification
-passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus
-build, latest-source lint, targeted formatting, and diff checks. Fresh
-complete-diff Sol/high source review `019f6b0f-f3c8-7160-bb2a-81329c61d473`
-passed 0C/0H/0M/0L on fingerprint
-`0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`.
-Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean,
-pushed, and aligned with the local remote-tracking ref. The amended WDD/model
-policy checkpoint passed GPT-5.5/xhigh review and is pushed at `d104ba4`. The
-durable controller-state marker passed GPT-5.5/xhigh review
-`019f6b4b-dc25-7331-9d26-b5f5595ff21b` 0C/0H/0M/0L on fingerprint
-`0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131` and was
-pushed at `fdf0e775a411959739a577071788eabe4133e3f2`. Full GPT-5.5/xhigh
-refresh review `019f6b54-ded2-7201-8ef8-cbfdf63c35cd` passed 0C/0H/0M/0L on
-fingerprint `e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1`.
-The reviewed refresh merge was committed and pushed as
-`f695bf4717ae024283479763d77684de9730f6b5`, and PR #263
-(`https://github.com/ivo-toby/talon/pull/263`) is open against
-`epic/durable-lifecycle-pipeline`. GitHub Verify PR run `29507211058` failed one
-selected test because the committed-v14 migration test expected 1 applied
-migration and `user_version` 15, but migrations 016 and 017 make the correct
-current totals 3 and 17. GPT-5.5/high implementation session
-`019f6b5c-57e9-74e2-9cf4-d59582276884` completed the focused remediation by
-changing only `tests/unit/core/database/repositories/lifecycle-event-repository.test.ts`
-lines 866-867, updating expected applied migration count 1 to 3 and
-`user_version` 15 to 17. Node 24.15.0 focused verification passed 30/30 in that
-file; no install, rebuild, or full suite ran. PR Agent run `29507211075` passed;
-its failed-suggestions issue comment is non-actionable, with no review threads.
-GitHub Verify PR run `29507211058` remains failed until a reviewed fix is pushed.
-The Medium CI blocker is remediation_completed_awaiting_fresh_full_gpt55_xhigh_review,
-not resolved. PR review/freshness/merge/cleanup/reconciliation remain.
-Historical Sol/high and Terra/high references below are provenance only
-and do not authorize new GPT-5.6 activity.
+No wave is active. WAVE-004 is done and its reconciliation draft records
+TASK-007 as merged through PR #263 at epic commit
+`67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`. Final task commit
+`fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
+`29511783210`; PR Agent run `29507211075` passed with no review threads and one
+non-actionable failed-suggestions issue comment. Complete GPT-5.5/xhigh review
+`019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` plus integrity adjudication
+`019f6b85-a9ac-74f3-9fcd-b10c566acdb8` issued Amended PASS with
+0C/0H/0M/0L, and the final WDD marker review
+`019f6b8a-afe5-7d02-ac39-c4f07fab5173` passed 0C/0H/0M/0L on fingerprint
+`f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4`.
+The task branch was fresh at merge; its clean worktree was removed and pruned.
 
-Superseding current gate: complete GPT-5.5/xhigh review
-`019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` reviewed the unchanged 37-path union and
-found 0C/0H/0M/0L substantive findings. Its sole initial block was the
-controller's non-canonical newline-stripped fingerprint. Independent GPT-5.5/
-xhigh integrity adjudication `019f6b85-a9ac-74f3-9fcd-b10c566acdb8`
-reproduced 37 paths, exactly six modified files, canonical newline-preserving
-fingerprint `0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9`,
-`git diff --check`, and JSON parse, and issued Amended PASS carrying forward
-0C/0H/0M/0L. Remediation is reviewed and ready for commit/push after a fresh
-GPT-5.5/xhigh review of this state-only WDD marker. PR #263 remains open; old
-Verify PR run `29507211058` remains failed pending push. WAVE-005 is inactive,
-`pauseAfterWave` remains WAVE-004, and next-wave activation is false.
+The reconciliation checkpoint still requires a fresh GPT-5.5/xhigh review,
+commit, and push. Monitoring remains active only until that reviewed checkpoint
+is pushed and the automation is deactivated. WAVE-005 is planned but inactive,
+`pauseAfterWave` is WAVE-004, and `nextWaveActivationAllowed` is false.
 
 ## Monitoring
 
 - Mode: Codex thread heartbeat
 - Cadence: adaptive; next controller check in 5 minutes
-- Status: PR open; amended full review passed 0C/0H/0M/0L; reviewed remediation ready for commit/push pending fresh GPT-5.5/xhigh WDD marker review
+- Status: WAVE-004 reconciliation checkpoint review/push pending; automation deactivation pending afterward
 - Scheduler: `talon-issue-256-wdd-wave-4-monitor`
-- Last checked: 2026-07-16T17:24:23+02:00
-- Next check due: 2026-07-16T17:29:23+02:00
+- Last checked: 2026-07-16T17:40:00+02:00
+- Next check due: 2026-07-16T17:45:00+02:00
 - Stop condition: WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, the monitor is deactivated, and epic work pauses before WAVE-005.
 - Automation state: the WAVE-003 heartbeat was deleted after reconciliation
   push. Self-contained WAVE-004 heartbeat
-  `talon-issue-256-wdd-wave-4-monitor` is active for fresh GPT-5.5/xhigh
-  review, PR checks after a reviewed fix is pushed, merge, cleanup, and WAVE-004
-  reconciliation only. It must
-  not activate WAVE-005.
+  `talon-issue-256-wdd-wave-4-monitor` remains active only for the fresh
+  GPT-5.5/xhigh reconciliation review, checkpoint commit/push, and subsequent
+  deactivation. It must not activate WAVE-005.
 
 ## Current Task Gates
 
@@ -227,50 +202,18 @@ Verify PR run `29507211058` remains failed pending push. WAVE-005 is inactive,
   suggestion system comment was non-actionable and did not change the passed
   check gate.
 - TASK-007-daemon-message-queue-schedule-events: current canonical state:
-  exactly six bounded Terra/high remediation passes completed. Final controller
-  verification passed 12 focused files / 385 tests under exact Node v24.15.0
-  ABI 137, plus build, latest-source lint, targeted formatting, and diff checks.
-  Fresh complete-diff Sol/high source review
-  `019f6b0f-f3c8-7160-bb2a-81329c61d473` passed 0C/0H/0M/0L on fingerprint
-  `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`.
-  Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean,
-  pushed, and aligned with the local remote-tracking ref. Final GPT-5.5/xhigh
-  marker review `019f6b4b-dc25-7331-9d26-b5f5595ff21b` passed 0C/0H/0M/0L on
-  fingerprint `0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131`;
-  marker commit `fdf0e775a411959739a577071788eabe4133e3f2` is pushed. Full
-  GPT-5.5/xhigh refresh review `019f6b54-ded2-7201-8ef8-cbfdf63c35cd` passed
-  0C/0H/0M/0L on fingerprint
-  `e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1`. The
-  reviewed refresh merge was committed and pushed as
-  `f695bf4717ae024283479763d77684de9730f6b5`, and PR #263
-  (`https://github.com/ivo-toby/talon/pull/263`) is open against
-  `epic/durable-lifecycle-pipeline`. GitHub Verify PR run `29507211058` failed
-  one selected committed-v14 migration test because it expected 1 applied
-  migration and `user_version` 15, while migrations 016 and 017 make the correct
-  current totals 3 and 17. GPT-5.5/high implementation session
-  `019f6b5c-57e9-74e2-9cf4-d59582276884` completed the focused remediation by
-  changing only `tests/unit/core/database/repositories/lifecycle-event-repository.test.ts`
-  lines 866-867, updating expected applied migration count 1 to 3 and
-  `user_version` 15 to 17. Node 24.15.0 focused verification passed 30/30 in
-  that file; no install, rebuild, or full suite ran. PR Agent run
-  `29507211075` passed; its failed-suggestions issue comment is non-actionable,
-  with no review threads. GitHub Verify PR run `29507211058` remains failed
-  until a reviewed fix is pushed. The Medium CI blocker is
-  remediation_completed_awaiting_fresh_full_gpt55_xhigh_review, not resolved.
-  Superseding review/remediation state: GPT-5.5/xhigh session
-  `019f6b67-c08a-7e13-a1e4-579fbac1e114` found 0C/0H/1M/0L on stale
-  lifecycle hot-reload authority. GPT-5.5/high remediation changed daemon and
-  reload-test files while preserving the migration fix; 26/26 focused reload
-  tests, build, source lint, source formatting, and diff check passed. Focused
-  sanity review `019f6b75-52f0-73a1-9016-41922cb35236` passed 0C/0H/0M. Fresh
-  complete GPT-5.5/xhigh review is required before commit.
-  Superseding gate: complete GPT-5.5/xhigh review
-  `019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` found 0C/0H/0M/0L substantive
-  findings. Integrity adjudication `019f6b85-a9ac-74f3-9fcd-b10c566acdb8`
-  reproduced the unchanged 37-path union, exactly six modified files, canonical
-  fingerprint `0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9`,
-  diff check, and JSON parse, and issued Amended PASS. Fresh GPT-5.5/xhigh WDD
-  marker review is required before commit/push.
+  merged. Final task commit `fab94953a41e34520ce216f4bec7acc92c449fa8`
+  passed Verify PR run `29511783210`; PR Agent run `29507211075` passed with no
+  review threads and one non-actionable failed-suggestions issue comment.
+  Complete GPT-5.5/xhigh review `019f6b7d-fd1b-78c3-ba7f-7cade5ca636b`
+  plus integrity adjudication `019f6b85-a9ac-74f3-9fcd-b10c566acdb8`
+  issued Amended PASS with 0C/0H/0M/0L. Final WDD marker review
+  `019f6b8a-afe5-7d02-ac39-c4f07fab5173` passed 0C/0H/0M/0L on fingerprint
+  `f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4`.
+  PR #263 merged fresh into `epic/durable-lifecycle-pipeline` at
+  `67e93accfc8b62dc1e43102ef173fc20cc2bb0e5` on
+  `2026-07-16T15:37:10Z`; the clean task worktree was removed and pruned.
+  The task gate is `merged`, with no unresolved Critical/High/Medium feedback.
   Historical controller verification
   passed 179 focused tests, build, scoped lint, and diff checks. Sol/high review
   `019f6a8f-2e78-7712-b6d8-ff006b8d1507` blocked 0C/2H/5M/0L after reproducing
@@ -306,7 +249,7 @@ Verify PR run `29507211058` remains failed pending push. WAVE-005 is inactive,
   lifecycle scope, native capability deduplication, and IPC shutdown promise
   blockers. The current canonical evidence above supersedes this historical
   summary for the remaining gate sequence.
-- The remaining 13 tasks remain not_started.
+- The remaining 13 tasks remain not_started; WAVE-005 is planned and inactive.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
@@ -323,33 +266,11 @@ Verify PR run `29507211058` remains failed pending push. WAVE-005 is inactive,
 - WAVE-003 / TASK-006: merged branch `task/TASK-006-durable-event-dispatcher`;
   clean worktree removed and pruned after PR #262 merged. The Low remains
   untouched.
-- WAVE-004 / TASK-007: local/remote branch
-  `task/TASK-007-daemon-message-queue-schedule-events` and assigned worktree
+- WAVE-004 / TASK-007: merged branch
+  `task/TASK-007-daemon-message-queue-schedule-events`; the worktree at
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
-  are at reviewed, pushed refresh merge commit
-  `f695bf4717ae024283479763d77684de9730f6b5`, with PR #263 open against
-  `epic/durable-lifecycle-pipeline`. GitHub Verify PR run `29507211058` failed
-  one selected committed-v14 migration test. GPT-5.5/high implementation session
-  `019f6b5c-57e9-74e2-9cf4-d59582276884` completed the focused remediation by
-  changing only test lines 866-867, with 30/30 focused Node 24.15.0 verification
-  passing and no install, rebuild, or full suite. Fresh full GPT-5.5/xhigh
-  review is required before any remediation commit. PR Agent run `29507211075`
-  passed with no review threads; its failed-suggestions issue comment is
-  non-actionable. GitHub Verify PR remains failed until a reviewed fix is
-  pushed. Complete GPT-5.5/xhigh review
-  `019f6b67-c08a-7e13-a1e4-579fbac1e114` found 0C/0H/1M/0L on lifecycle
-  hot-reload staleness. GPT-5.5/high remediation of `src/daemon/daemon.ts` and
-  `tests/unit/daemon/reload.test.ts` preserved the migration fix and passed
-  26/26 focused reload tests plus build/static gates. Focused GPT-5.5/high
-  sanity review `019f6b75-52f0-73a1-9016-41922cb35236` passed 0C/0H/0M; fresh
-  complete GPT-5.5/xhigh review is required before commit.
-  Complete GPT-5.5/xhigh review `019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` now
-  carries 0C/0H/0M/0L substantive findings after integrity adjudication
-  `019f6b85-a9ac-74f3-9fcd-b10c566acdb8` reproduced the unchanged 37-path
-  union, exactly six modified files, canonical fingerprint
-  `0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9`, diff
-  check, and JSON parse. Reviewed remediation is ready for commit/push pending
-  fresh GPT-5.5/xhigh review of this WDD marker.
+  was verified clean, removed, and pruned after PR #263 merged at epic commit
+  `67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`.
 
 ## Gate Definitions
 
@@ -397,8 +318,8 @@ passed GPT-5.5/xhigh review and was pushed at
 passed full GPT-5.5/xhigh review `019f6b54-ded2-7201-8ef8-cbfdf63c35cd`
 0C/0H/0M/0L on fingerprint
 `e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1`. The
-reviewed merge commit `f695bf4717ae024283479763d77684de9730f6b5` is pushed and
-open as PR #263 against the epic branch. GitHub Verify PR run `29507211058`
+reviewed merge commit `f695bf4717ae024283479763d77684de9730f6b5` was pushed and
+opened as PR #263 against the epic branch. GitHub Verify PR run `29507211058`
 failed one selected committed-v14 migration assertion; GPT-5.5/high remediation
 completed that fix with 30/30 focused tests. Complete GPT-5.5/xhigh review
 `019f6b67-c08a-7e13-a1e4-579fbac1e114` then found 0C/0H/1M/0L on stale
@@ -406,14 +327,18 @@ lifecycle runtime/authority after hot reload. GPT-5.5/high remediation changed
 only daemon source and reload tests, preserved the migration fix, passed 26/26
 focused reload tests and build/static gates, and focused sanity review
 `019f6b75-52f0-73a1-9016-41922cb35236` passed 0C/0H/0M. A fresh complete
-GPT-5.5/xhigh review is required before commit. Complete GPT-5.5/xhigh review
+GPT-5.5/xhigh review was required before commit. Complete GPT-5.5/xhigh review
 `019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` subsequently found 0C/0H/0M/0L
 substantive findings; integrity adjudication
 `019f6b85-a9ac-74f3-9fcd-b10c566acdb8` reproduced the unchanged 37-path union,
 exactly six modified files, canonical fingerprint
 `0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9`, diff
-check, and JSON parse and issued Amended PASS. Only fresh GPT-5.5/xhigh review
-of this WDD marker remains before commit/push.
+check, and JSON parse and issued Amended PASS. Final marker review
+`019f6b8a-afe5-7d02-ac39-c4f07fab5173` then passed 0C/0H/0M/0L on fingerprint
+`f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4`.
+Task commit `fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
+`29511783210`; PR #263 merged fresh at
+`67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`.
 
 ## Open P1/P2 Feedback
 
@@ -431,14 +356,9 @@ of this WDD marker remains before commit/push.
 - WAVE-004 activation-sync review passed after the stale-summary Medium was
   corrected. The two known Low follow-ups remain untouched; readiness review
   also passed 0C/0H/0M/2L and both Lows remain untouched.
-- TASK-007 has one active gate: fresh GPT-5.5/xhigh review of this state-only
-  WDD marker before commit/push. Complete review
-  `019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` has 0C/0H/0M/0L substantive findings;
-  integrity adjudication `019f6b85-a9ac-74f3-9fcd-b10c566acdb8` reproduced the
-  unchanged 37-path union, exactly six modified files, canonical fingerprint
-  `0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9`, diff
-  check, and JSON parse, and issued Amended PASS. Old Verify PR run
-  `29507211058` remains failed pending the reviewed push.
+- TASK-007 has no unresolved Critical/High/Medium feedback. Its final reviews,
+  Verify PR run, PR Agent gate, freshness, merge, and cleanup all passed. Known
+  Low/P3 follow-ups remain untouched and non-blocking.
 
 ## Verification Status
 
@@ -493,27 +413,32 @@ of this WDD marker remains before commit/push.
   pushed at `fdf0e77`. TASK-007 exact refresh review
   `019f6b54-ded2-7201-8ef8-cbfdf63c35cd` passed GPT-5.5/xhigh 0C/0H/0M/0L on
   fingerprint `e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1`;
-  reviewed merge commit `f695bf4717ae024283479763d77684de9730f6b5` is pushed
-  and PR #263 is open against the epic branch. GitHub Verify PR run
+  reviewed merge commit `f695bf4717ae024283479763d77684de9730f6b5` was pushed
+  and PR #263 was opened against the epic branch. GitHub Verify PR run
   `29507211058` failed one selected committed-v14 migration test. GPT-5.5/high
   implementation session `019f6b5c-57e9-74e2-9cf4-d59582276884` completed the
   focused remediation with 30/30 focused Node 24.15.0 verification, and PR Agent
-  run `29507211075` passed with no review threads. GitHub Verify PR remains
-  failed until a reviewed fix is pushed; the Medium CI blocker is
-  remediation_completed_awaiting_fresh_full_gpt55_xhigh_review, not resolved.
+  run `29507211075` passed with no review threads. GitHub Verify PR remained
+  failed until the reviewed fix was pushed; the Medium CI blocker was then
+  unresolved.
 - Superseding verification: complete GPT-5.5/xhigh review
   `019f6b67-c08a-7e13-a1e4-579fbac1e114` found 0C/0H/1M/0L on lifecycle
   hot-reload staleness after accepting the migration fix. GPT-5.5/high
   remediation passed 26/26 focused reload tests, build, source lint, source
   formatting, and diff check. Focused GPT-5.5/high sanity review
   `019f6b75-52f0-73a1-9016-41922cb35236` passed 0C/0H/0M. Fresh complete
-  GPT-5.5/xhigh review is now required.
+  GPT-5.5/xhigh review was then required.
 - Final substantive verification passed: complete GPT-5.5/xhigh review
   `019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` carries 0C/0H/0M/0L, and independent
   integrity adjudication `019f6b85-a9ac-74f3-9fcd-b10c566acdb8` reproduced the
   unchanged 37-path union, exactly six modified files, canonical fingerprint
   `0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9`, diff
-  check, and JSON parse. Only marker review remains.
+  check, and JSON parse. Final marker review
+  `019f6b8a-afe5-7d02-ac39-c4f07fab5173` passed 0C/0H/0M/0L on fingerprint
+  `f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4`.
+  Task commit `fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
+  `29511783210` and PR Agent run `29507211075`; PR #263 merged fresh at
+  `67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`.
 
 ## Shared Context Reconciliation
 
@@ -529,6 +454,14 @@ of this WDD marker remains before commit/push.
   dispatcher identity, timeout/concurrency, forward-migration, and daemon
   supervision findings are reconciled into
   `shared-context/resources/task-findings.md` and TASK-007.
+- WAVE-004 bootstrap lifecycle composition, atomic inbound routing/enqueue,
+  database-owned queue scope, claimed-only terminal publication, scheduler
+  generation/drain, durable signal handoff, migrations 016/017, v14-to-v17
+  migration coverage, and pre-mutation reload restart guards are reconciled
+  into `shared-context/resources/task-findings.md` and
+  `shared-context/resources/testing-strategy.md`.
+- TASK-014 now records the existing restart-required reload guard as its future
+  baseline without implying live lifecycle-runtime reconstruction.
 
 ## Event Log
 
@@ -938,14 +871,22 @@ of this WDD marker remains before commit/push.
   with no review threads. GitHub Verify PR run `29507211058` remains failed
   until a reviewed fix is pushed. The Medium CI blocker is
   remediation_completed_awaiting_fresh_full_gpt55_xhigh_review, not resolved.
+- 2026-07-16T15:37:10Z: TASK-007 final commit
+  `fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
+  `29511783210`; PR Agent run `29507211075` passed with no review threads and
+  one non-actionable failed-suggestions issue comment. PR #263 merged fresh
+  into the epic branch at `67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`.
+- 2026-07-16: TASK-007 was moved to done, its clean worktree was removed and
+  pruned, WAVE-004 was marked done/reconciled, and downstream shared context
+  was updated. The reconciliation checkpoint remains pending fresh GPT-5.5/
+  xhigh review and push; monitor deactivation follows that checkpoint.
 
 ## Next Action
 
-Run a fresh GPT-5.5/xhigh review of this state-only WDD marker before any
-commit. After a clean marker review, commit and push the already substantively
-reviewed fixes so GitHub Verify PR run `29507211058`
-can be superseded by a fresh passing run, then continue PR #263 through
-freshness, merge, cleanup, and WAVE-004 reconciliation. Then deactivate
-monitoring and pause; do not activate WAVE-005. Remediate only Critical/High/
-Medium WDD, refresh, CI, or PR blockers; leave Low/P3 and `.minispec` untouched,
-and do not run full `npm test` without approval.
+Run a fresh GPT-5.5/xhigh review of the complete WAVE-004 reconciliation diff.
+Remediate only Critical/High/Medium findings; leave Low/P3 findings untouched.
+After a clean review, commit and push the exact reviewed reconciliation
+checkpoint on `epic/durable-lifecycle-pipeline`, then deactivate automation
+`talon-issue-256-wdd-wave-4-monitor` and pause. Do not activate WAVE-005, do not
+touch `.minispec` or `validation-checklist.md`, and do not run full `npm test`
+without approval.

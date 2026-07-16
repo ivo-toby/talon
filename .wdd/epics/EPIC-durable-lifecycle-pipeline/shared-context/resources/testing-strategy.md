@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-RESOURCE-testing-strategy
 kind: shared_context_resource
 epic: EPIC-durable-lifecycle-pipeline
 resource: testing-strategy
-updated_at: 2026-07-15
+updated_at: 2026-07-16
 ---
 
 # Shared Context Resource: Testing Strategy
@@ -18,7 +18,9 @@ persistence, security, and provider-session change.
 Tasks use focused RED/GREEN tests. Persistence and integration tests use real
 in-memory or temporary-file SQLite, not repository mocks alone. Reviews block
 on P1/P2. Epic validation adds the approved full test suite and a real daemon
-terminal smoke round trip.
+terminal smoke round trip. WAVE-004 established focused daemon-boundary,
+migration-upgrade, and hot-reload regression baselines for later publishers and
+operations work.
 
 ## Test Layers
 
@@ -60,6 +62,27 @@ terminal smoke round trip.
 - `git diff --check` before handoff.
 - `gpt-5.5` review with xhigh reasoning before every commit; no unresolved Critical/High/Medium or
   P1/P2 findings.
+
+## WAVE-004 Regression Baseline
+
+- Preserve the established daemon/pipeline/queue/scheduler integration set that
+  passed 385 focused tests under Node 24, plus build and scoped static checks.
+- Persistence verification must exercise authoritative insert-vs-duplicate
+  outcomes, atomic message/route/enqueue publication, DB-owned queue scope, and
+  claimed-only terminal publication with real SQLite where applicable.
+- Migration upgrade coverage must prove v14 applies migrations 015, 016, and
+  017 and finishes at `user_version` 17 while retaining data, triggers,
+  indexes, and foreign-key behavior. The focused repository test passed 30/30.
+- Scheduler tests must cover stop/start generation invalidation after async
+  prompt lookup and before enqueue/state mutation, plus bounded drain failure
+  behavior that keeps teardown and restart gated.
+- Reload tests must prove lifecycle configuration and lifecycle-attached
+  subscription/sub-agent/capability-authority changes fail before any reload
+  mutation, while ordinary non-authority persona changes remain reloadable. The
+  focused reload suite passed 26/26.
+- Final task evidence includes Verify PR run `29511783210`, PR Agent with no
+  review threads, clean branch freshness/merge, and GPT-5.5/xhigh review gates
+  with 0C/0H/0M/0L.
 
 ## Epic Validation
 

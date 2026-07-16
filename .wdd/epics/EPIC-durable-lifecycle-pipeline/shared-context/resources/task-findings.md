@@ -18,9 +18,11 @@ need. Workers should propose concise updates; the controller owns reconciliation
 WAVE-001 froze the lifecycle contracts and registry boundary. WAVE-002 added
 durable event/delivery persistence, deterministic interceptor execution, and a
 capability-scoped sub-agent adapter. WAVE-003 added transaction-owned
-publication and an independently supervised durable dispatcher. Later tasks
-must consume these APIs and resolved identities rather than re-deriving
-authority, safety, causality, durability, compatibility, or execution policy.
+publication and an independently supervised durable dispatcher. WAVE-004 wired
+that runtime through daemon, inbound message, queue, and scheduler boundaries.
+Later tasks must consume these APIs and resolved identities rather than
+re-deriving authority, safety, causality, durability, compatibility, or
+execution policy.
 
 ## Details
 
@@ -116,6 +118,40 @@ authority, safety, causality, durability, compatibility, or execution policy.
 - Two WAVE-003 Lows remain follow-ups and were intentionally not remediated:
   TASK-005 standalone strict-TypeScript fixture shapes and TASK-006's historical
   `git show fbe4f08` migration fixture dependency in shallow/source checkouts.
+- Source: TASK-007 / PR #263, final task commit `fab9495`, merged at `67e93ac`
+  on 2026-07-16. Daemon bootstrap constructs one shared lifecycle runtime and
+  passes that exact optional authority to message, queue, scheduler, and
+  background producers. Omitted or disabled lifecycle configuration preserves
+  null wiring and the legacy path.
+- Inbound acceptance owns message persistence, persisted/routed publication,
+  and queue enqueue in one lifecycle-bus transaction. Only the authoritative
+  message insert outcome publishes/enqueues; duplicate detection cannot commit
+  a message without its queue/event side effects or publish them twice.
+- Queue lifecycle persona/item scope is stored in manager-owned database
+  columns, never trusted from caller payload metadata. Enqueue and terminal
+  events share stable correlation; terminal publication occurs only for a
+  successful claimed-state transition, so repeated/conflicting completion is
+  event-idempotent.
+- Scheduler work carries its originating generation across every asynchronous
+  boundary and revalidates before enqueue or state mutation. Queue, scheduler,
+  and lifecycle dispatcher shutdown use bounded drain results; failed or timed-
+  out drains retain teardown/restart gates instead of closing dependencies
+  beneath active work.
+- Successful lifecycle handler signals use an atomic, persona-scoped durable
+  handoff. Additive migrations 016 and 017 introduce signal handoff and
+  database-owned queue scope without rewriting earlier migrations. Opening a
+  v14 database now applies migrations 015-017 and ends at `user_version` 17;
+  migration tests must expect three applied migrations, not one.
+- Hot reload does not rebuild the bootstrap-owned lifecycle runtime. Reload
+  therefore rejects top-level lifecycle configuration or lifecycle-attached
+  persona subscription, sub-agent assignment, and capability-authority changes
+  before applying any mutable reload setting. TASK-014 owns restart/reload
+  evolution from this explicit restart-required baseline.
+- WAVE-004 evidence passed 385 focused integration tests under Node 24 plus
+  build/scoped static checks, 30/30 focused migration tests, 26/26 focused
+  reload tests, Verify PR run `29511783210`, final substantive GPT-5.5/xhigh
+  review and integrity adjudication, and a clean WDD marker review. PR Agent had
+  no review threads; no Low/P3 finding was auto-remediated.
 
 ## Durable Memory
 

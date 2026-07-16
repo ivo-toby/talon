@@ -54,6 +54,9 @@ Add configurable compaction, privacy-aware payload deletion/tombstoning, stable 
 - Snapshot handler/implementation/contract version for pending deliveries.
 - Implement disable and exact replay services.
 - Test restart/reload, compaction, deletion, replay, and dedup.
+- Treat the existing pre-mutation restart-required guard for lifecycle and
+  lifecycle-attached persona authority changes as the compatibility baseline;
+  do not assume the lifecycle runtime is already rebuilt in place on reload.
 
 ## Non-Scope
 
@@ -65,6 +68,8 @@ No CLI, arbitrary bulk replay, remote upgrades, or permanent full history.
 
 - Inspect the likely files and their focused tests before broad discovery.
 - Follow the epic architecture and design decisions; preserve existing disabled and legacy behavior.
+- Inspect TASK-007's merged reload guard and focused reload tests before
+  designing stable handler identity across reload/restart.
 - Treat untrusted content, capability scope, idempotency, ordering, audit, and privacy as explicit review concerns.
 
 ### Shared Context References
@@ -119,7 +124,9 @@ None. The task PR targets epic/durable-lifecycle-pipeline.
 
 ### RED
 
-Failing tests for compaction windows, pending/dead-letter preservation, privacy deletion, version-stable reload, missing/disabled handlers, exact replay, audit, and no duplicates.
+Failing tests for compaction windows, pending/dead-letter preservation, privacy
+deletion, version-stable reload, the existing restart-required lifecycle-change
+guard, missing/disabled handlers, exact replay, audit, and no duplicates.
 
 ### GREEN
 

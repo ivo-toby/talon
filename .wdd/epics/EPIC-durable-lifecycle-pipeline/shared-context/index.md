@@ -74,3 +74,7 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
   `8f74740`. See `resources/task-findings.md` for transactional publication,
   dispatcher authority, timeout/concurrency, forward-migration, and daemon
   supervision rules.
+- WAVE-004 / TASK-007 merged in PR #263 at epic head `67e93ac`. See
+  `resources/task-findings.md` for daemon-owned lifecycle wiring, atomic inbound
+  publication, database-owned queue scope, scheduler generation/drain, durable
+  signal handoff migrations, and restart-required reload rules.
