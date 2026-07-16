@@ -57,4 +57,6 @@ updated_at: 2026-07-16
 
 ## Next Phase
 
-- [x] WAVE-001 is reconciled; WAVE-002 is the active parallel batch, with activation sync required before its three task worktrees are created.
+- [x] WAVE-001 and WAVE-002 are reconciled; WAVE-003 is next, with allocation,
+  activation-sync, and worktree-readiness review/push gates required before its
+  two parallel Terra/high workers are dispatched.

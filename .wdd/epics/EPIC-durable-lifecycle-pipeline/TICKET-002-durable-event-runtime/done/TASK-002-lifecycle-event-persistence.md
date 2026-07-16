@@ -6,7 +6,7 @@ ticket: TICKET-002-durable-event-runtime
 wave: WAVE-002
 slug: lifecycle-event-persistence
 title: Add durable lifecycle event and delivery persistence
-status: in_progress
+status: done
 depends_on: ["TASK-001-lifecycle-contracts-registry"]
 conflict_domains:
   - "src/core/database/migrations/**"
@@ -17,12 +17,12 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-002-lifecycle-event-persistence
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence
-worktree_status: active
+worktree_status: cleaned_up
 worker_thread_id: 019f694a-8c17-7a20-a7b7-113e5349f5b8
-review_thread_id: 019f6944-fc19-7d82-ac69-bb2c3690bf65
-pr: null
-current_gate: needs_review
-branch_freshness: current_at_d153e17_at_dispatch
+review_thread_id: 019f6972-3de4-7f11-bb04-e6a186497f67
+pr: https://github.com/ivo-toby/talon/pull/260
+current_gate: merged
+branch_freshness: merged_current_at_49e47bf
 verification:
   - "npx vitest run tests/unit/core/database/repositories/lifecycle-event-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
   - "npm run build"
@@ -33,7 +33,7 @@ verification:
 
 ## Status
 
-in_progress
+done
 
 ## Parent Ticket
 
@@ -101,14 +101,14 @@ task/TASK-002-lifecycle-event-persistence
 
 ## Worker Worktree
 
+The clean worktree at
 `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence`
-is active on `task/TASK-002-lifecycle-event-persistence` from reviewed and
-pushed readiness commit `d153e17` under Terra/high worker
-`019f6850-6765-7f63-8874-1857dfc53796`.
+was removed and pruned after PR #260 merged.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #260 targeted `epic/durable-lifecycle-pipeline`, used task head `f53071e`,
+and merged at `49e47bf`.
 
 ## RED-GREEN TDD Plan
 
@@ -144,11 +144,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are reconciled.
 
 ## Validation Steps
 
@@ -165,7 +165,14 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Focused Sol/high delta review failed 0C/0H/1M because SQLite exposes an
   omitted `INTEGER PRIMARY KEY` as provisional `-1` inside `BEFORE INSERT`.
   Terra/high remediation now excludes that sentinel from the replacement check
-  and passed 35 focused tests plus all static gates. Fresh delta review is next.
+  and passed the remediation gate.
+- Final Sol/high review `019f696b-e150-7af1-a64a-535a1b08aa68` passed
+  0C/0H/0M/0L with 37 real-SQLite tests, build, scoped ESLint, Prettier, and diff
+  checks. Refresh review `019f6972-3de4-7f11-bb04-e6a186497f67` passed
+  0C/0H/0M/0L against current epic head `fcde60a`.
+- Source commit `25d0f91` refreshed at `f53071e`; GitHub Verify PR run
+  `29474916004` and PR Agent run `29474916015` passed. PR #260 had no review
+  threads and merged at `49e47bf`.
 
 ## Review Feedback
 
@@ -179,7 +186,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - Medium: replacement guard compared SQLite's provisional `NEW.event_sequence`
   value of `-1`, allowing a stored negative sequence to wedge later generated
-  inserts. Terra/high remediation is complete; fresh delta review pending.
+  inserts. Resolved and covered by real-SQLite regression tests.
 
 ### P3
 
@@ -187,4 +194,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Completion Notes
 
-- None yet.
+- Durable event/delivery persistence now provides bounded, atomic fan-out,
+  repository-controlled claims, ordered retry/dead-letter/replay, immutable
+  identity/state transitions, and real-SQLite migration coverage.
+- Downstream tasks must preserve the `BEFORE INSERT` provisional rowid sentinel,
+  preflight replay eligibility before expiry recovery, and use repository-owned
+  claim time.

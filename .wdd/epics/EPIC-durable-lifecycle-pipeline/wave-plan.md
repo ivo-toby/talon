@@ -38,9 +38,9 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | Task | Ticket | Depends On | Conflict Domains | Status |
 |------|--------|------------|------------------|--------|
 | TASK-001-lifecycle-contracts-registry | TICKET-001-extension-contracts | None | lifecycle contracts, config schema | done |
-| TASK-002-lifecycle-event-persistence | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry | database migrations, lifecycle repositories | in_progress |
-| TASK-003-interceptor-engine | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle interceptors, interceptor contract, audit logger | in_progress |
-| TASK-004-subagent-lifecycle-adapter | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle adapters, subagent runner, personas | in_progress |
+| TASK-002-lifecycle-event-persistence | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry | database migrations, lifecycle repositories | done |
+| TASK-003-interceptor-engine | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle interceptors, interceptor contract, audit logger | done |
+| TASK-004-subagent-lifecycle-adapter | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle adapters, subagent runner, personas | done |
 | TASK-005-transactional-event-bus | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence | event bus, database transaction helpers | todo |
 | TASK-006-durable-event-dispatcher | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | dispatcher, handler executor | todo |
 | TASK-007-daemon-message-queue-schedule-events | TICKET-003-core-boundary-integration | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | daemon bootstrap, message pipeline, queue, scheduler | todo |
@@ -157,7 +157,9 @@ Drift notes:
 
 ### WAVE-002
 
-Status: in_progress
+Status: done
+
+Completed: 2026-07-16
 
 Tasks:
 
@@ -189,6 +191,29 @@ Stop condition:
 
 - All active tasks are done, blocked, cancelled, or explicitly closed.
 - Reviews, verification, freshness, shared-context reconciliation, and wdd-reconcile-wave complete before the next wave.
+
+Outcome:
+
+- TASK-003 merged through PR #258 at `fcde60a`, TASK-002 merged through PR #260
+  at `49e47bf`, and TASK-004 merged through PR #259 at final epic head
+  `54dc872`.
+- Final task/refresh Sol/high reviews passed with no Critical, High, or Medium
+  findings. TASK-004's final combined integration gate passed after aligning
+  lifecycle contract and persistence string domains.
+- Focused evidence included 37 real-SQLite persistence tests, 141 interceptor
+  tests, 163 sub-agent task tests, and 339 tests in the final combined review,
+  plus build/TypeScript, scoped lint, formatting, diff, GitHub CI, freshness,
+  and review-integrity checks.
+- All three PRs had zero review threads. Clean task worktrees were removed and
+  pruned; unrelated `.minispec/` and the messaging worktree were untouched.
+
+Drift notes:
+
+- No dependency drift changes WAVE-003's TASK-005/TASK-006 parallel strategy.
+- TASK-005 must publish through the atomic repository boundary. TASK-006 must
+  reuse repository claim/replay semantics, native-only enforcing interceptors,
+  and exact loader-owned sub-agent authority.
+- The TASK-004 final-attempt log-wording Low remains a non-blocking follow-up.
 
 ### WAVE-003
 
@@ -502,7 +527,8 @@ Stop condition:
 
 ## Activation Rules
 
-- WAVE-001 is done; WAVE-002 is next and ready for `wdd-start-wave`.
+- WAVE-001 and WAVE-002 are done; WAVE-003 is next and ready for
+  `wdd-start-wave` after the reconciliation checkpoint is reviewed and pushed.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

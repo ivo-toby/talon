@@ -67,3 +67,6 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
 
 - WAVE-001 / TASK-001 merged in PR #257. See `resources/task-findings.md` for
   the frozen contract, authority, causality, compatibility, and follow-up rules.
+- WAVE-002 / TASK-002, TASK-003, and TASK-004 merged in PRs #260, #258, and
+  #259 at epic head `54dc872`. See `resources/task-findings.md` for persistence,
+  interceptor, sub-agent, contract-domain, and review-throughput rules.

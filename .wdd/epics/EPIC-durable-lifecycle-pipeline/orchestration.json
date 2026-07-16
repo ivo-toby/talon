@@ -257,7 +257,7 @@
     },
     {
       "id": "WAVE-002",
-      "status": "in_progress",
+      "status": "done",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -288,8 +288,8 @@
         {
           "id": "TASK-002-lifecycle-event-persistence",
           "ticket": "TICKET-002-durable-event-runtime",
-          "path": "TICKET-002-durable-event-runtime/in-progress/TASK-002-lifecycle-event-persistence.md",
-          "status": "in_progress",
+          "path": "TICKET-002-durable-event-runtime/done/TASK-002-lifecycle-event-persistence.md",
+          "status": "done",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry"
           ],
@@ -301,42 +301,54 @@
           "actualModel": "gpt-5.6-terra",
           "reasoningEffort": "high",
           "reviewModel": "reviewGate",
-      "workerThreadId": "019f694a-8c17-7a20-a7b7-113e5349f5b8",
-      "reviewThreadId": "019f6944-fc19-7d82-ac69-bb2c3690bf65",
+          "workerThreadId": "019f694a-8c17-7a20-a7b7-113e5349f5b8",
+          "reviewThreadId": "019f6972-3de4-7f11-bb04-e6a186497f67",
           "branch": "task/TASK-002-lifecycle-event-persistence",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence",
-          "worktreeStatus": "active",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "current_at_d153e17_at_dispatch",
-      "blockingFeedback": [
-        {
-          "severity": "High",
-          "summary": "Insert-time terminal delivery state and INSERT OR REPLACE can bypass update-only immutability and transition guards.",
-          "status": "resolved_except_separately_classified_medium"
-        },
-        {
-          "severity": "Medium",
-          "summary": "The replacement guard compared SQLite's provisional NEW.event_sequence value of -1 and could wedge generated-sequence inserts after a stored negative sequence.",
-          "status": "remediation_complete_needs_delta_review"
-        }
-      ],
-      "verification": {
-        "status": "remediation_passed_delta_review_pending",
-        "focusedTests": "35 passed",
-        "build": "passed",
-        "lint": "passed on changed source files",
-        "prettier": "passed on changed source and test files",
-        "diffCheck": "passed"
-      },
-      "currentGate": "needs_review"
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T08:12:49+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/260",
+          "sourceCommit": "25d0f914354ee9bf8bd45877808ac7a1da31ea6b",
+          "latestCommit": "f53071ef09dcb37669492a4ebd7ca7be1fe4333c",
+          "mergeCommit": "49e47bfaf68e26adffc80f536b9aca6c843daec4",
+          "branchFreshness": "merged_current_at_49e47bf",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "Insert-time terminal delivery state and INSERT OR REPLACE can bypass update-only immutability and transition guards.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "The replacement guard compared SQLite's provisional NEW.event_sequence value of -1 and could wedge generated-sequence inserts after a stored negative sequence.",
+              "status": "resolved"
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "37 real-SQLite tests passed",
+            "build": "passed",
+            "typeScript": "passed",
+            "lint": "passed on changed source files",
+            "prettier": "passed on changed source and test files; SQL excluded because no parser is configured",
+            "diffCheck": "passed",
+            "finalSolHighReview": "passed 0C/0H/0M/0L; session 019f696b-e150-7af1-a64a-535a1b08aa68",
+            "refreshSolHighReview": "passed 0C/0H/0M/0L; session 019f6972-3de4-7f11-bb04-e6a186497f67",
+            "githubVerifyPr": "passed; run 29474916004",
+            "githubPrAgent": "passed; run 29474916015",
+            "unresolvedReviewThreads": 0
+          },
+          "currentGate": "merged"
         },
         {
           "id": "TASK-003-interceptor-engine",
           "ticket": "TICKET-001-extension-contracts",
-          "path": "TICKET-001-extension-contracts/in-progress/TASK-003-interceptor-engine.md",
-          "status": "in_progress",
+          "path": "TICKET-001-extension-contracts/done/TASK-003-interceptor-engine.md",
+          "status": "done",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry"
           ],
@@ -349,38 +361,50 @@
           "actualModel": "gpt-5.6-terra",
           "reasoningEffort": "high",
           "reviewModel": "reviewGate",
-      "workerThreadId": "019f693a-4897-7d70-a2e4-90f3eaa98cd5",
-      "reviewThreadId": "019f6940-9c8c-72a0-b51d-039675eaf584",
+          "workerThreadId": "019f693a-4897-7d70-a2e4-90f3eaa98cd5",
+          "reviewThreadId": "019f696a-3860-75b0-880c-5565730b8922",
           "branch": "task/TASK-003-interceptor-engine",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine",
-          "worktreeStatus": "active",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "current_at_d153e17_at_dispatch",
-      "blockingFeedback": [
-        {
-          "severity": "High",
-          "summary": "A fail-open pre-invocation per-handler timeout can return allow and skip later enforcing handlers.",
-          "status": "resolved_by_delta_review"
-        }
-      ],
-      "verification": {
-        "status": "delta_review_passed_final_full_diff_pending",
-        "focusedTests": "138 passed before review; 108 passed in delta review",
-        "build": "passed",
-        "lint": "passed on changed source files",
-        "prettier": "passed on changed source and test files",
-        "diffCheck": "passed",
-        "reviewSandbox": "prompt forbade source/test/WDD edits and dependency installation; exact pre/post status matched"
-      },
-      "currentGate": "needs_review"
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T08:12:49+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/258",
+          "sourceCommit": "3529693ced39ba0e3cd822b5820eb5e12db14988",
+          "latestCommit": "7d4eb474fb14d46e7713d0bff9b9415bf911f5e0",
+          "mergeCommit": "fcde60a7d5515c5c9aeec5a17120086d6677c137",
+          "branchFreshness": "merged_current_at_fcde60a",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "A fail-open pre-invocation per-handler timeout can return allow and skip later enforcing handlers.",
+              "status": "resolved"
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "141 passed in final full review; 108 passed in focused delta review",
+            "build": "passed",
+            "typeScript": "passed",
+            "lint": "passed on changed source files",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+            "reviewSandbox": "prompt forbade source/test/WDD edits and dependency installation; exact pre/post status and hashes matched",
+            "finalSolHighReview": "passed 0C/0H/0M/0L; session 019f6962-32a0-7af1-9165-c43e6342c4b4",
+            "refreshSolHighReview": "passed 0C/0H/0M/0L; session 019f696a-3860-75b0-880c-5565730b8922",
+            "githubVerifyPr": "passed; run 29474326477",
+            "githubPrAgent": "passed; run 29474326478",
+            "unresolvedReviewThreads": 0
+          },
+          "currentGate": "merged"
         },
         {
           "id": "TASK-004-subagent-lifecycle-adapter",
           "ticket": "TICKET-001-extension-contracts",
-          "path": "TICKET-001-extension-contracts/in-progress/TASK-004-subagent-lifecycle-adapter.md",
-          "status": "in_progress",
+          "path": "TICKET-001-extension-contracts/done/TASK-004-subagent-lifecycle-adapter.md",
+          "status": "done",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry"
           ],
@@ -393,42 +417,63 @@
           "actualModel": "gpt-5.6-terra",
           "reasoningEffort": "high",
           "reviewModel": "reviewGate",
-      "workerThreadId": "019f693a-4894-7ff2-852f-424ab5bf9fe0",
-      "reviewThreadId": "019f6940-9cbb-7f00-adab-817f0f613ea9",
+          "workerThreadId": "019f6980-1903-7a92-a6e2-f05da2b97570",
+          "reviewThreadId": "019f6985-1b98-7912-bab6-5f96c60fca3c",
           "branch": "task/TASK-004-subagent-lifecycle-adapter",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter",
-          "worktreeStatus": "active",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "current_at_d153e17_at_dispatch",
-      "blockingFeedback": [
-        {
-          "severity": "Medium",
-          "summary": "Boundary cloning permits __proto__ prototype mutation and inherited-field validation.",
-          "status": "resolved_by_delta_review"
-        },
-        {
-          "severity": "Medium",
-          "summary": "Adapter invocation does not enforce exact configured subscription membership.",
-          "status": "resolved_by_delta_review"
-        },
-        {
-          "severity": "Medium",
-          "summary": "Persona aggregates bypass required explicit non-thread aggregate scope.",
-          "status": "resolved_by_delta_review"
-        }
-      ],
-      "verification": {
-        "status": "delta_review_passed_final_full_diff_pending",
-        "focusedTests": "104 passed before review; 89 passed in delta review",
-        "build": "passed",
-        "lint": "passed on changed source files",
-        "prettier": "passed on changed source and test files",
-        "diffCheck": "passed",
-        "reviewSandbox": "prompt forbade source/test/WDD edits and dependency installation; exact pre/post status matched"
-      },
-      "currentGate": "needs_review"
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T08:12:49+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/259",
+          "sourceCommit": "40b2b1093f4e735ec46d1b582173d0c3d67061aa",
+          "refreshCommit": "0f4ea829999a16effe524e263f650333552d6487",
+          "latestCommit": "02a0968dd7e917048d9f362d28d05c30ac5f0e31",
+          "mergeCommit": "54dc8725cada8e6c2d10ee4fe7782e676ee0a389",
+          "branchFreshness": "merged_current_at_54dc872",
+          "blockingFeedback": [
+            {
+              "severity": "Medium",
+              "summary": "Boundary cloning permits __proto__ prototype mutation and inherited-field validation.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Adapter invocation does not enforce exact configured subscription membership.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Persona aggregates bypass required explicit non-thread aggregate scope.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Lifecycle contract-valid NUL or malformed-Unicode event data and oversized enabled persona owners could be rejected only after reaching durable persistence.",
+              "status": "resolved"
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "163 passed in task review; 339 passed in final combined review",
+            "build": "passed",
+            "typeScript": "passed",
+            "lint": "passed on changed source files",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+            "reviewSandbox": "prompt forbade source/test/WDD edits and dependency installation; exact pre/post status and hashes matched",
+            "taskSolHighReview": "passed 0C/0H/0M/1L; session 019f696b-318e-7950-ac94-f9962029f856",
+            "firstRefreshSolHighReview": "passed 0C/0H/0M/1L; session 019f6973-8253-7e10-8a30-31c78f1e662f",
+            "integrationSolHighReview": "failed 0C/0H/1M/1L; session 019f697a-ab6b-70f0-b10d-222a9dea4324",
+            "integrationRemediation": "completed by Terra/high session 019f6980-1903-7a92-a6e2-f05da2b97570",
+            "finalCombinedSolHighReview": "passed 0C/0H/0M/0 new Low; known Low retained; session 019f6985-1b98-7912-bab6-5f96c60fca3c",
+            "githubVerifyPr": "passed; run 29475897009",
+            "unresolvedReviewThreads": 0,
+            "knownLow": "Final-attempt failover logging can imply another attempt after the deadline; recorded and intentionally untouched"
+          },
+          "currentGate": "merged"
         }
       ]
     },
@@ -1171,23 +1216,23 @@
     "pendingReconciliation": []
   },
   "controller": {
-    "activeWave": "WAVE-002",
+    "activeWave": null,
     "nextWave": "WAVE-003",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
-    "activationBase": "1d5ac4df77961f1ba5d2fa4acc04ffb57ee09c16",
-    "activationCheckpoint": "ad22c01fff24f97a30a9c74757eac7ba708e1352",
-    "activationSyncCommit": "039b568721914b55ade1e3054ff76eb6ade81773"
+    "activationArtifactsSynced": false,
+    "activationBase": "54dc8725cada8e6c2d10ee4fe7782e676ee0a389",
+    "activationCheckpoint": null,
+    "activationSyncCommit": null
   },
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "active",
-    "lastCheckedAt": "2026-07-16T07:02:33+02:00",
-    "nextCheckDueAt": "2026-07-16T07:07:33+02:00",
-    "schedulerRef": "talon-issue-256-wdd-wave-1-heartbeat",
-    "fallbackPrompt": "Run one bounded subagent-pr-orchestration heartbeat for EPIC-durable-lifecycle-pipeline WAVE-002. Read orchestration.json, controller-state.md, shared context, and every active task file. Do not create a task branch or worktree until the allocation checkpoint is pushed, its exact commit is recorded as controller.activationCheckpoint, controller.activationArtifactsSynced is true, and the activation-sync checkpoint has passed Sol/high review and is pushed. When tasks are dispatch_pending, do not dispatch any worker until the worktree-readiness checkpoint has passed Sol/high review, is committed and pushed on the epic branch, every recorded task branch/worktree is fast-forwarded to that exact pushed readiness commit, every worktree is clean, and the task plus current orchestration.json and controller-state.md are verified in each worktree. After those gates, inspect each Terra/high worker, task worktree, branch, PR, verification result, and Sol/high review independently. Route every Critical/High/Medium finding, but never remediate Low/P3 findings automatically. Use focused Sol/high delta review for blocking remediation and one final full-diff Sol/high review immediately before commit. A writable review sandbox is allowed only for ephemeral test artifacts: every reviewer prompt must explicitly forbid source, test, and WDD edits plus dependency installation, and the controller must verify exact before/after worktree status. Advance each clean task independently without waiting for its wave peers; enforce epic-branch freshness; keep .minispec untouched; update durable WDD state; stop only when every WAVE-002 task is ready for wdd-reconcile-wave.",
-    "stopCondition": "All WAVE-002 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",
-    "stopReason": null
+    "status": "paused",
+    "lastCheckedAt": "2026-07-16T08:12:49+02:00",
+    "nextCheckDueAt": null,
+    "schedulerRef": null,
+    "fallbackPrompt": "Resume EPIC-durable-lifecycle-pipeline by running wdd-start-wave for WAVE-003 from the reviewed and pushed WAVE-002 reconciliation checkpoint. Recreate allocation, activation-sync, and worktree-readiness gates before dispatching TASK-005 and TASK-006 to parallel Terra/high workers. Use Sol/high reviews, route only Critical/High/Medium blockers, preserve .minispec, and keep task worktrees isolated.",
+    "stopCondition": "WAVE-003 is activated with reviewed and pushed allocation, activation-sync, and worktree-readiness checkpoints.",
+    "stopReason": "WAVE-002 completed: TASK-002, TASK-003, and TASK-004 merged and reconciled at epic head 54dc872"
   }
 }

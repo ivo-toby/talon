@@ -6,7 +6,7 @@ ticket: TICKET-001-extension-contracts
 wave: WAVE-002
 slug: interceptor-engine
 title: Implement bounded synchronous interceptor execution
-status: in_progress
+status: done
 depends_on: ["TASK-001-lifecycle-contracts-registry"]
 conflict_domains:
   - "src/lifecycle/interceptors/**"
@@ -18,12 +18,12 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-003-interceptor-engine
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine
-worktree_status: active
+worktree_status: cleaned_up
 worker_thread_id: 019f693a-4897-7d70-a2e4-90f3eaa98cd5
-review_thread_id: 019f6940-9c8c-72a0-b51d-039675eaf584
-pr: null
-current_gate: needs_review
-branch_freshness: current_at_d153e17_at_dispatch
+review_thread_id: 019f696a-3860-75b0-880c-5565730b8922
+pr: https://github.com/ivo-toby/talon/pull/258
+current_gate: merged
+branch_freshness: merged_current_at_fcde60a
 verification:
   - "npx vitest run tests/unit/lifecycle/interceptor-engine.test.ts tests/unit/core/logging/audit-logger.test.ts"
   - "npm run build"
@@ -35,7 +35,7 @@ verification:
 
 ## Status
 
-in_progress
+done
 
 ## Parent Ticket
 
@@ -105,14 +105,14 @@ task/TASK-003-interceptor-engine
 
 ## Worker Worktree
 
-`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` is
-active on `task/TASK-003-interceptor-engine` from reviewed and pushed readiness
-commit `d153e17` under Terra/high worker
-`019f6850-67ee-70c3-971f-8580236dfc04`.
+The clean worktree at
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` was
+removed and pruned after PR #258 merged.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #258 targeted `epic/durable-lifecycle-pipeline`, used task head `7d4eb47`,
+and merged at `fcde60a`.
 
 ## RED-GREEN TDD Plan
 
@@ -153,11 +153,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are reconciled.
 
 ## Validation Steps
 
@@ -172,8 +172,14 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   changed-source ESLint, touched-file Prettier, and `git diff --check`.
 - Focused Sol/high delta review passed 0C/0H/0M/0L with 108 focused tests and
   exact pre/post worktree status. Its writable-review prompt explicitly forbade
-  source, test, and WDD edits plus dependency installation. Final full-diff
-  pre-commit review remains.
+  source, test, and WDD edits plus dependency installation.
+- Final full-diff Sol/high review `019f6962-32a0-7af1-9165-c43e6342c4b4`
+  passed 0C/0H/0M/0L with 141 focused tests, build, scoped ESLint, and diff
+  checks. Refresh review `019f696a-3860-75b0-880c-5565730b8922` passed
+  0C/0H/0M/0L against the staged epic checkpoint.
+- Source commit `3529693` refreshed at `7d4eb47`; GitHub Verify PR run
+  `29474326477` and PR Agent run `29474326478` passed. PR #258 had no review
+  threads and merged at `fcde60a`.
 
 ## Review Feedback
 
@@ -193,4 +199,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Completion Notes
 
-- None yet.
+- The interceptor engine now composes deterministic priority/ID-ordered
+  transforms with strict per-handler/total budgets, explicit failure policies,
+  restrictive short-circuiting, recursion guards, and redacted audit evidence.
+- Fail-open pre-invocation timeouts continue to later enforcing handlers unless
+  the aggregate deadline or a restrictive result terminates execution.
+- Bounded interceptor JSON rejects proxies and accessors before reflection;
+  omitted signal metadata materializes as `{}` without weakening strict fields.

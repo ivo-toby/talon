@@ -6,7 +6,7 @@ ticket: TICKET-001-extension-contracts
 wave: WAVE-002
 slug: subagent-lifecycle-adapter
 title: Implement the capability-scoped sub-agent lifecycle adapter
-status: in_progress
+status: done
 depends_on: ["TASK-001-lifecycle-contracts-registry"]
 conflict_domains:
   - "src/lifecycle/adapters/**"
@@ -18,12 +18,12 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-004-subagent-lifecycle-adapter
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter
-worktree_status: active
-worker_thread_id: 019f693a-4894-7ff2-852f-424ab5bf9fe0
-review_thread_id: 019f6940-9cbb-7f00-adab-817f0f613ea9
-pr: null
-current_gate: needs_review
-branch_freshness: current_at_d153e17_at_dispatch
+worktree_status: cleaned_up
+worker_thread_id: 019f6980-1903-7a92-a6e2-f05da2b97570
+review_thread_id: 019f6985-1b98-7912-bab6-5f96c60fca3c
+pr: https://github.com/ivo-toby/talon/pull/259
+current_gate: merged
+branch_freshness: merged_current_at_54dc872
 verification:
   - "npx vitest run tests/unit/lifecycle/subagent-lifecycle-adapter.test.ts tests/unit/subagents/subagent-runner.test.ts"
   - "npm run build"
@@ -35,7 +35,7 @@ verification:
 
 ## Status
 
-in_progress
+done
 
 ## Parent Ticket
 
@@ -104,14 +104,14 @@ task/TASK-004-subagent-lifecycle-adapter
 
 ## Worker Worktree
 
+The clean worktree at
 `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter`
-is active on `task/TASK-004-subagent-lifecycle-adapter` from reviewed and pushed
-readiness commit `d153e17` under Terra/high worker
-`019f6850-679f-7d93-a6da-be1f0100064c`.
+was removed and pruned after PR #259 merged.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #259 targeted `epic/durable-lifecycle-pipeline`, used final task head
+`02a0968`, and merged at final WAVE-002 epic head `54dc872`.
 
 ## RED-GREEN TDD Plan
 
@@ -147,11 +147,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are reconciled.
 
 ## Validation Steps
 
@@ -166,8 +166,20 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   changed-source ESLint, touched-file Prettier, and `git diff --check`.
 - Focused Sol/high delta review passed 0C/0H/0M/1L with 89 focused tests and
   exact pre/post worktree status. Its writable-review prompt explicitly forbade
-  source, test, and WDD edits plus dependency installation. The Low remains
-  untouched and non-blocking; final full-diff pre-commit review remains.
+  source, test, and WDD edits plus dependency installation. The Low remained
+  untouched and non-blocking.
+- Full task review `019f696b-318e-7950-ac94-f9962029f856` passed 0C/0H/0M/1L
+  with 163 focused tests and all static gates. First refresh review
+  `019f6973-8253-7e10-8a30-31c78f1e662f` also passed 0C/0H/0M/1L.
+- After TASK-002 merged, integration review
+  `019f697a-ab6b-70f0-b10d-222a9dea4324` found one Medium contract/persistence
+  domain mismatch. Terra/high session `019f6980-1903-7a92-a6e2-f05da2b97570`
+  aligned NUL/malformed-Unicode event strings and enabled persona-owner bounds
+  before persistence while preserving omitted/disabled legacy compatibility.
+- Final combined review `019f6985-1b98-7912-bab6-5f96c60fca3c` passed
+  0C/0H/0M with no new Low after 339 focused tests, TypeScript, scoped ESLint,
+  Prettier, diff, and status/hash integrity checks. GitHub Verify PR run
+  `29475897009` passed; PR #259 had no review threads and merged at `54dc872`.
 
 ## Review Feedback
 
@@ -183,6 +195,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   event/signal/hook subscription membership.
 - Resolved Medium: persona aggregates bypassed explicit non-thread aggregate
   scope.
+- Resolved Medium: lifecycle contract-valid NUL/malformed-Unicode event data
+  and oversized lifecycle-enabled persona owners could fail only after reaching
+  persistence; contract and durable domains now agree.
 
 ### P3
 
@@ -191,4 +206,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Completion Notes
 
-- None yet.
+- Lifecycle sub-agents are explicitly attached, advisory-only, capability-
+  scoped, repository-free, fenced from untrusted input, bounded by timeout/
+  token/model attempts, and validated against named output contracts.
+- Adapter and runner boundaries require exact loader-owned identity and safety
+  tuples, preserve causal event context, and never infer approval.
+- The known final-attempt failover-log wording Low is recorded for follow-up and
+  was intentionally not remediated under the acceleration policy.

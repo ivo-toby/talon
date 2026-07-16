@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: WAVE-002
+active_wave: null
 status: in_progress
 updated_at: 2026-07-16
 ---
@@ -29,13 +29,14 @@ Every task advances independently as soon as its gates clear.
 - WAVE-002 allocation checkpoint: reviewed, committed, and pushed at `ad22c01`
 - WAVE-002 activation sync marker: reviewed, committed, and pushed at `039b568`; exact allocation commit `ad22c01` recorded
 - WAVE-002 readiness checkpoint: Sol/high reviewed, committed, and pushed at `d153e17`; three isolated task branches/worktrees were fast-forwarded, pushed, and verified before dispatch
+- WAVE-002 implementation head: all three task PRs merged and the epic branch is current locally and remotely at `54dc872`
 
 ## Pending Waves
 
 | Wave | Tasks | Strategy | Confirmation | Status |
 |------|-------|----------|--------------|--------|
 | WAVE-001 | TASK-001-lifecycle-contracts-registry | full / bundled / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | in_progress |
+| WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
@@ -48,50 +49,43 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-002 is active as one parallel batch. TASK-002 persistence, TASK-003
-interception, and TASK-004 sub-agent adaptation are eligible because TASK-001
-is done and their primary conflict domains are independent. Each isolated
-worktree was fast-forwarded to reviewed and pushed readiness commit `d153e17`
-with its task and current controller artifacts verified before three independent
-Terra/high workers were dispatched.
+No wave is active. WAVE-002 completed as a parallel batch: TASK-003 merged at
+`fcde60a`, TASK-002 merged at `49e47bf`, and TASK-004 merged at final epic head
+`54dc872`. WAVE-003 is the next eligible wave after this reviewed reconciliation
+checkpoint is committed and pushed.
 
 ## Monitoring
 
 - Mode: codex_thread_heartbeat
-- Cadence: adaptive; 5 minutes during review/fix/freshness/merge-ready gates
-- Status: active
-- Scheduler: `talon-issue-256-wdd-wave-1-heartbeat`
-- Last checked: 2026-07-16T07:02:33+02:00
-- Next check due: 2026-07-16T07:07:33+02:00
+- Cadence: adaptive; paused between reconciled waves
+- Status: paused
+- Scheduler: none; obsolete WAVE-002 heartbeat deleted
+- Last checked: 2026-07-16T08:12:49+02:00
+- Next check due: none
 - Stop condition: all WAVE-002 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
-- Automation state: verified ACTIVE in Codex with a five-minute heartbeat and a
-  self-contained WAVE-002 orchestration prompt. Writable-review prompts must
-  explicitly forbid source, test, and WDD edits plus dependency installation.
+- Automation state: deleted after the stop condition was satisfied. WAVE-003
+  activation must install current instructions only after its reviewed checkpoints.
 
 ## Current Task Gates
 
 - TASK-001-lifecycle-contracts-registry: merged; PR #257 merged into the epic
   branch at `e5fda2a` after task head `ff3e561` passed branch refresh,
   verification, CI, and Sol/high review gates.
-- TASK-002-lifecycle-event-persistence: needs_review; focused Sol/high delta
-  review `019f6944-fc19-7d82-ac69-bb2c3690bf65` failed 0C/0H/1M because
-  SQLite's provisional `NEW.event_sequence = -1` could collide with a stored
-  negative sequence. Terra/high worker `019f694a-8c17-7a20-a7b7-113e5349f5b8`
-  completed the narrow fix with 35 focused tests and all static gates green;
-  fresh delta review is next.
-- TASK-003-interceptor-engine: needs_review; Sol/high review
-  `019f692d-cd1b-7250-bbed-def4c29b32fe` failed 0C/1H/0M/0L and routed the
-  fail-open pre-invocation timeout bypass to Terra/high worker
-  `019f693a-4897-7d70-a2e4-90f3eaa98cd5`; focused Sol/high delta review
-  `019f6940-9c8c-72a0-b51d-039675eaf584` passed 0C/0H/0M/0L. A final full-diff
-  Sol/high review is still required immediately before commit.
-- TASK-004-subagent-lifecycle-adapter: needs_review; Sol/high review
-  `019f692d-cc3c-7b92-9c3d-70b4aef221a9` failed 0C/0H/3M/1L and routed the
-  three blocking prototype, subscription, and aggregate-scope findings to
-  Terra/high worker `019f693a-4894-7ff2-852f-424ab5bf9fe0`; focused Sol/high
-  delta review `019f6940-9cbb-7f00-adab-817f0f613ea9` passed 0C/0H/0M/1L. The
-  Low logging wording issue remains untouched and non-blocking; a final
-  full-diff Sol/high review is still required immediately before commit.
+- TASK-002-lifecycle-event-persistence: merged; final task review
+  `019f696b-e150-7af1-a64a-535a1b08aa68` and refresh review
+  `019f6972-3de4-7f11-bb04-e6a186497f67` passed 0C/0H/0M/0L. PR #260 merged
+  task head `f53071e` at epic commit `49e47bf` after both GitHub checks passed.
+- TASK-003-interceptor-engine: merged; final task review
+  `019f6962-32a0-7af1-9165-c43e6342c4b4` and refresh review
+  `019f696a-3860-75b0-880c-5565730b8922` passed 0C/0H/0M/0L. PR #258 merged
+  task head `7d4eb47` at epic commit `fcde60a` after both GitHub checks passed.
+- TASK-004-subagent-lifecycle-adapter: merged; its task and first refresh reviews
+  passed 0C/0H/0M/1L. A later epic-integration review found one Medium contract/
+  persistence domain mismatch; Terra/high remediation aligned event and enabled
+  persona-owner domains, and final combined review
+  `019f6985-1b98-7912-bab6-5f96c60fca3c` passed 0C/0H/0M with no new Low.
+  PR #259 merged task head `02a0968` at final epic commit `54dc872` after GitHub
+  Verify PR passed. The known failover-log Low remains untouched.
 - The remaining 16 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -102,9 +96,9 @@ Terra/high workers were dispatched.
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`
   was removed and pruned during reconciliation. The superseded worker evidence
   stash was reconciled and dropped.
-- WAVE-002 / TASK-002: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence`; branch `task/TASK-002-lifecycle-event-persistence`; active at `d153e17` under latest worker `019f694a-8c17-7a20-a7b7-113e5349f5b8`.
-- WAVE-002 / TASK-003: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine`; branch `task/TASK-003-interceptor-engine`; active at `d153e17`; latest remediation worker `019f693a-4897-7d70-a2e4-90f3eaa98cd5` completed and delta review passed.
-- WAVE-002 / TASK-004: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter`; branch `task/TASK-004-subagent-lifecycle-adapter`; active at `d153e17`; latest remediation worker `019f693a-4894-7ff2-852f-424ab5bf9fe0` completed and delta review passed.
+- WAVE-002 / TASK-002: merged branch `task/TASK-002-lifecycle-event-persistence`; clean worktree removed and pruned after PR #260 merged.
+- WAVE-002 / TASK-003: merged branch `task/TASK-003-interceptor-engine`; clean worktree removed and pruned after PR #258 merged.
+- WAVE-002 / TASK-004: merged branch `task/TASK-004-subagent-lifecycle-adapter`; clean worktree removed and pruned after PR #259 merged.
 
 ## Gate Definitions
 
@@ -121,19 +115,16 @@ TASK-001 was refreshed from epic head `999772d` at merge commit `ff3e561`.
 Epic head `999772d` was verified as an ancestor before PR merge; PR #257 then
 merged at `e5fda2a`.
 
-WAVE-002 allocation commit `ad22c01fff24f97a30a9c74757eac7ba708e1352`
-is recorded as the activation checkpoint, activation-sync commit `039b568` is
-pushed, and readiness commit `d153e17078583d7e8931fd2182d8f8084d781720`
-passed Sol/high 0C/0H/0M/0L review before push. All three task branches and
-worktrees are current at `d153e17` at dispatch.
+WAVE-002 allocation commit `ad22c01fff24f97a30a9c74757eac7ba708e1352`,
+activation-sync commit `039b568`, and readiness commit
+`d153e17078583d7e8931fd2182d8f8084d781720` were pushed before dispatch.
+TASK-003 refreshed and merged first at `fcde60a`; TASK-002 refreshed over that
+head and merged at `49e47bf`; TASK-004 then refreshed over both predecessors,
+passed combined review and CI, and merged at current epic head `54dc872`.
 
 ## Open P1/P2 Feedback
 
-- TASK-002's prior High is resolved except for a separately classified Medium
-  provisional-rowid edge case; its narrow remediation is complete and awaiting
-  fresh focused delta review.
-- TASK-003's prior High is resolved by focused Sol/high delta review.
-- TASK-004's three prior Mediums are resolved by focused Sol/high delta review.
+- None. All WAVE-002 Critical/High/Medium findings are resolved and reviewed.
 - TASK-004 has one non-blocking Low about failover log wording; it remains a
   follow-up under the constitution's P3 policy.
 
@@ -149,14 +140,17 @@ worktrees are current at `d153e17` at dispatch.
 - Tests cover exact runtime authority, bounded iterable cleanup, proxy/accessor
   non-execution at authority boundaries, causal signals, immutable snapshots,
   omitted/disabled legacy compatibility, and enabled duplicate-owner rejection.
-- TASK-002 latest remediation passed 35 focused tests, build, scoped ESLint,
-  touched-file Prettier, and diff checks; fresh focused delta review is pending.
-- TASK-003 focused delta review passed 0C/0H/0M/0L with 108 tests after its
-  earlier 138-test remediation verification; final full-diff review is pending.
-- TASK-004 focused delta review passed 0C/0H/0M/1L with 89 tests after its
-  earlier 104-test remediation verification; final full-diff review is pending.
-- TASK-003 and TASK-004 writable-review prompts explicitly forbade source, test,
-  and WDD edits plus dependency installation, and exact pre/post status matched.
+- TASK-002 passed 37 real-SQLite focused tests, build, TypeScript, scoped ESLint,
+  Prettier, diff checks, final and refresh Sol/high reviews, GitHub Verify PR and
+  PR Agent checks, with zero unresolved review threads.
+- TASK-003 passed 141 focused tests in final review, build, TypeScript, scoped
+  ESLint, Prettier, diff checks, final and refresh Sol/high reviews, GitHub Verify
+  PR and PR Agent checks, with zero unresolved review threads.
+- TASK-004 passed 163 focused task tests and 339 tests in the final combined
+  review, plus TypeScript, scoped ESLint, Prettier, diff checks, final combined
+  Sol/high review, and GitHub Verify PR, with zero unresolved review threads.
+- Writable reviewer prompts forbade source, test, WDD, install, and rebuild
+  mutations; controller status/hash checks confirmed review integrity.
 
 ## Shared Context Reconciliation
 
@@ -165,8 +159,9 @@ worktrees are current at `d153e17` at dispatch.
 - TASK-003 was updated to own the remaining proxy-valued interceptor JSON
   zero-trap hardening. No architecture or dependency drift changes WAVE-002
   parallel readiness.
-- No worker-proposed WAVE-002 shared-context updates exist yet; the controller
-  remains the reconciliation owner.
+- WAVE-002 persistence, interceptor, sub-agent authority, contract-domain, and
+  review-acceleration findings are reconciled into
+  `shared-context/resources/task-findings.md` for downstream tasks.
 
 ## Event Log
 
@@ -251,11 +246,21 @@ worktrees are current at `d153e17` at dispatch.
 - 2026-07-16T06:58:00+02:00: TASK-002 focused Sol/high delta review `019f6944-fc19-7d82-ac69-bb2c3690bf65` failed 0C/0H/1M after reproducing a provisional `NEW.event_sequence = -1` collision; final worktree status matched exactly.
 - 2026-07-16T07:01:09+02:00: TASK-002 Terra/high worker `019f694a-8c17-7a20-a7b7-113e5349f5b8` completed only the Medium sentinel fix with 35 focused tests, build, scoped lint, touched-file format, and diff gates passing.
 - 2026-07-16T07:02:33+02:00: Live heartbeat was reverified ACTIVE at five minutes and its prompt now explicitly forbids source/test/WDD edits and dependency installation in writable reviewer sandboxes.
+- 2026-07-16T07:24:31+02:00: TASK-003 final full-diff Sol/high review `019f6962-32a0-7af1-9165-c43e6342c4b4` passed 0C/0H/0M/0L with 141 focused tests and all static gates green.
+- 2026-07-16T07:34:20+02:00: TASK-004 task review `019f696b-318e-7950-ac94-f9962029f856` passed 0C/0H/0M/1L with 163 focused tests; the known Low remained untouched.
+- 2026-07-16T07:35:05+02:00: TASK-002 final full-diff Sol/high review `019f696b-e150-7af1-a64a-535a1b08aa68` passed 0C/0H/0M/0L with 37 real-SQLite tests and all static gates green.
+- 2026-07-16T07:39:02+02:00: PR #258 merged TASK-003 head `7d4eb47` into the epic branch at `fcde60a` after both GitHub checks passed with no review threads.
+- 2026-07-16T07:50:45+02:00: PR #260 merged TASK-002 head `f53071e` into the epic branch at `49e47bf` after both GitHub checks passed with no review threads.
+- 2026-07-16T07:51:14+02:00: TASK-004 integration review `019f697a-ab6b-70f0-b10d-222a9dea4324` found 0C/0H/1M/1L: lifecycle contract-valid NUL/malformed-Unicode data and oversized enabled persona owners could be rejected only after reaching persistence.
+- 2026-07-16T07:57:10+02:00: One Terra/high integration owner `019f6980-1903-7a92-a6e2-f05da2b97570` aligned lifecycle and persistence string domains while preserving omitted/disabled legacy owner acceptance; the Low remained untouched.
+- 2026-07-16T08:08:54+02:00: Final combined Sol/high review `019f6985-1b98-7912-bab6-5f96c60fca3c` passed 0C/0H/0M with 339 focused tests and exact before/after status and hashes.
+- 2026-07-16T08:11:09+02:00: PR #259 merged TASK-004 head `02a0968` into the epic branch at `54dc872` after GitHub Verify PR passed with no review threads.
+- 2026-07-16T08:12:49+02:00: All three clean WAVE-002 task worktrees were removed and pruned; unrelated `.minispec/` and the independent messaging worktree remain untouched.
+- 2026-07-16T08:13:00+02:00: Obsolete five-minute WAVE-002 heartbeat `talon-issue-256-wdd-wave-1-heartbeat` deleted after its stop condition was satisfied.
 
 ## Next Action
 
-Publish the reviewed delivery-speed checkpoint, then start TASK-002's fresh
-focused Sol/high delta review while TASK-003 and TASK-004 independently advance
-to their fresh full-diff Sol/high pre-commit reviews. Publish each task PR
-against the epic branch as soon as its own Critical/High/Medium, verification,
-freshness, and commit gates clear.
+Commit and push the reviewed WAVE-002 reconciliation checkpoint, then activate
+WAVE-003 with `wdd-start-wave`. Do not dispatch TASK-005 or TASK-006 until the
+new allocation, activation-sync, and worktree-readiness gates are reviewed,
+pushed, and verified in their isolated worktrees.

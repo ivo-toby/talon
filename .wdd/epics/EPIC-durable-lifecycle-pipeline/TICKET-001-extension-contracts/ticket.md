@@ -4,7 +4,7 @@ kind: ticket
 epic: EPIC-durable-lifecycle-pipeline
 slug: TICKET-001-extension-contracts
 title: Lifecycle Extension Contracts and Adapters
-status: planned
+status: done
 task_count: 3
 depends_on: []
 conflict_domains:
@@ -47,8 +47,8 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 | Task | Status | Wave | Summary |
 |------|--------|------|---------|
 | TASK-001-lifecycle-contracts-registry | done | WAVE-001 | Create versioned event, signal, interceptor, handler, subscription, identity, filter, budget, and failure-policy contracts plus deterministic registry/config validation. |
-| TASK-003-interceptor-engine | in_progress | WAVE-002 | Implement deterministic allow, deny, approval, and transform composition with strict handler/total budgets, explicit failure policy, recursion protection, and redacted audit evidence. |
-| TASK-004-subagent-lifecycle-adapter | in_progress | WAVE-002 | Invoke only configured sub-agents with fenced untrusted input, persona/capability scope, timeout/token/model bounds, named output contracts, and typed signals/errors. |
+| TASK-003-interceptor-engine | done | WAVE-002 | Implement deterministic allow, deny, approval, and transform composition with strict handler/total budgets, explicit failure policy, recursion protection, and redacted audit evidence. |
+| TASK-004-subagent-lifecycle-adapter | done | WAVE-002 | Invoke only configured sub-agents with fenced untrusted input, persona/capability scope, timeout/token/model bounds, named output contracts, and typed signals/errors. |
 
 ## Dependencies
 
@@ -73,6 +73,6 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 
 ## Completion Criteria
 
-- [ ] All child task review and verification gates are resolved.
-- [ ] Shared-context updates are reconciled.
-- [ ] Ticket status matches child task state.
+- [x] All child task review and verification gates are resolved.
+- [x] Shared-context updates are reconciled.
+- [x] Ticket status matches child task state.
