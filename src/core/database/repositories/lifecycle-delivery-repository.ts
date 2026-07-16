@@ -3,6 +3,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import type Database from 'better-sqlite3';
 import { err, ok, type Result } from 'neverthrow';
+import { types } from 'node:util';
 import { z } from 'zod';
 import {
   LifecycleEventEnvelopeSchema,
@@ -82,6 +83,8 @@ export interface ClaimedLifecycleDelivery {
 
 export interface ClaimLifecycleDeliveryOptions {
   leaseMs: number;
+  /** Handler IDs temporarily unavailable to this dispatcher instance. */
+  excludedHandlerIds?: readonly string[];
 }
 
 /** Trusted clock supplied by repository composition; production defaults to Date.now. */
@@ -137,7 +140,12 @@ export class LifecycleDeliveryRepository extends BaseRepository {
         JOIN lifecycle_events e ON e.event_id = d.event_id
         WHERE d.status IN ('pending', 'failed')
           AND (d.next_retry_at IS NULL OR d.next_retry_at <= @lease_now)
-        AND NOT EXISTS (
+          AND NOT EXISTS (
+            SELECT 1
+            FROM json_each(@excluded_handler_ids) excluded_handler
+            WHERE excluded_handler.value = d.handler_id
+          )
+          AND NOT EXISTS (
           SELECT 1
           FROM lifecycle_event_deliveries previous_delivery
           JOIN lifecycle_events previous_event ON previous_event.event_id = previous_delivery.event_id
@@ -177,9 +185,11 @@ export class LifecycleDeliveryRepository extends BaseRepository {
     `);
     this.failStmt = db.prepare(`
       UPDATE lifecycle_event_deliveries
-      SET status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead_letter' ELSE 'failed' END,
+      SET status = CASE WHEN @retryable = 0 OR attempts + 1 >= max_attempts THEN 'dead_letter' ELSE 'failed' END,
+          -- Every claimed execution consumes exactly one attempt. Non-retryable
+          -- outcomes terminally dead-letter that attempted lease immediately.
           attempts = attempts + 1,
-          next_retry_at = CASE WHEN attempts + 1 >= max_attempts THEN NULL ELSE @next_retry_at END,
+          next_retry_at = CASE WHEN @retryable = 0 OR attempts + 1 >= max_attempts THEN NULL ELSE @next_retry_at END,
           claim_token = NULL, claim_expires_at = NULL, last_error = @last_error,
           updated_at = @write_now
       WHERE event_id = @event_id AND handler_id = @handler_id
@@ -276,6 +286,7 @@ export class LifecycleDeliveryRepository extends BaseRepository {
           write_now: writeNow,
           claim_token: claimToken,
           claim_expires_at: claimExpiresAt,
+          excluded_handler_ids: JSON.stringify(normalizedOptions.excludedHandlerIds),
         }) as LifecycleDeliveryRow | undefined;
         if (!row) {
           return null;
@@ -339,6 +350,7 @@ export class LifecycleDeliveryRepository extends BaseRepository {
     claimToken: string,
     failureDiagnostic: LifecycleFailureDiagnostic,
     nextRetryAt: number,
+    retryable = true,
   ): Result<LifecycleDeliveryRow, DbError> {
     try {
       const diagnosticSnapshot = snapshotLifecycleFailureDiagnostic(failureDiagnostic);
@@ -350,7 +362,8 @@ export class LifecycleDeliveryRepository extends BaseRepository {
         !this.isRuntimeId(eventId) ||
         !this.isIdentifier(handlerId) ||
         !this.isRuntimeId(claimToken) ||
-        !Number.isSafeInteger(nextRetryAt)
+        !Number.isSafeInteger(nextRetryAt) ||
+        typeof retryable !== 'boolean'
       ) {
         return err(
           new DbError(
@@ -365,6 +378,7 @@ export class LifecycleDeliveryRepository extends BaseRepository {
           handler_id: handlerId,
           claim_token: claimToken,
           next_retry_at: nextRetryAt,
+          retryable: retryable ? 1 : 0,
           // Never persist arbitrary handler error text; it may contain prompts,
           // tokens, headers, or other secrets. A parsed contract-owned code is
           // sufficient for retry policy and operator aggregation.
@@ -472,7 +486,38 @@ export class LifecycleDeliveryRepository extends BaseRepository {
     ) {
       return null;
     }
-    return { leaseMs };
+    const excludedHandlerIds = this.normalizeExcludedHandlerIds(snapshot.excludedHandlerIds);
+    if (!excludedHandlerIds) return null;
+    return { leaseMs, excludedHandlerIds };
+  }
+
+  private normalizeExcludedHandlerIds(value: unknown): string[] | null {
+    if (value === undefined) return [];
+    try {
+      if (
+        !Array.isArray(value) ||
+        types.isProxy(value) ||
+        Reflect.getPrototypeOf(value) !== Array.prototype ||
+        value.length > 4_096
+      ) {
+        return null;
+      }
+      const ids: string[] = [];
+      const seen = new Set<string>();
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) return null;
+        const handlerId: unknown = descriptor.value;
+        if (typeof handlerId !== 'string' || !this.isIdentifier(handlerId) || seen.has(handlerId)) {
+          return null;
+        }
+        seen.add(handlerId);
+        ids.push(handlerId);
+      }
+      return ids;
+    } catch {
+      return null;
+    }
   }
 
   /** Lease mutation time is repository-owned, never supplied by a claim caller. */
@@ -712,7 +757,8 @@ export class LifecycleDeliveryRepository extends BaseRepository {
         );
       case 'dead_letter':
         return (
-          row.attempts === row.max_attempts &&
+          row.attempts >= 1 &&
+          row.attempts <= row.max_attempts &&
           row.next_retry_at === null &&
           row.claim_token === null &&
           row.claim_expires_at === null &&

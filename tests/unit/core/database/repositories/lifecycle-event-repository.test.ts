@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { mkdtempSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -84,6 +85,30 @@ describe('lifecycle event persistence', () => {
       throw result.error;
     }
     return fileDb;
+  }
+
+  function committedV14Migrations(): string {
+    const currentMigrations = join(
+      import.meta.dirname,
+      '../../../../../src/core/database/migrations',
+    );
+    const legacyMigrations = mkdtempSync(join(tmpdir(), 'talon-lifecycle-v14-'));
+    for (const file of readdirSync(currentMigrations)) {
+      const version = Number.parseInt(file.slice(0, 3), 10);
+      if (Number.isSafeInteger(version) && version <= 13) {
+        copyFileSync(join(currentMigrations, file), join(legacyMigrations, file));
+      }
+    }
+    const baseMigration = execFileSync(
+      'git',
+      ['show', 'fbe4f08:src/core/database/migrations/014-lifecycle-events.sql'],
+      {
+        cwd: join(import.meta.dirname, '../../../../../'),
+        encoding: 'utf8',
+      },
+    );
+    writeFileSync(join(legacyMigrations, '014-lifecycle-events.sql'), baseMigration);
+    return legacyMigrations;
   }
 
   function withIgnoredCheckConstraints(operation: () => void): void {
@@ -386,6 +411,44 @@ describe('lifecycle event persistence', () => {
     leaseNow = now + 102;
     const secondClaim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap();
     expect(secondClaim?.delivery.event_id).toBe(second.eventId);
+  });
+
+  it('skips dispatcher-excluded handlers without consuming an attempt', () => {
+    const first = event();
+    const second = event();
+    events.insertWithDeliveries(first, [delivery('busy-handler')])._unsafeUnwrap();
+    events.insertWithDeliveries(second, [delivery('available-handler')])._unsafeUnwrap();
+
+    const claim = deliveries
+      .claimNext({ leaseMs: 100, excludedHandlerIds: ['busy-handler'] })
+      ._unsafeUnwrap();
+
+    expect(claim?.delivery.handler_id).toBe('available-handler');
+    expect(deliveries.findByKey(first.eventId, 'busy-handler')._unsafeUnwrap()).toMatchObject({
+      status: 'pending',
+      attempts: 0,
+    });
+  });
+
+  it('accepts bounded exclusions beyond 256 so a healthy delivery is not stalled', () => {
+    const blocked = event();
+    const healthy = event();
+    events.insertWithDeliveries(blocked, [delivery('busy-handler')])._unsafeUnwrap();
+    events.insertWithDeliveries(healthy, [delivery('available-handler')])._unsafeUnwrap();
+    const excluded = [
+      'busy-handler',
+      ...Array.from({ length: 257 }, (_, index) => `other-handler-${index}`),
+    ];
+
+    const claim = deliveries
+      .claimNext({ leaseMs: 100, excludedHandlerIds: excluded })
+      ._unsafeUnwrap();
+
+    expect(claim?.delivery.handler_id).toBe('available-handler');
+    expect(deliveries.findByKey(blocked.eventId, 'busy-handler')._unsafeUnwrap()).toMatchObject({
+      status: 'pending',
+      attempts: 0,
+    });
   });
 
   it('does not let a public claim timestamp expire another active lease', () => {
@@ -754,6 +817,85 @@ describe('lifecycle event persistence', () => {
     expect(deliveries.findByEventId(input.eventId)._unsafeUnwrap()).toHaveLength(1);
   });
 
+  it('moves a non-retryable failure directly to dead letter under its current lease', () => {
+    const now = 1_800_000_000_000;
+    leaseNow = now;
+    const input = event();
+    events.insertWithDeliveries(input, [{ ...delivery(), maxAttempts: 3 }])._unsafeUnwrap();
+    const claim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+
+    const terminalResult = deliveries.fail(
+      input.eventId,
+      'run-projector',
+      claim.delivery.claim_token!,
+      { code: 'permanent-failure' },
+      now + 500,
+      false,
+    );
+    expect(terminalResult.isOk()).toBe(true);
+    const terminal = terminalResult._unsafeUnwrap();
+
+    expect(terminal).toMatchObject({
+      status: 'dead_letter',
+      attempts: 1,
+      max_attempts: 3,
+      next_retry_at: null,
+      claim_token: null,
+      last_error: '{"code":"permanent-failure"}',
+    });
+  });
+
+  it('upgrades a committed v14 database before terminally dead-lettering a non-retryable lease', () => {
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'talon-lifecycle-v14-db-')), 'talon.sqlite');
+    const legacyDb = new Database(dbPath);
+    legacyDb.pragma('foreign_keys = ON');
+    let upgradeLeaseNow = 1_800_000_000_000;
+    try {
+      expect(runMigrations(legacyDb, committedV14Migrations())._unsafeUnwrap()).toBe(15);
+      expect(legacyDb.pragma('user_version', { simple: true })).toBe(14);
+      const legacyEvents = new LifecycleEventRepository(legacyDb);
+      const legacyDeliveries = new LifecycleDeliveryRepository(legacyDb, () => upgradeLeaseNow);
+      const input = event();
+      legacyEvents.insertWithDeliveries(input, [{ ...delivery(), maxAttempts: 3 }])._unsafeUnwrap();
+      const lease = legacyDeliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+
+      const currentMigrations = join(
+        import.meta.dirname,
+        '../../../../../src/core/database/migrations',
+      );
+      expect(runMigrations(legacyDb, currentMigrations)._unsafeUnwrap()).toBe(1);
+      expect(legacyDb.pragma('user_version', { simple: true })).toBe(15);
+      const upgradedDeliveries = new LifecycleDeliveryRepository(legacyDb, () => upgradeLeaseNow);
+      const terminal = upgradedDeliveries
+        .fail(
+          input.eventId,
+          'run-projector',
+          lease.delivery.claim_token!,
+          { code: 'permanent-failure' },
+          upgradeLeaseNow + 500,
+          false,
+        )
+        ._unsafeUnwrap();
+
+      expect(terminal).toMatchObject({
+        status: 'dead_letter',
+        attempts: 1,
+        max_attempts: 3,
+        claim_token: null,
+        claim_expires_at: null,
+        next_retry_at: null,
+      });
+      expect(
+        upgradedDeliveries.reopen(input.eventId, 'run-projector')._unsafeUnwrap(),
+      ).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+      });
+    } finally {
+      legacyDb.close();
+    }
+  });
+
   it('returns Result errors for invalid and hostile public inputs without throwing', () => {
     const hostile = new Proxy(
       {},
@@ -973,7 +1115,7 @@ describe('lifecycle event persistence', () => {
       },
       {
         status: 'dead_letter',
-        attempts: 1,
+        attempts: 0,
         nextRetryAt: null,
         claimToken: null,
         claimExpiresAt: null,
