@@ -83,6 +83,7 @@ export {
   type LifecycleInterceptorContract,
   type LifecycleInterceptorEnvelope,
   type LifecycleInterceptorResult,
+  type LifecycleInterceptorTransform,
   type LifecycleAdvisoryInterceptorResult,
   type LifecycleEnforcingInterceptorResult,
 } from './interceptor-contract.js';

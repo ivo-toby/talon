@@ -10,7 +10,10 @@ import type { AuditEntry, AuditStore } from '../../../../src/core/logging/audit-
 /**
  * Creates a pino logger that writes JSON to an in-memory array.
  */
-function createCapturingLogger(): { logger: pino.Logger; records: () => Record<string, unknown>[] } {
+function createCapturingLogger(): {
+  logger: pino.Logger;
+  records: () => Record<string, unknown>[];
+} {
   const raw: string[] = [];
   const writable = {
     write(chunk: string) {
@@ -64,6 +67,7 @@ describe.each([
   ['logChannelSend', 'channel.send'],
   ['logScheduleTrigger', 'schedule.trigger'],
   ['logConfigReload', 'config.reload'],
+  ['logLifecycleInterceptor', 'lifecycle.interceptor'],
 ] as const)('%s()', (method, expectedMsg) => {
   it(`writes a pino record with msg "${expectedMsg}"`, () => {
     const { logger, records } = createCapturingLogger();
@@ -208,9 +212,7 @@ describe('details payload', () => {
   it('preserves nested objects', () => {
     const { logger, records } = createCapturingLogger();
     const audit = new AuditLogger(logger);
-    audit.logToolExecution(
-      makeEntry({ details: { nested: { a: 1, b: [2, 3] }, flag: true } }),
-    );
+    audit.logToolExecution(makeEntry({ details: { nested: { a: 1, b: [2, 3] }, flag: true } }));
     expect(records()[0].details).toEqual({ nested: { a: 1, b: [2, 3] }, flag: true });
   });
 

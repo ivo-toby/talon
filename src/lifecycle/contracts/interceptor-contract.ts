@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { types } from 'node:util';
 
 import {
   LifecycleContractVersionSchema,
@@ -61,19 +62,33 @@ function materializeBoundedInterceptorJsonObject(
   value: unknown,
 ): LifecycleBoundedJsonObject | undefined {
   try {
-    if (!value || typeof value !== 'object' || Array.isArray(value) || !isPlainJsonObject(value)) {
+    // `types.isProxy` is intentionally the first operation on every object
+    // container. Array/prototype/descriptor reflection can execute Proxy
+    // traps, while this native predicate does not.
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      types.isProxy(value) ||
+      Array.isArray(value) ||
+      !isPlainJsonObject(value)
+    ) {
       return undefined;
     }
 
     const seen = new WeakSet<object>();
-    const root = Object.create(null) as LifecycleBoundedJsonObject;
     const stack: Array<{
       value: unknown;
       depth: number;
-      isRoot: boolean;
       assign: (materialized: LifecycleBoundedJson) => void;
-    }> = [{ value, depth: 0, isRoot: true, assign: () => undefined }];
+    }> = [{ value, depth: 0, assign: () => undefined }];
+    let root: LifecycleBoundedJsonObject | undefined;
     let nodes = 0;
+    const consumeText = (text: string): boolean => {
+      if (text.length > MAX_LIFECYCLE_INTERCEPTOR_JSON_STRING_LENGTH) {
+        return false;
+      }
+      return true;
+    };
 
     while (stack.length > 0) {
       const current = stack.pop()!;
@@ -90,7 +105,7 @@ function materializeBoundedInterceptorJsonObject(
         continue;
       }
       if (typeof current.value === 'string') {
-        if (current.value.length > MAX_LIFECYCLE_INTERCEPTOR_JSON_STRING_LENGTH) {
+        if (!consumeText(current.value)) {
           return undefined;
         }
         current.assign(current.value);
@@ -106,12 +121,18 @@ function materializeBoundedInterceptorJsonObject(
       if (!current.value || typeof current.value !== 'object') {
         return undefined;
       }
+      if (types.isProxy(current.value)) {
+        return undefined;
+      }
       if (seen.has(current.value)) {
         return undefined;
       }
       seen.add(current.value);
 
       if (Array.isArray(current.value)) {
+        if (Reflect.getPrototypeOf(current.value) !== Array.prototype) {
+          return undefined;
+        }
         const keys = Reflect.ownKeys(current.value);
         if (keys.some((key) => typeof key === 'symbol')) {
           return undefined;
@@ -132,11 +153,13 @@ function materializeBoundedInterceptorJsonObject(
         }
         for (let index = 0; index < arrayLength; index += 1) {
           const key = String(index);
-          if (!keys.includes(key)) {
-            return undefined;
-          }
           const descriptor = Object.getOwnPropertyDescriptor(current.value, key);
-          if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
+          if (
+            !keys.includes(key) ||
+            !descriptor ||
+            !('value' in descriptor) ||
+            !descriptor.enumerable
+          ) {
             return undefined;
           }
         }
@@ -147,7 +170,6 @@ function materializeBoundedInterceptorJsonObject(
           stack.push({
             value: descriptor.value,
             depth: current.depth + 1,
-            isRoot: false,
             assign: (materialized) => {
               target[index] = materialized;
             },
@@ -159,23 +181,32 @@ function materializeBoundedInterceptorJsonObject(
         return undefined;
       }
 
-      const keys = Reflect.ownKeys(current.value);
-      if (keys.length > MAX_LIFECYCLE_INTERCEPTOR_JSON_COLLECTION_SIZE) {
+      if (Object.getOwnPropertySymbols(current.value).length > 0) {
         return undefined;
       }
-      for (const key of keys) {
-        if (typeof key !== 'string' || !LifecycleMetadataKeySchema.safeParse(key).success) {
-          return undefined;
-        }
-        const descriptor = Object.getOwnPropertyDescriptor(current.value, key);
-        if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
-          return undefined;
-        }
-      }
-      const target = current.isRoot ? root : (Object.create(null) as LifecycleBoundedJsonObject);
+      const keys = Object.keys(current.value);
+      if (keys.length > MAX_LIFECYCLE_INTERCEPTOR_JSON_COLLECTION_SIZE) return undefined;
+
+      const target = Object.create(null) as LifecycleBoundedJsonObject;
       current.assign(target);
-      for (const key of keys.reverse()) {
-        const descriptor = Object.getOwnPropertyDescriptor(current.value, key as string)!;
+      if (current.depth === 0) {
+        root = target;
+      }
+      const normalizedKeys = new Set<string>();
+      for (let index = keys.length - 1; index >= 0; index -= 1) {
+        const key = keys[index];
+        const valueDescriptor = Object.getOwnPropertyDescriptor(current.value, key);
+        if (
+          !valueDescriptor ||
+          !('value' in valueDescriptor) ||
+          !valueDescriptor.enumerable ||
+          !LifecycleMetadataKeySchema.safeParse(key).success ||
+          normalizedKeys.has(key.normalize('NFKC')) ||
+          !consumeText(key)
+        ) {
+          return undefined;
+        }
+        normalizedKeys.add(key.normalize('NFKC'));
         Object.defineProperty(target, key, {
           configurable: true,
           enumerable: true,
@@ -183,9 +214,8 @@ function materializeBoundedInterceptorJsonObject(
           writable: true,
         });
         stack.push({
-          value: descriptor.value,
+          value: valueDescriptor.value,
           depth: current.depth + 1,
-          isRoot: false,
           assign: (materialized) => {
             Object.defineProperty(target, key, {
               configurable: true,
@@ -198,8 +228,9 @@ function materializeBoundedInterceptorJsonObject(
       }
     }
 
-    const serialized = JSON.stringify(root);
-    return new TextEncoder().encode(serialized).byteLength <= MAX_LIFECYCLE_INTERCEPTOR_JSON_BYTES
+    return root &&
+      new TextEncoder().encode(JSON.stringify(root)).byteLength <=
+        MAX_LIFECYCLE_INTERCEPTOR_JSON_BYTES
       ? root
       : undefined;
   } catch {
@@ -392,3 +423,4 @@ export type LifecycleEnforcingInterceptorResult = z.infer<
   typeof LifecycleEnforcingInterceptorResultSchema
 >;
 export type LifecycleInterceptorResult = z.infer<typeof LifecycleInterceptorResultSchema>;
+export type LifecycleInterceptorTransform = z.infer<typeof LifecycleInterceptorTransformSchema>;

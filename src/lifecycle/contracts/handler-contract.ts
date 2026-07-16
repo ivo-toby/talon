@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { types } from 'node:util';
 
 import {
   LifecycleContractVersionSchema,
@@ -10,7 +11,7 @@ import {
   LifecycleVersionedTypeNameSchema,
 } from './common.js';
 import { LifecycleBudgetContractSchema } from './budget-contract.js';
-import { LifecycleEventEnvelopeSchema } from './event-contract.js';
+import { LifecycleEventEnvelopeSchema, LifecycleMetadataKeySchema } from './event-contract.js';
 import { LifecycleFailurePolicyContractSchema } from './failure-policy-contract.js';
 import {
   LifecycleAdvisoryInterceptorResultSchema,
@@ -86,6 +87,263 @@ export const LifecycleHandlerContractSchema = z
   });
 
 const LifecycleSignalEnvelopesSchema = z.array(LifecycleSignalEnvelopeSchema).max(32);
+
+const MAX_LIFECYCLE_HANDLER_SIGNALS = 32;
+const MAX_LIFECYCLE_HANDLER_METADATA_ENTRIES = 32;
+
+type SafeDataObject = Record<string, unknown>;
+
+function isSafePlainObject(value: unknown): value is object {
+  if (!value || typeof value !== 'object' || types.isProxy(value) || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Reflect.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function safeDataDescriptor(value: object, key: string): PropertyDescriptor | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && 'value' in descriptor && descriptor.enumerable ? descriptor : undefined;
+}
+
+/**
+ * Materialize a fixed-shape ordinary v1 record without evaluating any of its
+ * properties. Strict contract schemas must see every own field: dropping an
+ * unknown field here would turn a hostile output into a valid one before Zod
+ * has a chance to reject it.
+ */
+function copyKnownObject(value: unknown, fields: readonly string[]): SafeDataObject | undefined {
+  if (!isSafePlainObject(value)) {
+    return undefined;
+  }
+  const allowedFields = new Set(fields);
+  const ownKeys = Reflect.ownKeys(value);
+  if (ownKeys.some((key) => typeof key !== 'string' || !allowedFields.has(key))) {
+    return undefined;
+  }
+  const copy = Object.create(null) as SafeDataObject;
+  for (const field of ownKeys) {
+    // `ownKeys` above established this as a string. Reading descriptors is
+    // safe after the proxy and prototype checks, and never invokes accessors.
+    const descriptor = safeDataDescriptor(value, field as string);
+    if (!descriptor) {
+      return undefined;
+    }
+    Object.defineProperty(copy, field as string, {
+      configurable: true,
+      enumerable: true,
+      value: descriptor.value,
+      writable: true,
+    });
+  }
+  return copy;
+}
+
+/** Handler-produced metadata remains the ordinary v1 record representation. */
+function materializeHandlerMetadata(value: unknown): SafeDataObject | undefined {
+  if (!isSafePlainObject(value)) {
+    return undefined;
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) return undefined;
+  const keys = Object.keys(value);
+  if (keys.length > MAX_LIFECYCLE_HANDLER_METADATA_ENTRIES) return undefined;
+  const metadata = Object.create(null) as SafeDataObject;
+  const normalizedKeys = new Set<string>();
+  for (const key of keys) {
+    const valueDescriptor = safeDataDescriptor(value, key);
+    const metadataValue: unknown = valueDescriptor?.value as unknown;
+    if (
+      !LifecycleMetadataKeySchema.safeParse(key).success ||
+      normalizedKeys.has(key.normalize('NFKC')) ||
+      !(
+        metadataValue === null ||
+        typeof metadataValue === 'boolean' ||
+        typeof metadataValue === 'number' ||
+        typeof metadataValue === 'string'
+      )
+    ) {
+      return undefined;
+    }
+    normalizedKeys.add(key.normalize('NFKC'));
+    Object.defineProperty(metadata, key, {
+      configurable: true,
+      enumerable: true,
+      value: metadataValue,
+      writable: true,
+    });
+  }
+  return metadata;
+}
+
+function materializeHandlerArray(
+  value: unknown,
+  maxLength: number,
+  materializeItem?: (item: unknown) => unknown,
+): unknown[] | undefined {
+  if (
+    !Array.isArray(value) ||
+    types.isProxy(value) ||
+    Reflect.getPrototypeOf(value) !== Array.prototype
+  ) {
+    return undefined;
+  }
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key === 'symbol')) return undefined;
+  const lengthDescriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  const length: unknown =
+    lengthDescriptor && 'value' in lengthDescriptor
+      ? (lengthDescriptor.value as unknown)
+      : undefined;
+  if (
+    !lengthDescriptor ||
+    !('value' in lengthDescriptor) ||
+    lengthDescriptor.enumerable ||
+    typeof length !== 'number' ||
+    !Number.isSafeInteger(length) ||
+    length < 0 ||
+    length > maxLength ||
+    keys.length !== length + 1
+  ) {
+    return undefined;
+  }
+  const result: unknown[] = [];
+  for (let index = 0; index < length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (
+      !keys.includes(String(index)) ||
+      !descriptor ||
+      !('value' in descriptor) ||
+      !descriptor.enumerable
+    ) {
+      return undefined;
+    }
+    const item: unknown = descriptor.value;
+    const materialized = materializeItem ? materializeItem(item) : item;
+    if (materialized === undefined) return undefined;
+    result.push(materialized);
+  }
+  return result;
+}
+
+function materializeHandlerReference(value: unknown): SafeDataObject | undefined {
+  return copyKnownObject(value, ['type', 'id']);
+}
+
+function materializeOptionalArray(
+  target: SafeDataObject,
+  field: string,
+  materializeItem?: (item: unknown) => unknown,
+): boolean {
+  if (!Object.prototype.hasOwnProperty.call(target, field)) return true;
+  const materialized = materializeHandlerArray(
+    target[field],
+    MAX_LIFECYCLE_HANDLER_SIGNALS,
+    materializeItem,
+  );
+  if (!materialized) return false;
+  target[field] = materialized;
+  return true;
+}
+
+function materializeHandlerSignal(value: unknown): SafeDataObject | undefined {
+  const signal = copyKnownObject(value, [
+    'version',
+    'type',
+    'signalId',
+    'occurredAt',
+    'context',
+    'payload',
+  ]);
+  if (!signal) return undefined;
+  const context = copyKnownObject(signal.context, [
+    'aggregate',
+    'correlationId',
+    'causationId',
+    'recursion',
+    'provenance',
+  ]);
+  const payload = copyKnownObject(signal.payload, ['references', 'metadata']);
+  if (!context || !payload) return undefined;
+  const aggregate = copyKnownObject(context.aggregate, ['type', 'id']);
+  const recursion = copyKnownObject(context.recursion, ['depth', 'maxDepth']);
+  const provenance = copyKnownObject(context.provenance, [
+    'source',
+    'sourceEventIds',
+    'sourceReferences',
+  ]);
+  const hasMetadata = Object.prototype.hasOwnProperty.call(payload, 'metadata');
+  const metadata = hasMetadata ? materializeHandlerMetadata(payload.metadata) : undefined;
+  if (!aggregate || !recursion || !provenance || (hasMetadata && !metadata)) return undefined;
+  if (
+    !materializeOptionalArray(payload, 'references', materializeHandlerReference) ||
+    !materializeOptionalArray(provenance, 'sourceEventIds') ||
+    !materializeOptionalArray(provenance, 'sourceReferences', materializeHandlerReference)
+  ) {
+    return undefined;
+  }
+  signal.context = Object.assign(context, { aggregate, recursion, provenance });
+  signal.payload = metadata ? Object.assign(payload, { metadata }) : payload;
+  return signal;
+}
+
+function materializeHandlerSignals(value: unknown): unknown[] | undefined {
+  return materializeHandlerArray(value, MAX_LIFECYCLE_HANDLER_SIGNALS, materializeHandlerSignal);
+}
+
+function materializeLifecycleHandlerResult(value: unknown): SafeDataObject | undefined {
+  try {
+    const result = copyKnownObject(value, [
+      'outcome',
+      'outputContract',
+      'signals',
+      'result',
+      'code',
+      'message',
+      'retryable',
+    ]);
+    if (!result) return undefined;
+    if (Object.prototype.hasOwnProperty.call(result, 'signals')) {
+      const signals = materializeHandlerSignals(result.signals);
+      if (!signals) return undefined;
+      result.signals = signals;
+    }
+    if (Object.prototype.hasOwnProperty.call(result, 'result')) {
+      const interceptorResult = copyKnownObject(result.result, [
+        'outcome',
+        'signals',
+        'reason',
+        'approvalKey',
+        'transform',
+        'code',
+        'message',
+        'retryable',
+      ]);
+      if (!interceptorResult) return undefined;
+      if (Object.prototype.hasOwnProperty.call(interceptorResult, 'signals')) {
+        const signals = materializeHandlerSignals(interceptorResult.signals);
+        if (!signals) return undefined;
+        interceptorResult.signals = signals;
+      }
+      if (Object.prototype.hasOwnProperty.call(interceptorResult, 'transform')) {
+        const transform = copyKnownObject(interceptorResult.transform, [
+          'hook',
+          'content',
+          'provider',
+          'model',
+          'contextAdditions',
+          'arguments',
+          'argumentsPatch',
+        ]);
+        if (!transform) return undefined;
+        interceptorResult.transform = transform;
+      }
+      result.result = interceptorResult;
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
+}
 
 export const LifecycleHandlerSuccessResultSchema = z
   .object({
@@ -325,9 +583,12 @@ export function resolveLifecycleHandlerContract(
     mode: definition.mode,
     ...(definition.requiredSafety ? { requiredSafety: definition.requiredSafety } : {}),
     parseInput,
-    acceptsOutput: Object.freeze(
-      (output: unknown) => safelyParseSchema(definition.output, output).success,
-    ),
+    acceptsOutput: Object.freeze((output: unknown) => {
+      const materialized = materializeLifecycleHandlerResult(output);
+      return (
+        materialized !== undefined && safelyParseSchema(definition.output, materialized).success
+      );
+    }),
   });
 }
 
@@ -368,7 +629,12 @@ export function parseLifecycleHandlerResult(
     return safelyParseHandlerResult({});
   }
 
-  const parsed = safelyParseHandlerResult(result);
+  // This is the hostile handler-output boundary. Signal metadata is
+  // materialized as a bounded ordinary v1 record before Zod sees it, so
+  // z.record never has to enumerate an unbounded user-controlled key set.
+  // Keep validating the original transport below through acceptsOutput.
+  const materializedResult = materializeLifecycleHandlerResult(result);
+  const parsed = safelyParseHandlerResult(materializedResult);
   if (!parsed.success || parsed.data.outcome === 'error') {
     return parsed;
   }
@@ -383,7 +649,7 @@ export function parseLifecycleHandlerResult(
 
   if (
     parsed.data.outputContract !== normalizedHandler.outputContract ||
-    !contract.acceptsOutput(parsed.data)
+    !contract.acceptsOutput(result)
   ) {
     // Reparse an intentionally incomplete result through the public result
     // schema so callers receive the same typed Zod failure shape as any other
