@@ -6,7 +6,7 @@ ticket: TICKET-003-core-boundary-integration
 wave: WAVE-004
 slug: daemon-message-queue-schedule-events
 title: Wire lifecycle runtime plus inbound, queue, and schedule boundaries
-status: todo
+status: in_progress
 depends_on: ["TASK-005-transactional-event-bus", "TASK-006-durable-event-dispatcher"]
 conflict_domains:
   - "src/daemon/daemon-bootstrap.ts"
@@ -15,13 +15,15 @@ conflict_domains:
   - "src/queue/**"
   - "src/scheduler/scheduler.ts"
 assigned_model_class: codexHigh
+actual_model: gpt-5.6-terra
+reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-007-daemon-message-queue-schedule-events
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: allocation_pending_review
+branch_freshness: pending_reviewed_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/pipeline/message-pipeline.test.ts tests/unit/queue/queue-processor.test.ts tests/unit/scheduler/scheduler.test.ts"
   - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/core/database/migrations/runner.test.ts"
@@ -34,7 +36,7 @@ verification:
 
 ## Status
 
-todo
+in_progress
 
 ## Parent Ticket
 
@@ -111,7 +113,7 @@ task/TASK-007-daemon-message-queue-schedule-events
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+Allocated at `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`, pending the reviewed and pushed allocation and activation-sync checkpoints. The branch and worktree must not be created before those gates pass.
 
 ## PR / Patch Reference
 

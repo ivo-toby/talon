@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: null
+active_wave: WAVE-004
 status: in_progress
 updated_at: 2026-07-16
 ---
@@ -36,6 +36,11 @@ Every task advances independently as soon as its gates clear.
 - WAVE-003 readiness checkpoint: Sol/high reviewed 0C/0H/0M/1L, committed, and pushed at `fbe4f08`; both task branches/worktrees were fast-forwarded, pushed, and verified before dispatch
 - WAVE-003 implementation head: TASK-005 and TASK-006 merged through PRs #261
   and #262; local and remote epic heads match at `8f74740`
+- WAVE-003 reconciliation checkpoint: Sol/high reviewed 0C/0H/0M/2L,
+  committed, and pushed at `7e3402c`; the Low findings remain untouched
+- WAVE-004 allocation: TASK-007 path/branch/worktree assigned in artifacts only;
+  the task branch and worktree are forbidden until the allocation and
+  activation-sync checkpoints are independently reviewed and pushed
 
 ## Pending Waves
 
@@ -44,7 +49,7 @@ Every task advances independently as soon as its gates clear.
 | WAVE-001 | TASK-001-lifecycle-contracts-registry | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
+| WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | in_progress |
 | WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-006 | TASK-011-context-lifecycle-migration, TASK-012-feedback-detector-subagent, TASK-013-handler-telemetry-correlation | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-007 | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
@@ -55,25 +60,24 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-No wave is active. WAVE-003 completed as a parallel batch: TASK-005 merged at
-`d3357fb` and TASK-006 merged at final epic head `8f74740`. Both tasks passed
-fresh full-diff Sol/high review with no Critical, High, or Medium findings,
-GitHub checks passed with zero review threads, and both clean worktrees were
-removed. WAVE-004 is next after this reviewed reconciliation checkpoint is
-committed and pushed.
+WAVE-004 is active as one bundled TASK-007 batch at the allocation-review gate.
+Both dependencies are done and reconciled. The artifacts allocate one
+Terra/high branch/worktree path, but neither branch, worktree, nor worker may
+exist until the allocation checkpoint is Sol/high reviewed, committed, pushed,
+recorded, and activation-synced through a second reviewed checkpoint.
 
 ## Monitoring
 
-- Mode: codex_thread_heartbeat
-- Cadence: adaptive; paused between reconciled waves
-- Status: paused
-- Scheduler: none; WAVE-003 monitor is ready for deletion after reconciliation push
-- Last checked: 2026-07-16T11:34:33+02:00
-- Next check due: none
-- Stop condition: all WAVE-003 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
-- Automation state: WAVE-003 stop condition is satisfied. Delete the obsolete
-  monitor after this reviewed reconciliation checkpoint is pushed; WAVE-004
-  activation must install current instructions only after its own checkpoints.
+- Mode: manual during activation checkpoints; Codex heartbeat required before worker dispatch
+- Cadence: adaptive; next manual gate check in 5 minutes
+- Status: activation_pending_review
+- Scheduler: none until reviewed worktree readiness exists
+- Last checked: 2026-07-16T11:59:36+02:00
+- Next check due: 2026-07-16T12:04:36+02:00
+- Stop condition: all WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
+- Automation state: the WAVE-003 heartbeat was deleted after reconciliation
+  push. A self-contained WAVE-004 heartbeat will be created after reviewed
+  worktree readiness and before Terra/high dispatch.
 
 ## Current Task Gates
 
@@ -157,7 +161,11 @@ committed and pushed.
   `8f74740`; its clean worktree was removed and pruned. The PR Agent's failed-
   suggestion system comment was non-actionable and did not change the passed
   check gate.
-- The remaining 14 tasks remain not_started.
+- TASK-007-daemon-message-queue-schedule-events: allocation_pending_review;
+  branch `task/TASK-007-daemon-message-queue-schedule-events` and worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
+  are allocated in artifacts only and must not be created yet.
+- The remaining 13 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
@@ -174,6 +182,9 @@ committed and pushed.
 - WAVE-003 / TASK-006: merged branch `task/TASK-006-durable-event-dispatcher`;
   clean worktree removed and pruned after PR #262 merged. The Low remains
   untouched.
+- WAVE-004 / TASK-007: branch and worktree path allocated in artifacts only;
+  creation is forbidden pending reviewed and pushed allocation plus
+  activation-sync checkpoints.
 
 ## Gate Definitions
 
@@ -207,6 +218,10 @@ fast-forwarded and pushed to `fbe4f08` before concurrent dispatch.
 TASK-005 merged at `d3357fb`; TASK-006 was refreshed against that epic head,
 passed final review and CI, and merged at current epic head `8f74740`.
 
+WAVE-004 activation base is reviewed and pushed reconciliation commit
+`7e3402cfd3c0855388e3921e3aab050da12f3cfc`. TASK-007 has no local or remote
+task branch and no worktree; allocation review is pending.
+
 ## Open P1/P2 Feedback
 
 - TASK-005's original and later High/Medium findings are reviewed resolved.
@@ -220,6 +235,7 @@ passed final review and CI, and merged at current epic head `8f74740`.
   test fixtures. It remains untouched under the constitution's P3 policy.
 - TASK-006 has one non-blocking Low for the historical `git show fbe4f08`
   migration fixture in shallow/source checkouts. It remains untouched.
+- WAVE-004 allocation review is pending; no new finding has been recorded.
 
 ## Verification Status
 
@@ -263,6 +279,9 @@ passed final review and CI, and merged at current epic head `8f74740`.
   hashes, migration-014 identity, and the no-leaked-timeout process probe passed.
   GitHub Verify PR and PR Agent checks passed with zero review threads. No
   install or native rebuild was performed for either task.
+- WAVE-003 reconciliation review `019f6a4b-86ff-7e13-b3e8-eb8bbc8ebb62`
+  passed 0C/0H/0M/2L after the sole prior Medium was fixed. The exact reviewed
+  snapshot was committed and pushed at `7e3402c`; the Lows remain untouched.
 
 ## Shared Context Reconciliation
 
@@ -427,9 +446,23 @@ passed final review and CI, and merged at current epic head `8f74740`.
   regression command. The command was added to match its validation steps. The
   two Low wording/branch-cleanup observations remain untouched; a fresh full
   reconciliation review is required.
+- 2026-07-16T11:49:00+02:00: Resumed full Sol/high reconciliation review
+  `019f6a4b-86ff-7e13-b3e8-eb8bbc8ebb62` passed 0C/0H/0M/2L. Exact status and
+  SHA-256 fingerprints remained unchanged; the reviewed checkpoint was
+  committed and pushed at `7e3402c` and the WAVE-003 monitor was deleted.
+- 2026-07-16T11:51:52+02:00: WAVE-004 activated at the allocation-review gate
+  from exact pushed reconciliation head `7e3402c`. TASK-007's branch/worktree
+  are allocated only in artifacts and remain forbidden pending both reviewed
+  activation checkpoints.
+- 2026-07-16T11:59:36+02:00: Sol/high allocation review
+  `019f6a59-94ca-78f3-bcb8-f325cd26830f` blocked 0C/0H/3M/2L on task model/
+  freshness metadata, review-gate cadence, and readiness-sequence wording. The
+  three Medium inconsistencies were corrected; stale epic wording and known
+  JSON indentation remain untouched Lows. A fresh complete review is required.
 
 ## Next Action
 
-Run a fresh Sol/high review of the complete WAVE-003 reconciliation diff. On a
-clean Critical/High/Medium gate, commit and push the checkpoint, delete the
-obsolete WAVE-003 monitor, then start WAVE-004 without touching recorded Lows.
+Run a fresh Sol/high review of the complete WAVE-004 allocation diff. On a clean
+Critical/High/Medium gate, commit and push it, record its exact hash as the
+activation checkpoint with activationArtifactsSynced true, and pass a second
+fresh Sol/high activation-sync review before creating the TASK-007 worktree.

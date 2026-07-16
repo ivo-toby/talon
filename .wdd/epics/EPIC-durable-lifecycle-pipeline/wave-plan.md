@@ -43,7 +43,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-004-subagent-lifecycle-adapter | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle adapters, subagent runner, personas | done |
 | TASK-005-transactional-event-bus | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence | event bus, database transaction helpers | done |
 | TASK-006-durable-event-dispatcher | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | dispatcher, handler executor, lifecycle delivery repository/migration/tests | done |
-| TASK-007-daemon-message-queue-schedule-events | TICKET-003-core-boundary-integration | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | daemon bootstrap, message pipeline, queue, scheduler | todo |
+| TASK-007-daemon-message-queue-schedule-events | TICKET-003-core-boundary-integration | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | daemon bootstrap, message pipeline, queue, scheduler | in_progress |
 | TASK-008-run-tool-outbound-events | TICKET-003-core-boundary-integration | TASK-007-daemon-message-queue-schedule-events | AgentRunner, host tools, outbound delivery | todo |
 | TASK-009-context-contracts-projector | TICKET-004-context-migration | TASK-004-subagent-lifecycle-adapter, TASK-005-transactional-event-bus | lifecycle context, ContextRoller, memory repository | todo |
 | TASK-010-behavior-ledger-persistence | TICKET-005-behavior-learning | TASK-002-lifecycle-event-persistence | database migrations, behavior repositories | todo |
@@ -286,7 +286,9 @@ Drift notes:
 
 ### WAVE-004
 
-Status: planned
+Status: in_progress
+
+Activated: 2026-07-16
 
 Tasks:
 
@@ -309,8 +311,11 @@ Rationale:
 
 Activation rule:
 
-- Activate the eligible tasks as one batch after syncing activation artifacts.
-- Create one isolated worktree per writing task from the synced epic branch.
+- TASK-007 is allocated as the sole bundled task from reviewed and pushed
+  reconciliation head `7e3402c`; its branch/worktree remain forbidden until
+  the allocation checkpoint is reviewed, committed, pushed, recorded, and the
+  activation-sync checkpoint independently passes Sol/high review and is pushed.
+- Create the isolated worktree only from the reviewed activation-sync commit.
 
 Stop condition:
 
@@ -562,10 +567,10 @@ Stop condition:
 
 ## Activation Rules
 
-- WAVE-001 through WAVE-003 are done. WAVE-003 merged PRs #261 and #262 at final
-  epic head `8f74740`, reconciled shared findings, and removed both clean task
-  worktrees. WAVE-004 is the next eligible wave after this reconciliation
-  checkpoint passes Sol/high review and is committed and pushed.
+- WAVE-001 through WAVE-003 are done. WAVE-003 merged PRs #261 and #262 and its
+  reconciliation passed Sol/high review 0C/0H/0M/2L before commit `7e3402c`
+  was pushed. WAVE-004 is active at the allocation-review gate; its task branch
+  and worktree do not yet exist.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

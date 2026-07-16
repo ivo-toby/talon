@@ -741,7 +741,7 @@
     },
     {
       "id": "WAVE-004",
-      "status": "planned",
+      "status": "in_progress",
       "strategy": {
         "profile": "full",
         "executionMode": "bundled",
@@ -766,8 +766,8 @@
         {
           "id": "TASK-007-daemon-message-queue-schedule-events",
           "ticket": "TICKET-003-core-boundary-integration",
-          "path": "TICKET-003-core-boundary-integration/todo/TASK-007-daemon-message-queue-schedule-events.md",
-          "status": "todo",
+          "path": "TICKET-003-core-boundary-integration/in-progress/TASK-007-daemon-message-queue-schedule-events.md",
+          "status": "in_progress",
           "dependsOn": [
             "TASK-005-transactional-event-bus",
             "TASK-006-durable-event-dispatcher"
@@ -779,19 +779,21 @@
             "scheduler"
           ],
           "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
           "reviewModel": "reviewGate",
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-007-daemon-message-queue-schedule-events",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events",
+          "worktreeStatus": "allocated_pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_reviewed_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "allocation_pending_review"
         }
       ]
     },
@@ -1391,23 +1393,23 @@
     "pendingReconciliation": []
   },
   "controller": {
-    "activeWave": null,
-    "nextWave": "WAVE-004",
+    "activeWave": "WAVE-004",
+    "nextWave": "WAVE-005",
     "epicBranchVerified": true,
     "activationArtifactsSynced": false,
-    "activationBase": "8f74740fe2d7591cf41995cf77e1887012e5b2b0",
+    "activationBase": "7e3402cfd3c0855388e3921e3aab050da12f3cfc",
     "activationCheckpoint": null,
     "activationSyncCommit": null
   },
   "monitoring": {
-    "mode": "codex_thread_heartbeat",
+    "mode": "manual",
     "cadence": "adaptive",
-    "status": "paused",
-  "lastCheckedAt": "2026-07-16T11:34:33+02:00",
-  "nextCheckDueAt": null,
+    "status": "activation_pending_review",
+  "lastCheckedAt": "2026-07-16T11:59:36+02:00",
+  "nextCheckDueAt": "2026-07-16T12:04:36+02:00",
     "schedulerRef": null,
-  "fallbackPrompt": "Resume EPIC-durable-lifecycle-pipeline by running wdd-start-wave for WAVE-004 from the reviewed and pushed WAVE-003 reconciliation checkpoint. Recreate allocation, activation-sync, and worktree-readiness gates before dispatching TASK-007 to a Terra/high worker. Use Sol/high reviews, route only Critical/High/Medium blockers, preserve .minispec, and keep the task worktree isolated.",
-    "stopCondition": "WAVE-004 is activated with reviewed and pushed allocation, activation-sync, and worktree-readiness checkpoints.",
-    "stopReason": "WAVE-003 completed: TASK-005 and TASK-006 merged and reconciled at epic head 8f74740"
+  "fallbackPrompt": "Resume WAVE-004 activation for EPIC-durable-lifecycle-pipeline. Read the constitution, epic, orchestration.json, controller-state.md, shared context, wave plan, and TASK-007. Do not create the task branch or worktree until the allocation checkpoint is Sol/high reviewed, committed and pushed, its exact hash is controller.activationCheckpoint, controller.activationArtifactsSynced is true, and a fresh activation-sync Sol/high review has passed and been pushed. Do not dispatch until a later worktree-readiness checkpoint is Sol/high reviewed, committed and pushed and the clean task branch/worktree is current at that exact commit. Use Terra/high for implementation, Sol/high for every review, route only Critical/High/Medium blockers, preserve .minispec, and do not run the full test suite without approval.",
+    "stopCondition": "All WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",
+    "stopReason": null
   }
 }

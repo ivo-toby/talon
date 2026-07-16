@@ -57,11 +57,12 @@ updated_at: 2026-07-16
 
 ## Next Phase
 
-- [x] WAVE-001 through WAVE-003 are reconciled. WAVE-003's reviewed TASK-005
-  commit merged through PR #261 at `d3357fb`, and its reviewed TASK-006 commit
-  merged through PR #262 at final epic head `8f74740`. Final Sol/high gates
-  passed 0C/0H/0M/1L for each task; 43 publication tests and 80 dispatcher/
-  repository/migration/event-bus tests passed with build and scoped static
-  checks. GitHub checks passed with zero review threads, both clean worktrees
-  were removed, and the two Low follow-ups remain untouched. WAVE-004 is next
-  after this reconciliation checkpoint is reviewed, committed, and pushed.
+- [x] WAVE-001 through WAVE-003 are reconciled. WAVE-003's reconciliation
+  passed Sol/high review 0C/0H/0M/2L and was pushed at `7e3402c`; all recorded
+  Low follow-ups remain untouched.
+- [ ] WAVE-004 / TASK-007 is active at allocation review. Its branch/worktree
+  must remain absent until the reviewed allocation checkpoint is pushed,
+  recorded, and activation-synced through a second Sol/high-reviewed push. Only
+  then may the branch/worktree be created; dispatch remains forbidden until the
+  later readiness checkpoint is reviewed, pushed, and fast-forwarded into the
+  clean verified task branch/worktree.
