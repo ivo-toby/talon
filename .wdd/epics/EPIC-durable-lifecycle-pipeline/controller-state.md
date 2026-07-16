@@ -19,7 +19,8 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 - Target: main
 - Verified locally: yes
 - Planning and reconciliation artifacts committed/synced: yes; pre-activation epic head `1d5ac4d`
-- WAVE-002 activation artifacts: prepared for Sol/high review and checkpoint sync before worktree creation
+- WAVE-002 allocation checkpoint: reviewed, committed, and pushed at `ad22c01`
+- WAVE-002 activation sync marker: exact allocation commit recorded; pending the second Sol/high review and pushed sync checkpoint before worktree creation
 
 ## Pending Waves
 
@@ -42,8 +43,8 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 WAVE-002 is active as one parallel batch. TASK-002 persistence, TASK-003
 interception, and TASK-004 sub-agent adaptation are eligible because TASK-001
 is done and their primary conflict domains are independent. Each task is
-allocated an isolated worktree that must be created only after the activation
-checkpoint is reviewed, committed, and pushed.
+allocated an isolated worktree that must be created only after this second
+activation sync checkpoint is reviewed, committed, and pushed.
 
 ## Monitoring
 
@@ -51,8 +52,8 @@ checkpoint is reviewed, committed, and pushed.
 - Cadence: adaptive
 - Status: active
 - Scheduler: `talon-issue-256-wdd-wave-1-heartbeat`
-- Last checked: 2026-07-16T01:53:46+02:00
-- Next check due: 2026-07-16T02:08:46+02:00
+- Last checked: 2026-07-16T02:08:31+02:00
+- Next check due: 2026-07-16T02:23:31+02:00
 - Stop condition: all WAVE-002 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
 - Automation state: verified ACTIVE in Codex with a 15-minute heartbeat and a self-contained WAVE-002 orchestration prompt.
 
@@ -61,10 +62,10 @@ checkpoint is reviewed, committed, and pushed.
 - TASK-001-lifecycle-contracts-registry: merged; PR #257 merged into the epic
   branch at `e5fda2a` after task head `ff3e561` passed branch refresh,
   verification, CI, and Sol/high review gates.
-- TASK-002-lifecycle-event-persistence: activation_sync_pending.
-- TASK-003-interceptor-engine: activation_sync_pending, including the carried
+- TASK-002-lifecycle-event-persistence: worktree_creation_pending.
+- TASK-003-interceptor-engine: worktree_creation_pending, including the carried
   proxy-valued bounded-JSON zero-trap hardening.
-- TASK-004-subagent-lifecycle-adapter: activation_sync_pending.
+- TASK-004-subagent-lifecycle-adapter: worktree_creation_pending.
 - The remaining 16 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -94,9 +95,11 @@ TASK-001 was refreshed from epic head `999772d` at merge commit `ff3e561`.
 Epic head `999772d` was verified as an ancestor before PR merge; PR #257 then
 merged at `e5fda2a`.
 
-WAVE-002 task branches are pending creation from the pushed activation
-checkpoint whose base is reconciliation head `1d5ac4d`. No worker may start
-before that checkpoint is synced and present in every assigned worktree.
+WAVE-002 allocation commit `ad22c01fff24f97a30a9c74757eac7ba708e1352`
+is recorded as the activation checkpoint. Task branches remain absent and must
+be created from the pushed commit containing this sync marker, not from the
+allocation commit alone. No worker may start before that pushed sync state is
+present in every assigned worktree.
 
 ## Open P1/P2 Feedback
 
@@ -189,14 +192,15 @@ before that checkpoint is synced and present in every assigned worktree.
 - 2026-07-16T01:53:16+02:00: WAVE-001 reconciliation checkpoint `1d5ac4d` committed and pushed; local and remote epic heads matched and `.minispec/` remained untouched.
 - 2026-07-16T01:53:46+02:00: Existing heartbeat updated and verified ACTIVE for WAVE-002 at a 15-minute cadence.
 - 2026-07-16T01:53:46+02:00: WAVE-002 activation prepared as a confirmed full-profile parallel batch with three Terra/high worktrees allocated pending reviewed checkpoint sync.
+- 2026-07-16T02:00:19+02:00: Initial Sol/high allocation review `019f6837-90ec-72e3-8e0a-0eb97a74146c` failed 0C/0H/1M/1L because the controller and heartbeat could skip the second sync checkpoint and validation metadata was stale.
+- 2026-07-16T02:03:35+02:00: The controller and live heartbeat were hardened to require allocation push, exact checkpoint recording, a second Sol/high review, and pushed sync state before task creation; validation metadata was refreshed.
+- 2026-07-16T02:07:21+02:00: Fresh Sol/high allocation review `019f683d-3c97-7283-a7ed-65730abc1dac` passed 0C/0H/0M/0L with all Wave 2 branches and worktrees absent.
+- 2026-07-16T02:08:31+02:00: Reviewed allocation checkpoint `ad22c01` committed and pushed; its exact commit is now recorded by the activation sync marker for the mandatory second review.
 
 ## Next Action
 
-Run Sol/high review over the WAVE-002 allocation artifacts. If clean, commit and
-push that allocation checkpoint. Before any task branch, worktree, or worker is
-created, record the exact allocation commit as the activation checkpoint, set
-`activationArtifactsSynced: true`, pass a second Sol/high review, and commit and
-push that sync checkpoint. Only then create the three task branches and
-worktrees from the pushed synced state, record and push their readiness state,
-fast-forward each task branch to that exact checkpoint, and dispatch one
-Terra/high worker per task.
+Run the second Sol/high review over this exact activation sync marker. If clean,
+commit and push only these WDD paths. Only then create the three task branches
+and worktrees from that pushed sync-marker commit, record and push their
+readiness state, fast-forward each task branch to that exact readiness
+checkpoint, and dispatch one Terra/high worker per task.

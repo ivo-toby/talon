@@ -297,10 +297,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "activation_checkpoint_pending",
+          "branchFreshness": "activation_checkpoint_ad22c01_recorded",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_sync_pending"
+          "currentGate": "worktree_creation_pending"
         },
         {
           "id": "TASK-003-interceptor-engine",
@@ -327,10 +327,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "activation_checkpoint_pending",
+          "branchFreshness": "activation_checkpoint_ad22c01_recorded",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_sync_pending"
+          "currentGate": "worktree_creation_pending"
         },
         {
           "id": "TASK-004-subagent-lifecycle-adapter",
@@ -357,10 +357,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "activation_checkpoint_pending",
+          "branchFreshness": "activation_checkpoint_ad22c01_recorded",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_sync_pending"
+          "currentGate": "worktree_creation_pending"
         }
       ]
     },
@@ -1106,16 +1106,16 @@
     "activeWave": "WAVE-002",
     "nextWave": "WAVE-003",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": false,
+    "activationArtifactsSynced": true,
     "activationBase": "1d5ac4df77961f1ba5d2fa4acc04ffb57ee09c16",
-    "activationCheckpoint": null
+    "activationCheckpoint": "ad22c01fff24f97a30a9c74757eac7ba708e1352"
   },
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
     "status": "active",
-    "lastCheckedAt": "2026-07-16T01:53:46+02:00",
-    "nextCheckDueAt": "2026-07-16T02:08:46+02:00",
+    "lastCheckedAt": "2026-07-16T02:08:31+02:00",
+    "nextCheckDueAt": "2026-07-16T02:23:31+02:00",
     "schedulerRef": "talon-issue-256-wdd-wave-1-heartbeat",
     "fallbackPrompt": "Run one bounded subagent-pr-orchestration heartbeat for EPIC-durable-lifecycle-pipeline WAVE-002. Read orchestration.json, controller-state.md, shared context, and every active task file. Do not create a task branch, worktree, or worker until the allocation checkpoint has been pushed, its exact commit is recorded as controller.activationCheckpoint, controller.activationArtifactsSynced is true, and that second sync checkpoint has passed Sol/high review and is pushed. After those gates, inspect each Terra/high worker, task worktree, branch, PR, verification result, and Sol/high review independently; route all Critical/High/Medium findings; enforce epic-branch freshness; keep .minispec untouched; update durable WDD state; stop only when every WAVE-002 task is ready for wdd-reconcile-wave.",
     "stopCondition": "All WAVE-002 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",

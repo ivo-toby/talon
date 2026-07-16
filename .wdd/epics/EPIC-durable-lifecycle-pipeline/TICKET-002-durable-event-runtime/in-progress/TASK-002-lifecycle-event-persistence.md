@@ -19,8 +19,8 @@ branch: task/TASK-002-lifecycle-event-persistence
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence
 worktree_status: pending_creation
 pr: null
-current_gate: activation_sync_pending
-branch_freshness: activation_head_pending
+current_gate: worktree_creation_pending
+branch_freshness: activation_checkpoint_ad22c01_recorded
 verification:
   - "npx vitest run tests/unit/core/database/repositories/lifecycle-event-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
   - "npm run build"

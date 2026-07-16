@@ -20,8 +20,8 @@ branch: task/TASK-003-interceptor-engine
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine
 worktree_status: pending_creation
 pr: null
-current_gate: activation_sync_pending
-branch_freshness: activation_head_pending
+current_gate: worktree_creation_pending
+branch_freshness: activation_checkpoint_ad22c01_recorded
 verification:
   - "npx vitest run tests/unit/lifecycle/interceptor-engine.test.ts tests/unit/core/logging/audit-logger.test.ts"
   - "npm run build"
