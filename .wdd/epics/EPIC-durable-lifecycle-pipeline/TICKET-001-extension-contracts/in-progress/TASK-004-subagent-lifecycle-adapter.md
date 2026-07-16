@@ -19,9 +19,10 @@ review_model_class: reviewGate
 branch: task/TASK-004-subagent-lifecycle-adapter
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter
 worktree_status: active
-worker_thread_id: 019f6850-679f-7d93-a6da-be1f0100064c
+worker_thread_id: 019f693a-4894-7ff2-852f-424ab5bf9fe0
+review_thread_id: 019f6940-9cbb-7f00-adab-817f0f613ea9
 pr: null
-current_gate: no_pr
+current_gate: needs_review
 branch_freshness: current_at_d153e17_at_dispatch
 verification:
   - "npx vitest run tests/unit/lifecycle/subagent-lifecycle-adapter.test.ts tests/unit/subagents/subagent-runner.test.ts"
@@ -161,7 +162,12 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- Pre-review Terra/high remediation passed 104 focused tests, build,
+  changed-source ESLint, touched-file Prettier, and `git diff --check`.
+- Focused Sol/high delta review passed 0C/0H/0M/1L with 89 focused tests and
+  exact pre/post worktree status. Its writable-review prompt explicitly forbade
+  source, test, and WDD edits plus dependency installation. The Low remains
+  untouched and non-blocking; final full-diff pre-commit review remains.
 
 ## Review Feedback
 
@@ -171,11 +177,17 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ### P2
 
-- None.
+- Resolved Medium: boundary cloning permitted `__proto__` prototype mutation
+  and inherited lifecycle fields.
+- Resolved Medium: invocation did not enforce exact configured
+  event/signal/hook subscription membership.
+- Resolved Medium: persona aggregates bypassed explicit non-thread aggregate
+  scope.
 
 ### P3
 
-- None.
+- Low: failover logging can claim a next attempt after the global deadline is
+  exhausted. Non-blocking follow-up; not automatically fixed.
 
 ## Completion Notes
 
