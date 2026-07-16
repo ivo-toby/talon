@@ -283,6 +283,25 @@ const TOOLS = [
     },
   },
   {
+    name: 'channel_broadcast',
+    description:
+      'Sends a single message to every chat the persona is bound to, across all bound channels. Deliberate fan-out — use only when the schedule has no specific origin chat. Skips channel-default bindings (no thread_id) with a warning included in the result. Returns { delivered, skipped, failed } summary.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        content: {
+          type: 'string' as const,
+          description: 'Message content in Markdown format',
+        },
+        replyTo: {
+          type: 'string' as const,
+          description: 'Optional thread or message ID to reply to (applied to every delivery)',
+        },
+      },
+      required: ['content'],
+    },
+  },
+  {
     name: 'persona_send',
     description: 'Send a task to another persona via the A2A layer',
     inputSchema: {
