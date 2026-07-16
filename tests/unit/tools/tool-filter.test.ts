@@ -59,12 +59,16 @@ describe('filterAllowedMcpTools', () => {
     expect(filterAllowedMcpTools(caps)).toEqual([]);
   });
 
-  it('maps channel.send capability to channel_send MCP tool', () => {
+  it('maps channel.send capability to channel_send, channel_list, and channel_broadcast MCP tools', () => {
     const caps: ResolvedCapabilities = {
       allow: ['channel.send:TalonMain'],
       requireApproval: [],
     };
-    expect(filterAllowedMcpTools(caps)).toEqual(['channel_send']);
+    const result = filterAllowedMcpTools(caps);
+    expect(result).toContain('channel_send');
+    expect(result).toContain('channel_list');
+    expect(result).toContain('channel_broadcast');
+    expect(result).toHaveLength(3);
   });
 
   it('maps multiple capabilities to MCP tools', () => {
@@ -74,9 +78,11 @@ describe('filterAllowedMcpTools', () => {
     };
     const result = filterAllowedMcpTools(caps);
     expect(result).toContain('channel_send');
+    expect(result).toContain('channel_list');
+    expect(result).toContain('channel_broadcast');
     expect(result).toContain('memory_access');
     expect(result).toContain('net_http');
-    expect(result).toHaveLength(3);
+    expect(result).toHaveLength(5);
   });
 
   it('includes tools from requireApproval list', () => {
@@ -93,7 +99,10 @@ describe('filterAllowedMcpTools', () => {
       requireApproval: ['channel.send:OtherChannel'],
     };
     const result = filterAllowedMcpTools(caps);
-    expect(result).toEqual(['channel_send']);
+    expect(result).toContain('channel_send');
+    expect(result).toContain('channel_list');
+    expect(result).toContain('channel_broadcast');
+    expect(result).toHaveLength(3);
   });
 
   it('ignores capabilities that do not map to host tools', () => {
@@ -111,8 +120,10 @@ describe('filterAllowedMcpTools', () => {
     };
     const result = filterAllowedMcpTools(caps);
     expect(result).toContain('channel_send');
+    expect(result).toContain('channel_list');
+    expect(result).toContain('channel_broadcast');
     expect(result).toContain('schedule_manage');
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(4);
   });
 
   it('returns all host tools when all capabilities are granted', () => {
@@ -131,12 +142,14 @@ describe('filterAllowedMcpTools', () => {
       requireApproval: [],
     };
     const result = filterAllowedMcpTools(caps);
-    expect(result).toHaveLength(11);
+    expect(result).toHaveLength(13);
     expect(result).toContain('background_agent');
     expect(result).toContain('persona_send');
     expect(result).toContain('persona_task_status');
     expect(result).toContain('persona_list');
     expect(result).toContain('execution_env');
+    expect(result).toContain('channel_list');
+    expect(result).toContain('channel_broadcast');
   });
 
   it('maps persona.send capability to persona_send, persona_task_status, and persona_list MCP tools', () => {
@@ -187,9 +200,11 @@ describe('filterAllowedTools', () => {
     };
     const result = filterAllowedTools(caps);
     expect(result).toContain('channel.send');
+    expect(result).toContain('channel.list');
+    expect(result).toContain('channel.broadcast');
     expect(result).toContain('net.http');
     expect(result).toContain('execution.env');
-    expect(result).toHaveLength(3);
+    expect(result).toHaveLength(5);
   });
 });
 
@@ -243,10 +258,12 @@ describe('isToolAllowed', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all eleven host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(11);
+  it('contains all thirteen host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(13);
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
+    expect(ALL_HOST_TOOLS).toContain('channel.list');
+    expect(ALL_HOST_TOOLS).toContain('channel.broadcast');
     expect(ALL_HOST_TOOLS).toContain('persona.send');
     expect(ALL_HOST_TOOLS).toContain('persona.task_status');
     expect(ALL_HOST_TOOLS).toContain('persona.list');
