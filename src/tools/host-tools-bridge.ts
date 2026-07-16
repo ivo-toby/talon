@@ -97,6 +97,7 @@ export class HostToolsBridge {
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       messageRepository: ctx.repos.message,
+      bindingRepository: ctx.repos.binding,
       logger: ctx.logger,
     });
 

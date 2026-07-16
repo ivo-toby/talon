@@ -17,6 +17,7 @@ import type {
   ThreadRepository,
   ThreadRow,
 } from '../../core/database/repositories/thread-repository.js';
+import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
 
 /**
@@ -100,6 +101,20 @@ export class ChannelSendHandler {
       threadRepository: ThreadRepository;
       channelRepository?: Pick<ChannelRepository, 'findByName'>;
       messageRepository?: Pick<MessageRepository, 'insert'>;
+      /**
+       * When provided, outbound persistence is gated on the current
+       * persona being bound to the target — either via a thread-scoped
+       * binding for `(channel, targetThread)` or via a channel-default
+       * binding (mirrors `ChannelRouter.resolvePersona`'s fallback). This
+       * prevents a persona from polluting an unbound thread's message
+       * history when `externalChatId` deliberately targets a chat the
+       * persona is not bound to. The capability check still permits the
+       * send itself.
+       */
+      bindingRepository?: Pick<
+        BindingRepository,
+        'findByChannelAndThread' | 'findDefaultForChannel'
+      >;
       logger: pino.Logger;
     },
   ) {}
@@ -208,6 +223,7 @@ export class ChannelSendHandler {
       channelName: channelId,
       externalThreadId,
       content,
+      personaId: context.personaId,
     });
 
     return {
@@ -224,13 +240,32 @@ export class ChannelSendHandler {
     channelName: string;
     externalThreadId: string;
     content: string;
+    personaId: string;
   }): void {
     if (!this.deps.channelRepository || !this.deps.messageRepository) {
       return;
     }
 
-    const targetThread = this.resolveTargetThread(input);
+    const channelResult = this.deps.channelRepository.findByName(input.channelName);
+    if (channelResult.isErr() || !channelResult.value) {
+      this.deps.logger.warn(
+        {
+          requestId: input.requestId,
+          channelName: input.channelName,
+          err: channelResult.isErr() ? channelResult.error : undefined,
+        },
+        'channel.send: delivered message but failed to resolve channel for outbound persistence',
+      );
+      return;
+    }
+    const channel = channelResult.value;
+
+    const targetThread = this.resolveTargetThread(input, channel.id);
     if (!targetThread) {
+      return;
+    }
+
+    if (!this.shouldPersistForTarget(input, channel.id, targetThread)) {
       return;
     }
 
@@ -258,41 +293,104 @@ export class ChannelSendHandler {
     }
   }
 
-  private resolveTargetThread(input: {
-    requestId: string;
-    channelName: string;
-    externalThreadId: string;
-  }): ThreadRow | null {
-    const channelResult = this.deps.channelRepository!.findByName(input.channelName);
-    if (channelResult.isErr()) {
+  /**
+   * Returns true when outbound context should be persisted on the target
+   * thread. Mirrors `ChannelRouter.resolvePersona`'s resolution:
+   *  1. If a thread-scoped binding exists for `(channel, targetThread)`,
+   *     persist iff its persona matches the current run. A scoped binding
+   *     for a different persona blocks persistence — the default binding
+   *     is NOT consulted (matches router behavior).
+   *  2. If no thread-scoped binding exists, fall back to the channel-
+   *     default binding; persist iff its persona matches.
+   * Otherwise the send still goes through (capability permits) but no
+   * outbound row is written, preventing a persona from polluting an
+   * unbound (or other-persona-owned) thread's message history when
+   * `externalChatId` deliberately targets a chat the persona is not
+   * bound to.
+   */
+  private shouldPersistForTarget(
+    input: { requestId: string; personaId: string },
+    channelId: string,
+    targetThread: ThreadRow,
+  ): boolean {
+    if (!this.deps.bindingRepository) {
+      return true;
+    }
+    const scopedResult = this.deps.bindingRepository.findByChannelAndThread(
+      channelId,
+      targetThread.id,
+    );
+    if (scopedResult.isErr()) {
       this.deps.logger.warn(
         {
           requestId: input.requestId,
-          channelName: input.channelName,
-          err: channelResult.error,
+          channelId,
+          threadId: targetThread.id,
+          err: scopedResult.error,
         },
-        'channel.send: delivered message but failed to resolve channel for outbound persistence',
+        'channel.send: skipping outbound persistence — binding lookup failed',
       );
-      return null;
+      return false;
     }
-    const channel = channelResult.value;
-    if (!channel) {
+    const scoped = scopedResult.value;
+    if (scoped) {
+      if (scoped.persona_id === input.personaId) {
+        return true;
+      }
       this.deps.logger.warn(
-        { requestId: input.requestId, channelName: input.channelName },
-        'channel.send: delivered message but channel row was missing for outbound persistence',
+        {
+          requestId: input.requestId,
+          channelId,
+          threadId: targetThread.id,
+          personaId: input.personaId,
+          scopedPersonaId: scoped.persona_id,
+        },
+        'channel.send: delivered message but skipping outbound persistence — thread is bound to a different persona',
       );
-      return null;
+      return false;
     }
+    const defaultResult = this.deps.bindingRepository.findDefaultForChannel(channelId);
+    if (defaultResult.isErr()) {
+      this.deps.logger.warn(
+        {
+          requestId: input.requestId,
+          channelId,
+          err: defaultResult.error,
+        },
+        'channel.send: skipping outbound persistence — default binding lookup failed',
+      );
+      return false;
+    }
+    const defaultBinding = defaultResult.value;
+    if (defaultBinding && defaultBinding.persona_id === input.personaId) {
+      return true;
+    }
+    this.deps.logger.warn(
+      {
+        requestId: input.requestId,
+        channelId,
+        threadId: targetThread.id,
+        personaId: input.personaId,
+        defaultPersonaId: defaultBinding?.persona_id ?? null,
+      },
+      'channel.send: delivered message but skipping outbound persistence — no binding for this persona on target channel/thread',
+    );
+    return false;
+  }
 
+  private resolveTargetThread(
+    input: { requestId: string; externalThreadId: string },
+    channelId: string,
+  ): ThreadRow | null {
     const existingResult = this.deps.threadRepository.findByExternalId(
-      channel.id,
+      channelId,
       input.externalThreadId,
     );
     if (existingResult.isErr()) {
       this.deps.logger.warn(
         {
           requestId: input.requestId,
-          channelId: channel.id,
+          channelId,
           externalThreadId: input.externalThreadId,
           err: existingResult.error,
         },
@@ -306,7 +404,7 @@ export class ChannelSendHandler {
 
     const insertInput: InsertThreadInput = {
       id: randomUUID(),
-      channel_id: channel.id,
+      channel_id: channelId,
       external_id: input.externalThreadId,
       metadata: '{}',
     };
@@ -316,7 +414,7 @@ export class ChannelSendHandler {
     }
 
     const retryResult = this.deps.threadRepository.findByExternalId(
-      channel.id,
+      channelId,
       input.externalThreadId,
     );
     if (retryResult.isOk() && retryResult.value) {
@@ -326,7 +424,7 @@ export class ChannelSendHandler {
     this.deps.logger.warn(
       {
         requestId: input.requestId,
-        channelId: channel.id,
+        channelId,
         externalThreadId: input.externalThreadId,
         err: insertResult.error,
       },

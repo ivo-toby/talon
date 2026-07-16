@@ -176,7 +176,7 @@ export class ChannelBroadcastHandler {
       thread_id: input.thread.id,
       direction: 'outbound',
       content: JSON.stringify({ body: input.content }),
-      idempotency_key: `channel-broadcast:${input.runId}:${input.channel.id}:${idempotencyRequestId}`,
+      idempotency_key: `channel-broadcast:${input.runId}:${input.thread.id}:${idempotencyRequestId}`,
       provider_id: null,
       run_id: input.runId,
     });
