@@ -167,7 +167,7 @@ Always make sure you are in a feature or fix branch before getting to work
 
 ### Reviews
 
-Before every commit you need to use the codex skill to ask `gpt-5.6-sol` with high reasoning for a review, address the issues, only if there are no critical, high, or medium issues can the work be committed.
+Before every commit you need to use the codex skill to ask `gpt-5.5` with xhigh reasoning for a review, address the issues, only if there are no critical, high, or medium issues can the work be committed. Do not use any GPT-5.6 model.
 When dealing with PR reviews, always resolve a comment when it's fixed or deemed invalid, always add a comment what you fixed, which commit, or why the comment was invalid
 
 ### Documentation
@@ -182,4 +182,4 @@ Do not consider a feature complete until the docs match the code. PR reviewers s
 
 ### Offload work
 
-If you can, offload coding tasks to `gpt-5.6-terra` with high reasoning using the codex skill; only do this for well-defined, tightly scoped tasks.
+If you can, offload coding tasks to `gpt-5.5` with high reasoning using the codex skill; only do this for well-defined, tightly scoped tasks. Implementation and remediation agents must never use a model newer than GPT-5.5.

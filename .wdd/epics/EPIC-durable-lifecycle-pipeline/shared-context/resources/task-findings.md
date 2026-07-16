@@ -81,7 +81,7 @@ authority, safety, causality, durability, compatibility, or execution policy.
 - Delivery throughput policy proven in WAVE-002: execute disjoint task worktrees
   in parallel, remediate blockers in parallel across tasks, use one integration
   owner for overlapping same-task findings, ignore Low/P3 for automatic edits,
-  and require a fresh full Sol/high review plus status/hash integrity proof
+  and require a fresh full GPT-5.5/xhigh review plus status/hash integrity proof
   before every commit.
 - Source: TASK-005 / PR #261, merged at `d3357fb` on 2026-07-16. The lifecycle
   event bus owns its SQLite transaction coordinator, binds transaction authority

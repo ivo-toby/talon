@@ -58,7 +58,7 @@ terminal smoke round trip.
 - `npm run lint` for source changes when practical.
 - Migration runner and repository tests for schema changes.
 - `git diff --check` before handoff.
-- `gpt-5.6-sol` review with high reasoning before every commit; no unresolved Critical/High/Medium or
+- `gpt-5.5` review with xhigh reasoning before every commit; no unresolved Critical/High/Medium or
   P1/P2 findings.
 
 ## Epic Validation

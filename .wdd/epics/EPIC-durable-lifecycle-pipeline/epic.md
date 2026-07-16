@@ -152,7 +152,7 @@ never receive lifecycle data merely because they exist.
 - Database, queue, provider session, context rotation, and prompt-write
   transitions must retain transactional or explicitly recoverable invariants.
 - Expected failures cross module boundaries as typed `Result` values.
-- RED/GREEN TDD, `gpt-5.6-sol`/high pre-commit review, P1/P2 gates, task PRs, and the full
+- RED/GREEN TDD, `gpt-5.5`/xhigh pre-commit review, P1/P2 gates, task PRs, and the full
   WDD review/validation policy apply.
 - Feature/config changes require README, affected `.agents/skills/`, example
   config, self-documentation, and AGENTS updates in the same epic.
