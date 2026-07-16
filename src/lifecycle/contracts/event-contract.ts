@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { types } from 'node:util';
 
 import {
   LifecycleContractVersionSchema,
@@ -34,20 +35,61 @@ export const LifecycleMetadataKeySchema = z
     message: 'lifecycle metadata keys must not have leading or trailing whitespace',
   });
 
-const LifecycleBoundedMetadataSchema = z
-  .record(LifecycleMetadataKeySchema, LifecycleBoundedScalarSchema)
-  .refine((metadata) => Object.keys(metadata).length <= MAX_LIFECYCLE_METADATA_ENTRIES, {
-    message: `lifecycle metadata may contain at most ${MAX_LIFECYCLE_METADATA_ENTRIES} entries`,
-  })
-  .refine(
-    (metadata) => {
-      const normalizedKeys = Object.keys(metadata).map((key) => key.normalize('NFKC'));
-      return new Set(normalizedKeys).size === normalizedKeys.length;
-    },
-    {
-      message: 'lifecycle metadata keys must not collide after Unicode normalization',
-    },
-  );
+function materializeLifecycleMetadata(
+  value: unknown,
+): Record<string, string | number | boolean | null> | undefined {
+  try {
+    if (!value || typeof value !== 'object' || types.isProxy(value) || Array.isArray(value)) {
+      return undefined;
+    }
+    const prototype = Reflect.getPrototypeOf(value);
+    if (
+      (prototype !== Object.prototype && prototype !== null) ||
+      Object.getOwnPropertySymbols(value).length > 0
+    ) {
+      return undefined;
+    }
+    const keys = Object.keys(value);
+    if (keys.length > MAX_LIFECYCLE_METADATA_ENTRIES) return undefined;
+    const metadata = Object.create(null) as Record<string, string | number | boolean | null>;
+    const normalized = new Set<string>();
+    for (const key of keys) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key);
+      if (
+        !descriptor ||
+        !('value' in descriptor) ||
+        !descriptor.enumerable ||
+        normalized.has(key.normalize('NFKC'))
+      ) {
+        return undefined;
+      }
+      const parsed = LifecycleBoundedScalarSchema.safeParse(descriptor.value);
+      if (!parsed.success || !LifecycleMetadataKeySchema.safeParse(key).success) return undefined;
+      normalized.add(key.normalize('NFKC'));
+      Object.defineProperty(metadata, key, {
+        configurable: true,
+        enumerable: true,
+        value: parsed.data,
+        writable: true,
+      });
+    }
+    return metadata;
+  } catch {
+    return undefined;
+  }
+}
+
+const LifecycleBoundedMetadataSchema = z.unknown().transform((value, context) => {
+  const metadata = materializeLifecycleMetadata(value);
+  if (metadata === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'lifecycle metadata must be bounded scalar data',
+    });
+    return z.NEVER;
+  }
+  return metadata;
+});
 
 /** Durable payloads intentionally contain references and scalar metadata only. */
 export const LifecycleBoundedPayloadSchema = z
