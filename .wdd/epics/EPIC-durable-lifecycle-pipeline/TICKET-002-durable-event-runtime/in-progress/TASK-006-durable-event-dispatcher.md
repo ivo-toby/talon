@@ -17,10 +17,10 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-006-durable-event-dispatcher
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher
-worktree_status: allocated_pending_creation
+worktree_status: ready
 pr: null
-current_gate: activation_sync_pending_review
-branch_freshness: pending_reviewed_activation_sync
+current_gate: dispatch_pending
+branch_freshness: current_at_activation_sync_pending_readiness_checkpoint
 verification:
   - "npx vitest run tests/unit/lifecycle/lifecycle-dispatcher.test.ts"
   - "npm run build"

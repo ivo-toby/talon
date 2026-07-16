@@ -32,6 +32,8 @@ Every task advances independently as soon as its gates clear.
 - WAVE-002 implementation head: all three task PRs merged and the epic branch is current locally and remotely at `54dc872`
 - WAVE-002 reconciliation checkpoint: Sol/high reviewed, committed, and pushed at `2de0689`; local and remote epic heads match
 - WAVE-003 allocation checkpoint: Sol/high reviewed 0C/0H/0M/0L, committed, and pushed at `2976170`; its exact hash is recorded for the mandatory activation-sync review, while task branches/worktrees remain forbidden
+- WAVE-003 activation sync marker: Sol/high reviewed 0C/0H/0M/0L, committed, and pushed at `461ec27`; exact allocation commit `2976170` recorded
+- WAVE-003 readiness checkpoint: two isolated task branches/worktrees are clean and verified at `461ec27`; pending Sol/high review, push, and task-branch fast-forward before dispatch
 
 ## Pending Waves
 
@@ -51,22 +53,23 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-003 is active as one parallel batch at the activation-sync review gate.
+WAVE-003 is active as one parallel batch at the worktree-readiness review gate.
 TASK-005 publication and TASK-006 dispatch are eligible because every WAVE-001/
 WAVE-002 dependency is done and their primary conflict domains remain separate.
-The artifacts allocate two Terra/high branches/worktree paths. The allocation
-checkpoint is reviewed and pushed at `2976170`, and its exact hash is recorded,
-but neither task branch, worktree, nor worker may exist until this activation-
-sync marker passes a second Sol/high review and is committed and pushed.
+Both isolated task branches/worktrees were created from pushed activation-sync
+commit `461ec27`, are clean, and contain their task plus current controller and
+orchestration artifacts. No worker may start until this readiness state passes
+Sol/high review, is committed and pushed, and both task branches/worktrees are
+fast-forwarded to that exact pushed readiness commit and reverified clean.
 
 ## Monitoring
 
 - Mode: codex_thread_heartbeat
 - Cadence: adaptive; five minutes during activation and review gates
-- Status: activation_sync_pending_review
+- Status: worktree_readiness_pending_review
 - Scheduler: `talon-issue-256-wdd-wave-3-monitor` verified active
-- Last checked: 2026-07-16T09:04:48+02:00
-- Next check due: 2026-07-16T09:09:48+02:00
+- Last checked: 2026-07-16T09:23:00+02:00
+- Next check due: 2026-07-16T09:28:00+02:00
 - Stop condition: all WAVE-003 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
 - Automation state: self-contained WAVE-003 heartbeat is active and requires
   every activation/readiness gate, parallel Terra/high dispatch, blocker-only
@@ -92,14 +95,16 @@ sync marker passes a second Sol/high review and is committed and pushed.
   `019f6985-1b98-7912-bab6-5f96c60fca3c` passed 0C/0H/0M with no new Low.
   PR #259 merged task head `02a0968` at final epic commit `54dc872` after GitHub
   Verify PR passed. The known failover-log Low remains untouched.
-- TASK-005-transactional-event-bus: activation_sync_pending_review; branch
+- TASK-005-transactional-event-bus: dispatch_pending; branch
   `task/TASK-005-transactional-event-bus` and worktree path
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus`
-  are recorded but do not yet exist.
-- TASK-006-durable-event-dispatcher: activation_sync_pending_review; branch
+  are clean and current at activation-sync commit `461ec27`, pending the
+  reviewed and pushed readiness checkpoint.
+- TASK-006-durable-event-dispatcher: dispatch_pending; branch
   `task/TASK-006-durable-event-dispatcher` and worktree path
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher`
-  are recorded but do not yet exist.
+  are clean and current at activation-sync commit `461ec27`, pending the
+  reviewed and pushed readiness checkpoint.
 - The remaining 14 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -113,8 +118,8 @@ sync marker passes a second Sol/high review and is committed and pushed.
 - WAVE-002 / TASK-002: merged branch `task/TASK-002-lifecycle-event-persistence`; clean worktree removed and pruned after PR #260 merged.
 - WAVE-002 / TASK-003: merged branch `task/TASK-003-interceptor-engine`; clean worktree removed and pruned after PR #258 merged.
 - WAVE-002 / TASK-004: merged branch `task/TASK-004-subagent-lifecycle-adapter`; clean worktree removed and pruned after PR #259 merged.
-- WAVE-003 / TASK-005: allocated path `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus`; absent pending reviewed activation sync.
-- WAVE-003 / TASK-006: allocated path `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher`; absent pending reviewed activation sync.
+- WAVE-003 / TASK-005: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus`; branch `task/TASK-005-transactional-event-bus`; clean at `461ec27`.
+- WAVE-003 / TASK-006: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher`; branch `task/TASK-006-durable-event-dispatcher`; clean at `461ec27`.
 
 ## Gate Definitions
 
@@ -141,8 +146,10 @@ passed combined review and CI, and merged at current epic head `54dc872`.
 WAVE-003 activation base is reviewed and pushed reconciliation commit
 `2de0689788fd868c15053b1ab65436706c63ad1d`. Allocation checkpoint
 `2976170eaddb7a44152931fb85452fc1cc2dd43c` is reviewed, pushed, and recorded;
-the activation-sync commit, task branch freshness, and worktree readiness remain
-unset, so no worker dispatch is authorized.
+activation-sync commit `461ec277cc6140556875d2e5e75d9704efc48e3b` is reviewed
+and pushed. Both task branches/worktrees were created from `461ec27`. This
+readiness state must pass Sol/high review, be committed and pushed, and then be
+fast-forwarded into both clean task worktrees before dispatch.
 
 ## Open P1/P2 Feedback
 
@@ -179,6 +186,11 @@ unset, so no worker dispatch is authorized.
   have no existing local/remote task branches or worktrees. Sol/high review
   `019f69a2-530a-7393-bbb5-aaaf1e1865b9` passed 0C/0H/0M/0L with exact
   before/after status and hashes.
+- WAVE-003 activation-sync review `019f69c9-2fcc-7a53-a48f-245716f6b695`
+  passed 0C/0H/0M/0L with the exact allocation checkpoint recorded and all
+  task branches/worktrees absent during review. Checkpoint `461ec27` was pushed;
+  both subsequently created worktrees are clean and contain current task,
+  orchestration, and controller artifacts.
 
 ## Shared Context Reconciliation
 
@@ -293,11 +305,13 @@ unset, so no worker dispatch is authorized.
 - 2026-07-16T09:04:48+02:00: Reviewed allocation checkpoint `2976170` committed and pushed; its exact hash was recorded with `activationArtifactsSynced=true`, and five-minute heartbeat `talon-issue-256-wdd-wave-3-monitor` was created and verified active.
 - 2026-07-16T09:10:00+02:00: Activation-sync reviewer `019f69bf-8b6a-7ee1-85ab-5b6e98b83254` was invalidated and aborted without a verdict after attempting a prohibited recursive Codex review; the nested command failed before review and no persistent state changed.
 - 2026-07-16T09:16:00+02:00: Fresh direct Sol/high activation-sync review `019f69c3-4f03-7c01-b228-c3d140db6607` failed 0C/0H/1M/0L because `wave-plan.md` still named the superseded allocation gate; the controller corrected only that blocking wording and queued a fresh full review.
+- 2026-07-16T09:20:00+02:00: Fresh full Sol/high activation-sync review `019f69c9-2fcc-7a53-a48f-245716f6b695` passed 0C/0H/0M/0L after verifying the six-file WDD-only diff, exact allocation hash, active five-minute heartbeat, branch/worktree absence, and before/after fingerprints.
+- 2026-07-16T09:21:00+02:00: Reviewed activation-sync checkpoint `461ec27` committed and pushed; local and remote epic heads matched.
+- 2026-07-16T09:23:00+02:00: TASK-005 and TASK-006 isolated branches/worktrees were created and pushed from exact activation-sync commit `461ec27`; both are clean and contain the current task, orchestration, and controller artifacts.
 
 ## Next Action
 
-Run the second fresh Sol/high review over this exact activation-sync marker. If
-C0/H0/M0, commit and push it, record its exact commit, and only then create the
-two task branches/worktrees from that pushed state. A third Sol/high worktree-
-readiness checkpoint must be pushed into both clean verified worktrees before
-the two Terra/high workers are dispatched concurrently.
+Run fresh Sol/high review over this worktree-readiness state. If C0/H0/M0,
+commit and push only these WDD paths, fast-forward both task branches/worktrees
+to the exact pushed readiness checkpoint, reverify clean current artifacts, and
+dispatch the two Terra/high workers concurrently.

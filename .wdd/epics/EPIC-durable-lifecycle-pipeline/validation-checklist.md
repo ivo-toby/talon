@@ -58,6 +58,7 @@ updated_at: 2026-07-16
 ## Next Phase
 
 - [x] WAVE-001 and WAVE-002 are reconciled; WAVE-003's allocation checkpoint
-  passed Sol/high review and is pushed at `2976170`. Its exact hash is recorded
-  for activation-sync review, with the later worktree-readiness review/push gate
-  still required before its two parallel Terra/high workers are dispatched.
+  `2976170` and activation-sync checkpoint `461ec27` passed Sol/high review and
+  are pushed. Both task worktrees are clean at `461ec27`; the readiness review,
+  push, exact branch/worktree fast-forward, and artifact recheck are still
+  required before its two parallel Terra/high workers are dispatched.
