@@ -995,6 +995,127 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('gates openai-compatible (previous_response_id) rotation on lastStepUsage even when resuming', async () => {
+      // openai-compatible with sessionMode=previous_response_id uses OpenAI's
+      // Responses API which retrieves prior context SERVER-SIDE via
+      // previous_response_id. The wrapper reports:
+      //   - usage = cumulative across this run's agent loop (billing total)
+      //   - lastStepUsage = final turn's per-step tokens (reflects the full
+      //     conversation context because the API re-sends it on each call)
+      // So lastStepUsage is the right rotation metric for openai-compatible
+      // even when resuming — opposite of codex-cli where cumulative usage
+      // is the session log size. This test guards against accidentally
+      // widening the codex-cli fix to openai-compatible.
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 600_000, outputTokens: 90 },
+          lastStepUsage: { inputTokens: 50_000, outputTokens: 20 },
+        }),
+      );
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'qwen3-coder:30b',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are an OpenAI-compatible test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      // Resumed session — sessionTracker returns a previous_response_id.
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resp-abc-123');
+      ctx.config.agentRunner.defaultProvider = 'openai-compatible';
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      ctx.providerRegistry = {
+        get: vi.fn().mockImplementation((name: string) =>
+          name === 'openai-compatible'
+            ? {
+                type: 'openai-compatible',
+                provider: {
+                  name: 'openai-compatible',
+                  skillLoaderTransport: 'stdio',
+                  createExecutionStrategy: () => ({
+                    type: 'sdk' as const,
+                    supportsSessionResumption: true as const,
+                    requiresContinuationAfterContextRotation: true as const,
+                    run: sdkRun,
+                  }),
+                  prepareBackgroundInvocation: vi.fn(),
+                  parseBackgroundResult: vi.fn(),
+                  estimateContextUsage: (u: { inputTokens?: number }) => ({
+                    inputTokens: u.inputTokens ?? 0,
+                    metrics: { input_tokens: u.inputTokens ?? 0 },
+                  }),
+                },
+                config: makeAgentRunnerProviderConfig({
+                  command: 'node',
+                  contextWindowTokens: 256_000,
+                  contextManagement: makeContextManagement({
+                    triggerMetric: 'input_tokens',
+                    thresholdRatio: 0.75,
+                  }),
+                }),
+              }
+            : undefined,
+        ),
+        getDefault: vi.fn().mockImplementation(() => ({
+          type: 'openai-compatible',
+          provider: {
+            name: 'openai-compatible',
+            skillLoaderTransport: 'stdio',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              requiresContinuationAfterContextRotation: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: (u: { inputTokens?: number }) => ({
+              inputTokens: u.inputTokens ?? 0,
+              metrics: { input_tokens: u.inputTokens ?? 0 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        })),
+      } as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      // openai-compatible: lastStepUsage wins even when resuming, because
+      // the Responses API's per-step input_tokens already includes the
+      // full conversation context (server-side retrieval). Cumulative
+      // usage would inflate the metric by summing across tool calls.
+      expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+        'thread-001',
+        'persona-001',
+        {
+          ratio: 50_000 / 256_000,
+          inputTokens: 50_000,
+          rawMetric: 50_000,
+          rawMetricName: 'input_tokens',
+        },
+        0.75,
+        'session-summarizer',
+      );
+    });
+
     it('runs Gemini through the existing CLI branch without sending a waiting message', async () => {
       const cliRun = vi.fn().mockResolvedValue({
         output: 'Gemini result',
