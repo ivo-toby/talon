@@ -26,8 +26,8 @@ worktree_status: clean_after_reviewed_commit
 worker_thread_id: 019f6a80-eb6a-7051-9e84-f448be2c2a17
 review_thread_id: 019f6b0f-f3c8-7160-bb2a-81329c61d473
 pr: null
-current_gate: model_policy_blockers_remediated_gpt55_xhigh_rereview_required
-branch_freshness: task_commit_pushed_from_dispatch_checkpoint_c682625_pending_epic_refresh
+current_gate: controller_state_marker_blocker_remediated_gpt55_xhigh_rereview_required
+branch_freshness: task_commit_pushed_pending_refresh_from_model_policy_checkpoint_d104ba4
 verification:
   - "npx vitest run tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/pipeline/message-pipeline.test.ts tests/unit/queue/queue-processor.test.ts tests/unit/scheduler/scheduler.test.ts"
   - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/core/database/migrations/runner.test.ts"
@@ -117,7 +117,7 @@ task/TASK-007-daemon-message-queue-schedule-events
 
 ## Worker Worktree
 
-Created clean at `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events` from reviewed and pushed activation-sync commit `923623b`, then fast-forwarded through readiness checkpoint `a6d48f7` to reviewed/pushed dispatch checkpoint `c682625`. TASK-007 completed exactly six bounded Terra/high remediation passes. Final controller verification passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks. Fresh complete-diff Sol/high source review `019f6b0f-f3c8-7160-bb2a-81329c61d473` passed 0C/0H/0M/0L on fingerprint `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`. Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean, pushed, and aligned with the local remote-tracking ref. Only WDD checkpoint review/commit/push, exact epic refresh review/commit/push, PR checks/review/freshness/merge/cleanup/reconciliation remain; the current gate is WDD checkpoint remediation/re-review before the epic checkpoint.
+Created clean at `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events` from reviewed and pushed activation-sync commit `923623b`, then fast-forwarded through readiness checkpoint `a6d48f7` to reviewed/pushed dispatch checkpoint `c682625`. TASK-007 completed exactly six bounded Terra/high remediation passes. Final controller verification passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks. Fresh complete-diff Sol/high source review `019f6b0f-f3c8-7160-bb2a-81329c61d473` passed 0C/0H/0M/0L on fingerprint `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`. Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean, pushed, and aligned with the local remote-tracking ref. The amended WDD/model-policy checkpoint passed GPT-5.5/xhigh review and is pushed at `d104ba4`. Only the durable controller-state marker review/commit/push, exact epic refresh review/commit/push, PR checks/review/freshness/merge/cleanup/reconciliation remain.
 
 ## PR / Patch Reference
 
@@ -134,12 +134,13 @@ checks. Fresh complete-diff Sol/high source review
 `019f6b0f-f3c8-7160-bb2a-81329c61d473` passed 0C/0H/0M/0L on fingerprint
 `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`.
 Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean,
-pushed, and aligned with the local remote-tracking ref. Only WDD checkpoint
-review/commit/push, exact epic refresh review/commit/push, PR
-checks/review/freshness/merge/cleanup/reconciliation remain. The WDD checkpoint
-has not passed: its fresh GPT-5.5/xhigh re-review is required before the epic
-checkpoint can be committed. Historical GPT-5.6 worker/reviewer references in
-this task remain provenance only; no new GPT-5.6 activity is permitted.
+pushed, and aligned with the local remote-tracking ref. The WDD/model-policy
+checkpoint passed GPT-5.5/xhigh review 0C/0H/0M/2L on fingerprint
+`9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd` and is
+pushed at `d104ba4`. The controller-state marker, exact epic refresh, PR,
+merge, cleanup, and reconciliation remain. Historical GPT-5.6 worker/reviewer
+references in this task remain provenance only; no new GPT-5.6 activity is
+permitted.
 
 ## RED-GREEN TDD Plan
 

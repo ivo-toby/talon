@@ -798,7 +798,7 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
-          "branchFreshness": "reviewed_task_commit_clean_pushed_and_local_remote_tracking_aligned_pending_exact_epic_refresh",
+          "branchFreshness": "reviewed_task_commit_clean_pushed_pending_refresh_from_model_policy_checkpoint_d104ba4",
           "blockingFeedback": [
             {
               "severity": "High",
@@ -920,9 +920,9 @@
         "reviewedCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
         "remotePushVerified": true,
         "remoteTrackingRefAlignment": "clean, pushed, and aligned with the local remote-tracking ref",
-        "currentStateSummary": "TASK-007 completed exactly six bounded Terra/high remediation passes; final controller verification passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks; fresh complete-diff Sol/high source review 019f6b0f-f3c8-7160-bb2a-81329c61d473 passed 0C/0H/0M/0L on fingerprint 0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0; reviewed task commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 is clean, pushed, and aligned with the local remote-tracking ref; only WDD checkpoint review/commit/push, exact epic refresh review/commit/push, PR checks/review/freshness/merge/cleanup/reconciliation remain."
+        "currentStateSummary": "TASK-007 completed exactly six bounded Terra/high remediation passes; final controller verification passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks; fresh complete-diff Sol/high source review 019f6b0f-f3c8-7160-bb2a-81329c61d473 passed 0C/0H/0M/0L on fingerprint 0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0; reviewed task commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 is clean, pushed, and aligned with the local remote-tracking ref; the model-policy/WDD checkpoint passed GPT-5.5/xhigh 0C/0H/0M/2L on fingerprint 9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd and was committed/pushed at d104ba468dbe3241691f8940e90238953b82ebeb; the controller-state marker review/commit/push, exact epic refresh review/commit/push, PR checks/review/freshness/merge/cleanup/reconciliation remain."
       },
-      "currentGate": "model_policy_blockers_remediated_gpt55_xhigh_rereview_required"
+      "currentGate": "controller_state_marker_blocker_remediated_gpt55_xhigh_rereview_required"
         }
       ]
     },
@@ -1530,6 +1530,7 @@
     "activationCheckpoint": "67b3457c9bab6a4611765c612e0b8f009d65e362",
     "activationSyncCommit": "923623b8c1833b83f83df8036e37ad95b0b0a343",
     "readinessCommit": "a6d48f7905e70f1ba9d72d4277a78d86acc35ed1",
+    "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": "WAVE-004",
     "nextWaveActivationAllowed": false,
     "pauseReason": "user requested pause after WAVE-004 reconciliation",
@@ -1538,21 +1539,41 @@
       "reviewModel": "gpt-5.5",
       "reviewReasoningEffort": "xhigh",
       "counts": "0C/1H/1M/1L",
-      "status": "blocking_findings_remediated_rereview_required",
+      "status": "passed_committed_and_pushed",
       "remediationThreadId": "019f6b35-8ba1-7f83-8a85-d6fa9b48c28f",
       "remediationModel": "gpt-5.5",
       "remediationReasoningEffort": "high",
-      "lowFindingDisposition": "untouched_non_blocking"
+      "finalReviewThreadId": "019f6b38-ae7a-7e72-913b-4b53c5fdd3e6",
+      "finalReviewCounts": "0C/0H/0M/2L",
+      "finalReviewFingerprint": "9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd",
+      "lowFindingDisposition": "two_lows_untouched_non_blocking"
+    },
+    "controllerStateMarkerReview": {
+      "reviewThreadId": "019f6b41-737e-7ae0-91e8-921556b0b5b6",
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "counts": "0C/0H/1M/0L",
+      "status": "blocking_finding_remediated_rereview_required",
+      "remediationThreadId": "019f6b44-377f-7cd0-bf29-05c6fec6c834",
+      "remediationModel": "gpt-5.5",
+      "remediationReasoningEffort": "high",
+      "secondReviewThreadId": "019f6b46-a404-7c53-af2c-4daa29015e90",
+      "secondReviewCounts": "0C/0H/1M/0L",
+      "secondReviewFinding": "two controller-state TASK-007 summaries still described the already-pushed model-policy WDD checkpoint as pending",
+      "secondRemediationThreadId": "019f6b49-d6da-71b2-a1f1-717cabd1dc25",
+      "secondRemediationModel": "gpt-5.5",
+      "secondRemediationReasoningEffort": "high",
+      "lowFindingDisposition": "none"
     }
   },
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "model_policy_blockers_remediated_gpt55_xhigh_rereview_required",
-    "lastCheckedAt": "2026-07-16T15:56:38+02:00",
-    "nextCheckDueAt": "2026-07-16T16:01:38+02:00",
+    "status": "controller_state_marker_blocker_remediated_gpt55_xhigh_rereview_required",
+    "lastCheckedAt": "2026-07-16T16:18:19+02:00",
+    "nextCheckDueAt": "2026-07-16T16:23:19+02:00",
     "schedulerRef": "talon-issue-256-wdd-wave-4-monitor",
-    "fallbackPrompt": "WAVE-004 post-source-commit controller workflow only. Never use GPT-5.6. Use GPT-5.5/xhigh for every review and at most GPT-5.5/high for implementation or blocking remediation. The first GPT-5.5/xhigh model-policy/WDD review 019f6b32-0008-7560-a6a2-8400237b7ca6 blocked 0C/1H/1M/1L; GPT-5.5/high remediation 019f6b35-8ba1-7f83-8a85-d6fa9b48c28f fixed only the High/Medium, and the Low remains untouched. Run a fresh complete GPT-5.5/xhigh re-review; if 0C/0H/0M, commit and push the checkpoint on epic/durable-lifecycle-pipeline. Refresh TASK-007 from that exact epic head, run a fresh GPT-5.5/xhigh refresh review before its merge commit, commit and push the refresh, open the PR targeting the epic, and monitor checks, review, freshness, merge, cleanup, and WAVE-004 reconciliation. Do not authorize, start, resume, or redispatch TASK-007 source implementation or source remediation. Remediate only Critical/High/Medium WDD, refresh, or PR blockers; never auto-edit Low/P3 findings, leave .minispec and the pre-existing validation-checklist.md working-tree modification untouched, and do not run the full npm test suite without approval. After the reviewed WAVE-004 reconciliation checkpoint is pushed, deactivate monitoring and pause all epic work; do not activate WAVE-005.",
+    "fallbackPrompt": "WAVE-004 post-source-commit controller workflow only. Never use GPT-5.6. Use GPT-5.5/xhigh for every review and at most GPT-5.5/high for implementation or blocking remediation. The model-policy/WDD checkpoint passed GPT-5.5/xhigh 0C/0H/0M/2L and is pushed at d104ba468dbe3241691f8940e90238953b82ebeb. Controller-state marker review 019f6b41-737e-7ae0-91e8-921556b0b5b6 and re-review 019f6b46-a404-7c53-af2c-4daa29015e90 each found 0C/0H/1M/0L; GPT-5.5/high remediation threads 019f6b44-377f-7cd0-bf29-05c6fec6c834 and 019f6b49-d6da-71b2-a1f1-717cabd1dc25 fixed only those stale current-state summaries. Run a fresh complete GPT-5.5/xhigh three-file re-review, then commit/push the marker if 0C/0H/0M. Refresh TASK-007 from the exact pushed epic head, run a fresh GPT-5.5/xhigh full task-diff refresh review before its merge commit, commit and push the refresh, open the PR targeting the epic, and monitor checks, review, freshness, merge, cleanup, and WAVE-004 reconciliation. Do not authorize, start, resume, or redispatch TASK-007 source implementation or source remediation. Remediate only Critical/High/Medium WDD, refresh, or PR blockers; never auto-edit Low/P3 findings, leave .minispec and the pre-existing validation-checklist.md working-tree modification untouched, and do not run the full npm test suite without approval. After the reviewed WAVE-004 reconciliation checkpoint is pushed, deactivate monitoring and pause all epic work; do not activate WAVE-005.",
     "stopCondition": "WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, monitoring is deactivated, and epic work is paused before WAVE-005.",
     "stopReason": null
   }

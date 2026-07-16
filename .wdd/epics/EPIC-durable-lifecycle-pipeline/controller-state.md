@@ -49,6 +49,9 @@ Every task advances independently as soon as its gates clear.
 - WAVE-004 readiness checkpoint: Sol/high reviewed 0C/0H/0M/2L, committed,
   and pushed at `a6d48f7`; TASK-007's branch/worktree were fast-forwarded,
   pushed, and verified clean at that exact commit before dispatch
+- WAVE-004 model-policy checkpoint: GPT-5.5/xhigh reviewed 0C/0H/0M/2L on
+  fingerprint `9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd`,
+  committed, and pushed at `d104ba4`; TASK-007 exact epic refresh is next
 
 ## Pending Waves
 
@@ -76,22 +79,21 @@ complete-diff Sol/high source review `019f6b0f-f3c8-7160-bb2a-81329c61d473`
 passed 0C/0H/0M/0L on fingerprint
 `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`.
 Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean,
-pushed, and aligned with the local remote-tracking ref. Only WDD checkpoint
-review/commit/push, exact epic refresh review/commit/push, PR
-checks/review/freshness/merge/cleanup/reconciliation remain. The current gate
-is the model-policy-amended WDD checkpoint review before the epic checkpoint;
-it has not passed until a fresh GPT-5.5/xhigh reviewer returns a passing
-verdict. Historical Sol/high and Terra/high references below are provenance
-only and do not authorize new GPT-5.6 activity.
+pushed, and aligned with the local remote-tracking ref. The amended WDD/model
+policy checkpoint passed GPT-5.5/xhigh review and is pushed at `d104ba4`. Only
+this controller-state marker review/commit/push, exact epic refresh
+review/commit/push, PR checks/review/freshness/merge/cleanup/reconciliation
+remain. Historical Sol/high and Terra/high references below are provenance only
+and do not authorize new GPT-5.6 activity.
 
 ## Monitoring
 
 - Mode: Codex thread heartbeat
 - Cadence: adaptive; next controller check in 5 minutes
-- Status: model-policy blockers remediated; fresh GPT-5.5/xhigh re-review required
+- Status: controller-state marker blocker remediated; GPT-5.5/xhigh re-review required
 - Scheduler: `talon-issue-256-wdd-wave-4-monitor`
-- Last checked: 2026-07-16T15:56:38+02:00
-- Next check due: 2026-07-16T16:01:38+02:00
+- Last checked: 2026-07-16T16:18:19+02:00
+- Next check due: 2026-07-16T16:23:19+02:00
 - Stop condition: WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, the monitor is deactivated, and epic work pauses before WAVE-005.
 - Automation state: the WAVE-003 heartbeat was deleted after reconciliation
   push. Self-contained WAVE-004 heartbeat
@@ -189,9 +191,8 @@ only and do not authorize new GPT-5.6 activity.
   `019f6b0f-f3c8-7160-bb2a-81329c61d473` passed 0C/0H/0M/0L on fingerprint
   `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`.
   Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean,
-  pushed, and aligned with the local remote-tracking ref. Only WDD checkpoint
-  review/commit/push, exact epic refresh review/commit/push, PR
-  checks/review/freshness/merge/cleanup/reconciliation remain. Historical
+  pushed, and aligned with the local remote-tracking ref. Only controller-state
+  marker re-review and commit/push before exact TASK-007 refresh remain. Historical
   controller verification
   passed 179 focused tests, build, scoped lint, and diff checks. Sol/high review
   `019f6a8f-2e78-7712-b6d8-ff006b8d1507` blocked 0C/2H/5M/0L after reproducing
@@ -248,8 +249,8 @@ only and do not authorize new GPT-5.6 activity.
   `task/TASK-007-daemon-message-queue-schedule-events` and clean worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
   are at clean, pushed, and local-remote-tracking-aligned
-  `8a994eac930b18ce5ec1e3fe78999c2a021e4308`, pending WDD checkpoint
-  remediation/re-review and exact epic-head refresh.
+  `8a994eac930b18ce5ec1e3fe78999c2a021e4308`, pending controller-state marker
+  re-review and commit/push before exact TASK-007 refresh.
 
 ## Gate Definitions
 
@@ -725,13 +726,35 @@ and clean worktree were fast-forwarded to that exact commit before dispatch.
   implementation, feedback fixes, and TASK-020 with `codexHigh`/GPT-5.5 high.
   The JSON-indentation Low remains untouched. No checkpoint PASS is claimed; a
   fresh GPT-5.5/xhigh complete re-review is required before commit.
+- 2026-07-16T16:04:20+02:00: Fresh GPT-5.5/xhigh complete re-review
+  `019f6b38-ae7a-7e72-913b-4b53c5fdd3e6` passed 0C/0H/0M/2L and independently
+  preserved fingerprint
+  `9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd`.
+  Both Lows remain untouched. The exact reviewed checkpoint was committed and
+  pushed at `d104ba468dbe3241691f8940e90238953b82ebeb`; local and remote epic
+  refs match. A small durable controller-state marker now requires its own
+  GPT-5.5/xhigh pre-commit review before TASK-007 is refreshed from the resulting
+  exact epic head.
+- 2026-07-16T16:12:12+02:00: GPT-5.5/xhigh controller-state marker review
+  `019f6b41-737e-7ae0-91e8-921556b0b5b6` returned 0C/0H/1M/0L because
+  `verification.currentStateSummary` still described the already-pushed WDD
+  checkpoint as remaining. GPT-5.5/high remediation
+  `019f6b44-377f-7cd0-bf29-05c6fec6c834` updated only that stale summary. No
+  Low/P3 finding was reported or edited. A fresh complete GPT-5.5/xhigh
+  three-file re-review is required before the marker can be committed.
+- 2026-07-16T16:18:19+02:00: Fresh GPT-5.5/xhigh marker re-review
+  `019f6b46-a404-7c53-af2c-4daa29015e90` returned 0C/0H/1M/0L because two
+  TASK-007 controller-state summaries still described the already-pushed
+  model-policy/WDD checkpoint as pending. GPT-5.5/high remediation
+  `019f6b49-d6da-71b2-a1f1-717cabd1dc25` changed only those two stale
+  descriptions. No Low/P3 finding was reported or edited. A fresh complete
+  GPT-5.5/xhigh three-file re-review is required before commit.
 
 ## Next Action
 
-Run a fresh GPT-5.5/xhigh review over the complete model-policy/WDD checkpoint,
-then commit
-and push the epic checkpoint if 0C/0H/0M. Refresh TASK-007 from that exact epic
-head; run a fresh GPT-5.5/xhigh refresh review before its merge commit, then commit
+Run a fresh GPT-5.5/xhigh review over this controller-state marker, then commit
+and push it if 0C/0H/0M. Refresh TASK-007 from that exact epic head; run a fresh
+GPT-5.5/xhigh full task-diff refresh review before its merge commit, then commit
 and push the refresh, open the PR targeting the epic, and continue through
 checks, review, freshness, merge, cleanup, and WAVE-004 reconciliation. Then
 deactivate monitoring and pause; do not activate WAVE-005. Remediate only
