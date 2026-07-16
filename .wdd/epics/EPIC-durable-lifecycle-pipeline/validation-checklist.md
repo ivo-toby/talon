@@ -57,6 +57,7 @@ updated_at: 2026-07-16
 
 ## Next Phase
 
-- [x] WAVE-001 and WAVE-002 are reconciled; WAVE-003 is active at allocation
-  review, with activation-sync and worktree-readiness review/push gates required
-  before its two parallel Terra/high workers are dispatched.
+- [x] WAVE-001 and WAVE-002 are reconciled; WAVE-003's allocation checkpoint
+  passed Sol/high review and is pushed at `2976170`. Its exact hash is recorded
+  for activation-sync review, with the later worktree-readiness review/push gate
+  still required before its two parallel Terra/high workers are dispatched.

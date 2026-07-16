@@ -19,8 +19,8 @@ branch: task/TASK-006-durable-event-dispatcher
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher
 worktree_status: allocated_pending_creation
 pr: null
-current_gate: allocation_pending_review
-branch_freshness: pending_reviewed_activation_checkpoint
+current_gate: activation_sync_pending_review
+branch_freshness: pending_reviewed_activation_sync
 verification:
   - "npx vitest run tests/unit/lifecycle/lifecycle-dispatcher.test.ts"
   - "npm run build"

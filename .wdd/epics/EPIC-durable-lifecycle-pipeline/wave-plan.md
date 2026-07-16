@@ -529,9 +529,9 @@ Stop condition:
 
 ## Activation Rules
 
-- WAVE-001 and WAVE-002 are done; WAVE-003 is active at its allocation review
-  gate. No task branch, worktree, or worker may exist until the reviewed and
-  pushed allocation plus activation-sync checkpoints are complete.
+- WAVE-001 and WAVE-002 are done; WAVE-003 is active at its activation-sync
+  review gate. No task branch, worktree, or worker may exist until the reviewed
+  and pushed allocation plus activation-sync checkpoints are complete.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

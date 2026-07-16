@@ -529,10 +529,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "pending_reviewed_activation_checkpoint",
+          "branchFreshness": "pending_reviewed_activation_sync",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "allocation_pending_review"
+          "currentGate": "activation_sync_pending_review"
         },
         {
           "id": "TASK-006-durable-event-dispatcher",
@@ -561,10 +561,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "pending_reviewed_activation_checkpoint",
+          "branchFreshness": "pending_reviewed_activation_sync",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "allocation_pending_review"
+          "currentGate": "activation_sync_pending_review"
         }
       ]
     },
@@ -1223,18 +1223,18 @@
     "activeWave": "WAVE-003",
     "nextWave": "WAVE-004",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": false,
+    "activationArtifactsSynced": true,
     "activationBase": "2de0689788fd868c15053b1ab65436706c63ad1d",
-    "activationCheckpoint": null,
+    "activationCheckpoint": "2976170eaddb7a44152931fb85452fc1cc2dd43c",
     "activationSyncCommit": null
   },
   "monitoring": {
-    "mode": "manual",
+    "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "activation_pending_review",
-    "lastCheckedAt": "2026-07-16T08:32:01+02:00",
-    "nextCheckDueAt": "2026-07-16T08:47:01+02:00",
-    "schedulerRef": null,
+    "status": "activation_sync_pending_review",
+    "lastCheckedAt": "2026-07-16T09:04:48+02:00",
+    "nextCheckDueAt": "2026-07-16T09:09:48+02:00",
+    "schedulerRef": "talon-issue-256-wdd-wave-3-monitor",
     "fallbackPrompt": "Resume WAVE-003 activation for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, and TASK-005/TASK-006. Do not create either task branch or worktree until the allocation checkpoint is Sol/high reviewed, committed and pushed, its exact hash is recorded as controller.activationCheckpoint, controller.activationArtifactsSynced is true, and a second activation-sync Sol/high review has passed and been pushed. Do not dispatch workers until a later worktree-readiness checkpoint is Sol/high reviewed, committed and pushed, both task worktrees are clean and current at that exact commit, and current task/controller artifacts are verified in each worktree. Preserve .minispec and route only Critical/High/Medium blockers.",
     "stopCondition": "All WAVE-003 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",
     "stopReason": null
