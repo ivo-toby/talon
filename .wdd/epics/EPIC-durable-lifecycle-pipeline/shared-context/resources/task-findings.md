@@ -17,9 +17,10 @@ need. Workers should propose concise updates; the controller owns reconciliation
 
 WAVE-001 froze the lifecycle contracts and registry boundary. WAVE-002 added
 durable event/delivery persistence, deterministic interceptor execution, and a
-capability-scoped sub-agent adapter. Later tasks must consume these APIs and
-resolved identities rather than re-deriving authority, safety, causality,
-durability, or compatibility rules.
+capability-scoped sub-agent adapter. WAVE-003 added transaction-owned
+publication and an independently supervised durable dispatcher. Later tasks
+must consume these APIs and resolved identities rather than re-deriving
+authority, safety, causality, durability, compatibility, or execution policy.
 
 ## Details
 
@@ -82,9 +83,42 @@ durability, or compatibility rules.
   owner for overlapping same-task findings, ignore Low/P3 for automatic edits,
   and require a fresh full Sol/high review plus status/hash integrity proof
   before every commit.
+- Source: TASK-005 / PR #261, merged at `d3357fb` on 2026-07-16. The lifecycle
+  event bus owns its SQLite transaction coordinator, binds transaction authority
+  opaquely to the exact bus and connection, snapshots stable subscribers, and
+  wakes dispatch only after the owned commit succeeds. Caller-owned publication
+  remains a typed `Result` boundary; external or nested active transactions are
+  rejected rather than risking a pre-outer-commit wake.
+- Derived publication preserves correlation and aggregate identity, uses the
+  parent invocation as causation, increments recursion depth exactly once, and
+  cannot cross the configured depth boundary. Rejected asynchronous wake work
+  is contained and cannot escape as an unhandled rejection.
+- Source: TASK-006 / PR #262, merged at `8f74740` on 2026-07-16. Dispatcher
+  construction snapshots immutable repository, executor, policy, clock, and
+  wake authority through bounded descriptor-safe validation. Native and
+  sub-agent execution require the complete captured handler identity; one
+  global sub-agent handler may serve multiple personas only through separate
+  explicit persona attachments.
+- Dispatcher concurrency accounts for the underlying execution, not only its
+  timeout race. An abort-ignoring timed-out handler retains its global and
+  per-handler slot until it actually settles, while graceful shutdown remains
+  bounded and clears the losing shutdown timer so an idle stop does not pin the
+  Node event loop.
+- Migration 014 remains immutable. Additive migration 015 upgrades existing v14
+  databases so captured non-retryable failures dead-letter immediately even
+  when `max_attempts > 1`; migration-runner coverage must retain v13-to-v15 and
+  v14-to-v15 data, trigger/index, and foreign-key checks.
+- Dispatcher claims and dependency calls are contained at typed `Result`
+  boundaries; public dispatch still participates in global concurrency,
+  exclusion scans are bounded without starving healthy handlers, and wake
+  notifications remain drain-safe. Daemon wiring in TASK-007 must supervise
+  this workload independently of the user queue and preserve these invariants.
+- Two WAVE-003 Lows remain follow-ups and were intentionally not remediated:
+  TASK-005 standalone strict-TypeScript fixture shapes and TASK-006's historical
+  `git show fbe4f08` migration fixture dependency in shallow/source checkouts.
 
 ## Durable Memory
 
 - Preserve these authority, causality, compatibility, bounded-input,
-  persistence, interceptor, sub-agent, and review-throughput rules in later
-  lifecycle implementation and review prompts.
+  persistence, interceptor, sub-agent, transaction, dispatch, migration, and
+  review-throughput rules in later lifecycle implementation and review prompts.

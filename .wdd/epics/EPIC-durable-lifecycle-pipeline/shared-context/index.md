@@ -70,3 +70,7 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
 - WAVE-002 / TASK-002, TASK-003, and TASK-004 merged in PRs #260, #258, and
   #259 at epic head `54dc872`. See `resources/task-findings.md` for persistence,
   interceptor, sub-agent, contract-domain, and review-throughput rules.
+- WAVE-003 / TASK-005 and TASK-006 merged in PRs #261 and #262 at epic head
+  `8f74740`. See `resources/task-findings.md` for transactional publication,
+  dispatcher authority, timeout/concurrency, forward-migration, and daemon
+  supervision rules.

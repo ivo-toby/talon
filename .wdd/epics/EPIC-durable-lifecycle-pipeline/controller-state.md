@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: WAVE-003
+active_wave: null
 status: in_progress
 updated_at: 2026-07-16
 ---
@@ -33,7 +33,9 @@ Every task advances independently as soon as its gates clear.
 - WAVE-002 reconciliation checkpoint: Sol/high reviewed, committed, and pushed at `2de0689`; local and remote epic heads match
 - WAVE-003 allocation checkpoint: Sol/high reviewed 0C/0H/0M/0L, committed, and pushed at `2976170`; its exact hash is recorded for the mandatory activation-sync review, while task branches/worktrees remain forbidden
 - WAVE-003 activation sync marker: Sol/high reviewed 0C/0H/0M/0L, committed, and pushed at `461ec27`; exact allocation commit `2976170` recorded
-- WAVE-003 readiness checkpoint: two isolated task branches/worktrees are clean and verified at `461ec27`; pending Sol/high review, push, and task-branch fast-forward before dispatch
+- WAVE-003 readiness checkpoint: Sol/high reviewed 0C/0H/0M/1L, committed, and pushed at `fbe4f08`; both task branches/worktrees were fast-forwarded, pushed, and verified before dispatch
+- WAVE-003 implementation head: TASK-005 and TASK-006 merged through PRs #261
+  and #262; local and remote epic heads match at `8f74740`
 
 ## Pending Waves
 
@@ -41,7 +43,7 @@ Every task advances independently as soon as its gates clear.
 |------|-------|----------|--------------|--------|
 | WAVE-001 | TASK-001-lifecycle-contracts-registry | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | in_progress |
+| WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-006 | TASK-011-context-lifecycle-migration, TASK-012-feedback-detector-subagent, TASK-013-handler-telemetry-correlation | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
@@ -53,27 +55,25 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-003 is active as one parallel batch at the worktree-readiness review gate.
-TASK-005 publication and TASK-006 dispatch are eligible because every WAVE-001/
-WAVE-002 dependency is done and their primary conflict domains remain separate.
-Both isolated task branches/worktrees were created from pushed activation-sync
-commit `461ec27`, are clean, and contain their task plus current controller and
-orchestration artifacts. No worker may start until this readiness state passes
-Sol/high review, is committed and pushed, and both task branches/worktrees are
-fast-forwarded to that exact pushed readiness commit and reverified clean.
+No wave is active. WAVE-003 completed as a parallel batch: TASK-005 merged at
+`d3357fb` and TASK-006 merged at final epic head `8f74740`. Both tasks passed
+fresh full-diff Sol/high review with no Critical, High, or Medium findings,
+GitHub checks passed with zero review threads, and both clean worktrees were
+removed. WAVE-004 is next after this reviewed reconciliation checkpoint is
+committed and pushed.
 
 ## Monitoring
 
 - Mode: codex_thread_heartbeat
-- Cadence: adaptive; five minutes during activation and review gates
-- Status: worktree_readiness_pending_review
-- Scheduler: `talon-issue-256-wdd-wave-3-monitor` verified active
-- Last checked: 2026-07-16T09:23:00+02:00
-- Next check due: 2026-07-16T09:28:00+02:00
+- Cadence: adaptive; paused between reconciled waves
+- Status: paused
+- Scheduler: none; WAVE-003 monitor is ready for deletion after reconciliation push
+- Last checked: 2026-07-16T11:34:33+02:00
+- Next check due: none
 - Stop condition: all WAVE-003 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
-- Automation state: self-contained WAVE-003 heartbeat is active and requires
-  every activation/readiness gate, parallel Terra/high dispatch, blocker-only
-  remediation, and fresh Sol/high reviews before commit or merge.
+- Automation state: WAVE-003 stop condition is satisfied. Delete the obsolete
+  monitor after this reviewed reconciliation checkpoint is pushed; WAVE-004
+  activation must install current instructions only after its own checkpoints.
 
 ## Current Task Gates
 
@@ -95,16 +95,68 @@ fast-forwarded to that exact pushed readiness commit and reverified clean.
   `019f6985-1b98-7912-bab6-5f96c60fca3c` passed 0C/0H/0M with no new Low.
   PR #259 merged task head `02a0968` at final epic commit `54dc872` after GitHub
   Verify PR passed. The known failover-log Low remains untouched.
-- TASK-005-transactional-event-bus: dispatch_pending; branch
+- TASK-005-transactional-event-bus: merged; initial Sol/high review
+  `019f69e5-5c3d-7151-9ca8-c1d04d787e2d` failed 0C/1H/3M/0L and Terra/high
+  remediation owner `019f69eb-a64d-7612-9084-7918ade4525f` completed on branch
   `task/TASK-005-transactional-event-bus` and worktree path
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus`
-  are clean and current at activation-sync commit `461ec27`, pending the
-  reviewed and pushed readiness checkpoint.
-- TASK-006-durable-event-dispatcher: dispatch_pending; branch
+  from reviewed readiness commit `fbe4f08`; 37/37 focused Node 24 tests passed,
+  including 26 real-SQLite repository tests. Fresh full-diff Sol/high review
+  `019f69f7-de0f-7d91-a71a-127ab60c892f` failed 0C/1H/1M/0L on forgeable
+  cross-connection transaction authority and nested pre-outer-commit wakes.
+  The same Terra/high owner remediated both; 43/43 focused tests and static
+  gates pass. Fresh full-diff Sol/high review
+  `019f6a04-bb9c-7aa0-89f2-c3413c2f30c2` passed 0C/0H/0M/1L; the test-fixture
+  type-check Low remains untouched. Reviewed commit `65bd0a7` passed Verify PR
+  and PR Agent with zero review threads; PR #261 merged at epic head `d3357fb`.
+- TASK-006-durable-event-dispatcher: merged; initial Sol/high review
+  `019f69e5-5c3d-7471-8041-641d23307bbf` failed 0C/4H/6M/0L and Terra/high
+  remediation owner `019f69ee-81ce-7762-b3bb-7bd63de54a60` completed on branch
   `task/TASK-006-durable-event-dispatcher` and worktree path
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher`
-  are clean and current at activation-sync commit `461ec27`, pending the
-  reviewed and pushed readiness checkpoint.
+  from reviewed readiness commit `fbe4f08`; its first remediation pass passed
+  42/42 focused Node 24 tests. The disclosed final Medium for immediate
+  non-retryable dead-lettering when `max_attempts > 1` is remediated with a
+  narrow migration/trigger change. Fresh full-diff Sol/high review
+  `019f6a01-c53f-7843-a393-c2581696bc16` failed 0C/2H/2M/0L on retained
+  mutable dependency authority, multi-persona sub-agent authority, non-total
+  hostile construction, and the missing additive migration. The same Terra/high
+  owner remediated all four with immutable captured dispatcher authority,
+  persona-attached sub-agent authority, total hostile construction, and
+  additive migration 015 while restoring migration 014 byte-for-byte. The
+  seven-file patch was refreshed without hash drift to epic head `d3357fb`;
+  controller verification passed 64 focused tests including TASK-005
+  integration, build, scoped lint/format, diff, and exact hash gates. A fresh
+  full-diff Sol/high review `019f6a18-baec-72c3-9ab3-2e3eae5aee04` failed
+  0C/1H/3M/1L on abort-ignoring timeout slot accounting, unbounded executor
+  descriptor collection, stale migration-runner assertions, and an unguarded
+  claim Result boundary. Controller reproduction confirmed the runner file at
+  10 passed/1 failed; the Low historical-Git fixture dependency is recorded
+  untouched. The same Terra/high owner remediated only those four blockers.
+  Independent controller verification now passes 79/79 focused tests across
+  dispatcher, real-SQLite repository/migration, transaction-event-bus, and
+  migration-runner coverage, plus build, scoped source lint, Prettier, diff,
+  byte-identical migration 014, exact eight-file scope, and SHA-256 integrity.
+  Fresh full-diff Sol/high review `019f6a2d-6e14-7de0-aa47-65b6f4da01bb`
+  failed 0C/0H/1M/1L: `stop()` leaves the losing shutdown-timeout timer
+  referenced after active settlement, delaying natural process termination by
+  the configured window. The review confirmed all previous blockers resolved,
+  treated forged claim-result methods as a non-finding because repository
+  authority is already executable, and preserved exact hashes. Only the new
+  Medium is routed to Terra/high; the known Low remains untouched.
+  The same owner fixed only that Medium by retaining and clearing the losing
+  timer in `finally`. Independent controller verification passes 80/80 focused
+  tests, build, scoped lint/Prettier, diff and hash gates; a pinned Node 24
+  process probe reports no Timeout resource and exits in 0.04 seconds with a
+  configured five-second shutdown window. Fresh full-diff Sol/high review
+  `019f6a38-b01a-77e1-bcb5-9b6639de95b4` passed 0C/0H/0M/1L after
+  independently rerunning all 80 focused tests, build/static gates, and the
+  process probe. Exact hashes remained unchanged; the Low is untouched.
+  Reviewed commit `d4fde6f` passed Verify PR run `29487277395` and PR Agent run
+  `29487277478` with zero review threads. PR #262 merged at final epic head
+  `8f74740`; its clean worktree was removed and pruned. The PR Agent's failed-
+  suggestion system comment was non-actionable and did not change the passed
+  check gate.
 - The remaining 14 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -118,8 +170,10 @@ fast-forwarded to that exact pushed readiness commit and reverified clean.
 - WAVE-002 / TASK-002: merged branch `task/TASK-002-lifecycle-event-persistence`; clean worktree removed and pruned after PR #260 merged.
 - WAVE-002 / TASK-003: merged branch `task/TASK-003-interceptor-engine`; clean worktree removed and pruned after PR #258 merged.
 - WAVE-002 / TASK-004: merged branch `task/TASK-004-subagent-lifecycle-adapter`; clean worktree removed and pruned after PR #259 merged.
-- WAVE-003 / TASK-005: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus`; branch `task/TASK-005-transactional-event-bus`; clean at `461ec27`.
-- WAVE-003 / TASK-006: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher`; branch `task/TASK-006-durable-event-dispatcher`; clean at `461ec27`.
+- WAVE-003 / TASK-005: merged branch `task/TASK-005-transactional-event-bus`; clean worktree removed and pruned after PR #261 merged.
+- WAVE-003 / TASK-006: merged branch `task/TASK-006-durable-event-dispatcher`;
+  clean worktree removed and pruned after PR #262 merged. The Low remains
+  untouched.
 
 ## Gate Definitions
 
@@ -147,16 +201,25 @@ WAVE-003 activation base is reviewed and pushed reconciliation commit
 `2de0689788fd868c15053b1ab65436706c63ad1d`. Allocation checkpoint
 `2976170eaddb7a44152931fb85452fc1cc2dd43c` is reviewed, pushed, and recorded;
 activation-sync commit `461ec277cc6140556875d2e5e75d9704efc48e3b` is reviewed
-and pushed. Both task branches/worktrees were created from `461ec27`. This
-readiness state must pass Sol/high review, be committed and pushed, and then be
-fast-forwarded into both clean task worktrees before dispatch.
+and pushed. Readiness commit `fbe4f08a2c8e28129795365eb50ea3bec670bfe5`
+passed Sol/high review before push. Both task branches/worktrees were
+fast-forwarded and pushed to `fbe4f08` before concurrent dispatch.
+TASK-005 merged at `d3357fb`; TASK-006 was refreshed against that epic head,
+passed final review and CI, and merged at current epic head `8f74740`.
 
 ## Open P1/P2 Feedback
 
-- None. All WAVE-002 Critical/High/Medium findings are resolved and reviewed.
+- TASK-005's original and later High/Medium findings are reviewed resolved.
+- TASK-006's complete Critical/High/Medium finding set is resolved and reviewed.
+- All WAVE-002 Critical/High/Medium findings remain resolved and reviewed.
 - TASK-004 has one non-blocking Low about failover log wording; it remains a
   follow-up under the constitution's P3 policy.
-- WAVE-003 allocation review passed 0C/0H/0M/0L; implementation has not started.
+- WAVE-003 readiness review had one non-blocking Low for JSON indentation. It
+  remains untouched under the constitution's P3 policy.
+- TASK-005 has one non-blocking Low for standalone strict-TypeScript drift in
+  test fixtures. It remains untouched under the constitution's P3 policy.
+- TASK-006 has one non-blocking Low for the historical `git show fbe4f08`
+  migration fixture in shallow/source checkouts. It remains untouched.
 
 ## Verification Status
 
@@ -191,6 +254,15 @@ fast-forwarded into both clean task worktrees before dispatch.
   task branches/worktrees absent during review. Checkpoint `461ec27` was pushed;
   both subsequently created worktrees are clean and contain current task,
   orchestration, and controller artifacts.
+- TASK-005 passed 43/43 focused tests with the repository-pinned Node 24 runtime,
+  including 26 real-SQLite repository tests, plus build, scoped lint/format,
+  and diff checks.
+- TASK-006 passed 80/80 focused tests with the repository-pinned Node 24
+  runtime: 22 dispatcher, 30 real-SQLite repository/migration, 17 event-bus,
+  and 11 migration-runner tests. Build, scoped lint/format, diff, exact scope/
+  hashes, migration-014 identity, and the no-leaked-timeout process probe passed.
+  GitHub Verify PR and PR Agent checks passed with zero review threads. No
+  install or native rebuild was performed for either task.
 
 ## Shared Context Reconciliation
 
@@ -202,9 +274,10 @@ fast-forwarded into both clean task worktrees before dispatch.
 - WAVE-002 persistence, interceptor, sub-agent authority, contract-domain, and
   review-acceleration findings are reconciled into
   `shared-context/resources/task-findings.md` for downstream tasks.
-- TASK-005 and TASK-006 must consume the reconciled SQLite rowid/replay/claim,
-  interceptor timeout/authority, and sub-agent identity/domain findings without
-  re-deriving or weakening those boundaries.
+- WAVE-003 transaction-owned publication, exact bus/connection authority,
+  dispatcher identity, timeout/concurrency, forward-migration, and daemon
+  supervision findings are reconciled into
+  `shared-context/resources/task-findings.md` and TASK-007.
 
 ## Event Log
 
@@ -308,10 +381,55 @@ fast-forwarded into both clean task worktrees before dispatch.
 - 2026-07-16T09:20:00+02:00: Fresh full Sol/high activation-sync review `019f69c9-2fcc-7a53-a48f-245716f6b695` passed 0C/0H/0M/0L after verifying the six-file WDD-only diff, exact allocation hash, active five-minute heartbeat, branch/worktree absence, and before/after fingerprints.
 - 2026-07-16T09:21:00+02:00: Reviewed activation-sync checkpoint `461ec27` committed and pushed; local and remote epic heads matched.
 - 2026-07-16T09:23:00+02:00: TASK-005 and TASK-006 isolated branches/worktrees were created and pushed from exact activation-sync commit `461ec27`; both are clean and contain the current task, orchestration, and controller artifacts.
+- 2026-07-16T09:30:00+02:00: Fresh Sol/high worktree-readiness review `019f69d0-3d0d-7290-8152-4eda7865b576` passed 0C/0H/0M/1L; the non-blocking JSON-indentation Low was left untouched.
+- 2026-07-16T09:30:45+02:00: Reviewed readiness checkpoint `fbe4f08` committed and pushed; both task branches/worktrees were fast-forwarded and pushed to the exact commit, then reverified clean with current task/controller/orchestration artifacts.
+- 2026-07-16T09:31:20+02:00: Terra/high workers `019f69d6-4e32-7863-8fab-54c86b5a342f` and `019f69d6-4f75-78c2-9cfa-a2cc01cfdd18` dispatched concurrently for TASK-005 and TASK-006.
+- 2026-07-16T09:42:00+02:00: WDD dispatch-state review `019f69d8-789b-7752-a8a7-e4ff3a9bdb0b` failed 0C/0H/2M/1L because both workers completed during review while durable state still named them active and fallback planning text still described the pre-dispatch gate. The JSON-indentation Low remains untouched.
+- 2026-07-16T09:44:42+02:00: Both Terra/high workers completed bounded uncommitted patches. Explicit repository-pinned Node 24 verification passed 6/6 TASK-005 tests and 33/33 TASK-006 tests, including its 27 real-SQLite repository tests; build, scoped lint/format, and diff evidence also passed without install or rebuild.
+- 2026-07-16T09:52:23+02:00: Full WDD checkpoint review `019f69e4-6294-70d1-ac4c-4b68818e7a12` confirmed 0C/0H/2M/1L: the lower wave activation summary remained pre-dispatch and TASK-006 repository API/test ownership was missing from its conflict metadata. Both Medium findings were corrected; the known indentation Low remains untouched. TASK-005's complete listed focused command passed 32/32 tests.
+- 2026-07-16T09:56:57+02:00: Fresh WDD checkpoint review `019f69ea-ffe6-7840-b763-bd38d5c11950` failed 0C/0H/1M/1L because TASK-006's repository test ownership and reproducible 33-test command were still incomplete. Those artifact gaps were corrected; the indentation Low remains untouched.
+- 2026-07-16T09:57:15+02:00: Independent task reviews completed. TASK-005 review `019f69e5-5c3d-7151-9ca8-c1d04d787e2d` found 0C/1H/3M/0L; TASK-006 review `019f69e5-5c3d-7471-8041-641d23307bbf` found 0C/4H/6M/0L. Blocking sets were routed independently to Terra/high integration owners `019f69eb-a64d-7612-9084-7918ade4525f` and `019f69ee-81ce-7762-b3bb-7bd63de54a60`; no Low remediation was requested.
+- 2026-07-16T10:07:59+02:00: TASK-005 Terra/high remediation completed with 37/37 focused Node 24 tests, build, scoped lint/format, diff and untracked-file whitespace gates passing; fresh full-diff Sol/high review `019f69f7-de0f-7d91-a71a-127ab60c892f` started against exact recorded hashes.
+- 2026-07-16T10:09:56+02:00: TASK-006 first remediation pass completed with 42/42 focused tests and static gates passing but disclosed one remaining Medium SQLite-trigger conflict for non-retryable deliveries with `max_attempts > 1`. The same Terra/high owner resumed only that fix with migration scope; an accidentally resumed Sol session was interrupted before edits.
+- 2026-07-16T10:14:57+02:00: TASK-005 fresh Sol/high review `019f69f7-de0f-7d91-a71a-127ab60c892f` failed 0C/1H/1M/0L after reproducing forgeable cross-bus/cross-connection transaction authority and nested wakes before the outer SQLite commit. Only those blockers were routed to the same Terra/high owner; no Low remediation was requested.
+- 2026-07-16T10:18:53+02:00: TASK-006 narrow migration remediation completed. Controller verification passed 42/42 focused Node 24 tests including 29 real-SQLite tests, build, scoped lint/format, diff, exact seven-file scope, base/upstream, and SHA-256 gates; fresh read-only Sol/high full-diff review `019f6a01-c53f-7843-a393-c2581696bc16` started.
+- 2026-07-16T10:22:43+02:00: TASK-005 Terra/high remediation completed opaque exact-bus/exact-connection transaction authority and nested/external transaction rejection. Controller verification passed 43/43 focused Node 24 tests including 26 real-SQLite tests, build, scoped lint/format, diff, exact three-file scope, base/upstream, and SHA-256 gates; fresh read-only Sol/high full-diff review `019f6a04-bb9c-7aa0-89f2-c3413c2f30c2` started.
+- 2026-07-16T10:26:49+02:00: The scheduled five-minute heartbeat interrupted both active read-only Sol/high reviewer processes before either emitted a verdict. Exact status, base/upstream, and all recorded hashes remained unchanged; the same Sol/high sessions `019f6a04-bb9c-7aa0-89f2-c3413c2f30c2` and `019f6a01-c53f-7843-a393-c2581696bc16` resumed with explicit non-recursive read-only instructions.
+- 2026-07-16T10:31:18+02:00: TASK-006 resumed Sol/high full-diff review `019f6a01-c53f-7843-a393-c2581696bc16` failed 0C/2H/2M/0L after direct probes reproduced retained mutable lease authority, invalid global-handler multi-persona rejection, construction escaping Result, and no upgrade path for already-applied migration 014. All four blockers were routed to the same Terra/high owner; no Low remediation was requested.
+- 2026-07-16T10:34:34+02:00: TASK-005 resumed full-diff Sol/high review `019f6a04-bb9c-7aa0-89f2-c3413c2f30c2` passed 0C/0H/0M/1L with 43 focused tests and exact status/hash integrity. The Low was recorded without remediation. Commit `65bd0a7` was pushed and PR #261 opened against current epic head `fbe4f08`; Verify PR and PR Agent checks are active.
+- 2026-07-16T10:37:00+02:00: TASK-005 PR #261 passed Verify PR run `29483917536` and PR Agent run `29483917558`, had zero review threads, remained current and mergeable, and merged into the epic branch at `d3357fb`. Controller local/remote epic heads match; TASK-006 continues independently.
+- 2026-07-16T10:38:20+02:00: TASK-005's clean merged worktree was verified at reviewed commit `65bd0a7`, removed, and pruned. The unrelated messaging worktree and `.minispec/` remain untouched.
+- 2026-07-16T10:41:42+02:00: TASK-006 Terra/high remediation completed all four blockers. Migration 014 is restored byte-for-byte, additive migration 015 provides the v14 upgrade, and exact seven-file hashes survived a safe fast-forward from `fbe4f08` to current epic head `d3357fb`. Controller verification passed 64/64 focused Node 24 tests including TASK-005 integration, build, scoped lint/format, diff, and hash gates; a fresh full-diff Sol/high review is next.
+- 2026-07-16T10:44:10+02:00: Fresh direct read-only Sol/high full-diff review `019f6a18-baec-72c3-9ab3-2e3eae5aee04` started against exact Task-006 hashes on current epic head `d3357fb`; recursive review, edits, dependency changes, and the full suite are prohibited.
+- 2026-07-16T10:53:28+02:00: TASK-006 Sol/high review `019f6a18-baec-72c3-9ab3-2e3eae5aee04` failed 0C/1H/3M/1L on abort-ignoring timeout slot accounting, unbounded executor descriptor collection, stale migration-runner assertions, and an unguarded claim Result boundary. Controller reproduction confirmed 10 migration-runner tests passing and one stale version/count assertion failing; exact status and hashes remained unchanged. The Low historical-Git fixture dependency is recorded untouched; only the four blockers are routed to Terra/high.
+- 2026-07-16T10:55:54+02:00: The same Terra/high integration owner `019f69ee-81ce-7762-b3bb-7bd63de54a60` resumed for exactly the one High and three Medium blockers. The Low historical-Git fixture dependency is explicitly excluded from edits; no commit is allowed before another fresh full-diff Sol/high review.
+- 2026-07-16T11:04:42+02:00: TASK-006 Terra/high remediation completed only the latest one High and three Medium blockers. Independent controller verification passed 79/79 focused Node 24 tests across four files, build, scoped source lint, Prettier, diff, byte-identical migration 014, exact eight-file scope, and SHA-256 integrity. The historical-Git Low remains untouched; a fresh full-diff Sol/high review is next.
+- 2026-07-16T11:06:52+02:00: Fresh direct Sol/high full-diff review `019f6a2d-6e14-7de0-aa47-65b6f4da01bb` started against the exact verified TASK-006 eight-file snapshot. The reviewer is non-recursive and read-only; source edits, dependency changes, the full suite, and Low remediation are prohibited.
+- 2026-07-16T11:13:52+02:00: TASK-006 Sol/high review `019f6a2d-6e14-7de0-aa47-65b6f4da01bb` failed 0C/0H/1M/1L. A bounded probe reproduced that an otherwise immediate stop with a five-second shutdown policy held the Node process for 5.05 seconds because the losing timer remained referenced. All previous blockers were confirmed resolved and exact hashes remained unchanged. Only the new Medium is routed to the same Terra/high owner; the known Low remains untouched.
+- 2026-07-16T11:15:16+02:00: The same Terra/high owner `019f69ee-81ce-7762-b3bb-7bd63de54a60` resumed for only the Medium shutdown-timer fix and focused regression coverage. Its scope is limited to the dispatcher and its test; the Low helper and all other task files are explicitly excluded.
+- 2026-07-16T11:17:41+02:00: TASK-006's narrow timer remediation completed with only dispatcher/test changes relative to the reviewed snapshot. Independent controller verification passed 80/80 focused Node 24 tests, build, scoped source lint, Prettier, diff, exact scope/hash, and migration-014 identity gates. The prior five-second process probe now exits in 0.04 seconds with no active Timeout resource. The Low remains untouched; a fresh full-diff Sol/high review is next.
+- 2026-07-16T11:18:48+02:00: Fresh direct read-only Sol/high full-diff review `019f6a38-b01a-77e1-bcb5-9b6639de95b4` started against the exact verified 80-test TASK-006 snapshot. Recursive review, edits, dependency changes, the full suite, and Low remediation are prohibited.
+- 2026-07-16T11:26:28+02:00: TASK-006 fresh Sol/high review `019f6a38-b01a-77e1-bcb5-9b6639de95b4` passed the commit gate 0C/0H/0M/1L. It independently reran 80/80 focused Node 24 tests, build, scoped ESLint/Prettier, diff and migration-014 identity gates, plus the five-second process probe at 0.05 seconds with no active Timeout. Exact status and all eight hashes remained unchanged; the Low remains untouched.
+- 2026-07-16T11:29:01+02:00: Exact reviewed TASK-006 commit `d4fde6f0082fa0a79825734c0d9a5d249e39f981` was committed and pushed. PR #262 opened against current epic head `d3357fb`; it is mergeable with Verify PR and PR Agent checks in progress.
+- 2026-07-16T11:30:54+02:00: TASK-006 PR #262 passed Verify PR run
+  `29487277395` and PR Agent run `29487277478`, had zero review threads, and
+  merged at final epic head `8f74740`. The PR Agent's failed-suggestion system
+  comment was non-actionable; both checks concluded successfully.
+- 2026-07-16T11:31:41+02:00: TASK-006's clean merged worktree was verified at
+  reviewed commit `d4fde6f`, removed, and pruned. The unrelated messaging
+  worktree and `.minispec/` remain untouched.
+- 2026-07-16T11:34:33+02:00: WAVE-003 reconciliation audited both merged PRs,
+  reviews, verification, freshness, task paths, cleanup, shared findings, and
+  WAVE-004 readiness. Monitoring is paused pending reviewed reconciliation push.
+- 2026-07-16T11:45:59+02:00: Sol/high reconciliation review
+  `019f6a4b-86ff-7e13-b3e8-eb8bbc8ebb62` blocked commit 0C/0H/1M/2L because
+  TASK-007's structured verification metadata omitted the new lifecycle
+  regression command. The command was added to match its validation steps. The
+  two Low wording/branch-cleanup observations remain untouched; a fresh full
+  reconciliation review is required.
 
 ## Next Action
 
-Run fresh Sol/high review over this worktree-readiness state. If C0/H0/M0,
-commit and push only these WDD paths, fast-forward both task branches/worktrees
-to the exact pushed readiness checkpoint, reverify clean current artifacts, and
-dispatch the two Terra/high workers concurrently.
+Run a fresh Sol/high review of the complete WAVE-003 reconciliation diff. On a
+clean Critical/High/Medium gate, commit and push the checkpoint, delete the
+obsolete WAVE-003 monitor, then start WAVE-004 without touching recorded Lows.

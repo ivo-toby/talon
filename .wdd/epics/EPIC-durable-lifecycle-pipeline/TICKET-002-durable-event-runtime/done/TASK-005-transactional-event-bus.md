@@ -6,7 +6,7 @@ ticket: TICKET-002-durable-event-runtime
 wave: WAVE-003
 slug: transactional-event-bus
 title: Implement transactional lifecycle event publication
-status: in_progress
+status: done
 depends_on: ["TASK-001-lifecycle-contracts-registry", "TASK-002-lifecycle-event-persistence"]
 conflict_domains:
   - "src/lifecycle/lifecycle-event-bus.ts"
@@ -18,12 +18,14 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-005-transactional-event-bus
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus
-worktree_status: ready
-pr: null
-current_gate: dispatch_pending
-branch_freshness: current_at_activation_sync_pending_readiness_checkpoint
+worktree_status: cleaned_up
+worker_thread_id: 019f69eb-a64d-7612-9084-7918ade4525f
+review_thread_id: 019f6a04-bb9c-7aa0-89f2-c3413c2f30c2
+pr: https://github.com/ivo-toby/talon/pull/261
+current_gate: merged
+branch_freshness: merged_current_at_d3357fb
 verification:
-  - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/core/database/repositories/lifecycle-event-repository.test.ts"
+  - "/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin/node ../../node_modules/vitest/vitest.mjs run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/core/database/repositories/lifecycle-event-repository.test.ts"
   - "npm run build"
   - "git diff --check"
 ---
@@ -32,7 +34,7 @@ verification:
 
 ## Status
 
-in_progress
+done
 
 ## Parent Ticket
 
@@ -48,7 +50,7 @@ Implement validated versioned publication, atomic subscriber delivery fan-out, c
 
 ## Scope
 
-- Support standalone and caller-owned transaction publication.
+- Support standalone and bus-owned transaction-callback publication.
 - Validate bounded payload/reference metadata and recursion depth.
 - Snapshot stable subscribers and create delivery rows.
 - Wake dispatch only after successful commit.
@@ -101,14 +103,16 @@ task/TASK-005-transactional-event-bus
 
 ## Worker Worktree
 
-Allocated path:
-`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus`.
-The controller must not create it until the reviewed allocation and activation-
-sync checkpoints are committed and pushed.
+Terra/high integration owner `019f69eb-a64d-7612-9084-7918ade4525f`
+completed reviewed commit `65bd0a7` on
+`task/TASK-005-transactional-event-bus`. PR #261 merged at epic commit
+`d3357fb`; the clean task worktree was removed and pruned.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+[PR #261](https://github.com/ivo-toby/talon/pull/261) merged reviewed commit
+`65bd0a7bc4037ab4e634e25e8ee34886f5c9c338` into
+`epic/durable-lifecycle-pipeline` at `d3357fb674ab3549769fa6e0a3a306c19925c31b`.
 
 ## RED-GREEN TDD Plan
 
@@ -144,11 +148,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -158,22 +162,49 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- 43/43 focused tests passed with the repository-pinned Node 24 runtime,
+  including 26 real-SQLite repository tests.
+- `npm run build` passed.
+- Scoped ESLint and Prettier checks passed on changed source and test files.
+- `git diff --check` passed.
+- No dependency install or native rebuild was performed.
 
 ## Review Feedback
 
 ### P1
 
-- None.
+- High: the first transaction-coordinator finding is reviewed resolved. Fresh
+  Sol/high review reproduced forgeable cross-bus/cross-connection authority via
+  overridable public context methods; opaque exact-bus/exact-connection
+  authority is implemented and reviewed resolved.
 
 ### P2
 
-- None.
+- Medium: caller-owned publication could throw across a neverthrow boundary.
+- Medium: rejected asynchronous wakes could escape as unhandled rejections.
+- Medium: derived-event causation and recursion invariants were not enforced.
+
+The original three Medium findings are reviewed resolved. Fresh Sol/high review
+found one new Medium: nested SQLite transactions could wake before the outer
+commit. Nested/external active transactions are rejected and reviewed resolved.
 
 ### P3
 
-- None.
+- Low: the test fixture has standalone strict-TypeScript drift in four helper
+  shapes. It is non-blocking and intentionally untouched under the WDD policy.
 
 ## Completion Notes
 
-- None yet.
+- Initial Sol/high review `019f69e5-5c3d-7151-9ca8-c1d04d787e2d` failed
+  0C/1H/3M/0L. Terra/high integration owner
+  `019f69eb-a64d-7612-9084-7918ade4525f` completed the blocking remediation
+  with 37 focused tests. Fresh full-diff Sol/high review
+  `019f69f7-de0f-7d91-a71a-127ab60c892f` failed 0C/1H/1M/0L after reproducing
+  forgeable cross-connection transaction authority and pre-outer-commit nested
+  wakes. The same Terra/high owner remediated both blockers; controller
+  verification passed 43 focused tests plus build and static gates. Fresh
+  full-diff Sol/high review `019f6a04-bb9c-7aa0-89f2-c3413c2f30c2` passed
+  0C/0H/0M/1L with exact hash integrity. The Low remains untouched. Reviewed
+  commit `65bd0a7` is pushed and PR #261 targets the current epic head; GitHub
+  checks passed with no review threads. PR #261 merged into the epic branch at
+  `d3357fb`.

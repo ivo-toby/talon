@@ -24,6 +24,7 @@ current_gate: not_started
 branch_freshness: unknown
 verification:
   - "npx vitest run tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/pipeline/message-pipeline.test.ts tests/unit/queue/queue-processor.test.ts tests/unit/scheduler/scheduler.test.ts"
+  - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/core/database/migrations/runner.test.ts"
   - "npm run build"
   - "npm run lint"
   - "git diff --check"
@@ -136,6 +137,15 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Do not switch branches in the controller checkout or start dependent work.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
+- Construct the merged event bus with exact bus/connection transaction authority;
+  do not publish through external or nested active SQLite transactions that can
+  wake before the owning commit.
+- Supervise the merged dispatcher as an independent daemon workload. Preserve
+  immutable repository/executor authority, exact handler-plus-persona identity,
+  retained concurrency slots for abort-ignoring timed-out handlers, and bounded
+  stop behavior without coupling failures back into the user-facing queue.
+- Exercise migration 015 when runtime boot opens an existing v14 database and
+  retain the repository's retry/dead-letter transition guards.
 - Request reviewGate/`gpt-5.6-sol` review with high reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings.
 
 ## Review Focus
@@ -159,6 +169,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 ## Validation Steps
 
 - npx vitest run tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/pipeline/message-pipeline.test.ts tests/unit/queue/queue-processor.test.ts tests/unit/scheduler/scheduler.test.ts
+- npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/core/database/migrations/runner.test.ts
 - npm run build
 - npm run lint
 - git diff --check

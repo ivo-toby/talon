@@ -41,8 +41,8 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-002-lifecycle-event-persistence | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry | database migrations, lifecycle repositories | done |
 | TASK-003-interceptor-engine | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle interceptors, interceptor contract, audit logger | done |
 | TASK-004-subagent-lifecycle-adapter | TICKET-001-extension-contracts | TASK-001-lifecycle-contracts-registry | lifecycle adapters, subagent runner, personas | done |
-| TASK-005-transactional-event-bus | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence | event bus, database transaction helpers | in_progress |
-| TASK-006-durable-event-dispatcher | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | dispatcher, handler executor | in_progress |
+| TASK-005-transactional-event-bus | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence | event bus, database transaction helpers | done |
+| TASK-006-durable-event-dispatcher | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | dispatcher, handler executor, lifecycle delivery repository/migration/tests | done |
 | TASK-007-daemon-message-queue-schedule-events | TICKET-003-core-boundary-integration | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | daemon bootstrap, message pipeline, queue, scheduler | todo |
 | TASK-008-run-tool-outbound-events | TICKET-003-core-boundary-integration | TASK-007-daemon-message-queue-schedule-events | AgentRunner, host tools, outbound delivery | todo |
 | TASK-009-context-contracts-projector | TICKET-004-context-migration | TASK-004-subagent-lifecycle-adapter, TASK-005-transactional-event-bus | lifecycle context, ContextRoller, memory repository | todo |
@@ -91,7 +91,7 @@ The dependency graph is acyclic. Contracts and persistence precede consumers; co
 |-----------|------|----------|
 | TASK-001 / TASK-011 | high | Config/context identity is sequenced through dependencies. |
 | TASK-002 / TASK-010 | high | Lifecycle and behavior migrations run in separate waves. |
-| TASK-005 / TASK-006 | medium | Parallel behind frozen APIs; reconcile shared exports only. |
+| TASK-005 / TASK-006 | medium | Parallel on distinct files; TASK-006 owns the bounded delivery-claim extension while TASK-005 consumes event persistence unchanged. |
 | TASK-007 / TASK-008 | high | Daemon and AgentRunner integration are sequential waves. |
 | TASK-008 / TASK-011 | high | AgentRunner changes are dependency-sequenced. |
 | TASK-009 / TASK-011 | high | Projector lands before orchestration migration. |
@@ -217,9 +217,11 @@ Drift notes:
 
 ### WAVE-003
 
-Status: in_progress
+Status: done
 
 Activated: 2026-07-16
+
+Completed: 2026-07-16
 
 Tasks:
 
@@ -238,18 +240,49 @@ Recommended strategy:
 
 Rationale:
 
-- Publication and dispatch use separate tested interfaces over the same frozen repositories.
+- Publication consumes the frozen event-persistence API while dispatch owns a
+  bounded, real-SQLite-tested delivery-claim eligibility and transition
+  extension, including the lifecycle delivery migration; the task patches
+  remain file-disjoint.
 - Daemon wiring is deliberately deferred.
 
 Activation rule:
 
-- Activate the eligible tasks as one batch after syncing activation artifacts.
-- Create one isolated worktree per writing task from the synced epic branch.
+- Readiness gates passed at pushed checkpoint `fbe4f08`; both isolated workers
+  completed their uncommitted implementations in parallel.
+- Independent Sol/high reviews found blocking High/Medium issues in both tasks;
+  separate Terra/high integration owners completed their remediations in
+  parallel, with 43 TASK-005 and 64 refreshed TASK-006 focused tests passing.
+- TASK-005's fresh full-diff Sol/high review passed 0C/0H/0M/1L and PR #261
+  merged at epic head `d3357fb`. TASK-006 passed its final full-diff Sol/high
+  review 0C/0H/0M/1L after 80 focused tests and merged through PR #262 at final
+  epic head `8f74740`. Both clean task worktrees were removed and pruned.
 
 Stop condition:
 
 - All active tasks are done, blocked, cancelled, or explicitly closed.
 - Reviews, verification, freshness, shared-context reconciliation, and wdd-reconcile-wave complete before the next wave.
+
+Outcome:
+
+- TASK-005 merged through PR #261 at `d3357fb`; TASK-006 merged through PR #262
+  at final epic head `8f74740`.
+- Final full-diff Sol/high reviews passed with no Critical, High, or Medium
+  findings. Focused evidence passed 43 transactional publication tests and 80
+  dispatcher/repository/migration/event-bus tests, plus build, scoped static
+  checks, GitHub CI, freshness, and zero unresolved review threads.
+- The dispatcher work added immutable captured authority, exact persona-scoped
+  handler execution, retained timeout concurrency accounting, bounded shutdown,
+  and additive v15 upgrade behavior without modifying migration 014.
+- Both Low findings remain recorded and unmodified. Both clean task worktrees
+  were removed; unrelated `.minispec/` and the messaging worktree were untouched.
+
+Drift notes:
+
+- No dependency drift changes WAVE-004 eligibility or its bundled strategy.
+- TASK-007 must construct the exact-bus transaction authority, supervise the
+  dispatcher independently of the user queue, preserve timeout-slot accounting,
+  and verify v14-to-v15 runtime boot behavior.
 
 ### WAVE-004
 
@@ -529,11 +562,10 @@ Stop condition:
 
 ## Activation Rules
 
-- WAVE-001 and WAVE-002 are done; WAVE-003 is active at its worktree-readiness
-  review gate. Its allocation and activation-sync checkpoints are reviewed and
-  pushed, and both clean task worktrees exist from `461ec27`. No worker may
-  start until the readiness checkpoint is reviewed, pushed, fast-forwarded into
-  both task branches/worktrees, and their current artifacts are reverified.
+- WAVE-001 through WAVE-003 are done. WAVE-003 merged PRs #261 and #262 at final
+  epic head `8f74740`, reconciled shared findings, and removed both clean task
+  worktrees. WAVE-004 is the next eligible wave after this reconciliation
+  checkpoint passes Sol/high review and is committed and pushed.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

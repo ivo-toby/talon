@@ -479,7 +479,7 @@
     },
     {
       "id": "WAVE-003",
-      "status": "in_progress",
+      "status": "done",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -490,7 +490,7 @@
         "requiresUserConfirmation": true,
         "confidence": "high",
         "rationale": [
-          "Publication and dispatch use separate tested interfaces over the same frozen repositories.",
+          "Publication consumes the frozen event-persistence API while dispatch owns a bounded, real-SQLite-tested delivery-claim eligibility extension; the task patches remain file-disjoint.",
           "Daemon wiring is deliberately deferred."
         ],
         "bundleGroups": [
@@ -505,10 +505,10 @@
       },
       "tasks": [
         {
-          "id": "TASK-005-transactional-event-bus",
+      "id": "TASK-005-transactional-event-bus",
           "ticket": "TICKET-002-durable-event-runtime",
-          "path": "TICKET-002-durable-event-runtime/in-progress/TASK-005-transactional-event-bus.md",
-          "status": "in_progress",
+          "path": "TICKET-002-durable-event-runtime/done/TASK-005-transactional-event-bus.md",
+          "status": "done",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry",
             "TASK-002-lifecycle-event-persistence"
@@ -521,24 +521,79 @@
           "actualModel": "gpt-5.6-terra",
           "reasoningEffort": "high",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
-          "reviewThreadId": null,
+          "workerThreadId": "019f69eb-a64d-7612-9084-7918ade4525f",
+          "reviewThreadId": "019f6a04-bb9c-7aa0-89f2-c3413c2f30c2",
           "branch": "task/TASK-005-transactional-event-bus",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus",
-      "worktreeStatus": "ready",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-      "branchFreshness": "current_at_activation_sync_pending_readiness_checkpoint",
-          "blockingFeedback": [],
-          "verification": null,
-      "currentGate": "dispatch_pending"
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T10:38:20+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/261",
+          "latestCommit": "65bd0a7bc4037ab4e634e25e8ee34886f5c9c338",
+          "mergeCommit": "d3357fb674ab3549769fa6e0a3a306c19925c31b",
+          "branchFreshness": "merged_current_at_d3357fb",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "Transaction atomicity and wake timing rely on caller discipline rather than an owned SQLite transaction coordinator.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Caller-owned publication can throw across the neverthrow boundary on hostile input or resolver snapshots.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Rejected asynchronous dispatcher wakes can escape as unhandled rejections.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Derived-event causation and recursion invariants are not enforced.",
+              "status": "resolved_reviewed"
+            },
+        {
+          "severity": "High",
+          "summary": "Public overridable context methods permit forged cross-bus and cross-connection transaction authority.",
+              "status": "resolved_reviewed"
         },
         {
-          "id": "TASK-006-durable-event-dispatcher",
+          "severity": "Medium",
+          "summary": "Nested SQLite transactions can trigger dispatcher wakes before the actual outer commit.",
+              "status": "resolved_reviewed"
+        }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "43 passed with the repository-pinned Node 24 runtime, including 26 real-SQLite repository tests",
+            "build": "passed",
+            "lint": "passed on changed source and test files",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+            "dependencyMutation": "none; no install or rebuild",
+            "finalSolHighReview": "passed 0C/0H/0M/1L; session 019f6a04-bb9c-7aa0-89f2-c3413c2f30c2",
+            "githubVerifyPr": "passed; run 29483917536",
+            "githubPrAgent": "passed; run 29483917558",
+            "unresolvedReviewThreads": 0
+          },
+          "nonBlockingFeedback": [
+            {
+              "severity": "Low",
+              "summary": "Standalone strict TypeScript checking reports four test-fixture shape errors.",
+              "status": "follow_up_unmodified"
+            }
+          ],
+          "currentGate": "merged"
+        },
+        {
+      "id": "TASK-006-durable-event-dispatcher",
           "ticket": "TICKET-002-durable-event-runtime",
-          "path": "TICKET-002-durable-event-runtime/in-progress/TASK-006-durable-event-dispatcher.md",
-          "status": "in_progress",
+          "path": "TICKET-002-durable-event-runtime/done/TASK-006-durable-event-dispatcher.md",
+          "status": "done",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry",
             "TASK-002-lifecycle-event-persistence",
@@ -547,24 +602,140 @@
           ],
           "conflictDomains": [
             "dispatcher",
-            "handler executor"
+        "handler executor",
+        "lifecycle delivery repository",
+        "lifecycle delivery migration",
+        "migration runner tests"
           ],
           "assignedModel": "codexHigh",
           "actualModel": "gpt-5.6-terra",
           "reasoningEffort": "high",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
-          "reviewThreadId": null,
+          "workerThreadId": "019f69ee-81ce-7762-b3bb-7bd63de54a60",
+      "reviewThreadId": "019f6a38-b01a-77e1-bcb5-9b6639de95b4",
           "branch": "task/TASK-006-durable-event-dispatcher",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher",
-      "worktreeStatus": "ready",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-      "branchFreshness": "current_at_activation_sync_pending_readiness_checkpoint",
-          "blockingFeedback": [],
-          "verification": null,
-      "currentGate": "dispatch_pending"
+      "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T11:31:41+02:00",
+            "worktreeRemoved": true
+          },
+      "pr": "https://github.com/ivo-toby/talon/pull/262",
+      "latestCommit": "d4fde6f0082fa0a79825734c0d9a5d249e39f981",
+      "mergeCommit": "8f74740fe2d7591cf41995cf77e1887012e5b2b0",
+      "branchFreshness": "merged_current_at_8f74740",
+          "blockingFeedback": [
+        {
+          "severity": "High",
+          "summary": "Handlers receive mutable lease authority and can corrupt or redirect completion.",
+          "status": "resolved_reviewed",
+          "detail": "Caller mutation of retained dispatcher options can redirect a claimed lease token to a replacement repository."
+        },
+        {
+          "severity": "High",
+          "summary": "Runtime executor selection does not enforce the complete immutable captured identity and loader authority.",
+          "status": "resolved_reviewed",
+          "detail": "Sub-agent authority must permit the same complete global handler identity for distinct explicitly attached personas while remaining persona-scoped."
+        },
+        {
+          "severity": "High",
+          "summary": "Validated successful handler signals are discarded before durable routing or projection.",
+          "status": "resolved_reviewed"
+        },
+        {
+          "severity": "High",
+          "summary": "Hung handlers defeat leases, backpressure, circuits, and bounded graceful shutdown.",
+          "status": "resolved_reviewed"
+        },
+            {
+          "severity": "Medium",
+          "summary": "Handler retryable and captured failure-policy semantics are ignored.",
+          "status": "resolved_reviewed",
+              "detail": "Repository semantics are correct for fresh schema, but an additive migration is required for databases already at user_version 14."
+            },
+            {
+              "severity": "Medium",
+              "summary": "Public dispatchOnce bypasses the global concurrency cap.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Wake notifications can be lost while a drain is already active.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "More than 256 excluded open or busy handlers can globally stall healthy delivery claims.",
+              "status": "resolved_reviewed"
+            },
+            {
+          "severity": "Medium",
+          "summary": "Policy construction executes hostile input and throws instead of using a typed Result factory.",
+          "status": "resolved_reviewed",
+              "detail": "Dispatcher construction must descriptor-safely snapshot and validate all callable dependencies and return typed errors for hostile input."
+            },
+        {
+          "severity": "Medium",
+          "summary": "Required dispatcher, authority, timeout, retry, wake, circuit, restart, and hostile-input coverage is incomplete.",
+          "status": "resolved_reviewed"
+        },
+        {
+          "severity": "High",
+          "summary": "Abort-ignoring timed-out handlers continue outside global and per-handler concurrency accounting.",
+          "status": "resolved_reviewed",
+          "detail": "Track underlying executions after timeout so retries cannot release local slots until the real execution settles."
+        },
+        {
+          "severity": "Medium",
+          "summary": "Executor construction materializes all property descriptors before enforcing key-count limits.",
+          "status": "resolved_reviewed",
+          "detail": "Bound own keys first and read only individual allowed data descriptors with oversized hostile-input tests."
+        },
+        {
+          "severity": "Medium",
+          "summary": "Migration 015 leaves the existing migration-runner version and count assertions stale.",
+          "status": "resolved_reviewed",
+          "detail": "Controller reproduced tests/unit/core/database/migrations/runner.test.ts at 10 passed and 1 failed because two migrations now apply."
+        },
+        {
+          "severity": "Medium",
+          "summary": "dispatchOnce can throw across its Result boundary when claimNext throws or returns a malformed value.",
+          "status": "resolved_reviewed",
+          "detail": "Sanitize claim invocation and Result-shape inspection without evaluating hostile accessors or proxies."
+        },
+        {
+          "severity": "Medium",
+          "summary": "stop leaves a referenced shutdown timer alive after active settlement wins the race.",
+          "status": "resolved_reviewed",
+          "detail": "Sol/high reproduced an otherwise immediate stop holding Node for the full configured shutdown window; retain and clear the losing timer."
+        }
+      ],
+          "verification": {
+            "status": "passed",
+        "focusedTests": "80 passed after latest remediation: 22 dispatcher, 30 real-SQLite repository/migration, 17 transactional event-bus integration, and 11 migration-runner tests",
+            "build": "passed",
+            "lint": "passed on changed source and test files; unrelated repository-wide lint failures remain outside task scope",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+        "dependencyMutation": "none; no install or rebuild",
+        "finalSolHighReview": "passed commit gate 0C/0H/0M/1L; session 019f6a38-b01a-77e1-bcb5-9b6639de95b4",
+        "migrationRunnerRegression": "resolved pending review: 11 passed with v13-to-v15, v14-to-v15 row preservation, trigger/index recreation, and FK coverage",
+        "latestRemediationIntegrity": "passed: exact eight-file scope, SHA-256 inventory, migration 014 byte-identical, no dependency mutation",
+        "activeSolHighReview": "completed: passed 0C/0H/0M/1L; session 019f6a38-b01a-77e1-bcb5-9b6639de95b4; prior session 019f6a2d-6e14-7de0-aa47-65b6f4da01bb failed 0C/0H/1M/1L",
+        "shutdownTimerProbe": "resolved reviewed: pinned Node 24 reports no active Timeout resource and exits in 0.04-0.05 seconds with a 5-second shutdown policy",
+        "githubVerifyPr": "passed; run 29487277395",
+        "githubPrAgent": "passed; run 29487277478; non-actionable failed-suggestion system comment only",
+        "unresolvedReviewThreads": 0
+      },
+      "nonBlockingFeedback": [
+        {
+          "severity": "Low",
+          "summary": "The v14 upgrade test depends on historical git object fbe4f08 and may fail in shallow clones or source archives.",
+          "status": "follow_up_unmodified"
+        }
+      ],
+      "currentGate": "merged"
         }
       ]
     },
@@ -1220,23 +1391,23 @@
     "pendingReconciliation": []
   },
   "controller": {
-    "activeWave": "WAVE-003",
+    "activeWave": null,
     "nextWave": "WAVE-004",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
-    "activationBase": "2de0689788fd868c15053b1ab65436706c63ad1d",
-    "activationCheckpoint": "2976170eaddb7a44152931fb85452fc1cc2dd43c",
-    "activationSyncCommit": "461ec277cc6140556875d2e5e75d9704efc48e3b"
+    "activationArtifactsSynced": false,
+    "activationBase": "8f74740fe2d7591cf41995cf77e1887012e5b2b0",
+    "activationCheckpoint": null,
+    "activationSyncCommit": null
   },
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "worktree_readiness_pending_review",
-    "lastCheckedAt": "2026-07-16T09:23:00+02:00",
-    "nextCheckDueAt": "2026-07-16T09:28:00+02:00",
-    "schedulerRef": "talon-issue-256-wdd-wave-3-monitor",
-    "fallbackPrompt": "Resume WAVE-003 activation for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, and TASK-005/TASK-006. Do not create either task branch or worktree until the allocation checkpoint is Sol/high reviewed, committed and pushed, its exact hash is recorded as controller.activationCheckpoint, controller.activationArtifactsSynced is true, and a second activation-sync Sol/high review has passed and been pushed. Do not dispatch workers until a later worktree-readiness checkpoint is Sol/high reviewed, committed and pushed, both task worktrees are clean and current at that exact commit, and current task/controller artifacts are verified in each worktree. Preserve .minispec and route only Critical/High/Medium blockers.",
-    "stopCondition": "All WAVE-003 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",
-    "stopReason": null
+    "status": "paused",
+  "lastCheckedAt": "2026-07-16T11:34:33+02:00",
+  "nextCheckDueAt": null,
+    "schedulerRef": null,
+  "fallbackPrompt": "Resume EPIC-durable-lifecycle-pipeline by running wdd-start-wave for WAVE-004 from the reviewed and pushed WAVE-003 reconciliation checkpoint. Recreate allocation, activation-sync, and worktree-readiness gates before dispatching TASK-007 to a Terra/high worker. Use Sol/high reviews, route only Critical/High/Medium blockers, preserve .minispec, and keep the task worktree isolated.",
+    "stopCondition": "WAVE-004 is activated with reviewed and pushed allocation, activation-sync, and worktree-readiness checkpoints.",
+    "stopReason": "WAVE-003 completed: TASK-005 and TASK-006 merged and reconciled at epic head 8f74740"
   }
 }
