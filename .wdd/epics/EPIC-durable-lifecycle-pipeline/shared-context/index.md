@@ -46,7 +46,7 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
   lifecycle trust boundaries.
 - Do not remediate Low/P3 review findings automatically. Route only
   Critical/High/Medium blockers, use focused delta re-review while fixing them,
-  and require one final full-diff Sol/high review immediately before commit.
+  and require one final full-diff GPT-5.5/xhigh review immediately before commit.
 - Do not break continuation, rotation-boundary, or observational-memory reducer
   semantics while removing name-based special cases.
 
@@ -54,7 +54,7 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
 
 - Preserve existing configs through explicit compatibility translation and
   deprecation.
-- Follow `neverthrow`, audit logging, RED/GREEN TDD, `gpt-5.6-sol`/high pre-commit review,
+- Follow `neverthrow`, audit logging, RED/GREEN TDD, `gpt-5.5`/xhigh pre-commit review,
   task PR, documentation, and runtime-smoke requirements.
 - Issue #70 is an optional evidence dependency, not a core-pipeline blocker.
 

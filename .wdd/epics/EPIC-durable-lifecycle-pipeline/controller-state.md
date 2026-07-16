@@ -15,8 +15,10 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 
 Delivery-speed policy: route only Critical/High/Medium blockers; Low/P3
 findings become follow-ups and never trigger automatic edits. Blocking fixes
-may receive focused Sol/high delta review, but one fresh full-diff Sol/high
-review is mandatory immediately before commit. Review sandboxes may be writable
+may receive focused GPT-5.5/xhigh delta review, but one fresh full-diff
+GPT-5.5/xhigh review is mandatory immediately before commit. GPT-5.6 is
+forbidden for all new work; implementation/remediation agents are capped at
+GPT-5.5 and default to GPT-5.5/high. Review sandboxes may be writable
 for ephemeral test artifacts only, with before/after worktree status proof.
 Every task advances independently as soon as its gates clear.
 
@@ -47,6 +49,13 @@ Every task advances independently as soon as its gates clear.
 - WAVE-004 readiness checkpoint: Sol/high reviewed 0C/0H/0M/2L, committed,
   and pushed at `a6d48f7`; TASK-007's branch/worktree were fast-forwarded,
   pushed, and verified clean at that exact commit before dispatch
+- WAVE-004 model-policy checkpoint: GPT-5.5/xhigh reviewed 0C/0H/0M/2L on
+  fingerprint `9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd`,
+  committed, and pushed at `d104ba4`; TASK-007 exact epic refresh is next
+- WAVE-004 controller-state marker: GPT-5.5/xhigh reviewed 0C/0H/0M/0L on
+  fingerprint `0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131`,
+  committed, and pushed at `fdf0e77`; TASK-007 is now in a conflict-free uncommitted
+  exact refresh merge from that marker with source commit `8a994ea` unchanged
 
 ## Pending Waves
 
@@ -66,25 +75,42 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-004 is active as one bundled TASK-007 batch at the dispatch gate. Both
-dependencies are done and reconciled. The isolated branch/worktree passed fresh
-Sol/high readiness review, was fast-forwarded and pushed to exact checkpoint
-`a6d48f7`, is clean, and contains the task/controller/orchestration artifacts
-from that exact commit. Terra/high dispatch is permitted under the active
-five-minute controller heartbeat.
+WAVE-004 is active as one bundled TASK-007 review batch. TASK-007 completed
+exactly six bounded Terra/high remediation passes. Final controller verification
+passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus
+build, latest-source lint, targeted formatting, and diff checks. Fresh
+complete-diff Sol/high source review `019f6b0f-f3c8-7160-bb2a-81329c61d473`
+passed 0C/0H/0M/0L on fingerprint
+`0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`.
+Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean,
+pushed, and aligned with the local remote-tracking ref. The amended WDD/model
+policy checkpoint passed GPT-5.5/xhigh review and is pushed at `d104ba4`. The
+durable controller-state marker passed GPT-5.5/xhigh review
+`019f6b4b-dc25-7331-9d26-b5f5595ff21b` 0C/0H/0M/0L on fingerprint
+`0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131` and was
+pushed at `fdf0e775a411959739a577071788eabe4133e3f2`. TASK-007 is now in a
+conflict-free uncommitted exact refresh merge from that marker; `HEAD` and upstream
+remain the reviewed source commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308`,
+and `MERGE_HEAD` is `fdf0e775a411959739a577071788eabe4133e3f2`. A fresh full
+GPT-5.5/xhigh refresh review is required before the merge commit. PR
+checks/review/freshness/merge/cleanup/reconciliation remain. Historical Sol/high
+and Terra/high references below are provenance only and do not authorize new
+GPT-5.6 activity.
 
 ## Monitoring
 
 - Mode: Codex thread heartbeat
 - Cadence: adaptive; next controller check in 5 minutes
-- Status: dispatch_ready
+- Status: exact refresh merge active; fresh full GPT-5.5/xhigh review required before merge commit
 - Scheduler: `talon-issue-256-wdd-wave-4-monitor`
-- Last checked: 2026-07-16T12:30:05+02:00
-- Next check due: 2026-07-16T12:35:05+02:00
-- Stop condition: all WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
+- Last checked: 2026-07-16T16:23:58+02:00
+- Next check due: 2026-07-16T16:28:58+02:00
+- Stop condition: WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, the monitor is deactivated, and epic work pauses before WAVE-005.
 - Automation state: the WAVE-003 heartbeat was deleted after reconciliation
   push. Self-contained WAVE-004 heartbeat
-  `talon-issue-256-wdd-wave-4-monitor` is active before Terra/high dispatch.
+  `talon-issue-256-wdd-wave-4-monitor` is active for exact-refresh review,
+  merge commit, PR, merge, cleanup, and WAVE-004 reconciliation only. It must
+  not activate WAVE-005.
 
 ## Current Task Gates
 
@@ -168,12 +194,56 @@ five-minute controller heartbeat.
   `8f74740`; its clean worktree was removed and pruned. The PR Agent's failed-
   suggestion system comment was non-actionable and did not change the passed
   check gate.
-- TASK-007-daemon-message-queue-schedule-events: dispatch_pending;
-  branch `task/TASK-007-daemon-message-queue-schedule-events` and worktree
-  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
-  are clean locally/remotely at reviewed/pushed readiness checkpoint
-  `a6d48f7`; task/controller/orchestration artifacts match exactly and worker
-  dispatch is permitted under the active heartbeat.
+- TASK-007-daemon-message-queue-schedule-events: current canonical state:
+  exactly six bounded Terra/high remediation passes completed. Final controller
+  verification passed 12 focused files / 385 tests under exact Node v24.15.0
+  ABI 137, plus build, latest-source lint, targeted formatting, and diff checks.
+  Fresh complete-diff Sol/high source review
+  `019f6b0f-f3c8-7160-bb2a-81329c61d473` passed 0C/0H/0M/0L on fingerprint
+  `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`.
+  Reviewed task commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is clean,
+  pushed, and aligned with the local remote-tracking ref. Final GPT-5.5/xhigh
+  marker review `019f6b4b-dc25-7331-9d26-b5f5595ff21b` passed 0C/0H/0M/0L on
+  fingerprint `0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131`;
+  marker commit `fdf0e775a411959739a577071788eabe4133e3f2` is pushed. TASK-007
+  is in a conflict-free uncommitted exact refresh merge from `fdf0e77`; source commit
+  `8a994eac930b18ce5ec1e3fe78999c2a021e4308` is unchanged and a fresh full
+  GPT-5.5/xhigh refresh review is required before the merge commit. Historical
+  controller verification
+  passed 179 focused tests, build, scoped lint, and diff checks. Sol/high review
+  `019f6a8f-2e78-7712-b6d8-ff006b8d1507` blocked 0C/2H/5M/0L after reproducing
+  219 focused test passes. It found missing runtime capability/executor wiring,
+  non-atomic inbound persistence-to-enqueue, pre-validation queue mutation,
+  queue scope/type drift, duplicate terminal-transition events, missing routed
+  persona provenance, and leaked services on post-bootstrap startup failure.
+  The same Terra/high owner remediated all seven findings. Worker verification
+  passes 229 focused tests, build, zero-error scoped ESLint, and diff checks.
+  Independent controller verification also passes 229 focused tests, build,
+  zero-error scoped ESLint, and diff checks. The attempted reviewer
+  `019f6aa8-38a3-76a3-b382-c557e9c8e558` was interrupted and discarded after it
+  attempted recursive review. Direct complete-diff Sol/high review
+  `019f6aac-4608-7440-b701-fc45c9a7ca17` preserved every reviewed file hash and
+  blocked 0C/1H/4M/0L: successful subagent signals are rejected instead of
+  routed; lifecycle subagent subscriptions can omit explicit persona assignment;
+  queue payload metadata is trusted as lifecycle authority; message queue
+  correlation changes between enqueue and terminal transitions; and failed
+  startup can close resources before already-started workloads drain. All five
+  blockers were routed to the same Terra/high integration owner. Its second
+  remediation stores successful signals in an atomic persona-scoped outbox,
+  enforces explicit persona subagent assignment, moves lifecycle queue scope to
+  manager-owned database columns, preserves stable message correlation, and
+  joins in-flight scheduler/queue work before resource teardown. Independent
+  controller verification passes 238 focused tests across ten files, build,
+  zero-error scoped ESLint, and diff checks. Fresh direct complete-diff Sol/high
+  review `019f6ac4-d662-7c53-b878-ea71a9ba68da` preserved the exact fingerprint
+  and blocked 0C/2H/1M/0L: subagent interceptor attachments can silently fail
+  open, queue/scheduler drains remain unbounded, and contract-valid identity
+  tuples can exceed the signal handoff key bound. Exactly those three blockers
+  are routed to the same Terra/high integration owner. No Low finding was
+  reported or edited. Subsequent bounded remediation closed the remaining
+  lifecycle scope, native capability deduplication, and IPC shutdown promise
+  blockers. The current canonical evidence above supersedes this historical
+  summary for the remaining gate sequence.
 - The remaining 13 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -191,11 +261,14 @@ five-minute controller heartbeat.
 - WAVE-003 / TASK-006: merged branch `task/TASK-006-durable-event-dispatcher`;
   clean worktree removed and pruned after PR #262 merged. The Low remains
   untouched.
-- WAVE-004 / TASK-007: branch
+- WAVE-004 / TASK-007: clean local/remote branch
   `task/TASK-007-daemon-message-queue-schedule-events` and clean worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
-  exist at exact pushed readiness checkpoint `a6d48f7`; task, controller, and
-  orchestration artifacts match that exact commit.
+  have an active conflict-free uncommitted exact refresh merge. `HEAD` and upstream are
+  the reviewed, pushed, local-remote-tracking-aligned source commit
+  `8a994eac930b18ce5ec1e3fe78999c2a021e4308`; `MERGE_HEAD` is pushed marker
+  commit `fdf0e775a411959739a577071788eabe4133e3f2`. A fresh full GPT-5.5/xhigh
+  refresh review is required before the merge commit.
 
 ## Gate Definitions
 
@@ -236,6 +309,13 @@ Reviewed activation-sync commit `923623b8c1833b83f83df8036e37ad95b0b0a343`
 is pushed. Readiness commit `a6d48f7905e70f1ba9d72d4277a78d86acc35ed1`
 passed fresh Sol/high review before push. TASK-007's local/remote task branch
 and clean worktree were fast-forwarded to that exact commit before dispatch.
+The model-policy checkpoint was reviewed and pushed at
+`d104ba468dbe3241691f8940e90238953b82ebeb`. The final controller-state marker
+passed GPT-5.5/xhigh review and was pushed at
+`fdf0e775a411959739a577071788eabe4133e3f2`. TASK-007 now has a clean
+uncommitted exact refresh merge from that marker; `HEAD` and upstream remain
+reviewed source commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308`, and a fresh
+full GPT-5.5/xhigh refresh review is required before the merge commit.
 
 ## Open P1/P2 Feedback
 
@@ -299,6 +379,13 @@ and clean worktree were fast-forwarded to that exact commit before dispatch.
 - WAVE-003 reconciliation review `019f6a4b-86ff-7e13-b3e8-eb8bbc8ebb62`
   passed 0C/0H/0M/2L after the sole prior Medium was fixed. The exact reviewed
   snapshot was committed and pushed at `7e3402c`; the Lows remain untouched.
+- WAVE-004 model-policy checkpoint review `019f6b38-ae7a-7e72-913b-4b53c5fdd3e6`
+  passed GPT-5.5/xhigh 0C/0H/0M/2L and was pushed at `d104ba4`; both Lows remain
+  untouched. Final marker review `019f6b4b-dc25-7331-9d26-b5f5595ff21b` passed
+  GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint
+  `0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131` and was
+  pushed at `fdf0e77`. TASK-007 exact refresh is an active clean no-commit merge
+  and requires a fresh full GPT-5.5/xhigh review before merge commit.
 
 ## Shared Context Reconciliation
 
@@ -504,10 +591,212 @@ and clean worktree were fast-forwarded to that exact commit before dispatch.
   and clean worktree were fast-forwarded/pushed to that exact commit and
   reverified with matching task/controller/orchestration artifacts. Five-minute
   heartbeat `talon-issue-256-wdd-wave-4-monitor` was then activated.
+- 2026-07-16T12:37:53+02:00: Fresh complete dispatch-state Sol/high review
+  `019f6a7b-b681-7212-b981-025ac143d4c8` passed 0C/0H/0M/2L; the stale epic
+  wording and JSON-indentation Lows remain untouched. Reviewed scheduler state
+  commit `c682625bd9af44c7f91507319038a8c38beca71b` was pushed and aligned into
+  the clean task branch/worktree. Terra/high worker
+  `019f6a80-eb6a-7051-9e84-f448be2c2a17` then started in the isolated worktree.
+- 2026-07-16T12:53:32+02:00: Terra/high worker
+  `019f6a80-eb6a-7051-9e84-f448be2c2a17` completed TASK-007 implementation and
+  a focused cleanup/coverage pass. Independent controller verification cleared
+  the worker-shell SQLite ABI concern with the pinned Node 24 runtime: 129
+  daemon/pipeline/queue/scheduler and 50 lifecycle/migration tests passed, plus
+  build, scoped lint with zero errors, and diff checks. Fresh full-diff Sol/high
+  review `019f6a8f-2e78-7712-b6d8-ff006b8d1507` started.
+- 2026-07-16T13:49:38+02:00: After the first 0C/2H/5M review and direct
+  0C/1H/4M review, the same Terra/high integration owner completed both
+  remediation passes. Independent controller verification now passes 238
+  focused tests across ten files, build, scoped ESLint with zero errors and four
+  explicit-return warnings, and `git diff --check`. No dependency install,
+  rebuild, full-suite run, `.minispec` edit, or controller-checkout source edit
+  occurred. The complete task patch at base `c682625` has status fingerprint
+  `9761648d65fa51993b262454ff22fa1f0c4eeb58acd6266acd0785a5905b984f`
+  and fresh direct Sol/high review `019f6ac4-d662-7c53-b878-ea71a9ba68da`
+  preserved that fingerprint before blocking 0C/2H/1M/0L.
+- 2026-07-16T14:01:15+02:00: The fresh review found two High and one Medium
+  blockers: unsupported subagent interceptors are accepted but cannot execute,
+  shutdown can wait forever on non-settling queue/scheduler work, and a valid
+  event/handler tuple can exceed the 256-character handoff-key constraint. No
+  Low finding exists. Only those three blockers are routed to Terra/high worker
+  `019f6a80-eb6a-7051-9e84-f448be2c2a17`.
+- 2026-07-16T14:03:01+02:00: The same Terra/high integration owner resumed in
+  the isolated task worktree for exactly the two High and one Medium blockers.
+  Source/test changes remain worker-owned; commit, push, dependency mutation,
+  full-suite execution, `.wdd` edits, `.minispec` edits, and Low remediation are
+  prohibited until independent verification and fresh Sol/high review.
+- 2026-07-16T14:09:04+02:00: Terra/high worker
+  `019f6a80-eb6a-7051-9e84-f448be2c2a17` completed the third bounded
+  remediation: unsupported subagent interceptors fail bootstrap, queue and
+  scheduler drains return finite status while dependency teardown/restart stay
+  gated on unfinished work, and signal handoff identity uses a bounded digest.
+  Independent controller verification passed build, 243 focused tests, scoped
+  ESLint with zero errors and four explicit-return warnings, and
+  `git diff --check`. The complete uncommitted patch fingerprint is
+  `55050184e7d70985d790741f52f23f303153b3284a15312c52d15e4b76cad874`;
+  fresh complete-diff Sol/high review
+  `019f6ad6-88bb-7f62-a142-f45966d9ff8d` is now active.
+- 2026-07-16T14:19:12+02:00: Fresh complete-diff Sol/high review
+  `019f6ad6-88bb-7f62-a142-f45966d9ff8d` preserved exact fingerprint
+  `55050184e7d70985d790741f52f23f303153b3284a15312c52d15e4b76cad874`
+  and blocked the commit gate 0C/0H/3M/0L. Lifecycle publication remains
+  optional for two scope-less internal queue producers, a timed-out scheduler
+  tick can resume under a new start generation, and drain exceptions can be
+  mistaken for successful cleanup or wedge normal stop. Prior blockers 13-15
+  are resolved; only these three Medium findings are routed to the same
+  Terra/high integration owner. No Low finding exists or is edited.
+- 2026-07-16T14:22:10+02:00: The same Terra/high integration owner
+  `019f6a80-eb6a-7051-9e84-f448be2c2a17` resumed in the isolated task
+  worktree for exactly the three new Medium findings. Source/test changes remain
+  worker-owned; WDD and `.minispec` edits, dependency mutation, full-suite
+  execution, commit, push, and Low/P3 remediation are prohibited.
+- 2026-07-16T14:30:07+02:00: TASK-007's fourth bounded Terra/high
+  remediation completed the three Medium findings. Internal message producers
+  now attach trusted lifecycle scope while disabled mode discards it, scheduler
+  work retains and checks its originating generation across asynchronous
+  boundaries, and all drain exceptions fail closed with deferred retry and
+  restart gating. Independent controller verification passed build, 380
+  focused tests across twelve files, scoped ESLint with zero errors and seven
+  explicit-return warnings, targeted Prettier, and `git diff --check`. No full
+  suite, dependency mutation, commit, push, WDD worker edit, `.minispec` edit,
+  or Low/P3 remediation occurred. The complete uncommitted patch fingerprint is
+  `4b49b9517bfe2822cb93440c8fad66087bc2f87c7238a55ba74bbbcf7c24daba`;
+  a fresh complete-diff Sol/high review is next.
+- 2026-07-16T14:32:27+02:00: Fresh direct read-only complete-diff Sol/high
+  review `019f6ae9-e594-7e52-9da3-3cb877db332f` started from a byte-stable
+  prompt file against the exact verified TASK-007 fingerprint. A prior terminal
+  attempt `019f6ae9-15a0-7ba1-b0b8-da440087ef2f` was interrupted before review
+  because terminal input corruption made it invalid evidence. The active review
+  is non-recursive; edits, dependency changes, full-suite execution, commit,
+  push, and Low/P3 remediation are prohibited.
+- 2026-07-16T14:41:55+02:00: Fresh direct complete-diff Sol/high review
+  `019f6ae9-e594-7e52-9da3-3cb877db332f` preserved exact fingerprint
+  `4b49b9517bfe2822cb93440c8fad66087bc2f87c7238a55ba74bbbcf7c24daba`
+  and blocked the commit gate 0C/0H/2M/0L. New lifecycle-enabled message and
+  schedule enqueues can still bypass lifecycle publication when trusted scope
+  or persona resolution is absent, and bootstrap duplicates a native runtime
+  capability when the same handler is attached to multiple personas. The
+  scheduler-generation and drain-exception blockers passed review. Only these
+  two Medium findings are routed to the same Terra/high integration owner; no
+  Low finding exists or is edited.
+- 2026-07-16T14:43:12+02:00: The same Terra/high integration owner
+  `019f6a80-eb6a-7051-9e84-f448be2c2a17` resumed for exactly the two Medium
+  findings from review `019f6ae9-e594-7e52-9da3-3cb877db332f`. Source and test
+  edits remain worker-owned; WDD and `.minispec` edits, dependency mutation,
+  full-suite execution, commit, push, and Low/P3 remediation are prohibited.
+- 2026-07-16T14:50:14+02:00: TASK-007's fifth bounded Terra/high remediation
+  completed both Medium findings. New lifecycle-enabled message and schedule
+  enqueues now require trusted manager-owned scope; scheduler and background
+  persona-resolution failures fail closed; native runtime capabilities are
+  deduplicated by immutable identity across persona attachments while sub-agent
+  entries remain persona-specific. Independent controller verification passed
+  build, 384 focused tests across the established twelve files, scoped ESLint
+  with zero errors and seven explicit-return warnings, targeted Prettier, and
+  `git diff --check`. No full suite, dependency mutation, commit, push, WDD
+  worker edit, `.minispec` edit, or Low/P3 remediation occurred. The complete
+  status-plus-file-content fingerprint is
+  `9f8d5071ef9a5ca47335941b5c86bfb0d2e0fc632dda7c8138c3787ba9db4de6`;
+  a fresh complete-diff Sol/high review is next.
+- 2026-07-16T14:51:35+02:00: Fresh direct read-only complete-diff Sol/high
+  review `019f6afb-7dee-7e73-8104-cac36de905a5` started against exact verified
+  TASK-007 fingerprint
+  `9f8d5071ef9a5ca47335941b5c86bfb0d2e0fc632dda7c8138c3787ba9db4de6`.
+  The review is non-recursive; edits, dependency changes, full-suite execution,
+  commit, push, and Low/P3 remediation are prohibited.
+- 2026-07-16T15:06:55+02:00: Fresh complete-diff Sol/high review
+  `019f6afb-7dee-7e73-8104-cac36de905a5` preserved exact fingerprint
+  `9f8d5071ef9a5ca47335941b5c86bfb0d2e0fc632dda7c8138c3787ba9db4de6`
+  and blocked the commit gate 0C/0H/1M/0L. The two fifth-remediation findings
+  and every earlier blocker passed. The sole remaining Medium is that IPC
+  shutdown discards the newly fallible `stop()` promise, allowing a drain
+  rejection to become unhandled and interrupt deferred teardown gating. Only
+  that Medium is routed to the same Terra/high integration owner; no Low/P3
+  finding exists or is edited.
+- 2026-07-16T15:13:55+02:00: The same Terra/high owner completed the sixth
+  bounded remediation in only `src/daemon/daemon.ts` and its focused daemon
+  test: IPC shutdown now contains/logs a rejected bounded-drain `stop()` while
+  preserving deferred teardown. Independent controller verification passed
+  385 focused tests across twelve files under exact Node v24.15.0 ABI 137,
+  pinned Node 24 build, latest-source ESLint, targeted Prettier, and diff
+  checks. An earlier controller invocation selected Node 26 and produced only
+  the expected better-sqlite3 ABI mismatch without repository changes; it is
+  superseded by the exact Node 24 pass. The twice-reproduced canonical patch
+  fingerprint is
+  `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`;
+  fresh direct non-recursive Sol/high complete-diff review
+  `019f6b0f-f3c8-7160-bb2a-81329c61d473` is active.
+- 2026-07-16T15:21:29+02:00: Fresh direct Sol/high review
+  `019f6b0f-f3c8-7160-bb2a-81329c61d473` preserved canonical fingerprint
+  `0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0`
+  and passed the task commit gate 0C/0H/0M/0L. All prior blocker classes,
+  including IPC shutdown promise containment, passed explicitly. The exact
+  reviewed 32-file snapshot was committed as
+  `8a994eac930b18ce5ec1e3fe78999c2a021e4308`, pushed to the task branch, and
+  verified against the remote. No Low/P3 finding exists or was edited.
+- 2026-07-16T15:31:57+02:00: Sol/high WDD-state review
+  `019f6b19-e342-7891-a5c8-601f817753d3` identified two Medium WDD-state
+  findings; only those findings were routed for controller remediation. No
+  review PASS is claimed; fresh Sol/high re-review remains required.
+- 2026-07-16T15:41:29+02:00: Fresh direct Sol/high WDD review
+  `019f6b24-4895-7fd3-ac6f-907477bef6a7` returned 0C/0H/2M/0L. Controller
+  remediation routed and completed exactly those two Mediums: post-commit-only
+  heartbeat authorization and six-pass current-state consistency. No PASS is
+  claimed for this WDD checkpoint, and no Low/P3 finding was edited; fresh
+  Sol/high re-review remains required.
+- 2026-07-16T15:46:56+02:00: The user prohibited all new GPT-5.6 use, selected
+  GPT-5.5/xhigh for every review, capped implementation/remediation agents at
+  GPT-5.5, and required a pause after WAVE-004 reconciliation. In-flight
+  GPT-5.6 review `019f6b2b-8959-7bd2-91e9-6700ed8806b2` was interrupted before
+  verdict and is invalid evidence. Constitution 2.2.0, repository instructions,
+  active/future task briefs, shared context, controller state, and heartbeat
+  policy are amended; a fresh GPT-5.5/xhigh complete review is required before
+  commit. Historical GPT-5.6 references remain provenance only.
+- 2026-07-16T15:56:38+02:00: Fresh GPT-5.5/xhigh complete checkpoint review
+  `019f6b32-0008-7560-a6a2-8400237b7ca6` returned 0C/1H/1M/1L. GPT-5.5/high
+  remediation `019f6b35-8ba1-7f83-8a85-d6fa9b48c28f` removed only the stale
+  present-tense TASK-007 dispatch authorization and aligned simple
+  implementation, feedback fixes, and TASK-020 with `codexHigh`/GPT-5.5 high.
+  The JSON-indentation Low remains untouched. No checkpoint PASS is claimed; a
+  fresh GPT-5.5/xhigh complete re-review is required before commit.
+- 2026-07-16T16:04:20+02:00: Fresh GPT-5.5/xhigh complete re-review
+  `019f6b38-ae7a-7e72-913b-4b53c5fdd3e6` passed 0C/0H/0M/2L and independently
+  preserved fingerprint
+  `9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd`.
+  Both Lows remain untouched. The exact reviewed checkpoint was committed and
+  pushed at `d104ba468dbe3241691f8940e90238953b82ebeb`; local and remote epic
+  refs match. A small durable controller-state marker now requires its own
+  GPT-5.5/xhigh pre-commit review before TASK-007 is refreshed from the resulting
+  exact epic head.
+- 2026-07-16T16:12:12+02:00: GPT-5.5/xhigh controller-state marker review
+  `019f6b41-737e-7ae0-91e8-921556b0b5b6` returned 0C/0H/1M/0L because
+  `verification.currentStateSummary` still described the already-pushed WDD
+  checkpoint as remaining. GPT-5.5/high remediation
+  `019f6b44-377f-7cd0-bf29-05c6fec6c834` updated only that stale summary. No
+  Low/P3 finding was reported or edited. A fresh complete GPT-5.5/xhigh
+  three-file re-review is required before the marker can be committed.
+- 2026-07-16T16:18:19+02:00: Fresh GPT-5.5/xhigh marker re-review
+  `019f6b46-a404-7c53-af2c-4daa29015e90` returned 0C/0H/1M/0L because two
+  TASK-007 controller-state summaries still described the already-pushed
+  model-policy/WDD checkpoint as pending. GPT-5.5/high remediation
+  `019f6b49-d6da-71b2-a1f1-717cabd1dc25` changed only those two stale
+  descriptions. No Low/P3 finding was reported or edited. A fresh complete
+  GPT-5.5/xhigh three-file re-review is required before commit.
+- 2026-07-16T16:23:58+02:00: Final GPT-5.5/xhigh marker review
+  `019f6b4b-dc25-7331-9d26-b5f5595ff21b` passed 0C/0H/0M/0L on fingerprint
+  `0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131`. The
+  reviewed marker was committed and pushed at
+  `fdf0e775a411959739a577071788eabe4133e3f2`. TASK-007 now has an active clean
+  uncommitted exact refresh merge from `fdf0e77`; `HEAD` and upstream remain
+  reviewed source commit `8a994eac930b18ce5ec1e3fe78999c2a021e4308`, and
+  `MERGE_HEAD` is `fdf0e775a411959739a577071788eabe4133e3f2`. A fresh full
+  GPT-5.5/xhigh refresh review is required before the merge commit.
 
 ## Next Action
 
-Review and push this scheduler/readiness state checkpoint, fast-forward/push
-TASK-007's clean branch/worktree to that exact commit, reverify the artifacts,
-then dispatch the single Terra/high worker and monitor implementation,
-verification, Sol/high review, PR checks, freshness, and merge readiness.
+Run a fresh full GPT-5.5/xhigh review over the active exact TASK-007 refresh
+merge, then create and push the merge commit only if it passes 0C/0H/0M. Open
+the PR targeting the epic, and continue through checks, review, freshness, merge,
+cleanup, and WAVE-004 reconciliation. Then deactivate monitoring and pause; do
+not activate WAVE-005. Remediate only Critical/High/Medium WDD, refresh, or PR
+blockers; leave Low/P3 and `.minispec` untouched, and do not run full `npm test`
+without approval.

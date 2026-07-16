@@ -16,7 +16,7 @@ conflict_domains:
   - "starter/**"
   - "starter-stack/**"
   - ".agents/skills/**"
-assigned_model_class: controllerCurrent
+assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-020-lifecycle-documentation-adoption
 worker_worktree: null
@@ -104,7 +104,7 @@ No remote-handler design or runtime change beyond documentation-discovered drift
 
 ## Assigned Model Class
 
-controllerCurrent
+codexHigh
 
 ## Branch
 
@@ -138,7 +138,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Do not switch branches in the controller checkout or start dependent work.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
-- Request reviewGate/`gpt-5.6-sol` review with high reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings.
+- Request reviewGate/`gpt-5.5` review with xhigh reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings. Never use GPT-5.6.
 
 ## Review Focus
 

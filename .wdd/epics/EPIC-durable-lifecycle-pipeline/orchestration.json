@@ -11,12 +11,20 @@
     "profile": "full",
     "reviewMode": "risk_based",
     "monitoringMode": "adaptive",
+    "modelPolicy": {
+      "maximumImplementationModel": "gpt-5.5",
+      "implementationReasoningEffort": "high",
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "gpt56Allowed": false,
+      "historicalGpt56ReferencesAreProvenanceOnly": true
+    },
     "models": {
       "planning": "controllerCurrent",
-      "implementationSimple": "controllerCurrent",
+      "implementationSimple": "codexHigh",
       "implementationComplex": "codexHigh",
       "review": "reviewGate",
-      "feedbackFix": "controllerCurrent",
+      "feedbackFix": "codexHigh",
       "epicValidation": "reviewGate",
       "prDescription": "controllerCurrent"
     },
@@ -782,18 +790,142 @@
           "actualModel": "gpt-5.6-terra",
           "reasoningEffort": "high",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
-          "reviewThreadId": null,
+          "workerThreadId": "019f6a80-eb6a-7051-9e84-f448be2c2a17",
+      "reviewThreadId": "019f6b0f-f3c8-7160-bb2a-81329c61d473",
           "branch": "task/TASK-007-daemon-message-queue-schedule-events",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events",
-          "worktreeStatus": "ready",
+      "worktreeStatus": "conflict_free_uncommitted_exact_refresh_merge_active",
           "cleanup": null,
           "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "current_at_readiness_checkpoint_a6d48f7",
-          "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "dispatch_pending"
+          "latestCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
+      "branchFreshness": "conflict_free_uncommitted_exact_refresh_merge_from_fdf0e77_source_commit_8a994e_unchanged",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "Bootstrap supplies empty lifecycle capability catalogs, executor registrations, and interceptor implementations, so configured handlers cannot boot or execute.",
+          "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Inbound persistence commits before routing publication and enqueue, so a later failure is retried as a duplicate and can permanently lose the message.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Joined-transaction queue enqueue mutates before exact transaction authority is validated.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Queue lifecycle publication depends on an optional personaName payload and misclassifies authoritative queue types as messages.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Repeated or conflicting queue terminal transitions can emit multiple distinct lifecycle events for one authoritative state change.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "message.routed.v1 omits the resolved persona reference required for route provenance.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Post-bootstrap startup failures escape the Result boundary and can leak the lifecycle dispatcher and other started services.",
+          "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Successful subagent signals are rejected by the bootstrap signal router, so valid deliveries retry and dead-letter instead of reaching later signal handlers or projectors.",
+          "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Bootstrap accepts lifecycle subagent subscriptions that are not also explicitly assigned to the owning persona, deferring the authority failure to delivery retries.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "QueueProcessor trusts caller- or legacy-controlled top-level __lifecycle payload data as persona and item-type authority.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Message queue enqueue and terminal transition events derive different correlation identifiers for the same queue lifecycle.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Failed daemon startup can close resources before already-started scheduler or queue workloads have drained, allowing overlap with restart.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Bootstrap accepts subagent interceptor subscriptions even though the synchronous interceptor engine can execute only native implementations, silently losing configured transforms and signals.",
+          "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Queue and scheduler shutdown drains wait forever when handler or prompt work never settles, so normal shutdown and failed-start cleanup can hang indefinitely.",
+          "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "The event-id plus handler-id signal handoff key can exceed the runtime-id persistence bound for contract-valid identities.",
+          "status": "resolved_by_review"
+        },
+        {
+          "severity": "Medium",
+          "summary": "Lifecycle-enabled queue publication remains optional, so scope-less AgentRunner continuation and background-completion enqueues can bypass enqueue and terminal lifecycle events.",
+          "status": "resolved_by_review"
+        },
+        {
+          "severity": "Medium",
+          "summary": "A timed-out scheduler tick can resume after a direct stop/start because processSchedule checks running state but not its originating generation after asynchronous prompt lookup.",
+          "status": "resolved_by_review"
+        },
+        {
+          "severity": "Medium",
+          "summary": "Drain exceptions are treated as successful failed-start cleanup, deferred cleanup ignores its boolean result, and normal stop can remain wedged in stopping after a drain rejection.",
+          "status": "resolved_by_review"
+        },
+        {
+          "severity": "Medium",
+          "summary": "Enabled-mode message and schedule enqueues can still bypass lifecycle publication when manager-owned scope or persona resolution is absent.",
+          "status": "resolved_by_review"
+        },
+        {
+          "severity": "Medium",
+          "summary": "A native lifecycle handler attached to multiple personas is added to the runtime catalog more than once and makes valid daemon bootstrap fail.",
+          "status": "resolved_by_review"
+        },
+        {
+          "severity": "Medium",
+          "summary": "IPC shutdown discards the newly fallible stop promise, so a rejected or timed-out drain can become an unhandled rejection and interrupt deferred teardown gating.",
+          "status": "resolved_by_review"
+        }
+      ],
+      "verification": {
+        "status": "exact_refresh_merge_active_review_required",
+        "boundedTerraHighRemediationPasses": 6,
+        "focusedTests": "12 focused files / 385 tests passed under exact Node v24.15.0 ABI 137",
+        "finalControllerVerification": "passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks",
+        "build": "passed",
+        "lint": "latest changed source passes with zero issues; prior full changed-source check had zero errors and seven explicit-return-type warnings",
+        "prettier": "latest daemon source/test pass; repository-baseline full-file drift remains in earlier task files",
+        "diffCheck": "passed",
+        "dependencyMutation": "none; no install or rebuild",
+        "freshSolHighPreCommitReview": "passed commit gate 0C/0H/0M/0L on immutable fingerprint 0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0; session 019f6b0f-f3c8-7160-bb2a-81329c61d473",
+        "reviewedCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
+        "remotePushVerified": true,
+        "remoteTrackingRefAlignment": "clean, pushed, and aligned with the local remote-tracking ref",
+        "finalMarkerReview": "passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint 0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131; session 019f6b4b-dc25-7331-9d26-b5f5595ff21b",
+        "markerCommit": "fdf0e775a411959739a577071788eabe4133e3f2",
+        "exactRefreshMerge": "active conflict-free uncommitted no-commit merge from marker fdf0e775a411959739a577071788eabe4133e3f2; HEAD/upstream source commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 unchanged; fresh full GPT-5.5/xhigh review required before merge commit",
+        "currentStateSummary": "TASK-007 completed exactly six bounded Terra/high remediation passes; final controller verification passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks; fresh complete-diff Sol/high source review 019f6b0f-f3c8-7160-bb2a-81329c61d473 passed 0C/0H/0M/0L on fingerprint 0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0; reviewed task commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 is clean, pushed, and aligned with the local remote-tracking ref; the model-policy/WDD checkpoint passed GPT-5.5/xhigh 0C/0H/0M/2L on fingerprint 9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd and was committed/pushed at d104ba468dbe3241691f8940e90238953b82ebeb; final marker review 019f6b4b-dc25-7331-9d26-b5f5595ff21b passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint 0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131 and marker commit fdf0e775a411959739a577071788eabe4133e3f2 is pushed; TASK-007 is in a conflict-free uncommitted exact refresh merge from fdf0e77 with source commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 unchanged; fresh full GPT-5.5/xhigh refresh review is required before the merge commit; PR checks/review/freshness/merge/cleanup/reconciliation remain."
+      },
+      "currentGate": "exact_refresh_merge_active_gpt55_xhigh_full_review_required"
         }
       ]
     },
@@ -1364,7 +1496,7 @@
             "starter assets",
             "agent skills"
           ],
-          "assignedModel": "controllerCurrent",
+          "assignedModel": "codexHigh",
           "reviewModel": "reviewGate",
           "workerThreadId": null,
           "reviewThreadId": null,
@@ -1400,17 +1532,67 @@
     "activationBase": "7e3402cfd3c0855388e3921e3aab050da12f3cfc",
     "activationCheckpoint": "67b3457c9bab6a4611765c612e0b8f009d65e362",
     "activationSyncCommit": "923623b8c1833b83f83df8036e37ad95b0b0a343",
-    "readinessCommit": "a6d48f7905e70f1ba9d72d4277a78d86acc35ed1"
+    "readinessCommit": "a6d48f7905e70f1ba9d72d4277a78d86acc35ed1",
+    "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
+    "pauseAfterWave": "WAVE-004",
+    "nextWaveActivationAllowed": false,
+    "pauseReason": "user requested pause after WAVE-004 reconciliation",
+    "modelPolicyCheckpointReview": {
+      "reviewThreadId": "019f6b32-0008-7560-a6a2-8400237b7ca6",
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "counts": "0C/1H/1M/1L",
+      "status": "passed_committed_and_pushed",
+      "remediationThreadId": "019f6b35-8ba1-7f83-8a85-d6fa9b48c28f",
+      "remediationModel": "gpt-5.5",
+      "remediationReasoningEffort": "high",
+      "finalReviewThreadId": "019f6b38-ae7a-7e72-913b-4b53c5fdd3e6",
+      "finalReviewCounts": "0C/0H/0M/2L",
+      "finalReviewFingerprint": "9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd",
+      "lowFindingDisposition": "two_lows_untouched_non_blocking"
+    },
+    "controllerStateMarkerReview": {
+      "reviewThreadId": "019f6b41-737e-7ae0-91e8-921556b0b5b6",
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "counts": "0C/0H/1M/0L",
+      "status": "blocking_finding_remediated_rereview_required",
+      "remediationThreadId": "019f6b44-377f-7cd0-bf29-05c6fec6c834",
+      "remediationModel": "gpt-5.5",
+      "remediationReasoningEffort": "high",
+      "secondReviewThreadId": "019f6b46-a404-7c53-af2c-4daa29015e90",
+      "secondReviewCounts": "0C/0H/1M/0L",
+      "secondReviewFinding": "two controller-state TASK-007 summaries still described the already-pushed model-policy WDD checkpoint as pending",
+      "secondRemediationThreadId": "019f6b49-d6da-71b2-a1f1-717cabd1dc25",
+      "secondRemediationModel": "gpt-5.5",
+      "secondRemediationReasoningEffort": "high",
+      "finalReviewThreadId": "019f6b4b-dc25-7331-9d26-b5f5595ff21b",
+      "finalReviewCounts": "0C/0H/0M/0L",
+      "finalReviewFingerprint": "0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131",
+      "markerCommit": "fdf0e775a411959739a577071788eabe4133e3f2",
+      "markerCommitStatus": "pushed",
+      "lowFindingDisposition": "none"
+    },
+    "exactTaskRefresh": {
+      "status": "conflict_free_uncommitted_merge_active_review_required",
+      "sourceCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
+      "headAndUpstreamCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
+      "mergeHead": "fdf0e775a411959739a577071788eabe4133e3f2",
+      "mergeHeadSource": "final_controller_state_marker",
+      "freshFullReviewRequiredBeforeMergeCommit": true,
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh"
+    }
   },
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "dispatch_ready",
-  "lastCheckedAt": "2026-07-16T12:30:05+02:00",
-  "nextCheckDueAt": "2026-07-16T12:35:05+02:00",
+    "status": "exact_refresh_merge_active_gpt55_xhigh_full_review_required",
+    "lastCheckedAt": "2026-07-16T16:23:58+02:00",
+    "nextCheckDueAt": "2026-07-16T16:28:58+02:00",
     "schedulerRef": "talon-issue-256-wdd-wave-4-monitor",
-  "fallbackPrompt": "Resume WAVE-004 execution for EPIC-durable-lifecycle-pipeline. Read the constitution, epic, orchestration.json, controller-state.md, shared context, wave plan, and TASK-007. Verify exact pushed readiness checkpoint a6d48f7905e70f1ba9d72d4277a78d86acc35ed1 on the epic branch and clean task branch/worktree before dispatch. Use Terra/high for implementation and blocking remediation, Sol/high for every review, route only Critical/High/Medium blockers, never auto-edit Low/P3 findings, preserve .minispec, and do not run the full test suite without approval. Monitor worker, verification, freshness, PR, checks, review, merge, and reconciliation readiness.",
-    "stopCondition": "All WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",
+    "fallbackPrompt": "WAVE-004 post-source-commit controller workflow only. Never use GPT-5.6. Use GPT-5.5/xhigh for every review and at most GPT-5.5/high for implementation or blocking remediation. The model-policy/WDD checkpoint passed GPT-5.5/xhigh 0C/0H/0M/2L and is pushed at d104ba468dbe3241691f8940e90238953b82ebeb. Final controller-state marker review 019f6b4b-dc25-7331-9d26-b5f5595ff21b passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint 0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131 and marker commit fdf0e775a411959739a577071788eabe4133e3f2 is pushed. TASK-007 is in a conflict-free uncommitted exact refresh merge from fdf0e77; HEAD and upstream remain reviewed source commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 and MERGE_HEAD is fdf0e775a411959739a577071788eabe4133e3f2. Run a fresh full GPT-5.5/xhigh refresh review before any merge commit, then commit and push the refresh only if it passes 0C/0H/0M, open the PR targeting the epic, and monitor checks, review, freshness, merge, cleanup, and WAVE-004 reconciliation. Do not authorize, start, resume, or redispatch TASK-007 source implementation or source remediation. Remediate only Critical/High/Medium WDD, refresh, or PR blockers; never auto-edit Low/P3 findings, leave .minispec and validation-checklist.md untouched, and do not run the full npm test suite without approval. After the reviewed WAVE-004 reconciliation checkpoint is pushed, deactivate monitoring and pause all epic work; do not activate WAVE-005.",
+    "stopCondition": "WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, monitoring is deactivated, and epic work is paused before WAVE-005.",
     "stopReason": null
   }
 }

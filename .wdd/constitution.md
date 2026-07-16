@@ -1,7 +1,7 @@
 ---
 id: WDD-CONSTITUTION
 kind: constitution
-version: 2.1.0
+version: 2.2.0
 status: active
 ratified: 2026-07-10
 last_amended: 2026-07-16
@@ -44,22 +44,30 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 ```json
 {
   "availableAliases": {
-    "controllerCurrent": "active Codex session for controller, planning, and local edits",
-    "codexHigh": "gpt-5.6-terra at high reasoning for well-defined, tightly scoped offloaded coding tasks",
-    "reviewGate": "gpt-5.6-sol at high reasoning for required pre-commit, task, reconciliation, and epic-validation review"
+    "controllerCurrent": "active Codex session for controller, planning, and local edits; it must not invoke or delegate to a GPT-5.6 model",
+    "codexHigh": "gpt-5.5 at high reasoning for well-defined, tightly scoped offloaded coding and blocking-remediation tasks",
+    "reviewGate": "gpt-5.5 at xhigh reasoning for every required pre-commit, task, refresh, PR, reconciliation, and epic-validation review"
   },
   "models": {
     "epicDefinition": "controllerCurrent",
     "planning": "controllerCurrent",
-    "implementationSimple": "controllerCurrent",
+    "implementationSimple": "codexHigh",
     "implementationComplex": "codexHigh",
     "review": "reviewGate",
-    "feedbackFix": "controllerCurrent",
+    "feedbackFix": "codexHigh",
     "epicValidation": "reviewGate",
     "prDescription": "controllerCurrent"
   }
 }
 ```
+
+- GPT-5.6 models are forbidden for all new controller, worker, feedback-fix,
+  reviewer, reconciliation, and validation activity.
+- Implementation and blocking-remediation agents may use models no newer than
+  GPT-5.5. `codexHigh` defaults to GPT-5.5 with high reasoning.
+- Every review uses `reviewGate`: GPT-5.5 with xhigh reasoning.
+- Historical GPT-5.6 model references remain immutable provenance only and do
+  not authorize reuse.
 
 ## WDD Profile Defaults
 
@@ -88,19 +96,20 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 
 ## Review Policy
 
-- Before every commit, the controller must request a `gpt-5.6-sol` review with high reasoning.
+- Before every commit, the controller must request a `gpt-5.5` review with
+  xhigh reasoning.
 - Critical, high, and medium review issues block commit and merge until addressed or explicitly deemed invalid with written rationale.
 - P1 findings block merge.
 - P2 findings block merge.
 - P3/Low findings do not block commit or merge and MUST NOT trigger automatic
   remediation or another review cycle. Record relevant items as follow-up work.
 - The initial task review and the final pre-commit review inspect the complete
-  task diff. After blocking feedback, intermediate Sol/high reviews MAY focus
+  task diff. After blocking feedback, intermediate reviewGate/xhigh reviews MAY focus
   on the remediation delta and the previously open Critical/High/Medium
-  findings. One fresh complete-task-diff Sol/high review is still mandatory
+  findings. One fresh complete-task-diff reviewGate/xhigh review is still mandatory
   immediately before commit.
 - Any source or test edit after the final clean complete-task-diff review
-  invalidates that review and requires another final Sol/high review.
+  invalidates that review and requires another final reviewGate/xhigh review.
 - Reviewers MAY use `workspace-write` in an isolated task worktree when test
   runners require ephemeral config, cache, socket, or coverage files. The
   reviewer prompt MUST forbid source/test/WDD edits and dependency installation;
@@ -143,7 +152,7 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 - `orchestration.json` must include `schemaVersion: 1`.
 - Plans must identify conflict domains before parallel work begins.
 - Planning must call out persistence, auth, capability, provider-session, runtime-smoke, and documentation impacts when present.
-- Coding tasks may be offloaded to `codexHigh` only when the task is well-defined, tightly scoped, and safe to execute independently.
+- Coding tasks may be offloaded to `codexHigh` only when the task is well-defined, tightly scoped, and safe to execute independently. No implementation or remediation task may use a model newer than GPT-5.5.
 
 ## Task Rules
 
@@ -192,6 +201,9 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 
 ## Amendment History
 
+- 2.2.0 (2026-07-16): prohibited all new GPT-5.6 use, moved every review gate
+  to GPT-5.5 with xhigh reasoning, capped implementation/remediation agents at
+  GPT-5.5, and retained older model references as historical provenance only.
 - 2.1.0 (2026-07-16): prohibited automatic Low/P3 remediation, introduced
   focused blocking-delta re-reviews plus one final full-diff Sol/high gate,
   allowed tightly controlled writable review sandboxes for ephemeral test

@@ -13,10 +13,10 @@ updated_at: 2026-07-16
 
 - Critical, High, and Medium findings block; Low findings are recorded as
   follow-ups and are not automatically remediated.
-- After a full review identifies blockers, intermediate Sol/high reviews focus
+- After a full review identifies blockers, intermediate GPT-5.5/xhigh reviews focus
   on the blocking remediation delta. Every task still receives one fresh full
-  task-diff Sol/high review immediately before commit.
-- Sol/high reviewers may use a writable isolated task worktree only for
+  task-diff GPT-5.5/xhigh review immediately before commit.
+- GPT-5.5/xhigh reviewers may use a writable isolated task worktree only for
   ephemeral test-runner artifacts. Controller before/after status comparison
   must prove no unexpected persistent edits.
 - Each task is committed, pushed, reviewed in GitHub, and merged into the epic
@@ -24,6 +24,8 @@ updated_at: 2026-07-16
   wave-wide batch.
 - Five-minute monitoring applies during review/fix/freshness/merge-ready gates;
   slower cadence applies only during steady implementation.
+- GPT-5.6 is forbidden for all new work. Implementation and remediation agents
+  are capped at GPT-5.5; every review uses GPT-5.5 with xhigh reasoning.
 
 The remaining dependency graph was rechecked on 2026-07-16. Its longest chain
 still requires the planned ordering through dispatcher, daemon integration,
@@ -320,7 +322,20 @@ Activation rule:
   pushed. The isolated branch/worktree were created clean from that exact
   commit. Separate readiness checkpoint `a6d48f7` passed fresh Sol/high review,
   was committed/pushed, and was fast-forwarded/pushed into the clean worktree;
-  Terra/high dispatch is permitted under the active five-minute heartbeat.
+  Terra/high dispatch was historical authorization for the completed TASK-007
+  source run only, is now expired, and is explicitly unauthorized for redispatch
+  because TASK-007 source is complete.
+
+Current execution state:
+
+- TASK-007 source work is complete, reviewed, committed, and pushed at
+  `8a994ea`; only the amended WDD checkpoint, exact epic refresh, task PR,
+  merge, cleanup, and WAVE-004 reconciliation remain.
+- The user replaced the model policy on 2026-07-16: no new GPT-5.6 use,
+  GPT-5.5/high at most for implementation or remediation, and GPT-5.5/xhigh for
+  every review.
+- Pause after WAVE-004 reconciliation. Do not activate WAVE-005 without new
+  user direction.
 
 Stop condition:
 
@@ -574,10 +589,11 @@ Stop condition:
 
 - WAVE-001 through WAVE-003 are done. WAVE-003 merged PRs #261 and #262 and its
   reconciliation passed Sol/high review 0C/0H/0M/2L before commit `7e3402c`
-  was pushed. WAVE-004 is active at the dispatch gate after allocation
-  checkpoint `67b3457` and activation-sync checkpoint `923623b` were reviewed
-  and pushed; readiness checkpoint `a6d48f7` also passed fresh Sol/high review,
-  was pushed, and is exact in the clean local/remote task branch/worktree.
+  was pushed. WAVE-004 is active after TASK-007 source completion at reviewed
+  and pushed task commit `8a994ea`; the amended WDD checkpoint, exact epic
+  refresh, task PR, merge, cleanup, and reconciliation remain.
+- Reconciliation of WAVE-004 is the terminal action for this run. WAVE-005 must
+  remain planned and inactive until the user explicitly resumes the epic.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.
