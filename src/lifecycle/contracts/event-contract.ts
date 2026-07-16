@@ -6,6 +6,7 @@ import {
   LifecycleEventTypeSchema,
   LifecycleIdentifierSchema,
   LifecycleRuntimeIdSchema,
+  isBoundedWellFormedUtf8,
 } from './common.js';
 
 const MAX_LIFECYCLE_REFERENCES = 32;
@@ -21,7 +22,12 @@ export const LifecycleReferenceSchema = z
   .strict();
 
 const LifecycleBoundedScalarSchema = z.union([
-  z.string().max(MAX_LIFECYCLE_METADATA_VALUE_LENGTH),
+  z
+    .string()
+    .max(MAX_LIFECYCLE_METADATA_VALUE_LENGTH)
+    .refine((value) => value.indexOf('\0') === -1 && isBoundedWellFormedUtf8(value, 1_024, 4_096), {
+      message: 'lifecycle metadata strings must be well-formed Unicode without NUL characters',
+    }),
   z.number().finite(),
   z.boolean(),
   z.null(),
@@ -31,6 +37,9 @@ export const LifecycleMetadataKeySchema = z
   .string()
   .min(1)
   .max(128)
+  .refine((value) => value.indexOf('\0') === -1 && isBoundedWellFormedUtf8(value, 128, 512), {
+    message: 'lifecycle metadata keys must be well-formed Unicode without NUL characters',
+  })
   .refine((value) => value === value.trim(), {
     message: 'lifecycle metadata keys must not have leading or trailing whitespace',
   });

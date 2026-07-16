@@ -3,6 +3,7 @@ export {
   LifecycleContractVersionSchema,
   LifecycleHandlerModeSchema,
   LifecycleDisplayNameSchema,
+  LifecycleDurablePersonaOwnerNameSchema,
   LifecycleFilterOwnerNameSchema,
   LifecycleIdentifierSchema,
   LifecycleEventTypeSchema,

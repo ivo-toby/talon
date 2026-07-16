@@ -8,6 +8,7 @@
 import Database from 'better-sqlite3';
 import { ok, err, type Result } from 'neverthrow';
 import { DbError } from '../errors/index.js';
+import { registerLifecycleSqlFunctions } from './lifecycle-sql-functions.js';
 
 /**
  * Opens a SQLite database at the given path and applies performance/safety PRAGMAs.
@@ -22,6 +23,7 @@ export function createDatabase(
 ): Result<Database.Database, DbError> {
   try {
     const db = new Database(dbPath, { readonly: options?.readonly ?? false });
+    registerLifecycleSqlFunctions(db);
 
     // WAL mode: concurrent readers do not block writers and vice versa.
     db.pragma('journal_mode = WAL');

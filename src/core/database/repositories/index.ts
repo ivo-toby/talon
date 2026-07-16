@@ -23,12 +23,7 @@ export { ThreadRepository } from './thread-repository.js';
 export type { MessageRow, InsertMessageInput } from './message-repository.js';
 export { MessageRepository } from './message-repository.js';
 
-export type {
-  QueueItemRow,
-  QueueStatus,
-  QueueType,
-  EnqueueInput,
-} from './queue-repository.js';
+export type { QueueItemRow, QueueStatus, QueueType, EnqueueInput } from './queue-repository.js';
 export { QueueRepository } from './queue-repository.js';
 
 export type {
@@ -40,7 +35,12 @@ export type {
 } from './run-repository.js';
 export { RunRepository } from './run-repository.js';
 
-export type { ScheduleRow, ScheduleType, InsertScheduleInput, UpdateScheduleInput } from './schedule-repository.js';
+export type {
+  ScheduleRow,
+  ScheduleType,
+  InsertScheduleInput,
+  UpdateScheduleInput,
+} from './schedule-repository.js';
 export { ScheduleRepository } from './schedule-repository.js';
 
 export type {
@@ -57,7 +57,11 @@ export { ArtifactRepository } from './artifact-repository.js';
 export type { AuditLogRow, InsertAuditLogInput } from './audit-repository.js';
 export { AuditRepository } from './audit-repository.js';
 
-export type { ToolResultRow, ToolResultStatus, InsertToolResultInput } from './tool-result-repository.js';
+export type {
+  ToolResultRow,
+  ToolResultStatus,
+  InsertToolResultInput,
+} from './tool-result-repository.js';
 export { ToolResultRepository } from './tool-result-repository.js';
 
 export { BackgroundTaskRepository } from './background-task-repository.js';
@@ -65,3 +69,20 @@ export type { InsertA2ATaskInput } from './a2a-task-repository.js';
 export { A2ATaskRepository } from './a2a-task-repository.js';
 export { ExecutionEnvRepository } from './execution-env-repository.js';
 export { ExecutionEnvCheckpointRepository } from './execution-env-checkpoint-repository.js';
+
+export type {
+  LifecycleEventRow,
+  LifecycleEventFanoutResult,
+} from './lifecycle-event-repository.js';
+export { LifecycleEventRepository } from './lifecycle-event-repository.js';
+
+export type {
+  LifecycleDeliveryStatus,
+  LifecycleDeliveryFanoutInput,
+  LifecycleDeliveryRow,
+  ClaimedLifecycleDelivery,
+  ClaimLifecycleDeliveryOptions,
+  LifecycleDeliveryClock,
+  LifecycleFailureDiagnostic,
+} from './lifecycle-delivery-repository.js';
+export { LifecycleDeliveryRepository } from './lifecycle-delivery-repository.js';

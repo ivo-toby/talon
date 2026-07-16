@@ -4,6 +4,82 @@ export const LifecycleContractVersionSchema = z.literal('v1');
 
 const MAX_LIFECYCLE_IDENTIFIER_LENGTH = 128;
 const MAX_LIFECYCLE_RUNTIME_ID_LENGTH = 256;
+export const MAX_LIFECYCLE_DURABLE_PERSONA_SCALARS = 256;
+export const MAX_LIFECYCLE_DURABLE_PERSONA_UTF8_BYTES = 1_024;
+
+/**
+ * Bounds JavaScript UTF-16 code units and UTF-8 bytes without allowing Node
+ * to replace malformed surrogate code units during encoding.
+ */
+export function isBoundedWellFormedUtf8(
+  value: string,
+  maxCodeUnits: number,
+  maxBytes: number,
+): boolean {
+  if (value.length > maxCodeUnits) return false;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    let byteLength: number;
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+      byteLength = 4;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    } else if (codeUnit < 0x80) {
+      byteLength = 1;
+    } else if (codeUnit < 0x800) {
+      byteLength = 2;
+    } else {
+      byteLength = 3;
+    }
+    bytes += byteLength;
+    if (bytes > maxBytes) return false;
+  }
+  return true;
+}
+
+/** Bounds Unicode scalar values and UTF-8 bytes without changing the spelling. */
+export function isBoundedUnicodeScalarsUtf8(
+  value: string,
+  maxScalars: number,
+  maxBytes: number,
+): boolean {
+  let scalars = 0;
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    let byteLength: number;
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+      byteLength = 4;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    } else if (codeUnit < 0x80) {
+      byteLength = 1;
+    } else if (codeUnit < 0x800) {
+      byteLength = 2;
+    } else {
+      byteLength = 3;
+    }
+    scalars += 1;
+    bytes += byteLength;
+    if (scalars > maxScalars || bytes > maxBytes) return false;
+  }
+  return true;
+}
+
+function isPersistableLifecycleText(
+  value: string,
+  maxCodeUnits: number,
+  maxBytes: number,
+): boolean {
+  return value.indexOf('\0') === -1 && isBoundedWellFormedUtf8(value, maxCodeUnits, maxBytes);
+}
 
 /**
  * Lifecycle identifiers are persisted and used as map keys.  They must already
@@ -46,6 +122,25 @@ export const LifecycleRuntimeNameSchema = z
  */
 export const LifecycleFilterOwnerNameSchema = z.string().min(1);
 
+/**
+ * A persona becomes a durable delivery owner only when lifecycle resolution
+ * is enabled. This intentionally remains separate from the legacy root
+ * persona schema and general owner-name filter contract.
+ */
+export const LifecycleDurablePersonaOwnerNameSchema = LifecycleFilterOwnerNameSchema.refine(
+  (value) =>
+    value.indexOf('\0') === -1 &&
+    isBoundedUnicodeScalarsUtf8(
+      value,
+      MAX_LIFECYCLE_DURABLE_PERSONA_SCALARS,
+      MAX_LIFECYCLE_DURABLE_PERSONA_UTF8_BYTES,
+    ),
+  {
+    message:
+      'lifecycle delivery persona names must be at most 256 Unicode scalars and 1024 UTF-8 bytes without NUL characters',
+  },
+);
+
 export const LifecycleVersionedTypeNameSchema = z
   .string()
   .min(1)
@@ -57,6 +152,9 @@ export const LifecycleRuntimeIdSchema = z
   .string()
   .min(1)
   .max(MAX_LIFECYCLE_RUNTIME_ID_LENGTH)
+  .refine((value) => isPersistableLifecycleText(value, MAX_LIFECYCLE_RUNTIME_ID_LENGTH, 1_024), {
+    message: 'lifecycle runtime identifiers must be well-formed Unicode without NUL characters',
+  })
   .refine((value) => value === value.trim(), {
     message: 'lifecycle runtime identifiers must not have leading or trailing whitespace',
   });

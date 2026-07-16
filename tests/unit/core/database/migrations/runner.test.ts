@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -106,10 +106,7 @@ describe('runMigrations', () => {
 
   it('rolls back partial changes from a failed migration', () => {
     // Migration 001 creates table_a successfully.
-    writeFileSync(
-      join(tmpDir, '001-setup.sql'),
-      'CREATE TABLE table_a (id TEXT PRIMARY KEY);',
-    );
+    writeFileSync(join(tmpDir, '001-setup.sql'), 'CREATE TABLE table_a (id TEXT PRIMARY KEY);');
     // Migration 002 creates table_b then fails — table_b should be rolled back.
     writeFileSync(
       join(tmpDir, '002-partial.sql'),
@@ -154,5 +151,741 @@ describe('runMigrations', () => {
       .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='channels'`)
       .get();
     expect(tbl).toBeDefined();
+  });
+
+  it('upgrades a pre-lifecycle schema with the durable event tables', () => {
+    const realMigrationsDir = join(
+      import.meta.dirname,
+      '../../../../../src/core/database/migrations',
+    );
+    const legacyDir = makeTmpDir();
+    for (const file of readdirSync(realMigrationsDir)) {
+      if (file.endsWith('.sql') && Number.parseInt(file, 10) <= 13) {
+        copyFileSync(join(realMigrationsDir, file), join(legacyDir, file));
+      }
+    }
+
+    expect(runMigrations(db, legacyDir)._unsafeUnwrap()).toBeGreaterThan(0);
+    expect(db.pragma('user_version', { simple: true })).toBe(13);
+
+    const upgrade = runMigrations(db, realMigrationsDir);
+    expect(upgrade._unsafeUnwrap()).toBe(1);
+    expect(db.pragma('user_version', { simple: true })).toBe(14);
+    for (const table of ['lifecycle_events', 'lifecycle_event_deliveries']) {
+      expect(
+        db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table),
+      ).toBeDefined();
+    }
+
+    const indexes = db.prepare(`PRAGMA index_list('lifecycle_event_deliveries')`).all() as Array<{
+      name: string;
+      partial: number;
+    }>;
+    expect(indexes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: 'idx_lifecycle_deliveries_ready', partial: 1 }),
+        expect.objectContaining({ name: 'idx_lifecycle_deliveries_expired_claims', partial: 1 }),
+      ]),
+    );
+    const expiredColumns = db
+      .prepare(`PRAGMA index_info('idx_lifecycle_deliveries_expired_claims')`)
+      .all() as Array<{ name: string }>;
+    expect(expiredColumns.map((column) => column.name)).toEqual([
+      'claim_expires_at',
+      'priority',
+      'created_at',
+    ]);
+
+    db.prepare(
+      `INSERT INTO lifecycle_events (
+        event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+        causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+        occurred_at, created_at
+      ) VALUES (?, 'v1', 'run.completed.v1', 'thread', 'thread-1', 'correlation-1',
+        NULL, 0, 1, '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}', '{"references":[],"metadata":{}}',
+        '2026-07-16T10:00:00.000Z', 1)`,
+    ).run('event-1');
+    const insertEventWithPayload = db.prepare(
+      `INSERT INTO lifecycle_events (
+        event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+        causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+        occurred_at, created_at
+      ) VALUES (@eventId, 'v1', 'run.completed.v1', 'thread', 'thread-1', @eventId,
+        NULL, @recursionDepth, @recursionMaxDepth,
+        '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}', @payload,
+        '2026-07-16T10:00:00.000Z', 1)`,
+    );
+    expect(() =>
+      insertEventWithPayload.run({
+        eventId: 'event-recursion-max-zero',
+        recursionDepth: 0,
+        recursionMaxDepth: 0,
+        payload: '{"references":[],"metadata":{}}',
+      }),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+          event_id, handler_id, persona, priority, handler_identity, failure_policy,
+          status, attempts, max_attempts, created_at, updated_at
+        ) VALUES ('event-1', 'handler-1', 'support', 0, '{"version":"v1"}',
+          '{"version":"v1","mode":"dead_letter"}', 'not-a-state', 0, 1, 1, 1)`,
+        )
+        .run(),
+    ).toThrow();
+    // Escaped lone surrogates cannot be faithfully represented by JSON1 and
+    // must fail, while ordinary escaped Unicode remains valid. Use INSERTs:
+    // the event outbox itself is intentionally immutable after persistence.
+    expect(() =>
+      insertEventWithPayload.run({
+        eventId: 'event-payload-lone-surrogate',
+        recursionDepth: 0,
+        recursionMaxDepth: 1,
+        payload: '{"references":[],"metadata":{"bad":"\\ud800"}}',
+      }),
+    ).toThrow();
+    for (const [index, payload] of [
+      '{"references":[{"type":"run"}],"metadata":{}}',
+      '{"references":[{"type":"run","id":null}],"metadata":{}}',
+      '{"references":[{"type":" bad","id":"reference-1"}],"metadata":{}}',
+      '{"references":[{"type":"run","id":" reference-1"}],"metadata":{}}',
+      '{"references":[],"metadata":{" unicode":"value"}}',
+      '{"references":["{\\"type\\":\\"run\\",\\"id\\":\\"reference-1\\"}"],"metadata":{}}',
+      '{"references":[],"metadata":{"a":1,"a":2}}',
+      '{"references":[],"metadata":{"huge":1e999}}',
+      '{"references":[],"metadata":{"negative":-1e999}}',
+      '{"references":[],"metadata":{"A":true,"Ａ":false}}',
+    ].entries()) {
+      expect(() =>
+        insertEventWithPayload.run({
+          eventId: `event-invalid-payload-${index}`,
+          recursionDepth: 0,
+          recursionMaxDepth: 1,
+          payload,
+        }),
+      ).toThrow();
+    }
+    for (const [index, payload] of [
+      '{"references":[],"metadata":{"café":"emoji 😀"}}',
+      '{"references":[],"metadata":{"escaped":"line\\nbreak\\tand \\u0001"}}',
+      '{"references":[],"metadata":{"literal":"\\\\u1234"}}',
+    ].entries()) {
+      expect(() =>
+        insertEventWithPayload.run({
+          eventId: `event-valid-payload-${index}`,
+          recursionDepth: 0,
+          recursionMaxDepth: 1,
+          payload,
+        }),
+      ).not.toThrow();
+      expect(
+        db
+          .prepare(`SELECT payload FROM lifecycle_events WHERE event_id = ?`)
+          .get(`event-valid-payload-${index}`),
+      ).toEqual({ payload });
+    }
+    expect(() =>
+      db
+        .prepare(`UPDATE lifecycle_events SET aggregate_type = 'Thread' WHERE event_id = 'event-1'`)
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_events SET aggregate_id = 'forged-thread' WHERE event_id = 'event-1'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(`UPDATE lifecycle_events SET provenance = ? WHERE event_id = 'event-1'`)
+        .run('{"source":"daemon","sourceEventIds":[],"sourceReferences":[{"type":"run"}]}'),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+          event_id, handler_id, persona, priority, handler_identity, failure_policy,
+          status, attempts, max_attempts, created_at, updated_at
+        ) VALUES ('event-1', 'handler-2', 'support', 0, '{not-json}',
+          '{"version":"v1","mode":"dead_letter"}', 'pending', 0, 1, 1, 1)`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+          event_id, handler_id, persona, priority, handler_identity, failure_policy,
+          status, attempts, max_attempts, created_at, updated_at
+        ) VALUES ('event-1', 'handler-3', 'support', 0,
+          '{"version":"v2"}', '{"version":"v1","mode":"dead_letter"}',
+          'pending', 0, 1, 1, 1)`,
+        )
+        .run(),
+    ).toThrow();
+
+    const insertValidDelivery = db.prepare(
+      `INSERT INTO lifecycle_event_deliveries (
+        event_id, handler_id, persona, priority, handler_identity, failure_policy,
+        status, attempts, max_attempts, created_at, updated_at
+      ) VALUES ('event-1', @handlerId, @persona, 0, @identity, @failurePolicy,
+        'pending', 0, 1, 1, 1)`,
+    );
+    const failurePolicy = '{"version":"v1","mode":"dead_letter"}';
+    const identityFor = (handlerId: string): string =>
+      JSON.stringify({
+        version: 'v1',
+        handlerId,
+        runtimeKind: 'native',
+        implementationRef: 'run-projector',
+        implementationVersion: '1.0.0',
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      });
+    const interceptorIdentity = (
+      handlerId: string,
+      overrides: Record<string, unknown> = {},
+    ): string =>
+      JSON.stringify({
+        version: 'v1',
+        handlerId,
+        runtimeKind: 'native',
+        implementationRef: 'run-projector',
+        implementationVersion: '1.0.0',
+        mode: 'interceptor',
+        inputContract: 'talon.lifecycle.interceptor.input.v1',
+        outputContract: 'talon.lifecycle.advisory.interceptor.output.v1',
+        interceptorSafety: 'advisory',
+        ...overrides,
+      });
+    for (const [handlerId, identity] of [
+      [
+        'handler-advisory-enforcing-output',
+        interceptorIdentity('handler-advisory-enforcing-output', {
+          outputContract: 'talon.lifecycle.enforcing.interceptor.output.v1',
+        }),
+      ],
+      [
+        'handler-enforcing-advisory-output',
+        interceptorIdentity('handler-enforcing-advisory-output', {
+          interceptorSafety: 'enforcing',
+        }),
+      ],
+      [
+        'handler-enforcing-subagent',
+        interceptorIdentity('handler-enforcing-subagent', {
+          interceptorSafety: 'enforcing',
+          outputContract: 'talon.lifecycle.enforcing.interceptor.output.v1',
+          runtimeKind: 'subagent',
+        }),
+      ],
+      [
+        'handler-enforcing-missing-safety',
+        interceptorIdentity('handler-enforcing-missing-safety', {
+          outputContract: 'talon.lifecycle.enforcing.interceptor.output.v1',
+          interceptorSafety: undefined,
+        }),
+      ],
+    ] as const) {
+      expect(() =>
+        insertValidDelivery.run({ handlerId, persona: 'support', identity, failurePolicy }),
+      ).toThrow();
+    }
+    expect(() =>
+      insertValidDelivery.run({
+        handlerId: 'handler-4',
+        persona: 'support',
+        identity: identityFor('handler-4'),
+        failurePolicy,
+      }),
+    ).not.toThrow();
+    // Identity and policy are one authority decision. A syntactically valid
+    // policy cannot be paired with the wrong handler mode on INSERT or UPDATE.
+    for (const [handlerId, identity, incompatiblePolicy] of [
+      ['handler-event-fail-open', identityFor('handler-event-fail-open'), 'fail_open'],
+      [
+        'handler-advisory-dead-letter',
+        interceptorIdentity('handler-advisory-dead-letter'),
+        'dead_letter',
+      ],
+      [
+        'handler-enforcing-fail-open',
+        interceptorIdentity('handler-enforcing-fail-open', {
+          interceptorSafety: 'enforcing',
+          outputContract: 'talon.lifecycle.enforcing.interceptor.output.v1',
+        }),
+        'fail_open',
+      ],
+    ] as const) {
+      expect(() =>
+        insertValidDelivery.run({
+          handlerId,
+          persona: 'support',
+          identity,
+          failurePolicy: JSON.stringify({ version: 'v1', mode: incompatiblePolicy }),
+        }),
+      ).toThrow();
+    }
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET failure_policy = '{"version":"v1","mode":"fail_open"}'
+           WHERE handler_id = 'handler-4'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET handler_identity = ?
+           WHERE handler_id = 'handler-4'`,
+        )
+        .run(interceptorIdentity('handler-4')),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries SET handler_identity = ? WHERE handler_id = 'handler-4'`,
+        )
+        .run(
+          JSON.stringify({
+            ...JSON.parse(identityFor('handler-4')),
+            mode: 'event',
+            inputContract: 'talon.lifecycle.signal.envelope.v1',
+          }),
+        ),
+    ).toThrow();
+    // Individually valid, policy-compatible replacements are still forged
+    // authority snapshots and must remain immutable after fan-out.
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries SET handler_identity = ? WHERE handler_id = 'handler-4'`,
+        )
+        .run(
+          JSON.stringify({
+            ...JSON.parse(identityFor('handler-4')),
+            implementationVersion: '2.0.0',
+          }),
+        ),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET failure_policy = '{"version":"v1","mode":"preserve_session"}'
+           WHERE handler_id = 'handler-4'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      insertValidDelivery.run({
+        handlerId: 'handler-policy-null',
+        persona: 'support',
+        identity: identityFor('handler-policy-null'),
+        failurePolicy: '{"version":"v1","mode":null}',
+      }),
+    ).toThrow();
+    expect(() =>
+      insertValidDelivery.run({
+        handlerId: 'handler-persona-boundary',
+        persona: 'p'.repeat(256),
+        identity: identityFor('handler-persona-boundary'),
+        failurePolicy,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      insertValidDelivery.run({
+        handlerId: 'handler-persona-overflow',
+        persona: 'p'.repeat(257),
+        identity: identityFor('handler-persona-overflow'),
+        failurePolicy,
+      }),
+    ).toThrow();
+    const maxUtf8Persona = '😀'.repeat(256);
+    expect(Array.from(maxUtf8Persona)).toHaveLength(256);
+    expect(Buffer.byteLength(maxUtf8Persona, 'utf8')).toBe(1_024);
+    expect(() =>
+      insertValidDelivery.run({
+        handlerId: 'handler-persona-utf8-boundary',
+        persona: maxUtf8Persona,
+        identity: identityFor('handler-persona-utf8-boundary'),
+        failurePolicy,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      insertValidDelivery.run({
+        handlerId: 'handler-persona-utf8-overflow',
+        persona: `${maxUtf8Persona}😀`,
+        identity: identityFor('handler-persona-utf8-overflow'),
+        failurePolicy,
+      }),
+    ).toThrow();
+    // Bind the value so this regression covers SQLite's TEXT handling without
+    // leaving an invalid fixture row behind for later assertions.
+    expect(() =>
+      insertValidDelivery.run({
+        handlerId: 'handler-persona-nul',
+        persona: 'support\0poison',
+        identity: identityFor('handler-persona-nul'),
+        failurePolicy,
+      }),
+    ).toThrow();
+    for (const [handlerId, persona, identity] of [
+      ['handler-5', 'support', '{"handlerId":"handler-5"}'],
+      ['handler-6', 'support', '[]'],
+      ['handler-7', 'support', identityFor('another-handler')],
+      ['handler-8', '', identityFor('handler-8')],
+    ]) {
+      expect(() =>
+        insertValidDelivery.run({ handlerId, persona, identity, failurePolicy }),
+      ).toThrow();
+    }
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+            event_id, handler_id, persona, priority, handler_identity, failure_policy,
+            status, attempts, max_attempts, created_at, updated_at
+          ) VALUES ('event-1', 'handler-9', 'support', 0, ?, ?, 'claimed', 0, 1, 1, 1)`,
+        )
+        .run(identityFor('handler-9'), failurePolicy),
+    ).toThrow();
+    expect(() =>
+      db.prepare(`UPDATE lifecycle_events SET causation_id = '' WHERE event_id = 'event-1'`).run(),
+    ).toThrow();
+
+    // The migration is also the durability boundary: direct SQL cannot bypass
+    // the bounded lifecycle contract even when repository validation is absent.
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_events SET type = 'unshipped.event.v1' WHERE event_id = 'event-1'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_events SET occurred_at = 'not-a-timestamp' WHERE event_id = 'event-1'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_events SET occurred_at = '2026-07-16T10:00:00.000+00:00' WHERE event_id = 'event-1'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(`UPDATE lifecycle_events SET recursion_max_depth = 17 WHERE event_id = 'event-1'`)
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(`UPDATE lifecycle_events SET provenance = ? WHERE event_id = 'event-1'`)
+        .run('{"source":"daemon","sourceEventIds":[1],"sourceReferences":[]}'),
+    ).toThrow();
+    expect(() =>
+      db.prepare(`UPDATE lifecycle_events SET payload = ? WHERE event_id = 'event-1'`).run(
+        JSON.stringify({
+          references: [],
+          metadata: Object.fromEntries(
+            Array.from({ length: 33 }, (_, index) => [`k${index}`, index]),
+          ),
+        }),
+      ),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(`UPDATE lifecycle_events SET payload = ? WHERE event_id = 'event-1'`)
+        .run(JSON.stringify({ references: [{ type: 'run', id: 1 }], metadata: {} })),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(`UPDATE lifecycle_events SET payload = ? WHERE event_id = 'event-1'`)
+        .run(JSON.stringify({ references: [], metadata: { body: 'x'.repeat(262_144) } })),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries SET handler_identity = ? WHERE handler_id = 'handler-4'`,
+        )
+        .run(JSON.stringify({ ...JSON.parse(identityFor('handler-4')), extra: true })),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries SET failure_policy = ? WHERE handler_id = 'handler-4'`,
+        )
+        .run('{"version":"v1","mode":"dead_letter","extra":true}'),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries SET handler_identity = ? WHERE handler_id = 'handler-4'`,
+        )
+        .run(
+          JSON.stringify({
+            ...JSON.parse(identityFor('handler-4')),
+            implementationRef: 'x'.repeat(129),
+          }),
+        ),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET status = 'completed', completed_at = 2, updated_at = 2
+           WHERE handler_id = 'handler-4'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET status = 'failed', attempts = 1, max_attempts = 2, next_retry_at = 2,
+               last_error = '{}'
+           WHERE handler_id = 'handler-4'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET status = 'failed', attempts = 1, max_attempts = 2, next_retry_at = 2,
+               last_error = ?
+           WHERE handler_id = 'handler-4'`,
+        )
+        .run(JSON.stringify({ code: 'x'.repeat(129) })),
+    ).toThrow();
+
+    // Direct SQL must not be able to create a terminal delivery or use
+    // conflict replacement to sidestep the immutable event/fan-out snapshots.
+    // These are real SQLite statements, rather than repository tests, because
+    // the migration is the final durability boundary.
+    const replaceEventId = 'event-replace-guard';
+    db.prepare(
+      `INSERT INTO lifecycle_events (
+        event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+        causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+        occurred_at, created_at
+      ) VALUES (?, 'v1', 'run.completed.v1', 'thread', 'original-thread', 'replace-correlation',
+        NULL, 0, 1, '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+        '{"references":[],"metadata":{"original":true}}', '2026-07-16T10:00:00.000Z', 10)`,
+    ).run(replaceEventId);
+    const originalEvent = db
+      .prepare(
+        `SELECT event_sequence, aggregate_id, payload FROM lifecycle_events WHERE event_id = ?`,
+      )
+      .get(replaceEventId);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO lifecycle_events (
+            event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+            causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+            occurred_at, created_at
+          ) VALUES (?, 'v1', 'run.completed.v1', 'thread', 'forged-thread', 'replace-correlation',
+            NULL, 0, 1, '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+            '{"references":[],"metadata":{"forged":true}}', '2026-07-16T10:00:00.000Z', 11)`,
+        )
+        .run(replaceEventId),
+    ).toThrow();
+    expect(
+      db
+        .prepare(
+          `SELECT event_sequence, aggregate_id, payload FROM lifecycle_events WHERE event_id = ?`,
+        )
+        .get(replaceEventId),
+    ).toEqual(originalEvent);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO lifecycle_events (
+            event_sequence, event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+            causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+            occurred_at, created_at
+          ) VALUES (?, 'forged-sequence-event', 'v1', 'run.completed.v1', 'thread',
+            'forged-thread', 'forged-sequence-correlation', NULL, 0, 1,
+            '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+            '{"references":[],"metadata":{"forged":true}}', '2026-07-16T10:00:00.000Z', 11)`,
+        )
+        .run((originalEvent as { event_sequence: number }).event_sequence),
+    ).toThrow();
+    expect(
+      db
+        .prepare(
+          `SELECT event_sequence, aggregate_id, payload FROM lifecycle_events WHERE event_id = ?`,
+        )
+        .get(replaceEventId),
+    ).toEqual(originalEvent);
+
+    // SQLite exposes an omitted INTEGER PRIMARY KEY as -1 in a BEFORE INSERT
+    // trigger. The durable table must nevertheless reject direct sentinel
+    // sequences, while leaving a repository-shaped omitted insert functional.
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_events (
+            event_sequence, event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+            causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+            occurred_at, created_at
+          ) VALUES (-1, 'event-negative-sequence', 'v1', 'run.completed.v1', 'thread',
+            'thread-negative-sequence', 'correlation-negative-sequence', NULL, 0, 1,
+            '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+            '{"references":[],"metadata":{}}', '2026-07-16T10:00:00.000Z', 12)`,
+        )
+        .run(),
+    ).toThrow();
+    expect(
+      db
+        .prepare(`SELECT event_sequence FROM lifecycle_events WHERE event_id = ?`)
+        .get('event-negative-sequence'),
+    ).toBeUndefined();
+    expect(() =>
+      insertEventWithPayload.run({
+        eventId: 'event-auto-after-negative-sequence',
+        recursionDepth: 0,
+        recursionMaxDepth: 1,
+        payload: '{"references":[],"metadata":{}}',
+      }),
+    ).not.toThrow();
+    const autoInsertedEvent = db
+      .prepare(`SELECT event_sequence FROM lifecycle_events WHERE event_id = ?`)
+      .get('event-auto-after-negative-sequence') as { event_sequence: number };
+    expect(autoInsertedEvent.event_sequence).toBeGreaterThan(0);
+
+    // A legacy or externally damaged database may already contain -1. Its
+    // replacement attempt still must be atomic: the failed statement cannot
+    // delete the original event and cascade-delete its existing delivery.
+    db.pragma('ignore_check_constraints = ON');
+    try {
+      db.prepare(
+        `INSERT INTO lifecycle_events (
+          event_sequence, event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+          causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+          occurred_at, created_at
+        ) VALUES (-1, 'legacy-negative-sequence', 'v1', 'run.completed.v1', 'thread',
+          'legacy-thread', 'legacy-correlation', NULL, 0, 1,
+          '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+          '{"references":[],"metadata":{"original":true}}', '2026-07-16T10:00:00.000Z', 12)`,
+      ).run();
+    } finally {
+      db.pragma('ignore_check_constraints = OFF');
+    }
+    const legacyNegativeEvent = db
+      .prepare(
+        `SELECT event_sequence, aggregate_id, payload FROM lifecycle_events WHERE event_id = ?`,
+      )
+      .get('legacy-negative-sequence');
+    const legacyHandlerId = 'legacy-negative-handler';
+    db.prepare(
+      `INSERT INTO lifecycle_event_deliveries (
+        event_id, handler_id, persona, priority, handler_identity, failure_policy,
+        status, attempts, max_attempts, created_at, updated_at
+      ) VALUES (?, ?, 'support', 1, ?, ?, 'pending', 0, 2, 12, 12)`,
+    ).run('legacy-negative-sequence', legacyHandlerId, identityFor(legacyHandlerId), failurePolicy);
+    const legacyNegativeDelivery = db
+      .prepare(
+        `SELECT event_id, handler_id, persona, priority, status, attempts
+         FROM lifecycle_event_deliveries WHERE event_id = ? AND handler_id = ?`,
+      )
+      .get('legacy-negative-sequence', legacyHandlerId);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO lifecycle_events (
+            event_sequence, event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+            causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+            occurred_at, created_at
+          ) VALUES (-1, 'forged-negative-sequence', 'v1', 'run.completed.v1', 'thread',
+            'forged-thread', 'forged-correlation', NULL, 0, 1,
+            '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+            '{"references":[],"metadata":{"forged":true}}', '2026-07-16T10:00:00.000Z', 13)`,
+        )
+        .run(),
+    ).toThrow();
+    expect(
+      db
+        .prepare(
+          `SELECT event_sequence, aggregate_id, payload FROM lifecycle_events WHERE event_id = ?`,
+        )
+        .get('legacy-negative-sequence'),
+    ).toEqual(legacyNegativeEvent);
+    expect(
+      db
+        .prepare(`SELECT event_id FROM lifecycle_events WHERE event_id = ?`)
+        .get('forged-negative-sequence'),
+    ).toBeUndefined();
+    expect(
+      db
+        .prepare(
+          `SELECT event_id, handler_id, persona, priority, status, attempts
+           FROM lifecycle_event_deliveries WHERE event_id = ? AND handler_id = ?`,
+        )
+        .get('legacy-negative-sequence', legacyHandlerId),
+    ).toEqual(legacyNegativeDelivery);
+
+    const replaceHandlerId = 'replace-guard-handler';
+    db.prepare(
+      `INSERT INTO lifecycle_event_deliveries (
+        event_id, handler_id, persona, priority, handler_identity, failure_policy,
+        status, attempts, max_attempts, created_at, updated_at
+      ) VALUES (?, ?, 'support', 1, ?, ?, 'pending', 0, 2, 10, 10)`,
+    ).run(replaceEventId, replaceHandlerId, identityFor(replaceHandlerId), failurePolicy);
+    const originalDelivery = db
+      .prepare(
+        `SELECT persona, priority, handler_identity, status, attempts
+         FROM lifecycle_event_deliveries WHERE event_id = ? AND handler_id = ?`,
+      )
+      .get(replaceEventId, replaceHandlerId);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT OR REPLACE INTO lifecycle_event_deliveries (
+            event_id, handler_id, persona, priority, handler_identity, failure_policy,
+            status, attempts, max_attempts, created_at, updated_at
+          ) VALUES (?, ?, 'forged', 99, ?, ?, 'pending', 0, 2, 11, 11)`,
+        )
+        .run(replaceEventId, replaceHandlerId, identityFor(replaceHandlerId), failurePolicy),
+    ).toThrow();
+    expect(
+      db
+        .prepare(
+          `SELECT persona, priority, handler_identity, status, attempts
+           FROM lifecycle_event_deliveries WHERE event_id = ? AND handler_id = ?`,
+        )
+        .get(replaceEventId, replaceHandlerId),
+    ).toEqual(originalDelivery);
+
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+            event_id, handler_id, persona, priority, handler_identity, failure_policy,
+            status, attempts, max_attempts, completed_at, created_at, updated_at
+          ) VALUES (?, 'forged-terminal-handler', 'support', 0, ?, ?,
+            'completed', 0, 1, 12, 12, 12)`,
+        )
+        .run(replaceEventId, identityFor('forged-terminal-handler'), failurePolicy),
+    ).toThrow();
+    expect(
+      db
+        .prepare(
+          `SELECT COUNT(*) AS count FROM lifecycle_event_deliveries
+           WHERE event_id = ? AND handler_id = 'forged-terminal-handler'`,
+        )
+        .get(replaceEventId),
+    ).toEqual({ count: 0 });
   });
 });
