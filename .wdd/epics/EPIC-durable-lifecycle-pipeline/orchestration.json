@@ -790,10 +790,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "pending_reviewed_activation_checkpoint",
+          "branchFreshness": "pending_reviewed_activation_sync",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "allocation_pending_review"
+          "currentGate": "activation_sync_pending_review"
         }
       ]
     },
@@ -1396,17 +1396,17 @@
     "activeWave": "WAVE-004",
     "nextWave": "WAVE-005",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": false,
+    "activationArtifactsSynced": true,
     "activationBase": "7e3402cfd3c0855388e3921e3aab050da12f3cfc",
-    "activationCheckpoint": null,
+    "activationCheckpoint": "67b3457c9bab6a4611765c612e0b8f009d65e362",
     "activationSyncCommit": null
   },
   "monitoring": {
     "mode": "manual",
     "cadence": "adaptive",
-    "status": "activation_pending_review",
-  "lastCheckedAt": "2026-07-16T11:59:36+02:00",
-  "nextCheckDueAt": "2026-07-16T12:04:36+02:00",
+    "status": "activation_sync_pending_review",
+  "lastCheckedAt": "2026-07-16T12:10:23+02:00",
+  "nextCheckDueAt": "2026-07-16T12:15:23+02:00",
     "schedulerRef": null,
   "fallbackPrompt": "Resume WAVE-004 activation for EPIC-durable-lifecycle-pipeline. Read the constitution, epic, orchestration.json, controller-state.md, shared context, wave plan, and TASK-007. Do not create the task branch or worktree until the allocation checkpoint is Sol/high reviewed, committed and pushed, its exact hash is controller.activationCheckpoint, controller.activationArtifactsSynced is true, and a fresh activation-sync Sol/high review has passed and been pushed. Do not dispatch until a later worktree-readiness checkpoint is Sol/high reviewed, committed and pushed and the clean task branch/worktree is current at that exact commit. Use Terra/high for implementation, Sol/high for every review, route only Critical/High/Medium blockers, preserve .minispec, and do not run the full test suite without approval.",
     "stopCondition": "All WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",

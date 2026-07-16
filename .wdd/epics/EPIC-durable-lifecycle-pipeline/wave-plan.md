@@ -312,9 +312,10 @@ Rationale:
 Activation rule:
 
 - TASK-007 is allocated as the sole bundled task from reviewed and pushed
-  reconciliation head `7e3402c`; its branch/worktree remain forbidden until
-  the allocation checkpoint is reviewed, committed, pushed, recorded, and the
-  activation-sync checkpoint independently passes Sol/high review and is pushed.
+  reconciliation head `7e3402c`. Allocation checkpoint `67b3457` passed
+  Sol/high review and is pushed/recorded exactly; its branch/worktree remain
+  forbidden until the activation-sync checkpoint independently passes fresh
+  Sol/high review and is committed/pushed.
 - Create the isolated worktree only from the reviewed activation-sync commit.
 
 Stop condition:
@@ -569,8 +570,9 @@ Stop condition:
 
 - WAVE-001 through WAVE-003 are done. WAVE-003 merged PRs #261 and #262 and its
   reconciliation passed Sol/high review 0C/0H/0M/2L before commit `7e3402c`
-  was pushed. WAVE-004 is active at the allocation-review gate; its task branch
-  and worktree do not yet exist.
+  was pushed. WAVE-004 is active at the activation-sync review gate after
+  reviewed allocation checkpoint `67b3457` was pushed and recorded; its task
+  branch and worktree do not yet exist.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

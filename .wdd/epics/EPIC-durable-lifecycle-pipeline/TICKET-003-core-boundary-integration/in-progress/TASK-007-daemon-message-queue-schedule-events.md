@@ -22,8 +22,8 @@ branch: task/TASK-007-daemon-message-queue-schedule-events
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events
 worktree_status: allocated_pending_creation
 pr: null
-current_gate: allocation_pending_review
-branch_freshness: pending_reviewed_activation_checkpoint
+current_gate: activation_sync_pending_review
+branch_freshness: pending_reviewed_activation_sync
 verification:
   - "npx vitest run tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/pipeline/message-pipeline.test.ts tests/unit/queue/queue-processor.test.ts tests/unit/scheduler/scheduler.test.ts"
   - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/core/database/migrations/runner.test.ts"
