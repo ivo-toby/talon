@@ -274,6 +274,15 @@ const TOOLS = [
     },
   },
   {
+    name: 'channel_list',
+    description:
+      'Lists the channels bound to the persona and, per channel, the chat external_ids the persona can deliver to. Use this to discover explicit targets for channel_send when the schedule was created from the CLI and has no origin chat.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
     name: 'persona_send',
     description: 'Send a task to another persona via the A2A layer',
     inputSchema: {

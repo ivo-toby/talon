@@ -15,6 +15,7 @@ import type { ToolCallResult } from './tool-types.js';
 import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
 import { ChannelSendHandler, type ChannelSendArgs } from './host-tools/channel-send.js';
+import { ChannelListHandler, type ChannelListArgs } from './host-tools/channel-list.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
 import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
@@ -67,6 +68,7 @@ export class HostToolsBridge {
   private readonly bridgeAuthByRunId = new Map<string, RegisteredBridgeAuth>();
   private scheduleHandler: ScheduleManageHandler;
   private channelHandler: ChannelSendHandler;
+  private channelListHandler: ChannelListHandler;
   private personaSendHandler: PersonaSendHandler | null = null;
   private personaTaskStatusHandler: PersonaTaskStatusHandler | null = null;
   private personaListHandler: PersonaListHandler;
@@ -93,6 +95,13 @@ export class HostToolsBridge {
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       messageRepository: ctx.repos.message,
+      logger: ctx.logger,
+    });
+
+    this.channelListHandler = new ChannelListHandler({
+      bindingRepository: ctx.repos.binding,
+      channelRepository: ctx.repos.channel,
+      threadRepository: ctx.repos.thread,
       logger: ctx.logger,
     });
 
@@ -570,6 +579,9 @@ export class HostToolsBridge {
 
       case 'channel.send':
         return this.channelHandler.execute(args as unknown as ChannelSendArgs, context);
+
+      case 'channel.list':
+        return this.channelListHandler.execute(args as unknown as ChannelListArgs, context);
 
       case 'persona.send':
         if (!this.personaSendHandler) {
