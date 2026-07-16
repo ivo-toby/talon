@@ -9,6 +9,30 @@ updated_at: 2026-07-16
 
 # Wave Plan: EPIC-durable-lifecycle-pipeline
 
+## Delivery-Speed Policy
+
+- Critical, High, and Medium findings block; Low findings are recorded as
+  follow-ups and are not automatically remediated.
+- After a full review identifies blockers, intermediate Sol/high reviews focus
+  on the blocking remediation delta. Every task still receives one fresh full
+  task-diff Sol/high review immediately before commit.
+- Sol/high reviewers may use a writable isolated task worktree only for
+  ephemeral test-runner artifacts. Controller before/after status comparison
+  must prove no unexpected persistent edits.
+- Each task is committed, pushed, reviewed in GitHub, and merged into the epic
+  branch as soon as its individual gate passes; tasks are not held for a
+  wave-wide batch.
+- Five-minute monitoring applies during review/fix/freshness/merge-ready gates;
+  slower cadence applies only during steady implementation.
+
+The remaining dependency graph was rechecked on 2026-07-16. Its longest chain
+still requires the planned ordering through dispatcher, daemon integration,
+outbound events, telemetry, retention, CLI, governed promotion, verification,
+and documentation. Collapsing those barriers would combine central config,
+daemon, persistence, or operator boundaries and is not a safe acceleration.
+The plan therefore preserves task dependencies and gains speed from review and
+gate throughput rather than speculative conflict-heavy parallelism.
+
 ## Task Inventory
 
 | Task | Ticket | Depends On | Conflict Domains | Status |

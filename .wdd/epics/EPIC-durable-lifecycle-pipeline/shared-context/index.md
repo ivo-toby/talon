@@ -44,6 +44,9 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
   catalogs materialized into canonical snapshots.
 - Reject proxy/accessor/callable-proxy paths before reflection or invocation at
   lifecycle trust boundaries.
+- Do not remediate Low/P3 review findings automatically. Route only
+  Critical/High/Medium blockers, use focused delta re-review while fixing them,
+  and require one final full-diff Sol/high review immediately before commit.
 - Do not break continuation, rotation-boundary, or observational-memory reducer
   semantics while removing name-based special cases.
 

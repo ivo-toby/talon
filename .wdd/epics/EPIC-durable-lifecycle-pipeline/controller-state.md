@@ -13,6 +13,13 @@ updated_at: 2026-07-16
 
 The controller activates/reconciles waves, owns epic/task branch and worktree setup, dispatch, reviews, feedback, freshness, verification, merges, and shared context. It does not implement task code while workers are active.
 
+Delivery-speed policy: route only Critical/High/Medium blockers; Low/P3
+findings become follow-ups and never trigger automatic edits. Blocking fixes
+may receive focused Sol/high delta review, but one fresh full-diff Sol/high
+review is mandatory immediately before commit. Review sandboxes may be writable
+for ephemeral test artifacts only, with before/after worktree status proof.
+Every task advances independently as soon as its gates clear.
+
 ## Epic Branch
 
 - Branch: epic/durable-lifecycle-pipeline
@@ -51,23 +58,40 @@ Terra/high workers were dispatched.
 ## Monitoring
 
 - Mode: codex_thread_heartbeat
-- Cadence: adaptive
+- Cadence: adaptive; 5 minutes during review/fix/freshness/merge-ready gates
 - Status: active
 - Scheduler: `talon-issue-256-wdd-wave-1-heartbeat`
-- Last checked: 2026-07-16T02:26:01+02:00
-- Next check due: 2026-07-16T02:41:01+02:00
+- Last checked: 2026-07-16T07:02:33+02:00
+- Next check due: 2026-07-16T07:07:33+02:00
 - Stop condition: all WAVE-002 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
-- Automation state: verified ACTIVE in Codex with a 15-minute heartbeat and a self-contained WAVE-002 orchestration prompt.
+- Automation state: verified ACTIVE in Codex with a five-minute heartbeat and a
+  self-contained WAVE-002 orchestration prompt. Writable-review prompts must
+  explicitly forbid source, test, and WDD edits plus dependency installation.
 
 ## Current Task Gates
 
 - TASK-001-lifecycle-contracts-registry: merged; PR #257 merged into the epic
   branch at `e5fda2a` after task head `ff3e561` passed branch refresh,
   verification, CI, and Sol/high review gates.
-- TASK-002-lifecycle-event-persistence: no_pr; Terra/high worker active.
-- TASK-003-interceptor-engine: no_pr; Terra/high worker active, including the carried
-  proxy-valued bounded-JSON zero-trap hardening.
-- TASK-004-subagent-lifecycle-adapter: no_pr; Terra/high worker active.
+- TASK-002-lifecycle-event-persistence: needs_review; focused Sol/high delta
+  review `019f6944-fc19-7d82-ac69-bb2c3690bf65` failed 0C/0H/1M because
+  SQLite's provisional `NEW.event_sequence = -1` could collide with a stored
+  negative sequence. Terra/high worker `019f694a-8c17-7a20-a7b7-113e5349f5b8`
+  completed the narrow fix with 35 focused tests and all static gates green;
+  fresh delta review is next.
+- TASK-003-interceptor-engine: needs_review; Sol/high review
+  `019f692d-cd1b-7250-bbed-def4c29b32fe` failed 0C/1H/0M/0L and routed the
+  fail-open pre-invocation timeout bypass to Terra/high worker
+  `019f693a-4897-7d70-a2e4-90f3eaa98cd5`; focused Sol/high delta review
+  `019f6940-9c8c-72a0-b51d-039675eaf584` passed 0C/0H/0M/0L. A final full-diff
+  Sol/high review is still required immediately before commit.
+- TASK-004-subagent-lifecycle-adapter: needs_review; Sol/high review
+  `019f692d-cc3c-7b92-9c3d-70b4aef221a9` failed 0C/0H/3M/1L and routed the
+  three blocking prototype, subscription, and aggregate-scope findings to
+  Terra/high worker `019f693a-4894-7ff2-852f-424ab5bf9fe0`; focused Sol/high
+  delta review `019f6940-9cbb-7f00-adab-817f0f613ea9` passed 0C/0H/0M/1L. The
+  Low logging wording issue remains untouched and non-blocking; a final
+  full-diff Sol/high review is still required immediately before commit.
 - The remaining 16 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -78,9 +102,9 @@ Terra/high workers were dispatched.
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`
   was removed and pruned during reconciliation. The superseded worker evidence
   stash was reconciled and dropped.
-- WAVE-002 / TASK-002: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence`; branch `task/TASK-002-lifecycle-event-persistence`; active at `d153e17` under worker `019f6850-6765-7f63-8874-1857dfc53796`.
-- WAVE-002 / TASK-003: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine`; branch `task/TASK-003-interceptor-engine`; active at `d153e17` under worker `019f6850-67ee-70c3-971f-8580236dfc04`.
-- WAVE-002 / TASK-004: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter`; branch `task/TASK-004-subagent-lifecycle-adapter`; active at `d153e17` under worker `019f6850-679f-7d93-a6da-be1f0100064c`.
+- WAVE-002 / TASK-002: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence`; branch `task/TASK-002-lifecycle-event-persistence`; active at `d153e17` under latest worker `019f694a-8c17-7a20-a7b7-113e5349f5b8`.
+- WAVE-002 / TASK-003: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine`; branch `task/TASK-003-interceptor-engine`; active at `d153e17`; latest remediation worker `019f693a-4897-7d70-a2e4-90f3eaa98cd5` completed and delta review passed.
+- WAVE-002 / TASK-004: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter`; branch `task/TASK-004-subagent-lifecycle-adapter`; active at `d153e17`; latest remediation worker `019f693a-4894-7ff2-852f-424ab5bf9fe0` completed and delta review passed.
 
 ## Gate Definitions
 
@@ -105,9 +129,13 @@ worktrees are current at `d153e17` at dispatch.
 
 ## Open P1/P2 Feedback
 
-- None for WAVE-002 activation. All Wave 1 Critical, High, and Medium findings
-  were resolved before merge. The carried Low is now explicit TASK-003 scope,
-  not unresolved feedback.
+- TASK-002's prior High is resolved except for a separately classified Medium
+  provisional-rowid edge case; its narrow remediation is complete and awaiting
+  fresh focused delta review.
+- TASK-003's prior High is resolved by focused Sol/high delta review.
+- TASK-004's three prior Mediums are resolved by focused Sol/high delta review.
+- TASK-004 has one non-blocking Low about failover log wording; it remains a
+  follow-up under the constitution's P3 policy.
 
 ## Verification Status
 
@@ -121,8 +149,14 @@ worktrees are current at `d153e17` at dispatch.
 - Tests cover exact runtime authority, bounded iterable cleanup, proxy/accessor
   non-execution at authority boundaries, causal signals, immutable snapshots,
   omitted/disabled legacy compatibility, and enabled duplicate-owner rejection.
-- WAVE-002 implementation verification has not started; each task owns its
-  focused RED/GREEN test set, build, lint where listed, and diff checks.
+- TASK-002 latest remediation passed 35 focused tests, build, scoped ESLint,
+  touched-file Prettier, and diff checks; fresh focused delta review is pending.
+- TASK-003 focused delta review passed 0C/0H/0M/0L with 108 tests after its
+  earlier 138-test remediation verification; final full-diff review is pending.
+- TASK-004 focused delta review passed 0C/0H/0M/1L with 89 tests after its
+  earlier 104-test remediation verification; final full-diff review is pending.
+- TASK-003 and TASK-004 writable-review prompts explicitly forbade source, test,
+  and WDD edits plus dependency installation, and exact pre/post status matched.
 
 ## Shared Context Reconciliation
 
@@ -206,10 +240,22 @@ worktrees are current at `d153e17` at dispatch.
 - 2026-07-16T02:23:36+02:00: Fresh Sol/high readiness review `019f684a-ab37-7e62-b764-649a66233928` passed 0C/0H/0M/0L and independently verified staged scope, exact hashes, clean worktrees, parsed artifacts, and the strengthened live heartbeat.
 - 2026-07-16T02:24:22+02:00: Reviewed readiness checkpoint `d153e17` committed and pushed; all three task branches/worktrees were fast-forwarded to the exact commit, pushed, and reverified clean with current task/controller/orchestration artifacts.
 - 2026-07-16T02:26:01+02:00: Terra/high workers `019f6850-6765-7f63-8874-1857dfc53796`, `019f6850-67ee-70c3-971f-8580236dfc04`, and `019f6850-679f-7d93-a6da-be1f0100064c` dispatched independently for TASK-002, TASK-003, and TASK-004.
+- 2026-07-16T06:32:12+02:00: TASK-002 Terra/high remediation `019f692d-cc70-7b52-aed7-176ef1cd058c` completed with 35 focused tests and all build, changed-source lint, touched-file format, and diff gates passing; fresh Sol/high review `019f6933-b480-71b3-acc5-cafd7b006063` started.
+- 2026-07-16T06:39:30+02:00: TASK-003 Sol/high review `019f692d-cd1b-7250-bbed-def4c29b32fe` failed 0C/1H/0M/0L; TASK-004 Sol/high review `019f692d-cc3c-7b92-9c3d-70b4aef221a9` failed 0C/0H/3M/1L.
+- 2026-07-16T06:39:30+02:00: Blocking feedback was routed independently to Terra/high workers `019f693a-4897-7d70-a2e4-90f3eaa98cd5` for TASK-003 and `019f693a-4894-7ff2-852f-424ab5bf9fe0` for TASK-004; the TASK-004 Low remains non-blocking.
+- 2026-07-16T06:39:30+02:00: User approved delivery acceleration. Constitution 2.1.0 now prohibits automatic Low/P3 remediation, uses focused blocking-delta re-reviews plus one final full-diff Sol/high pre-commit review, allows tightly controlled writable review sandboxes with cleanliness checks, and requires independent task advancement plus five-minute review/fix monitoring.
+- 2026-07-16T06:45:00+02:00: TASK-002 Sol/high full review `019f6933-b480-71b3-acc5-cafd7b006063` failed 0C/1H/0M/0L on insert/replace bypasses; Terra/high remediation `019f6940-9c7b-7341-8f97-ce91a9983d0d` started.
+- 2026-07-16T06:45:00+02:00: TASK-003 and TASK-004 blocking remediations completed; focused writable-sandbox Sol/high delta reviews `019f6940-9c8c-72a0-b51d-039675eaf584` and `019f6940-9cbb-7f00-adab-817f0f613ea9` started after controller recorded their pre-review worktree status.
+- 2026-07-16T06:50:47+02:00: TASK-003 delta review passed 0C/0H/0M/0L with 108 focused tests; TASK-004 delta review passed 0C/0H/0M/1L with 89 focused tests. Both worktrees exactly matched their recorded pre-review status, and TASK-004's Low remained untouched.
+- 2026-07-16T06:51:00+02:00: TASK-002 Terra/high remediation completed SQL insert/replacement guards with 35 focused tests plus build, lint, format, and diff gates passing; focused Sol/high delta review is next.
+- 2026-07-16T06:58:00+02:00: TASK-002 focused Sol/high delta review `019f6944-fc19-7d82-ac69-bb2c3690bf65` failed 0C/0H/1M after reproducing a provisional `NEW.event_sequence = -1` collision; final worktree status matched exactly.
+- 2026-07-16T07:01:09+02:00: TASK-002 Terra/high worker `019f694a-8c17-7a20-a7b7-113e5349f5b8` completed only the Medium sentinel fix with 35 focused tests, build, scoped lint, touched-file format, and diff gates passing.
+- 2026-07-16T07:02:33+02:00: Live heartbeat was reverified ACTIVE at five minutes and its prompt now explicitly forbids source/test/WDD edits and dependency installation in writable reviewer sandboxes.
 
 ## Next Action
 
-Monitor all three Terra/high workers independently. When a worker completes,
-verify its scoped diff and evidence, run a fresh Sol/high review before commit,
-route every Critical/High/Medium finding, then publish its task PR against the
-epic branch only after the commit gate is clean.
+Publish the reviewed delivery-speed checkpoint, then start TASK-002's fresh
+focused Sol/high delta review while TASK-003 and TASK-004 independently advance
+to their fresh full-diff Sol/high pre-commit reviews. Publish each task PR
+against the epic branch as soon as its own Critical/High/Medium, verification,
+freshness, and commit gates clear.
