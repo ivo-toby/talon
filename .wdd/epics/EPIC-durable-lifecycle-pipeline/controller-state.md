@@ -40,7 +40,10 @@ Every task advances independently as soon as its gates clear.
   committed, and pushed at `7e3402c`; the Low findings remain untouched
 - WAVE-004 allocation checkpoint: Sol/high reviewed 0C/0H/0M/2L, committed,
   and pushed at `67b3457`; its exact hash is recorded for the mandatory
-  activation-sync review while the task branch/worktree remain absent
+  activation-sync review
+- WAVE-004 activation sync marker: Sol/high reviewed 0C/0H/0M/2L, committed,
+  and pushed at `923623b`; exact allocation commit `67b3457` is recorded and
+  TASK-007's clean branch/worktree were created from the sync commit
 
 ## Pending Waves
 
@@ -60,20 +63,22 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-004 is active as one bundled TASK-007 batch at the activation-sync review
-gate. Both dependencies are done and reconciled. The reviewed allocation commit
-`67b3457c9bab6a4611765c612e0b8f009d65e362` is recorded exactly and activation
-artifacts are synced, but neither branch, worktree, nor worker may exist until
-this second checkpoint passes fresh Sol/high review and is committed/pushed.
+WAVE-004 is active as one bundled TASK-007 batch at the worktree-readiness
+review gate. Both dependencies are done and reconciled. The isolated branch and
+worktree were created from exact pushed activation-sync commit `923623b`, are
+clean, and contain the task/controller/orchestration artifacts from that exact
+commit. No worker may start until this readiness state passes fresh Sol/high
+review, is committed and pushed, and the task branch/worktree is fast-forwarded
+to that exact commit.
 
 ## Monitoring
 
-- Mode: manual during activation checkpoints; Codex heartbeat required before worker dispatch
+- Mode: manual during readiness review; Codex heartbeat required before worker dispatch
 - Cadence: adaptive; next manual gate check in 5 minutes
-- Status: activation_sync_pending_review
+- Status: worktree_readiness_pending_review
 - Scheduler: none until reviewed worktree readiness exists
-- Last checked: 2026-07-16T12:10:23+02:00
-- Next check due: 2026-07-16T12:15:23+02:00
+- Last checked: 2026-07-16T12:22:39+02:00
+- Next check due: 2026-07-16T12:27:39+02:00
 - Stop condition: all WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
 - Automation state: the WAVE-003 heartbeat was deleted after reconciliation
   push. A self-contained WAVE-004 heartbeat will be created after reviewed
@@ -161,10 +166,11 @@ this second checkpoint passes fresh Sol/high review and is committed/pushed.
   `8f74740`; its clean worktree was removed and pruned. The PR Agent's failed-
   suggestion system comment was non-actionable and did not change the passed
   check gate.
-- TASK-007-daemon-message-queue-schedule-events: activation_sync_pending_review;
+- TASK-007-daemon-message-queue-schedule-events: dispatch_pending;
   branch `task/TASK-007-daemon-message-queue-schedule-events` and worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
-  remain absent and must not be created until this reviewed sync is pushed.
+  are clean at activation-sync commit `923623b`; worker dispatch remains
+  forbidden pending reviewed/pushed readiness and exact fast-forward.
 - The remaining 13 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -182,9 +188,11 @@ this second checkpoint passes fresh Sol/high review and is committed/pushed.
 - WAVE-003 / TASK-006: merged branch `task/TASK-006-durable-event-dispatcher`;
   clean worktree removed and pruned after PR #262 merged. The Low remains
   untouched.
-- WAVE-004 / TASK-007: branch and worktree path allocated in artifacts only;
-  creation is forbidden pending reviewed and pushed allocation plus
-  activation-sync checkpoints.
+- WAVE-004 / TASK-007: branch
+  `task/TASK-007-daemon-message-queue-schedule-events` and clean worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
+  exist at exact pushed activation-sync commit `923623b`; task, controller,
+  and orchestration artifacts match that exact commit.
 
 ## Gate Definitions
 
@@ -221,8 +229,9 @@ passed final review and CI, and merged at current epic head `8f74740`.
 WAVE-004 activation base is reviewed and pushed reconciliation commit
 `7e3402cfd3c0855388e3921e3aab050da12f3cfc`; reviewed allocation checkpoint
 `67b3457c9bab6a4611765c612e0b8f009d65e362` is pushed and recorded exactly.
-TASK-007 has no local or remote task branch and no worktree; activation-sync
-review is pending.
+Reviewed activation-sync commit `923623b8c1833b83f83df8036e37ad95b0b0a343`
+is pushed. TASK-007's local/remote task branch and clean worktree exist at that
+exact commit pending the separate readiness checkpoint.
 
 ## Open P1/P2 Feedback
 
@@ -237,9 +246,9 @@ review is pending.
   test fixtures. It remains untouched under the constitution's P3 policy.
 - TASK-006 has one non-blocking Low for the historical `git show fbe4f08`
   migration fixture in shallow/source checkouts. It remains untouched.
-- WAVE-004 activation-sync review found one Medium for stale active gate
-  summaries; it is corrected pending fresh complete review. The two known Low
-  follow-ups remain untouched.
+- WAVE-004 activation-sync review passed after the stale-summary Medium was
+  corrected. The two known Low follow-ups remain untouched; readiness review
+  is pending with no implementation worker active.
 
 ## Verification Status
 
@@ -473,10 +482,21 @@ review is pending.
   active summaries still named the completed allocation-review gate. Only
   those summaries were reconciled to activation-sync pending review; the stale
   epic wording and known JSON-indentation Lows remain untouched.
+- 2026-07-16T12:16:20+02:00: Fresh complete Sol/high activation-sync review
+  `019f6a68-d5de-7212-bcb9-553e78502b7d` passed 0C/0H/0M/2L with exact
+  fingerprint integrity. The two Lows remained untouched. Reviewed sync commit
+  `923623b8c1833b83f83df8036e37ad95b0b0a343` was pushed; TASK-007's branch and
+  isolated worktree were created/pushed from that exact commit and verified
+  clean with matching task, controller, and orchestration artifacts.
+- 2026-07-16T12:22:39+02:00: Fresh complete worktree-readiness Sol/high review
+  `019f6a6e-fec9-7653-9245-2e8d9b7c9029` blocked 0C/0H/1M/2L because two
+  summaries incorrectly claimed the activation-sync artifacts matched the
+  uncommitted controller checkout. Only those claims were corrected to exact
+  commit `923623b`; the two known Lows remain untouched.
 
 ## Next Action
 
-Run a fresh complete Sol/high activation-sync review with TASK-007's branch and
-worktree still absent. On a clean Critical/High/Medium gate, commit and push the
-sync marker, then create the isolated branch/worktree from that exact pushed
-commit and prepare the separate reviewed worktree-readiness checkpoint.
+Run a fresh complete Sol/high worktree-readiness review. On a clean Critical/
+High/Medium gate, commit and push the readiness checkpoint, fast-forward/push
+TASK-007's clean branch/worktree to that exact commit, reverify the artifacts,
+then create the five-minute monitor before dispatching the Terra/high worker.

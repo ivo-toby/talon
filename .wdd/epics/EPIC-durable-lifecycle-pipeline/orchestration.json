@@ -786,14 +786,14 @@
           "reviewThreadId": null,
           "branch": "task/TASK-007-daemon-message-queue-schedule-events",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events",
-          "worktreeStatus": "allocated_pending_creation",
+          "worktreeStatus": "ready",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "pending_reviewed_activation_sync",
+          "branchFreshness": "current_at_activation_sync_pending_readiness_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_sync_pending_review"
+          "currentGate": "dispatch_pending"
         }
       ]
     },
@@ -1399,14 +1399,14 @@
     "activationArtifactsSynced": true,
     "activationBase": "7e3402cfd3c0855388e3921e3aab050da12f3cfc",
     "activationCheckpoint": "67b3457c9bab6a4611765c612e0b8f009d65e362",
-    "activationSyncCommit": null
+    "activationSyncCommit": "923623b8c1833b83f83df8036e37ad95b0b0a343"
   },
   "monitoring": {
     "mode": "manual",
     "cadence": "adaptive",
-    "status": "activation_sync_pending_review",
-  "lastCheckedAt": "2026-07-16T12:10:23+02:00",
-  "nextCheckDueAt": "2026-07-16T12:15:23+02:00",
+    "status": "worktree_readiness_pending_review",
+  "lastCheckedAt": "2026-07-16T12:22:39+02:00",
+  "nextCheckDueAt": "2026-07-16T12:27:39+02:00",
     "schedulerRef": null,
   "fallbackPrompt": "Resume WAVE-004 activation for EPIC-durable-lifecycle-pipeline. Read the constitution, epic, orchestration.json, controller-state.md, shared context, wave plan, and TASK-007. Do not create the task branch or worktree until the allocation checkpoint is Sol/high reviewed, committed and pushed, its exact hash is controller.activationCheckpoint, controller.activationArtifactsSynced is true, and a fresh activation-sync Sol/high review has passed and been pushed. Do not dispatch until a later worktree-readiness checkpoint is Sol/high reviewed, committed and pushed and the clean task branch/worktree is current at that exact commit. Use Terra/high for implementation, Sol/high for every review, route only Critical/High/Medium blockers, preserve .minispec, and do not run the full test suite without approval.",
     "stopCondition": "All WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",

@@ -20,10 +20,10 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-007-daemon-message-queue-schedule-events
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events
-worktree_status: allocated_pending_creation
+worktree_status: ready
 pr: null
-current_gate: activation_sync_pending_review
-branch_freshness: pending_reviewed_activation_sync
+current_gate: dispatch_pending
+branch_freshness: current_at_activation_sync_pending_readiness_checkpoint
 verification:
   - "npx vitest run tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/pipeline/message-pipeline.test.ts tests/unit/queue/queue-processor.test.ts tests/unit/scheduler/scheduler.test.ts"
   - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/core/database/migrations/runner.test.ts"
@@ -113,7 +113,7 @@ task/TASK-007-daemon-message-queue-schedule-events
 
 ## Worker Worktree
 
-Allocated at `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`, pending the reviewed and pushed allocation and activation-sync checkpoints. The branch and worktree must not be created before those gates pass.
+Created clean at `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events` from reviewed and pushed activation-sync commit `923623b`. No worker may start until the separate readiness state passes Sol/high review, is committed/pushed, and this branch/worktree is fast-forwarded to that exact readiness commit and reverified clean.
 
 ## PR / Patch Reference
 
