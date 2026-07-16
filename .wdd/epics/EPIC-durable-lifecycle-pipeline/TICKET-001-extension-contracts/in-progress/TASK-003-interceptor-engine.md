@@ -18,10 +18,10 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-003-interceptor-engine
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine
-worktree_status: pending_creation
+worktree_status: ready
 pr: null
-current_gate: worktree_creation_pending
-branch_freshness: activation_checkpoint_ad22c01_recorded
+current_gate: dispatch_pending
+branch_freshness: current_at_readiness_checkpoint_before_dispatch
 verification:
   - "npx vitest run tests/unit/lifecycle/interceptor-engine.test.ts tests/unit/core/logging/audit-logger.test.ts"
   - "npm run build"
@@ -103,8 +103,9 @@ task/TASK-003-interceptor-engine
 
 ## Worker Worktree
 
-`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` is
-allocated and pending creation from the synced WAVE-002 activation commit.
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` exists
+on `task/TASK-003-interceptor-engine` from activation-sync commit `039b568` and
+must be fast-forwarded to the pushed readiness checkpoint before dispatch.
 
 ## PR / Patch Reference
 

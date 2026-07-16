@@ -17,10 +17,10 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-002-lifecycle-event-persistence
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence
-worktree_status: pending_creation
+worktree_status: ready
 pr: null
-current_gate: worktree_creation_pending
-branch_freshness: activation_checkpoint_ad22c01_recorded
+current_gate: dispatch_pending
+branch_freshness: current_at_readiness_checkpoint_before_dispatch
 verification:
   - "npx vitest run tests/unit/core/database/repositories/lifecycle-event-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
   - "npm run build"
@@ -100,7 +100,9 @@ task/TASK-002-lifecycle-event-persistence
 ## Worker Worktree
 
 `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence`
-is allocated and pending creation from the synced WAVE-002 activation commit.
+exists on `task/TASK-002-lifecycle-event-persistence` from activation-sync
+commit `039b568` and must be fast-forwarded to the pushed readiness checkpoint
+before dispatch.
 
 ## PR / Patch Reference
 
