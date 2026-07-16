@@ -165,10 +165,7 @@ describe('SubAgentLoader', () => {
 
     expect(result.isOk()).toBe(true);
     const agents = result._unsafeUnwrap();
-    expect(agents[0].promptContents).toEqual([
-      'You are a helper.',
-      'Be concise.',
-    ]);
+    expect(agents[0].promptContents).toEqual(['You are a helper.', 'Be concise.']);
   });
 
   it('sorts prompt fragments alphabetically', async () => {
@@ -238,10 +235,7 @@ describe('SubAgentLoader', () => {
     for (const name of ['agent-a', 'agent-b']) {
       const agentDir = join(root, name);
       mkdirSync(agentDir, { recursive: true });
-      writeManifest(
-        agentDir,
-        VALID_MANIFEST.replace('test-agent', name),
-      );
+      writeManifest(agentDir, VALID_MANIFEST.replace('test-agent', name));
       writeEntryPoint(agentDir);
     }
 
@@ -272,17 +266,111 @@ describe('SubAgentLoader', () => {
     expect(manifest.rootPaths).toEqual([]);
   });
 
+  it('materializes immutable validated lifecycle authority from the loaded manifest', async () => {
+    const agentDir = join(root, 'lifecycle-agent');
+    mkdirSync(agentDir, { recursive: true });
+    writeManifest(
+      agentDir,
+      `${VALID_MANIFEST}\nlifecycleCapabilities:\n  - mode: event\n    inputContract: talon.lifecycle.event.envelope.v1\n    outputContract: talon.lifecycle.signal.envelopes.v1`,
+    );
+    writeEntryPoint(agentDir);
+
+    const result = await new SubAgentLoader(makeLogger()).loadAll(root);
+
+    expect(result.isOk()).toBe(true);
+    const capabilities = result._unsafeUnwrap()[0].lifecycleCapabilities;
+    expect(capabilities).toEqual([
+      {
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      },
+    ]);
+    expect(Object.isFrozen(capabilities)).toBe(true);
+    expect(Object.isFrozen(capabilities![0])).toBe(true);
+  });
+
+  it('publishes frozen detached executable authority, including ordinary empty lifecycle capability lists', async () => {
+    const agentDir = join(root, 'frozen-agent');
+    const promptsDir = join(agentDir, 'prompts');
+    mkdirSync(promptsDir, { recursive: true });
+    writeManifest(agentDir, VALID_MANIFEST);
+    writeEntryPoint(agentDir);
+    writeFileSync(join(promptsDir, '01-system.md'), 'immutable prompt');
+
+    const result = await new SubAgentLoader(makeLogger()).loadAll(root);
+
+    expect(result.isOk()).toBe(true);
+    const agent = result._unsafeUnwrap()[0]!;
+    const replacement = async (): Promise<unknown> => ({ summary: 'replacement' });
+    expect(Object.isFrozen(agent)).toBe(true);
+    expect(Object.isFrozen(agent.manifest)).toBe(true);
+    expect(Object.isFrozen(agent.manifest.model)).toBe(true);
+    expect(Object.isFrozen(agent.manifest.requiredCapabilities)).toBe(true);
+    expect(Object.isFrozen(agent.manifest.rootPaths)).toBe(true);
+    expect(Object.isFrozen(agent.manifest.requiresEnv)).toBe(true);
+    expect(Object.isFrozen(agent.promptContents)).toBe(true);
+    expect(Object.isFrozen(agent.lifecycleCapabilities)).toBe(true);
+    expect(Object.isFrozen(agent.manifest.lifecycleCapabilities)).toBe(true);
+    expect(agent.lifecycleCapabilities).toEqual([]);
+    expect(Reflect.set(agent, 'run', replacement)).toBe(false);
+    expect(Reflect.set(agent.manifest.model, 'name', 'weakened')).toBe(false);
+    expect(Reflect.set(agent.promptContents, '0', 'weakened')).toBe(false);
+    expect(agent.run).not.toBe(replacement);
+    expect(agent.manifest.model.name).toBe('claude-haiku-4-5-20251001');
+    expect(agent.promptContents).toEqual(['immutable prompt']);
+  });
+
+  it('rejects a callable proxy export without executing its traps', async () => {
+    const agentDir = join(root, 'proxy-export-agent');
+    mkdirSync(agentDir, { recursive: true });
+    writeManifest(agentDir, VALID_MANIFEST);
+    writeFileSync(
+      join(agentDir, 'index.js'),
+      `globalThis.__talonSubagentProxyTraps = 0;
+exports.run = new Proxy(async () => ({ ok: true, value: { summary: 'nope' } }), {
+  apply() { globalThis.__talonSubagentProxyTraps += 1; },
+  get() { globalThis.__talonSubagentProxyTraps += 1; },
+});`,
+    );
+
+    const result = await new SubAgentLoader(makeLogger()).loadAll(root);
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toEqual([]);
+    expect((globalThis as Record<string, unknown>).__talonSubagentProxyTraps).toBe(0);
+    delete (globalThis as Record<string, unknown>).__talonSubagentProxyTraps;
+  });
+
+  it('skips a sub-agent that declares unsupported lifecycle authority', async () => {
+    const agentDir = join(root, 'bad-lifecycle-agent');
+    mkdirSync(agentDir, { recursive: true });
+    writeManifest(
+      agentDir,
+      `${VALID_MANIFEST}\nlifecycleCapabilities:\n  - mode: interceptor\n    inputContract: talon.lifecycle.interceptor.input.v1\n    outputContract: talon.lifecycle.enforcing.interceptor.output.v1\n    interceptorSafety: enforcing`,
+    );
+    writeEntryPoint(agentDir);
+
+    const result = await new SubAgentLoader(makeLogger()).loadAll(root);
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap()).toEqual([]);
+  });
+
   it('skips sub-agent when requiresEnv var is missing (info, not warn)', async () => {
     const agentDir = join(root, 'env-gated');
     mkdirSync(agentDir, { recursive: true });
-    writeManifest(agentDir, `name: env-gated
+    writeManifest(
+      agentDir,
+      `name: env-gated
 version: "0.1.0"
 description: Needs an env var
 model:
   provider: openai
   name: gpt-5.4-spark
 requiresEnv:
-  - TALON_TEST_NONEXISTENT_KEY_12345`);
+  - TALON_TEST_NONEXISTENT_KEY_12345`,
+    );
     writeEntryPoint(agentDir);
 
     const infos: unknown[] = [];
@@ -303,9 +391,9 @@ requiresEnv:
     expect(result.isOk()).toBe(true);
     expect(result._unsafeUnwrap()).toEqual([]);
     // Should log at info level, not warn
-    expect(infos.some((args) =>
-      JSON.stringify(args).includes('missing required env vars'),
-    )).toBe(true);
+    expect(infos.some((args) => JSON.stringify(args).includes('missing required env vars'))).toBe(
+      true,
+    );
     expect(warnings).toEqual([]);
   });
 
@@ -316,14 +404,17 @@ requiresEnv:
     try {
       const agentDir = join(root, 'env-present');
       mkdirSync(agentDir, { recursive: true });
-      writeManifest(agentDir, `name: env-present
+      writeManifest(
+        agentDir,
+        `name: env-present
 version: "0.1.0"
 description: Has env var
 model:
   provider: openai
   name: gpt-5.4-spark
 requiresEnv:
-  - ${envKey}`);
+  - ${envKey}`,
+      );
       writeEntryPoint(agentDir);
 
       const loader = new SubAgentLoader(makeLogger());
