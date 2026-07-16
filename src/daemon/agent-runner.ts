@@ -80,6 +80,7 @@ export class AgentRunner {
         ? payloadTaskId
         : null;
     const isA2ATask = a2aTaskId !== null;
+    const isScheduleTask = item.type === 'schedule';
 
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {
@@ -121,10 +122,15 @@ export class AgentRunner {
         ? getProviderAffinityResetAt(threadResult.value.metadata)
         : undefined;
 
-    const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(item.threadId, {
-      excludeCollaboration: true,
-      ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
-    });
+    const affinityProviderResult =
+      !isA2ATask && !isScheduleTask
+        ? this.ctx.repos.run.getLatestProviderName(item.threadId, {
+            excludeCollaboration: true,
+            ...(providerAffinityResetAt !== undefined
+              ? { sinceCreatedAt: providerAffinityResetAt }
+              : {}),
+          })
+        : ok(null);
     const affinityProviderName =
       affinityProviderResult.isOk() && affinityProviderResult.value
         ? affinityProviderResult.value
@@ -164,7 +170,7 @@ export class AgentRunner {
     // persona's session history. Skip session restoration for A2A items entirely
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
-    if (strategy.supportsSessionResumption && !isA2ATask) {
+    if (strategy.supportsSessionResumption && !isA2ATask && !isScheduleTask) {
       const sessionLookupOptions = {
         excludeCollaboration: true,
         modelName: model,
@@ -511,7 +517,7 @@ export class AgentRunner {
               !isA2ATask &&
               connector &&
               externalId &&
-              item.payload.type !== 'schedule'
+              !isScheduleTask
             ) {
               const waitingResult = await connector.send(externalId, {
                 body: 'Thinking...',
@@ -543,7 +549,7 @@ export class AgentRunner {
                 channelContext,
                 timeContext,
               ];
-              if (!resumeSessionId) {
+              if (!resumeSessionId && !isScheduleTask) {
                 const previous = await getPreviousContext();
                 if (previous.text) {
                   systemPromptParts.push(previous.text);
@@ -960,7 +966,7 @@ export class AgentRunner {
             // Store session ID for future conversation resumption (memory + DB).
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
-            if (resultSessionId && !isA2ATask) {
+            if (resultSessionId && !isA2ATask && !isScheduleTask) {
               if (reasoningEffort !== undefined) {
                 this.ctx.sessionTracker.setSessionId(
                   item.threadId,
@@ -1023,7 +1029,7 @@ export class AgentRunner {
                 { runId, a2aTaskId, outputLength: fullOutputText.length },
                 'agent-sdk: A2A task completed, result stored (no channel send)',
               );
-            } else if (item.type === 'schedule') {
+            } else if (isScheduleTask) {
               // Scheduled prompts must invoke channel.send explicitly to
               // deliver. The agent's final assistant text on a scheduled
               // run is a self-narration / wrap-up (e.g. "Silent — lunch
@@ -1055,7 +1061,7 @@ export class AgentRunner {
             // Persist the outbound message BEFORE context rotation so that a fast
             // user reply cannot be inserted ahead of the assistant turn in the DB.
             // The message is stored immediately after delivery (issue #164).
-            if (!isA2ATask) {
+            if (!isA2ATask && !isScheduleTask) {
               this.ctx.repos.message.insert({
                 id: uuidv4(),
                 thread_id: item.threadId,
@@ -1074,7 +1080,7 @@ export class AgentRunner {
             // until run() returns, so the next item for this thread cannot be
             // picked up until rotation completes, preserving per-thread ordering.
             // (issue #164)
-            if (this.ctx.contextRoller && enabledContextManagement) {
+            if (this.ctx.contextRoller && enabledContextManagement && !isScheduleTask) {
               // Gate rotation on per-step usage when the provider reports
               // it; cumulative `usage` across a multi-tool agent loop can
               // easily exceed the per-call context window even when each

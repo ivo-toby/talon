@@ -1385,8 +1385,20 @@ describe('AgentRunner', () => {
       mockQuery.mockReturnValue(
         makeAgentStream({
           result: 'Silent — lunch window, items from 11:05 still pending. Log written.',
+          usage: {
+            input_tokens: 500_000,
+            output_tokens: 50,
+            cache_read_input_tokens: 450_000,
+          },
         }),
       );
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-schedule-session');
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok('db-schedule-session'));
+      vi.mocked(ctx.repos.run.getLatestProviderName).mockReturnValue(ok('stale-schedule-provider'));
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn(),
+        checkAndRotateOM: vi.fn(),
+      } as any;
 
       const connector = ctx.channelRegistry.get('test-channel')!;
       const item = makeQueueItem({ type: 'schedule' });
@@ -1397,13 +1409,18 @@ describe('AgentRunner', () => {
       // No implicit channel send for schedule items — only sendTyping
       // is permitted, which is a separate method.
       expect(connector.send).not.toHaveBeenCalled();
-      // The wrap-up is still persisted on the schedule's thread for
-      // observability/audit, just not delivered to the originating chat.
-      expect(ctx.repos.message.insert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          thread_id: 'thread-001',
-          direction: 'outbound',
-        }),
+      expect(ctx.repos.message.insert).not.toHaveBeenCalled();
+      expect(ctx.repos.run.getLatestProviderName).not.toHaveBeenCalled();
+      expect(ctx.sessionTracker.getSessionId).not.toHaveBeenCalled();
+      expect(ctx.repos.run.getLatestSessionId).not.toHaveBeenCalled();
+      expect(ctx.sessionTracker.setSessionId).not.toHaveBeenCalled();
+      expect(ctx.repos.run.updateSessionId).not.toHaveBeenCalled();
+      expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+      expect(ctx.contextRoller?.checkAndRotate).not.toHaveBeenCalled();
+      expect(ctx.contextRoller?.checkAndRotateOM).not.toHaveBeenCalled();
+      expect(ctx.observability.observe).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
+        expect.any(Function),
       );
     });
   });

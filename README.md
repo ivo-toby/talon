@@ -2278,7 +2278,9 @@ Scheduled tasks are enqueued through the standard queue pipeline, subject to the
 
 ### Dedicated Execution Threads
 
-Schedules created by the agent via `schedule_manage` are stored against a dedicated execution thread keyed by `(persona, channel, origin chat)` — not the live chat thread. This keeps scheduled runs from polluting the live conversation's session state, observational-memory log, and session resumption id.
+Schedules created by the agent via `schedule_manage` are stored against a dedicated execution thread keyed by `(persona, channel, origin chat)` — not the live chat thread. This keeps scheduled runs from polluting the live conversation's session state.
+
+Scheduled executions are intentionally short-context, one-shot runs. They do not use thread provider affinity, do not restore or persist provider session IDs, do not inject prior schedule-thread transcript through the context assembler, do not run context rotation / observational-memory compression, and do not persist skipped final assistant wrap-up text as outbound messages. A scheduled task only reaches the user when the agent explicitly calls `channel_send`; successful `channel_send` deliveries are persisted as outbound messages on the live recipient thread so follow-up replies include the scheduled message in conversation context.
 
 The dedicated thread records the origin chat's `external_id` in metadata (`kind: "schedule"`, `originExternalId: "<chat id>"`). Outbound delivery (`channel_send`, typing indicators) reads that field and routes messages back to the originating chat, so users still receive scheduled notifications on the channel they set the schedule up from.
 

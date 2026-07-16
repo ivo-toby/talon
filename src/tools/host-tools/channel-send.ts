@@ -6,10 +6,17 @@
  * allow or operator approval depending on the persona policy.
  */
 
+import { randomUUID } from 'node:crypto';
 import type pino from 'pino';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import type { ChannelRegistry } from '../../channels/channel-registry.js';
-import type { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
+import type { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
+import type { MessageRepository } from '../../core/database/repositories/message-repository.js';
+import type {
+  InsertThreadInput,
+  ThreadRepository,
+  ThreadRow,
+} from '../../core/database/repositories/thread-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
 
 /**
@@ -82,6 +89,8 @@ export class ChannelSendHandler {
     private readonly deps: {
       channelRegistry: ChannelRegistry;
       threadRepository: ThreadRepository;
+      channelRepository?: Pick<ChannelRepository, 'findByName'>;
+      messageRepository?: Pick<MessageRepository, 'insert'>;
       logger: pino.Logger;
     },
   ) {}
@@ -166,6 +175,13 @@ export class ChannelSendHandler {
       { requestId, channelId, threadId: context.threadId },
       'channel.send: message sent successfully',
     );
+    this.persistOutboundMessage({
+      requestId,
+      runId: context.runId,
+      channelName: channelId,
+      externalThreadId,
+      content,
+    });
 
     return {
       requestId,
@@ -173,5 +189,122 @@ export class ChannelSendHandler {
       status: 'success',
       result: { channelId, sent: true },
     };
+  }
+
+  private persistOutboundMessage(input: {
+    requestId: string;
+    runId: string;
+    channelName: string;
+    externalThreadId: string;
+    content: string;
+  }): void {
+    if (!this.deps.channelRepository || !this.deps.messageRepository) {
+      return;
+    }
+
+    const targetThread = this.resolveTargetThread(input);
+    if (!targetThread) {
+      return;
+    }
+
+    const idempotencyRequestId =
+      input.requestId === 'unknown' ? randomUUID() : input.requestId;
+    const insertResult = this.deps.messageRepository.insert({
+      id: randomUUID(),
+      thread_id: targetThread.id,
+      direction: 'outbound',
+      content: JSON.stringify({ body: input.content }),
+      idempotency_key: `channel-send:${input.runId}:${idempotencyRequestId}`,
+      provider_id: null,
+      run_id: input.runId,
+    });
+    if (insertResult.isErr()) {
+      this.deps.logger.warn(
+        {
+          requestId: input.requestId,
+          runId: input.runId,
+          threadId: targetThread.id,
+          err: insertResult.error,
+        },
+        'channel.send: delivered message but failed to persist outbound context',
+      );
+    }
+  }
+
+  private resolveTargetThread(input: {
+    requestId: string;
+    channelName: string;
+    externalThreadId: string;
+  }): ThreadRow | null {
+    const channelResult = this.deps.channelRepository!.findByName(input.channelName);
+    if (channelResult.isErr()) {
+      this.deps.logger.warn(
+        {
+          requestId: input.requestId,
+          channelName: input.channelName,
+          err: channelResult.error,
+        },
+        'channel.send: delivered message but failed to resolve channel for outbound persistence',
+      );
+      return null;
+    }
+    const channel = channelResult.value;
+    if (!channel) {
+      this.deps.logger.warn(
+        { requestId: input.requestId, channelName: input.channelName },
+        'channel.send: delivered message but channel row was missing for outbound persistence',
+      );
+      return null;
+    }
+
+    const existingResult = this.deps.threadRepository.findByExternalId(
+      channel.id,
+      input.externalThreadId,
+    );
+    if (existingResult.isErr()) {
+      this.deps.logger.warn(
+        {
+          requestId: input.requestId,
+          channelId: channel.id,
+          externalThreadId: input.externalThreadId,
+          err: existingResult.error,
+        },
+        'channel.send: delivered message but failed to resolve recipient thread for outbound persistence',
+      );
+      return null;
+    }
+    if (existingResult.value) {
+      return existingResult.value;
+    }
+
+    const insertInput: InsertThreadInput = {
+      id: randomUUID(),
+      channel_id: channel.id,
+      external_id: input.externalThreadId,
+      metadata: '{}',
+    };
+    const insertResult = this.deps.threadRepository.insert(insertInput);
+    if (insertResult.isOk()) {
+      return insertResult.value;
+    }
+
+    const retryResult = this.deps.threadRepository.findByExternalId(
+      channel.id,
+      input.externalThreadId,
+    );
+    if (retryResult.isOk() && retryResult.value) {
+      return retryResult.value;
+    }
+
+    this.deps.logger.warn(
+      {
+        requestId: input.requestId,
+        channelId: channel.id,
+        externalThreadId: input.externalThreadId,
+        err: insertResult.error,
+      },
+      'channel.send: delivered message but failed to create recipient thread for outbound persistence',
+    );
+    return null;
   }
 }

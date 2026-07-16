@@ -28,6 +28,27 @@ function makeThreadRepo() {
   } as any;
 }
 
+function makeChannelRepo() {
+  return {
+    findByName: vi.fn().mockReturnValue(ok({
+      id: 'chan-001',
+      type: 'telegram',
+      name: 'my-telegram',
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+      created_at: 0,
+      updated_at: 0,
+    })),
+  } as any;
+}
+
+function makeMessageRepo() {
+  return {
+    insert: vi.fn().mockReturnValue(ok({})),
+  } as any;
+}
+
 function makeLogger() {
   return {
     info: vi.fn(),
@@ -272,6 +293,69 @@ describe('ChannelSendHandler — schedule-thread routing', () => {
     expect(connector.send).toHaveBeenCalledWith(
       'chat-42',
       expect.objectContaining({ body: 'Hello from persona!' }),
+    );
+  });
+
+  it('persists scheduled channel_send output to the origin live thread', async () => {
+    const liveThread = {
+      id: 'live-thread-001',
+      channel_id: 'chan-001',
+      external_id: 'chat-42',
+      metadata: '{}',
+      created_at: 0,
+      updated_at: 0,
+    };
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'dedicated-schedule-thread-001',
+          channel_id: 'chan-001',
+          external_id: 'schedule:assistant:telegram-main:chat-42',
+          metadata: JSON.stringify({
+            kind: 'schedule',
+            originExternalId: 'chat-42',
+            personaName: 'assistant',
+            channelName: 'telegram-main',
+          }),
+        }),
+      ),
+      findByExternalId: vi.fn().mockReturnValue(ok(liveThread)),
+      insert: vi.fn(),
+    } as any;
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      makeArgs({ content: 'Are you still joining the 16:30 sync?' }),
+      makeContext({
+        runId: 'run-schedule-001',
+        requestId: 'tool-call-001',
+        threadId: 'dedicated-schedule-thread-001',
+      }),
+    );
+
+    expect(result.status).toBe('success');
+    expect(connector.send).toHaveBeenCalledWith(
+      'chat-42',
+      expect.objectContaining({ body: 'Are you still joining the 16:30 sync?' }),
+    );
+    expect(threadRepo.findByExternalId).toHaveBeenCalledWith('chan-001', 'chat-42');
+    expect(messageRepo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        thread_id: 'live-thread-001',
+        direction: 'outbound',
+        content: JSON.stringify({ body: 'Are you still joining the 16:30 sync?' }),
+        idempotency_key: 'channel-send:run-schedule-001:tool-call-001',
+        run_id: 'run-schedule-001',
+      }),
     );
   });
 
