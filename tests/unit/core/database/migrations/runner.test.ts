@@ -169,8 +169,8 @@ describe('runMigrations', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(13);
 
     const upgrade = runMigrations(db, realMigrationsDir);
-    expect(upgrade._unsafeUnwrap()).toBe(1);
-    expect(db.pragma('user_version', { simple: true })).toBe(14);
+    expect(upgrade._unsafeUnwrap()).toBe(2);
+    expect(db.pragma('user_version', { simple: true })).toBe(15);
     for (const table of ['lifecycle_events', 'lifecycle_event_deliveries']) {
       expect(
         db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table),
@@ -185,6 +185,7 @@ describe('runMigrations', () => {
       expect.arrayContaining([
         expect.objectContaining({ name: 'idx_lifecycle_deliveries_ready', partial: 1 }),
         expect.objectContaining({ name: 'idx_lifecycle_deliveries_expired_claims', partial: 1 }),
+        expect.objectContaining({ name: 'idx_lifecycle_deliveries_handler_status', partial: 0 }),
       ]),
     );
     const expiredColumns = db
@@ -195,6 +196,31 @@ describe('runMigrations', () => {
       'priority',
       'created_at',
     ]);
+    const triggers = db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'lifecycle_event_deliveries'`,
+      )
+      .all() as Array<{ name: string }>;
+    expect(triggers.map((trigger) => trigger.name)).toEqual(
+      expect.arrayContaining([
+        'lifecycle_event_deliveries_guard_initial_insert',
+        'lifecycle_event_deliveries_reject_replacements',
+        'lifecycle_event_deliveries_guard_transitions',
+      ]),
+    );
+    const foreignKeys = db
+      .prepare(`PRAGMA foreign_key_list('lifecycle_event_deliveries')`)
+      .all() as Array<{ table: string; from: string; to: string; on_delete: string }>;
+    expect(foreignKeys).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          table: 'lifecycle_events',
+          from: 'event_id',
+          to: 'event_id',
+          on_delete: 'CASCADE',
+        }),
+      ]),
+    );
 
     db.prepare(
       `INSERT INTO lifecycle_events (
@@ -361,6 +387,66 @@ describe('runMigrations', () => {
         interceptorSafety: 'advisory',
         ...overrides,
       });
+    // A database already at v14 receives only the additive rebuild. Its valid
+    // durable rows must survive while the rebuilt indexes, foreign key, and
+    // transition triggers remain present.
+    const v14Dir = makeTmpDir();
+    for (const file of readdirSync(realMigrationsDir)) {
+      if (file.endsWith('.sql') && Number.parseInt(file, 10) <= 14) {
+        copyFileSync(join(realMigrationsDir, file), join(v14Dir, file));
+      }
+    }
+    const preservedDb = freshDb();
+    try {
+      expect(runMigrations(preservedDb, legacyDir)._unsafeUnwrap()).toBeGreaterThan(0);
+      expect(runMigrations(preservedDb, v14Dir)._unsafeUnwrap()).toBe(1);
+      expect(preservedDb.pragma('user_version', { simple: true })).toBe(14);
+      preservedDb
+        .prepare(
+          `INSERT INTO lifecycle_events (
+            event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+            causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+            occurred_at, created_at
+          ) VALUES ('preserved-event', 'v1', 'run.completed.v1', 'thread', 'preserved-thread',
+            'preserved-correlation', NULL, 0, 1,
+            '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+            '{"references":[],"metadata":{}}', '2026-07-16T10:00:00.000Z', 1)`,
+        )
+        .run();
+      preservedDb
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+            event_id, handler_id, persona, priority, handler_identity, failure_policy,
+            status, attempts, max_attempts, created_at, updated_at
+          ) VALUES ('preserved-event', 'preserved-handler', 'support', 0, ?,
+            '{"version":"v1","mode":"dead_letter"}', 'pending', 0, 3, 1, 1)`,
+        )
+        .run(identityFor('preserved-handler'));
+
+      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(1);
+      expect(preservedDb.pragma('user_version', { simple: true })).toBe(15);
+      expect(
+        preservedDb
+          .prepare(
+            `SELECT status, attempts, max_attempts FROM lifecycle_event_deliveries
+             WHERE event_id = 'preserved-event' AND handler_id = 'preserved-handler'`,
+          )
+          .get(),
+      ).toEqual({ status: 'pending', attempts: 0, max_attempts: 3 });
+      expect(
+        preservedDb
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type = 'trigger'
+             AND name = 'lifecycle_event_deliveries_guard_transitions'`,
+          )
+          .get(),
+      ).toBeDefined();
+      expect(
+        preservedDb.prepare(`PRAGMA foreign_key_list('lifecycle_event_deliveries')`).all(),
+      ).toEqual(expect.arrayContaining([expect.objectContaining({ table: 'lifecycle_events' })]));
+    } finally {
+      preservedDb.close();
+    }
     for (const [handlerId, identity] of [
       [
         'handler-advisory-enforcing-output',
