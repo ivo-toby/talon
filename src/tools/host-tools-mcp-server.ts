@@ -247,13 +247,14 @@ const TOOLS = [
   },
   {
     name: 'channel_send',
-    description: 'Sends a message to a channel on behalf of a persona.',
+    description:
+      'Sends a message to a channel on behalf of a persona. Pass `externalChatId` to target a specific chat on the channel (e.g. a Telegram chat_id). When omitted, the tool routes to the schedule thread\'s origin chat if the run is on a persona-created schedule. If neither is available (CLI-created schedules), the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         channelId: {
           type: 'string' as const,
-          description: 'Target channel identifier',
+          description: 'Target channel identifier (channel name)',
         },
         content: {
           type: 'string' as const,
@@ -262,6 +263,11 @@ const TOOLS = [
         replyTo: {
           type: 'string' as const,
           description: 'Optional thread or message ID to reply to',
+        },
+        externalChatId: {
+          type: 'string' as const,
+          description:
+            'Optional explicit recipient chat id on the target channel (e.g. Telegram chat_id, Slack channel id). Required for CLI-created scheduled tasks that have no originExternalId.',
         },
       },
       required: ['channelId', 'content'],

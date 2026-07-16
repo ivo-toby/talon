@@ -51,6 +51,15 @@ export interface ChannelSendArgs {
   content: string;
   /** Optional thread or message ID to reply to. */
   replyTo?: string;
+  /**
+   * Explicit recipient chat id on the target channel (e.g. Telegram chat_id,
+   * Slack channel id). When provided, this takes precedence over any
+   * schedule-thread `originExternalId`. Required when the run is on a
+   * schedule thread that has no `originExternalId` (CLI-created schedules);
+   * in that case the tool errors and points the agent at `channel.list`
+   * and `channel.broadcast`.
+   */
+  externalChatId?: string;
 }
 
 /** Execution context passed to every tool handler. */
@@ -160,8 +169,26 @@ export class ChannelSendHandler {
       this.deps.logger.error({ requestId, threadId: context.threadId, channelId }, msg);
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
+    const originExternalId = readOriginExternalId(threadResult.value.metadata);
+    const fallbackExternalId = threadResult.value.external_id;
+    const isSyntheticFallback = fallbackExternalId.startsWith('schedule:');
+    // Precedence: explicit externalChatId → schedule-thread originExternalId →
+    // thread.external_id when it's a real chat id (non-synthetic). Refuse the
+    // synthetic `schedule:<persona>:<channel>` fallback because it isn't a
+    // valid provider-side chat id and the connector would reject it with
+    // "chat not found" (the silent-failure mode this branch fixes).
     const externalThreadId =
-      readOriginExternalId(threadResult.value.metadata) ?? threadResult.value.external_id;
+      args.externalChatId ?? originExternalId ?? (isSyntheticFallback ? null : fallbackExternalId);
+    if (!externalThreadId) {
+      const msg =
+        'channel.send: no recipient chat id. This run is on a schedule thread without an originExternalId (likely created from the CLI). ' +
+        'Pass `externalChatId` explicitly, or use `channel.list` to discover available chats and `channel.broadcast` to fan out to all bound chats.';
+      this.deps.logger.warn(
+        { requestId, threadId: context.threadId, channelId, threadExternalId: fallbackExternalId },
+        'channel.send: refusing to deliver to synthetic schedule-thread external_id',
+      );
+      return { requestId, tool: 'channel.send', status: 'error', error: msg };
+    }
 
     const result = await connector.send(externalThreadId, output);
 

@@ -461,3 +461,101 @@ describe('ChannelSendHandler — missing thread fail-loud', () => {
     expect(connector.send).not.toHaveBeenCalled();
   });
 });
+
+// ---------------------------------------------------------------------------
+// externalChatId resolution
+// ---------------------------------------------------------------------------
+
+describe('ChannelSendHandler — externalChatId resolution', () => {
+  it('uses explicit externalChatId in preference to schedule-thread originExternalId', async () => {
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'dedicated-schedule-thread-001',
+          channel_id: 'chan-001',
+          external_id: 'schedule:assistant:telegram-main:chat-42',
+          metadata: JSON.stringify({
+            kind: 'schedule',
+            originExternalId: 'chat-42',
+            personaName: 'assistant',
+            channelName: 'telegram-main',
+          }),
+        }),
+      ),
+      findByExternalId: vi.fn().mockReturnValue(
+        ok({
+          id: 'live-thread-999',
+          channel_id: 'chan-001',
+          external_id: 'chat-999',
+          metadata: '{}',
+          created_at: 0,
+          updated_at: 0,
+        }),
+      ),
+      insert: vi.fn(),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      channelRepository: makeChannelRepo(),
+      messageRepository: makeMessageRepo(),
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      makeArgs({ channelId: 'my-telegram', content: 'ping', externalChatId: 'chat-999' }),
+      makeContext({
+        runId: 'run-001',
+        requestId: 'tool-001',
+        threadId: 'dedicated-schedule-thread-001',
+      }),
+    );
+
+    expect(result.status).toBe('success');
+    expect(connector.send).toHaveBeenCalledWith(
+      'chat-999',
+      expect.objectContaining({ body: 'ping' }),
+    );
+    expect(threadRepo.findByExternalId).toHaveBeenCalledWith('chan-001', 'chat-999');
+  });
+
+  it('errors with a pointer to channel.list / channel.broadcast when no originExternalId and no externalChatId and synthetic thread external_id', async () => {
+    const threadRepo = {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'cli-schedule-thread-001',
+          channel_id: 'chan-001',
+          external_id: 'schedule:assistant:telegram-main',
+          metadata: '{}',
+        }),
+      ),
+      findByExternalId: vi.fn(),
+      insert: vi.fn(),
+    } as any;
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: threadRepo,
+      channelRepository: makeChannelRepo(),
+      messageRepository: makeMessageRepo(),
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      makeArgs({ channelId: 'my-telegram', content: 'ping' }),
+      makeContext({
+        runId: 'run-001',
+        requestId: 'tool-001',
+        threadId: 'cli-schedule-thread-001',
+      }),
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/externalChatId/);
+    expect(result.error).toMatch(/channel\.list|channel\.broadcast/);
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+});
