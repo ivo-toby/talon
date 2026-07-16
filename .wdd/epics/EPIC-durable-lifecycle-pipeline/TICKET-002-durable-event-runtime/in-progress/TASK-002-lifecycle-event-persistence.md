@@ -17,10 +17,11 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-002-lifecycle-event-persistence
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence
-worktree_status: ready
+worktree_status: active
+worker_thread_id: 019f6850-6765-7f63-8874-1857dfc53796
 pr: null
-current_gate: dispatch_pending
-branch_freshness: current_at_readiness_checkpoint_before_dispatch
+current_gate: no_pr
+branch_freshness: current_at_d153e17_at_dispatch
 verification:
   - "npx vitest run tests/unit/core/database/repositories/lifecycle-event-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
   - "npm run build"
@@ -100,9 +101,9 @@ task/TASK-002-lifecycle-event-persistence
 ## Worker Worktree
 
 `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence`
-exists on `task/TASK-002-lifecycle-event-persistence` from activation-sync
-commit `039b568` and must be fast-forwarded to the pushed readiness checkpoint
-before dispatch.
+is active on `task/TASK-002-lifecycle-event-persistence` from reviewed and
+pushed readiness commit `d153e17` under Terra/high worker
+`019f6850-6765-7f63-8874-1857dfc53796`.
 
 ## PR / Patch Reference
 

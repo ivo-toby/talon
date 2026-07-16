@@ -18,10 +18,11 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-004-subagent-lifecycle-adapter
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter
-worktree_status: ready
+worktree_status: active
+worker_thread_id: 019f6850-679f-7d93-a6da-be1f0100064c
 pr: null
-current_gate: dispatch_pending
-branch_freshness: current_at_readiness_checkpoint_before_dispatch
+current_gate: no_pr
+branch_freshness: current_at_d153e17_at_dispatch
 verification:
   - "npx vitest run tests/unit/lifecycle/subagent-lifecycle-adapter.test.ts tests/unit/subagents/subagent-runner.test.ts"
   - "npm run build"
@@ -103,9 +104,9 @@ task/TASK-004-subagent-lifecycle-adapter
 ## Worker Worktree
 
 `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter`
-exists on `task/TASK-004-subagent-lifecycle-adapter` from activation-sync commit
-`039b568` and must be fast-forwarded to the pushed readiness checkpoint before
-dispatch.
+is active on `task/TASK-004-subagent-lifecycle-adapter` from reviewed and pushed
+readiness commit `d153e17` under Terra/high worker
+`019f6850-679f-7d93-a6da-be1f0100064c`.
 
 ## PR / Patch Reference
 

@@ -18,10 +18,11 @@ reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-003-interceptor-engine
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine
-worktree_status: ready
+worktree_status: active
+worker_thread_id: 019f6850-67ee-70c3-971f-8580236dfc04
 pr: null
-current_gate: dispatch_pending
-branch_freshness: current_at_readiness_checkpoint_before_dispatch
+current_gate: no_pr
+branch_freshness: current_at_d153e17_at_dispatch
 verification:
   - "npx vitest run tests/unit/lifecycle/interceptor-engine.test.ts tests/unit/core/logging/audit-logger.test.ts"
   - "npm run build"
@@ -103,9 +104,10 @@ task/TASK-003-interceptor-engine
 
 ## Worker Worktree
 
-`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` exists
-on `task/TASK-003-interceptor-engine` from activation-sync commit `039b568` and
-must be fast-forwarded to the pushed readiness checkpoint before dispatch.
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` is
+active on `task/TASK-003-interceptor-engine` from reviewed and pushed readiness
+commit `d153e17` under Terra/high worker
+`019f6850-67ee-70c3-971f-8580236dfc04`.
 
 ## PR / Patch Reference
 
