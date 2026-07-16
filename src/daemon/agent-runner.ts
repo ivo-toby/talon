@@ -941,10 +941,18 @@ export class AgentRunner {
               outputTokens: 0,
             };
             let lastStepUsage: AgentUsage | undefined;
+            // Tracks whether the successful run executed on a resumed
+            // codex-cli session. When true, `usage` reflects the provider's
+            // cumulative total_token_usage (the session log size on the
+            // provider's side), which is the right metric for rotation
+            // gating — see the comment at the rotation check below.
+            let ranOnResumedCodexSession = false;
 
             try {
               ({ outputText, fullOutputText, resultSessionId, usage, lastStepUsage } =
                 await executeAgentQuery(existingSessionId));
+              ranOnResumedCodexSession =
+                existingSessionId !== undefined && providerEntry.type === 'codex-cli';
             } catch (cause) {
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
                 this.ctx.sessionTracker.rotateSession(item.threadId);
@@ -1087,7 +1095,22 @@ export class AgentRunner {
               // individual prompt fits, which would trigger spurious
               // rotations. Telemetry/accounting still uses the cumulative
               // `usage` further down (it's what the user was billed for).
-              const usageForRotation = lastStepUsage ?? usage;
+              //
+              // Exception: codex-cli with a resumed session. Codex's
+              // total_token_usage is the cumulative session log size kept
+              // on the provider's side — exactly what we want to bound —
+              // while last_token_usage is just the new turn's tokens (the
+              // rest are cache hits). Gating on lastStepUsage here means a
+              // resumed session can grow to any size without triggering
+              // rotation, as long as each individual call stays under the
+              // threshold. Observed in production: a 644K-token session
+              // across 5 runs never rotated because no single call crossed
+              // the 524K threshold. Use cumulative `usage` for codex-cli
+              // resumed runs so the roller fires when the session log
+              // itself crosses the threshold.
+              const usageForRotation = ranOnResumedCodexSession
+                ? usage
+                : lastStepUsage ?? usage;
               const contextUsage: ContextUsage =
                 providerEntry.provider.estimateContextUsage(usageForRotation);
               const triggerMetric = enabledContextManagement.triggerMetric as ContextMetricName;
