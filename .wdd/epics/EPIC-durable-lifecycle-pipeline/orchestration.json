@@ -479,7 +479,7 @@
     },
     {
       "id": "WAVE-003",
-      "status": "planned",
+      "status": "in_progress",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -507,8 +507,8 @@
         {
           "id": "TASK-005-transactional-event-bus",
           "ticket": "TICKET-002-durable-event-runtime",
-          "path": "TICKET-002-durable-event-runtime/todo/TASK-005-transactional-event-bus.md",
-          "status": "todo",
+          "path": "TICKET-002-durable-event-runtime/in-progress/TASK-005-transactional-event-bus.md",
+          "status": "in_progress",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry",
             "TASK-002-lifecycle-event-persistence"
@@ -518,25 +518,27 @@
             "database transaction helpers"
           ],
           "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
           "reviewModel": "reviewGate",
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-005-transactional-event-bus",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus",
+          "worktreeStatus": "allocated_pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_reviewed_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "allocation_pending_review"
         },
         {
           "id": "TASK-006-durable-event-dispatcher",
           "ticket": "TICKET-002-durable-event-runtime",
-          "path": "TICKET-002-durable-event-runtime/todo/TASK-006-durable-event-dispatcher.md",
-          "status": "todo",
+          "path": "TICKET-002-durable-event-runtime/in-progress/TASK-006-durable-event-dispatcher.md",
+          "status": "in_progress",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry",
             "TASK-002-lifecycle-event-persistence",
@@ -548,19 +550,21 @@
             "handler executor"
           ],
           "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
           "reviewModel": "reviewGate",
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-006-durable-event-dispatcher",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher",
+          "worktreeStatus": "allocated_pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_reviewed_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "allocation_pending_review"
         }
       ]
     },
@@ -1216,23 +1220,23 @@
     "pendingReconciliation": []
   },
   "controller": {
-    "activeWave": null,
-    "nextWave": "WAVE-003",
+    "activeWave": "WAVE-003",
+    "nextWave": "WAVE-004",
     "epicBranchVerified": true,
     "activationArtifactsSynced": false,
-    "activationBase": "54dc8725cada8e6c2d10ee4fe7782e676ee0a389",
+    "activationBase": "2de0689788fd868c15053b1ab65436706c63ad1d",
     "activationCheckpoint": null,
     "activationSyncCommit": null
   },
   "monitoring": {
-    "mode": "codex_thread_heartbeat",
+    "mode": "manual",
     "cadence": "adaptive",
-    "status": "paused",
-    "lastCheckedAt": "2026-07-16T08:12:49+02:00",
-    "nextCheckDueAt": null,
+    "status": "activation_pending_review",
+    "lastCheckedAt": "2026-07-16T08:32:01+02:00",
+    "nextCheckDueAt": "2026-07-16T08:47:01+02:00",
     "schedulerRef": null,
-    "fallbackPrompt": "Resume EPIC-durable-lifecycle-pipeline by running wdd-start-wave for WAVE-003 from the reviewed and pushed WAVE-002 reconciliation checkpoint. Recreate allocation, activation-sync, and worktree-readiness gates before dispatching TASK-005 and TASK-006 to parallel Terra/high workers. Use Sol/high reviews, route only Critical/High/Medium blockers, preserve .minispec, and keep task worktrees isolated.",
-    "stopCondition": "WAVE-003 is activated with reviewed and pushed allocation, activation-sync, and worktree-readiness checkpoints.",
-    "stopReason": "WAVE-002 completed: TASK-002, TASK-003, and TASK-004 merged and reconciled at epic head 54dc872"
+    "fallbackPrompt": "Resume WAVE-003 activation for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, and TASK-005/TASK-006. Do not create either task branch or worktree until the allocation checkpoint is Sol/high reviewed, committed and pushed, its exact hash is recorded as controller.activationCheckpoint, controller.activationArtifactsSynced is true, and a second activation-sync Sol/high review has passed and been pushed. Do not dispatch workers until a later worktree-readiness checkpoint is Sol/high reviewed, committed and pushed, both task worktrees are clean and current at that exact commit, and current task/controller artifacts are verified in each worktree. Preserve .minispec and route only Critical/High/Medium blockers.",
+    "stopCondition": "All WAVE-003 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",
+    "stopReason": null
   }
 }

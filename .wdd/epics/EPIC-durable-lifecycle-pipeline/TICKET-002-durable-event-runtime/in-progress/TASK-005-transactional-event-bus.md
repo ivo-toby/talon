@@ -6,20 +6,22 @@ ticket: TICKET-002-durable-event-runtime
 wave: WAVE-003
 slug: transactional-event-bus
 title: Implement transactional lifecycle event publication
-status: todo
+status: in_progress
 depends_on: ["TASK-001-lifecycle-contracts-registry", "TASK-002-lifecycle-event-persistence"]
 conflict_domains:
   - "src/lifecycle/lifecycle-event-bus.ts"
   - "src/lifecycle/transaction-context.ts"
   - "src/core/database/**"
 assigned_model_class: codexHigh
+actual_model: gpt-5.6-terra
+reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-005-transactional-event-bus
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: allocation_pending_review
+branch_freshness: pending_reviewed_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/core/database/repositories/lifecycle-event-repository.test.ts"
   - "npm run build"
@@ -30,7 +32,7 @@ verification:
 
 ## Status
 
-todo
+in_progress
 
 ## Parent Ticket
 
@@ -99,7 +101,10 @@ task/TASK-005-transactional-event-bus
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+Allocated path:
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus`.
+The controller must not create it until the reviewed allocation and activation-
+sync checkpoints are committed and pushed.
 
 ## PR / Patch Reference
 

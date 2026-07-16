@@ -57,6 +57,6 @@ updated_at: 2026-07-16
 
 ## Next Phase
 
-- [x] WAVE-001 and WAVE-002 are reconciled; WAVE-003 is next, with allocation,
-  activation-sync, and worktree-readiness review/push gates required before its
-  two parallel Terra/high workers are dispatched.
+- [x] WAVE-001 and WAVE-002 are reconciled; WAVE-003 is active at allocation
+  review, with activation-sync and worktree-readiness review/push gates required
+  before its two parallel Terra/high workers are dispatched.

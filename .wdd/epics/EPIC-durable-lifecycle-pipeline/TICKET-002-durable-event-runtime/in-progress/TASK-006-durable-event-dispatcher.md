@@ -6,19 +6,21 @@ ticket: TICKET-002-durable-event-runtime
 wave: WAVE-003
 slug: durable-event-dispatcher
 title: Implement the durable lifecycle dispatcher
-status: todo
+status: in_progress
 depends_on: ["TASK-001-lifecycle-contracts-registry", "TASK-002-lifecycle-event-persistence", "TASK-003-interceptor-engine", "TASK-004-subagent-lifecycle-adapter"]
 conflict_domains:
   - "src/lifecycle/lifecycle-dispatcher.ts"
   - "src/lifecycle/handler-executor.ts"
 assigned_model_class: codexHigh
+actual_model: gpt-5.6-terra
+reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-006-durable-event-dispatcher
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: allocation_pending_review
+branch_freshness: pending_reviewed_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/lifecycle/lifecycle-dispatcher.test.ts"
   - "npm run build"
@@ -30,7 +32,7 @@ verification:
 
 ## Status
 
-todo
+in_progress
 
 ## Parent Ticket
 
@@ -101,7 +103,10 @@ task/TASK-006-durable-event-dispatcher
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+Allocated path:
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher`.
+The controller must not create it until the reviewed allocation and activation-
+sync checkpoints are committed and pushed.
 
 ## PR / Patch Reference
 

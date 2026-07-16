@@ -47,8 +47,8 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 | Task | Status | Wave | Summary |
 |------|--------|------|---------|
 | TASK-002-lifecycle-event-persistence | done | WAVE-002 | Add real SQLite migration/repository support for bounded lifecycle events and per-handler deliveries with claims, ordering, retry, dead-letter, and transactional primitives. |
-| TASK-005-transactional-event-bus | todo | WAVE-003 | Implement validated versioned publication, atomic subscriber delivery fan-out, correlation/causation/depth propagation, and after-commit wake behavior. |
-| TASK-006-durable-event-dispatcher | todo | WAVE-003 | Implement independent at-least-once delivery with leases, per-aggregate ordering, bounded concurrency, retry/dead-letter, idempotency, backpressure, circuit state, and restart-safe shutdown. |
+| TASK-005-transactional-event-bus | in_progress | WAVE-003 | Implement validated versioned publication, atomic subscriber delivery fan-out, correlation/causation/depth propagation, and after-commit wake behavior. |
+| TASK-006-durable-event-dispatcher | in_progress | WAVE-003 | Implement independent at-least-once delivery with leases, per-aggregate ordering, bounded concurrency, retry/dead-letter, idempotency, backpressure, circuit state, and restart-safe shutdown. |
 | TASK-014-lifecycle-retention-reload-replay | todo | WAVE-007 | Add configurable compaction, privacy-aware payload deletion/tombstoning, stable handler identity across reload, disablement, and exact one-handler replay without duplicated state/side effects. |
 
 ## Dependencies
