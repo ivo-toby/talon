@@ -8,13 +8,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ok, err } from 'neverthrow';
 import pino from 'pino';
+import Database from 'better-sqlite3';
 import { MessagePipeline } from '../../../src/pipeline/message-pipeline.js';
 import { PipelineError } from '../../../src/core/errors/index.js';
 import { DbError, ChannelError, QueueError } from '../../../src/core/errors/index.js';
 import type { InboundEvent } from '../../../src/channels/channel-types.js';
-import type { MessageRepository } from '../../../src/core/database/repositories/message-repository.js';
-import type { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
-import type { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
+import { MessageRepository } from '../../../src/core/database/repositories/message-repository.js';
+import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
+import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import type { ChannelRouter } from '../../../src/channels/channel-router.js';
 import type { QueueManager } from '../../../src/queue/queue-manager.js';
 import type { AuditLogger } from '../../../src/core/logging/audit-logger.js';
@@ -23,6 +24,13 @@ import type { ThreadRow } from '../../../src/core/database/repositories/thread-r
 import type { MessageRow } from '../../../src/core/database/repositories/message-repository.js';
 import type { QueueItem } from '../../../src/queue/queue-types.js';
 import { QueueItemStatus } from '../../../src/queue/queue-types.js';
+import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
+import { LifecycleEventRepository } from '../../../src/core/database/repositories/lifecycle-event-repository.js';
+import { LifecycleEventBus } from '../../../src/lifecycle/lifecycle-event-bus.js';
+import { LifecycleRuntime } from '../../../src/lifecycle/lifecycle-runtime.js';
+import { LifecycleInterceptorEngine } from '../../../src/lifecycle/interceptors/interceptor-engine.js';
+import { QueueManager } from '../../../src/queue/queue-manager.js';
+import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -108,6 +116,7 @@ function makeQueueItem(overrides: Partial<QueueItem> = {}): QueueItem {
 function makeMocks() {
   const messageRepo = {
     insert: vi.fn(),
+    insertIfAbsent: vi.fn(),
     findById: vi.fn(),
     findByThread: vi.fn(),
     existsByIdempotencyKey: vi.fn(),
@@ -132,6 +141,7 @@ function makeMocks() {
 
   const queueManager = {
     enqueue: vi.fn(),
+    enqueueInLifecycleTransaction: vi.fn(),
     startProcessing: vi.fn(),
     stopProcessing: vi.fn(),
     stats: vi.fn(),
@@ -183,8 +193,12 @@ describe('MessagePipeline', () => {
       vi.mocked(mocks.threadRepo.findByExternalId).mockReturnValue(ok(makeThreadRow()));
       vi.mocked(mocks.messageRepo.existsByIdempotencyKey).mockReturnValue(false);
       vi.mocked(mocks.messageRepo.insert).mockReturnValue(ok(makeMessageRow()));
+      vi.mocked(mocks.messageRepo.insertIfAbsent).mockReturnValue(
+        ok({ message: makeMessageRow(), inserted: true }),
+      );
       vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok('persona-uuid-1'));
       vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
+      vi.mocked(mocks.queueManager.enqueueInLifecycleTransaction).mockReturnValue(ok(makeQueueItem()));
     });
 
     it('returns Ok("enqueued") on a successful end-to-end run', async () => {
@@ -237,6 +251,162 @@ describe('MessagePipeline', () => {
       expect(stats.errors).toBe(0);
       expect(stats.duplicates).toBe(0);
       expect(stats.noPersona).toBe(0);
+    });
+  });
+
+  describe('enabled lifecycle inbound boundary', () => {
+    beforeEach(() => {
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+      vi.mocked(mocks.threadRepo.findByExternalId).mockReturnValue(ok(makeThreadRow()));
+      vi.mocked(mocks.messageRepo.existsByIdempotencyKey).mockReturnValue(false);
+      vi.mocked(mocks.messageRepo.insert).mockReturnValue(ok(makeMessageRow()));
+      vi.mocked(mocks.messageRepo.insertIfAbsent).mockReturnValue(
+        ok({ message: makeMessageRow(), inserted: true }),
+      );
+      vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok('persona-uuid-1'));
+      vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
+      vi.mocked(mocks.queueManager.enqueueInLifecycleTransaction).mockReturnValue(ok(makeQueueItem()));
+    });
+
+    it('transforms before persistence and publishes bounded persisted/routed events', () => {
+      const runtime = {
+        transaction: vi.fn((callback) => callback({})),
+        intercept: vi.fn(() =>
+          ok({
+            outcome: 'allow' as const,
+            signals: [],
+            input: {
+              hook: 'message.before_persist' as const,
+              input: { content: 'redacted' },
+            },
+          }),
+        ),
+        publish: vi.fn(() => ok({})),
+      };
+      pipeline = new MessagePipeline(
+        mocks.messageRepo,
+        mocks.threadRepo,
+        mocks.channelRepo,
+        mocks.queueManager,
+        mocks.router,
+        mocks.auditLogger,
+        silentLogger(),
+        runtime as any,
+        () => ok('assistant'),
+      );
+
+      const result = pipeline.handleInboundEvent(makeEvent({ content: 'secret source text' }));
+
+      expect(result._unsafeUnwrap()).toBe('enqueued');
+      expect(mocks.messageRepo.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({ content: 'redacted' }),
+      );
+      expect(mocks.queueManager.enqueueInLifecycleTransaction).toHaveBeenCalledWith(
+        expect.any(String),
+        'message',
+        expect.objectContaining({ content: 'redacted' }),
+        { persona: 'assistant', itemType: 'message' },
+        expect.anything(),
+        expect.any(String),
+      );
+      expect(runtime.publish).toHaveBeenCalledTimes(2);
+      for (const [input] of runtime.publish.mock.calls) {
+        expect(input.event.payload).not.toHaveProperty('content');
+      }
+      expect(runtime.publish.mock.calls[1]?.[0].event.payload.references).toContainEqual({
+        type: 'persona',
+        id: 'persona-uuid-1',
+      });
+    });
+
+    it('does not persist or enqueue a message denied before persistence', () => {
+      const runtime = {
+        transaction: vi.fn((callback) => callback({})),
+        intercept: vi.fn(() =>
+          ok({
+            outcome: 'deny' as const,
+            reason: 'native_policy',
+            signals: [],
+            input: { hook: 'message.before_persist' as const, input: { content: 'ignored' } },
+          }),
+        ),
+        publish: vi.fn(() => ok({})),
+      };
+      pipeline = new MessagePipeline(
+        mocks.messageRepo,
+        mocks.threadRepo,
+        mocks.channelRepo,
+        mocks.queueManager,
+        mocks.router,
+        mocks.auditLogger,
+        silentLogger(),
+        runtime as any,
+        () => ok('assistant'),
+      );
+
+      const result = pipeline.handleInboundEvent(makeEvent());
+
+      expect(result._unsafeUnwrap()).toBe('denied');
+      expect(mocks.messageRepo.insert).not.toHaveBeenCalled();
+      expect(mocks.queueManager.enqueue).not.toHaveBeenCalled();
+      expect(runtime.publish).not.toHaveBeenCalled();
+    });
+
+    it.each([1, 2, 3])('rolls back stage %i and recovers idempotently on retry', (failureAt) => {
+      const db: Database.Database = createTestDb();
+      const channels = new ChannelRepository(db);
+      const threads = new ThreadRepository(db);
+      const messages = new MessageRepository(db);
+      const queue = new QueueRepository(db);
+      const channelId = uuid();
+      const threadId = uuid();
+      const personaId = uuid();
+      let injectFailure = true;
+      channels.insert({
+        id: channelId,
+        type: 'terminal',
+        name: 'test-bot',
+        config: '{}',
+        credentials_ref: null,
+        enabled: 1,
+      });
+      threads.insert({ id: threadId, channel_id: channelId, external_id: 'ext-thread-001', metadata: '{}' });
+      let publications = 0;
+      const runtime = new LifecycleRuntime(
+        new LifecycleEventBus(new LifecycleEventRepository(db), {
+          resolveEventHandlers: () => {
+            publications += 1;
+            if (injectFailure && publications === failureAt) throw new Error('injected publication failure');
+            return [];
+          },
+        }),
+        new LifecycleInterceptorEngine({ resolveHandlers: () => [], implementations: {} }),
+        {} as any,
+      );
+      const pipelineUnderTest = new MessagePipeline(
+        messages,
+        threads,
+        channels,
+        new QueueManager(queue, threads, { maxAttempts: 3, backoffBaseMs: 10, backoffMaxMs: 100, concurrencyLimit: 1 }, silentLogger(), runtime),
+        { resolvePersona: () => ok(personaId) } as unknown as ChannelRouter,
+        mocks.auditLogger,
+        silentLogger(),
+        runtime,
+        () => ok('assistant'),
+      );
+
+      expect(pipelineUnderTest.handleInboundEvent(makeEvent()).isErr()).toBe(true);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM messages').get() as { count: number }).count).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number }).count).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM lifecycle_events').get() as { count: number }).count).toBe(0);
+
+      publications = 0;
+      injectFailure = false;
+      expect(pipelineUnderTest.handleInboundEvent(makeEvent())._unsafeUnwrap()).toBe('enqueued');
+      expect((db.prepare('SELECT COUNT(*) AS count FROM messages').get() as { count: number }).count).toBe(1);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number }).count).toBe(1);
+      expect((db.prepare('SELECT COUNT(*) AS count FROM lifecycle_events').get() as { count: number }).count).toBe(3);
+      db.close();
     });
   });
 

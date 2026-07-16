@@ -169,9 +169,9 @@ describe('runMigrations', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(13);
 
     const upgrade = runMigrations(db, realMigrationsDir);
-    expect(upgrade._unsafeUnwrap()).toBe(2);
-    expect(db.pragma('user_version', { simple: true })).toBe(15);
-    for (const table of ['lifecycle_events', 'lifecycle_event_deliveries']) {
+    expect(upgrade._unsafeUnwrap()).toBe(4);
+    expect(db.pragma('user_version', { simple: true })).toBe(17);
+    for (const table of ['lifecycle_events', 'lifecycle_event_deliveries', 'lifecycle_signal_handoffs', 'lifecycle_signals']) {
       expect(
         db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table),
       ).toBeDefined();
@@ -423,8 +423,8 @@ describe('runMigrations', () => {
         )
         .run(identityFor('preserved-handler'));
 
-      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(1);
-      expect(preservedDb.pragma('user_version', { simple: true })).toBe(15);
+      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(3);
+      expect(preservedDb.pragma('user_version', { simple: true })).toBe(17);
       expect(
         preservedDb
           .prepare(

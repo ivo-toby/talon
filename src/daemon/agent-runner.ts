@@ -1165,6 +1165,7 @@ export class AgentRunner {
                         'message',
                         { personaId, content: 'continue' },
                         continueMessageId,
+                        { persona: personaName, itemType: 'message' },
                       );
                       if (enqueueResult.isOk()) {
                         this.ctx.logger.info(

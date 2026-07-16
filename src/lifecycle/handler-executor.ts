@@ -2,6 +2,7 @@
 
 import { err, ok, type Result } from 'neverthrow';
 import { types } from 'node:util';
+import { createHash } from 'node:crypto';
 import {
   LifecycleEventEnvelopeSchema,
   LifecycleHandlerIdentityContractSchema,
@@ -38,6 +39,21 @@ export interface LifecycleHandlerExecutor {
   execute(
     execution: LifecycleHandlerExecution,
   ): Promise<Result<LifecycleHandlerResult, LifecycleError>>;
+}
+
+/**
+ * Stable, bounded idempotency key for one signal handoff. The length-delimited
+ * encoding prevents tuple ambiguity before hashing and keeps valid maximum
+ * event/handler identities inside LifecycleRuntimeId's persistence bound.
+ */
+export function lifecycleSignalHandoffKey(eventId: string, handlerId: string): string {
+  const encode = (value: string): string => `${Buffer.byteLength(value, 'utf8')}:${value}`;
+  return `lsh.v1.${createHash('sha256')
+    .update('talon.lifecycle.signal-handoff.v1\0', 'utf8')
+    .update(encode(eventId), 'utf8')
+    .update('\0', 'utf8')
+    .update(encode(handlerId), 'utf8')
+    .digest('base64url')}`;
 }
 
 export interface LifecycleRuntimeCapability {
@@ -407,7 +423,10 @@ export function materializeLifecycleHandlerExecution(
         event: deepFreeze(structuredClone(event.data)),
         identity: deepFreeze(structuredClone(identity.data)),
         persona: claim.delivery.persona,
-        idempotencyKey: `${claim.delivery.event_id}:${claim.delivery.handler_id}`,
+        idempotencyKey: lifecycleSignalHandoffKey(
+          claim.delivery.event_id,
+          claim.delivery.handler_id,
+        ),
         signal,
       }),
     );

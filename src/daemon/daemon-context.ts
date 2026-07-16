@@ -27,6 +27,9 @@ import type {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  LifecycleEventRepository,
+  LifecycleDeliveryRepository,
+  LifecycleSignalRepository,
 } from '../core/database/repositories/index.js';
 import type { ChannelRegistry } from '../channels/channel-registry.js';
 import type { QueueManager } from '../queue/queue-manager.js';
@@ -49,6 +52,7 @@ import type { ObservabilityService } from '../observability/langfuse/observabili
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
 import type { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import type { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -70,6 +74,9 @@ export interface DaemonRepos {
   readonly binding: BindingRepository;
   readonly memory: MemoryRepository;
   readonly a2aTask: A2ATaskRepository;
+  readonly lifecycleEvent: LifecycleEventRepository;
+  readonly lifecycleDelivery: LifecycleDeliveryRepository;
+  readonly lifecycleSignal: LifecycleSignalRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -116,4 +123,6 @@ export interface DaemonContext {
   readonly toolInstructions: Map<string, string>;
   readonly a2aServer: A2AServer | null;
   readonly a2aTaskMapper: A2ATaskMapper | null;
+  /** Null when lifecycle is absent or explicitly disabled, preserving legacy behaviour. */
+  readonly lifecycleRuntime: LifecycleRuntime | null;
 }

@@ -48,9 +48,10 @@ export interface NormalizedMessage {
  * - `'enqueued'`   — message was persisted and a queue item was created.
  * - `'duplicate'`  — message was already present (idempotency_key matched).
  * - `'no_persona'` — no persona binding found for the channel+thread pair.
+ * - `'denied'`     — an enabled native lifecycle policy rejected the inbound message.
  * - `'error'`      — an unexpected error occurred (details in the Err wrapper).
  */
-export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'error';
+export type PipelineResult = 'enqueued' | 'duplicate' | 'no_persona' | 'denied' | 'error';
 
 // ---------------------------------------------------------------------------
 // PipelineStats

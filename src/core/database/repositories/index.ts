@@ -20,7 +20,7 @@ export { BindingRepository } from './binding-repository.js';
 export type { ThreadRow, InsertThreadInput, UpdateThreadInput } from './thread-repository.js';
 export { ThreadRepository } from './thread-repository.js';
 
-export type { MessageRow, InsertMessageInput } from './message-repository.js';
+export type { MessageRow, InsertMessageInput, InsertMessageOutcome } from './message-repository.js';
 export { MessageRepository } from './message-repository.js';
 
 export type { QueueItemRow, QueueStatus, QueueType, EnqueueInput } from './queue-repository.js';
@@ -86,3 +86,6 @@ export type {
   LifecycleFailureDiagnostic,
 } from './lifecycle-delivery-repository.js';
 export { LifecycleDeliveryRepository } from './lifecycle-delivery-repository.js';
+
+export type { LifecycleSignalHandoffInput, LifecycleSignalRow } from './lifecycle-signal-repository.js';
+export { LifecycleSignalRepository } from './lifecycle-signal-repository.js';

@@ -38,7 +38,11 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   ScheduleRepository: vi.fn().mockImplementation(() => ({
     // Bootstrap now invokes migrateLegacySchedules() before the scheduler
     // starts ticking; mock findAll() so the mocked repo satisfies it.
-    findAll: vi.fn().mockReturnValue({ isErr: () => true, isOk: () => false, error: new Error('mock: migration skipped') }),
+    findAll: vi.fn().mockReturnValue({
+      isErr: () => true,
+      isOk: () => false,
+      error: new Error('mock: migration skipped'),
+    }),
   })),
   AuditRepository: vi.fn().mockImplementation(() => ({})),
   MessageRepository: vi.fn().mockImplementation(() => ({})),
@@ -46,6 +50,15 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   BindingRepository: vi.fn().mockImplementation(() => ({})),
   MemoryRepository: vi.fn().mockImplementation(() => ({})),
   A2ATaskRepository: vi.fn().mockImplementation(() => ({})),
+  LifecycleEventRepository: vi.fn().mockImplementation(() => ({ db: { inTransaction: false } })),
+  LifecycleDeliveryRepository: vi.fn().mockImplementation(() => ({
+    claimNext: vi.fn(),
+    complete: vi.fn(),
+    fail: vi.fn(),
+  })),
+  LifecycleSignalRepository: vi
+    .fn()
+    .mockImplementation(() => ({ handoff: vi.fn().mockReturnValue(ok(undefined)) })),
 }));
 
 vi.mock('../../../src/core/database/repositories/audit-repository.js', () => ({
@@ -159,7 +172,11 @@ vi.mock('../../../src/a2a/index.js', () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { bootstrap } from '../../../src/daemon/daemon-bootstrap.js';
+import {
+  bootstrap,
+  hasExplicitLifecycleSubagentAuthority,
+  supportsLifecycleBootstrapHandler,
+} from '../../../src/daemon/daemon-bootstrap.js';
 import { loadConfig } from '../../../src/core/config/config-loader.js';
 import { createDatabase } from '../../../src/core/database/connection.js';
 import { runMigrations } from '../../../src/core/database/migrations/runner.js';
@@ -182,7 +199,9 @@ function createSilentLogger(): pino.Logger {
   return createDiscardLogger('silent');
 }
 
-function makeContextManagementConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeContextManagementConfig(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     enabled: true,
     triggerMetric: 'cache_read_input_tokens',
@@ -193,7 +212,9 @@ function makeContextManagementConfig(overrides: Record<string, unknown> = {}): R
   };
 }
 
-function makeAgentRunnerProviderConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeAgentRunnerProviderConfig(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     enabled: true,
     command: 'claude',
@@ -203,7 +224,9 @@ function makeAgentRunnerProviderConfig(overrides: Record<string, unknown> = {}):
   };
 }
 
-function makeBackgroundProviderConfig(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeBackgroundProviderConfig(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
   return {
     enabled: true,
     command: 'claude',
@@ -307,13 +330,19 @@ function setupSuccessfulMocks() {
   vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
 
   // Restore constructor mocks in case previous tests overrode them.
-  vi.mocked(PersonaLoader).mockImplementation(() => ({
-    loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
-    getByName: vi.fn().mockReturnValue(ok({})),
-  }) as any);
-  vi.mocked(SkillLoader).mockImplementation(() => ({
-    loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
-  }) as any);
+  vi.mocked(PersonaLoader).mockImplementation(
+    () =>
+      ({
+        loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+        getByName: vi.fn().mockReturnValue(ok({})),
+      }) as any,
+  );
+  vi.mocked(SkillLoader).mockImplementation(
+    () =>
+      ({
+        loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
+      }) as any,
+  );
 
   return { config, db, observability };
 }
@@ -330,15 +359,27 @@ describe('bootstrap', () => {
     vi.clearAllMocks();
   });
 
+  it('requires the owning persona to explicitly attach a lifecycle sub-agent', () => {
+    expect(hasExplicitLifecycleSubagentAuthority([], 'signal-projector')).toBe(false);
+    expect(hasExplicitLifecycleSubagentAuthority(undefined, 'signal-projector')).toBe(false);
+    expect(hasExplicitLifecycleSubagentAuthority(['signal-projector'], 'signal-projector')).toBe(
+      true,
+    );
+  });
+
+  it('rejects only unsupported sub-agent interceptor attachments at bootstrap', () => {
+    expect(supportsLifecycleBootstrapHandler('subagent', 'interceptor')).toBe(false);
+    expect(supportsLifecycleBootstrapHandler('subagent', 'event')).toBe(true);
+    expect(supportsLifecycleBootstrapHandler('native', 'interceptor')).toBe(true);
+  });
+
   // -------------------------------------------------------------------------
   // Failure scenarios
   // -------------------------------------------------------------------------
 
   describe('failure scenarios', () => {
     it('returns error when config loading fails', async () => {
-      vi.mocked(loadConfig).mockReturnValue(
-        err(new Error('config file not found') as any),
-      );
+      vi.mocked(loadConfig).mockReturnValue(err(new Error('config file not found') as any));
 
       const result = await bootstrap('/missing.yaml', logger);
 
@@ -349,9 +390,7 @@ describe('bootstrap', () => {
     it('returns error when database creation fails', async () => {
       const config = makeConfig();
       vi.mocked(loadConfig).mockReturnValue(ok(config as any));
-      vi.mocked(createDatabase).mockReturnValue(
-        err(new Error('cannot open database') as any),
-      );
+      vi.mocked(createDatabase).mockReturnValue(err(new Error('cannot open database') as any));
 
       const result = await bootstrap('/config.yaml', logger);
 
@@ -364,9 +403,7 @@ describe('bootstrap', () => {
       const db = makeMockDb();
       vi.mocked(loadConfig).mockReturnValue(ok(config as any));
       vi.mocked(createDatabase).mockReturnValue(ok(db as any));
-      vi.mocked(runMigrations).mockReturnValue(
-        err(new Error('migration 003 failed') as any),
-      );
+      vi.mocked(runMigrations).mockReturnValue(err(new Error('migration 003 failed') as any));
 
       const result = await bootstrap('/config.yaml', logger);
 
@@ -389,10 +426,13 @@ describe('bootstrap', () => {
       vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
 
       // Override the PersonaLoader mock to make loadFromConfig fail.
-      vi.mocked(PersonaLoader).mockImplementation(() => ({
-        loadFromConfig: vi.fn().mockResolvedValue(err(new Error('persona parse error'))),
-        getByName: vi.fn(),
-      }) as any);
+      vi.mocked(PersonaLoader).mockImplementation(
+        () =>
+          ({
+            loadFromConfig: vi.fn().mockResolvedValue(err(new Error('persona parse error'))),
+            getByName: vi.fn(),
+          }) as any,
+      );
 
       const result = await bootstrap('/config.yaml', logger);
 
@@ -416,15 +456,23 @@ describe('bootstrap', () => {
       vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
 
       // Restore PersonaLoader to success (may have been overridden by previous test).
-      vi.mocked(PersonaLoader).mockImplementation(() => ({
-        loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
-        getByName: vi.fn().mockReturnValue(ok({})),
-      }) as any);
+      vi.mocked(PersonaLoader).mockImplementation(
+        () =>
+          ({
+            loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+            getByName: vi.fn().mockReturnValue(ok({})),
+          }) as any,
+      );
 
       // Override the SkillLoader mock to make loadFromPersonaConfig fail.
-      vi.mocked(SkillLoader).mockImplementation(() => ({
-        loadFromPersonaConfig: vi.fn().mockResolvedValue(err(new Error('skill manifest invalid'))),
-      }) as any);
+      vi.mocked(SkillLoader).mockImplementation(
+        () =>
+          ({
+            loadFromPersonaConfig: vi
+              .fn()
+              .mockResolvedValue(err(new Error('skill manifest invalid'))),
+          }) as any,
+      );
 
       const result = await bootstrap('/config.yaml', logger);
 
@@ -474,13 +522,19 @@ describe('bootstrap', () => {
       vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
       // Restore PersonaLoader and SkillLoader to success — previous failure
       // tests override these and clearAllMocks does not reset implementations.
-      vi.mocked(PersonaLoader).mockImplementation(() => ({
-        loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
-        getByName: vi.fn().mockReturnValue(ok({})),
-      }) as any);
-      vi.mocked(SkillLoader).mockImplementation(() => ({
-        loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
-      }) as any);
+      vi.mocked(PersonaLoader).mockImplementation(
+        () =>
+          ({
+            loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+            getByName: vi.fn().mockReturnValue(ok({})),
+          }) as any,
+      );
+      vi.mocked(SkillLoader).mockImplementation(
+        () =>
+          ({
+            loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
+          }) as any,
+      );
 
       const result = await bootstrap('/config.yaml', logger);
 
@@ -497,6 +551,97 @@ describe('bootstrap', () => {
   // -------------------------------------------------------------------------
 
   describe('successful bootstrap', () => {
+    it('constructs an enabled native lifecycle interceptor with bootstrap-owned authority', async () => {
+      const { config } = setupSuccessfulMocks();
+      const enabled = {
+        ...(config as Record<string, unknown>),
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'allow-inbound',
+              mode: 'interceptor',
+              inputContract: 'talon.lifecycle.interceptor.input.v1',
+              outputContract: 'talon.lifecycle.enforcing.interceptor.output.v1',
+              interceptorSafety: 'enforcing',
+              runtime: {
+                kind: 'native',
+                ref: 'native-allow-interceptor',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [
+          {
+            name: 'assistant',
+            lifecycle: {
+              subscriptions: [
+                {
+                  version: 'v1',
+                  handler: 'allow-inbound',
+                  priority: 1,
+                  subscription: {
+                    version: 'v1',
+                    kind: 'interceptor',
+                    interceptors: [{ version: 'v1', hook: 'message.before_persist' }],
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+      vi.mocked(loadConfig).mockReturnValue(ok(enabled as any));
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().lifecycleRuntime).not.toBeNull();
+    });
+
+    it('deduplicates one native lifecycle capability attached to multiple personas', async () => {
+      const { config } = setupSuccessfulMocks();
+      const nativeEventHandler = {
+        version: 'v1',
+        id: 'noop-event',
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+        runtime: {
+          kind: 'native',
+          ref: 'native-noop-event',
+          implementationVersion: '1.0.0',
+        },
+      };
+      const eventSubscription = {
+        version: 'v1',
+        handler: 'noop-event',
+        priority: 1,
+        subscription: {
+          version: 'v1',
+          kind: 'event',
+          events: [{ version: 'v1', type: 'message.persisted.v1' }],
+        },
+      };
+      vi.mocked(loadConfig).mockReturnValue(
+        ok({
+          ...(config as Record<string, unknown>),
+          lifecycle: { enabled: true, handlers: [nativeEventHandler] },
+          personas: [
+            { name: 'assistant', lifecycle: { subscriptions: [eventSubscription] } },
+            { name: 'observer', lifecycle: { subscriptions: [eventSubscription] } },
+          ],
+        } as any),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().lifecycleRuntime).not.toBeNull();
+    });
+
     it('returns Ok(DaemonContext) with all fields populated', async () => {
       setupSuccessfulMocks();
 
@@ -590,7 +735,9 @@ describe('bootstrap', () => {
       const ctx = result._unsafeUnwrap();
       expect(ctx.dataDir.startsWith('/')).toBe(true);
       expect(ctx.dataDir.endsWith('/data')).toBe(true);
-      expect(ctx.threadWorkspace.ensureDirectories('thread-abs')._unsafeUnwrap().startsWith('/')).toBe(true);
+      expect(
+        ctx.threadWorkspace.ensureDirectories('thread-abs')._unsafeUnwrap().startsWith('/'),
+      ).toBe(true);
     });
 
     it('applies the configured log level during bootstrap', async () => {
@@ -666,18 +813,20 @@ describe('bootstrap', () => {
     it('wires ExecutionEnvManager when sprites are enabled', async () => {
       setupSuccessfulMocks();
       vi.mocked(loadConfig).mockReturnValue(
-        ok(makeConfig({
-          sprites: {
-            enabled: true,
-            token: 'sprites-token',
-            apiBaseUrl: 'https://api.sprites.dev',
-            workingDirectory: '/workspace',
-            createTimeoutMs: 60000,
-            execTimeoutMs: 1200000,
-            autoDestroyOnCompletion: true,
-            resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
-          },
-        }) as any),
+        ok(
+          makeConfig({
+            sprites: {
+              enabled: true,
+              token: 'sprites-token',
+              apiBaseUrl: 'https://api.sprites.dev',
+              workingDirectory: '/workspace',
+              createTimeoutMs: 60000,
+              execTimeoutMs: 1200000,
+              autoDestroyOnCompletion: true,
+              resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+            },
+          }) as any,
+        ),
       );
 
       const result = await bootstrap('/config.yaml', logger);
@@ -814,8 +963,8 @@ describe('bootstrap', () => {
       expect(ctx.providerRegistry.get('codex-cli')?.provider.name).toBe('codex-cli');
       expect(ctx.providerRegistry.getDefault(['codex-cli'])?.provider.name).toBe('codex-cli');
 
-      const backgroundProviderRegistry = vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0]
-        .providerRegistry;
+      const backgroundProviderRegistry =
+        vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0].providerRegistry;
       expect(backgroundProviderRegistry.get('codex-cli')?.provider.name).toBe('codex-cli');
       expect(backgroundProviderRegistry.getDefault(['codex-cli'])?.provider.name).toBe('codex-cli');
       expect(BackgroundAgentManager).toHaveBeenCalledWith(
@@ -888,8 +1037,8 @@ describe('bootstrap', () => {
         'openai-compatible',
       );
 
-      const backgroundProviderRegistry = vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0]
-        .providerRegistry;
+      const backgroundProviderRegistry =
+        vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0].providerRegistry;
       expect(backgroundProviderRegistry.get('openai-compatible')?.provider.name).toBe(
         'openai-compatible',
       );
@@ -987,8 +1136,8 @@ describe('bootstrap', () => {
       expect(payload.baseUrl).toBe('http://mac.local:11434/v1');
       expect(payload.apiKey).toBe('local-key');
 
-      const backgroundProviderRegistry = vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0]
-        .providerRegistry;
+      const backgroundProviderRegistry =
+        vi.mocked(BackgroundAgentManager).mock.calls[0]?.[0].providerRegistry;
       expect(backgroundProviderRegistry.get('ollama-mac')?.type).toBe('openai-compatible');
       expect(backgroundProviderRegistry.get('ollama-mac')?.provider.name).toBe('ollama-mac');
     });
@@ -1155,9 +1304,11 @@ describe('bootstrap', () => {
     });
 
     it('binds the session summarizer with the manifest maxTokens budget', async () => {
-      const summarizerRun = vi.fn().mockResolvedValue(ok({
-        summary: 'Summarized.',
-      }));
+      const summarizerRun = vi.fn().mockResolvedValue(
+        ok({
+          summary: 'Summarized.',
+        }),
+      );
 
       vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
         SubAgentLoader: vi.fn().mockImplementation(() => ({
@@ -1196,11 +1347,16 @@ describe('bootstrap', () => {
       vi.resetModules();
 
       try {
-        const { loadConfig: isolatedLoadConfig } = await import('../../../src/core/config/config-loader.js');
-        const { createDatabase: isolatedCreateDatabase } = await import('../../../src/core/database/connection.js');
-        const { runMigrations: isolatedRunMigrations } = await import('../../../src/core/database/migrations/runner.js');
-        const { createObservabilityService: isolatedCreateObservabilityService } = await import('../../../src/observability/langfuse/index.js');
-        const { bootstrap: isolatedBootstrap } = await import('../../../src/daemon/daemon-bootstrap.js');
+        const { loadConfig: isolatedLoadConfig } =
+          await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } =
+          await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } =
+          await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } =
+          await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } =
+          await import('../../../src/daemon/daemon-bootstrap.js');
 
         const config = makeConfig();
         const db = makeMockDb();
@@ -1300,11 +1456,16 @@ describe('bootstrap', () => {
       vi.resetModules();
 
       try {
-        const { loadConfig: isolatedLoadConfig } = await import('../../../src/core/config/config-loader.js');
-        const { createDatabase: isolatedCreateDatabase } = await import('../../../src/core/database/connection.js');
-        const { runMigrations: isolatedRunMigrations } = await import('../../../src/core/database/migrations/runner.js');
-        const { createObservabilityService: isolatedCreateObservabilityService } = await import('../../../src/observability/langfuse/index.js');
-        const { bootstrap: isolatedBootstrap } = await import('../../../src/daemon/daemon-bootstrap.js');
+        const { loadConfig: isolatedLoadConfig } =
+          await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } =
+          await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } =
+          await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } =
+          await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } =
+          await import('../../../src/daemon/daemon-bootstrap.js');
 
         // Configure the provider to use the observer-based OM path.
         const config = makeConfig({
@@ -1335,7 +1496,9 @@ describe('bootstrap', () => {
         expect(ctx.contextRoller).toBeTruthy();
 
         const resolver = (ctx.contextRoller as any).deps.resolveSummarizerRun as
-          | ((name: string) => ((threadId: string, personaId: string, input: unknown) => Promise<unknown>) | null)
+          | ((
+              name: string,
+            ) => ((threadId: string, personaId: string, input: unknown) => Promise<unknown>) | null)
           | undefined;
         expect(resolver).toBeTypeOf('function');
 

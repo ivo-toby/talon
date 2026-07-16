@@ -863,8 +863,8 @@ describe('lifecycle event persistence', () => {
         import.meta.dirname,
         '../../../../../src/core/database/migrations',
       );
-      expect(runMigrations(legacyDb, currentMigrations)._unsafeUnwrap()).toBe(1);
-      expect(legacyDb.pragma('user_version', { simple: true })).toBe(15);
+      expect(runMigrations(legacyDb, currentMigrations)._unsafeUnwrap()).toBe(3);
+      expect(legacyDb.pragma('user_version', { simple: true })).toBe(17);
       const upgradedDeliveries = new LifecycleDeliveryRepository(legacyDb, () => upgradeLeaseNow);
       const terminal = upgradedDeliveries
         .fail(

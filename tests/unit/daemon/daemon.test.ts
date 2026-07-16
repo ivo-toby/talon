@@ -106,7 +106,13 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       schedule: {} as any,
       audit: {} as any,
       message: {} as any,
-      run: { aggregateByPeriod: vi.fn().mockReturnValue(ok({ total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0 })) } as any,
+      run: {
+        aggregateByPeriod: vi
+          .fn()
+          .mockReturnValue(
+            ok({ total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0 }),
+          ),
+      } as any,
       binding: {} as any,
       memory: {} as any,
     },
@@ -307,7 +313,9 @@ describe('TalondDaemon', () => {
           logLevel: 'debug',
         } as any,
       });
-      const stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true as any);
+      const stdoutWriteSpy = vi
+        .spyOn(process.stdout, 'write')
+        .mockImplementation(() => true as any);
       const logger = createDiscardLogger('info');
       const localDaemon = new TalondDaemon(logger);
 
@@ -338,13 +346,142 @@ describe('TalondDaemon', () => {
     });
 
     it('transitions state to error when bootstrap fails', async () => {
-      vi.mocked(bootstrap).mockResolvedValue(
-        err(new DaemonError('bootstrap failure')),
-      );
+      vi.mocked(bootstrap).mockResolvedValue(err(new DaemonError('bootstrap failure')));
 
       await daemon.start('/bad.yaml');
 
       expect(daemon.state).toBe('error');
+    });
+
+    it('cleans up a post-lifecycle startup failure and permits a successful restart', async () => {
+      const lifecycleRuntime = { start: vi.fn(), stop: vi.fn().mockResolvedValue(undefined) };
+      const failed = makeMockContext({
+        lifecycleRuntime: lifecycleRuntime as any,
+        scheduler: {
+          start: vi.fn(() => {
+            throw new Error('scheduler start failed');
+          }),
+          stop: vi.fn(),
+        } as any,
+      });
+      const recovered = makeMockContext();
+      vi.mocked(bootstrap).mockResolvedValueOnce(ok(failed)).mockResolvedValueOnce(ok(recovered));
+
+      const result = await daemon.start('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().code).toBe('DAEMON_ERROR');
+      expect(daemon.state).toBe('stopped');
+      expect(lifecycleRuntime.start).toHaveBeenCalledOnce();
+      expect(lifecycleRuntime.stop).toHaveBeenCalledOnce();
+      expect(failed.queueManager.stopProcessing).toHaveBeenCalledOnce();
+      expect(failed.hostToolsBridge.stop).toHaveBeenCalledOnce();
+      expect(failed.db.close).toHaveBeenCalledOnce();
+
+      expect((await daemon.start('/config.yaml')).isOk()).toBe(true);
+      expect(daemon.state).toBe('running');
+    });
+
+    it('joins started queue work before closing SQLite after startup failure', async () => {
+      let releaseQueue!: () => void;
+      const queueDrain = new Promise<void>((resolve) => {
+        releaseQueue = resolve;
+      });
+      const failed = makeMockContext({
+        scheduler: {
+          start: vi.fn(() => {
+            throw new Error('scheduler start failed');
+          }),
+          stop: vi.fn().mockResolvedValue(undefined),
+        } as any,
+        queueManager: {
+          startProcessing: vi.fn(),
+          stopProcessing: vi.fn().mockReturnValue(queueDrain),
+          stats: vi.fn().mockReturnValue({ pending: 0, claimed: 0, processing: 0, deadLetter: 0 }),
+        } as any,
+      });
+      vi.mocked(bootstrap).mockResolvedValue(ok(failed));
+
+      const starting = daemon.start('/config.yaml');
+      await vi.waitFor(() => expect(failed.queueManager.stopProcessing).toHaveBeenCalledOnce());
+      expect(failed.db.close).not.toHaveBeenCalled();
+
+      releaseQueue();
+      expect((await starting).isErr()).toBe(true);
+      expect(failed.db.close).toHaveBeenCalledOnce();
+      expect(failed.queueManager.stopProcessing.mock.invocationCallOrder[0]).toBeLessThan(
+        failed.db.close.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('gates restart and defers SQLite teardown when a bounded scheduler drain times out', async () => {
+      let releaseDrain!: () => void;
+      const deferred = new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+      const failed = makeMockContext({
+        scheduler: {
+          start: vi.fn(() => {
+            throw new Error('scheduler start failed');
+          }),
+          stop: vi
+            .fn()
+            .mockResolvedValueOnce({ status: 'timed_out' })
+            .mockResolvedValue({ status: 'drained' }),
+          waitForDrain: vi.fn().mockReturnValue(deferred),
+        } as any,
+        queueManager: {
+          startProcessing: vi.fn(),
+          stopProcessing: vi.fn().mockResolvedValue({ status: 'drained' }),
+          waitForDrain: vi.fn().mockResolvedValue(undefined),
+          stats: vi.fn(),
+        } as any,
+      });
+      vi.mocked(bootstrap).mockResolvedValue(ok(failed));
+
+      const result = await daemon.start('/config.yaml');
+      expect(result.isErr()).toBe(true);
+      expect(failed.db.close).not.toHaveBeenCalled();
+      expect((await daemon.start('/config.yaml')).isErr()).toBe(true);
+
+      releaseDrain();
+      await vi.waitFor(() => expect(failed.db.close).toHaveBeenCalledOnce());
+      expect(daemon.state).toBe('stopped');
+    });
+
+    it('fails closed on a startup drain exception until deferred cleanup confirms all work drained', async () => {
+      let releaseDrain!: () => void;
+      const deferred = new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+      const failed = makeMockContext({
+        scheduler: {
+          start: vi.fn(() => {
+            throw new Error('scheduler start failed');
+          }),
+          stop: vi
+            .fn()
+            .mockRejectedValueOnce(new Error('scheduler drain failed'))
+            .mockResolvedValue({ status: 'drained' }),
+          waitForDrain: vi.fn().mockReturnValue(deferred),
+        } as any,
+        queueManager: {
+          startProcessing: vi.fn(),
+          stopProcessing: vi.fn().mockResolvedValue({ status: 'drained' }),
+          waitForDrain: vi.fn().mockResolvedValue(undefined),
+          stats: vi.fn(),
+        } as any,
+      });
+      vi.mocked(bootstrap).mockResolvedValue(ok(failed));
+
+      const result = await daemon.start('/config.yaml');
+      expect(result.isErr()).toBe(true);
+      expect(failed.db.close).not.toHaveBeenCalled();
+      expect((await daemon.start('/config.yaml')).isErr()).toBe(true);
+
+      releaseDrain();
+      await vi.waitFor(() => expect(failed.db.close).toHaveBeenCalledOnce());
+      expect(daemon.state).toBe('stopped');
     });
   });
 
@@ -378,6 +515,72 @@ describe('TalondDaemon', () => {
   // -------------------------------------------------------------------------
 
   describe('stop()', () => {
+    it('contains a rejected drain from an IPC shutdown callback', async () => {
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+      } as any;
+      const ipcDaemon = new TalondDaemon(logger);
+      const stop = vi
+        .spyOn(ipcDaemon, 'stop')
+        .mockRejectedValue(new DaemonError('Daemon workloads are still draining'));
+      const unhandledRejection = vi.fn();
+      process.once('unhandledRejection', unhandledRejection);
+
+      const response = await (ipcDaemon as any).handleIpcCommand({
+        id: '00000000-0000-4000-8000-000000000007',
+        command: 'shutdown',
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await Promise.resolve();
+      process.off('unhandledRejection', unhandledRejection);
+
+      expect(response).toMatchObject({
+        success: true,
+        commandId: '00000000-0000-4000-8000-000000000007',
+      });
+      expect(stop).toHaveBeenCalledOnce();
+      expect(unhandledRejection).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ cause: expect.any(DaemonError) }),
+        'daemon: IPC shutdown deferred after drain failure',
+      );
+    });
+
+    it('defers teardown and remains restart-gated when a normal shutdown drain rejects', async () => {
+      let releaseDrain!: () => void;
+      const deferred = new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+      const ctx = setupSuccessfulBootstrap({
+        scheduler: {
+          start: vi.fn(),
+          stop: vi
+            .fn()
+            .mockRejectedValueOnce(new Error('scheduler drain failed'))
+            .mockResolvedValue({ status: 'drained' }),
+          waitForDrain: vi.fn().mockReturnValue(deferred),
+        } as any,
+        queueManager: {
+          startProcessing: vi.fn(),
+          stopProcessing: vi.fn().mockResolvedValue({ status: 'drained' }),
+          waitForDrain: vi.fn().mockResolvedValue(undefined),
+          stats: vi.fn(),
+        } as any,
+      });
+      await daemon.start('/config.yaml');
+
+      await expect(daemon.stop()).rejects.toMatchObject({ code: 'DAEMON_ERROR' });
+      expect(ctx.db.close).not.toHaveBeenCalled();
+      expect((await daemon.start('/config.yaml')).isErr()).toBe(true);
+
+      releaseDrain();
+      await vi.waitFor(() => expect(ctx.db.close).toHaveBeenCalledOnce());
+      expect(daemon.state).toBe('stopped');
+    });
+
     it('transitions state to stopped after shutdown', async () => {
       setupSuccessfulBootstrap();
       await daemon.start('/config.yaml');

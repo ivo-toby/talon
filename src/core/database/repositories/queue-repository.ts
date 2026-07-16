@@ -29,6 +29,8 @@ export interface QueueItemRow {
   next_retry_at: number | null;
   error: string | null;
   payload: string;
+  lifecycle_persona: string | null;
+  lifecycle_item_type: 'message' | 'schedule' | null;
   claimed_at: number | null;
   created_at: number;
   updated_at: number;
@@ -37,15 +39,24 @@ export interface QueueItemRow {
 /** Fields accepted when enqueueing a new item. */
 export type EnqueueInput = Pick<
   QueueItemRow,
-  'id' | 'thread_id' | 'message_id' | 'type' | 'payload' | 'max_attempts'
->;
+  | 'id'
+  | 'thread_id'
+  | 'message_id'
+  | 'type'
+  | 'payload'
+  | 'max_attempts'
+> &
+  Partial<Pick<QueueItemRow, 'lifecycle_persona' | 'lifecycle_item_type'>>;
 
 /** Repository for durable queue operations. */
 export class QueueRepository extends BaseRepository {
   private readonly enqueueStmt: Database.Statement;
   private readonly claimNextStmt: Database.Statement;
   private readonly completeStmt: Database.Statement;
+  private readonly completeClaimedStmt: Database.Statement;
   private readonly markDeadLetterStmt: Database.Statement;
+  private readonly failClaimedStmt: Database.Statement;
+  private readonly deadLetterClaimedStmt: Database.Statement;
   private readonly findByIdStmt: Database.Statement;
   private readonly findPendingStmt: Database.Statement;
   private readonly findDeadLetterStmt: Database.Statement;
@@ -59,10 +70,12 @@ export class QueueRepository extends BaseRepository {
     this.enqueueStmt = db.prepare(`
       INSERT INTO queue_items
         (id, thread_id, message_id, type, status, attempts, max_attempts,
-         next_retry_at, error, payload, claimed_at, created_at, updated_at)
+         next_retry_at, error, payload, lifecycle_persona, lifecycle_item_type,
+         claimed_at, created_at, updated_at)
       VALUES
         (@id, @thread_id, @message_id, @type, 'pending', 0, @max_attempts,
-         NULL, NULL, @payload, NULL, @created_at, @updated_at)
+         NULL, NULL, @payload, @lifecycle_persona, @lifecycle_item_type,
+         NULL, @created_at, @updated_at)
     `);
 
     // Atomically claim the oldest pending/retryable item for a given thread.
@@ -106,10 +119,29 @@ export class QueueRepository extends BaseRepository {
       WHERE id = @id
     `);
 
+    this.completeClaimedStmt = db.prepare(`
+      UPDATE queue_items
+      SET status = 'completed', updated_at = @now
+      WHERE id = @id AND status = 'claimed'
+    `);
+
     this.markDeadLetterStmt = db.prepare(`
       UPDATE queue_items
       SET status = 'dead_letter', error = @error, updated_at = @now
       WHERE id = @id
+    `);
+
+    this.failClaimedStmt = db.prepare(`
+      UPDATE queue_items
+      SET status = 'failed', attempts = attempts + 1, next_retry_at = @next_retry_at,
+          error = @error, updated_at = @now
+      WHERE id = @id AND status = 'claimed' AND attempts + 1 < max_attempts
+    `);
+    this.deadLetterClaimedStmt = db.prepare(`
+      UPDATE queue_items
+      SET status = 'dead_letter', attempts = attempts + 1, next_retry_at = NULL,
+          error = @error, updated_at = @now
+      WHERE id = @id AND status = 'claimed' AND attempts + 1 >= max_attempts
     `);
 
     this.findByIdStmt = db.prepare(`SELECT * FROM queue_items WHERE id = ?`);
@@ -143,7 +175,13 @@ export class QueueRepository extends BaseRepository {
   enqueue(input: EnqueueInput): Result<QueueItemRow, DbError> {
     try {
       const ts = this.now();
-      this.enqueueStmt.run({ ...input, created_at: ts, updated_at: ts });
+      this.enqueueStmt.run({
+        ...input,
+        lifecycle_persona: input.lifecycle_persona ?? null,
+        lifecycle_item_type: input.lifecycle_item_type ?? null,
+        created_at: ts,
+        updated_at: ts,
+      });
       const row = this.findByIdStmt.get(input.id) as QueueItemRow;
       return ok(row);
     } catch (cause) {
@@ -191,6 +229,55 @@ export class QueueRepository extends BaseRepository {
       return ok(undefined);
     } catch (cause) {
       return err(new DbError(`Failed to complete queue item: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /** Completes exactly one currently claimed item. */
+  completeClaimed(id: string): Result<boolean, DbError> {
+    try {
+      return ok(this.completeClaimedStmt.run({ id, now: this.now() }).changes === 1);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to complete claimed queue item: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Applies one terminal failure transition only while the item remains
+   * claimed. A stale/conflicting call returns null and must not publish.
+   */
+  transitionClaimedFailure(
+    id: string,
+    errorMessage: string,
+    nextRetryAt: number,
+  ): Result<'failed' | 'dead_letter' | null, DbError> {
+    try {
+      const now = this.now();
+      if (this.deadLetterClaimedStmt.run({ id, error: errorMessage, now }).changes === 1) {
+        return ok('dead_letter');
+      }
+      if (
+        this.failClaimedStmt.run({
+          id,
+          error: errorMessage,
+          next_retry_at: nextRetryAt,
+          now,
+        }).changes === 1
+      ) {
+        return ok('failed');
+      }
+      return ok(null);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to transition claimed queue item: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 

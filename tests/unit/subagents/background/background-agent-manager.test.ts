@@ -648,7 +648,9 @@ describe('BackgroundAgentManager', () => {
   });
 
   it('marks the task completed and enqueues both direct and agent notifications when the process resolves', async () => {
-    const manager = createManager();
+    const manager = createManager({
+      resolveLifecyclePersonaName: vi.fn().mockReturnValue('assistant'),
+    });
     const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
 
     completionResolve?.(
@@ -694,6 +696,40 @@ describe('BackgroundAgentManager', () => {
         personaId: 'persona-1',
         content: expect.stringContaining('Background Task Complete'),
       }),
+      undefined,
+      { persona: 'assistant', itemType: 'message' },
+    );
+  });
+
+  it('does not enqueue an unscoped completion message when lifecycle persona resolution fails', async () => {
+    const logger = makeLogger();
+    const manager = createManager({
+      logger,
+      resolveLifecyclePersonaName: vi.fn().mockReturnValue(undefined),
+    });
+    const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
+
+    completionResolve?.(
+      ok({
+        stdout: 'Done!',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('completed');
+    expect(queueManager.enqueue).toHaveBeenCalledTimes(1);
+    expect(queueManager.enqueue).toHaveBeenCalledWith(
+      'thread-1',
+      'collaboration',
+      expect.objectContaining({ taskId }),
+    );
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ taskId, personaId: 'persona-1' }),
+      'background-agent: lifecycle persona unavailable for completion message',
     );
   });
 

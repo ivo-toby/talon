@@ -30,6 +30,8 @@ export interface LifecycleDispatcherClock {
 export interface LifecycleSignalHandoff {
   readonly eventId: string;
   readonly handlerId: string;
+  /** Persisted delivery ownership; signals must never escape this persona scope. */
+  readonly persona: string;
   /** Stable key lets the durable projection boundary de-duplicate crash recovery. */
   readonly idempotencyKey: string;
   readonly signals: readonly unknown[];
@@ -487,6 +489,7 @@ export class LifecycleDispatcher {
       const handoff = await this.authority.handoff({
         eventId: lease.eventId,
         handlerId: lease.handlerId,
+        persona: claim.delivery.persona,
         idempotencyKey: execution.value.idempotencyKey,
         signals: resultSignals(result.value),
       });

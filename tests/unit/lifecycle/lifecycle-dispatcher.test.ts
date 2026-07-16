@@ -7,6 +7,7 @@ import type {
 } from '../../../src/core/database/repositories/lifecycle-delivery-repository.js';
 import {
   CapturedLifecycleHandlerExecutor,
+  lifecycleSignalHandoffKey,
   type LifecycleHandlerExecutor,
 } from '../../../src/lifecycle/handler-executor.js';
 import { LifecycleDispatcher } from '../../../src/lifecycle/lifecycle-dispatcher.js';
@@ -113,7 +114,9 @@ describe('LifecycleDispatcher', () => {
     deliveries.claimNext.mockReturnValueOnce(ok(claim()));
     const executor: LifecycleHandlerExecutor = {
       execute: vi.fn(async (execution) => {
-        expect(execution.idempotencyKey).toBe('event-projector:projector');
+        expect(execution.idempotencyKey).toBe(
+          lifecycleSignalHandoffKey('event-projector', 'projector'),
+        );
         expect(execution.identity.implementationVersion).toBe('1.0.0');
         expect('claim' in execution).toBe(false);
         expect(Object.isFrozen(execution.event)).toBe(true);
@@ -135,6 +138,9 @@ describe('LifecycleDispatcher', () => {
       signals.handoff.mock.invocationCallOrder[0]!,
     );
     expect(deliveries.fail).not.toHaveBeenCalled();
+    expect(signals.handoff).toHaveBeenCalledWith(
+      expect.objectContaining({ persona: 'assistant', eventId: 'event-projector' }),
+    );
   });
 
   it('enforces global and per-handler backpressure before claiming another delivery', async () => {
@@ -263,8 +269,8 @@ describe('LifecycleDispatcher', () => {
 
     expect(signals.handoff).toHaveBeenCalledTimes(2);
     expect(signals.handoff.mock.calls.map(([value]) => value.idempotencyKey)).toEqual([
-      'event-projector:projector',
-      'event-projector:projector',
+      lifecycleSignalHandoffKey('event-projector', 'projector'),
+      lifecycleSignalHandoffKey('event-projector', 'projector'),
     ]);
     expect(deliveries.complete).toHaveBeenCalledTimes(2);
   });
