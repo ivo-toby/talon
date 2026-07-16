@@ -14,6 +14,9 @@ import type { calculateBackoff } from './retry-strategy.js';
 import type { DeadLetterHandler } from './dead-letter.js';
 import { type QueueItem } from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
+import { v4 as uuidv4 } from 'uuid';
+import type { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
+import type { LifecycleEventEnvelope } from '../lifecycle/contracts/index.js';
 
 /**
  * Processes queue items with retry and dead-letter support.
@@ -34,6 +37,7 @@ export class QueueProcessor {
     private readonly logger: pino.Logger,
     private readonly backoffBaseMs: number = 1000,
     private readonly backoffMaxMs: number = 60_000,
+    private readonly lifecycleRuntime?: LifecycleRuntime,
   ) {}
 
   /**
@@ -51,8 +55,10 @@ export class QueueProcessor {
    * @returns The claimed QueueItem, or null if nothing was available.
    */
   async processNext(
-    handler: (item: QueueItem) => Promise<Result<void, Error>>,
+    handler: (item: QueueItem, signal?: AbortSignal) => Promise<Result<void, Error>>,
+    signal?: AbortSignal,
   ): Promise<QueueItem | null> {
+    if (signal?.aborted) return null;
     // Find all pending items to discover eligible thread IDs.
     const pendingResult = this.queueRepo.findPending();
     if (pendingResult.isErr()) {
@@ -167,11 +173,16 @@ export class QueueProcessor {
       // Dispatch to handler.
       let handlerResult: Result<void, Error>;
       try {
-        handlerResult = await handler(item);
+        handlerResult = await handler(item, signal);
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
         handlerResult = err(new Error(message));
       }
+
+      // A bounded daemon drain may return before a non-cooperative handler
+      // settles. Never touch repositories after its abort signal fires; the
+      // leased row remains recoverable by normal crash/lease recovery.
+      if (signal?.aborted) return item;
 
       if (handlerResult.isOk()) {
         const completeResult = this.complete(item.id);
@@ -204,6 +215,15 @@ export class QueueProcessor {
    * @returns Ok(void) on success, or a QueueError.
    */
   complete(itemId: string): Result<void, QueueError> {
+    if (this.lifecycleRuntime) {
+      const item = this.queueRepo.findById(itemId);
+      if (item.isErr() || !item.value) {
+        return err(new QueueError(`Failed to read queue item ${itemId} before completion`));
+      }
+      return this.transitionWithEvent(item.value, 'queue.item.completed.v1', () =>
+        this.queueRepo.completeClaimed(itemId),
+      );
+    }
     const result = this.queueRepo.complete(itemId);
     if (result.isErr()) {
       return err(
@@ -246,6 +266,12 @@ export class QueueProcessor {
 
     const newAttempts = row.attempts + 1;
 
+    if (this.lifecycleRuntime) {
+      const delayMs = this.retryStrategy(row.attempts, this.backoffBaseMs, this.backoffMaxMs);
+      const nextRetryAt = Date.now() + delayMs;
+      return this.transitionFailureWithEvent(row, error, nextRetryAt);
+    }
+
     if (newAttempts >= row.max_attempts) {
       // Exhausted all retries — dead-letter the item.
       const dlResult = this.deadLetterHandler.moveToDeadLetter(itemId, error);
@@ -283,5 +309,123 @@ export class QueueProcessor {
       'queue item failed, scheduled for retry',
     );
     return ok(undefined);
+  }
+
+  private transitionWithEvent(
+    row: import('../core/database/repositories/queue-repository.js').QueueItemRow,
+    type: LifecycleEventEnvelope['type'],
+    transition: () => Result<boolean, Error>,
+  ): Result<void, QueueError> {
+    const item = rowToQueueItem(row);
+    const scope = this.lifecycleScope(row);
+    if (!this.lifecycleRuntime || !scope) {
+      const result = transition();
+      return result.isErr()
+        ? err(new QueueError(result.error.message, result.error))
+        : ok(undefined);
+    }
+    const result = this.lifecycleRuntime.transaction((transaction) => {
+      const changed = transition();
+      if (changed.isErr()) return err(new QueueError(changed.error.message, changed.error));
+      if (!changed.value) return ok(undefined);
+      const publication = this.lifecycleRuntime!.publish(
+        this.lifecycleEvent(item, type, scope.persona, scope.itemType),
+        transaction,
+      );
+      if (publication.isErr())
+        return err(
+          new QueueError(`Failed to publish queue transition: ${publication.error.message}`),
+        );
+      return ok(undefined);
+    });
+    return result.isErr() ? err(new QueueError(result.error.message, result.error)) : ok(undefined);
+  }
+
+  private transitionFailureWithEvent(
+    row: import('../core/database/repositories/queue-repository.js').QueueItemRow,
+    errorMessage: string,
+    nextRetryAt: number,
+  ): Result<void, QueueError> {
+    const item = rowToQueueItem(row);
+    const scope = this.lifecycleScope(row);
+    if (!this.lifecycleRuntime || !scope) {
+      const transition = this.queueRepo.transitionClaimedFailure(
+        item.id,
+        errorMessage,
+        nextRetryAt,
+      );
+      return transition.isErr()
+        ? err(new QueueError(transition.error.message, transition.error))
+        : ok(undefined);
+    }
+    const result = this.lifecycleRuntime.transaction((transaction) => {
+      const transition = this.queueRepo.transitionClaimedFailure(
+        item.id,
+        errorMessage,
+        nextRetryAt,
+      );
+      if (transition.isErr())
+        return err(new QueueError(transition.error.message, transition.error));
+      if (!transition.value) return ok(undefined);
+      const eventType =
+        transition.value === 'dead_letter'
+          ? 'queue.item.dead_lettered.v1'
+          : 'queue.item.failed.v1';
+      const publication = this.lifecycleRuntime!.publish(
+        this.lifecycleEvent(item, eventType, scope.persona, scope.itemType),
+        transaction,
+      );
+      return publication.isErr()
+        ? err(new QueueError(`Failed to publish queue transition: ${publication.error.message}`))
+        : ok(undefined);
+    });
+    return result.isErr() ? err(new QueueError(result.error.message, result.error)) : ok(undefined);
+  }
+
+  private lifecycleScope(
+    row: import('../core/database/repositories/queue-repository.js').QueueItemRow,
+  ): Readonly<{ persona: string; itemType: 'message' | 'schedule' }> | undefined {
+    if (
+      !row.lifecycle_persona ||
+      (row.lifecycle_item_type !== 'message' && row.lifecycle_item_type !== 'schedule')
+    ) {
+      return undefined;
+    }
+    const expectedItemType = row.type === 'schedule' ? 'schedule' : row.type === 'message' ? 'message' : null;
+    return expectedItemType === row.lifecycle_item_type
+      ? { persona: row.lifecycle_persona, itemType: row.lifecycle_item_type }
+      : undefined;
+  }
+
+  private lifecycleEvent(
+    item: QueueItem,
+    type: LifecycleEventEnvelope['type'],
+    persona: string,
+    itemType: 'message' | 'schedule',
+  ) {
+    return {
+      event: {
+        version: 'v1' as const,
+        type,
+        eventId: uuidv4(),
+        occurredAt: new Date().toISOString(),
+        context: {
+          aggregate: { type: 'queue_item', id: item.id },
+          correlationId: item.messageId ?? item.id,
+          recursion: { depth: 0, maxDepth: 8 },
+          provenance: { source: 'queue', sourceEventIds: [], sourceReferences: [] },
+        },
+        payload: {
+          references: [
+            { type: 'queue_item', id: item.id },
+            { type: 'thread', id: item.threadId },
+          ],
+          metadata: { itemType },
+        },
+      },
+      persona,
+      itemOrigin: 'queue' as const,
+      itemType,
+    };
   }
 }

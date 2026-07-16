@@ -16,11 +16,15 @@ import { createTestDb, seedPersona, seedThread, seedDueSchedule, uuid } from './
 // ---------------------------------------------------------------------------
 
 function makeQueueStub(
-  enqueueImpl: (threadId: string, type: string, payload: Record<string, unknown>) => ReturnType<QueueManager['enqueue']> = () =>
-    ok(makeQueueItem()),
+  enqueueImpl: (
+    threadId: string,
+    type: string,
+    payload: Record<string, unknown>,
+  ) => ReturnType<QueueManager['enqueue']> = () => ok(makeQueueItem()),
 ): QueueManager {
   return {
     enqueue: vi.fn(enqueueImpl),
+    enqueueInLifecycleTransaction: vi.fn(() => ok(makeQueueItem())),
     startProcessing: vi.fn(),
     stopProcessing: vi.fn(),
     stats: vi.fn(),
@@ -84,6 +88,7 @@ describe('Scheduler', () => {
     logger = makeLogger();
     personaLoader = {
       resolveTaskPrompt: vi.fn(),
+      getById: vi.fn(() => ok({ config: { name: 'assistant' } })),
     } as unknown as PersonaLoader;
     scheduler = new Scheduler(scheduleRepo, queueStub, personaLoader, FAST_CONFIG, logger);
   });
@@ -134,6 +139,93 @@ describe('Scheduler', () => {
       const callsLater = (queueStub.enqueue as ReturnType<typeof vi.fn>).mock.calls.length;
       expect(callsLater).toBe(callsAfterStop);
     });
+
+    it('joins an in-flight prompt lookup and does not enqueue after draining starts', async () => {
+      let resolvePrompt!: (value: ReturnType<typeof ok>) => void;
+      const prompt = new Promise<ReturnType<typeof ok>>((resolve) => {
+        resolvePrompt = resolve;
+      });
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify({ promptFile: 'slow-prompt' }),
+      });
+      vi.mocked(personaLoader.resolveTaskPrompt).mockReturnValue(prompt as any);
+
+      scheduler.start();
+      await vi.waitFor(() => expect(personaLoader.resolveTaskPrompt).toHaveBeenCalledOnce());
+      const stopping = scheduler.stop();
+      expect(queueStub.enqueue).not.toHaveBeenCalled();
+
+      resolvePrompt(ok('late prompt'));
+      await stopping;
+      expect(queueStub.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not let a stale prompt lookup enqueue or mutate state after a direct restart', async () => {
+      vi.useFakeTimers();
+      let resolveOldPrompt!: (value: ReturnType<typeof ok>) => void;
+      let resolveNewPrompt!: (value: ReturnType<typeof ok>) => void;
+      const oldPrompt = new Promise<ReturnType<typeof ok>>((resolve) => {
+        resolveOldPrompt = resolve;
+      });
+      const newPrompt = new Promise<ReturnType<typeof ok>>((resolve) => {
+        resolveNewPrompt = resolve;
+      });
+      const scheduleId = seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify({ promptFile: 'slow-prompt' }),
+      });
+      vi.mocked(personaLoader.resolveTaskPrompt)
+        .mockReturnValueOnce(oldPrompt as any)
+        .mockReturnValueOnce(newPrompt as any);
+
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(personaLoader.resolveTaskPrompt).toHaveBeenCalledOnce());
+      const firstStop = scheduler.stop(10);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await firstStop).toEqual({ status: 'timed_out' });
+
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.waitFor(() => expect(personaLoader.resolveTaskPrompt).toHaveBeenCalledTimes(2));
+
+      resolveOldPrompt(ok('stale prompt'));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(queueStub.enqueue).not.toHaveBeenCalled();
+      expect(scheduleRepo.findById(scheduleId)._unsafeUnwrap()?.enabled).toBe(1);
+
+      const secondStop = scheduler.stop(10);
+      resolveNewPrompt(ok('current prompt'));
+      await vi.advanceTimersByTimeAsync(10);
+      await secondStop;
+      vi.useRealTimers();
+    });
+
+    it('returns a finite timeout for a non-settling prompt lookup without later enqueue', async () => {
+      vi.useFakeTimers();
+      let resolvePrompt!: (value: ReturnType<typeof ok>) => void;
+      const prompt = new Promise<ReturnType<typeof ok>>((resolve) => {
+        resolvePrompt = resolve;
+      });
+      seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify({ promptFile: 'never-settles' }),
+      });
+      vi.mocked(personaLoader.resolveTaskPrompt).mockReturnValue(prompt as any);
+
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(0);
+      const stopping = scheduler.stop(10);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await stopping).toEqual({ status: 'timed_out' });
+
+      resolvePrompt(ok('late prompt'));
+      await vi.runAllTimersAsync();
+      expect(queueStub.enqueue).not.toHaveBeenCalled();
+      vi.useRealTimers();
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -149,6 +241,93 @@ describe('Scheduler', () => {
       scheduler.stop();
 
       expect(queueStub.enqueue).toHaveBeenCalledOnce();
+    });
+
+    it('publishes schedule provenance atomically with the queue and schedule state', async () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn((callback) => callback({})),
+        publish: vi.fn(() => ok({})),
+      };
+      const lifecycleQueue = makeQueueStub();
+      vi.mocked(lifecycleQueue.enqueueInLifecycleTransaction).mockReturnValue(
+        ok(makeQueueItem({ id: 'queue-item-1', threadId })),
+      );
+      scheduler = new Scheduler(
+        scheduleRepo,
+        lifecycleQueue,
+        personaLoader,
+        FAST_CONFIG,
+        logger,
+        lifecycleRuntime as any,
+      );
+      const scheduleId = seedDueSchedule(db, personaId, threadId, { type: 'one_shot' });
+
+      scheduler.start();
+      await wait(150);
+      scheduler.stop();
+
+      expect(lifecycleRuntime.transaction).toHaveBeenCalledOnce();
+      expect(lifecycleQueue.enqueueInLifecycleTransaction).toHaveBeenCalledWith(
+        threadId,
+        'schedule',
+        expect.objectContaining({ personaId }),
+        { persona: 'assistant', itemType: 'schedule' },
+        expect.anything(),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'schedule.fired.v1',
+            context: expect.objectContaining({
+              aggregate: { type: 'schedule', id: scheduleId },
+              provenance: expect.objectContaining({ source: 'scheduler' }),
+            }),
+            payload: expect.objectContaining({
+              references: expect.arrayContaining([
+                { type: 'schedule', id: scheduleId },
+                { type: 'queue_item', id: 'queue-item-1' },
+              ]),
+              metadata: { scheduleType: 'one_shot' },
+            }),
+          }),
+          persona: 'assistant',
+          itemOrigin: 'scheduler',
+          scheduleSource: 'oneshot',
+        }),
+        expect.anything(),
+      );
+      expect(scheduleRepo.findById(scheduleId)._unsafeUnwrap()?.enabled).toBe(0);
+    });
+
+    it('does not enqueue or advance a lifecycle schedule when persona scope is unavailable', async () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn(),
+        publish: vi.fn(),
+      };
+      const lifecycleQueue = makeQueueStub();
+      vi.mocked(personaLoader.getById).mockReturnValue(ok(undefined) as any);
+      scheduler = new Scheduler(
+        scheduleRepo,
+        lifecycleQueue,
+        personaLoader,
+        FAST_CONFIG,
+        logger,
+        lifecycleRuntime as any,
+      );
+      const scheduleId = seedDueSchedule(db, personaId, threadId, { type: 'one_shot' });
+
+      scheduler.start();
+      await wait(150);
+      await scheduler.stop();
+
+      expect(lifecycleQueue.enqueue).not.toHaveBeenCalled();
+      expect(lifecycleQueue.enqueueInLifecycleTransaction).not.toHaveBeenCalled();
+      expect(lifecycleRuntime.transaction).not.toHaveBeenCalled();
+      expect(scheduleRepo.findById(scheduleId)._unsafeUnwrap()?.enabled).toBe(1);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ scheduleId, personaId }),
+        'scheduler: lifecycle persona unavailable; schedule will be retried without enqueue',
+      );
     });
 
     it('disables the schedule after firing', async () => {
@@ -215,7 +394,9 @@ describe('Scheduler', () => {
     });
 
     it('resolves promptFile to content when the schedule fires', async () => {
-      vi.mocked(personaLoader.resolveTaskPrompt).mockResolvedValue(ok('Rendered prompt file contents'));
+      vi.mocked(personaLoader.resolveTaskPrompt).mockResolvedValue(
+        ok('Rendered prompt file contents'),
+      );
       const payload = { label: 'Morning briefing', promptFile: 'morning-briefing' };
       seedDueSchedule(db, personaId, threadId, {
         type: 'one_shot',
@@ -290,12 +471,7 @@ describe('Scheduler', () => {
     it('does NOT promote "file:" followed by content with spaces or special chars', async () => {
       // A few near-miss patterns that must NOT be treated as aliases:
       // file:name with space, file:name@host, file:/absolute/path, etc.
-      const nearMisses = [
-        'file:my name',
-        'file:user@host',
-        'file:/etc/passwd',
-        'file:name?query',
-      ];
+      const nearMisses = ['file:my name', 'file:user@host', 'file:/etc/passwd', 'file:name?query'];
 
       for (const prompt of nearMisses) {
         vi.mocked(personaLoader.resolveTaskPrompt).mockClear();
@@ -418,7 +594,9 @@ describe('Scheduler', () => {
       await wait(150);
       scheduler.stop();
 
-      const row = db.prepare('SELECT next_run_at, last_run_at, enabled FROM schedules WHERE id = ?').get(scheduleId) as {
+      const row = db
+        .prepare('SELECT next_run_at, last_run_at, enabled FROM schedules WHERE id = ?')
+        .get(scheduleId) as {
         next_run_at: number;
         last_run_at: number;
         enabled: number;
@@ -494,7 +672,9 @@ describe('Scheduler', () => {
       await wait(150);
       scheduler.stop();
 
-      const row = db.prepare('SELECT next_run_at, last_run_at, enabled FROM schedules WHERE id = ?').get(scheduleId) as {
+      const row = db
+        .prepare('SELECT next_run_at, last_run_at, enabled FROM schedules WHERE id = ?')
+        .get(scheduleId) as {
         next_run_at: number;
         last_run_at: number;
         enabled: number;
@@ -613,7 +793,10 @@ describe('Scheduler', () => {
     });
 
     it('does not advance schedule state when enqueue fails', async () => {
-      const scheduleId = seedDueSchedule(db, personaId, threadId, { type: 'interval', expression: '10000' });
+      const scheduleId = seedDueSchedule(db, personaId, threadId, {
+        type: 'interval',
+        expression: '10000',
+      });
 
       const errorStub = makeQueueStub(() => err(new QueueError('enqueue failed')));
       scheduler = new Scheduler(scheduleRepo, errorStub, personaLoader, FAST_CONFIG, logger);
@@ -677,7 +860,9 @@ describe('Scheduler', () => {
       scheduler.stop();
 
       expect(queueStub.enqueue).not.toHaveBeenCalled();
-      const row = db.prepare('SELECT next_run_at, last_run_at FROM schedules WHERE id = ?').get(scheduleId) as {
+      const row = db
+        .prepare('SELECT next_run_at, last_run_at FROM schedules WHERE id = ?')
+        .get(scheduleId) as {
         next_run_at: number;
         last_run_at: number | null;
       };

@@ -1112,6 +1112,7 @@ describe('AgentRunner', () => {
         'message',
         { personaId: 'persona-001', content: 'continue' },
         expect.any(String),
+        { persona: 'TestBot', itemType: 'message' },
       );
     });
 

@@ -31,6 +31,8 @@ export const LIFECYCLE_SUBAGENT_RESULT_KEY = 'lifecycleResult';
 
 export interface LifecycleSubagentPersonaScope {
   readonly id: string;
+  /** Configured lifecycle owner name; distinct from durable persona id. */
+  readonly name?: string;
   readonly subagents: readonly string[];
   readonly capabilities: ResolvedCapabilities;
 }
@@ -73,7 +75,7 @@ const RESOLVED_HANDLER_KEYS = new Set([
   'failurePolicy',
 ]);
 const SCOPE_KEYS = new Set(['threadId', 'persona', 'approvedCapabilities', 'aggregate']);
-const PERSONA_KEYS = new Set(['id', 'subagents', 'capabilities']);
+const PERSONA_KEYS = new Set(['id', 'name', 'subagents', 'capabilities']);
 const CAPABILITIES_KEYS = new Set(['allow', 'requireApproval']);
 
 /**
@@ -115,7 +117,12 @@ export class SubAgentLifecycleAdapter {
           new LifecycleError('lifecycle subagent aggregate is not owned by the dispatch thread'),
         );
       }
-      if (this.hasMismatchedPayloadPersona(parsedInput.data, snapshot.scope.persona.id)) {
+      if (
+        this.hasMismatchedPayloadPersona(
+          parsedInput.data,
+          snapshot.scope.persona.name ?? snapshot.scope.persona.id,
+        )
+      ) {
         return err(
           new LifecycleError('lifecycle subagent payload persona does not match dispatch scope'),
         );
@@ -192,7 +199,7 @@ export class SubAgentLifecycleAdapter {
     if (definition.runtime.kind !== 'subagent' || identity.runtimeKind !== 'subagent') {
       return new LifecycleError('lifecycle handler is not a subagent implementation');
     }
-    if (handler.persona !== persona.id) {
+    if (handler.persona !== (persona.name ?? persona.id)) {
       return new LifecycleError('lifecycle handler may only run for its attached persona');
     }
     if (!persona.subagents.includes(identity.implementationRef)) {
@@ -405,8 +412,17 @@ export class SubAgentLifecycleAdapter {
     const id = LifecycleFilterOwnerNameSchema.safeParse(this.ownDataProperty(source, 'id'));
     const subagents = this.materializeStringArray(this.ownDataProperty(source, 'subagents'));
     const capabilities = this.materializeCapabilities(this.ownDataProperty(source, 'capabilities'));
-    if (!id.success || !subagents || !capabilities) return undefined;
-    return Object.freeze({ id: id.data, subagents, capabilities });
+    const nameValue = this.ownDataProperty(source, 'name');
+    const name =
+      nameValue === undefined ? undefined : LifecycleFilterOwnerNameSchema.safeParse(nameValue);
+    if (!id.success || !subagents || !capabilities || (name !== undefined && !name.success))
+      return undefined;
+    return Object.freeze({
+      id: id.data,
+      ...(name?.success ? { name: name.data } : {}),
+      subagents,
+      capabilities,
+    });
   }
 
   private materializeCapabilities(value: unknown): ResolvedCapabilities | undefined {

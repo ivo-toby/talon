@@ -356,6 +356,18 @@ export class LifecycleEventBus {
     }
   }
 
+  /** Validates a caller-held context before it performs an authoritative write. */
+  assertTransaction(transaction: TransactionContext): Result<void, LifecycleError> {
+    try {
+      return this.#connection.inTransaction &&
+        getOpenOwnedTransactionContext(transaction, this.#transactionOwner, this.#connection)
+        ? ok(undefined)
+        : err(new LifecycleError('Cannot use a transaction outside this lifecycle event bus'));
+    } catch {
+      return err(new LifecycleError('Cannot validate lifecycle transaction authority'));
+    }
+  }
+
   /**
    * Validates a supplied derived event against its parent before publication.
    * Derived events retain aggregate, correlation and max depth, use the parent

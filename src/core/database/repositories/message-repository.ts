@@ -26,6 +26,12 @@ export interface MessageRow {
 /** Fields accepted when inserting a new message. `created_at` is set automatically. */
 export type InsertMessageInput = Omit<MessageRow, 'created_at'>;
 
+/** The authoritative outcome of INSERT OR IGNORE. */
+export interface InsertMessageOutcome {
+  readonly message: MessageRow;
+  readonly inserted: boolean;
+}
+
 /** Repository for reading and writing message records. */
 export class MessageRepository extends BaseRepository {
   private readonly insertStmt: Database.Statement;
@@ -86,12 +92,21 @@ export class MessageRepository extends BaseRepository {
    * succeeds but returns the existing row unchanged.
    */
   insert(input: InsertMessageInput): Result<MessageRow, DbError> {
+    return this.insertIfAbsent(input).map(({ message }) => message);
+  }
+
+  /**
+   * Inserts a message or returns the existing idempotent row while preserving
+   * whether this invocation actually created durable state. Callers that
+   * attach follow-up work must use this instead of inferring from the row.
+   */
+  insertIfAbsent(input: InsertMessageInput): Result<InsertMessageOutcome, DbError> {
     try {
       const row: MessageRow = { ...input, created_at: this.now() };
-      this.insertStmt.run(row);
+      const result = this.insertStmt.run(row);
       // Re-fetch so we always return the authoritative persisted row.
       const persisted = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as MessageRow;
-      return ok(persisted);
+      return ok({ message: persisted, inserted: result.changes === 1 });
     } catch (cause) {
       return err(
         new DbError(

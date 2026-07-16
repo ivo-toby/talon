@@ -33,6 +33,9 @@ import {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  LifecycleEventRepository,
+  LifecycleDeliveryRepository,
+  LifecycleSignalRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
@@ -43,7 +46,7 @@ import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
-import { DaemonError, SubAgentError } from '../core/errors/error-types.js';
+import { DaemonError, LifecycleError, SubAgentError } from '../core/errors/error-types.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
 import { PersonaLoader } from '../personas/persona-loader.js';
@@ -74,6 +77,36 @@ import { NoopObservabilityService } from '../observability/langfuse/noop-observa
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { wrapProviderOptions } from '../subagents/provider-options.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import { LifecycleEventBus } from '../lifecycle/lifecycle-event-bus.js';
+import { LifecycleDispatcher } from '../lifecycle/lifecycle-dispatcher.js';
+import { CapturedLifecycleHandlerExecutor } from '../lifecycle/handler-executor.js';
+import type { LifecycleRuntimeCapability } from '../lifecycle/handler-executor.js';
+import { LifecycleInterceptorEngine } from '../lifecycle/interceptors/interceptor-engine.js';
+import { nativeAllowInterceptor } from '../lifecycle/interceptors/native-example-handlers.js';
+import { SubAgentLifecycleAdapter } from '../lifecycle/adapters/subagent-lifecycle-adapter.js';
+import { createLifecycleHandlerRegistry } from '../lifecycle/handler-registry.js';
+import { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
+import {
+  LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
+  LIFECYCLE_EVENT_INPUT_CONTRACT,
+  LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
+  LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+} from '../lifecycle/contracts/index.js';
+
+/** Lifecycle attachment requires both a loaded capability and persona opt-in. */
+export function hasExplicitLifecycleSubagentAuthority(
+  subagents: readonly string[] | undefined,
+  implementationRef: string,
+): boolean {
+  return subagents?.includes(implementationRef) ?? false;
+}
+
+export function supportsLifecycleBootstrapHandler(
+  runtimeKind: 'native' | 'subagent',
+  mode: 'event' | 'signal' | 'interceptor',
+): boolean {
+  return runtimeKind === 'native' || mode !== 'interceptor';
+}
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -164,6 +197,9 @@ export async function bootstrap(
     binding: new BindingRepository(db),
     memory: new MemoryRepository(db),
     a2aTask: new A2ATaskRepository(db),
+    lifecycleEvent: new LifecycleEventRepository(db),
+    lifecycleDelivery: new LifecycleDeliveryRepository(db),
+    lifecycleSignal: new LifecycleSignalRepository(db),
   };
 
   // 5. Audit logger
@@ -204,6 +240,7 @@ export async function bootstrap(
       ),
     );
   }
+  const loadedPersonaList = personaLoadResult.value;
 
   // 8. Load skills
   const skillLoader = new SkillLoader(logger);
@@ -616,7 +653,225 @@ export async function bootstrap(
   const channelRegistry = new ChannelRegistry(logger);
 
   // 12. Queue manager
-  const queueManager = new QueueManager(repos.queue, repos.thread, config.queue, logger);
+  // Lifecycle services are intentionally constructed only when enabled. This
+  // keeps an omitted/disabled lifecycle configuration on the exact legacy
+  // execution path, while the durable dispatcher remains an independent
+  // workload when enabled.
+  let lifecycleRuntime: LifecycleRuntime | null = null;
+  if (config.lifecycle?.enabled) {
+    const nativeImplementations = {
+      'native-noop-event': () =>
+        Promise.resolve(
+          ok({
+            outcome: 'success' as const,
+            outputContract:
+              LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT as typeof LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+            signals: [],
+          }),
+        ),
+      // Interceptors execute synchronously through LifecycleInterceptorEngine;
+      // retaining this identity in the captured executor prevents a divergent
+      // authority catalog from ever selecting a different implementation.
+      'native-allow-interceptor': () =>
+        Promise.resolve(err(new LifecycleError('Lifecycle interceptors are not dispatcher jobs'))),
+    };
+    const nativeImplementationCatalog = [
+      {
+        ref: 'native-noop-event',
+        implementationVersion: '1.0.0',
+        mode: 'event' as const,
+        inputContract: LIFECYCLE_EVENT_INPUT_CONTRACT,
+        outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+      },
+      {
+        ref: 'native-allow-interceptor',
+        implementationVersion: '1.0.0',
+        mode: 'interceptor' as const,
+        inputContract: LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
+        outputContract: LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
+        interceptorSafety: 'enforcing' as const,
+      },
+    ];
+    const loadedSubagentCatalog = [...mergedAgentMap.values()].flatMap((agent) =>
+      (agent.lifecycleCapabilities ?? []).map((capability) => ({
+        ref: agent.manifest.name,
+        implementationVersion: agent.manifest.version,
+        mode: capability.mode,
+        inputContract: capability.inputContract,
+        outputContract: capability.outputContract,
+        ...(capability.interceptorSafety
+          ? { interceptorSafety: capability.interceptorSafety }
+          : {}),
+      })),
+    );
+    const registryResult = createLifecycleHandlerRegistry({
+      lifecycle: config.lifecycle,
+      channels: config.channels.map(({ name }) => ({ name })),
+      personas: config.personas.map(({ name, lifecycle }) => ({ name, lifecycle })),
+      nativeImplementationCatalog,
+      loadedSubagentCatalog,
+    });
+    if (registryResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to construct lifecycle registry: ${registryResult.error.message}`),
+      );
+    }
+    const resolvedHandlers = config.personas.flatMap((persona) =>
+      registryResult.value.listPersonaHandlers(persona.name),
+    );
+    const nativeCatalogByIdentity = new Map<string, LifecycleRuntimeCapability>();
+    const subagentCatalog: LifecycleRuntimeCapability[] = [];
+    const subagentAdapter = subAgentRunner ? new SubAgentLifecycleAdapter(subAgentRunner) : null;
+    for (const handler of resolvedHandlers) {
+      if (handler.identity.runtimeKind === 'native') {
+        const implementation =
+          nativeImplementations[
+            handler.identity.implementationRef as keyof typeof nativeImplementations
+          ];
+        if (implementation) {
+          // Native handlers have no persona authority. Capture each immutable
+          // identity once even when configuration attaches it to many personas.
+          const identityKey = JSON.stringify([
+            handler.identity.version,
+            handler.identity.handlerId,
+            handler.identity.runtimeKind,
+            handler.identity.implementationRef,
+            handler.identity.implementationVersion,
+            handler.identity.mode,
+            handler.identity.inputContract,
+            handler.identity.outputContract,
+            handler.identity.interceptorSafety ?? null,
+          ]);
+          if (!nativeCatalogByIdentity.has(identityKey)) {
+            nativeCatalogByIdentity.set(identityKey, {
+              identity: handler.identity,
+              handler: implementation,
+            });
+          }
+        }
+        continue;
+      }
+      if (!supportsLifecycleBootstrapHandler(handler.identity.runtimeKind, handler.identity.mode)) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent interceptors are unsupported: ${handler.identity.handlerId}`,
+          ),
+        );
+      }
+      const loadedPersona = loadedPersonaList.find(
+        (persona) => persona.config.name === handler.persona,
+      );
+      const personaRow = repos.persona.findByName(handler.persona);
+      const agent = mergedAgentMap.get(handler.identity.implementationRef);
+      if (
+        !subagentAdapter ||
+        !loadedPersona ||
+        personaRow.isErr() ||
+        !personaRow.value ||
+        !agent?.lifecycleRun ||
+        !hasExplicitLifecycleSubagentAuthority(
+          loadedPersona.config.subagents,
+          handler.identity.implementationRef,
+        )
+      ) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Failed to construct lifecycle sub-agent capability for ${handler.identity.handlerId}`,
+          ),
+        );
+      }
+      const capturedHandler = handler;
+      const capturedPersona = loadedPersona;
+      const capturedPersonaId = personaRow.value.id;
+      subagentCatalog.push({
+        identity: handler.identity,
+        subagentScope: {
+          persona: handler.persona,
+          capabilities: {
+            allow: [...capturedPersona.resolvedCapabilities.allow],
+            requireApproval: [...capturedPersona.resolvedCapabilities.requireApproval],
+          },
+        },
+        handler: (execution) =>
+          subagentAdapter.invoke({
+            handler: capturedHandler,
+            scope: {
+              threadId:
+                execution.event.payload.references.find((reference) => reference.type === 'thread')
+                  ?.id ?? execution.event.context.aggregate.id,
+              aggregate: execution.event.context.aggregate,
+              persona: {
+                id: capturedPersonaId,
+                name: capturedHandler.persona,
+                subagents: capturedPersona.config.subagents,
+                capabilities: capturedPersona.resolvedCapabilities,
+              },
+            },
+            input: execution.event,
+          }),
+      });
+    }
+    const executorResult = CapturedLifecycleHandlerExecutor.create({
+      nativeCatalog: [...nativeCatalogByIdentity.values()],
+      subagentCatalog,
+    });
+    if (executorResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to construct lifecycle executor: ${executorResult.error.message}`),
+      );
+    }
+    const interceptorEngine = new LifecycleInterceptorEngine({
+      resolveHandlers: (
+        query,
+      ): ReturnType<typeof registryResult.value.resolveInterceptorHandlers> =>
+        registryResult.value.resolveInterceptorHandlers(query),
+      implementations: { 'native-allow-interceptor': nativeAllowInterceptor },
+      auditLogger,
+    });
+    const dispatcherResult = LifecycleDispatcher.create({
+      deliveries: repos.lifecycleDelivery,
+      executor: executorResult.value,
+      signalRouter: {
+        handoff: (handoff) => {
+          if (handoff.signals.length === 0) return Promise.resolve(ok(undefined));
+          const persisted = repos.lifecycleSignal.handoff(handoff);
+          return Promise.resolve(
+            persisted.isErr()
+              ? err(
+                  new LifecycleError(
+                    `Failed to persist lifecycle signals: ${persisted.error.message}`,
+                  ),
+                )
+              : ok(undefined),
+          );
+        },
+      },
+    });
+    if (dispatcherResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Failed to construct lifecycle dispatcher: ${dispatcherResult.error.message}`,
+        ),
+      );
+    }
+    const dispatcher = dispatcherResult.value;
+    const eventBus = new LifecycleEventBus(repos.lifecycleEvent, registryResult.value, () => {
+      dispatcher.wake();
+    });
+    lifecycleRuntime = new LifecycleRuntime(eventBus, interceptorEngine, dispatcher);
+  }
+  const queueManager = new QueueManager(
+    repos.queue,
+    repos.thread,
+    config.queue,
+    logger,
+    lifecycleRuntime ?? undefined,
+  );
 
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
@@ -646,6 +901,13 @@ export async function bootstrap(
       providerRegistry: backgroundProviderRegistry,
       executionEnvManager,
       hostToolsSocketPath: resolve(join(dataDir, 'host-tools.sock')),
+      resolveLifecyclePersonaName: lifecycleRuntime
+        ? (personaId: string): string | undefined =>
+            personaLoader
+              .getById(personaId)
+              .map((persona) => persona?.config.name)
+              .unwrapOr(undefined)
+        : undefined,
       // Share the same token store the foreground path uses so an
       // `talonctl auth-mcp` run unlocks Glean (etc.) for both run
       // types — without this, background runs receive raw
@@ -674,6 +936,7 @@ export async function bootstrap(
     personaLoader,
     config.scheduler,
     logger,
+    lifecycleRuntime ?? undefined,
   );
 
   // 15. Message pipeline and channel registration
@@ -686,6 +949,8 @@ export async function bootstrap(
     router,
     auditLogger,
     logger,
+    lifecycleRuntime ?? undefined,
+    (personaId) => personaLoader.getById(personaId).map((persona) => persona?.config.name),
   );
 
   registerChannels(config, channelRegistry, {
@@ -697,7 +962,6 @@ export async function bootstrap(
   });
 
   // 16. A2A server (internal-only, no port binding in M1)
-  const loadedPersonaList = personaLoadResult.value;
   const a2aCardRegistry = buildAgentCardRegistry(loadedPersonaList);
   const a2aTaskMapper = new A2ATaskMapper(
     repos.a2aTask,
@@ -742,6 +1006,7 @@ export async function bootstrap(
     contextAssembler,
     oauthTokenStore,
     logger,
+    lifecycleRuntime,
     a2aServer,
     a2aTaskMapper,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
