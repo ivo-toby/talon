@@ -1,10 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ok, err } from 'neverthrow';
 import {
+  DEFAULT_LIFECYCLE_SUBAGENT_TIMEOUT_MS,
+  MAX_LIFECYCLE_SUBAGENT_MODEL_ATTEMPTS,
   SubAgentRunner,
   type SubAgentInvokeContext,
 } from '../../../src/subagents/subagent-runner.js';
-import type { LoadedSubAgent, SubAgentServices } from '../../../src/subagents/subagent-types.js';
+import type {
+  LoadedLifecycleSubAgentCapability,
+  LoadedSubAgent,
+  LifecycleSubAgentRunFn,
+  SubAgentServices,
+} from '../../../src/subagents/subagent-types.js';
 import type { ModelResolver } from '../../../src/subagents/model-resolver.js';
 import { SubAgentError } from '../../../src/core/errors/index.js';
 import type pino from 'pino';
@@ -42,6 +49,62 @@ function makeContext(overrides: Partial<SubAgentInvokeContext> = {}): SubAgentIn
       requireApproval: [],
     },
     ...overrides,
+  };
+}
+
+function makeLifecycleContext(
+  overrides: Partial<SubAgentInvokeContext> = {},
+): SubAgentInvokeContext {
+  return makeContext({
+    serviceScope: 'none',
+    lifecycle: {
+      expectedIdentity: {
+        version: 'v1',
+        handlerId: 'test-handler',
+        runtimeKind: 'subagent',
+        implementationRef: 'test-agent',
+        implementationVersion: '0.1.0',
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      },
+    },
+    ...overrides,
+  });
+}
+
+function makeLifecycleContextForCapability(
+  capability: LoadedLifecycleSubAgentCapability,
+): SubAgentInvokeContext {
+  const expectedIdentity = makeLifecycleContext().lifecycle!.expectedIdentity;
+  return makeLifecycleContext({
+    lifecycle: {
+      expectedIdentity: {
+        ...expectedIdentity,
+        mode: capability.mode,
+        inputContract: capability.inputContract,
+        outputContract: capability.outputContract,
+        ...(capability.interceptorSafety
+          ? { interceptorSafety: capability.interceptorSafety }
+          : {}),
+      },
+    },
+  });
+}
+
+function lifecycleCapableAgent(overrides: Partial<LoadedSubAgent> = {}): LoadedSubAgent {
+  const agent = makeAgent(overrides);
+  return {
+    ...agent,
+    lifecycleCapabilities: [
+      {
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      },
+    ],
+    ...overrides,
+    lifecycleRun: (overrides.lifecycleRun ?? overrides.run ?? agent.run) as LifecycleSubAgentRunFn,
   };
 }
 
@@ -103,6 +166,1102 @@ function makeRunner(
 // ---------------------------------------------------------------------------
 
 describe('SubAgentRunner', () => {
+  it('fails closed when a captured lifecycle identity is replaced before model resolution', async () => {
+    const replaced = lifecycleCapableAgent({
+      manifest: { ...makeAgent().manifest, version: '2.0.0' },
+    });
+    const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+    const runner = makeRunner(new Map([['test-agent', replaced]]), resolver);
+
+    const result = await runner.execute('test-agent', {}, makeLifecycleContext());
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the loaded lifecycle contract tuple changes', async () => {
+    const replaced = lifecycleCapableAgent({
+      lifecycleCapabilities: [
+        {
+          mode: 'event',
+          inputContract: 'talon.lifecycle.signal.envelope.v1',
+          outputContract: 'talon.lifecycle.signal.envelopes.v1',
+        },
+      ],
+    });
+    const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+    const runner = makeRunner(new Map([['test-agent', replaced]]), resolver);
+
+    const result = await runner.execute('test-agent', {}, makeLifecycleContext());
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'event',
+      capability: {
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      },
+    },
+    {
+      name: 'signal',
+      capability: {
+        mode: 'signal',
+        inputContract: 'talon.lifecycle.signal.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      },
+    },
+    {
+      name: 'advisory interceptor',
+      capability: {
+        mode: 'interceptor',
+        inputContract: 'talon.lifecycle.interceptor.input.v1',
+        outputContract: 'talon.lifecycle.advisory.interceptor.output.v1',
+        interceptorSafety: 'advisory',
+      },
+    },
+  ] satisfies readonly { name: string; capability: LoadedLifecycleSubAgentCapability }[])(
+    'accepts an exact canonical $name lifecycle identity',
+    async ({ capability }) => {
+      const agent = lifecycleCapableAgent({ lifecycleCapabilities: [capability] });
+      const resolver = { resolve: vi.fn().mockResolvedValue(ok({} as any)) } as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+
+      const result = await runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContextForCapability(capability),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(resolver.resolve).toHaveBeenCalledOnce();
+      expect(agent.run).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    {
+      name: 'event',
+      capability: {
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      },
+    },
+    {
+      name: 'signal',
+      capability: {
+        mode: 'signal',
+        inputContract: 'talon.lifecycle.signal.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+      },
+    },
+  ] satisfies readonly { name: string; capability: LoadedLifecycleSubAgentCapability }[])(
+    'rejects an extraneous interceptor safety on a $name lifecycle identity',
+    async ({ capability }) => {
+      const agent = lifecycleCapableAgent({ lifecycleCapabilities: [capability] });
+      const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+      const context = makeLifecycleContextForCapability(capability);
+      context.lifecycle!.expectedIdentity = {
+        ...context.lifecycle!.expectedIdentity,
+        interceptorSafety: 'advisory',
+      };
+
+      const result = await runner.execute('test-agent', {}, context);
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+      expect(resolver.resolve).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it('binds the callable captured before model resolution rather than a replacement', async () => {
+    const originalRun = vi.fn().mockResolvedValue(ok({ summary: 'captured' }));
+    const replacementRun = vi.fn().mockResolvedValue(ok({ summary: 'replacement' }));
+    const agent = lifecycleCapableAgent({ run: originalRun });
+    const resolver = {
+      resolve: vi.fn().mockImplementation(async () => {
+        agent.lifecycleRun = replacementRun;
+        return ok({} as any);
+      }),
+    } as unknown as ModelResolver;
+    const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+
+    const result = await runner.execute('test-agent', {}, makeLifecycleContext());
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap().summary).toBe('captured');
+    expect(originalRun).toHaveBeenCalledOnce();
+    expect(replacementRun).not.toHaveBeenCalled();
+  });
+
+  it('rejects accessor-backed lifecycle authority without invoking it', async () => {
+    const capability = Object.create(null, {
+      mode: {
+        enumerable: true,
+        get: () => {
+          throw new Error('trap');
+        },
+      },
+      inputContract: { enumerable: true, value: 'talon.lifecycle.event.envelope.v1' },
+      outputContract: { enumerable: true, value: 'talon.lifecycle.signal.envelopes.v1' },
+    });
+    const agent = lifecycleCapableAgent({ lifecycleCapabilities: [capability] as any });
+    const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+    const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+
+    const result = await runner.execute('test-agent', {}, makeLifecycleContext());
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(resolver.resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(['maxOutputTokens', 'timeoutMs'] as const)(
+    'rejects accessor-backed lifecycle executionLimits.%s without invoking it',
+    async (key) => {
+      const getter = vi.fn(() => {
+        throw new Error('execution limit getter must not run');
+      });
+      const executionLimits = Object.create(null, {
+        [key]: { enumerable: true, get: getter },
+      });
+      const agent = lifecycleCapableAgent();
+      const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+
+      const result = await runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContext({ executionLimits: executionLimits as never }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+      expect(getter).not.toHaveBeenCalled();
+      expect(resolver.resolve).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([0, -1, 1.5, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid lifecycle execution limit values (%s)',
+    async (value) => {
+      const agent = lifecycleCapableAgent();
+      const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+
+      for (const executionLimits of [{ maxOutputTokens: value }, { timeoutMs: value }] as const) {
+        const result = await runner.execute(
+          'test-agent',
+          {},
+          makeLifecycleContext({ executionLimits: executionLimits as never }),
+        );
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+      }
+
+      expect(resolver.resolve).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it('fails closed for a proxied lifecycle context without executing proxy traps or ordinary authority', async () => {
+    const traps = { get: 0, descriptor: 0 };
+    const context = new Proxy(makeLifecycleContext(), {
+      get: () => {
+        traps.get += 1;
+        throw new Error('get trap must not execute');
+      },
+      getOwnPropertyDescriptor: () => {
+        traps.descriptor += 1;
+        throw new Error('descriptor trap must not execute');
+      },
+    });
+    const agent = lifecycleCapableAgent();
+    const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+    const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+
+    const result = await runner.execute('test-agent', {}, context);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(traps).toEqual({ get: 0, descriptor: 0 });
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(agent.run).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when an explicitly supplied lifecycle property is undefined', async () => {
+    const observe = vi.fn();
+    const observability = {
+      observe,
+      observeWithTraceparent: vi.fn(),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ObservabilityService;
+    const agent = lifecycleCapableAgent();
+    const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+    const runner = makeRunner(new Map([['test-agent', agent]]), resolver, observability);
+    const context = makeContext({ serviceScope: 'full', lifecycle: undefined });
+
+    const result = await runner.execute('test-agent', {}, context);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(observe).not.toHaveBeenCalled();
+    expect(resolver.resolve).not.toHaveBeenCalled();
+    expect(agent.run).not.toHaveBeenCalled();
+  });
+
+  it.each(['personaSubagents', 'allow', 'requireApproval', 'approvedCapabilities'])(
+    'contains a revoked proxy in lifecycle %s arrays without traps or downstream work',
+    async (field) => {
+      const traps = { get: 0, descriptor: 0 };
+      const { proxy, revoke } = Proxy.revocable([] as string[], {
+        get: () => {
+          traps.get += 1;
+          throw new Error('get trap must not execute');
+        },
+        getOwnPropertyDescriptor: () => {
+          traps.descriptor += 1;
+          throw new Error('descriptor trap must not execute');
+        },
+      });
+      revoke();
+      const context = makeLifecycleContext();
+      if (field === 'personaSubagents') context.personaSubagents = proxy as unknown as string[];
+      if (field === 'allow') context.personaCapabilities.allow = proxy as unknown as string[];
+      if (field === 'requireApproval') {
+        context.personaCapabilities.requireApproval = proxy as unknown as string[];
+      }
+      if (field === 'approvedCapabilities') {
+        context.lifecycle!.approvedCapabilities = proxy as unknown as string[];
+      }
+      const observe = vi.fn();
+      const observability = {
+        observe,
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ObservabilityService;
+      const agent = lifecycleCapableAgent();
+      const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver, observability);
+
+      const result = await runner.execute('test-agent', {}, context);
+
+      expect(result.isErr()).toBe(true);
+      expect(traps).toEqual({ get: 0, descriptor: 0 });
+      expect(observe).not.toHaveBeenCalled();
+      expect(resolver.resolve).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['expectedIdentity', 'executionLimits'])(
+    'contains a revoked proxy in lifecycle %s objects without traps or downstream work',
+    async (field) => {
+      const traps = { get: 0, descriptor: 0 };
+      const { proxy, revoke } = Proxy.revocable(
+        {},
+        {
+          get: () => {
+            traps.get += 1;
+            throw new Error('get trap must not execute');
+          },
+          getOwnPropertyDescriptor: () => {
+            traps.descriptor += 1;
+            throw new Error('descriptor trap must not execute');
+          },
+        },
+      );
+      revoke();
+      const context = makeLifecycleContext();
+      if (field === 'expectedIdentity') context.lifecycle!.expectedIdentity = proxy as never;
+      if (field === 'executionLimits') context.executionLimits = proxy as never;
+      const observe = vi.fn();
+      const observability = {
+        observe,
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ObservabilityService;
+      const agent = lifecycleCapableAgent();
+      const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver, observability);
+
+      const result = await runner.execute('test-agent', {}, context);
+
+      expect(result.isErr()).toBe(true);
+      expect(traps).toEqual({ get: 0, descriptor: 0 });
+      expect(observe).not.toHaveBeenCalled();
+      expect(resolver.resolve).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+    },
+  );
+
+  it('uses its lifecycle snapshot for error paths after the caller mutates context fields', async () => {
+    let release: ((value: ReturnType<typeof err>) => void) | undefined;
+    const resolver = {
+      resolve: vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            release = resolve;
+          }),
+      ),
+    } as unknown as ModelResolver;
+    const runner = makeRunner(new Map([['test-agent', lifecycleCapableAgent()]]), resolver);
+    const context = makeLifecycleContext();
+    const pending = runner.execute('test-agent', {}, context);
+
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    context.personaId = 'mutated-persona';
+    context.personaSubagents = [];
+    context.personaCapabilities = { allow: ['queue.write:*'], requireApproval: [] };
+    context.traceparent = 'mutated-traceparent';
+    release!(err(new SubAgentError('provider token=secret')));
+
+    const result = await pending;
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(JSON.stringify((mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls)).not.toContain(
+      'mutated-persona',
+    );
+  });
+
+  it('times out deferred lifecycle observability and refuses a late callback', async () => {
+    vi.useFakeTimers();
+    const unhandledRejection = vi.fn();
+    process.on('unhandledRejection', unhandledRejection);
+    try {
+      let callback: ((observation: any) => Promise<unknown>) | undefined;
+      const observe = vi.fn(
+        (_input, fn) =>
+          new Promise(() => {
+            callback = fn;
+          }),
+      );
+      const observability = {
+        observe,
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ObservabilityService;
+      const agent = lifecycleCapableAgent();
+      const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver, observability);
+      const pending = runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+      await expect(
+        callback!({ update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) }),
+      ).rejects.toThrow('timed out');
+      await Promise.resolve();
+
+      expect(result.isErr()).toBe(true);
+      expect(resolver.resolve).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandledRejection);
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects an observer callback invoked at the exact lifecycle deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(0));
+      const observe = vi.fn((_input, fn) => {
+        vi.setSystemTime(new Date(25));
+        return fn({ update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) });
+      });
+      const observability = {
+        observe,
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ObservabilityService;
+      const agent = lifecycleCapableAgent();
+      const resolver = { resolve: vi.fn() } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver, observability);
+
+      const result = await runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(resolver.resolve).not.toHaveBeenCalled();
+      expect(agent.run).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects observer settlement at the exact lifecycle deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(0));
+      const observation = { update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) };
+      const observe = vi.fn(async (_input, fn) => {
+        const callbackResult = await fn(observation);
+        vi.setSystemTime(new Date(25));
+        return callbackResult;
+      });
+      const observability = {
+        observe,
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ObservabilityService;
+      const agent = lifecycleCapableAgent();
+      const runner = makeRunner(new Map([['test-agent', agent]]), mockResolver, observability);
+
+      const result = await runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(agent.run).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('contains a late observer settlement rejection after a lifecycle timeout', async () => {
+    vi.useFakeTimers();
+    const unhandledRejection = vi.fn();
+    process.on('unhandledRejection', unhandledRejection);
+    try {
+      let rejectSettlement: ((reason?: unknown) => void) | undefined;
+      const observation = { update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) };
+      const observe = vi.fn(async (_input, fn) => {
+        await fn(observation);
+        return await new Promise<never>((_resolve, reject) => {
+          rejectSettlement = reject;
+        });
+      });
+      const observability = {
+        observe,
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ObservabilityService;
+      const agent = lifecycleCapableAgent();
+      const runner = makeRunner(new Map([['test-agent', agent]]), mockResolver, observability);
+      const pending = runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+      rejectSettlement!(new Error('late observer rejection'));
+      await Promise.resolve();
+
+      expect(result.isErr()).toBe(true);
+      expect(unhandledRejection).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandledRejection);
+      vi.useRealTimers();
+    }
+  });
+
+  it('times out lifecycle observer settlement after its callback completes', async () => {
+    vi.useFakeTimers();
+    try {
+      const observation = { update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) };
+      const observe = vi.fn(async (_input, fn) => {
+        await fn(observation);
+        return await new Promise(() => undefined);
+      });
+      const observability = {
+        observe,
+        observeWithTraceparent: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+      } as unknown as ObservabilityService;
+      const agent = lifecycleCapableAgent();
+      const runner = makeRunner(new Map([['test-agent', agent]]), mockResolver, observability);
+      const pending = runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+
+      expect(result.isErr()).toBe(true);
+      expect(agent.run).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('uses lifecycle allow grants with exact scope or explicit wildcard, never implicit approval', async () => {
+    const agent = lifecycleCapableAgent({
+      manifest: {
+        ...makeAgent().manifest,
+        requiredCapabilities: ['memory.access:thread'],
+      },
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]));
+
+    const approvalOnly = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({
+        personaCapabilities: { allow: [], requireApproval: ['memory.access:thread'] },
+      }),
+    );
+    const exact = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({
+        personaCapabilities: { allow: ['memory.access:thread'], requireApproval: [] },
+      }),
+    );
+    const wildcard = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({
+        personaCapabilities: { allow: ['memory.access:*'], requireApproval: [] },
+      }),
+    );
+
+    expect(approvalOnly.isErr()).toBe(true);
+    expect(approvalOnly._unsafeUnwrapErr().message).not.toContain('memory.access');
+    expect(exact.isOk()).toBe(true);
+    expect(wildcard.isOk()).toBe(true);
+  });
+
+  it('accepts a requireApproval grant only with an authoritative lifecycle approval', async () => {
+    const agent = lifecycleCapableAgent({
+      manifest: {
+        ...makeAgent().manifest,
+        requiredCapabilities: ['memory.access:thread'],
+      },
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]));
+
+    const result = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({
+        personaCapabilities: { allow: [], requireApproval: ['memory.access:thread'] },
+        lifecycle: {
+          ...makeLifecycleContext().lifecycle!,
+          approvedCapabilities: ['memory.access:thread'],
+        },
+      }),
+    );
+
+    expect(result.isOk()).toBe(true);
+  });
+
+  it('rejects an approval that is not an exact configured requireApproval policy entry', async () => {
+    const agent = lifecycleCapableAgent({
+      manifest: {
+        ...makeAgent().manifest,
+        requiredCapabilities: ['memory.access:thread'],
+      },
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]));
+
+    const result = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({
+        personaCapabilities: { allow: [], requireApproval: ['memory.access:thread'] },
+        lifecycle: {
+          ...makeLifecycleContext().lifecycle!,
+          approvedCapabilities: ['memory.access:other'],
+        },
+      }),
+    );
+
+    expect(result.isErr()).toBe(true);
+  });
+
+  it('uses a finite default lifecycle deadline when model resolution never settles', async () => {
+    vi.useFakeTimers();
+    try {
+      const resolver = {
+        resolve: vi.fn().mockImplementation(() => new Promise(() => undefined)),
+      } as unknown as ModelResolver;
+      const runner = makeRunner(new Map([['test-agent', lifecycleCapableAgent()]]), resolver);
+      const pending = runner.execute('test-agent', {}, makeLifecycleContext());
+
+      await vi.advanceTimersByTimeAsync(DEFAULT_LIFECYCLE_SUBAGENT_TIMEOUT_MS);
+      const result = await pending;
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not overlap lifecycle failover after a provider ignores cancellation', async () => {
+    vi.useFakeTimers();
+    try {
+      const ignoredAbort = vi.fn(() => new Promise(() => undefined));
+      const warningStart = (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+      const runner = makeRunner(
+        new Map([['test-agent', lifecycleCapableAgent({ run: ignoredAbort as any })]]),
+        resolver,
+        undefined,
+        {
+          'test-agent': {
+            model: [
+              { provider: 'openai', name: 'first' },
+              { provider: 'openai', name: 'must-not-overlap' },
+            ],
+          },
+        },
+      );
+      const pending = runner.execute(
+        'test-agent',
+        {},
+        makeLifecycleContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+
+      expect(result.isErr()).toBe(true);
+      expect(ignoredAbort).toHaveBeenCalledOnce();
+      expect(resolver.resolve).toHaveBeenCalledOnce();
+      expect(
+        (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.slice(warningStart),
+      ).toContainEqual([
+        { subagent: 'test-agent', lifecycle: true },
+        'Sub-agent timed out; lifecycle execution will not overlap a failover attempt',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('logs ordinary timeouts as failing over to the next model', async () => {
+    vi.useFakeTimers();
+    try {
+      const timedOutRun = vi.fn(() => new Promise(() => undefined));
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 25 },
+        run: vi
+          .fn()
+          .mockImplementationOnce(timedOutRun)
+          .mockResolvedValueOnce(ok({ summary: 'fallback succeeded' })),
+      });
+      const runner = makeRunner(new Map([['test-agent', agent]]), mockResolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'openai', name: 'first', timeoutMs: 25 },
+            { provider: 'openai', name: 'fallback', timeoutMs: 25 },
+          ],
+        },
+      });
+      const warningStart = (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
+      const pending = runner.execute('test-agent', {}, makeContext());
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+
+      expect(result.isOk()).toBe(true);
+      expect(timedOutRun).toHaveBeenCalledOnce();
+      expect(
+        (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.slice(warningStart),
+      ).toContainEqual([
+        { subagent: 'test-agent', model: 'openai/first', timeoutMs: 25 },
+        'Sub-agent timed out, failing over to next model',
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aggregates an intermediate resolver timeout with earlier failures at the configured ceiling', async () => {
+    vi.useFakeTimers();
+    try {
+      const resolver = {
+        resolve: vi
+          .fn()
+          .mockResolvedValueOnce(err(new SubAgentError('first resolution failed')))
+          .mockImplementationOnce(() => new Promise(() => undefined)),
+      } as unknown as ModelResolver;
+      const agent = makeAgent();
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'openai', name: 'first' },
+            { provider: 'openai', name: 'second' },
+          ],
+        },
+      });
+      const warningStart = (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
+      const pending = runner.execute(
+        'test-agent',
+        {},
+        makeContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe(
+        'All models failed for sub-agent "test-agent":\n' +
+          '  1. openai/first (override): first resolution failed\n' +
+          '  2. openai/second (override): Sub-agent "test-agent" timed out after 25ms',
+      );
+      expect(
+        (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.slice(warningStart),
+      ).toContainEqual([
+        { subagent: 'test-agent', model: 'openai/second', timeoutMs: 25 },
+        'Model resolution timed out, failing over to next model',
+      ]);
+      expect(agent.run).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aggregates a final resolver timeout with earlier failures without a failover log', async () => {
+    vi.useFakeTimers();
+    try {
+      const resolver = {
+        resolve: vi
+          .fn()
+          .mockResolvedValueOnce(err(new SubAgentError('first resolution failed')))
+          .mockImplementationOnce(() => new Promise(() => undefined)),
+      } as unknown as ModelResolver;
+      const agent = makeAgent();
+      const runner = makeRunner(new Map([['test-agent', agent]]), resolver, undefined, {
+        'test-agent': { model: [{ provider: 'openai', name: 'first' }] },
+      });
+      const warningStart = (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
+      const pending = runner.execute(
+        'test-agent',
+        {},
+        makeContext({ executionLimits: { timeoutMs: 25 } }),
+      );
+
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe(
+        'All models failed for sub-agent "test-agent":\n' +
+          '  1. openai/first (override): first resolution failed\n' +
+          '  2. anthropic/claude-haiku-4-5-20251001 (manifest): Sub-agent "test-agent" timed out after 25ms',
+      );
+      const warningMessages = (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls
+        .slice(warningStart)
+        .map(([, message]) => message);
+      expect(warningMessages).not.toContain(
+        'Model resolution timed out, failing over to next model',
+      );
+      expect(agent.run).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('aggregates a final ordinary timeout without logging a nonexistent failover', async () => {
+    vi.useFakeTimers();
+    try {
+      let secondAttemptStarted: (() => void) | undefined;
+      const secondAttemptReady = new Promise<void>((resolve) => {
+        secondAttemptStarted = resolve;
+      });
+      const timedOutRun = vi.fn(() => {
+        secondAttemptStarted!();
+        return new Promise(() => undefined);
+      });
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 25 },
+        run: vi
+          .fn()
+          .mockResolvedValueOnce(err(new SubAgentError('first model failed')))
+          .mockImplementationOnce(timedOutRun),
+      });
+      const runner = makeRunner(new Map([['test-agent', agent]]), mockResolver, undefined, {
+        'test-agent': {
+          model: [{ provider: 'openai', name: 'first', timeoutMs: 25 }],
+        },
+      });
+      const warningStart = (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls.length;
+      const pending = runner.execute('test-agent', {}, makeContext());
+
+      // The first rejected attempt must finish before the fallback timeout is
+      // installed; advancing earlier leaves the fallback pending forever.
+      await secondAttemptReady;
+      await vi.advanceTimersByTimeAsync(25);
+      const result = await pending;
+
+      expect(result.isErr()).toBe(true);
+      const message = result._unsafeUnwrapErr().message;
+      expect(message).toContain('All models failed for sub-agent "test-agent"');
+      expect(message).toContain('first model failed');
+      expect(message).toContain('timed out after 25ms');
+      expect(timedOutRun).toHaveBeenCalledOnce();
+      const warningMessages = (mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls
+        .slice(warningStart)
+        .map(([, message]) => message);
+      expect(warningMessages).not.toContain('Sub-agent timed out, failing over to next model');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds lifecycle failover attempts even when the override chain is longer', async () => {
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue(err(new SubAgentError('provider token=secret'))),
+    } as unknown as ModelResolver;
+    const runner = makeRunner(
+      new Map([['test-agent', lifecycleCapableAgent()]]),
+      resolver,
+      undefined,
+      {
+        'test-agent': {
+          model: Array.from({ length: MAX_LIFECYCLE_SUBAGENT_MODEL_ATTEMPTS + 2 }, (_, index) => ({
+            provider: 'openai',
+            name: `attempt-${index}`,
+          })),
+        },
+      },
+    );
+
+    const result = await runner.execute('test-agent', {}, makeLifecycleContext());
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(resolver.resolve).toHaveBeenCalledTimes(MAX_LIFECYCLE_SUBAGENT_MODEL_ATTEMPTS);
+  });
+
+  it('keeps lifecycle payloads, results, and error details out of telemetry', async () => {
+    const observation = { update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) };
+    const observe = vi.fn(async (_input, fn) => await fn(observation));
+    const observability = {
+      observe,
+      observeWithTraceparent: vi.fn(),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ObservabilityService;
+    const agent = lifecycleCapableAgent({
+      run: vi
+        .fn()
+        .mockResolvedValue(ok({ summary: 'private summary', data: { secret: 'token=secret' } })),
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]), mockResolver, observability);
+
+    const result = await runner.execute(
+      'test-agent',
+      { lifecycle: { untrustedInput: 'token=secret' } },
+      makeLifecycleContext(),
+    );
+
+    expect(result.isOk()).toBe(true);
+    expect(JSON.stringify(observe.mock.calls)).not.toContain('token=secret');
+    expect(JSON.stringify(observation.update.mock.calls)).not.toContain('private summary');
+    expect(JSON.stringify(observation.update.mock.calls)).not.toContain('token=secret');
+    expect((agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0].telemetry).toEqual({
+      isEnabled: false,
+    });
+  });
+
+  it('keeps a lifecycle invocation logger-only when its context mutates during model resolution', async () => {
+    let resolveModel: ((value: ReturnType<typeof ok>) => void) | undefined;
+    const resolver = {
+      resolve: vi.fn().mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveModel = resolve;
+          }),
+      ),
+    } as unknown as ModelResolver;
+    const observation = { update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) };
+    const observe = vi.fn(async (observationInput, fn) => {
+      expect(JSON.stringify(observationInput)).not.toContain('token=secret');
+      return await fn(observation);
+    });
+    const observability = {
+      observe,
+      observeWithTraceparent: vi.fn(),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ObservabilityService;
+    const agent = lifecycleCapableAgent({
+      run: vi.fn().mockResolvedValue(ok({ summary: 'private token=secret', data: {} })),
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]), resolver, observability);
+    const context = makeLifecycleContext({ serviceScope: 'none' });
+
+    const pending = runner.execute('test-agent', { token: 'token=secret' }, context);
+    await vi.waitFor(() => expect(resolveModel).toBeTypeOf('function'));
+    context.lifecycle = undefined;
+    context.serviceScope = 'full';
+    resolveModel!(ok({} as any));
+
+    const result = await pending;
+
+    expect(result.isOk()).toBe(true);
+    const runContext = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(runContext.services).toEqual({ logger: expect.anything() });
+    expect(runContext.services).not.toHaveProperty('memory');
+    expect(runContext.telemetry).toEqual({ isEnabled: false });
+    expect(JSON.stringify(observation.update.mock.calls)).not.toContain('private token=secret');
+  });
+
+  it('retains lifecycle failover and sanitized errors when ctx.lifecycle is removed mid-resolution', async () => {
+    let releaseFirst: ((value: ReturnType<typeof err>) => void) | undefined;
+    const resolver = {
+      resolve: vi
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              releaseFirst = resolve;
+            }),
+        )
+        .mockResolvedValue(err(new SubAgentError('provider token=secret'))),
+    } as unknown as ModelResolver;
+    const runner = makeRunner(
+      new Map([['test-agent', lifecycleCapableAgent()]]),
+      resolver,
+      undefined,
+      {
+        'test-agent': {
+          model: Array.from({ length: MAX_LIFECYCLE_SUBAGENT_MODEL_ATTEMPTS + 2 }, (_, index) => ({
+            provider: 'openai',
+            name: `attempt-${index}`,
+          })),
+        },
+      },
+    );
+    const context = makeLifecycleContext({ serviceScope: 'none' });
+    const pending = runner.execute('test-agent', {}, context);
+
+    await vi.waitFor(() => expect(releaseFirst).toBeTypeOf('function'));
+    context.lifecycle = undefined;
+    context.serviceScope = 'full';
+    releaseFirst!(err(new SubAgentError('provider token=secret')));
+
+    const result = await pending;
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(resolver.resolve).toHaveBeenCalledTimes(MAX_LIFECYCLE_SUBAGENT_MODEL_ATTEMPTS);
+    expect(JSON.stringify((mockLogger.warn as ReturnType<typeof vi.fn>).mock.calls)).not.toContain(
+      'token=secret',
+    );
+  });
+
+  it.each([undefined, 'full'] as const)(
+    'ignores lifecycle serviceScope=%s and keeps services unavailable',
+    async (serviceScope) => {
+      const agent = lifecycleCapableAgent();
+      const runner = makeRunner(new Map([['test-agent', agent]]));
+
+      const result = await runner.execute('test-agent', {}, makeLifecycleContext({ serviceScope }));
+
+      expect(result.isOk()).toBe(true);
+      const runContext = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+      expect(runContext.services).toEqual({ logger: expect.anything() });
+      expect(runContext.services).not.toHaveProperty('memory');
+      expect(runContext.rootPaths).toEqual([]);
+      expect(runContext.telemetry).toEqual({ isEnabled: false });
+    },
+  );
+
+  it('lets lifecycle callers reduce token and timeout budgets without exposing repositories', async () => {
+    const agent = lifecycleCapableAgent({
+      manifest: {
+        ...makeAgent().manifest,
+        model: { ...makeAgent().manifest.model, maxTokens: 2048 },
+      },
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]));
+
+    const result = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({
+        executionLimits: { maxOutputTokens: 128, timeoutMs: 500 },
+      }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const context = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(context.maxOutputTokens).toBe(128);
+    expect(context.rootPaths).toEqual([]);
+    expect(context.services).toEqual({ logger: expect.anything() });
+    expect(context.services).not.toHaveProperty('memory');
+  });
+
+  it('applies a lifecycle timeout across sub-agent failover attempts', async () => {
+    const slowRun = vi
+      .fn()
+      .mockResolvedValueOnce(err(new SubAgentError('first model failed')))
+      .mockImplementation(
+        () => new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 10_000)),
+      );
+    const agent = lifecycleCapableAgent({
+      manifest: { ...makeAgent().manifest, timeoutMs: 1_000 },
+      run: slowRun,
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]), mockResolver, undefined, {
+      'test-agent': {
+        model: [{ provider: 'openai', name: 'first-attempt', timeoutMs: 1_000 }],
+      },
+    });
+
+    const result = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({
+        executionLimits: { timeoutMs: 25 },
+      }),
+    );
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(slowRun).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds model resolution by the lifecycle timeout', async () => {
+    const resolver = {
+      resolve: vi.fn().mockImplementation(() => new Promise(() => undefined)),
+    } as unknown as ModelResolver;
+    const agent = lifecycleCapableAgent();
+    const runner = makeRunner(new Map([['test-agent', agent]]), resolver);
+
+    const result = await runner.execute(
+      'test-agent',
+      {},
+      makeLifecycleContext({ executionLimits: { timeoutMs: 25 } }),
+    );
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toBe('Lifecycle sub-agent execution failed');
+    expect(agent.run).not.toHaveBeenCalled();
+  });
+
   it('wraps sub-agent execution in an agent observation', async () => {
     const agent = makeAgent();
     const observe = vi.fn(

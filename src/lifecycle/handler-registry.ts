@@ -5,6 +5,7 @@ import {
   getEffectiveInterceptorSafety,
   LifecycleEventTypeSchema,
   LifecycleConfigSchema,
+  LifecycleDurablePersonaOwnerNameSchema,
   LifecycleFilterOwnerNameSchema,
   LifecycleHandlerModeSchema,
   PersonaLifecycleConfigSchema,
@@ -687,6 +688,13 @@ export function collectLifecycleValidationIssues(
   // this check behind the feature flag preserves legacy and disabled configs.
   if (lifecycleEnabled) {
     for (const [index, persona] of input.personas.entries()) {
+      if (!LifecycleDurablePersonaOwnerNameSchema.safeParse(persona.name).success) {
+        issues.push({
+          path: ['personas', index, 'name'],
+          message:
+            'lifecycle-enabled persona names must be at most 256 Unicode scalars and 1024 UTF-8 bytes without NUL characters',
+        });
+      }
       const firstIndex = personaNames.get(persona.name);
       if (firstIndex !== undefined) {
         issues.push({

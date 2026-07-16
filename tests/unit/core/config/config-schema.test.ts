@@ -1261,6 +1261,36 @@ describe('TalondConfigSchema', () => {
       }
     });
 
+    it('preserves oversized persona names when lifecycle is omitted or disabled', () => {
+      const oversizedOwner = '😀'.repeat(257);
+
+      expect(TalondConfigSchema.safeParse({ personas: [{ name: oversizedOwner }] }).success).toBe(
+        true,
+      );
+      expect(
+        TalondConfigSchema.safeParse({
+          lifecycle: { enabled: false, handlers: [] },
+          personas: [{ name: oversizedOwner }],
+        }).success,
+      ).toBe(true);
+
+      const enabled = TalondConfigSchema.safeParse({
+        lifecycle: { enabled: true, handlers: [] },
+        personas: [{ name: oversizedOwner }],
+      });
+      expect(enabled.success).toBe(false);
+      if (!enabled.success) {
+        expect(enabled.error.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              path: ['personas', 0, 'name'],
+              message: expect.stringMatching(/256 Unicode scalars and 1024 UTF-8 bytes/i),
+            }),
+          ]),
+        );
+      }
+    });
+
     it('accepts globally defined handlers with explicit persona subscriptions', () => {
       const result = TalondConfigSchema.safeParse({
         lifecycle: {

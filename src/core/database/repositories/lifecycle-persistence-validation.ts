@@ -1,6 +1,12 @@
 /** Bounded, descriptor-only lifecycle transport guards before SQLite sees caller data. */
 
 import { types } from 'node:util';
+import {
+  isBoundedUnicodeScalarsUtf8,
+  isBoundedWellFormedUtf8,
+} from '../../../lifecycle/contracts/common.js';
+
+export { isBoundedUnicodeScalarsUtf8, isBoundedWellFormedUtf8 };
 
 const MAX_REFERENCES = 32;
 const MAX_METADATA_ENTRIES = 32;
@@ -19,68 +25,6 @@ export function isWellFormedUnicode(value: string): boolean {
     } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
       return false;
     }
-  }
-  return true;
-}
-
-/**
- * Bounds JavaScript UTF-16 code units and UTF-8 bytes in one pass. Zod's
- * string limits are UTF-16 limits, so code points must not be substituted
- * here (an emoji consumes two contract units).
- */
-export function isBoundedWellFormedUtf8(
-  value: string,
-  maxCodeUnits: number,
-  maxBytes: number,
-): boolean {
-  if (value.length > maxCodeUnits) return false;
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    let byteLength: number;
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-      byteLength = 4;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      return false;
-    } else if (codeUnit < 0x80) {
-      byteLength = 1;
-    } else if (codeUnit < 0x800) {
-      byteLength = 2;
-    } else {
-      byteLength = 3;
-    }
-    bytes += byteLength;
-    if (bytes > maxBytes) return false;
-  }
-  return true;
-}
-
-/** Bounds Unicode scalar values for the persona persistence limit. */
-export function isBoundedUnicodeScalarsUtf8(
-  value: string,
-  maxScalars: number,
-  maxBytes: number,
-): boolean {
-  let scalars = 0;
-  let bytes = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    let byteLength: number;
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
-      index += 1;
-      byteLength = 4;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) return false;
-    else if (codeUnit < 0x80) byteLength = 1;
-    else if (codeUnit < 0x800) byteLength = 2;
-    else byteLength = 3;
-    scalars += 1;
-    bytes += byteLength;
-    if (scalars > maxScalars || bytes > maxBytes) return false;
   }
   return true;
 }

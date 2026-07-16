@@ -368,6 +368,26 @@ describe('LifecycleHandlerRegistry', () => {
         eventId: 'event-1',
         occurredAt: '2026-07-15T19:00:00.000Z',
         context,
+        payload: { references: [], metadata: { title: 'contains\0nul' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      LifecycleEventEnvelopeSchema.safeParse({
+        version: 'v1',
+        type: 'message.persisted.v1',
+        eventId: 'event-1',
+        occurredAt: '2026-07-15T19:00:00.000Z',
+        context,
+        payload: { references: [], metadata: { title: '\ud800' } },
+      }).success,
+    ).toBe(false);
+    expect(
+      LifecycleEventEnvelopeSchema.safeParse({
+        version: 'v1',
+        type: 'message.persisted.v1',
+        eventId: 'event-1',
+        occurredAt: '2026-07-15T19:00:00.000Z',
+        context,
         payload: { references: [], metadata: { A: true, Ａ: false } },
       }).success,
     ).toBe(false);
@@ -1259,6 +1279,26 @@ describe('LifecycleHandlerRegistry', () => {
         })
         .map((handler) => handler.handler.id),
     ).toEqual(['context-projector']);
+  });
+
+  it('rejects oversized durable persona owners only when lifecycle is enabled', () => {
+    const oversizedOwner = '😀'.repeat(257);
+    const input = makeRegistryInput();
+    input.personas[0]!.name = oversizedOwner;
+
+    const enabled = createLifecycleHandlerRegistry(input);
+    expect(enabled.isErr()).toBe(true);
+    expect(enabled._unsafeUnwrapErr().message).toMatch(/256 Unicode scalars and 1024 UTF-8 bytes/i);
+
+    expect(createLifecycleHandlerRegistry({ personas: [{ name: oversizedOwner }] }).isOk()).toBe(
+      true,
+    );
+    expect(
+      createLifecycleHandlerRegistry({
+        lifecycle: { enabled: false, handlers: [] },
+        personas: [{ name: oversizedOwner }],
+      }).isOk(),
+    ).toBe(true);
   });
 
   it('returns an empty registry when lifecycle is omitted entirely', () => {
