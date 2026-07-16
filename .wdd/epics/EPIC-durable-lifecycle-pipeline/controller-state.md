@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: null
+active_wave: WAVE-002
 status: in_progress
 updated_at: 2026-07-16
 ---
@@ -18,14 +18,15 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 - Branch: epic/durable-lifecycle-pipeline
 - Target: main
 - Verified locally: yes
-- Planning and activation artifacts committed/synced: yes; current pushed epic head `e5fda2a`
+- Planning and reconciliation artifacts committed/synced: yes; pre-activation epic head `1d5ac4d`
+- WAVE-002 activation artifacts: prepared for Sol/high review and checkpoint sync before worktree creation
 
 ## Pending Waves
 
 | Wave | Tasks | Strategy | Confirmation | Status |
 |------|-------|----------|--------------|--------|
 | WAVE-001 | TASK-001-lifecycle-contracts-registry | full / bundled / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
+| WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | in_progress |
 | WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
@@ -38,26 +39,33 @@ The controller activates/reconciles waves, owns epic/task branch and worktree se
 
 ## Active Wave
 
-No wave is active during the reconciliation boundary. WAVE-001 completed with
-TASK-001 merged through PR #257 at `e5fda2a`. WAVE-002 is the next eligible wave.
+WAVE-002 is active as one parallel batch. TASK-002 persistence, TASK-003
+interception, and TASK-004 sub-agent adaptation are eligible because TASK-001
+is done and their primary conflict domains are independent. Each task is
+allocated an isolated worktree that must be created only after the activation
+checkpoint is reviewed, committed, and pushed.
 
 ## Monitoring
 
 - Mode: codex_thread_heartbeat
 - Cadence: adaptive
-- Status: stopped
+- Status: active
 - Scheduler: `talon-issue-256-wdd-wave-1-heartbeat`
-- Last checked: 2026-07-16T01:34:25+02:00
-- Next check due: none
-- Stop reason: WAVE-001 task PR merged and reconciliation began.
-- Automation state: paused in Codex after the stop condition was met.
+- Last checked: 2026-07-16T01:53:46+02:00
+- Next check due: 2026-07-16T02:08:46+02:00
+- Stop condition: all WAVE-002 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
+- Automation state: verified ACTIVE in Codex with a 15-minute heartbeat and a self-contained WAVE-002 orchestration prompt.
 
 ## Current Task Gates
 
 - TASK-001-lifecycle-contracts-registry: merged; PR #257 merged into the epic
   branch at `e5fda2a` after task head `ff3e561` passed branch refresh,
   verification, CI, and Sol/high review gates.
-- The other 19 tasks remain not_started.
+- TASK-002-lifecycle-event-persistence: activation_sync_pending.
+- TASK-003-interceptor-engine: activation_sync_pending, including the carried
+  proxy-valued bounded-JSON zero-trap hardening.
+- TASK-004-subagent-lifecycle-adapter: activation_sync_pending.
+- The remaining 16 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
@@ -67,6 +75,9 @@ TASK-001 merged through PR #257 at `e5fda2a`. WAVE-002 is the next eligible wave
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry`
   was removed and pruned during reconciliation. The superseded worker evidence
   stash was reconciled and dropped.
+- WAVE-002 / TASK-002: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence` allocated, pending creation.
+- WAVE-002 / TASK-003: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` allocated, pending creation.
+- WAVE-002 / TASK-004: `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter` allocated, pending creation.
 
 ## Gate Definitions
 
@@ -83,15 +94,19 @@ TASK-001 was refreshed from epic head `999772d` at merge commit `ff3e561`.
 Epic head `999772d` was verified as an ancestor before PR merge; PR #257 then
 merged at `e5fda2a`.
 
+WAVE-002 task branches are pending creation from the pushed activation
+checkpoint whose base is reconciliation head `1d5ac4d`. No worker may start
+before that checkpoint is synced and present in every assigned worktree.
+
 ## Open P1/P2 Feedback
 
-- None. All Critical, High, and Medium findings were resolved before merge.
-  The remaining Low—reject proxy-valued bounded interceptor JSON before any
-  reflection—is non-blocking and routed to TASK-003.
+- None for WAVE-002 activation. All Wave 1 Critical, High, and Medium findings
+  were resolved before merge. The carried Low is now explicit TASK-003 scope,
+  not unresolved feedback.
 
 ## Verification Status
 
-- Final task and refresh verification passed 130/130 focused tests, build,
+- WAVE-001 final task and refresh verification passed 130/130 focused tests, build,
   TypeScript, cumulative task-source ESLint, changed-TS Prettier, diff checks,
   branch-refresh fidelity, and GitHub Verify PR run `29458737878`.
 - Sol/high cumulative committed-code review
@@ -101,6 +116,8 @@ merged at `e5fda2a`.
 - Tests cover exact runtime authority, bounded iterable cleanup, proxy/accessor
   non-execution at authority boundaries, causal signals, immutable snapshots,
   omitted/disabled legacy compatibility, and enabled duplicate-owner rejection.
+- WAVE-002 implementation verification has not started; each task owns its
+  focused RED/GREEN test set, build, lint where listed, and diff checks.
 
 ## Shared Context Reconciliation
 
@@ -109,6 +126,8 @@ merged at `e5fda2a`.
 - TASK-003 was updated to own the remaining proxy-valued interceptor JSON
   zero-trap hardening. No architecture or dependency drift changes WAVE-002
   parallel readiness.
+- No worker-proposed WAVE-002 shared-context updates exist yet; the controller
+  remains the reconciliation owner.
 
 ## Event Log
 
@@ -166,9 +185,18 @@ merged at `e5fda2a`.
 - 2026-07-16T01:34:25+02:00: WAVE-001 heartbeat paused; shared findings reconciled, carried Low routed to TASK-003, superseded stash dropped, and clean task worktree removed/pruned.
 - 2026-07-16T01:45:00+02:00: Sol/high reconciliation review `019f6826-1d74-7113-a293-07ea922ca9da` failed 0C/0H/2M/1L because TASK-003's contract conflict was absent from authoritative inventories and no explicit staging boundary protected unrelated `.minispec/` files.
 - 2026-07-16T01:48:11+02:00: Reconciliation remediation added the TASK-003 contract conflict everywhere authoritative, clarified checkpoint state, and explicitly staged only the WDD reconciliation paths; `.minispec/` remains untracked and excluded.
+- 2026-07-16T01:50:00+02:00: Fresh Sol/high reconciliation review `019f682e-e2b9-77b0-8e71-bb5af4500c56` passed 0C/0H/0M/1L; the sole Low was a transient pre-reconciliation head label.
+- 2026-07-16T01:53:16+02:00: WAVE-001 reconciliation checkpoint `1d5ac4d` committed and pushed; local and remote epic heads matched and `.minispec/` remained untouched.
+- 2026-07-16T01:53:46+02:00: Existing heartbeat updated and verified ACTIVE for WAVE-002 at a 15-minute cadence.
+- 2026-07-16T01:53:46+02:00: WAVE-002 activation prepared as a confirmed full-profile parallel batch with three Terra/high worktrees allocated pending reviewed checkpoint sync.
 
 ## Next Action
 
-If the reconciliation checkpoint is not yet synced, require a clean Sol/high
-review, then commit and push only the staged WDD paths. Once synced, run
-`wdd-start-wave` for WAVE-002.
+Run Sol/high review over the WAVE-002 allocation artifacts. If clean, commit and
+push that allocation checkpoint. Before any task branch, worktree, or worker is
+created, record the exact allocation commit as the activation checkpoint, set
+`activationArtifactsSynced: true`, pass a second Sol/high review, and commit and
+push that sync checkpoint. Only then create the three task branches and
+worktrees from the pushed synced state, record and push their readiness state,
+fast-forward each task branch to that exact checkpoint, and dispatch one
+Terra/high worker per task.

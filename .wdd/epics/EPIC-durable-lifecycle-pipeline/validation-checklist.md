@@ -4,7 +4,7 @@ kind: validation_checklist
 epic: EPIC-durable-lifecycle-pipeline
 status: ready
 created_at: 2026-07-15
-updated_at: 2026-07-15
+updated_at: 2026-07-16
 ---
 
 # Planning Validation Checklist: EPIC-durable-lifecycle-pipeline
@@ -57,4 +57,4 @@ updated_at: 2026-07-15
 
 ## Next Phase
 
-- [x] WAVE-001 is active; its bundle worktree exists at the pushed activation head, and readiness sync/worker dispatch are next.
+- [x] WAVE-001 is reconciled; WAVE-002 is the active parallel batch, with activation sync required before its three task worktrees are created.

@@ -6,20 +6,22 @@ ticket: TICKET-001-extension-contracts
 wave: WAVE-002
 slug: interceptor-engine
 title: Implement bounded synchronous interceptor execution
-status: todo
+status: in_progress
 depends_on: ["TASK-001-lifecycle-contracts-registry"]
 conflict_domains:
   - "src/lifecycle/interceptors/**"
   - "src/lifecycle/contracts/interceptor-contract.ts"
   - "src/core/logging/audit-logger.ts"
 assigned_model_class: codexHigh
+actual_model: gpt-5.6-terra
+reasoning_effort: high
 review_model_class: reviewGate
 branch: task/TASK-003-interceptor-engine
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine
+worktree_status: pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_sync_pending
+branch_freshness: activation_head_pending
 verification:
   - "npx vitest run tests/unit/lifecycle/interceptor-engine.test.ts tests/unit/core/logging/audit-logger.test.ts"
   - "npm run build"
@@ -31,7 +33,7 @@ verification:
 
 ## Status
 
-todo
+in_progress
 
 ## Parent Ticket
 
@@ -101,7 +103,8 @@ task/TASK-003-interceptor-engine
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine` is
+allocated and pending creation from the synced WAVE-002 activation commit.
 
 ## PR / Patch Reference
 

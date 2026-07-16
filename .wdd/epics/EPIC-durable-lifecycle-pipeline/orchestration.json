@@ -245,7 +245,7 @@
     },
     {
       "id": "WAVE-002",
-      "status": "planned",
+      "status": "in_progress",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -276,8 +276,8 @@
         {
           "id": "TASK-002-lifecycle-event-persistence",
           "ticket": "TICKET-002-durable-event-runtime",
-          "path": "TICKET-002-durable-event-runtime/todo/TASK-002-lifecycle-event-persistence.md",
-          "status": "todo",
+          "path": "TICKET-002-durable-event-runtime/in-progress/TASK-002-lifecycle-event-persistence.md",
+          "status": "in_progress",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry"
           ],
@@ -286,25 +286,27 @@
             "lifecycle repositories"
           ],
           "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
           "reviewModel": "reviewGate",
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-002-lifecycle-event-persistence",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence",
+          "worktreeStatus": "pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "activation_checkpoint_pending",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_sync_pending"
         },
         {
           "id": "TASK-003-interceptor-engine",
           "ticket": "TICKET-001-extension-contracts",
-          "path": "TICKET-001-extension-contracts/todo/TASK-003-interceptor-engine.md",
-          "status": "todo",
+          "path": "TICKET-001-extension-contracts/in-progress/TASK-003-interceptor-engine.md",
+          "status": "in_progress",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry"
           ],
@@ -314,25 +316,27 @@
             "audit logger"
           ],
           "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
           "reviewModel": "reviewGate",
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-003-interceptor-engine",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine",
+          "worktreeStatus": "pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "activation_checkpoint_pending",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_sync_pending"
         },
         {
           "id": "TASK-004-subagent-lifecycle-adapter",
           "ticket": "TICKET-001-extension-contracts",
-          "path": "TICKET-001-extension-contracts/todo/TASK-004-subagent-lifecycle-adapter.md",
-          "status": "todo",
+          "path": "TICKET-001-extension-contracts/in-progress/TASK-004-subagent-lifecycle-adapter.md",
+          "status": "in_progress",
           "dependsOn": [
             "TASK-001-lifecycle-contracts-registry"
           ],
@@ -342,19 +346,21 @@
             "personas"
           ],
           "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
           "reviewModel": "reviewGate",
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-004-subagent-lifecycle-adapter",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter",
+          "worktreeStatus": "pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "activation_checkpoint_pending",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_sync_pending"
         }
       ]
     },
@@ -1097,20 +1103,22 @@
     "pendingReconciliation": []
   },
   "controller": {
-    "activeWave": null,
-    "nextWave": "WAVE-002",
+    "activeWave": "WAVE-002",
+    "nextWave": "WAVE-003",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true
+    "activationArtifactsSynced": false,
+    "activationBase": "1d5ac4df77961f1ba5d2fa4acc04ffb57ee09c16",
+    "activationCheckpoint": null
   },
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "stopped",
-    "lastCheckedAt": "2026-07-16T01:34:25+02:00",
-    "nextCheckDueAt": null,
+    "status": "active",
+    "lastCheckedAt": "2026-07-16T01:53:46+02:00",
+    "nextCheckDueAt": "2026-07-16T02:08:46+02:00",
     "schedulerRef": "talon-issue-256-wdd-wave-1-heartbeat",
-    "fallbackPrompt": "Run subagent-pr-orchestration for EPIC-durable-lifecycle-pipeline and the active wave. Read orchestration.json and controller-state.md, verify activation artifacts are committed on the epic branch before task worktrees branch, inspect every worker/reviewer/PR gate, route P1/P2 feedback, update freshness and verification, and stop when all active tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
-    "stopCondition": "All active-wave tasks are closed and ready for wdd-reconcile-wave.",
-    "stopReason": "WAVE-001 PR #257 merged and task execution completed; heartbeat paused during reconciliation checkpointing before WAVE-002 activation."
+    "fallbackPrompt": "Run one bounded subagent-pr-orchestration heartbeat for EPIC-durable-lifecycle-pipeline WAVE-002. Read orchestration.json, controller-state.md, shared context, and every active task file. Do not create a task branch, worktree, or worker until the allocation checkpoint has been pushed, its exact commit is recorded as controller.activationCheckpoint, controller.activationArtifactsSynced is true, and that second sync checkpoint has passed Sol/high review and is pushed. After those gates, inspect each Terra/high worker, task worktree, branch, PR, verification result, and Sol/high review independently; route all Critical/High/Medium findings; enforce epic-branch freshness; keep .minispec untouched; update durable WDD state; stop only when every WAVE-002 task is ready for wdd-reconcile-wave.",
+    "stopCondition": "All WAVE-002 tasks are merged, blocked, cancelled, or otherwise ready for wdd-reconcile-wave.",
+    "stopReason": null
   }
 }
