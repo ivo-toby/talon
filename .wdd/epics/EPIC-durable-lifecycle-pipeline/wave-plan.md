@@ -318,8 +318,9 @@ Activation rule:
   Sol/high review and is committed/pushed.
 - Activation-sync checkpoint `923623b` passed fresh Sol/high review and was
   pushed. The isolated branch/worktree were created clean from that exact
-  commit; dispatch remains forbidden until the separate readiness checkpoint
-  is reviewed, committed/pushed, and fast-forwarded into the clean worktree.
+  commit. Separate readiness checkpoint `a6d48f7` passed fresh Sol/high review,
+  was committed/pushed, and was fast-forwarded/pushed into the clean worktree;
+  Terra/high dispatch is permitted under the active five-minute heartbeat.
 
 Stop condition:
 
@@ -573,10 +574,10 @@ Stop condition:
 
 - WAVE-001 through WAVE-003 are done. WAVE-003 merged PRs #261 and #262 and its
   reconciliation passed Sol/high review 0C/0H/0M/2L before commit `7e3402c`
-  was pushed. WAVE-004 is active at worktree-readiness review after allocation
+  was pushed. WAVE-004 is active at the dispatch gate after allocation
   checkpoint `67b3457` and activation-sync checkpoint `923623b` were reviewed
-  and pushed; its clean task branch/worktree exist at `923623b` but no worker
-  may start before the separate reviewed/pushed readiness checkpoint.
+  and pushed; readiness checkpoint `a6d48f7` also passed fresh Sol/high review,
+  was pushed, and is exact in the clean local/remote task branch/worktree.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

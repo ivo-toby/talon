@@ -44,6 +44,9 @@ Every task advances independently as soon as its gates clear.
 - WAVE-004 activation sync marker: Sol/high reviewed 0C/0H/0M/2L, committed,
   and pushed at `923623b`; exact allocation commit `67b3457` is recorded and
   TASK-007's clean branch/worktree were created from the sync commit
+- WAVE-004 readiness checkpoint: Sol/high reviewed 0C/0H/0M/2L, committed,
+  and pushed at `a6d48f7`; TASK-007's branch/worktree were fast-forwarded,
+  pushed, and verified clean at that exact commit before dispatch
 
 ## Pending Waves
 
@@ -63,26 +66,25 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-004 is active as one bundled TASK-007 batch at the worktree-readiness
-review gate. Both dependencies are done and reconciled. The isolated branch and
-worktree were created from exact pushed activation-sync commit `923623b`, are
-clean, and contain the task/controller/orchestration artifacts from that exact
-commit. No worker may start until this readiness state passes fresh Sol/high
-review, is committed and pushed, and the task branch/worktree is fast-forwarded
-to that exact commit.
+WAVE-004 is active as one bundled TASK-007 batch at the dispatch gate. Both
+dependencies are done and reconciled. The isolated branch/worktree passed fresh
+Sol/high readiness review, was fast-forwarded and pushed to exact checkpoint
+`a6d48f7`, is clean, and contains the task/controller/orchestration artifacts
+from that exact commit. Terra/high dispatch is permitted under the active
+five-minute controller heartbeat.
 
 ## Monitoring
 
-- Mode: manual during readiness review; Codex heartbeat required before worker dispatch
-- Cadence: adaptive; next manual gate check in 5 minutes
-- Status: worktree_readiness_pending_review
-- Scheduler: none until reviewed worktree readiness exists
-- Last checked: 2026-07-16T12:22:39+02:00
-- Next check due: 2026-07-16T12:27:39+02:00
+- Mode: Codex thread heartbeat
+- Cadence: adaptive; next controller check in 5 minutes
+- Status: dispatch_ready
+- Scheduler: `talon-issue-256-wdd-wave-4-monitor`
+- Last checked: 2026-07-16T12:30:05+02:00
+- Next check due: 2026-07-16T12:35:05+02:00
 - Stop condition: all WAVE-004 tasks are merged, blocked, cancelled, or otherwise ready for `wdd-reconcile-wave`.
 - Automation state: the WAVE-003 heartbeat was deleted after reconciliation
-  push. A self-contained WAVE-004 heartbeat will be created after reviewed
-  worktree readiness and before Terra/high dispatch.
+  push. Self-contained WAVE-004 heartbeat
+  `talon-issue-256-wdd-wave-4-monitor` is active before Terra/high dispatch.
 
 ## Current Task Gates
 
@@ -169,8 +171,9 @@ to that exact commit.
 - TASK-007-daemon-message-queue-schedule-events: dispatch_pending;
   branch `task/TASK-007-daemon-message-queue-schedule-events` and worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
-  are clean at activation-sync commit `923623b`; worker dispatch remains
-  forbidden pending reviewed/pushed readiness and exact fast-forward.
+  are clean locally/remotely at reviewed/pushed readiness checkpoint
+  `a6d48f7`; task/controller/orchestration artifacts match exactly and worker
+  dispatch is permitted under the active heartbeat.
 - The remaining 13 tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
@@ -191,8 +194,8 @@ to that exact commit.
 - WAVE-004 / TASK-007: branch
   `task/TASK-007-daemon-message-queue-schedule-events` and clean worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events`
-  exist at exact pushed activation-sync commit `923623b`; task, controller,
-  and orchestration artifacts match that exact commit.
+  exist at exact pushed readiness checkpoint `a6d48f7`; task, controller, and
+  orchestration artifacts match that exact commit.
 
 ## Gate Definitions
 
@@ -230,8 +233,9 @@ WAVE-004 activation base is reviewed and pushed reconciliation commit
 `7e3402cfd3c0855388e3921e3aab050da12f3cfc`; reviewed allocation checkpoint
 `67b3457c9bab6a4611765c612e0b8f009d65e362` is pushed and recorded exactly.
 Reviewed activation-sync commit `923623b8c1833b83f83df8036e37ad95b0b0a343`
-is pushed. TASK-007's local/remote task branch and clean worktree exist at that
-exact commit pending the separate readiness checkpoint.
+is pushed. Readiness commit `a6d48f7905e70f1ba9d72d4277a78d86acc35ed1`
+passed fresh Sol/high review before push. TASK-007's local/remote task branch
+and clean worktree were fast-forwarded to that exact commit before dispatch.
 
 ## Open P1/P2 Feedback
 
@@ -248,7 +252,7 @@ exact commit pending the separate readiness checkpoint.
   migration fixture in shallow/source checkouts. It remains untouched.
 - WAVE-004 activation-sync review passed after the stale-summary Medium was
   corrected. The two known Low follow-ups remain untouched; readiness review
-  is pending with no implementation worker active.
+  also passed 0C/0H/0M/2L and both Lows remain untouched.
 
 ## Verification Status
 
@@ -493,10 +497,17 @@ exact commit pending the separate readiness checkpoint.
   summaries incorrectly claimed the activation-sync artifacts matched the
   uncommitted controller checkout. Only those claims were corrected to exact
   commit `923623b`; the two known Lows remain untouched.
+- 2026-07-16T12:30:05+02:00: Fresh complete worktree-readiness Sol/high review
+  `019f6a73-c3e1-7232-8092-8916fca9a0a4` passed 0C/0H/0M/2L with exact
+  fingerprint integrity. The two Lows remained untouched. Reviewed readiness
+  commit `a6d48f7905e70f1ba9d72d4277a78d86acc35ed1` was pushed; TASK-007's branch
+  and clean worktree were fast-forwarded/pushed to that exact commit and
+  reverified with matching task/controller/orchestration artifacts. Five-minute
+  heartbeat `talon-issue-256-wdd-wave-4-monitor` was then activated.
 
 ## Next Action
 
-Run a fresh complete Sol/high worktree-readiness review. On a clean Critical/
-High/Medium gate, commit and push the readiness checkpoint, fast-forward/push
+Review and push this scheduler/readiness state checkpoint, fast-forward/push
 TASK-007's clean branch/worktree to that exact commit, reverify the artifacts,
-then create the five-minute monitor before dispatching the Terra/high worker.
+then dispatch the single Terra/high worker and monitor implementation,
+verification, Sol/high review, PR checks, freshness, and merge readiness.

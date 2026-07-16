@@ -23,7 +23,7 @@ worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-mess
 worktree_status: ready
 pr: null
 current_gate: dispatch_pending
-branch_freshness: current_at_activation_sync_pending_readiness_checkpoint
+branch_freshness: current_at_readiness_checkpoint_a6d48f7
 verification:
   - "npx vitest run tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/pipeline/message-pipeline.test.ts tests/unit/queue/queue-processor.test.ts tests/unit/scheduler/scheduler.test.ts"
   - "npx vitest run tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/core/database/migrations/runner.test.ts"
@@ -113,7 +113,7 @@ task/TASK-007-daemon-message-queue-schedule-events
 
 ## Worker Worktree
 
-Created clean at `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events` from reviewed and pushed activation-sync commit `923623b`. No worker may start until the separate readiness state passes Sol/high review, is committed/pushed, and this branch/worktree is fast-forwarded to that exact readiness commit and reverified clean.
+Created clean at `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events` from reviewed and pushed activation-sync commit `923623b`, then fast-forwarded and pushed to reviewed readiness checkpoint `a6d48f7`. The branch/worktree is clean and its task, controller, and orchestration artifacts match that exact checkpoint; Terra/high dispatch is now permitted under the active five-minute monitor.
 
 ## PR / Patch Reference
 

@@ -60,9 +60,9 @@ updated_at: 2026-07-16
 - [x] WAVE-001 through WAVE-003 are reconciled. WAVE-003's reconciliation
   passed Sol/high review 0C/0H/0M/2L and was pushed at `7e3402c`; all recorded
   Low follow-ups remain untouched.
-- [ ] WAVE-004 / TASK-007 is active at worktree-readiness review. Reviewed
+- [ ] WAVE-004 / TASK-007 is active at the dispatch gate. Reviewed
   allocation checkpoint `67b3457` and activation-sync checkpoint `923623b` are
-  pushed; the task branch/worktree were created clean from `923623b` with
-  matching artifacts. Dispatch remains forbidden until this readiness state is
-  reviewed, committed/pushed, and fast-forwarded into the clean verified task
-  branch/worktree.
+  pushed. Readiness checkpoint `a6d48f7` passed fresh Sol/high review and was
+  committed/pushed; the clean local/remote task branch/worktree were
+  fast-forwarded to it with matching artifacts. The five-minute monitor is
+  active and Terra/high dispatch is permitted.
