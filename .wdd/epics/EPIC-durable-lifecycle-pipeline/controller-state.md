@@ -51,11 +51,13 @@ Every task advances independently as soon as its gates clear.
   pushed, and verified clean at that exact commit before dispatch
 - WAVE-004 model-policy checkpoint: GPT-5.5/xhigh reviewed 0C/0H/0M/2L on
   fingerprint `9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd`,
-  committed, and pushed at `d104ba4`; TASK-007 exact epic refresh is next
+  committed, and pushed at `d104ba4`; at that checkpoint, TASK-007 exact epic
+  refresh was next
 - WAVE-004 controller-state marker: GPT-5.5/xhigh reviewed 0C/0H/0M/0L on
   fingerprint `0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131`,
-  committed, and pushed at `fdf0e77`; TASK-007 is now in a conflict-free uncommitted
-  exact refresh merge from that marker with source commit `8a994ea` unchanged
+  committed, and pushed at `fdf0e77`; at that checkpoint, TASK-007 entered a
+  conflict-free uncommitted exact refresh merge from that marker with source
+  commit `8a994ea` unchanged
 - WAVE-004 TASK-007 refresh merge: GPT-5.5/xhigh reviewed 0C/0H/0M/0L in
   session `019f6b54-ded2-7201-8ef8-cbfdf63c35cd` on fingerprint
   `e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1`,
@@ -64,9 +66,15 @@ Every task advances independently as soon as its gates clear.
 - WAVE-004 implementation head: TASK-007 final task commit `fab9495` passed
   Verify PR run `29511783210` and PR Agent run `29507211075`; PR #263 merged
   fresh into the epic branch at `67e93ac` on `2026-07-16T15:37:10Z`
-- WAVE-004 reconciliation draft: task/shared-context/wave/controller state is
-  reconciled at epic head `67e93ac`; fresh GPT-5.5/xhigh checkpoint review and
-  push remain, followed by automation deactivation and the requested pause
+- WAVE-004 reconciliation checkpoint: prior GPT-5.5/xhigh review
+  `019f6ba0-3a31-7172-a54d-34602d8aebeb` found two Mediums, both remediated;
+  fresh complete review `019f6ba5-814a-72f0-8aee-f54d6446c64a` passed
+  0C/0H/0M/0L on fingerprint
+  `b522f7fa0e213d7bb2f51c0e5f23defa62db274f16a359b56c926c79cdc9bd82`
+- WAVE-004 reconciliation checkpoint commit
+  `06778d9a15db3d4cb623ef81b2bd94e7136d5b7e` is pushed with matching local
+  and remote epic heads; automation `talon-issue-256-wdd-wave-4-monitor` was
+  deleted successfully and the epic is paused before WAVE-005
 
 ## Pending Waves
 
@@ -86,7 +94,7 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-No wave is active. WAVE-004 is done and its reconciliation draft records
+No wave is active. WAVE-004 is done and its reconciliation records
 TASK-007 as merged through PR #263 at epic commit
 `67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`. Final task commit
 `fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
@@ -99,25 +107,26 @@ non-actionable failed-suggestions issue comment. Complete GPT-5.5/xhigh review
 `f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4`.
 The task branch was fresh at merge; its clean worktree was removed and pruned.
 
-The reconciliation checkpoint still requires a fresh GPT-5.5/xhigh review,
-commit, and push. Monitoring remains active only until that reviewed checkpoint
-is pushed and the automation is deactivated. WAVE-005 is planned but inactive,
-`pauseAfterWave` is WAVE-004, and `nextWaveActivationAllowed` is false.
+The reconciliation checkpoint passed fresh complete GPT-5.5/xhigh review
+`019f6ba5-814a-72f0-8aee-f54d6446c64a` 0C/0H/0M/0L on fingerprint
+`b522f7fa0e213d7bb2f51c0e5f23defa62db274f16a359b56c926c79cdc9bd82` and
+was pushed at `06778d9a15db3d4cb623ef81b2bd94e7136d5b7e`; local and remote
+epic heads match. Monitoring is deactivated and its automation was deleted.
+WAVE-005 is planned but inactive, `pauseAfterWave` is WAVE-004, and
+`nextWaveActivationAllowed` is false.
 
 ## Monitoring
 
-- Mode: Codex thread heartbeat
-- Cadence: adaptive; next controller check in 5 minutes
-- Status: WAVE-004 reconciliation checkpoint review/push pending; automation deactivation pending afterward
-- Scheduler: `talon-issue-256-wdd-wave-4-monitor`
-- Last checked: 2026-07-16T17:40:00+02:00
-- Next check due: 2026-07-16T17:45:00+02:00
+- Mode: inactive; former Codex thread heartbeat
+- Cadence: none
+- Status: deactivated after successful checkpoint push and automation deletion
+- Scheduler provenance: `talon-issue-256-wdd-wave-4-monitor` (deleted)
+- Last checked: 2026-07-16T18:02:18+02:00
+- Next check due: none
 - Stop condition: WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, the monitor is deactivated, and epic work pauses before WAVE-005.
-- Automation state: the WAVE-003 heartbeat was deleted after reconciliation
-  push. Self-contained WAVE-004 heartbeat
-  `talon-issue-256-wdd-wave-4-monitor` remains active only for the fresh
-  GPT-5.5/xhigh reconciliation review, checkpoint commit/push, and subsequent
-  deactivation. It must not activate WAVE-005.
+- Automation state: WAVE-004 heartbeat
+  `talon-issue-256-wdd-wave-4-monitor` was deleted successfully after reviewed
+  reconciliation checkpoint `06778d9` was pushed. WAVE-005 remains inactive.
 
 ## Current Task Gates
 
@@ -868,9 +877,9 @@ Task commit `fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
   `user_version` 15 to 17. Node 24.15.0 focused verification passed 30/30 in
   that file; no install, rebuild, or full suite ran. PR Agent run
   `29507211075` passed; its failed-suggestions issue comment is non-actionable,
-  with no review threads. GitHub Verify PR run `29507211058` remains failed
-  until a reviewed fix is pushed. The Medium CI blocker is
-  remediation_completed_awaiting_fresh_full_gpt55_xhigh_review, not resolved.
+  with no review threads. GitHub Verify PR run `29507211058` remained failed
+  until the reviewed fix was pushed. At that point, the Medium CI blocker was
+  unresolved.
 - 2026-07-16T15:37:10Z: TASK-007 final commit
   `fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
   `29511783210`; PR Agent run `29507211075` passed with no review threads and
@@ -878,15 +887,21 @@ Task commit `fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
   into the epic branch at `67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`.
 - 2026-07-16: TASK-007 was moved to done, its clean worktree was removed and
   pruned, WAVE-004 was marked done/reconciled, and downstream shared context
-  was updated. The reconciliation checkpoint remains pending fresh GPT-5.5/
-  xhigh review and push; monitor deactivation follows that checkpoint.
+  was updated. At that point, the reconciliation checkpoint and monitor
+  deactivation remained pending.
+- 2026-07-16: Initial GPT-5.5/xhigh reconciliation review
+  `019f6ba0-3a31-7172-a54d-34602d8aebeb` found two Mediums; both were
+  remediated. Fresh complete review `019f6ba5-814a-72f0-8aee-f54d6446c64a`
+  passed 0C/0H/0M/0L on fingerprint
+  `b522f7fa0e213d7bb2f51c0e5f23defa62db274f16a359b56c926c79cdc9bd82`.
+  The reviewed checkpoint was committed and pushed at
+  `06778d9a15db3d4cb623ef81b2bd94e7136d5b7e`; local and remote heads match.
+  Automation `talon-issue-256-wdd-wave-4-monitor` was then deleted
+  successfully, satisfying the stop condition.
 
 ## Next Action
 
-Run a fresh GPT-5.5/xhigh review of the complete WAVE-004 reconciliation diff.
-Remediate only Critical/High/Medium findings; leave Low/P3 findings untouched.
-After a clean review, commit and push the exact reviewed reconciliation
-checkpoint on `epic/durable-lifecycle-pipeline`, then deactivate automation
-`talon-issue-256-wdd-wave-4-monitor` and pause. Do not activate WAVE-005, do not
-touch `.minispec` or `validation-checklist.md`, and do not run full `npm test`
-without approval.
+No controller action is pending. The epic is paused after reconciled WAVE-004;
+monitoring is deactivated and its automation is deleted. WAVE-005 remains
+planned and inactive until the user explicitly resumes the epic. On resume,
+begin with `wdd-start-wave`; do not infer activation from this stopped state.

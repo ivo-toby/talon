@@ -1681,7 +1681,7 @@
       }
     },
     "wave004Reconciliation": {
-      "status": "draft_pending_gpt55_xhigh_review_and_push",
+      "status": "reviewed_committed_pushed_and_paused",
       "task": "TASK-007-daemon-message-queue-schedule-events",
       "taskCommit": "fab94953a41e34520ce216f4bec7acc92c449fa8",
       "mergeCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5",
@@ -1689,20 +1689,30 @@
       "taskWorktreeCleanup": "clean_verified_removed_and_pruned",
       "checkpointReviewModel": "gpt-5.5",
       "checkpointReviewReasoningEffort": "xhigh",
-      "monitoringDeactivation": "pending_after_reviewed_checkpoint_push",
+      "checkpointReviewThreadId": "019f6ba5-814a-72f0-8aee-f54d6446c64a",
+      "checkpointReviewCounts": "0C/0H/0M/0L",
+      "checkpointReviewFingerprint": "b522f7fa0e213d7bb2f51c0e5f23defa62db274f16a359b56c926c79cdc9bd82",
+      "priorReviewThreadId": "019f6ba0-3a31-7172-a54d-34602d8aebeb",
+      "priorReviewCounts": "0C/0H/2M/0L",
+      "priorReviewDisposition": "two_medium_findings_remediated_before_final_review",
+      "checkpointCommit": "06778d9a15db3d4cb623ef81b2bd94e7136d5b7e",
+      "checkpointCommitStatus": "pushed_local_remote_match",
+      "monitoringDeactivation": "completed_automation_deleted",
       "nextWave": "WAVE-005",
       "nextWaveStatus": "planned_inactive"
     }
   },
   "monitoring": {
-    "mode": "codex_thread_heartbeat",
-    "cadence": "adaptive",
-    "status": "wave4_reconciliation_checkpoint_review_push_pending_then_automation_deactivation_pending",
-    "lastCheckedAt": "2026-07-16T17:40:00+02:00",
-    "nextCheckDueAt": "2026-07-16T17:45:00+02:00",
+    "mode": "inactive",
+    "formerMode": "codex_thread_heartbeat",
+    "cadence": "inactive",
+    "status": "inactive_deactivated",
+    "lastCheckedAt": "2026-07-16T18:02:18+02:00",
+    "nextCheckDueAt": null,
     "schedulerRef": "talon-issue-256-wdd-wave-4-monitor",
-    "fallbackPrompt": "WAVE-004 is merged and reconciliation is drafted. Never use GPT-5.6. Run a fresh GPT-5.5/xhigh review of the complete reconciliation diff; remediate only Critical/High/Medium findings and never auto-edit Low/P3 findings. If clean, commit and push the exact reviewed WAVE-004 reconciliation checkpoint on epic/durable-lifecycle-pipeline. Then deactivate automation talon-issue-256-wdd-wave-4-monitor and pause all epic work. Do not activate WAVE-005, do not touch .minispec or validation-checklist.md, and do not run the full npm test suite without approval.",
+    "schedulerStatus": "deleted",
+    "fallbackPrompt": null,
     "stopCondition": "WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, monitoring is deactivated, and epic work is paused before WAVE-005.",
-    "stopReason": "pending reviewed reconciliation checkpoint push and automation deactivation"
+    "stopReason": "stop_condition_satisfied_after_reviewed_checkpoint_push_and_successful_automation_deletion"
   }
 }
