@@ -429,6 +429,14 @@ export class TalondDaemon {
     const newConfig = configResult.value;
     const oldConfig = this.ctx.config;
 
+    if (lifecycleConfigurationChanged(oldConfig, newConfig)) {
+      return err(
+        new DaemonError(
+          'Cannot hot-reload lifecycle configuration or lifecycle-attached persona subscriptions/authority; restart required to apply these changes',
+        ),
+      );
+    }
+
     this.logger.info({ configPath: effectivePath }, 'daemon: applying hot-reload');
 
     // Log level — apply immediately.
@@ -717,4 +725,25 @@ export class TalondDaemon {
     if (changed.length > 0)
       this.logger.info({ changed: changed }, 'daemon: reload — personas changed');
   }
+}
+
+function lifecycleConfigurationChanged(oldConfig: TalondConfig, newConfig: TalondConfig): boolean {
+  if (JSON.stringify(oldConfig.lifecycle ?? null) !== JSON.stringify(newConfig.lifecycle ?? null)) {
+    return true;
+  }
+
+  const personaLifecycleConfiguration = (config: TalondConfig): string =>
+    JSON.stringify(
+      config.personas
+        .filter((persona) => persona.lifecycle !== undefined)
+        .map((persona) => ({
+          name: persona.name,
+          lifecycle: persona.lifecycle,
+          subagents: persona.subagents,
+          capabilities: persona.capabilities,
+        }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    );
+
+  return personaLifecycleConfiguration(oldConfig) !== personaLifecycleConfiguration(newConfig);
 }

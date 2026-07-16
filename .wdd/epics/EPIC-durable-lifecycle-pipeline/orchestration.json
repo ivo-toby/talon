@@ -791,14 +791,14 @@
           "reasoningEffort": "high",
           "reviewModel": "reviewGate",
           "workerThreadId": "019f6a80-eb6a-7051-9e84-f448be2c2a17",
-      "reviewThreadId": "019f6b0f-f3c8-7160-bb2a-81329c61d473",
+          "reviewThreadId": "019f6b85-a9ac-74f3-9fcd-b10c566acdb8",
           "branch": "task/TASK-007-daemon-message-queue-schedule-events",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events",
-      "worktreeStatus": "conflict_free_uncommitted_exact_refresh_merge_active",
+          "worktreeStatus": "pr_open_reviewed_remediations_ready_for_commit_push_pending_wdd_marker_review",
           "cleanup": null,
-          "pr": null,
-          "latestCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
-      "branchFreshness": "conflict_free_uncommitted_exact_refresh_merge_from_fdf0e77_source_commit_8a994e_unchanged",
+          "pr": "https://github.com/ivo-toby/talon/pull/263",
+          "latestCommit": "f695bf4717ae024283479763d77684de9730f6b5",
+          "branchFreshness": "reviewed_refresh_merge_commit_f695bf4717ae024283479763d77684de9730f6b5_pushed_pr_open_against_epic",
           "blockingFeedback": [
             {
               "severity": "High",
@@ -904,10 +904,20 @@
           "severity": "Medium",
           "summary": "IPC shutdown discards the newly fallible stop promise, so a rejected or timed-out drain can become an unhandled rejection and interrupt deferred teardown gating.",
           "status": "resolved_by_review"
+        },
+        {
+          "severity": "Medium",
+          "summary": "GitHub Verify PR run 29507211058 failed one selected committed-v14 migration test because it expected 1 applied migration and user_version 15, while migrations 016 and 017 make the correct current totals 3 and 17.",
+          "status": "resolved_by_full_review_019f6b67_c08a_7e13_a1e4_579fbac1e114"
+        },
+        {
+          "severity": "Medium",
+          "summary": "Successful daemon hot reload can leave the bootstrap-owned lifecycle runtime, subscriptions, sub-agent assignments, and capability authority stale when lifecycle configuration or lifecycle-attached persona authority changes.",
+          "status": "resolved_by_amended_full_gpt55_xhigh_review"
         }
       ],
       "verification": {
-        "status": "exact_refresh_merge_active_review_required",
+        "status": "reviewed_remediations_ready_for_commit_push_pending_fresh_wdd_marker_review",
         "boundedTerraHighRemediationPasses": 6,
         "focusedTests": "12 focused files / 385 tests passed under exact Node v24.15.0 ABI 137",
         "finalControllerVerification": "passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks",
@@ -922,13 +932,28 @@
         "remoteTrackingRefAlignment": "clean, pushed, and aligned with the local remote-tracking ref",
         "finalMarkerReview": "passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint 0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131; session 019f6b4b-dc25-7331-9d26-b5f5595ff21b",
         "markerCommit": "fdf0e775a411959739a577071788eabe4133e3f2",
-        "exactRefreshMerge": "active conflict-free uncommitted no-commit merge from marker fdf0e775a411959739a577071788eabe4133e3f2; HEAD/upstream source commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 unchanged; fresh full GPT-5.5/xhigh review required before merge commit",
-        "currentStateSummary": "TASK-007 completed exactly six bounded Terra/high remediation passes; final controller verification passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks; fresh complete-diff Sol/high source review 019f6b0f-f3c8-7160-bb2a-81329c61d473 passed 0C/0H/0M/0L on fingerprint 0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0; reviewed task commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 is clean, pushed, and aligned with the local remote-tracking ref; the model-policy/WDD checkpoint passed GPT-5.5/xhigh 0C/0H/0M/2L on fingerprint 9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd and was committed/pushed at d104ba468dbe3241691f8940e90238953b82ebeb; final marker review 019f6b4b-dc25-7331-9d26-b5f5595ff21b passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint 0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131 and marker commit fdf0e775a411959739a577071788eabe4133e3f2 is pushed; TASK-007 is in a conflict-free uncommitted exact refresh merge from fdf0e77 with source commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 unchanged; fresh full GPT-5.5/xhigh refresh review is required before the merge commit; PR checks/review/freshness/merge/cleanup/reconciliation remain."
+        "exactRefreshReview": "passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1; session 019f6b54-ded2-7201-8ef8-cbfdf63c35cd",
+        "reviewedRefreshMergeCommit": "f695bf4717ae024283479763d77684de9730f6b5",
+        "pr": "https://github.com/ivo-toby/talon/pull/263",
+        "githubVerifyPr": "failed selected migration test; run 29507211058; committed-v14 migration test expected 1 applied migration and user_version 15, but migrations 016 and 017 make the correct current totals 3 and 17",
+        "blockingRemediation": "migration-test remediation completed by GPT-5.5/high implementation session 019f6b5c-57e9-74e2-9cf4-d59582276884; changed only tests/unit/core/database/repositories/lifecycle-event-repository.test.ts lines 866-867, updating expected applied migration count 1 to 3 and user_version 15 to 17",
+        "blockingRemediationVerification": "Node 24.15.0 focused verification passed 30/30 in tests/unit/core/database/repositories/lifecycle-event-repository.test.ts; no install, rebuild, or full suite",
+        "fullReviewAfterMigrationRemediation": "GPT-5.5/xhigh session 019f6b67-c08a-7e13-a1e4-579fbac1e114 reviewed the complete snapshot and found 0C/0H/1M/0L; the migration-test fix was accepted and the sole Medium was stale lifecycle runtime/authority after successful hot reload",
+        "lifecycleReloadRemediation": "GPT-5.5/high remediation changed src/daemon/daemon.ts and tests/unit/daemon/reload.test.ts only, adding a pre-mutation restart-required guard for lifecycle configuration and lifecycle-attached persona subscription, sub-agent assignment, and capability-authority changes while preserving the migration-test fix",
+        "lifecycleReloadRemediationVerification": "focused reload tests passed 26/26 under Node 24; build, source lint, source formatting, and git diff --check passed; no install, rebuild, or full suite",
+        "focusedHighSanityReview": "passed GPT-5.5/high 0C/0H/0M in session 019f6b75-52f0-73a1-9016-41922cb35236",
+        "freshFullXhighReview": "complete GPT-5.5/xhigh session 019f6b7d-fd1b-78c3-ba7f-7cade5ca636b reviewed the unchanged 37-path union with 0C/0H/0M/0L substantive findings; its only initial block was the controller's non-canonical newline-stripped fingerprint",
+        "canonicalReviewFingerprint": "0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9 using newline-preserving path plus sha256 records",
+        "integrityAdjudication": "independent GPT-5.5/xhigh session 019f6b85-a9ac-74f3-9fcd-b10c566acdb8 reproduced the unchanged 37 paths, exactly six modified files, canonical fingerprint 0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9, git diff --check, and JSON parse; Amended PASS carries forward 0C/0H/0M/0L",
+        "wddMarkerReview": "fresh GPT-5.5/xhigh review required after this state-only update before commit",
+        "prAgent": "passed; run 29507211075; failed-suggestions issue comment non-actionable; no review threads",
+        "githubVerifyPrCurrent": "run 29507211058 remains failed until a reviewed fix is pushed",
+        "currentStateSummary": "TASK-007 source commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 and refresh merge f695bf4717ae024283479763d77684de9730f6b5 are pushed; PR #263 is open against epic/durable-lifecycle-pipeline and old GitHub Verify PR run 29507211058 remains failed pending a reviewed push. Migration and lifecycle hot-reload remediations passed focused verification. Complete GPT-5.5/xhigh review 019f6b7d-fd1b-78c3-ba7f-7cade5ca636b reviewed the unchanged 37-path union with 0C/0H/0M/0L substantive findings and initially blocked only on a non-canonical newline-stripped fingerprint. Independent GPT-5.5/xhigh integrity adjudication 019f6b85-a9ac-74f3-9fcd-b10c566acdb8 reproduced 37 paths, exactly six modified files, canonical newline-preserving fingerprint 0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9, git diff --check, and JSON parse, and issued Amended PASS carrying forward 0C/0H/0M/0L. Remediation is reviewed and ready for commit/push after a fresh GPT-5.5/xhigh review of this state-only WDD marker. PR Agent run 29507211075 passed with no review threads. WAVE-005 remains planned and inactive; pauseAfterWave is WAVE-004 and nextWaveActivationAllowed is false."
       },
-      "currentGate": "exact_refresh_merge_active_gpt55_xhigh_full_review_required"
-        }
-      ]
-    },
+      "currentGate": "reviewed_remediation_ready_for_commit_push_pending_fresh_wdd_marker_review"
+    }
+  ]
+},
     {
       "id": "WAVE-005",
       "status": "planned",
@@ -1574,24 +1599,72 @@
       "lowFindingDisposition": "none"
     },
     "exactTaskRefresh": {
-      "status": "conflict_free_uncommitted_merge_active_review_required",
+      "status": "reviewed_committed_pushed_pr_open",
       "sourceCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
-      "headAndUpstreamCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
+      "headAndUpstreamCommit": "f695bf4717ae024283479763d77684de9730f6b5",
       "mergeHead": "fdf0e775a411959739a577071788eabe4133e3f2",
       "mergeHeadSource": "final_controller_state_marker",
-      "freshFullReviewRequiredBeforeMergeCommit": true,
+      "freshFullReviewRequiredBeforeMergeCommit": false,
       "reviewModel": "gpt-5.5",
-      "reviewReasoningEffort": "xhigh"
+      "reviewReasoningEffort": "xhigh",
+      "reviewThreadId": "019f6b54-ded2-7201-8ef8-cbfdf63c35cd",
+      "reviewCounts": "0C/0H/0M/0L",
+      "reviewFingerprint": "e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1",
+      "reviewedMergeCommit": "f695bf4717ae024283479763d77684de9730f6b5",
+      "reviewedMergeCommitStatus": "pushed",
+      "pr": "https://github.com/ivo-toby/talon/pull/263"
+    },
+    "pullRequest": {
+      "number": 263,
+      "url": "https://github.com/ivo-toby/talon/pull/263",
+      "targetBranch": "epic/durable-lifecycle-pipeline",
+      "status": "open",
+      "githubVerifyPr": {
+        "runId": "29507211058",
+        "status": "failed",
+        "failure": "one selected committed-v14 migration test expected 1 applied migration and user_version 15, but migrations 016 and 017 make the correct current totals 3 and 17"
+      },
+      "prAgent": {
+        "status": "passed",
+        "runId": "29507211075",
+        "failedSuggestionsIssueComment": "non_actionable",
+        "reviewThreads": "none"
+      },
+      "blockingRemediation": {
+        "status": "reviewed_remediation_ready_for_commit_push_pending_fresh_wdd_marker_review",
+        "sessionId": "019f6b5c-57e9-74e2-9cf4-d59582276884",
+        "model": "gpt-5.5",
+        "reasoningEffort": "high",
+        "changedOnly": "tests/unit/core/database/repositories/lifecycle-event-repository.test.ts lines 866-867; expected applied migration count 1 to 3 and user_version 15 to 17",
+        "verification": "Node 24.15.0 focused verification passed 30/30 in tests/unit/core/database/repositories/lifecycle-event-repository.test.ts; no install, rebuild, or full suite",
+        "fullReviewThreadId": "019f6b67-c08a-7e13-a1e4-579fbac1e114",
+        "fullReviewCounts": "0C/0H/1M/0L",
+        "fullReviewFinding": "successful hot reload could retain stale bootstrap-owned lifecycle runtime, subscriptions, sub-agent assignment, and capability authority",
+        "lifecycleRemediationChangedOnly": "src/daemon/daemon.ts and tests/unit/daemon/reload.test.ts; prior migration-test remediation preserved",
+        "lifecycleRemediationVerification": "focused reload tests 26/26, build, source lint, source formatting, and git diff --check passed",
+        "focusedSanityReviewThreadId": "019f6b75-52f0-73a1-9016-41922cb35236",
+        "focusedSanityReviewCounts": "0C/0H/0M",
+        "freshFullReviewThreadId": "019f6b7d-fd1b-78c3-ba7f-7cade5ca636b",
+        "freshFullReviewCounts": "0C/0H/0M/0L substantive findings",
+        "freshFullReviewInitialDisposition": "blocked only on controller non-canonical newline-stripped fingerprint",
+        "canonicalFingerprint": "0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9",
+        "integrityAdjudicationThreadId": "019f6b85-a9ac-74f3-9fcd-b10c566acdb8",
+        "integrityAdjudication": "Amended PASS; reproduced unchanged 37-path union, exactly six modified files, canonical fingerprint, git diff --check, and JSON parse; carries forward 0C/0H/0M/0L",
+        "freshFullReviewRequiredBeforeCommit": false,
+        "freshWddMarkerReviewRequiredBeforeCommit": true,
+        "reviewModel": "gpt-5.5",
+        "reviewReasoningEffort": "xhigh"
+      }
     }
   },
   "monitoring": {
     "mode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "exact_refresh_merge_active_gpt55_xhigh_full_review_required",
-    "lastCheckedAt": "2026-07-16T16:23:58+02:00",
-    "nextCheckDueAt": "2026-07-16T16:28:58+02:00",
+    "status": "pr_open_reviewed_remediations_ready_for_commit_push_pending_fresh_wdd_marker_review",
+    "lastCheckedAt": "2026-07-16T17:24:23+02:00",
+    "nextCheckDueAt": "2026-07-16T17:29:23+02:00",
     "schedulerRef": "talon-issue-256-wdd-wave-4-monitor",
-    "fallbackPrompt": "WAVE-004 post-source-commit controller workflow only. Never use GPT-5.6. Use GPT-5.5/xhigh for every review and at most GPT-5.5/high for implementation or blocking remediation. The model-policy/WDD checkpoint passed GPT-5.5/xhigh 0C/0H/0M/2L and is pushed at d104ba468dbe3241691f8940e90238953b82ebeb. Final controller-state marker review 019f6b4b-dc25-7331-9d26-b5f5595ff21b passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint 0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131 and marker commit fdf0e775a411959739a577071788eabe4133e3f2 is pushed. TASK-007 is in a conflict-free uncommitted exact refresh merge from fdf0e77; HEAD and upstream remain reviewed source commit 8a994eac930b18ce5ec1e3fe78999c2a021e4308 and MERGE_HEAD is fdf0e775a411959739a577071788eabe4133e3f2. Run a fresh full GPT-5.5/xhigh refresh review before any merge commit, then commit and push the refresh only if it passes 0C/0H/0M, open the PR targeting the epic, and monitor checks, review, freshness, merge, cleanup, and WAVE-004 reconciliation. Do not authorize, start, resume, or redispatch TASK-007 source implementation or source remediation. Remediate only Critical/High/Medium WDD, refresh, or PR blockers; never auto-edit Low/P3 findings, leave .minispec and validation-checklist.md untouched, and do not run the full npm test suite without approval. After the reviewed WAVE-004 reconciliation checkpoint is pushed, deactivate monitoring and pause all epic work; do not activate WAVE-005.",
+    "fallbackPrompt": "WAVE-004 PR controller workflow only. Never use GPT-5.6. Use GPT-5.5/xhigh for every review and at most GPT-5.5/high for implementation or blocking remediation. PR #263 is open against epic/durable-lifecycle-pipeline at pushed refresh merge f695bf4717ae024283479763d77684de9730f6b5; old GitHub Verify PR run 29507211058 remains failed pending a reviewed push. Complete GPT-5.5/xhigh review 019f6b7d-fd1b-78c3-ba7f-7cade5ca636b reviewed the unchanged 37-path union with 0C/0H/0M/0L substantive findings and initially blocked only on the controller's non-canonical newline-stripped fingerprint. Canonical newline-preserving fingerprint is 0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9. Independent GPT-5.5/xhigh integrity adjudication 019f6b85-a9ac-74f3-9fcd-b10c566acdb8 reproduced 37 paths, exactly six modified files, that fingerprint, git diff --check, and JSON parse, and issued Amended PASS carrying forward 0C/0H/0M/0L. Remediation is reviewed and ready for commit/push after a fresh GPT-5.5/xhigh review of this state-only WDD marker. Remediate only Critical/High/Medium findings; never auto-edit Low/P3 findings. Leave source/tests, .minispec, validation-checklist.md, wave-plan, shared context, and other tasks untouched during the marker update; do not run full npm test without approval. After the reviewed WAVE-004 reconciliation checkpoint is pushed, deactivate monitoring and pause all epic work; do not activate WAVE-005.",
     "stopCondition": "WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, monitoring is deactivated, and epic work is paused before WAVE-005.",
     "stopReason": null
   }

@@ -260,6 +260,144 @@ describe('TalondDaemon.reload()', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Lifecycle config changes
+  // -------------------------------------------------------------------------
+
+  describe('lifecycle config changes', () => {
+    it('rejects top-level lifecycle changes before applying any reload mutations', async () => {
+      const ctx = setupSuccessfulStart({
+        lifecycle: { enabled: true, handlers: [] },
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        logLevel: 'debug',
+        lifecycle: { enabled: false, handlers: [] },
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('restart required');
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(ctx.channelRegistry.stopAll).not.toHaveBeenCalled();
+      expect(ctx.config.logLevel).toBe('info');
+    });
+
+    it('rejects persona lifecycle subscription changes before reloading personas', async () => {
+      const oldSubscription = {
+        handler: 'audit-handler',
+        subscription: { eventTypes: ['message.received'] },
+      };
+      const newSubscription = {
+        handler: 'audit-handler',
+        subscription: { eventTypes: ['message.completed'] },
+      };
+      const persona = {
+        name: 'observer',
+        model: 'claude-sonnet-4-6',
+        skills: [],
+        capabilities: { allow: [], requireApproval: [] },
+        mounts: [],
+        lifecycle: { subscriptions: [oldSubscription] },
+      };
+      const ctx = setupSuccessfulStart({
+        lifecycle: { enabled: true, handlers: [] },
+        personas: [persona],
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        lifecycle: { enabled: true, handlers: [] },
+        personas: [
+          {
+            ...persona,
+            lifecycle: { subscriptions: [newSubscription] },
+          },
+        ],
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('lifecycle-attached persona');
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(ctx.config.personas).toEqual([persona]);
+    });
+
+    it.each([
+      {
+        description: 'sub-agent assignment',
+        change: { subagents: [] },
+      },
+      {
+        description: 'capability policy',
+        change: { capabilities: { allow: [], requireApproval: ['tools.read:*'] } },
+      },
+    ])(
+      'rejects lifecycle-attached persona $description changes before reloading personas',
+      async ({ change }) => {
+        const persona = {
+          name: 'observer',
+          model: 'claude-sonnet-4-6',
+          skills: [],
+          subagents: ['lifecycle-auditor'],
+          capabilities: { allow: ['tools.read:*'], requireApproval: [] },
+          mounts: [],
+          lifecycle: {
+            subscriptions: [
+              {
+                handler: 'audit-handler',
+                subscription: { eventTypes: ['message.received'] },
+              },
+            ],
+          },
+        };
+        const ctx = setupSuccessfulStart({ personas: [persona] });
+        await daemon.start('/config.yaml');
+
+        const newConfig = makeConfig({
+          personas: [{ ...persona, ...change }],
+        });
+        vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+        const result = await daemon.reload('/config.yaml');
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toContain('restart required');
+        expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+        expect(ctx.config.personas).toEqual([persona]);
+      },
+    );
+
+    it('allows ordinary persona changes when lifecycle attachments are unchanged', async () => {
+      const lifecycle = { subscriptions: [] };
+      const persona = {
+        name: 'assistant',
+        model: 'claude-sonnet-4-6',
+        skills: [],
+        capabilities: { allow: [], requireApproval: [] },
+        mounts: [],
+        lifecycle,
+      };
+      const ctx = setupSuccessfulStart({ personas: [persona] });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        personas: [{ ...persona, model: 'claude-opus-4-6' }],
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.personaLoader.loadFromConfig).toHaveBeenCalledWith(newConfig.personas);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Log level changes
   // -------------------------------------------------------------------------
 
