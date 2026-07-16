@@ -217,10 +217,13 @@ interface DerivedSignal {
       sourceReferences: Array<{ type: string; id: string }>;
     };
   };
-  payload: { references: never[]; metadata: Record<string, never> };
+  payload: { references: never[]; metadata: Record<string, unknown> };
 }
 
-function makeCausallyDerivedSignal(invocation: CausalInvocation): DerivedSignal {
+function makeCausallyDerivedSignal(
+  invocation: CausalInvocation,
+  metadata: Record<string, unknown> = {},
+): DerivedSignal {
   const causationId = invocation.eventId ?? invocation.signalId ?? invocation.interceptionId;
   return {
     version: 'v1',
@@ -241,7 +244,7 @@ function makeCausallyDerivedSignal(invocation: CausalInvocation): DerivedSignal 
         sourceReferences: [...invocation.context.provenance.sourceReferences],
       },
     },
-    payload: { references: [], metadata: {} },
+    payload: { references: [], metadata },
   };
 }
 
@@ -535,7 +538,11 @@ describe('LifecycleHandlerRegistry', () => {
       },
       {
         hook: 'tool.before_execute',
-        input: { toolCallId: 'tool-1', toolName: 'calendar-create', arguments: { duration: 30 } },
+        input: {
+          toolCallId: 'tool-1',
+          toolName: 'calendar-create',
+          arguments: { duration: 30 },
+        },
       },
       {
         hook: 'message.before_send',
@@ -655,7 +662,10 @@ describe('LifecycleHandlerRegistry', () => {
         contextAdditions: { executionEnvironment: { resources: { memoryMb: 4096 } } },
       },
       { hook: 'tool.before_execute', arguments: { duration: 30 } },
-      { hook: 'tool.before_execute', argumentsPatch: { headers: { 'x-trace': 'trace-1' } } },
+      {
+        hook: 'tool.before_execute',
+        argumentsPatch: { headers: { 'x-trace': 'trace-1' } },
+      },
     ]) {
       expect(LifecycleInterceptorTransformSchema.safeParse(transform).success).toBe(true);
     }
@@ -822,7 +832,10 @@ describe('LifecycleHandlerRegistry', () => {
         outputContract: LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
         result: {
           outcome: 'transform',
-          transform: { hook: 'tool.before_execute', argumentsPatch: { trace: true } },
+          transform: {
+            hook: 'tool.before_execute',
+            argumentsPatch: { trace: true },
+          },
           signals: [],
         },
       }).success,
@@ -988,6 +1001,179 @@ describe('LifecycleHandlerRegistry', () => {
         signals: [boundarySignal],
       }).success,
     ).toBe(false);
+  });
+
+  it('defaults omitted metadata in causally valid enforcing interceptor signals', () => {
+    const context = {
+      aggregate: { type: 'thread', id: 'thread-omitted-metadata' },
+      correlationId: 'correlation-omitted-metadata',
+      recursion: { depth: 0, maxDepth: 2 },
+      provenance: { source: 'message-pipeline', sourceEventIds: [], sourceReferences: [] },
+    };
+    const input = {
+      version: 'v1' as const,
+      interceptionId: 'interception-omitted-metadata',
+      context,
+      hook: 'tool.before_execute' as const,
+      input: { toolCallId: 'tool-omitted-metadata', toolName: 'Tool.Http:Send', arguments: {} },
+    };
+    const handler = LifecycleHandlerContractSchema.parse({
+      version: 'v1',
+      id: 'enforcer-omitted-metadata',
+      mode: 'interceptor',
+      interceptorSafety: 'enforcing',
+      inputContract: LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
+      outputContract: LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
+      runtime: { kind: 'native', ref: 'enforcer-omitted-metadata', implementationVersion: '1.0.0' },
+    });
+    const signal = makeCausallyDerivedSignal(input);
+    delete (signal.payload as { metadata?: unknown }).metadata;
+
+    const parsed = parseLifecycleHandlerResult(handler, input, {
+      outcome: 'success',
+      outputContract: LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
+      result: { outcome: 'allow', signals: [signal] },
+    });
+
+    expect(parsed.success).toBe(true);
+    if (parsed.success && parsed.data.outcome !== 'error') {
+      expect(parsed.data.result.signals[0]?.payload.metadata).toEqual({});
+    }
+  });
+
+  it('materializes ordinary handler signal metadata without executing hostile accessors', () => {
+    const handler = makeRegistryInput().lifecycle!.handlers[0]!;
+    const input = makeEventEnvelope();
+    const parse = (metadata: unknown) =>
+      parseLifecycleHandlerResult(handler, input, {
+        outcome: 'success',
+        outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+        signals: [makeCausallyDerivedSignal(input, metadata as Record<string, unknown>)],
+      });
+
+    const accepted = parse({
+      'customer.custom': 'retained',
+      outcome: true,
+      entries: 3,
+      metadata: null,
+    });
+    expect(accepted.success).toBe(true);
+    if (accepted.success && accepted.data.outcome !== 'error') {
+      expect(accepted.data.signals[0]?.payload.metadata).toEqual({
+        'customer.custom': 'retained',
+        outcome: true,
+        entries: 3,
+        metadata: null,
+      });
+    }
+
+    const protoMetadata = Object.create(null) as Record<string, unknown>;
+    Object.defineProperty(protoMetadata, '__proto__', {
+      configurable: true,
+      enumerable: true,
+      value: 'retained',
+      writable: true,
+    });
+    const protoAccepted = parse(protoMetadata);
+    expect(protoAccepted.success).toBe(true);
+    if (protoAccepted.success && protoAccepted.data.outcome !== 'error') {
+      const metadata = protoAccepted.data.signals[0]!.payload.metadata;
+      expect(Object.getPrototypeOf(metadata)).toBeNull();
+      expect(metadata.__proto__).toBe('retained');
+    }
+
+    expect(parse({ A: 1, Ａ: 2 }).success).toBe(false);
+    expect(parse({ A: 1, Ａ: 2 }).success).toBe(false);
+
+    let accessorCalls = 0;
+    const accessorEntry = {};
+    Object.defineProperty(accessorEntry, 'never-read', {
+      enumerable: true,
+      get() {
+        accessorCalls += 1;
+        return 'never-read';
+      },
+    });
+    expect(parse(accessorEntry).success).toBe(false);
+    expect(accessorCalls).toBe(0);
+
+    let proxyTraps = 0;
+    const metadataProxy = new Proxy(
+      {},
+      {
+        get() {
+          proxyTraps += 1;
+          throw new Error('proxy trap');
+        },
+        getOwnPropertyDescriptor() {
+          proxyTraps += 1;
+          throw new Error('proxy trap');
+        },
+      },
+    );
+    expect(parse(metadataProxy).success).toBe(false);
+    expect(proxyTraps).toBe(0);
+
+    let unknownGetterCalls = 0;
+    const boundedMetadata: Record<string, unknown> = {};
+    const ordinaryRecord: Record<string, unknown> = {};
+    for (let index = 0; index < 4_096; index += 1) {
+      Object.defineProperty(boundedMetadata, `unknown-${index}`, {
+        enumerable: true,
+        get() {
+          unknownGetterCalls += 1;
+          throw new Error('unknown metadata must not be read');
+        },
+      });
+      Object.defineProperty(ordinaryRecord, `unknown-${index}`, {
+        enumerable: true,
+        get() {
+          unknownGetterCalls += 1;
+          throw new Error('ordinary metadata must not be enumerated');
+        },
+      });
+    }
+    expect(parse(boundedMetadata).success).toBe(false);
+    expect(parse(ordinaryRecord).success).toBe(false);
+    expect(unknownGetterCalls).toBe(0);
+  });
+
+  it('strictly rejects unknown handler-output fields without executing their accessors', () => {
+    const handler = makeRegistryInput().lifecycle!.handlers[0]!;
+    const input = makeEventEnvelope();
+    const output = {
+      outcome: 'success' as const,
+      outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+      signals: [makeCausallyDerivedSignal(input)],
+    };
+    let topLevelGetterCalls = 0;
+    Object.defineProperty(output, 'unexpected', {
+      enumerable: true,
+      get() {
+        topLevelGetterCalls += 1;
+        throw new Error('unknown top-level output field must not be read');
+      },
+    });
+
+    expect(parseLifecycleHandlerResult(handler, input, output).success).toBe(false);
+    expect(topLevelGetterCalls).toBe(0);
+
+    const nestedOutput = {
+      outcome: 'success' as const,
+      outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+      signals: [makeCausallyDerivedSignal(input)],
+    };
+    let nestedGetterCalls = 0;
+    Object.defineProperty(nestedOutput.signals[0]!.context, 'unexpected', {
+      enumerable: true,
+      get() {
+        nestedGetterCalls += 1;
+        throw new Error('unknown nested output field must not be read');
+      },
+    });
+
+    expect(parseLifecycleHandlerResult(handler, input, nestedOutput).success).toBe(false);
+    expect(nestedGetterCalls).toBe(0);
   });
 
   it('resolves explicitly attached event handlers in deterministic priority order', () => {

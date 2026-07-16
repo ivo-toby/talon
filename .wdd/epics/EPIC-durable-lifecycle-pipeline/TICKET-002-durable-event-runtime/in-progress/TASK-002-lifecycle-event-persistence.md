@@ -18,9 +18,10 @@ review_model_class: reviewGate
 branch: task/TASK-002-lifecycle-event-persistence
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence
 worktree_status: active
-worker_thread_id: 019f6850-6765-7f63-8874-1857dfc53796
+worker_thread_id: 019f694a-8c17-7a20-a7b7-113e5349f5b8
+review_thread_id: 019f6944-fc19-7d82-ac69-bb2c3690bf65
 pr: null
-current_gate: no_pr
+current_gate: needs_review
 branch_freshness: current_at_d153e17_at_dispatch
 verification:
   - "npx vitest run tests/unit/core/database/repositories/lifecycle-event-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
@@ -157,17 +158,28 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- Terra/high remediation: 35 focused tests passed under Node 24.15.0.
+- Build, changed-source ESLint, touched-file Prettier, and `git diff --check` passed.
+- Sol/high review failed 0C/1H/0M/0L; insert/replace bypass remediation completed
+  with 35 focused tests and all static gates green.
+- Focused Sol/high delta review failed 0C/0H/1M because SQLite exposes an
+  omitted `INTEGER PRIMARY KEY` as provisional `-1` inside `BEFORE INSERT`.
+  Terra/high remediation now excludes that sentinel from the replacement check
+  and passed 35 focused tests plus all static gates. Fresh delta review is next.
 
 ## Review Feedback
 
 ### P1
 
-- None.
+- High: insert-time terminal delivery rows and `INSERT OR REPLACE` could bypass
+  update-only guards. Resolved by remediation and delta review except for the
+  separately classified provisional-rowid Medium below.
 
 ### P2
 
-- None.
+- Medium: replacement guard compared SQLite's provisional `NEW.event_sequence`
+  value of `-1`, allowing a stored negative sequence to wedge later generated
+  inserts. Terra/high remediation is complete; fresh delta review pending.
 
 ### P3
 

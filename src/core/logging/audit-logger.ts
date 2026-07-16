@@ -143,6 +143,15 @@ export class AuditLogger {
     this.write('config.reload', entry);
   }
 
+  /**
+   * Record a bounded lifecycle interceptor decision. Callers must provide
+   * metadata only: never include intercepted content, tool arguments, model
+   * prompts, or raw handler errors in this durable audit record.
+   */
+  logLifecycleInterceptor(entry: AuditEntry): void {
+    this.write('lifecycle.interceptor', entry);
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
