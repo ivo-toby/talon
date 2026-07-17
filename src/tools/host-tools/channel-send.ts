@@ -115,6 +115,19 @@ export class ChannelSendHandler {
         BindingRepository,
         'findByChannelAndThread' | 'findDefaultForChannel'
       >;
+      /**
+       * When provided, the recipient thread's session is force-rotated
+       * whenever an outbound message is persisted to a thread other than
+       * the current run's thread (the scheduled-task cross-thread case).
+       * Without this, the next run on the recipient thread resumes its
+       * codex session and ContextAssembler is skipped (agent-runner.ts),
+       * so the agent never sees the scheduled outbound in context — even
+       * though it's in the DB. Rotating forces a fresh session and lets
+       * ContextAssembler inject the recent messages including the
+       * scheduled outbound. The cost is one cache miss per cross-thread
+       * delivery; acceptable for scheduled tasks (few per hour).
+       */
+      sessionTracker?: { rotateSession: (threadId: string) => void };
       logger: pino.Logger;
     },
   ) {}
@@ -224,6 +237,7 @@ export class ChannelSendHandler {
       externalThreadId,
       content,
       personaId: context.personaId,
+      runThreadId: context.threadId,
     });
 
     return {
@@ -241,6 +255,14 @@ export class ChannelSendHandler {
     externalThreadId: string;
     content: string;
     personaId: string;
+    /**
+     * The thread the current run is executing on. When the resolved
+     * recipient thread differs from this (cross-thread delivery — the
+     * scheduled-task case), the recipient's session is force-rotated so
+     * the next run there starts fresh and ContextAssembler injects this
+     * outbound into context.
+     */
+    runThreadId: string;
   }): void {
     if (!this.deps.channelRepository || !this.deps.messageRepository) {
       return;
@@ -289,6 +311,32 @@ export class ChannelSendHandler {
           err: insertResult.error,
         },
         'channel.send: delivered message but failed to persist outbound context',
+      );
+      return;
+    }
+
+    // Cross-thread delivery: the outbound was persisted to a thread other
+    // than the current run's thread (scheduled-task case). Force-rotate
+    // the recipient's session so the next run there starts fresh —
+    // ContextAssembler will inject this outbound into context. Without
+    // this, a resumed codex session on the recipient thread would skip
+    // ContextAssembler (agent-runner.ts) and never see the scheduled
+    // message, even though it's in the DB. Observed in production: agent
+    // asked "what's on your plate today?" via scheduled task, user
+    // replied, agent had no context for the reply.
+    if (
+      this.deps.sessionTracker &&
+      targetThread.id !== input.runThreadId
+    ) {
+      this.deps.sessionTracker.rotateSession(targetThread.id);
+      this.deps.logger.info(
+        {
+          requestId: input.requestId,
+          runId: input.runId,
+          recipientThreadId: targetThread.id,
+          runThreadId: input.runThreadId,
+        },
+        'channel.send: rotated recipient session after cross-thread outbound persistence',
       );
     }
   }

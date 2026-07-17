@@ -224,4 +224,84 @@ describe('ChannelBroadcastHandler', () => {
     );
     expect(slackConnector.send).toHaveBeenCalled();
   });
+
+  it('force-rotates each recipient session when broadcasting from a different thread (scheduled-task case)', async () => {
+    const bindings = [
+      { id: 'b1', channel_id: 'chan-001', thread_id: 'thread-a', persona_id: PERSONA_ID, is_default: 0, created_at: 0, updated_at: 0 },
+      { id: 'b2', channel_id: 'chan-002', thread_id: 'thread-b', persona_id: PERSONA_ID, is_default: 0, created_at: 0, updated_at: 0 },
+    ];
+    const channels = {
+      'chan-001': { id: 'chan-001', type: 'telegram', name: 'telegram-main', config: '{}', credentials_ref: null, enabled: 1, created_at: 0, updated_at: 0 },
+      'chan-002': { id: 'chan-002', type: 'slack', name: 'slack-work', config: '{}', credentials_ref: null, enabled: 1, created_at: 0, updated_at: 0 },
+    };
+    const threads = {
+      'thread-a': { id: 'thread-a', channel_id: 'chan-001', external_id: 'chat-1', metadata: '{}', created_at: 0, updated_at: 0 },
+      'thread-b': { id: 'thread-b', channel_id: 'chan-002', external_id: 'C12345', metadata: '{}', created_at: 0, updated_at: 0 },
+    };
+    const tgConnector = makeConnector(ok(undefined));
+    const slackConnector = makeConnector(ok(undefined));
+    const channelRegistry = {
+      get: vi.fn().mockImplementation((name: string) =>
+        name === 'telegram-main' ? tgConnector : name === 'slack-work' ? slackConnector : undefined,
+      ),
+    } as any;
+
+    const sessionTracker = { rotateSession: vi.fn() };
+    const handler = new ChannelBroadcastHandler({
+      channelRegistry,
+      bindingRepository: makeBindingRepo(bindings),
+      channelRepository: makeChannelRepo(channels),
+      threadRepository: makeThreadRepo(threads),
+      messageRepository: makeMessageRepo(),
+      sessionTracker,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      { content: 'morning briefing' },
+      // Run is on the schedule thread — both recipients are cross-thread.
+      { runId: RUN_ID, threadId: 'schedule-thread-001', personaId: PERSONA_ID, requestId: 'req-1' },
+    );
+
+    expect(result.status).toBe('success');
+    expect(sessionTracker.rotateSession).toHaveBeenCalledWith('thread-a');
+    expect(sessionTracker.rotateSession).toHaveBeenCalledWith('thread-b');
+    expect(sessionTracker.rotateSession).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT rotate a recipient whose thread is the same as the run thread', async () => {
+    const bindings = [
+      { id: 'b1', channel_id: 'chan-001', thread_id: 'thread-a', persona_id: PERSONA_ID, is_default: 0, created_at: 0, updated_at: 0 },
+    ];
+    const channels = {
+      'chan-001': { id: 'chan-001', type: 'telegram', name: 'telegram-main', config: '{}', credentials_ref: null, enabled: 1, created_at: 0, updated_at: 0 },
+    };
+    const threads = {
+      'thread-a': { id: 'thread-a', channel_id: 'chan-001', external_id: 'chat-1', metadata: '{}', created_at: 0, updated_at: 0 },
+    };
+    const connector = makeConnector(ok(undefined));
+    const channelRegistry = {
+      get: vi.fn().mockReturnValue(connector),
+    } as any;
+
+    const sessionTracker = { rotateSession: vi.fn() };
+    const handler = new ChannelBroadcastHandler({
+      channelRegistry,
+      bindingRepository: makeBindingRepo(bindings),
+      channelRepository: makeChannelRepo(channels),
+      threadRepository: makeThreadRepo(threads),
+      messageRepository: makeMessageRepo(),
+      sessionTracker,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      { content: 'inline broadcast' },
+      // Run is on the same thread as the only recipient.
+      { runId: RUN_ID, threadId: 'thread-a', personaId: PERSONA_ID, requestId: 'req-1' },
+    );
+
+    expect(result.status).toBe('success');
+    expect(sessionTracker.rotateSession).not.toHaveBeenCalled();
+  });
 });

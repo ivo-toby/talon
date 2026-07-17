@@ -778,3 +778,151 @@ describe('ChannelSendHandler — binding-gated persistence', () => {
     expect(messageRepo.insert).not.toHaveBeenCalled();
   });
 });
+
+describe('ChannelSendHandler — cross-thread session rotation', () => {
+  function makeBindingRepo(opts: { scoped?: any | null; default?: any | null }) {
+    return {
+      findByChannelAndThread: vi.fn().mockReturnValue(ok(opts.scoped ?? null)),
+      findDefaultForChannel: vi.fn().mockReturnValue(ok(opts.default ?? null)),
+    } as any;
+  }
+
+  function makeThreadRepoWithExternal(externalThread: any) {
+    return {
+      findById: vi.fn().mockReturnValue(
+        ok({
+          id: 'schedule-thread-001',
+          channel_id: 'chan-001',
+          external_id: 'schedule:assistant:telegram-main:chat-42',
+          metadata: JSON.stringify({ kind: 'schedule', originExternalId: 'chat-42' }),
+        }),
+      ),
+      findByExternalId: vi.fn().mockReturnValue(ok(externalThread)),
+      insert: vi.fn(),
+    } as any;
+  }
+
+  const liveThread = {
+    id: 'live-thread-001',
+    channel_id: 'chan-001',
+    external_id: 'chat-42',
+    metadata: '{}',
+    created_at: 0,
+    updated_at: 0,
+  };
+
+  const scopedBinding = {
+    id: 'b1',
+    channel_id: 'chan-001',
+    thread_id: 'live-thread-001',
+    persona_id: 'persona-001',
+    is_default: 0,
+    created_at: 0,
+    updated_at: 0,
+  };
+
+  it('force-rotates the recipient session when the run is on a different thread (scheduled-task case)', async () => {
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const sessionTracker = { rotateSession: vi.fn() };
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepoWithExternal(liveThread),
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
+      sessionTracker,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      makeArgs({ content: 'What is on your plate today?' }),
+      makeContext({ runId: 'run-001', requestId: 'tool-001', threadId: 'schedule-thread-001' }),
+    );
+
+    expect(result.status).toBe('success');
+    expect(messageRepo.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ thread_id: 'live-thread-001', direction: 'outbound' }),
+    );
+    // Recipient thread's session is rotated so the next run there starts
+    // fresh and ContextAssembler injects the scheduled outbound.
+    expect(sessionTracker.rotateSession).toHaveBeenCalledWith('live-thread-001');
+  });
+
+  it('does NOT rotate when the recipient thread is the same as the run thread (inline reply)', async () => {
+    // Same-thread delivery: the outbound is part of the current run's own
+    // conversation. The codex session for this thread already includes it
+    // (the agent just generated it). Rotating would needlessly destroy
+    // the session and force a cache miss on the next run.
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const sessionTracker = { rotateSession: vi.fn() };
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepoWithExternal(liveThread),
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
+      sessionTracker,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      makeArgs({ content: 'inline reply' }),
+      makeContext({ runId: 'run-001', requestId: 'tool-001', threadId: 'live-thread-001' }),
+    );
+
+    expect(result.status).toBe('success');
+    expect(messageRepo.insert).toHaveBeenCalled();
+    expect(sessionTracker.rotateSession).not.toHaveBeenCalled();
+  });
+
+  it('does NOT rotate when persistence fails (message not in DB, rotation would not help)', async () => {
+    const messageRepo = makeMessageRepo();
+    (messageRepo.insert as any).mockReturnValue(err(new Error('disk full')));
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const sessionTracker = { rotateSession: vi.fn() };
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepoWithExternal(liveThread),
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
+      sessionTracker,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      makeArgs({ content: 'hi' }),
+      makeContext({ runId: 'run-001', requestId: 'tool-001', threadId: 'schedule-thread-001' }),
+    );
+
+    expect(result.status).toBe('success');
+    expect(sessionTracker.rotateSession).not.toHaveBeenCalled();
+  });
+
+  it('works without a sessionTracker (no rotation, no error)', async () => {
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepoWithExternal(liveThread),
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      bindingRepository: makeBindingRepo({ scoped: scopedBinding }),
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      makeArgs({ content: 'hi' }),
+      makeContext({ runId: 'run-001', requestId: 'tool-001', threadId: 'schedule-thread-001' }),
+    );
+
+    expect(result.status).toBe('success');
+    expect(messageRepo.insert).toHaveBeenCalled();
+  });
+});

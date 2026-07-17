@@ -60,6 +60,14 @@ export class ChannelBroadcastHandler {
       channelRepository: Pick<ChannelRepository, 'findById'>;
       threadRepository: Pick<ThreadRepository, 'findById' | 'findByExternalId' | 'insert'>;
       messageRepository: Pick<MessageRepository, 'insert'>;
+      /**
+       * When provided, each recipient thread whose id differs from the
+       * current run's thread has its session force-rotated after the
+       * outbound is persisted. This ensures the next run on that thread
+       * starts fresh and ContextAssembler injects the broadcast into
+       * context. See channel.send for the full rationale.
+       */
+      sessionTracker?: { rotateSession: (threadId: string) => void };
       logger: pino.Logger;
     },
   ) {}
@@ -145,6 +153,7 @@ export class ChannelBroadcastHandler {
         channel,
         thread,
         content: args.content,
+        runThreadId: context.threadId,
       });
       delivered += 1;
     }
@@ -169,6 +178,7 @@ export class ChannelBroadcastHandler {
     channel: { id: string; name: string };
     thread: ThreadRow;
     content: string;
+    runThreadId: string;
   }): void {
     const idempotencyRequestId = input.requestId === 'unknown' ? randomUUID() : input.requestId;
     const insertResult = this.deps.messageRepository.insert({
@@ -184,6 +194,26 @@ export class ChannelBroadcastHandler {
       this.deps.logger.warn(
         { requestId: input.requestId, runId: input.runId, threadId: input.thread.id, err: insertResult.error },
         'channel.broadcast: delivered message but failed to persist outbound context',
+      );
+      return;
+    }
+
+    // Cross-thread delivery: force-rotate the recipient's session so the
+    // next run there starts fresh and ContextAssembler injects this
+    // broadcast into context. See channel.send for the full rationale.
+    // Broadcast recipients are almost always cross-thread (the run is on
+    // the schedule thread, recipients are the persona's bound chats).
+    if (this.deps.sessionTracker && input.thread.id !== input.runThreadId) {
+      this.deps.sessionTracker.rotateSession(input.thread.id);
+      this.deps.logger.info(
+        {
+          requestId: input.requestId,
+          runId: input.runId,
+          recipientThreadId: input.thread.id,
+          runThreadId: input.runThreadId,
+          channelName: input.channel.name,
+        },
+        'channel.broadcast: rotated recipient session after cross-thread outbound persistence',
       );
     }
   }
