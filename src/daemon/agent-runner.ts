@@ -80,6 +80,7 @@ export class AgentRunner {
         ? payloadTaskId
         : null;
     const isA2ATask = a2aTaskId !== null;
+    const isScheduleTask = item.type === 'schedule';
 
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {
@@ -121,10 +122,15 @@ export class AgentRunner {
         ? getProviderAffinityResetAt(threadResult.value.metadata)
         : undefined;
 
-    const affinityProviderResult = this.ctx.repos.run.getLatestProviderName(item.threadId, {
-      excludeCollaboration: true,
-      ...(providerAffinityResetAt !== undefined ? { sinceCreatedAt: providerAffinityResetAt } : {}),
-    });
+    const affinityProviderResult =
+      !isA2ATask && !isScheduleTask
+        ? this.ctx.repos.run.getLatestProviderName(item.threadId, {
+            excludeCollaboration: true,
+            ...(providerAffinityResetAt !== undefined
+              ? { sinceCreatedAt: providerAffinityResetAt }
+              : {}),
+          })
+        : ok(null);
     const affinityProviderName =
       affinityProviderResult.isOk() && affinityProviderResult.value
         ? affinityProviderResult.value
@@ -164,7 +170,7 @@ export class AgentRunner {
     // persona's session history. Skip session restoration for A2A items entirely
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
-    if (strategy.supportsSessionResumption && !isA2ATask) {
+    if (strategy.supportsSessionResumption && !isA2ATask && !isScheduleTask) {
       const sessionLookupOptions = {
         excludeCollaboration: true,
         modelName: model,
@@ -511,7 +517,7 @@ export class AgentRunner {
               !isA2ATask &&
               connector &&
               externalId &&
-              item.payload.type !== 'schedule'
+              !isScheduleTask
             ) {
               const waitingResult = await connector.send(externalId, {
                 body: 'Thinking...',
@@ -543,7 +549,7 @@ export class AgentRunner {
                 channelContext,
                 timeContext,
               ];
-              if (!resumeSessionId) {
+              if (!resumeSessionId && !isScheduleTask) {
                 const previous = await getPreviousContext();
                 if (previous.text) {
                   systemPromptParts.push(previous.text);
@@ -935,10 +941,18 @@ export class AgentRunner {
               outputTokens: 0,
             };
             let lastStepUsage: AgentUsage | undefined;
+            // Tracks whether the successful run executed on a resumed
+            // codex-cli session. When true, `usage` reflects the provider's
+            // cumulative total_token_usage (the session log size on the
+            // provider's side), which is the right metric for rotation
+            // gating — see the comment at the rotation check below.
+            let ranOnResumedCodexSession = false;
 
             try {
               ({ outputText, fullOutputText, resultSessionId, usage, lastStepUsage } =
                 await executeAgentQuery(existingSessionId));
+              ranOnResumedCodexSession =
+                existingSessionId !== undefined && providerEntry.type === 'codex-cli';
             } catch (cause) {
               if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
                 this.ctx.sessionTracker.rotateSession(item.threadId);
@@ -960,7 +974,7 @@ export class AgentRunner {
             // Store session ID for future conversation resumption (memory + DB).
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
-            if (resultSessionId && !isA2ATask) {
+            if (resultSessionId && !isA2ATask && !isScheduleTask) {
               if (reasoningEffort !== undefined) {
                 this.ctx.sessionTracker.setSessionId(
                   item.threadId,
@@ -1023,7 +1037,7 @@ export class AgentRunner {
                 { runId, a2aTaskId, outputLength: fullOutputText.length },
                 'agent-sdk: A2A task completed, result stored (no channel send)',
               );
-            } else if (item.type === 'schedule') {
+            } else if (isScheduleTask) {
               // Scheduled prompts must invoke channel.send explicitly to
               // deliver. The agent's final assistant text on a scheduled
               // run is a self-narration / wrap-up (e.g. "Silent — lunch
@@ -1055,7 +1069,7 @@ export class AgentRunner {
             // Persist the outbound message BEFORE context rotation so that a fast
             // user reply cannot be inserted ahead of the assistant turn in the DB.
             // The message is stored immediately after delivery (issue #164).
-            if (!isA2ATask) {
+            if (!isA2ATask && !isScheduleTask) {
               this.ctx.repos.message.insert({
                 id: uuidv4(),
                 thread_id: item.threadId,
@@ -1074,14 +1088,29 @@ export class AgentRunner {
             // until run() returns, so the next item for this thread cannot be
             // picked up until rotation completes, preserving per-thread ordering.
             // (issue #164)
-            if (this.ctx.contextRoller && enabledContextManagement) {
+            if (this.ctx.contextRoller && enabledContextManagement && !isScheduleTask) {
               // Gate rotation on per-step usage when the provider reports
               // it; cumulative `usage` across a multi-tool agent loop can
               // easily exceed the per-call context window even when each
               // individual prompt fits, which would trigger spurious
               // rotations. Telemetry/accounting still uses the cumulative
               // `usage` further down (it's what the user was billed for).
-              const usageForRotation = lastStepUsage ?? usage;
+              //
+              // Exception: codex-cli with a resumed session. Codex's
+              // total_token_usage is the cumulative session log size kept
+              // on the provider's side — exactly what we want to bound —
+              // while last_token_usage is just the new turn's tokens (the
+              // rest are cache hits). Gating on lastStepUsage here means a
+              // resumed session can grow to any size without triggering
+              // rotation, as long as each individual call stays under the
+              // threshold. Observed in production: a 644K-token session
+              // across 5 runs never rotated because no single call crossed
+              // the 524K threshold. Use cumulative `usage` for codex-cli
+              // resumed runs so the roller fires when the session log
+              // itself crosses the threshold.
+              const usageForRotation = ranOnResumedCodexSession
+                ? usage
+                : lastStepUsage ?? usage;
               const contextUsage: ContextUsage =
                 providerEntry.provider.estimateContextUsage(usageForRotation);
               const triggerMetric = enabledContextManagement.triggerMetric as ContextMetricName;

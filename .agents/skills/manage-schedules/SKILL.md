@@ -57,5 +57,7 @@ Optionally filter: `--persona <name>`
 
 - Schedules fire in system local time (CET on the VM).
 - Schedule output is silent -- the agent only sends messages if it explicitly uses channel.send.
+- Scheduled runs are one-shot and short-context: they do not use thread provider affinity, resume provider sessions, replay schedule-thread history, run context rotation, or store skipped final wrap-up text as outbound messages. Explicit channel.send deliveries are stored on the live recipient thread so replies have context.
+- Scheduled runs created from the CLI (`talonctl add-schedule`) have no `originExternalId` in their schedule-thread metadata, so `channel_send` cannot infer a recipient chat. In that case the agent must either (a) pass `externalChatId` explicitly to `channel_send` after discovering it via `channel_list`, or (b) call `channel_broadcast` to fan out to every chat the persona is bound to. Broadcasts skip channel-default bindings (no `thread_id`) with a warning; the result includes `{ delivered, skipped, failed }` so the agent can tell the user which channels were unreachable.
 - The daemon must be running for schedules to fire (they live in the DB, not the config).
 - After creating schedules, remind the user: schedules require a running daemon to execute.

@@ -2127,7 +2127,9 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 | Tool                  | Purpose                                                                  |
 | --------------------- | ------------------------------------------------------------------------ |
 | `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`        | Send messages to channel connectors                                      |
+| `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting; CLI-created schedules must pass it or use `channel_list` / `channel_broadcast`) |
+| `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`) |
+| `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
 | `persona_send`        | Submit a delegated A2A task to another persona                           |
 | `persona_task_status` | Fetch the status or result of a delegated A2A task                       |
 | `persona_list`        | List personas available for delegation                                   |
@@ -2288,9 +2290,13 @@ Scheduled tasks are enqueued through the standard queue pipeline, subject to the
 
 ### Dedicated Execution Threads
 
-Schedules created by the agent via `schedule_manage` are stored against a dedicated execution thread keyed by `(persona, channel, origin chat)` — not the live chat thread. This keeps scheduled runs from polluting the live conversation's session state, observational-memory log, and session resumption id.
+Schedules created by the agent via `schedule_manage` are stored against a dedicated execution thread keyed by `(persona, channel, origin chat)` — not the live chat thread. This keeps scheduled runs from polluting the live conversation's session state.
+
+Scheduled executions are intentionally short-context, one-shot runs. They do not use thread provider affinity, do not restore or persist provider session IDs, do not inject prior schedule-thread transcript through the context assembler, do not run context rotation / observational-memory compression, and do not persist skipped final assistant wrap-up text as outbound messages. A scheduled task only reaches the user when the agent explicitly calls `channel_send`; successful `channel_send` deliveries are persisted as outbound messages on the live recipient thread so follow-up replies include the scheduled message in conversation context.
 
 The dedicated thread records the origin chat's `external_id` in metadata (`kind: "schedule"`, `originExternalId: "<chat id>"`). Outbound delivery (`channel_send`, typing indicators) reads that field and routes messages back to the originating chat, so users still receive scheduled notifications on the channel they set the schedule up from.
+
+Scheduled tasks created from the CLI (`talonctl add-schedule`) have no `originExternalId` in their schedule-thread metadata, so `channel_send` cannot infer a recipient chat — the tool errors and points at the discovery/broadcast tools. Use `channel_list` to discover available chats, then `channel_send` with an explicit `externalChatId`, or use `channel_broadcast` to fan out to every chat the persona is bound to. Broadcasts skip channel-default bindings (those with `thread_id IS NULL`) with a warning in the `{ delivered, skipped, failed }` result summary.
 
 List / update / cancel / delete remain persona-scoped rather than thread-scoped, so schedules created from the live chat are still fully visible and editable from the live chat thread.
 

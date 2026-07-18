@@ -774,6 +774,348 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('gates codex-cli rotation on cumulative usage when resuming a session (not lastStepUsage)', async () => {
+      // Reproduces the production bloat: a resumed codex session has a
+      // large cumulative total_token_usage (the session log size on the
+      // provider's side) but a small last_token_usage (just this turn,
+      // the rest were cache hits). The roller must gate on the cumulative
+      // value or it will never fire and the session grows unbounded.
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 600_000, outputTokens: 90 },
+          lastStepUsage: { inputTokens: 50_000, outputTokens: 20 },
+        }),
+      );
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gpt-5.4',
+            provider: 'codex-cli',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a Codex test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resumed-codex-session');
+      ctx.config.agentRunner.defaultProvider = 'codex-cli';
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      ctx.providerRegistry = {
+        get: vi.fn().mockImplementation((name: string) =>
+          name === 'codex-cli'
+            ? {
+                type: 'codex-cli',
+                provider: {
+                  name: 'codex-cli',
+                  skillLoaderTransport: 'stdio',
+                  createExecutionStrategy: () => ({
+                    type: 'sdk' as const,
+                    supportsSessionResumption: true as const,
+                    run: sdkRun,
+                  }),
+                  prepareBackgroundInvocation: vi.fn(),
+                  parseBackgroundResult: vi.fn(),
+                  // Mirror the real CodexCliProvider.estimateContextUsage:
+                  // pass inputTokens through as the input_tokens metric.
+                  estimateContextUsage: (u: { inputTokens?: number }) => ({
+                    inputTokens: u.inputTokens ?? 0,
+                    metrics: { input_tokens: u.inputTokens ?? 0 },
+                  }),
+                },
+                config: makeAgentRunnerProviderConfig({
+                  command: 'codex',
+                  contextWindowTokens: 1_000_000,
+                  contextManagement: makeContextManagement({
+                    triggerMetric: 'input_tokens',
+                    thresholdRatio: 0.5,
+                  }),
+                }),
+              }
+            : undefined,
+        ),
+        getDefault: vi.fn().mockImplementation(() => ({
+          type: 'codex-cli',
+          provider: {
+            name: 'codex-cli',
+            skillLoaderTransport: 'stdio',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: (u: { inputTokens?: number }) => ({
+              inputTokens: u.inputTokens ?? 0,
+              metrics: { input_tokens: u.inputTokens ?? 0 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'codex',
+            contextWindowTokens: 1_000_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.5,
+            }),
+          }),
+        })),
+      } as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+        'thread-001',
+        'persona-001',
+        {
+          ratio: 600_000 / 1_000_000,
+          inputTokens: 600_000,
+          rawMetric: 600_000,
+          rawMetricName: 'input_tokens',
+        },
+        0.5,
+        'session-summarizer',
+      );
+    });
+
+    it('gates codex-cli rotation on lastStepUsage when starting a fresh session (no resume)', async () => {
+      // The non-resume path must preserve the original lastStepUsage ?? usage
+      // behavior: a fresh codex run's cumulative usage across a multi-tool
+      // loop can exceed the per-call context window without the session log
+      // being that large, which would spuriously trigger rotation. Only
+      // resumed sessions should gate on cumulative.
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 600_000, outputTokens: 90 },
+          lastStepUsage: { inputTokens: 50_000, outputTokens: 20 },
+        }),
+      );
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gpt-5.4',
+            provider: 'codex-cli',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a Codex test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);
+      ctx.config.agentRunner.defaultProvider = 'codex-cli';
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      ctx.providerRegistry = {
+        get: vi.fn().mockImplementation((name: string) =>
+          name === 'codex-cli'
+            ? {
+                type: 'codex-cli',
+                provider: {
+                  name: 'codex-cli',
+                  skillLoaderTransport: 'stdio',
+                  createExecutionStrategy: () => ({
+                    type: 'sdk' as const,
+                    supportsSessionResumption: true as const,
+                    run: sdkRun,
+                  }),
+                  prepareBackgroundInvocation: vi.fn(),
+                  parseBackgroundResult: vi.fn(),
+                  estimateContextUsage: (u: { inputTokens?: number }) => ({
+                    inputTokens: u.inputTokens ?? 0,
+                    metrics: { input_tokens: u.inputTokens ?? 0 },
+                  }),
+                },
+                config: makeAgentRunnerProviderConfig({
+                  command: 'codex',
+                  contextWindowTokens: 1_000_000,
+                  contextManagement: makeContextManagement({
+                    triggerMetric: 'input_tokens',
+                    thresholdRatio: 0.5,
+                  }),
+                }),
+              }
+            : undefined,
+        ),
+        getDefault: vi.fn().mockImplementation(() => ({
+          type: 'codex-cli',
+          provider: {
+            name: 'codex-cli',
+            skillLoaderTransport: 'stdio',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: (u: { inputTokens?: number }) => ({
+              inputTokens: u.inputTokens ?? 0,
+              metrics: { input_tokens: u.inputTokens ?? 0 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'codex',
+            contextWindowTokens: 1_000_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.5,
+            }),
+          }),
+        })),
+      } as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      // Fresh session: lastStepUsage wins, NOT cumulative usage.
+      expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+        'thread-001',
+        'persona-001',
+        {
+          ratio: 50_000 / 1_000_000,
+          inputTokens: 50_000,
+          rawMetric: 50_000,
+          rawMetricName: 'input_tokens',
+        },
+        0.5,
+        'session-summarizer',
+      );
+    });
+
+    it('gates openai-compatible (previous_response_id) rotation on lastStepUsage even when resuming', async () => {
+      // openai-compatible with sessionMode=previous_response_id uses OpenAI's
+      // Responses API which retrieves prior context SERVER-SIDE via
+      // previous_response_id. The wrapper reports:
+      //   - usage = cumulative across this run's agent loop (billing total)
+      //   - lastStepUsage = final turn's per-step tokens (reflects the full
+      //     conversation context because the API re-sends it on each call)
+      // So lastStepUsage is the right rotation metric for openai-compatible
+      // even when resuming — opposite of codex-cli where cumulative usage
+      // is the session log size. This test guards against accidentally
+      // widening the codex-cli fix to openai-compatible.
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 600_000, outputTokens: 90 },
+          lastStepUsage: { inputTokens: 50_000, outputTokens: 20 },
+        }),
+      );
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'qwen3-coder:30b',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are an OpenAI-compatible test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      // Resumed session — sessionTracker returns a previous_response_id.
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resp-abc-123');
+      ctx.config.agentRunner.defaultProvider = 'openai-compatible';
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue(undefined),
+      } as any;
+      ctx.providerRegistry = {
+        get: vi.fn().mockImplementation((name: string) =>
+          name === 'openai-compatible'
+            ? {
+                type: 'openai-compatible',
+                provider: {
+                  name: 'openai-compatible',
+                  skillLoaderTransport: 'stdio',
+                  createExecutionStrategy: () => ({
+                    type: 'sdk' as const,
+                    supportsSessionResumption: true as const,
+                    requiresContinuationAfterContextRotation: true as const,
+                    run: sdkRun,
+                  }),
+                  prepareBackgroundInvocation: vi.fn(),
+                  parseBackgroundResult: vi.fn(),
+                  estimateContextUsage: (u: { inputTokens?: number }) => ({
+                    inputTokens: u.inputTokens ?? 0,
+                    metrics: { input_tokens: u.inputTokens ?? 0 },
+                  }),
+                },
+                config: makeAgentRunnerProviderConfig({
+                  command: 'node',
+                  contextWindowTokens: 256_000,
+                  contextManagement: makeContextManagement({
+                    triggerMetric: 'input_tokens',
+                    thresholdRatio: 0.75,
+                  }),
+                }),
+              }
+            : undefined,
+        ),
+        getDefault: vi.fn().mockImplementation(() => ({
+          type: 'openai-compatible',
+          provider: {
+            name: 'openai-compatible',
+            skillLoaderTransport: 'stdio',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              requiresContinuationAfterContextRotation: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: (u: { inputTokens?: number }) => ({
+              inputTokens: u.inputTokens ?? 0,
+              metrics: { input_tokens: u.inputTokens ?? 0 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        })),
+      } as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      // openai-compatible: lastStepUsage wins even when resuming, because
+      // the Responses API's per-step input_tokens already includes the
+      // full conversation context (server-side retrieval). Cumulative
+      // usage would inflate the metric by summing across tool calls.
+      expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+        'thread-001',
+        'persona-001',
+        {
+          ratio: 50_000 / 256_000,
+          inputTokens: 50_000,
+          rawMetric: 50_000,
+          rawMetricName: 'input_tokens',
+        },
+        0.75,
+        'session-summarizer',
+      );
+    });
+
     it('runs Gemini through the existing CLI branch without sending a waiting message', async () => {
       const cliRun = vi.fn().mockResolvedValue({
         output: 'Gemini result',
@@ -1385,8 +1727,20 @@ describe('AgentRunner', () => {
       mockQuery.mockReturnValue(
         makeAgentStream({
           result: 'Silent — lunch window, items from 11:05 still pending. Log written.',
+          usage: {
+            input_tokens: 500_000,
+            output_tokens: 50,
+            cache_read_input_tokens: 450_000,
+          },
         }),
       );
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-schedule-session');
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok('db-schedule-session'));
+      vi.mocked(ctx.repos.run.getLatestProviderName).mockReturnValue(ok('stale-schedule-provider'));
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn(),
+        checkAndRotateOM: vi.fn(),
+      } as any;
 
       const connector = ctx.channelRegistry.get('test-channel')!;
       const item = makeQueueItem({ type: 'schedule' });
@@ -1397,13 +1751,18 @@ describe('AgentRunner', () => {
       // No implicit channel send for schedule items — only sendTyping
       // is permitted, which is a separate method.
       expect(connector.send).not.toHaveBeenCalled();
-      // The wrap-up is still persisted on the schedule's thread for
-      // observability/audit, just not delivered to the originating chat.
-      expect(ctx.repos.message.insert).toHaveBeenCalledWith(
-        expect.objectContaining({
-          thread_id: 'thread-001',
-          direction: 'outbound',
-        }),
+      expect(ctx.repos.message.insert).not.toHaveBeenCalled();
+      expect(ctx.repos.run.getLatestProviderName).not.toHaveBeenCalled();
+      expect(ctx.sessionTracker.getSessionId).not.toHaveBeenCalled();
+      expect(ctx.repos.run.getLatestSessionId).not.toHaveBeenCalled();
+      expect(ctx.sessionTracker.setSessionId).not.toHaveBeenCalled();
+      expect(ctx.repos.run.updateSessionId).not.toHaveBeenCalled();
+      expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+      expect(ctx.contextRoller?.checkAndRotate).not.toHaveBeenCalled();
+      expect(ctx.contextRoller?.checkAndRotateOM).not.toHaveBeenCalled();
+      expect(ctx.observability.observe).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
+        expect.any(Function),
       );
     });
   });

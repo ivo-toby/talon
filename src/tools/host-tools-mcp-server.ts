@@ -247,13 +247,14 @@ const TOOLS = [
   },
   {
     name: 'channel_send',
-    description: 'Sends a message to a channel on behalf of a persona.',
+    description:
+      'Sends a message to a channel on behalf of a persona. Pass `externalChatId` to target a specific chat on the channel (e.g. a Telegram chat_id). When omitted, the tool routes to the schedule thread\'s origin chat if the run is on a persona-created schedule. If neither is available (CLI-created schedules), the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         channelId: {
           type: 'string' as const,
-          description: 'Target channel identifier',
+          description: 'Target channel identifier (channel name)',
         },
         content: {
           type: 'string' as const,
@@ -263,8 +264,41 @@ const TOOLS = [
           type: 'string' as const,
           description: 'Optional thread or message ID to reply to',
         },
+        externalChatId: {
+          type: 'string' as const,
+          description:
+            'Optional explicit recipient chat id on the target channel (e.g. Telegram chat_id, Slack channel id). Required for CLI-created scheduled tasks that have no originExternalId.',
+        },
       },
       required: ['channelId', 'content'],
+    },
+  },
+  {
+    name: 'channel_list',
+    description:
+      'Lists the channels bound to the persona and, per channel, the chat external_ids the persona can deliver to. Use this to discover explicit targets for channel_send when the schedule was created from the CLI and has no origin chat.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {},
+    },
+  },
+  {
+    name: 'channel_broadcast',
+    description:
+      'Sends a single message to every chat the persona is bound to, across all bound channels. Deliberate fan-out — use only when the schedule has no specific origin chat. Skips channel-default bindings (no thread_id) with a warning included in the result. Returns { delivered, skipped, failed } summary.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        content: {
+          type: 'string' as const,
+          description: 'Message content in Markdown format',
+        },
+        replyTo: {
+          type: 'string' as const,
+          description: 'Optional thread or message ID to reply to (applied to every delivery)',
+        },
+      },
+      required: ['content'],
     },
   },
   {
