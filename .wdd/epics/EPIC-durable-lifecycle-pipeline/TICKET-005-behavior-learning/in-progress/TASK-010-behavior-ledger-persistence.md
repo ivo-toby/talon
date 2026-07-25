@@ -16,9 +16,9 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-010-behavior-ledger-persistence
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence
-worktree_status: pending_creation
+worktree_status: verified_clean_at_activation_sync
 pr: null
-current_gate: activation_pending
+current_gate: dispatch_pending
 branch_freshness: unknown
 verification:
   - "npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"

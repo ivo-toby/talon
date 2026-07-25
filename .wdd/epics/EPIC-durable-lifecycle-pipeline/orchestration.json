@@ -1015,14 +1015,19 @@
           "reviewThreadId": null,
           "branch": "task/TASK-008-run-tool-outbound-events",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events",
-          "worktreeStatus": "pending_creation",
+          "worktreeStatus": "verified_clean_at_activation_sync",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
           "branchFreshness": "unknown",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "activation_pending"
+          "verification": {
+            "worktreeReadiness": "passed",
+            "checkedAt": "2026-07-25T22:01:44+02:00",
+            "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
+            "evidence": "branch task/TASK-008-run-tool-outbound-events is clean at activation-sync commit and contains assigned task file plus orchestration.json and controller-state.md"
+          },
+          "currentGate": "dispatch_pending"
         },
         {
           "id": "TASK-009-context-contracts-projector",
@@ -1044,14 +1049,19 @@
           "reviewThreadId": null,
           "branch": "task/TASK-009-context-contracts-projector",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector",
-          "worktreeStatus": "pending_creation",
+          "worktreeStatus": "verified_clean_at_activation_sync",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
           "branchFreshness": "unknown",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "activation_pending"
+          "verification": {
+            "worktreeReadiness": "passed",
+            "checkedAt": "2026-07-25T22:01:44+02:00",
+            "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
+            "evidence": "branch task/TASK-009-context-contracts-projector is clean at activation-sync commit and contains assigned task file plus orchestration.json and controller-state.md"
+          },
+          "currentGate": "dispatch_pending"
         },
         {
           "id": "TASK-010-behavior-ledger-persistence",
@@ -1071,14 +1081,19 @@
           "reviewThreadId": null,
           "branch": "task/TASK-010-behavior-ledger-persistence",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence",
-          "worktreeStatus": "pending_creation",
+          "worktreeStatus": "verified_clean_at_activation_sync",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
           "branchFreshness": "unknown",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "activation_pending"
+          "verification": {
+            "worktreeReadiness": "passed",
+            "checkedAt": "2026-07-25T22:01:44+02:00",
+            "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
+            "evidence": "branch task/TASK-010-behavior-ledger-persistence is clean at activation-sync commit and contains assigned task file plus orchestration.json and controller-state.md"
+          },
+          "currentGate": "dispatch_pending"
         }
       ]
     },
@@ -1570,8 +1585,8 @@
     "epicBranchVerified": true,
     "activationArtifactsSynced": true,
     "activationBase": "b6ff72cab10e20f16f34381916d9948662b27276",
-    "activationCheckpoint": "185c537a1d882d9df42bfd7775e118735b11b502",
-    "activationSyncCommit": null,
+    "activationCheckpoint": "185c537d96c48987a2b8cf57f6a2dd2ed0f0dd5e",
+    "activationSyncCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
@@ -1706,12 +1721,12 @@
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "activation_checkpoint_reviewed_pushed_worktrees_pending",
-    "lastCheckedAt": "2026-07-25T21:43:02+02:00",
+    "status": "worktree_readiness_checkpoint_pending_review_commit_push",
+    "lastCheckedAt": "2026-07-25T22:01:44+02:00",
     "nextCheckDueAt": null,
     "schedulerRef": null,
     "schedulerStatus": "not_created_until_after_readiness_or_dispatch",
-    "fallbackPrompt": "Resume WAVE-005 for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, and TASK-008/TASK-009/TASK-010. Do not implement task code in the controller checkout. First complete the reviewed activation checkpoint and sync it to the epic branch; then create/verify isolated task worktrees from that exact commit, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-005 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "fallbackPrompt": "Resume WAVE-005 for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, and TASK-008/TASK-009/TASK-010. Do not implement task code in the controller checkout. The activation checkpoint 185c537 and activation-sync commit 8ebb6db are reviewed and pushed. The three task branches/worktrees are clean at 8ebb6db and contain current task/controller/orchestration artifacts. Complete a fresh GPT-5.5/xhigh worktree-readiness review, commit and push the readiness checkpoint, fast-forward/push each task branch/worktree to that exact pushed readiness commit, reverify clean task/controller/orchestration artifacts in every worktree, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-005 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopCondition": "All WAVE-005 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopReason": null
   }

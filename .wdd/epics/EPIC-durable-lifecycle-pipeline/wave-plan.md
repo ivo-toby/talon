@@ -399,7 +399,11 @@ Activation rule:
 - Create one isolated worktree per writing task from the synced epic branch.
 - Activation resumed on 2026-07-25 from reviewed/pushed epic base `b6ff72c`;
   activation artifacts passed GPT-5.5/xhigh review and were pushed at
-  `185c537`; task branches/worktrees are pending creation from that checkpoint.
+  `185c537`; activation-sync marker `8ebb6db` is pushed. TASK-008/TASK-009/
+  TASK-010 branches and worktrees were created clean from `8ebb6db` and verified
+  with current task/controller/orchestration artifacts. Readiness review,
+  readiness commit push, and task-branch fast-forward remain required before
+  dispatch.
 
 Stop condition:
 

@@ -17,9 +17,9 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-008-run-tool-outbound-events
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events
-worktree_status: pending_creation
+worktree_status: verified_clean_at_activation_sync
 pr: null
-current_gate: activation_pending
+current_gate: dispatch_pending
 branch_freshness: unknown
 verification:
   - "npx vitest run tests/unit/daemon/agent-runner.test.ts tests/unit/tools/host-tools-bridge.test.ts tests/unit/tools/tool-filter.test.ts tests/unit/tools/host-tools/channel-send.test.ts"

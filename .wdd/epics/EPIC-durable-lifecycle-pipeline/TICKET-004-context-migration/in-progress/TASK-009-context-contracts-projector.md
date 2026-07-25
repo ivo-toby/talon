@@ -16,9 +16,9 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-009-context-contracts-projector
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector
-worktree_status: pending_creation
+worktree_status: verified_clean_at_activation_sync
 pr: null
-current_gate: activation_pending
+current_gate: dispatch_pending
 branch_freshness: unknown
 verification:
   - "npx vitest run tests/unit/lifecycle/context tests/unit/daemon/context-roller.test.ts"
