@@ -87,5 +87,21 @@ export type {
 } from './lifecycle-delivery-repository.js';
 export { LifecycleDeliveryRepository } from './lifecycle-delivery-repository.js';
 
-export type { LifecycleSignalHandoffInput, LifecycleSignalRow } from './lifecycle-signal-repository.js';
+export type {
+  LifecycleSignalHandoffInput,
+  LifecycleSignalRow,
+} from './lifecycle-signal-repository.js';
 export { LifecycleSignalRepository } from './lifecycle-signal-repository.js';
+
+export type {
+  BehaviorCandidateInput,
+  BehaviorCandidateRow,
+  BehaviorEvidenceInput,
+  BehaviorEvidenceRow,
+  BehaviorMetadata,
+  BehaviorPromotionActivationInput,
+  BehaviorPromotionInput,
+  BehaviorPromotionRollbackInput,
+  BehaviorPromotionRow,
+} from './behavior-signal-repository.js';
+export { BehaviorSignalRepository } from './behavior-signal-repository.js';
