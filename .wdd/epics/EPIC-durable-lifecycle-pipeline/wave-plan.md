@@ -370,7 +370,7 @@ Stop condition:
 
 ### WAVE-005
 
-Status: planned
+Status: in_progress
 
 Tasks:
 
@@ -397,6 +397,9 @@ Activation rule:
 
 - Activate the eligible tasks as one batch after syncing activation artifacts.
 - Create one isolated worktree per writing task from the synced epic branch.
+- Activation resumed on 2026-07-25 from reviewed/pushed epic base `b6ff72c`;
+  activation artifacts are pending GPT-5.5/xhigh review, commit, and push before
+  any WAVE-005 task worktree is created.
 
 Stop condition:
 

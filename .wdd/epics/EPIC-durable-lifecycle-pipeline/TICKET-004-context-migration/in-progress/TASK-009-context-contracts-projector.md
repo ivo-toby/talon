@@ -6,7 +6,7 @@ ticket: TICKET-004-context-migration
 wave: WAVE-005
 slug: context-contracts-projector
 title: Add context observer/reducer contracts and native projector
-status: todo
+status: in-progress
 depends_on: ["TASK-004-subagent-lifecycle-adapter", "TASK-005-transactional-event-bus"]
 conflict_domains:
   - "src/lifecycle/context/**"
@@ -15,10 +15,10 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-009-context-contracts-projector
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector
+worktree_status: pending_creation
 pr: null
-current_gate: not_started
+current_gate: activation_pending
 branch_freshness: unknown
 verification:
   - "npx vitest run tests/unit/lifecycle/context tests/unit/daemon/context-roller.test.ts"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -102,7 +102,7 @@ task/TASK-009-context-contracts-projector
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector
 
 ## PR / Patch Reference
 

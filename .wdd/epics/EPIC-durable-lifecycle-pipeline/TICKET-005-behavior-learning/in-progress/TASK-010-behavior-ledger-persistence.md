@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-005
 slug: behavior-ledger-persistence
 title: Add persona-scoped behavior evidence and promotion persistence
-status: todo
+status: in-progress
 depends_on: ["TASK-002-lifecycle-event-persistence"]
 conflict_domains:
   - "src/core/database/migrations/**"
@@ -15,10 +15,10 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-010-behavior-ledger-persistence
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence
+worktree_status: pending_creation
 pr: null
-current_gate: not_started
+current_gate: activation_pending
 branch_freshness: unknown
 verification:
   - "npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
@@ -30,7 +30,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -100,7 +100,7 @@ task/TASK-010-behavior-ledger-persistence
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence
 
 ## PR / Patch Reference
 

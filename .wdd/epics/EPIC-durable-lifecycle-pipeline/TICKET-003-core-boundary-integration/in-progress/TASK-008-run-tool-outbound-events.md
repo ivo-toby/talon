@@ -6,7 +6,7 @@ ticket: TICKET-003-core-boundary-integration
 wave: WAVE-005
 slug: run-tool-outbound-events
 title: Wire run, provider-tool, and outbound lifecycle boundaries
-status: todo
+status: in-progress
 depends_on: ["TASK-007-daemon-message-queue-schedule-events"]
 conflict_domains:
   - "src/daemon/agent-runner.ts"
@@ -16,10 +16,10 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-008-run-tool-outbound-events
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events
+worktree_status: pending_creation
 pr: null
-current_gate: not_started
+current_gate: activation_pending
 branch_freshness: unknown
 verification:
   - "npx vitest run tests/unit/daemon/agent-runner.test.ts tests/unit/tools/host-tools-bridge.test.ts tests/unit/tools/tool-filter.test.ts tests/unit/tools/host-tools/channel-send.test.ts"
@@ -32,7 +32,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -105,7 +105,7 @@ task/TASK-008-run-tool-outbound-events
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events
 
 ## PR / Patch Reference
 

@@ -2,9 +2,9 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: null
-status: paused
-updated_at: 2026-07-16
+active_wave: WAVE-005
+status: in_progress
+updated_at: 2026-07-25
 ---
 
 # Controller State: EPIC-durable-lifecycle-pipeline
@@ -75,6 +75,10 @@ Every task advances independently as soon as its gates clear.
   `06778d9a15db3d4cb623ef81b2bd94e7136d5b7e` is pushed with matching local
   and remote epic heads; automation `talon-issue-256-wdd-wave-4-monitor` was
   deleted successfully and the epic is paused before WAVE-005
+- WAVE-005 activation base: local and remote epic branch heads match at
+  `b6ff72cab10e20f16f34381916d9948662b27276`; activation artifacts are
+  prepared locally and require GPT-5.5/xhigh review, commit, and push before
+  any task branch/worktree is created.
 
 ## Pending Waves
 
@@ -84,7 +88,7 @@ Every task advances independently as soon as its gates clear.
 | WAVE-002 | TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-003 | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
+| WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user resume on 2026-07-25 | in_progress |
 | WAVE-006 | TASK-011-context-lifecycle-migration, TASK-012-feedback-detector-subagent, TASK-013-handler-telemetry-correlation | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-007 | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-008 | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
@@ -94,39 +98,44 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-No wave is active. WAVE-004 is done and its reconciliation records
-TASK-007 as merged through PR #263 at epic commit
-`67e93accfc8b62dc1e43102ef173fc20cc2bb0e5`. Final task commit
-`fab94953a41e34520ce216f4bec7acc92c449fa8` passed Verify PR run
-`29511783210`; PR Agent run `29507211075` passed with no review threads and one
-non-actionable failed-suggestions issue comment. Complete GPT-5.5/xhigh review
-`019f6b7d-fd1b-78c3-ba7f-7cade5ca636b` plus integrity adjudication
-`019f6b85-a9ac-74f3-9fcd-b10c566acdb8` issued Amended PASS with
-0C/0H/0M/0L, and the final WDD marker review
-`019f6b8a-afe5-7d02-ac39-c4f07fab5173` passed 0C/0H/0M/0L on fingerprint
-`f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4`.
-The task branch was fresh at merge; its clean worktree was removed and pruned.
+WAVE-005 is active as a full-profile parallel batch. The activation base is the
+matching local/remote epic branch head
+`b6ff72cab10e20f16f34381916d9948662b27276`. The three eligible tasks are moved
+to `in-progress/` and assigned isolated worktree paths, but task branches and
+worktrees must not be created until this activation checkpoint passes
+GPT-5.5/xhigh review, is committed, and is pushed to the epic branch.
 
-The reconciliation checkpoint passed fresh complete GPT-5.5/xhigh review
-`019f6ba5-814a-72f0-8aee-f54d6446c64a` 0C/0H/0M/0L on fingerprint
-`b522f7fa0e213d7bb2f51c0e5f23defa62db274f16a359b56c926c79cdc9bd82` and
-was pushed at `06778d9a15db3d4cb623ef81b2bd94e7136d5b7e`; local and remote
-epic heads match. Monitoring is deactivated and its automation was deleted.
-WAVE-005 is planned but inactive, `pauseAfterWave` is WAVE-004, and
-`nextWaveActivationAllowed` is false.
+Active WAVE-005 tasks:
+
+- TASK-008-run-tool-outbound-events:
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events`
+  pending creation from the reviewed activation checkpoint.
+- TASK-009-context-contracts-projector:
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector`
+  pending creation from the reviewed activation checkpoint.
+- TASK-010-behavior-ledger-persistence:
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence`
+  pending creation from the reviewed activation checkpoint.
 
 ## Monitoring
 
-- Mode: inactive; former Codex thread heartbeat
-- Cadence: none
-- Status: deactivated after successful checkpoint push and automation deletion
-- Scheduler provenance: `talon-issue-256-wdd-wave-4-monitor` (deleted)
-- Last checked: 2026-07-16T18:02:18+02:00
-- Next check due: none
-- Stop condition: WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, the monitor is deactivated, and epic work pauses before WAVE-005.
-- Automation state: WAVE-004 heartbeat
-  `talon-issue-256-wdd-wave-4-monitor` was deleted successfully after reviewed
-  reconciliation checkpoint `06778d9` was pushed. WAVE-005 remains inactive.
+- Mode: manual until the WAVE-005 activation/readiness checkpoints are reviewed,
+  committed, pushed, and worker dispatch begins.
+- Cadence: adaptive
+- Status: activation artifacts pending GPT-5.5/xhigh review, commit, and push
+- Scheduler provenance: none yet for WAVE-005
+- Last checked: 2026-07-25T21:43:02+02:00
+- Next check due: immediately after the reviewed activation checkpoint is pushed
+- Stop condition: all WAVE-005 tasks are merged, blocked, cancelled, or ready
+  for `wdd-reconcile-wave`.
+- Fallback prompt: resume WAVE-005 for EPIC-durable-lifecycle-pipeline. Read
+  orchestration.json, controller-state.md, shared context, and
+  TASK-008/TASK-009/TASK-010. Do not implement task code in the controller
+  checkout. Complete the reviewed activation checkpoint and sync it to the epic
+  branch; then create/verify isolated task worktrees from that exact commit,
+  dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh
+  reviews, and monitor until WAVE-005 is merged, blocked, cancelled, or ready
+  for `wdd-reconcile-wave`.
 
 ## Current Task Gates
 
@@ -258,7 +267,8 @@ WAVE-005 is planned but inactive, `pauseAfterWave` is WAVE-004, and
   lifecycle scope, native capability deduplication, and IPC shutdown promise
   blockers. The current canonical evidence above supersedes this historical
   summary for the remaining gate sequence.
-- The remaining 13 tasks remain not_started; WAVE-005 is planned and inactive.
+- TASK-008, TASK-009, and TASK-010 are activation_pending for WAVE-005; the
+  remaining 10 downstream tasks remain not_started.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees

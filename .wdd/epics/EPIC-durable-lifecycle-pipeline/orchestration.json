@@ -957,7 +957,7 @@
         "finalTaskCommit": "fab94953a41e34520ce216f4bec7acc92c449fa8",
         "mergeCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5",
         "mergedAt": "2026-07-16T15:37:10Z",
-        "currentStateSummary": "TASK-007 task commit fab94953a41e34520ce216f4bec7acc92c449fa8 passed Verify PR run 29511783210 and PR Agent run 29507211075, with no review threads and only one non-actionable failed-suggestions issue comment. Complete GPT-5.5/xhigh review 019f6b7d-fd1b-78c3-ba7f-7cade5ca636b plus integrity adjudication 019f6b85-a9ac-74f3-9fcd-b10c566acdb8 issued Amended PASS with 0C/0H/0M/0L. The state marker review 019f6b8a-afe5-7d02-ac39-c4f07fab5173 passed 0C/0H/0M/0L on fingerprint f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4. PR #263 merged fresh into epic/durable-lifecycle-pipeline at 67e93accfc8b62dc1e43102ef173fc20cc2bb0e5 on 2026-07-16T15:37:10Z. The clean task worktree was removed and pruned. WAVE-005 remains planned and inactive; pauseAfterWave is WAVE-004 and nextWaveActivationAllowed is false."
+        "currentStateSummary": "TASK-007 task commit fab94953a41e34520ce216f4bec7acc92c449fa8 passed Verify PR run 29511783210 and PR Agent run 29507211075, with no review threads and only one non-actionable failed-suggestions issue comment. Complete GPT-5.5/xhigh review 019f6b7d-fd1b-78c3-ba7f-7cade5ca636b plus integrity adjudication 019f6b85-a9ac-74f3-9fcd-b10c566acdb8 issued Amended PASS with 0C/0H/0M/0L. The state marker review 019f6b8a-afe5-7d02-ac39-c4f07fab5173 passed 0C/0H/0M/0L on fingerprint f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4. PR #263 merged fresh into epic/durable-lifecycle-pipeline at 67e93accfc8b62dc1e43102ef173fc20cc2bb0e5 on 2026-07-16T15:37:10Z. The clean task worktree was removed and pruned. WAVE-005 was later resumed on 2026-07-25 from epic base b6ff72c."
       },
       "currentGate": "merged"
     }
@@ -968,14 +968,14 @@
 },
     {
       "id": "WAVE-005",
-      "status": "planned",
+      "status": "in_progress",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
         "reviewMode": "risk_based",
         "monitoringMode": "adaptive",
         "recommendedBy": "wdd-plan-epic",
-        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "confirmedBy": "user:2026-07-25 resume WAVE-005 after WAVE-004 pause",
         "requiresUserConfirmation": true,
         "confidence": "high",
         "rationale": [
@@ -999,8 +999,8 @@
         {
           "id": "TASK-008-run-tool-outbound-events",
           "ticket": "TICKET-003-core-boundary-integration",
-          "path": "TICKET-003-core-boundary-integration/todo/TASK-008-run-tool-outbound-events.md",
-          "status": "todo",
+          "path": "TICKET-003-core-boundary-integration/in-progress/TASK-008-run-tool-outbound-events.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-007-daemon-message-queue-schedule-events"
           ],
@@ -1014,21 +1014,21 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-008-run-tool-outbound-events",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events",
+          "worktreeStatus": "pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
           "branchFreshness": "unknown",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_pending"
         },
         {
           "id": "TASK-009-context-contracts-projector",
           "ticket": "TICKET-004-context-migration",
-          "path": "TICKET-004-context-migration/todo/TASK-009-context-contracts-projector.md",
-          "status": "todo",
+          "path": "TICKET-004-context-migration/in-progress/TASK-009-context-contracts-projector.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-004-subagent-lifecycle-adapter",
             "TASK-005-transactional-event-bus"
@@ -1043,21 +1043,21 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-009-context-contracts-projector",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector",
+          "worktreeStatus": "pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
           "branchFreshness": "unknown",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_pending"
         },
         {
           "id": "TASK-010-behavior-ledger-persistence",
           "ticket": "TICKET-005-behavior-learning",
-          "path": "TICKET-005-behavior-learning/todo/TASK-010-behavior-ledger-persistence.md",
-          "status": "todo",
+          "path": "TICKET-005-behavior-learning/in-progress/TASK-010-behavior-ledger-persistence.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-002-lifecycle-event-persistence"
           ],
@@ -1070,15 +1070,15 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-010-behavior-ledger-persistence",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence",
+          "worktreeStatus": "pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
           "branchFreshness": "unknown",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_pending"
         }
       ]
     },
@@ -1565,18 +1565,18 @@
     "reconciledAtEpicCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5"
   },
   "controller": {
-    "activeWave": null,
-    "nextWave": "WAVE-005",
+    "activeWave": "WAVE-005",
+    "nextWave": "WAVE-006",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
-    "activationBase": "7e3402cfd3c0855388e3921e3aab050da12f3cfc",
-    "activationCheckpoint": "67b3457c9bab6a4611765c612e0b8f009d65e362",
-    "activationSyncCommit": "923623b8c1833b83f83df8036e37ad95b0b0a343",
-    "readinessCommit": "a6d48f7905e70f1ba9d72d4277a78d86acc35ed1",
+    "activationArtifactsSynced": false,
+    "activationBase": "b6ff72cab10e20f16f34381916d9948662b27276",
+    "activationCheckpoint": null,
+    "activationSyncCommit": null,
+    "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
-    "pauseAfterWave": "WAVE-004",
-    "nextWaveActivationAllowed": false,
-    "pauseReason": "user requested pause after WAVE-004 reconciliation",
+    "pauseAfterWave": null,
+    "nextWaveActivationAllowed": true,
+    "pauseReason": null,
     "modelPolicyCheckpointReview": {
       "reviewThreadId": "019f6b32-0008-7560-a6a2-8400237b7ca6",
       "reviewModel": "gpt-5.5",
@@ -1699,20 +1699,20 @@
       "checkpointCommitStatus": "pushed_local_remote_match",
       "monitoringDeactivation": "completed_automation_deleted",
       "nextWave": "WAVE-005",
-      "nextWaveStatus": "planned_inactive"
+      "nextWaveStatus": "resumed_activation_pending"
     }
   },
   "monitoring": {
-    "mode": "inactive",
+    "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
-    "cadence": "inactive",
-    "status": "inactive_deactivated",
-    "lastCheckedAt": "2026-07-16T18:02:18+02:00",
+    "cadence": "adaptive",
+    "status": "activation_artifacts_pending_review_commit_and_push",
+    "lastCheckedAt": "2026-07-25T21:43:02+02:00",
     "nextCheckDueAt": null,
-    "schedulerRef": "talon-issue-256-wdd-wave-4-monitor",
-    "schedulerStatus": "deleted",
-    "fallbackPrompt": null,
-    "stopCondition": "WAVE-004 is fully reconciled, its reviewed reconciliation checkpoint is pushed, monitoring is deactivated, and epic work is paused before WAVE-005.",
-    "stopReason": "stop_condition_satisfied_after_reviewed_checkpoint_push_and_successful_automation_deletion"
+    "schedulerRef": null,
+    "schedulerStatus": "not_created_until_after_readiness_or_dispatch",
+    "fallbackPrompt": "Resume WAVE-005 for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, and TASK-008/TASK-009/TASK-010. Do not implement task code in the controller checkout. First complete the reviewed activation checkpoint and sync it to the epic branch; then create/verify isolated task worktrees from that exact commit, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-005 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "stopCondition": "All WAVE-005 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "stopReason": null
   }
 }
