@@ -6,7 +6,7 @@ ticket: TICKET-004-context-migration
 wave: WAVE-005
 slug: context-contracts-projector
 title: Add context observer/reducer contracts and native projector
-status: in-progress
+status: done
 depends_on: ["TASK-004-subagent-lifecycle-adapter", "TASK-005-transactional-event-bus"]
 conflict_domains:
   - "src/lifecycle/context/**"
@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-009-context-contracts-projector
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector
-worktree_status: verified_clean_at_activation_sync
-pr: null
-current_gate: dispatch_pending
-branch_freshness: unknown
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/266
+current_gate: merged
+branch_freshness: merged_current_at_3c1b5f4
 verification:
   - "npx vitest run tests/unit/lifecycle/context tests/unit/daemon/context-roller.test.ts"
   - "npm run build"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -106,7 +106,10 @@ task/TASK-009-context-contracts-projector
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #266: https://github.com/ivo-toby/talon/pull/266
+
+Merged into `epic/durable-lifecycle-pipeline` at
+`3c1b5f4b0bea23ff08b6b591e6c5871ab6ec3377` on 2026-07-25.
 
 ## RED-GREEN TDD Plan
 
@@ -142,11 +145,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -157,7 +160,14 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- Focused tests passed: `npx vitest run tests/unit/lifecycle/context
+  tests/unit/daemon/context-roller.test.ts` (65 tests).
+- `npm run build` passed during remediation.
+- Scoped ESLint passed for `src/lifecycle/context/context-contracts.ts`,
+  `src/lifecycle/context/context-projector.ts`, `src/lifecycle/context/index.ts`,
+  and `src/daemon/context-roller.ts`.
+- `git diff --check` passed.
+- GitHub Verify PR and PR Agent passed on PR #266.
 
 ## Review Feedback
 
@@ -171,8 +181,14 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ### P3
 
-- None.
+- Fresh GPT-5.5/xhigh review passed with 0 Critical/High/Medium and one
+  non-blocking P3 tombstone-visibility follow-up intentionally left untouched.
 
 ## Completion Notes
 
-- None yet.
+- Added strict context observer/reducer contracts under `src/lifecycle/context`.
+- Extracted native context projection for observations, named memory updates,
+  pre-roll tails, reductions, and continuation metadata.
+- Preserved replay/idempotency invariants for append-mode named memory and
+  reduced observation replays.
+- Clean task worktree was removed and pruned during WAVE-005 reconciliation.

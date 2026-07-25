@@ -4,7 +4,7 @@ kind: wave_plan
 epic: EPIC-durable-lifecycle-pipeline
 status: in_progress
 created_at: 2026-07-15
-updated_at: 2026-07-16
+updated_at: 2026-07-25
 ---
 
 # Wave Plan: EPIC-durable-lifecycle-pipeline
@@ -46,9 +46,9 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-005-transactional-event-bus | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence | event bus, database transaction helpers | done |
 | TASK-006-durable-event-dispatcher | TICKET-002-durable-event-runtime | TASK-001-lifecycle-contracts-registry, TASK-002-lifecycle-event-persistence, TASK-003-interceptor-engine, TASK-004-subagent-lifecycle-adapter | dispatcher, handler executor, lifecycle delivery repository/migration/tests | done |
 | TASK-007-daemon-message-queue-schedule-events | TICKET-003-core-boundary-integration | TASK-005-transactional-event-bus, TASK-006-durable-event-dispatcher | daemon bootstrap, message pipeline, queue, scheduler | done |
-| TASK-008-run-tool-outbound-events | TICKET-003-core-boundary-integration | TASK-007-daemon-message-queue-schedule-events | AgentRunner, host tools, outbound delivery | todo |
-| TASK-009-context-contracts-projector | TICKET-004-context-migration | TASK-004-subagent-lifecycle-adapter, TASK-005-transactional-event-bus | lifecycle context, ContextRoller, memory repository | todo |
-| TASK-010-behavior-ledger-persistence | TICKET-005-behavior-learning | TASK-002-lifecycle-event-persistence | database migrations, behavior repositories | todo |
+| TASK-008-run-tool-outbound-events | TICKET-003-core-boundary-integration | TASK-007-daemon-message-queue-schedule-events | AgentRunner, host tools, outbound delivery | done |
+| TASK-009-context-contracts-projector | TICKET-004-context-migration | TASK-004-subagent-lifecycle-adapter, TASK-005-transactional-event-bus | lifecycle context, ContextRoller, memory repository | done |
+| TASK-010-behavior-ledger-persistence | TICKET-005-behavior-learning | TASK-002-lifecycle-event-persistence | database migrations, behavior repositories | done |
 | TASK-011-context-lifecycle-migration | TICKET-004-context-migration | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector | AgentRunner, ContextRoller, daemon bootstrap, config schema, queue | todo |
 | TASK-012-feedback-detector-subagent | TICKET-005-behavior-learning | TASK-004-subagent-lifecycle-adapter, TASK-010-behavior-ledger-persistence | behavior contracts, default detector subagent | todo |
 | TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | todo |
@@ -370,7 +370,9 @@ Stop condition:
 
 ### WAVE-005
 
-Status: in_progress
+Status: done
+
+Completed: 2026-07-25
 
 Tasks:
 
@@ -401,9 +403,30 @@ Activation rule:
   activation artifacts passed GPT-5.5/xhigh review and were pushed at
   `185c537`; activation-sync marker `8ebb6db` is pushed. TASK-008/TASK-009/
   TASK-010 branches and worktrees were created clean from `8ebb6db` and verified
-  with current task/controller/orchestration artifacts. Readiness review,
-  readiness commit push, and task-branch fast-forward remain required before
-  dispatch.
+  with current task/controller/orchestration artifacts.
+- TASK-009 merged first through PR #266 at `3c1b5f4`, delivering lifecycle
+  context contracts/projector integration. TASK-010 merged through PR #267 at
+  `08c564a`, delivering behavior ledger persistence and the required migration
+  expectation fix. TASK-008 merged last through PR #268 at `6921a9e` after a
+  GPT-5.5/xhigh Medium finding on streamed fallback transcript duplication was
+  remediated and the branch was rebased onto TASK-010.
+- Focused verification, build, scoped lint, diff checks, GitHub checks, and
+  GPT-5.5/xhigh review gates passed for all three tasks. The only remaining
+  finding is a non-blocking TASK-009 P3 tombstone-visibility follow-up, left
+  untouched under policy.
+- WAVE-005 task worktrees were verified clean, removed, and pruned. The epic
+  branch is current locally and remotely at merge commit `6921a9e`.
+
+Drift notes:
+
+- Downstream context migration can depend on explicit lifecycle context
+  snapshots/projector contracts from TASK-009 and streamed outbound segment
+  idempotency from TASK-008.
+- Downstream behavior detector/projector work can depend on the behavior ledger
+  tables and repository contract from TASK-010.
+- Event-pipeline verification now needs end-to-end coverage after the remaining
+  waves are reconciled, including a sprites run against the lifecycle event
+  pipeline before the epic is considered complete.
 
 Stop condition:
 

@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-SHARED-CONTEXT
 kind: shared_context_index
 epic: EPIC-durable-lifecycle-pipeline
-updated_at: 2026-07-16
+updated_at: 2026-07-25
 ---
 
 # Shared Context: EPIC-durable-lifecycle-pipeline
@@ -78,3 +78,9 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
   `resources/task-findings.md` for daemon-owned lifecycle wiring, atomic inbound
   publication, database-owned queue scope, scheduler generation/drain, durable
   signal handoff migrations, and restart-required reload rules.
+- WAVE-005 / TASK-008, TASK-009, and TASK-010 merged in PRs #268, #266, and
+  #267 at epic head `6921a9e`. See `resources/task-findings.md` for
+  run/tool/outbound lifecycle events, before-execute/send interception,
+  outbound idempotency, context observer/reducer contracts, native context
+  projection, behavior-ledger migration 018, and the remaining non-blocking
+  TASK-009 P3 tombstone-visibility follow-up.

@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-RESOURCE-testing-strategy
 kind: shared_context_resource
 epic: EPIC-durable-lifecycle-pipeline
 resource: testing-strategy
-updated_at: 2026-07-16
+updated_at: 2026-07-25
 ---
 
 # Shared Context Resource: Testing Strategy
@@ -17,10 +17,11 @@ persistence, security, and provider-session change.
 
 Tasks use focused RED/GREEN tests. Persistence and integration tests use real
 in-memory or temporary-file SQLite, not repository mocks alone. Reviews block
-on P1/P2. Epic validation adds the approved full test suite and a real daemon
-terminal smoke round trip. WAVE-004 established focused daemon-boundary,
-migration-upgrade, and hot-reload regression baselines for later publishers and
-operations work.
+on Critical/High/Medium findings. Epic validation adds the approved full test
+suite, a real daemon terminal smoke round trip, and a sprites validation pass
+for the lifecycle event pipeline. WAVE-004 established focused daemon-boundary,
+migration-upgrade, and hot-reload regression baselines; WAVE-005 added
+run/tool/outbound, context-projector, and behavior-ledger baselines.
 
 ## Test Layers
 
@@ -84,6 +85,26 @@ operations work.
   review threads, clean branch freshness/merge, and GPT-5.5/xhigh review gates
   with 0C/0H/0M/0L.
 
+## WAVE-005 Regression Baseline
+
+- Run/tool/outbound verification must cover run started/completed/failed,
+  provider tool started/completed, outbound sent/send_failed, before-execute and
+  before-send interception, approval preservation, redaction/bounded payloads,
+  stable outbound idempotency, and no duplicate transcript row when a streamed
+  run already flushed intermediate text and returns no final text.
+- Context verification must cover strict observer/reducer contracts,
+  observation projection, named-memory append idempotency, pre-roll tails,
+  reduction, continuation metadata, replay, and boundary preservation through
+  `ContextRoller`.
+- Behavior-ledger verification must cover migration 018, v14-to-current upgrade
+  through user_version 18, persona isolation, evidence fingerprints,
+  distinct-source rules, guarded status transitions, promotion/activation, and
+  rollback lineage.
+- Final task evidence includes PR #266, #267, and #268 merges, focused tests,
+  build, scoped lint, diff checks, GitHub Verify PR/PR Agent gates as
+  applicable, and GPT-5.5/xhigh reviews with no remaining Critical/High/Medium
+  findings. The TASK-009 tombstone-visibility P3 remains non-blocking.
+
 ## Epic Validation
 
 - All focused task checks and integration suites pass on the reconciled epic
@@ -93,6 +114,10 @@ operations work.
 - `npm test` runs only with user approval because the repository marks it slow.
 - `$run-talon-smoke` proves daemon boot, SQLite migrations, terminal IPC, queue,
   provider runtime, and response delivery; no listeners remain afterward.
+- End-to-end tests must cover the completed lifecycle/event pipeline behavior
+  from publisher through dispatcher/projector side effects. After all waves are
+  reconciled, validate that event pipeline in an isolated sprites run before
+  declaring the epic complete.
 - Documentation, example config, setup skill, migration packaging, and effective
   CLI help are inspected for drift.
 - Final review specifically checks event atomicity, data leakage, replay side

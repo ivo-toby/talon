@@ -6,7 +6,7 @@ ticket: TICKET-003-core-boundary-integration
 wave: WAVE-005
 slug: run-tool-outbound-events
 title: Wire run, provider-tool, and outbound lifecycle boundaries
-status: in-progress
+status: done
 depends_on: ["TASK-007-daemon-message-queue-schedule-events"]
 conflict_domains:
   - "src/daemon/agent-runner.ts"
@@ -17,10 +17,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-008-run-tool-outbound-events
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events
-worktree_status: verified_clean_at_activation_sync
-pr: null
-current_gate: dispatch_pending
-branch_freshness: unknown
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/268
+current_gate: merged
+branch_freshness: merged_current_at_6921a9e
 verification:
   - "npx vitest run tests/unit/daemon/agent-runner.test.ts tests/unit/tools/host-tools-bridge.test.ts tests/unit/tools/tool-filter.test.ts tests/unit/tools/host-tools/channel-send.test.ts"
   - "npm run build"
@@ -32,7 +32,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -109,7 +109,10 @@ task/TASK-008-run-tool-outbound-events
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #268: https://github.com/ivo-toby/talon/pull/268
+
+Merged into `epic/durable-lifecycle-pipeline` at
+`6921a9ec7a8c053ae7af616abfb832a7bf548c19` on 2026-07-25.
 
 ## RED-GREEN TDD Plan
 
@@ -145,11 +148,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -160,7 +163,16 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- Focused tests passed after remediation and after rebase to the current epic
+  head: `npx vitest run tests/unit/daemon/agent-runner.test.ts
+  tests/unit/tools/host-tools-bridge.test.ts
+  tests/unit/tools/host-tools/channel-send.test.ts
+  tests/unit/core/database/repositories/message-repository.test.ts`
+  (4 files, 164 tests).
+- Scoped ESLint exited 0 with repo-standard ignored-test warnings only.
+- `npm run build` passed.
+- `git diff --check` passed.
+- GitHub Verify PR passed on PR #268 after rebase to epic head `08c564a`.
 
 ## Review Feedback
 
@@ -170,7 +182,13 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ### P2
 
-- None.
+- GPT-5.5/xhigh full review initially found one Medium blocker: streamed runs
+  with no final text segment could duplicate already-flushed outbound text in
+  the persisted transcript. Fixed by skipping the synthetic final fallback row
+  when intermediate outbound reservations exist, with a regression test for
+  `text -> tool_use -> tool_result -> empty result`.
+- GPT-5.5/xhigh post-remediation review passed with no Critical, High, or
+  Medium blockers.
 
 ### P3
 
@@ -178,4 +196,12 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Completion Notes
 
-- None yet.
+- Publishes run started/completed/failed, provider tool started/completed, and
+  outbound message sent/send_failed lifecycle events from the authoritative run
+  and host-tool boundaries.
+- Routes `run.before_execute`, `tool.before_execute`, and outbound
+  `message.before_send` through existing run/tool/send paths while preserving
+  default-deny capability checks.
+- Outbound delivery uses stable queue-item-scoped idempotency keys for final,
+  streamed, waiting, and tool-notice messages to prevent retry double-sends.
+- Clean task worktree was removed and pruned during WAVE-005 reconciliation.

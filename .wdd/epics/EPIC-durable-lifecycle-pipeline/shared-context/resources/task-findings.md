@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-RESOURCE-task-findings
 kind: shared_context_resource
 epic: EPIC-durable-lifecycle-pipeline
 resource: task-findings
-updated_at: 2026-07-16
+updated_at: 2026-07-25
 ---
 
 # Shared Context Resource: Task Findings
@@ -20,9 +20,10 @@ durable event/delivery persistence, deterministic interceptor execution, and a
 capability-scoped sub-agent adapter. WAVE-003 added transaction-owned
 publication and an independently supervised durable dispatcher. WAVE-004 wired
 that runtime through daemon, inbound message, queue, and scheduler boundaries.
-Later tasks must consume these APIs and resolved identities rather than
-re-deriving authority, safety, causality, durability, compatibility, or
-execution policy.
+WAVE-005 added run/tool/outbound publishers, context contracts/projector, and
+behavior-ledger persistence. Later tasks must consume these APIs and resolved
+identities rather than re-deriving authority, safety, causality, durability,
+compatibility, context projection, behavior evidence, or execution policy.
 
 ## Details
 
@@ -152,9 +153,38 @@ execution policy.
   reload tests, Verify PR run `29511783210`, final substantive GPT-5.5/xhigh
   review and integrity adjudication, and a clean WDD marker review. PR Agent had
   no review threads; no Low/P3 finding was auto-remediated.
+- Source: TASK-009 / PR #266, merged at `3c1b5f4` on 2026-07-25. Context
+  observer/reducer contracts now live under `src/lifecycle/context`, and the
+  native context projector preserves observation, named-memory append
+  idempotency, pre-roll tail, reduction, continuation, and boundary invariants.
+  Downstream TASK-011 must consume the explicit projector contracts instead of
+  re-encoding ContextRoller name-based behavior. One non-blocking P3 remains:
+  tombstone visibility in projection evidence. It must not trigger automatic
+  edits.
+- Source: TASK-010 / PR #267, merged at `08c564a` on 2026-07-25. Migration 018
+  adds persona-scoped behavior evidence, candidates, promotions, activations,
+  and rollback lineage. `BehaviorSignalRepository` owns guarded transitions,
+  fingerprint/provenance uniqueness, persona isolation, and rollback lineage
+  tests. Existing migration-upgrade tests must now expect v14 databases to apply
+  four forward migrations and finish at `user_version` 18.
+- Source: TASK-008 / PR #268, merged at `6921a9e` on 2026-07-25. AgentRunner,
+  host-tool, and channel-send boundaries publish run started/completed/failed,
+  provider tool started/completed, and outbound sent/send_failed events.
+  `run.before_execute`, `tool.before_execute`, and `message.before_send` route
+  through existing authoritative paths while preserving capability/approval
+  semantics. Outbound delivery uses stable queue-item-scoped idempotency keys
+  for final, streamed, waiting, and tool-notice messages. Streamed intermediate
+  reservations suppress the synthetic final fallback transcript row when the
+  provider returns no final text, preventing duplicate already-flushed text.
+- WAVE-005 evidence passed focused context tests (65 tests), focused
+  run/tool/outbound tests (164 tests after remediation/rebase), behavior
+  repository/migration tests plus CI-selected migration coverage, build, scoped
+  lint, diff checks, GitHub Verify PR/PR Agent gates as applicable, and
+  GPT-5.5/xhigh reviews. No Critical/High/Medium findings remain.
 
 ## Durable Memory
 
 - Preserve these authority, causality, compatibility, bounded-input,
-  persistence, interceptor, sub-agent, transaction, dispatch, migration, and
-  review-throughput rules in later lifecycle implementation and review prompts.
+  persistence, interceptor, sub-agent, transaction, dispatch, migration, context
+  projection, behavior-ledger, outbound idempotency, and review-throughput rules
+  in later lifecycle implementation and review prompts.

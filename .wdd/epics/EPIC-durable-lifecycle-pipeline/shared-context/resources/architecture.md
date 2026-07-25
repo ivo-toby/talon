@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-RESOURCE-architecture
 kind: shared_context_resource
 epic: EPIC-durable-lifecycle-pipeline
 resource: architecture
-updated_at: 2026-07-15
+updated_at: 2026-07-25
 ---
 
 # Shared Context Resource: Architecture
@@ -15,9 +15,10 @@ Define the trusted boundaries and repository integration map for issue #256.
 ## Summary
 
 Talon must own event durability, subscription resolution, scope enforcement,
-interceptor budgets, output validation, projection, and audit. Native or
-sub-agent implementations run behind registered adapters. Async delivery is a
-separate durable workload that cannot affect the originating user-facing queue.
+interceptor budgets, output validation, projection, behavior evidence, and
+audit. Native or sub-agent implementations run behind registered adapters.
+Async delivery is a separate durable workload that cannot affect the
+originating user-facing queue.
 
 ## Current Boundaries
 
@@ -35,6 +36,10 @@ separate durable workload that cannot affect the originating user-facing queue.
 - Repository calls are synchronous `better-sqlite3` operations returning typed
   results; migration files are transactionally applied and tracked with
   `user_version`.
+- Through WAVE-005, AgentRunner/host-tool/outbound boundaries publish lifecycle
+  events and enforce run/tool/send interceptors through existing authoritative
+  paths. Context projection has explicit observer/reducer contracts, and
+  behavior evidence/promotion state has dedicated persona-scoped persistence.
 
 ## Target Boundaries
 

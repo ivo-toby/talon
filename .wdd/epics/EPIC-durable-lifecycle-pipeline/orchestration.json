@@ -968,7 +968,7 @@
 },
     {
       "id": "WAVE-005",
-      "status": "in_progress",
+      "status": "done",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -999,8 +999,8 @@
         {
           "id": "TASK-008-run-tool-outbound-events",
           "ticket": "TICKET-003-core-boundary-integration",
-          "path": "TICKET-003-core-boundary-integration/in-progress/TASK-008-run-tool-outbound-events.md",
-          "status": "in-progress",
+          "path": "TICKET-003-core-boundary-integration/done/TASK-008-run-tool-outbound-events.md",
+          "status": "done",
           "dependsOn": [
             "TASK-007-daemon-message-queue-schedule-events"
           ],
@@ -1015,25 +1015,37 @@
           "reviewThreadId": null,
           "branch": "task/TASK-008-run-tool-outbound-events",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events",
-          "worktreeStatus": "verified_clean_at_activation_sync",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "unknown",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-25T22:20:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/268",
+          "latestCommit": "9551cf0fe16bb82e3fe24ac3ecd7c1d0c84e7265",
+          "branchFreshness": "merged_current_at_6921a9e",
           "blockingFeedback": [],
           "verification": {
             "worktreeReadiness": "passed",
             "checkedAt": "2026-07-25T22:01:44+02:00",
             "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
-            "evidence": "branch task/TASK-008-run-tool-outbound-events is clean at activation-sync commit and contains assigned task file plus orchestration.json and controller-state.md"
+            "focusedTests": "passed after remediation and after rebase: 4 files, 164 tests",
+            "scopedLint": "passed with repo ignored-test warnings only",
+            "build": "passed",
+            "diffCheck": "passed",
+            "review": "GPT-5.5/xhigh full review found one Medium; remediation delta review passed 0C/0H/0M",
+            "githubVerifyPr": "passed; PR #268 Verify PR",
+            "mergeCommit": "6921a9ec7a8c053ae7af616abfb832a7bf548c19",
+            "evidence": "PR #268 merged fresh into epic after rebase to TASK-010 merge commit"
           },
-          "currentGate": "dispatch_pending"
+          "currentGate": "merged"
         },
         {
           "id": "TASK-009-context-contracts-projector",
           "ticket": "TICKET-004-context-migration",
-          "path": "TICKET-004-context-migration/in-progress/TASK-009-context-contracts-projector.md",
-          "status": "in-progress",
+          "path": "TICKET-004-context-migration/done/TASK-009-context-contracts-projector.md",
+          "status": "done",
           "dependsOn": [
             "TASK-004-subagent-lifecycle-adapter",
             "TASK-005-transactional-event-bus"
@@ -1049,25 +1061,37 @@
           "reviewThreadId": null,
           "branch": "task/TASK-009-context-contracts-projector",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector",
-          "worktreeStatus": "verified_clean_at_activation_sync",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "unknown",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-25T22:20:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/266",
+          "latestCommit": "29d5c9dd1a57bfb117cb4585e73c1fec23b60d49",
+          "branchFreshness": "merged_current_at_3c1b5f4",
           "blockingFeedback": [],
           "verification": {
             "worktreeReadiness": "passed",
             "checkedAt": "2026-07-25T22:01:44+02:00",
             "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
-            "evidence": "branch task/TASK-009-context-contracts-projector is clean at activation-sync commit and contains assigned task file plus orchestration.json and controller-state.md"
+            "focusedTests": "passed: lifecycle context and context-roller coverage, 65 tests",
+            "scopedLint": "passed",
+            "build": "passed",
+            "diffCheck": "passed",
+            "review": "GPT-5.5/xhigh passed 0C/0H/0M with one non-blocking P3 tombstone-visibility follow-up",
+            "githubVerifyPr": "passed; PR #266 Verify PR and PR Agent",
+            "mergeCommit": "3c1b5f4b0bea23ff08b6b591e6c5871ab6ec3377",
+            "evidence": "PR #266 merged into epic"
           },
-          "currentGate": "dispatch_pending"
+          "currentGate": "merged"
         },
         {
           "id": "TASK-010-behavior-ledger-persistence",
           "ticket": "TICKET-005-behavior-learning",
-          "path": "TICKET-005-behavior-learning/in-progress/TASK-010-behavior-ledger-persistence.md",
-          "status": "in-progress",
+          "path": "TICKET-005-behavior-learning/done/TASK-010-behavior-ledger-persistence.md",
+          "status": "done",
           "dependsOn": [
             "TASK-002-lifecycle-event-persistence"
           ],
@@ -1081,21 +1105,36 @@
           "reviewThreadId": null,
           "branch": "task/TASK-010-behavior-ledger-persistence",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence",
-          "worktreeStatus": "verified_clean_at_activation_sync",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "unknown",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-25T22:20:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/267",
+          "latestCommit": "9e2bc50e20c756dcec48c59bde4d1eea9be650c6",
+          "branchFreshness": "merged_current_at_08c564a",
           "blockingFeedback": [],
           "verification": {
             "worktreeReadiness": "passed",
             "checkedAt": "2026-07-25T22:01:44+02:00",
             "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
-            "evidence": "branch task/TASK-010-behavior-ledger-persistence is clean at activation-sync commit and contains assigned task file plus orchestration.json and controller-state.md"
+            "focusedTests": "repository/migration tests passed; CI-selected rerun passed 37 files and 837 tests after expectation fix",
+            "scopedLint": "passed with repo ignored-test warnings only",
+            "build": "passed",
+            "diffCheck": "passed",
+            "review": "GPT-5.5/xhigh passed 0C/0H/0M",
+            "githubVerifyPr": "passed; PR #267 Verify PR after CI expectation fix",
+            "mergeCommit": "08c564a75faa86025c8995822a13e78ad1178861",
+            "evidence": "PR #267 merged into epic before TASK-008 rebase"
           },
-          "currentGate": "dispatch_pending"
+          "currentGate": "merged"
         }
-      ]
+      ],
+      "completedAt": "2026-07-25T22:19:47Z",
+      "reconciledAt": "2026-07-25",
+      "mergeCommit": "6921a9ec7a8c053ae7af616abfb832a7bf548c19"
     },
     {
       "id": "WAVE-006",
@@ -1575,12 +1614,12 @@
       "shared-context/resources/task-findings.md"
     ],
     "pendingReconciliation": [],
-    "lastReconciledWave": "WAVE-004",
-    "lastReconciledTask": "TASK-007-daemon-message-queue-schedule-events",
-    "reconciledAtEpicCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5"
+    "lastReconciledWave": "WAVE-005",
+    "lastReconciledTask": "TASK-008-run-tool-outbound-events,TASK-009-context-contracts-projector,TASK-010-behavior-ledger-persistence",
+    "reconciledAtEpicCommit": "6921a9ec7a8c053ae7af616abfb832a7bf548c19"
   },
   "controller": {
-    "activeWave": "WAVE-005",
+    "activeWave": null,
     "nextWave": "WAVE-006",
     "epicBranchVerified": true,
     "activationArtifactsSynced": true,
@@ -1715,19 +1754,48 @@
       "monitoringDeactivation": "completed_automation_deleted",
       "nextWave": "WAVE-005",
       "nextWaveStatus": "resumed_activation_pending"
+    },
+    "wave005Reconciliation": {
+      "status": "reviewed_ready_to_commit",
+      "tasks": [
+        "TASK-008-run-tool-outbound-events",
+        "TASK-009-context-contracts-projector",
+        "TASK-010-behavior-ledger-persistence"
+      ],
+      "prs": [
+        "https://github.com/ivo-toby/talon/pull/268",
+        "https://github.com/ivo-toby/talon/pull/266",
+        "https://github.com/ivo-toby/talon/pull/267"
+      ],
+      "mergeCommits": {
+        "TASK-008-run-tool-outbound-events": "6921a9ec7a8c053ae7af616abfb832a7bf548c19",
+        "TASK-009-context-contracts-projector": "3c1b5f4b0bea23ff08b6b591e6c5871ab6ec3377",
+        "TASK-010-behavior-ledger-persistence": "08c564a75faa86025c8995822a13e78ad1178861"
+      },
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "all_three_clean_verified_removed_and_pruned",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewThreadId": "019f9b67-2d36-7d53-a36c-3fb53c1c2601",
+      "checkpointReviewCounts": "0C/0H/0M/2L",
+      "checkpointCommit": null,
+      "checkpointCommitStatus": "pending_commit_push",
+      "lowFindingDisposition": "TASK-009 P3 tombstone-visibility follow-up left untouched",
+      "nextWave": "WAVE-006",
+      "nextWaveStatus": "planned"
     }
   },
   "monitoring": {
-    "mode": "manual",
+    "mode": "inactive",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "worktree_readiness_checkpoint_pending_review_commit_push",
-    "lastCheckedAt": "2026-07-25T22:01:44+02:00",
+    "status": "wave005_stop_condition_met_reconciliation_checkpoint_reviewed_pending_commit_push",
+    "lastCheckedAt": "2026-07-25T22:20:00Z",
     "nextCheckDueAt": null,
     "schedulerRef": null,
-    "schedulerStatus": "not_created_until_after_readiness_or_dispatch",
-    "fallbackPrompt": "Resume WAVE-005 for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, and TASK-008/TASK-009/TASK-010. Do not implement task code in the controller checkout. The activation checkpoint 185c537 and activation-sync commit 8ebb6db are reviewed and pushed. The three task branches/worktrees are clean at 8ebb6db and contain current task/controller/orchestration artifacts. Complete a fresh GPT-5.5/xhigh worktree-readiness review, commit and push the readiness checkpoint, fast-forward/push each task branch/worktree to that exact pushed readiness commit, reverify clean task/controller/orchestration artifacts in every worktree, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-005 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
-    "stopCondition": "All WAVE-005 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
-    "stopReason": null
+    "schedulerStatus": "inactive_between_waves",
+    "fallbackPrompt": "Complete WAVE-005 reconciliation for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-008/TASK-009/TASK-010 done files. Verify PR #266, #267, and #268 merge evidence, task verification, GPT-5.5/xhigh review state, and cleaned worktrees. Do not implement task code in the controller checkout. Review session 019f9b67-2d36-7d53-a36c-3fb53c1c2601 passed with 0C/0H/0M/2L; keep Low findings non-blocking and untouched. Commit and push the reconciliation checkpoint on epic/durable-lifecycle-pipeline, then run old-global wdd-start-wave for WAVE-006.",
+    "stopCondition": "All WAVE-005 tasks are merged and their worktrees are cleaned up.",
+    "stopReason": "wave005_tasks_merged_and_cleaned"
   }
 }

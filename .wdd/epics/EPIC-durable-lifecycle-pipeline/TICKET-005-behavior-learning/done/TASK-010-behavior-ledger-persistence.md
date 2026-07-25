@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-005
 slug: behavior-ledger-persistence
 title: Add persona-scoped behavior evidence and promotion persistence
-status: in-progress
+status: done
 depends_on: ["TASK-002-lifecycle-event-persistence"]
 conflict_domains:
   - "src/core/database/migrations/**"
@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-010-behavior-ledger-persistence
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence
-worktree_status: verified_clean_at_activation_sync
-pr: null
-current_gate: dispatch_pending
-branch_freshness: unknown
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/267
+current_gate: merged
+branch_freshness: merged_current_at_08c564a
 verification:
   - "npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
   - "npm run build"
@@ -30,7 +30,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -104,7 +104,10 @@ task/TASK-010-behavior-ledger-persistence
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #267: https://github.com/ivo-toby/talon/pull/267
+
+Merged into `epic/durable-lifecycle-pipeline` at
+`08c564a75faa86025c8995822a13e78ad1178861` on 2026-07-25.
 
 ## RED-GREEN TDD Plan
 
@@ -140,11 +143,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -154,7 +157,15 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- Focused repository/migration tests passed:
+  `npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts
+  tests/unit/core/database/migrations/runner.test.ts`.
+- GitHub CI-selected verification after the migration-expectation fix passed
+  37 files and 837 tests, including lifecycle repository migration coverage.
+- Scoped ESLint exited 0 with repo-standard ignored-test warnings only.
+- `npm run build` passed.
+- `git diff --check` passed.
+- GitHub Verify PR passed on PR #267 after the CI expectation fix.
 
 ## Review Feedback
 
@@ -164,7 +175,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ### P2
 
-- None.
+- None. GPT-5.5/xhigh review passed with no Critical/High/Medium blockers.
 
 ### P3
 
@@ -172,4 +183,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Completion Notes
 
-- None yet.
+- Added migration 018 for persona-scoped behavior evidence, candidates,
+  promotions, activations, and rollback lineage.
+- Added `BehaviorSignalRepository` and behavior lifecycle types with guarded
+  transition, fingerprint, provenance, and persona isolation tests.
+- Fixed stale v14-to-current migration test expectations after adding migration
+  018; CI rerun passed before merge.
+- Clean task worktree was removed and pruned during WAVE-005 reconciliation.
