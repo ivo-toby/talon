@@ -153,6 +153,276 @@ describe('runMigrations', () => {
     expect(tbl).toBeDefined();
   });
 
+  it('enforces behavior ledger evidence and lineage invariants at the migration boundary', () => {
+    const realMigrationsDir = join(
+      import.meta.dirname,
+      '../../../../../src/core/database/migrations',
+    );
+    const result = runMigrations(db, realMigrationsDir);
+    expect(result.isOk()).toBe(true);
+
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO behavior_candidates (
+            candidate_id, persona, kind, status, summary, proposed_behavior, confidence,
+            created_at, updated_at
+          ) VALUES (
+            'direct-ready-no-evidence', 'support', 'style', 'ready',
+            'Direct SQL should not bypass evidence.',
+            'Keep answers concise unless detail is explicitly requested.',
+            0.7, 1, 1
+          )`,
+        )
+        .run(),
+    ).toThrow();
+
+    const insertEvidence = db.prepare(
+      `INSERT INTO behavior_evidence (
+        evidence_id, persona, source_kind, source_id, source_occurred_at, fingerprint,
+        sentiment, confidence, summary, metadata, created_at
+      ) VALUES (
+        @evidenceId, 'support', 'message', @sourceId, '2026-07-25T12:00:00.000Z',
+        @fingerprint, 'positive', 0.8, 'User explicitly asked for concise responses.',
+        '{"detector":"migration-test"}', @createdAt
+      )`,
+    );
+    insertEvidence.run({
+      evidenceId: 'direct-evidence-a',
+      sourceId: 'direct-message-a',
+      fingerprint: 'direct-fingerprint-a',
+      createdAt: 1,
+    });
+    insertEvidence.run({
+      evidenceId: 'direct-evidence-b',
+      sourceId: 'direct-message-b',
+      fingerprint: 'direct-fingerprint-b',
+      createdAt: 2,
+    });
+
+    db.prepare(
+      `INSERT INTO behavior_candidates (
+        candidate_id, persona, kind, status, summary, proposed_behavior, confidence,
+        created_at, updated_at
+      ) VALUES (
+        'direct-candidate-a', 'support', 'style', 'collecting',
+        'Prefer concise responses.',
+        'Keep answers concise unless detail is explicitly requested.',
+        0.7, 3, 3
+      )`,
+    ).run();
+    db.prepare(
+      `INSERT INTO behavior_candidate_evidence (
+        candidate_id, persona, evidence_id, created_at
+      ) VALUES ('direct-candidate-a', 'support', 'direct-evidence-a', 4)`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE behavior_candidates
+           SET status = 'ready', updated_at = 5
+           WHERE candidate_id = 'direct-candidate-a'`,
+        )
+        .run(),
+    ).toThrow();
+    db.prepare(
+      `INSERT INTO behavior_candidate_evidence (
+        candidate_id, persona, evidence_id, created_at
+      ) VALUES ('direct-candidate-a', 'support', 'direct-evidence-b', 6)`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE behavior_candidates
+           SET status = 'ready', updated_at = 7
+           WHERE candidate_id = 'direct-candidate-a'`,
+        )
+        .run(),
+    ).not.toThrow();
+
+    db.prepare(
+      `INSERT INTO behavior_promotions (
+        promotion_id, persona, candidate_id, status, policy, evaluation, created_at, updated_at
+      ) VALUES (
+        'direct-promotion-a', 'support', 'direct-candidate-a', 'proposed',
+        '{"approval":"operator"}', '{"dryRun":"passed"}', 8, 8
+      )`,
+    ).run();
+    for (const [status, updatedAt] of [
+      ['evaluating', 9],
+      ['approved', 10],
+      ['activating', 11],
+    ] as const) {
+      db.prepare(
+        `UPDATE behavior_promotions
+         SET status = ?, updated_at = ?
+         WHERE promotion_id = 'direct-promotion-a'`,
+      ).run(status, updatedAt);
+    }
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE behavior_promotions
+           SET status = 'active', updated_at = 12
+           WHERE promotion_id = 'direct-promotion-a'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(
+      db
+        .prepare(`SELECT status FROM behavior_promotions WHERE promotion_id = 'direct-promotion-a'`)
+        .get(),
+    ).toEqual({ status: 'activating' });
+    db.prepare(
+      `INSERT INTO behavior_promotion_activations (
+        activation_id, persona, promotion_id, prompt_artifact_id, reload_id, activated_at
+      ) VALUES (
+        'direct-activation-a', 'support', 'direct-promotion-a',
+        'direct-prompt-a', 'direct-reload-a', 12
+      )`,
+    ).run();
+    db.prepare(
+      `INSERT INTO behavior_promotion_activations (
+        activation_id, persona, promotion_id, prompt_artifact_id, reload_id, activated_at
+      ) VALUES (
+        'direct-activation-b', 'support', 'direct-promotion-a',
+        'direct-prompt-b', 'direct-reload-b', 12
+      )`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO behavior_promotion_rollbacks (
+            rollback_id, persona, activation_id, promotion_id, reason, rolled_back_at
+          ) VALUES (
+            'direct-rollback-before-active', 'support', 'direct-activation-a',
+            'direct-promotion-a', 'operator-rejected', 12
+          )`,
+        )
+        .run(),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE behavior_promotions
+           SET status = 'active', updated_at = 12
+           WHERE promotion_id = 'direct-promotion-a'`,
+        )
+        .run(),
+    ).not.toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE behavior_promotions
+           SET status = 'rolled_back', updated_at = 14
+           WHERE promotion_id = 'direct-promotion-a'`,
+        )
+        .run(),
+    ).toThrow();
+    expect(
+      db
+        .prepare(`SELECT status FROM behavior_promotions WHERE promotion_id = 'direct-promotion-a'`)
+        .get(),
+    ).toEqual({ status: 'active' });
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO behavior_promotion_rollbacks (
+            rollback_id, persona, activation_id, promotion_id, reason, rolled_back_at
+          ) VALUES (
+            'direct-rollback-active', 'support', 'direct-activation-a',
+            'direct-promotion-a', 'operator-rejected', 13
+          )`,
+        )
+        .run(),
+    ).not.toThrow();
+    expect(
+      db
+        .prepare(
+          `SELECT rollback_id FROM behavior_promotion_rollbacks
+           WHERE rollback_id = 'direct-rollback-active'`,
+        )
+        .get(),
+    ).toEqual({ rollback_id: 'direct-rollback-active' });
+    db.prepare(
+      `UPDATE behavior_promotions
+       SET status = 'rolled_back', updated_at = 13
+       WHERE promotion_id = 'direct-promotion-a'`,
+    ).run();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO behavior_promotion_rollbacks (
+            rollback_id, persona, activation_id, promotion_id, reason, rolled_back_at
+          ) VALUES (
+            'direct-rollback-after-rollback', 'support', 'direct-activation-b',
+            'direct-promotion-a', 'operator-rejected', 14
+          )`,
+        )
+        .run(),
+    ).toThrow();
+
+    insertEvidence.run({
+      evidenceId: 'direct-evidence-c',
+      sourceId: 'direct-message-c',
+      fingerprint: 'direct-fingerprint-c',
+      createdAt: 14,
+    });
+    insertEvidence.run({
+      evidenceId: 'direct-evidence-d',
+      sourceId: 'direct-message-d',
+      fingerprint: 'direct-fingerprint-d',
+      createdAt: 15,
+    });
+    db.prepare(
+      `INSERT INTO behavior_candidates (
+        candidate_id, persona, kind, status, summary, proposed_behavior, confidence,
+        created_at, updated_at
+      ) VALUES (
+        'direct-candidate-b', 'support', 'style', 'collecting',
+        'Prefer brief replies.',
+        'Use a compact answer shape unless asked for detail.',
+        0.7, 16, 16
+      )`,
+    ).run();
+    for (const [evidenceId, createdAt] of [
+      ['direct-evidence-c', 17],
+      ['direct-evidence-d', 18],
+    ] as const) {
+      db.prepare(
+        `INSERT INTO behavior_candidate_evidence (
+          candidate_id, persona, evidence_id, created_at
+        ) VALUES ('direct-candidate-b', 'support', ?, ?)`,
+      ).run(evidenceId, createdAt);
+    }
+    db.prepare(
+      `UPDATE behavior_candidates
+       SET status = 'ready', updated_at = 19
+       WHERE candidate_id = 'direct-candidate-b'`,
+    ).run();
+    db.prepare(
+      `INSERT INTO behavior_promotions (
+        promotion_id, persona, candidate_id, status, policy, evaluation, created_at, updated_at
+      ) VALUES (
+        'direct-promotion-b', 'support', 'direct-candidate-b', 'proposed',
+        '{"approval":"operator"}', '{"dryRun":"passed"}', 20, 20
+      )`,
+    ).run();
+
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO behavior_promotion_rollbacks (
+            rollback_id, persona, activation_id, promotion_id, reason, rolled_back_at
+          ) VALUES (
+            'direct-rollback-mismatch', 'support', 'direct-activation-a',
+            'direct-promotion-b', 'operator-rejected', 21
+          )`,
+        )
+        .run(),
+    ).toThrow();
+  });
+
   it('upgrades a pre-lifecycle schema with the durable event tables', () => {
     const realMigrationsDir = join(
       import.meta.dirname,
@@ -169,9 +439,19 @@ describe('runMigrations', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(13);
 
     const upgrade = runMigrations(db, realMigrationsDir);
-    expect(upgrade._unsafeUnwrap()).toBe(4);
-    expect(db.pragma('user_version', { simple: true })).toBe(17);
-    for (const table of ['lifecycle_events', 'lifecycle_event_deliveries', 'lifecycle_signal_handoffs', 'lifecycle_signals']) {
+    expect(upgrade._unsafeUnwrap()).toBe(5);
+    expect(db.pragma('user_version', { simple: true })).toBe(18);
+    for (const table of [
+      'lifecycle_events',
+      'lifecycle_event_deliveries',
+      'lifecycle_signal_handoffs',
+      'lifecycle_signals',
+      'behavior_evidence',
+      'behavior_candidates',
+      'behavior_promotions',
+      'behavior_promotion_activations',
+      'behavior_promotion_rollbacks',
+    ]) {
       expect(
         db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table),
       ).toBeDefined();
@@ -423,8 +703,8 @@ describe('runMigrations', () => {
         )
         .run(identityFor('preserved-handler'));
 
-      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(3);
-      expect(preservedDb.pragma('user_version', { simple: true })).toBe(17);
+      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(4);
+      expect(preservedDb.pragma('user_version', { simple: true })).toBe(18);
       expect(
         preservedDb
           .prepare(

@@ -67,7 +67,16 @@ export abstract class BaseRepository {
              COALESCE((SELECT MAX(created_at) FROM lifecycle_events), 0),
              COALESCE((SELECT MAX(created_at) FROM lifecycle_event_deliveries), 0),
              COALESCE((SELECT MAX(updated_at) FROM lifecycle_event_deliveries), 0),
-             COALESCE((SELECT MAX(completed_at) FROM lifecycle_event_deliveries), 0)
+             COALESCE((SELECT MAX(completed_at) FROM lifecycle_event_deliveries), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_evidence), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_candidates), 0),
+             COALESCE((SELECT MAX(updated_at) FROM behavior_candidates), 0),
+             COALESCE((SELECT MAX(expired_at) FROM behavior_candidates), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_candidate_evidence), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_promotions), 0),
+             COALESCE((SELECT MAX(updated_at) FROM behavior_promotions), 0),
+             COALESCE((SELECT MAX(activated_at) FROM behavior_promotion_activations), 0),
+             COALESCE((SELECT MAX(rolled_back_at) FROM behavior_promotion_rollbacks), 0)
            ) AS max_ts`,
         )
         .get() as { max_ts: number | null } | undefined;
