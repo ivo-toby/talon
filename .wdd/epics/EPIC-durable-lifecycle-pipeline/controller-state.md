@@ -77,8 +77,8 @@ Every task advances independently as soon as its gates clear.
   deleted successfully and the epic is paused before WAVE-005
 - WAVE-005 activation base: local and remote epic branch heads match at
   `b6ff72cab10e20f16f34381916d9948662b27276`; activation artifacts are
-  prepared locally and require GPT-5.5/xhigh review, commit, and push before
-  any task branch/worktree is created.
+  reviewed, committed, and pushed at `185c537`; task branch/worktree creation
+  is pending from that synced activation checkpoint.
 
 ## Pending Waves
 
@@ -103,7 +103,8 @@ matching local/remote epic branch head
 `b6ff72cab10e20f16f34381916d9948662b27276`. The three eligible tasks are moved
 to `in-progress/` and assigned isolated worktree paths, but task branches and
 worktrees must not be created until this activation checkpoint passes
-GPT-5.5/xhigh review, is committed, and is pushed to the epic branch.
+GPT-5.5/xhigh review, is committed, and is pushed to the epic branch. That gate
+passed at `185c537`; task branches/worktrees are next.
 
 Active WAVE-005 tasks:
 
@@ -122,7 +123,8 @@ Active WAVE-005 tasks:
 - Mode: manual until the WAVE-005 activation/readiness checkpoints are reviewed,
   committed, pushed, and worker dispatch begins.
 - Cadence: adaptive
-- Status: activation artifacts pending GPT-5.5/xhigh review, commit, and push
+- Status: activation checkpoint reviewed and pushed at `185c537`; task
+  branch/worktree creation pending
 - Scheduler provenance: none yet for WAVE-005
 - Last checked: 2026-07-25T21:43:02+02:00
 - Next check due: immediately after the reviewed activation checkpoint is pushed
