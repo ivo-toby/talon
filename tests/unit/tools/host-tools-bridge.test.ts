@@ -12,6 +12,7 @@ import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import type { ChannelRegistry } from '../../../src/channels/channel-registry.js';
 import { ok } from 'neverthrow';
+import type { LifecycleInterceptorEnvelope } from '../../../src/lifecycle/contracts/index.js';
 
 // Mock createDatabase so it doesn't try to open a real file for the readonly connection.
 // Returns an err() result so the bridge falls back to the main ctx.db connection.
@@ -91,6 +92,14 @@ describe('HostToolsBridge', () => {
       bridgeSecret: validBridgeSecret,
     });
   };
+
+  const makeLifecycleRuntime = () => ({
+    intercept: vi.fn((_invocation, input: LifecycleInterceptorEnvelope) =>
+      ok({ outcome: 'allow' as const, input, signals: [] }),
+    ),
+    publish: vi.fn(() => ok({})),
+    transaction: vi.fn(),
+  });
 
   beforeEach(async () => {
     tempDir = join('/tmp', `host-tools-bridge-test-${randomUUID()}`);
@@ -215,6 +224,7 @@ describe('HostToolsBridge', () => {
         cancel: vi.fn().mockReturnValue(ok(false)),
         getResult: vi.fn().mockReturnValue(ok(null)),
       } as any,
+      lifecycleRuntime: null,
       executionEnvManager: {
         create: vi.fn().mockResolvedValue(ok({
           id: 'env-1',
@@ -627,6 +637,99 @@ describe('HostToolsBridge', () => {
         }),
         expect.any(Function),
       );
+    });
+
+    it('runs tool.before_execute, dispatches transformed arguments, and publishes tool lifecycle events', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
+        if (input.hook !== 'tool.before_execute') {
+          return ok({ outcome: 'allow' as const, input, signals: [] });
+        }
+        return ok({
+          outcome: 'allow' as const,
+          input: {
+            ...input,
+            input: {
+              ...input.input,
+              arguments: { action: 'list' },
+            },
+          },
+          signals: [],
+        });
+      });
+      mockCtx.lifecycleRuntime = lifecycleRuntime as any;
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      const dispatch = vi
+        .spyOn(bridge as any, 'dispatch')
+        .mockResolvedValue({ requestId: 'req-001', tool: 'schedule.manage', status: 'success', result: { ok: true } });
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-001',
+          tool: 'schedule_manage',
+          args: { action: 'create', cronExpr: '0 9 * * *' },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-001',
+          },
+        }),
+        socket,
+      );
+
+      expect(dispatch).toHaveBeenCalledWith(
+        'schedule.manage',
+        { action: 'list' },
+        expect.objectContaining({ runId: 'run-001' }),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'provider.tool.started.v1' }),
+          persona: 'test',
+          itemOrigin: 'tool',
+          itemType: 'tool_call',
+        }),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'provider.tool.completed.v1' }),
+          persona: 'test',
+          itemOrigin: 'tool',
+          itemType: 'tool_call',
+        }),
+      );
+    });
+
+    it('keeps default-deny capability rejection authoritative before lifecycle interception', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      mockCtx.lifecycleRuntime = lifecycleRuntime as any;
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-001',
+          tool: 'unknown_tool',
+          args: {},
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-001',
+          },
+        }),
+        socket,
+      );
+
+      expect(lifecycleRuntime.intercept).not.toHaveBeenCalled();
+      expect(lifecycleRuntime.publish).not.toHaveBeenCalled();
+      expect((socket.write as any).mock.calls[0]?.[0]).toContain('not allowed');
     });
 
     it('dispatches skill.load before capability checks for persona-owned skills', async () => {

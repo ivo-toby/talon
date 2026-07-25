@@ -17,6 +17,11 @@ import type { ChannelSendArgs, ToolExecutionContext } from '../../../../src/tool
 import { ChannelError } from '../../../../src/core/errors/error-types.js';
 import type { ChannelRegistry } from '../../../../src/channels/channel-registry.js';
 import type { ChannelConnector } from '../../../../src/channels/channel-types.js';
+import {
+  LifecycleInterceptorEnvelopeSchema,
+  type LifecycleInterceptorEnvelope,
+} from '../../../../src/lifecycle/contracts/index.js';
+import { MAX_LIFECYCLE_CONTENT_LENGTH } from '../../../../src/lifecycle/contracts/event-contract.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -80,6 +85,21 @@ function makeRegistry(connector?: ChannelConnector): ChannelRegistry {
     startAll: vi.fn(),
     stopAll: vi.fn(),
   } as unknown as ChannelRegistry;
+}
+
+function makePersonaRepo() {
+  return {
+    findById: vi.fn().mockReturnValue(ok({ id: 'persona-001', name: 'assistant' })),
+  } as any;
+}
+
+function makeLifecycleRuntime() {
+  return {
+    intercept: vi.fn((_invocation, input: LifecycleInterceptorEnvelope) =>
+      ok({ outcome: 'allow' as const, input, signals: [] }),
+    ),
+    publish: vi.fn(() => ok({})),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -151,6 +171,170 @@ describe('ChannelSendHandler — success', () => {
     const result = await handler.execute(makeArgs(), context);
 
     expect(result.requestId).toBe('unknown');
+  });
+
+  it('runs message.before_send before delivery and publishes message.sent on success', async () => {
+    const lifecycleRuntime = makeLifecycleRuntime();
+    lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) =>
+      ok({
+        outcome: 'allow' as const,
+        input: {
+          ...input,
+          input: {
+            ...input.input,
+            content: 'Lifecycle transformed',
+          },
+        },
+        signals: [],
+      }),
+    );
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepo(),
+      personaRepository: makePersonaRepo(),
+      lifecycleRuntime: lifecycleRuntime as any,
+      logger: makeLogger(),
+    } as any);
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('success');
+    expect(connector.send).toHaveBeenCalledWith(
+      'ext-001',
+      expect.objectContaining({ body: 'Lifecycle transformed' }),
+    );
+    expect(lifecycleRuntime.intercept).toHaveBeenCalledWith(
+      expect.objectContaining({
+        persona: 'assistant',
+        hook: 'message.before_send',
+        itemOrigin: 'tool',
+        itemType: 'message',
+        messageSource: 'outbound',
+      }),
+      expect.objectContaining({
+        hook: 'message.before_send',
+        input: expect.objectContaining({
+          content: 'Hello from persona!',
+          recipientId: 'ext-001',
+        }),
+      }),
+    );
+    expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: expect.objectContaining({ type: 'message.sent.v1' }),
+        persona: 'assistant',
+        itemOrigin: 'tool',
+        itemType: 'message',
+        messageSource: 'outbound',
+      }),
+    );
+  });
+
+  it('returns an error without sending when message.before_send denies delivery', async () => {
+    const lifecycleRuntime = makeLifecycleRuntime();
+    lifecycleRuntime.intercept.mockReturnValue(
+      ok({
+        outcome: 'deny' as const,
+        reason: 'blocked outbound',
+        input: {
+          version: 'v1',
+          interceptionId: 'interception-001',
+          hook: 'message.before_send',
+          context: {
+            aggregate: { type: 'message', id: 'message-001' },
+            correlationId: 'run-001',
+            recursion: { depth: 0, maxDepth: 8 },
+            provenance: { source: 'tool', sourceEventIds: [], sourceReferences: [] },
+          },
+          input: {
+            messageId: 'message-001',
+            content: 'Hello from persona!',
+            source: 'outbound',
+            recipientId: 'ext-001',
+          },
+        } as LifecycleInterceptorEnvelope,
+        signals: [],
+      }),
+    );
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepo(),
+      personaRepository: makePersonaRepo(),
+      lifecycleRuntime: lifecycleRuntime as any,
+      logger: makeLogger(),
+    } as any);
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('blocked outbound');
+    expect(connector.send).not.toHaveBeenCalled();
+    expect(lifecycleRuntime.publish).not.toHaveBeenCalled();
+  });
+
+  it('bounds lifecycle input but sends original over-limit content when unchanged', async () => {
+    const longContent = 'C'.repeat(MAX_LIFECYCLE_CONTENT_LENGTH + 1024);
+    const lifecycleRuntime = makeLifecycleRuntime();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepo(),
+      personaRepository: makePersonaRepo(),
+      lifecycleRuntime: lifecycleRuntime as any,
+      logger: makeLogger(),
+    } as any);
+
+    const result = await handler.execute(makeArgs({ content: longContent }), makeContext());
+
+    expect(result.status).toBe('success');
+    const lifecycleInput = lifecycleRuntime.intercept.mock.calls[0]![1] as LifecycleInterceptorEnvelope;
+    expect(LifecycleInterceptorEnvelopeSchema.safeParse(lifecycleInput).success).toBe(true);
+    expect(lifecycleInput.input.content.length).toBeLessThanOrEqual(
+      MAX_LIFECYCLE_CONTENT_LENGTH,
+    );
+    expect(lifecycleInput.input.content).not.toBe(longContent);
+    expect(connector.send).toHaveBeenCalledWith(
+      'ext-001',
+      expect.objectContaining({ body: longContent }),
+    );
+  });
+
+  it('rejects content transforms when before_send only saw a truncated preview', async () => {
+    const longContent = 'T'.repeat(MAX_LIFECYCLE_CONTENT_LENGTH + 1024);
+    const lifecycleRuntime = makeLifecycleRuntime();
+    lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) =>
+      ok({
+        outcome: 'allow' as const,
+        input: {
+          ...input,
+          input: {
+            ...input.input,
+            content: 'Unsafe transform from truncated preview',
+          },
+        },
+        signals: [],
+      }),
+    );
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepo(),
+      personaRepository: makePersonaRepo(),
+      lifecycleRuntime: lifecycleRuntime as any,
+      logger: makeLogger(),
+    } as any);
+
+    const result = await handler.execute(makeArgs({ content: longContent }), makeContext());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('truncated preview');
+    expect(connector.send).not.toHaveBeenCalled();
   });
 });
 

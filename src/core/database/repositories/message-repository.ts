@@ -40,6 +40,7 @@ export class MessageRepository extends BaseRepository {
   private readonly findLatestByThreadStmt: Database.Statement;
   private readonly findLatestByThreadSinceStmt: Database.Statement;
   private readonly findByIdempotencyKeyStmt: Database.Statement;
+  private readonly deleteByIdempotencyKeyStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -82,6 +83,10 @@ export class MessageRepository extends BaseRepository {
 
     this.findByIdempotencyKeyStmt = db.prepare(`
       SELECT * FROM messages WHERE idempotency_key = ?
+    `);
+
+    this.deleteByIdempotencyKeyStmt = db.prepare(`
+      DELETE FROM messages WHERE idempotency_key = ?
     `);
   }
 
@@ -206,5 +211,27 @@ export class MessageRepository extends BaseRepository {
    */
   existsByIdempotencyKey(key: string): boolean {
     return this.findByIdempotencyKeyStmt.get(key) !== undefined;
+  }
+
+  /**
+   * Deletes a message reservation by idempotency key.
+   *
+   * This is intentionally narrow: outbound final delivery reserves an
+   * idempotency key before external send so post-send finalization retries do
+   * not duplicate delivery, but a known send failure must make that key
+   * retryable again.
+   */
+  deleteByIdempotencyKey(key: string): Result<number, DbError> {
+    try {
+      const result = this.deleteByIdempotencyKeyStmt.run(key);
+      return ok(result.changes);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to delete message by idempotency key: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
   }
 }

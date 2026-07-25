@@ -18,7 +18,13 @@ import {
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
 import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
+import type { ReasoningEffort } from '../core/config/config-types.js';
 import { formatToolCall } from './tool-name-formatter.js';
+import {
+  buildLifecycleContentPreview,
+  resolveLifecycleOutboundContent,
+} from '../lifecycle/outbound-content-preview.js';
+import type { ChannelConnector } from '../channels/channel-types.js';
 import type {
   AgentUsage,
   ContextUsage,
@@ -26,11 +32,23 @@ import type {
   CanonicalMcpSdkServer,
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
+import type { LifecycleEventEnvelope } from '../lifecycle/contracts/index.js';
+import type { TransactionContext } from '../lifecycle/transaction-context.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
 import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-tools-bridge-auth.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+interface OutboundDeliveryIdentity {
+  readonly messageId: string;
+  readonly idempotencyKey: string;
+}
+
+interface PendingNoIdProviderToolObservation {
+  readonly observation: StartedObservationHandle;
+  readonly toolCallId: string;
+}
 
 class AgentQueryAttemptError extends Error {
   constructor(
@@ -112,7 +130,7 @@ export class AgentRunner {
       loadedPersona.config.queryTimeoutMinutes !== undefined
         ? loadedPersona.config.queryTimeoutMinutes * 60 * 1000
         : this.queryTimeoutMs;
-    const model = loadedPersona.config.model;
+    let model = loadedPersona.config.model;
     const reasoningEffort = loadedPersona.config.reasoningEffort;
 
     const threadResult = this.ctx.repos.thread.findById(item.threadId);
@@ -146,11 +164,77 @@ export class AgentRunner {
         : [affinityProviderName, personaProviderName, configuredDefaultProvider]
     ).filter((name): name is string => typeof name === 'string' && name.length > 0);
 
-    const providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
+    let providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
     if (!providerEntry) {
       this.failA2ATask(a2aTaskId, 'NO_PROVIDER', 'No enabled agent runner provider is configured');
       return err(new Error('No enabled agent runner provider is configured'));
     }
+
+    const runId = uuidv4();
+    const runInterception = this.interceptRunBeforeExecute({
+      runId,
+      threadId: item.threadId,
+      personaName,
+      provider: providerEntry.provider.name,
+      model,
+      queueItemId: item.id,
+      itemType: item.type,
+    });
+    if (runInterception.isErr()) {
+      const finalized = this.insertAndFinalizePreExecutionFailedRun(
+        runId,
+        {
+          threadId: item.threadId,
+          personaId,
+          queueItemId: item.id,
+          provider: providerEntry.provider.name,
+          model,
+          reasoningEffort,
+          error: runInterception.error.message,
+        },
+        personaName,
+      );
+      if (finalized.isErr()) {
+        this.ctx.logger.error(
+          { runId, err: finalized.error.message },
+          'agent-runner: failed to finalize blocked run',
+        );
+      }
+      this.failA2ATask(a2aTaskId, 'RUN_BLOCKED', runInterception.error.message);
+      return err(runInterception.error);
+    }
+    const lifecycleRunContextAdditions = runInterception.value.contextAdditions;
+    if (runInterception.value.provider !== providerEntry.provider.name) {
+      const transformedProvider = this.ctx.providerRegistry.get(runInterception.value.provider);
+      if (!transformedProvider) {
+        const error = new Error(
+          `Lifecycle run interceptor selected unavailable provider "${runInterception.value.provider}"`,
+        );
+        const finalized = this.insertAndFinalizePreExecutionFailedRun(
+          runId,
+          {
+            threadId: item.threadId,
+            personaId,
+            queueItemId: item.id,
+            provider: runInterception.value.provider,
+            model: runInterception.value.model,
+            reasoningEffort,
+            error: error.message,
+          },
+          personaName,
+        );
+        if (finalized.isErr()) {
+          this.ctx.logger.error(
+            { runId, err: finalized.error.message },
+            'agent-runner: failed to finalize unavailable transformed provider run',
+          );
+        }
+        this.failA2ATask(a2aTaskId, 'NO_PROVIDER', error.message);
+        return err(error);
+      }
+      providerEntry = transformedProvider;
+    }
+    model = runInterception.value.model;
 
     const strategy = providerEntry.provider.createExecutionStrategy();
     const sessionProviderName = providerEntry.provider.name;
@@ -223,10 +307,9 @@ export class AgentRunner {
       }
     }
 
-    const runId = uuidv4();
     const now = Date.now();
 
-    const runInsert = this.ctx.repos.run.insert({
+    const runInput = {
       id: runId,
       thread_id: item.threadId,
       persona_id: personaId,
@@ -246,7 +329,29 @@ export class AgentRunner {
       error: null,
       started_at: now,
       ended_at: null,
-    });
+    } as const;
+
+    const runInsert = this.ctx.lifecycleRuntime
+      ? this.ctx.lifecycleRuntime.transaction((transaction) => {
+          const inserted = this.ctx.repos.run.insert(runInput);
+          if (inserted.isErr()) return err(inserted.error);
+          const published = this.publishRunEvent(
+            'run.started.v1',
+            {
+              runId,
+              threadId: item.threadId,
+              personaId,
+              queueItemId: item.id,
+              provider: providerEntry.provider.name,
+              model,
+              status: 'running',
+            },
+            personaName,
+            transaction,
+          );
+          return published.isErr() ? err(published.error) : ok(inserted.value);
+        })
+      : this.ctx.repos.run.insert(runInput);
 
     if (runInsert.isErr()) {
       // Mark A2A task as failed — run record creation failed, so the task cannot proceed.
@@ -283,7 +388,7 @@ export class AgentRunner {
       bridgeSecret,
     });
 
-    const runInput = {
+    const observedRunInput = {
       content,
       itemType: item.type,
       persona: personaName,
@@ -303,7 +408,7 @@ export class AgentRunner {
         {
           type: 'agent',
           name: 'foreground-run',
-          input: runInput,
+          input: observedRunInput,
           metadata: runMetadata,
           trace: {
             sessionId: item.threadId,
@@ -313,7 +418,7 @@ export class AgentRunner {
               `itemType:${item.type}`,
               `provider:${providerEntry.provider.name}`,
             ],
-            input: runInput,
+            input: observedRunInput,
             metadata: runMetadata,
           },
         },
@@ -513,8 +618,17 @@ export class AgentRunner {
               externalId &&
               item.payload.type !== 'schedule'
             ) {
-              const waitingResult = await connector.send(externalId, {
-                body: 'Thinking...',
+              const waitingResult = await this.sendLifecycleOutboundMessage({
+                content: 'Thinking...',
+                connector,
+                externalId,
+                runId,
+                threadId: item.threadId,
+                personaName,
+                channelName,
+                itemOrigin: 'run',
+                itemType: 'message',
+                messageId: `outbound:${item.id}:waiting`,
               });
               if (waitingResult.isErr()) {
                 this.ctx.logger.debug(
@@ -543,6 +657,11 @@ export class AgentRunner {
                 channelContext,
                 timeContext,
               ];
+              if (lifecycleRunContextAdditions) {
+                systemPromptParts.push(
+                  `Lifecycle Context Additions:\n${JSON.stringify(lifecycleRunContextAdditions)}`,
+                );
+              }
               if (!resumeSessionId) {
                 const previous = await getPreviousContext();
                 if (previous.text) {
@@ -700,7 +819,7 @@ export class AgentRunner {
                   const pendingProviderToolTasks: Array<Promise<void>> = [];
                   // FIFO queue for tool events that lack a toolUseId (e.g. claude-code tool_use/tool_result
                   // streaming events). Events are sequential so FIFO order correctly pairs starts with ends.
-                  const pendingNoIdToolObservations: StartedObservationHandle[] = [];
+                  const pendingNoIdToolObservations: PendingNoIdProviderToolObservation[] = [];
 
                   // Materialize dynamic auth (OAuth bearers) on HTTP MCP
                   // entries before handing them to the provider. Providers
@@ -781,14 +900,33 @@ export class AgentRunner {
                           ) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
                             if (outputText) {
-                              const flushResult = await connector.send(externalId, {
-                                body: outputText,
+                              const originalOutputText = outputText;
+                              const flushIdentity = this.runOutboundDeliveryIdentity(
+                                item.id,
+                                `stream:${streamOutboundMessageIndex++}`,
+                              );
+                              const flushResult = await this.sendLifecycleOutboundMessage({
+                                content: outputText,
+                                connector,
+                                externalId,
+                                runId,
+                                threadId: item.threadId,
+                                personaName,
+                                channelName,
+                                itemOrigin: 'run',
+                                itemType: 'message',
+                                messageId: flushIdentity.messageId,
+                                idempotencyKey: flushIdentity.idempotencyKey,
                               });
                               if (flushResult.isErr()) {
                                 throw new Error(
                                   `channel send failed: ${flushResult.error.message}`,
                                 );
                               }
+                              fullOutputText = fullOutputText.endsWith(originalOutputText)
+                                ? `${fullOutputText.slice(0, -originalOutputText.length)}${flushResult.value.content}`
+                                : fullOutputText;
+                              hasReservedIntermediateTextOutbound = true;
                               outputText = '';
                               fullOutputText += '\n\n';
                             }
@@ -801,8 +939,22 @@ export class AgentRunner {
                                 event.messageType === 'mcp_tool_use' && event.serverName
                                   ? `mcp__${event.serverName}__${event.tool ?? ''}`
                                   : (event.tool ?? '');
-                              const toolCallResult = await connector.send(externalId, {
-                                body: formatToolCall(toolCallId),
+                              const toolNoticeIdentity = this.runOutboundDeliveryIdentity(
+                                item.id,
+                                `tool:${streamOutboundMessageIndex++}`,
+                              );
+                              const toolCallResult = await this.sendLifecycleOutboundMessage({
+                                content: formatToolCall(toolCallId),
+                                connector,
+                                externalId,
+                                runId,
+                                threadId: item.threadId,
+                                personaName,
+                                channelName,
+                                itemOrigin: 'run',
+                                itemType: 'message',
+                                messageId: toolNoticeIdentity.messageId,
+                                idempotencyKey: toolNoticeIdentity.idempotencyKey,
                               });
                               if (toolCallResult.isErr()) {
                                 this.ctx.logger.warn(
@@ -818,6 +970,7 @@ export class AgentRunner {
                               runId,
                               threadId: item.threadId,
                               provider: providerEntry.provider.name,
+                              persona: personaName,
                             },
                             activeProviderToolObservations,
                             ignoredProviderToolUseIds,
@@ -929,6 +1082,10 @@ export class AgentRunner {
 
             let outputText = '';
             let fullOutputText = '';
+            const finalOutboundIdentity = this.runOutboundDeliveryIdentity(item.id);
+            let finalOutboundReservationHandled = false;
+            let streamOutboundMessageIndex = 0;
+            let hasReservedIntermediateTextOutbound = false;
             let resultSessionId: string | undefined;
             let usage: AgentUsage = {
               inputTokens: 0,
@@ -1044,35 +1201,61 @@ export class AgentRunner {
             } else if (connector !== undefined && externalId && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
               // during the stream when tool_use events were encountered (issue #102).
-              const sendResult = await connector.send(externalId, {
-                body: outputText,
+              const sendResult = await this.sendLifecycleOutboundMessage({
+                content: outputText,
+                persistedContent: fullOutputText,
+                connector,
+                externalId,
+                runId,
+                threadId: item.threadId,
+                personaName,
+                channelName,
+                itemOrigin: 'run',
+                itemType: 'message',
+                messageId: finalOutboundIdentity.messageId,
+                idempotencyKey: finalOutboundIdentity.idempotencyKey,
+                ...(hasReservedIntermediateTextOutbound
+                  ? { reservationContent: outputText }
+                  : {}),
               });
               if (sendResult.isErr()) {
                 throw new Error(`channel send failed: ${sendResult.error.message}`);
               }
+              outputText = sendResult.value.content;
+              fullOutputText = sendResult.value.fullContent;
+              finalOutboundReservationHandled = true;
             }
 
-            // Persist the outbound message BEFORE context rotation so that a fast
-            // user reply cannot be inserted ahead of the assistant turn in the DB.
-            // The message is stored immediately after delivery (issue #164).
-            if (!isA2ATask) {
-              this.ctx.repos.message.insert({
-                id: uuidv4(),
+            // When streamed text was already flushed as physical outbound rows
+            // and the provider emits no final text segment, do not synthesize a
+            // final transcript row containing the previously flushed content.
+            if (
+              !isA2ATask &&
+              !finalOutboundReservationHandled &&
+              !hasReservedIntermediateTextOutbound
+            ) {
+              const persistedOutbound = this.ctx.repos.message.insert({
+                id: finalOutboundIdentity.messageId,
                 thread_id: item.threadId,
                 direction: 'outbound',
                 content: JSON.stringify({ body: fullOutputText }),
-                idempotency_key: `outbound:${runId}`,
+                idempotency_key: finalOutboundIdentity.idempotencyKey,
                 provider_id: null,
                 run_id: runId,
               });
+              if (persistedOutbound.isErr()) {
+                throw new Error(
+                  `failed to persist outbound message: ${persistedOutbound.error.message}`,
+                );
+              }
             }
 
             // Check if context needs rotation (rolling window).
-            // Runs AFTER connector.send() and message.insert() so the user receives
-            // their response immediately — context rotation may invoke a summarizer
-            // LLM call that takes 5-15 s. The queue item stays in-flight (claimed)
-            // until run() returns, so the next item for this thread cannot be
-            // picked up until rotation completes, preserving per-thread ordering.
+            // Runs AFTER connector.send() and the final outbound reservation so the
+            // user receives their response immediately — context rotation may invoke
+            // a summarizer LLM call that takes 5-15 s. The queue item stays in-flight
+            // (claimed) until run() returns, so the next item for this thread cannot
+            // be picked up until rotation completes, preserving per-thread ordering.
             // (issue #164)
             if (this.ctx.contextRoller && enabledContextManagement) {
               // Gate rotation on per-step usage when the provider reports
@@ -1201,17 +1384,40 @@ export class AgentRunner {
               },
             });
 
-            this.ctx.repos.run.updateStatus(runId, 'completed', {
-              ended_at: Date.now(),
-            });
+            const finalized = this.finalizeRunWithLifecycle(
+              runId,
+              'completed',
+              {
+                threadId: item.threadId,
+                personaId,
+                queueItemId: item.id,
+                provider: providerEntry.provider.name,
+                model,
+              },
+              personaName,
+              { ended_at: Date.now() },
+            );
+            if (finalized.isErr()) {
+              throw new Error(`failed to finalize completed run: ${finalized.error.message}`);
+            }
             runFinalized = true;
           } catch (cause) {
             if (typingInterval) clearInterval(typingInterval);
             const error = this.toError(cause);
-            this.ctx.repos.run.updateStatus(runId, 'failed', {
-              ended_at: Date.now(),
-              error: error.message,
-            });
+            const finalized = this.finalizeRunWithLifecycle(
+              runId,
+              'failed',
+              {
+                threadId: item.threadId,
+                personaId,
+                queueItemId: item.id,
+                provider: providerEntry.provider.name,
+                model,
+                error: error.message,
+              },
+              personaName,
+              { ended_at: Date.now(), error: error.message },
+            );
             // Mark A2A task as failed on agent execution error.
             if (isA2ATask && a2aTaskId) {
               this.ctx.repos.a2aTask
@@ -1223,6 +1429,11 @@ export class AgentRunner {
                   );
                 });
             }
+            if (finalized.isErr()) {
+              throw new Error(
+                `${error.message}; additionally failed to finalize failed run: ${finalized.error.message}`,
+              );
+            }
             runFinalized = true;
             throw error;
           }
@@ -1233,15 +1444,495 @@ export class AgentRunner {
     } catch (cause) {
       const error = this.toError(cause);
       if (!runFinalized) {
-        this.ctx.repos.run.updateStatus(runId, 'failed', {
-          ended_at: Date.now(),
-          error: error.message,
-        });
+        const finalized = this.finalizeRunWithLifecycle(
+          runId,
+          'failed',
+          {
+            threadId: item.threadId,
+            personaId,
+            queueItemId: item.id,
+            provider: providerEntry.provider.name,
+            model,
+            error: error.message,
+          },
+          personaName,
+          { ended_at: Date.now(), error: error.message },
+        );
+        if (finalized.isErr()) {
+          return err(
+            new Error(
+              `${error.message}; additionally failed to finalize failed run: ${finalized.error.message}`,
+            ),
+          );
+        }
       }
       return err(error);
     } finally {
       this.ctx.hostToolsBridge.unregisterRunAuthentication?.(runId);
     }
+  }
+
+  private interceptRunBeforeExecute(input: {
+    runId: string;
+    threadId: string;
+    personaName: string;
+    provider: string;
+    model: string;
+    queueItemId: string;
+    itemType: string;
+  }): Result<
+    { provider: string; model: string; contextAdditions?: Record<string, unknown> },
+    Error
+  > {
+    if (!this.ctx.lifecycleRuntime) {
+      return ok({ provider: input.provider, model: input.model });
+    }
+
+    const interception = this.ctx.lifecycleRuntime.intercept(
+      {
+        persona: input.personaName,
+        hook: 'run.before_execute',
+        itemOrigin: 'run',
+        itemType: 'run',
+      },
+      {
+        version: 'v1',
+        interceptionId: uuidv4(),
+        hook: 'run.before_execute',
+        context: this.lifecycleContext('run', input.runId, input.queueItemId, 'run'),
+        input: {
+          runId: input.runId,
+          provider: input.provider,
+          model: input.model,
+          persona: input.personaName,
+        },
+      },
+    );
+    if (interception.isErr()) {
+      return err(new Error(`Lifecycle run interception failed: ${interception.error.message}`));
+    }
+    if (interception.value.outcome !== 'allow') {
+      return err(new Error(`Lifecycle run policy blocked execution: ${interception.value.reason}`));
+    }
+
+    const runInput = interception.value.input.input as {
+      provider: string;
+      model: string;
+      contextAdditions?: Record<string, unknown>;
+    };
+    return ok({
+      provider: runInput.provider,
+      model: runInput.model,
+      ...(runInput.contextAdditions ? { contextAdditions: runInput.contextAdditions } : {}),
+    });
+  }
+
+  private runOutboundDeliveryIdentity(
+    queueItemId: string,
+    segment: string = 'final',
+  ): OutboundDeliveryIdentity {
+    const key = segment === 'final' ? `outbound:${queueItemId}` : `outbound:${queueItemId}:${segment}`;
+    return {
+      messageId: key,
+      idempotencyKey: key,
+    };
+  }
+
+  private async sendLifecycleOutboundMessage(input: {
+    content: string;
+    persistedContent?: string;
+    connector: ChannelConnector;
+    externalId: string;
+    runId: string;
+    threadId: string;
+    personaName: string;
+    channelName?: string;
+    itemOrigin: 'run' | 'tool';
+    itemType: 'message';
+    messageId: string;
+    idempotencyKey?: string;
+    reservationContent?: string;
+  }): Promise<Result<{ content: string; fullContent: string; skipped: boolean }, Error>> {
+    const originalContent = input.content;
+    let content = input.content;
+    let fullContent = input.persistedContent ?? input.content;
+    let idempotentReservationInserted = false;
+
+    if (this.ctx.lifecycleRuntime) {
+      const lifecycleContent = buildLifecycleContentPreview(content);
+      const interception = this.ctx.lifecycleRuntime.intercept(
+        {
+          persona: input.personaName,
+          hook: 'message.before_send',
+          itemOrigin: input.itemOrigin,
+          itemType: input.itemType,
+          ...(input.channelName ? { channel: input.channelName } : {}),
+          messageSource: 'outbound',
+        },
+        {
+          version: 'v1',
+          interceptionId: uuidv4(),
+          hook: 'message.before_send',
+          context: this.lifecycleContext('message', input.messageId, input.runId, input.itemOrigin),
+          input: {
+            messageId: input.messageId,
+            content: lifecycleContent.content,
+            source: 'outbound',
+            recipientId: input.externalId,
+            ...(input.channelName ? { channel: input.channelName } : {}),
+            persona: input.personaName,
+          },
+        },
+      );
+      if (interception.isErr()) {
+        return err(new Error(`Lifecycle outbound interception failed: ${interception.error.message}`));
+      }
+      if (interception.value.outcome !== 'allow') {
+        return err(new Error(`Lifecycle outbound policy blocked delivery: ${interception.value.reason}`));
+      }
+      const resolvedContent = resolveLifecycleOutboundContent({
+        originalContent: content,
+        preview: lifecycleContent,
+        interceptedContent: (interception.value.input.input as { content: string }).content,
+      });
+      if (resolvedContent.isErr()) {
+        return err(resolvedContent.error);
+      }
+      content = resolvedContent.value;
+    }
+
+    fullContent = input.persistedContent
+      ? input.persistedContent.endsWith(originalContent)
+        ? `${input.persistedContent.slice(0, -originalContent.length)}${content}`
+        : content
+      : content;
+
+    if (input.idempotencyKey) {
+      const reservationContent = input.reservationContent ?? fullContent;
+      const reserved = this.ctx.repos.message.insertIfAbsent({
+        id: input.messageId,
+        thread_id: input.threadId,
+        direction: 'outbound',
+        content: JSON.stringify({ body: reservationContent }),
+        idempotency_key: input.idempotencyKey,
+        provider_id: null,
+        run_id: input.runId,
+      });
+      if (reserved.isErr()) {
+        return err(
+          new Error(`failed to reserve outbound delivery: ${reserved.error.message}`),
+        );
+      }
+      if (!reserved.value.inserted) {
+        this.ctx.logger.info(
+          { runId: input.runId, messageId: input.messageId },
+          'agent-runner: skipping already reserved outbound delivery',
+        );
+        return ok({ content, fullContent, skipped: true });
+      }
+      idempotentReservationInserted = true;
+    }
+
+    const sendResult = await input.connector.send(input.externalId, { body: content });
+    if (sendResult.isErr()) {
+      if (input.idempotencyKey && idempotentReservationInserted) {
+        const cleared = this.ctx.repos.message.deleteByIdempotencyKey(input.idempotencyKey);
+        if (cleared.isErr()) {
+          return err(
+            new Error(
+              `channel send failed: ${sendResult.error.message}; failed to clear outbound delivery reservation: ${cleared.error.message}`,
+            ),
+          );
+        }
+      }
+      this.publishMessageSendEvent('message.send_failed.v1', input, content, {
+        status: 'failed',
+        errorLength: sendResult.error.message.length,
+      });
+      return err(new Error(sendResult.error.message));
+    }
+
+    this.publishMessageSendEvent('message.sent.v1', input, content, { status: 'sent' });
+    return ok({ content, fullContent, skipped: false });
+  }
+
+  private publishMessageSendEvent(
+    type: 'message.sent.v1' | 'message.send_failed.v1',
+    input: {
+      runId: string;
+      threadId: string;
+      personaName: string;
+      channelName?: string;
+      itemOrigin: 'run' | 'tool';
+      itemType: 'message';
+      messageId: string;
+      externalId: string;
+    },
+    content: string,
+    metadata: Record<string, string | number | boolean | null>,
+  ): void {
+    if (!this.ctx.lifecycleRuntime) return;
+    const publication = this.ctx.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'message',
+        input.messageId,
+        input.runId,
+        input.itemOrigin,
+        [
+          { type: 'message', id: input.messageId },
+          { type: 'thread', id: input.threadId },
+          { type: 'run', id: input.runId },
+        ],
+        {
+          direction: 'outbound',
+          source: input.itemOrigin,
+          contentLength: content.length,
+          ...metadata,
+        },
+      ),
+      persona: input.personaName,
+      itemOrigin: input.itemOrigin,
+      itemType: input.itemType,
+      ...(input.channelName ? { channel: input.channelName } : {}),
+      messageSource: 'outbound',
+    });
+    if (publication.isErr()) {
+      this.ctx.logger.error(
+        { err: publication.error.message, runId: input.runId, messageId: input.messageId, type },
+        'agent-runner: failed to publish outbound lifecycle event',
+      );
+    }
+  }
+
+  private finalizeRunWithLifecycle(
+    runId: string,
+    status: 'completed' | 'failed',
+    eventInput: {
+      threadId: string;
+      personaId: string;
+      queueItemId: string;
+      provider: string;
+      model: string;
+      error?: string;
+    },
+    personaName: string,
+    timestamps: { ended_at: number; error?: string },
+  ): Result<void, Error> {
+    if (!this.ctx.lifecycleRuntime) {
+      const updated = this.ctx.repos.run.updateStatus(runId, status, timestamps);
+      return updated.isErr() ? err(new Error(updated.error.message)) : ok(undefined);
+    }
+    const result = this.ctx.lifecycleRuntime.transaction((transaction) => {
+      const updated = this.ctx.repos.run.updateStatus(runId, status, timestamps);
+      if (updated.isErr()) return err(updated.error);
+      const published = this.publishRunEvent(
+        status === 'completed' ? 'run.completed.v1' : 'run.failed.v1',
+        {
+          runId,
+          threadId: eventInput.threadId,
+          personaId: eventInput.personaId,
+          queueItemId: eventInput.queueItemId,
+          provider: eventInput.provider,
+          model: eventInput.model,
+          status,
+          ...(eventInput.error ? { errorLength: eventInput.error.length } : {}),
+        },
+        personaName,
+        transaction,
+      );
+      return published.isErr() ? err(published.error) : ok(undefined);
+    });
+    if (result.isErr()) {
+      this.ctx.logger.error(
+        { err: result.error.message, runId, status },
+        'agent-runner: failed to finalize run lifecycle event',
+      );
+    }
+    return result.isErr() ? err(new Error(result.error.message)) : ok(undefined);
+  }
+
+  private insertAndFinalizePreExecutionFailedRun(
+    runId: string,
+    input: {
+      threadId: string;
+      personaId: string;
+      queueItemId: string;
+      provider: string;
+      model: string;
+      reasoningEffort?: ReasoningEffort | null;
+      error: string;
+    },
+    personaName: string,
+  ): Result<void, Error> {
+    const inserted = this.ctx.repos.run.insert({
+      id: runId,
+      thread_id: input.threadId,
+      persona_id: input.personaId,
+      provider_name: input.provider,
+      model_name: input.model,
+      reasoning_effort: input.reasoningEffort ?? null,
+      sandbox_id: null,
+      session_id: null,
+      status: 'running',
+      parent_run_id: null,
+      queue_item_id: input.queueItemId,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      error: null,
+      started_at: Date.now(),
+      ended_at: null,
+    });
+    if (inserted.isErr()) {
+      return err(new Error(inserted.error.message));
+    }
+    return this.finalizeRunWithLifecycle(
+      runId,
+      'failed',
+      {
+        threadId: input.threadId,
+        personaId: input.personaId,
+        queueItemId: input.queueItemId,
+        provider: input.provider,
+        model: input.model,
+        error: input.error,
+      },
+      personaName,
+      { ended_at: Date.now(), error: input.error },
+    );
+  }
+
+  private publishRunEvent(
+    type: 'run.started.v1' | 'run.completed.v1' | 'run.failed.v1',
+    input: {
+      runId: string;
+      threadId: string;
+      personaId: string;
+      queueItemId: string;
+      provider: string;
+      model: string;
+      status: string;
+      errorLength?: number;
+    },
+    personaName: string,
+    transaction: TransactionContext,
+  ): Result<void, Error> {
+    if (!this.ctx.lifecycleRuntime) return ok(undefined);
+    const publication = this.ctx.lifecycleRuntime.publish(
+      {
+        event: this.lifecycleEvent(
+          type,
+          'run',
+          input.runId,
+          input.queueItemId,
+          'run',
+          [
+            { type: 'run', id: input.runId },
+            { type: 'thread', id: input.threadId },
+            { type: 'persona', id: input.personaId },
+            { type: 'queue_item', id: input.queueItemId },
+          ],
+          {
+            provider: input.provider,
+            model: input.model,
+            status: input.status,
+            ...(input.errorLength !== undefined ? { errorLength: input.errorLength } : {}),
+          },
+        ),
+        persona: personaName,
+        itemOrigin: 'run',
+        itemType: 'run',
+      },
+      transaction,
+    );
+    return publication.isErr() ? err(new Error(publication.error.message)) : ok(undefined);
+  }
+
+  private publishProviderToolLifecycleEvent(
+    type: 'provider.tool.started.v1' | 'provider.tool.completed.v1',
+    metadata: {
+      runId: string;
+      threadId: string;
+      provider: string;
+      persona: string;
+    },
+    event: {
+      messageType: string;
+      tool?: string;
+      toolUseId?: string;
+      isError?: boolean;
+      serverName?: string;
+    },
+    toolCallIdOverride?: string,
+  ): void {
+    if (!this.ctx.lifecycleRuntime) return;
+    const toolCallId = toolCallIdOverride ?? event.toolUseId ?? uuidv4();
+    const publication = this.ctx.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'tool_call',
+        toolCallId,
+        metadata.runId,
+        'run',
+        [
+          { type: 'tool_call', id: toolCallId },
+          { type: 'run', id: metadata.runId },
+          { type: 'thread', id: metadata.threadId },
+        ],
+        {
+          provider: metadata.provider,
+          toolName: event.tool ?? event.messageType,
+          messageType: event.messageType,
+          ...(event.serverName ? { serverName: event.serverName } : {}),
+          status: type === 'provider.tool.started.v1' ? 'started' : event.isError ? 'error' : 'completed',
+        },
+      ),
+      persona: metadata.persona,
+      itemOrigin: 'run',
+      itemType: 'tool_call',
+    });
+    if (publication.isErr()) {
+      this.ctx.logger.error(
+        { err: publication.error.message, runId: metadata.runId, type },
+        'agent-runner: failed to publish provider tool lifecycle event',
+      );
+    }
+  }
+
+  private lifecycleContext(
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+  ): LifecycleEventEnvelope['context'] {
+    return {
+      aggregate: { type: aggregateType, id: aggregateId },
+      correlationId,
+      recursion: { depth: 0, maxDepth: 8 },
+      provenance: { source, sourceEventIds: [], sourceReferences: [] },
+    };
+  }
+
+  private lifecycleEvent(
+    type: LifecycleEventEnvelope['type'],
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+    references: LifecycleEventEnvelope['payload']['references'],
+    metadata: LifecycleEventEnvelope['payload']['metadata'],
+  ): LifecycleEventEnvelope {
+    return {
+      version: 'v1',
+      type,
+      eventId: uuidv4(),
+      occurredAt: new Date().toISOString(),
+      context: this.lifecycleContext(aggregateType, aggregateId, correlationId, source),
+      payload: { references, metadata },
+    };
   }
 
   private toError(cause: unknown): Error {
@@ -1254,11 +1945,12 @@ export class AgentRunner {
       runId: string;
       threadId: string;
       provider: string;
+      persona: string;
     },
     activeProviderToolObservations: Map<string, StartedObservationHandle>,
     ignoredProviderToolUseIds: Set<string>,
     pendingProviderToolTasks: Array<Promise<void>>,
-    pendingNoIdToolObservations: StartedObservationHandle[],
+    pendingNoIdToolObservations: PendingNoIdProviderToolObservation[],
     event: {
       messageType: string;
       tool?: string;
@@ -1285,6 +1977,7 @@ export class AgentRunner {
     }
 
     if (this.isProviderToolStartEvent(event.messageType) && event.toolUseId) {
+      this.publishProviderToolLifecycleEvent('provider.tool.started.v1', metadata, event);
       const observation = this.ctx.observability.startWithTraceparent(traceparent, {
         type: 'tool',
         name: this.getProviderToolObservationName(event),
@@ -1302,6 +1995,7 @@ export class AgentRunner {
     }
 
     if (this.isProviderToolResultEvent(event.messageType) && event.toolUseId) {
+      this.publishProviderToolLifecycleEvent('provider.tool.completed.v1', metadata, event);
       const observation = activeProviderToolObservations.get(event.toolUseId);
       if (!observation) {
         return;
@@ -1319,14 +2013,20 @@ export class AgentRunner {
 
     // Handle result events for tools that had no toolUseId — match by FIFO order.
     if (this.isProviderToolResultEvent(event.messageType) && !event.toolUseId) {
-      const observation = pendingNoIdToolObservations.shift();
-      if (observation) {
-        observation.update({
+      const pending = pendingNoIdToolObservations.shift();
+      this.publishProviderToolLifecycleEvent(
+        'provider.tool.completed.v1',
+        metadata,
+        event,
+        pending?.toolCallId,
+      );
+      if (pending) {
+        pending.observation.update({
           output: event.output,
           level: event.isError ? 'ERROR' : undefined,
           statusMessage: event.isError ? 'Tool call returned an error' : undefined,
         });
-        observation.end();
+        pending.observation.end();
       }
       return;
     }
@@ -1337,6 +2037,13 @@ export class AgentRunner {
 
     // Start events without toolUseId: track with FIFO queue so we can end them when the
     // matching result event arrives. This avoids the zero-latency observation problem.
+    const noIdToolCallId = uuidv4();
+    this.publishProviderToolLifecycleEvent(
+      'provider.tool.started.v1',
+      metadata,
+      event,
+      noIdToolCallId,
+    );
     const noIdObservation = this.ctx.observability.startWithTraceparent(traceparent, {
       type: 'tool',
       name: this.getProviderToolObservationName(event),
@@ -1348,12 +2055,15 @@ export class AgentRunner {
         serverName: event.serverName ?? null,
       },
     });
-    pendingNoIdToolObservations.push(noIdObservation);
+    pendingNoIdToolObservations.push({
+      observation: noIdObservation,
+      toolCallId: noIdToolCallId,
+    });
   }
 
   private finishProviderToolObservations(
     activeProviderToolObservations: Map<string, StartedObservationHandle>,
-    pendingNoIdToolObservations: StartedObservationHandle[],
+    pendingNoIdToolObservations: PendingNoIdProviderToolObservation[],
     update?: {
       level?: 'ERROR';
       statusMessage?: string;
@@ -1368,11 +2078,11 @@ export class AgentRunner {
     activeProviderToolObservations.clear();
 
     // End any unmatched no-id observations (e.g. on error path where result never arrived)
-    for (const observation of pendingNoIdToolObservations) {
+    for (const pending of pendingNoIdToolObservations) {
       if (update) {
-        observation.update(update);
+        pending.observation.update(update);
       }
-      observation.end();
+      pending.observation.end();
     }
     pendingNoIdToolObservations.splice(0);
   }
