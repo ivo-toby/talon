@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
 active_wave: WAVE-006
-status: activation_checkpoint_pending_review
+status: worktrees_created_readiness_review_pending
 updated_at: 2026-07-25
 ---
 
@@ -87,9 +87,14 @@ Every task advances independently as soon as its gates clear.
   starts from this exact pushed commit.
 - WAVE-006 activation checkpoint: GPT-5.5/xhigh reviewed 0C/0H/0M/0L in
   session `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03`, committed, and pushed at
-  `eec0846676f37db0e9cc5a580c5a3457cbf18689`. Activation-sync marker is pending
-  review, commit, and push; task branches/worktrees remain uncreated until that
-  sync gate passes.
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`.
+- WAVE-006 activation-sync marker: GPT-5.5/xhigh reviewed 0C/0H/0M/0L in
+  session `019f9b76-c6a7-7a60-8cd9-2322cfdaf8f7`, committed, and pushed at
+  `e70d27ef04e550546975c4abb4e90929b5f82180`.
+- WAVE-006 task branches/worktrees: TASK-011/TASK-012/TASK-013 branches are
+  pushed and their worktrees are clean at exact sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180`; worktree-readiness review is the
+  next required gate before dispatch.
 
 ## Pending Waves
 
@@ -110,54 +115,55 @@ Every task advances independently as soon as its gates clear.
 ## Active Wave
 
 WAVE-006 is activating as a full-profile parallel batch from reviewed/pushed
-Wave 5 reconciliation checkpoint `3231c5be5c736f04d55d8ff94a28a1b1c24de372`. The three eligible tasks are moved
-to `in-progress/` and assigned isolated worktree paths. Task branches and
-worktrees are not yet created; they remain blocked until this activation
-checkpoint passes GPT-5.5/xhigh review, is committed, and is pushed.
+Wave 5 reconciliation checkpoint `3231c5be5c736f04d55d8ff94a28a1b1c24de372`.
+Activation checkpoint `eec0846676f37db0e9cc5a580c5a3457cbf18689` and
+activation-sync commit `e70d27ef04e550546975c4abb4e90929b5f82180` are reviewed
+and pushed. The three task branches/worktrees are created, pushed, verified
+clean, and waiting for the required worktree-readiness review before dispatch.
 
 Active WAVE-006 tasks:
 
 - TASK-011-context-lifecycle-migration:
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-context-lifecycle-migration`
-  on branch `task/TASK-011-context-lifecycle-migration`; creation pending
-  reviewed activation checkpoint.
+  on branch `task/TASK-011-context-lifecycle-migration`; created, pushed, and
+  verified clean at sync commit `e70d27ef04e550546975c4abb4e90929b5f82180`.
 - TASK-012-feedback-detector-subagent:
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent`
-  on branch `task/TASK-012-feedback-detector-subagent`; creation pending
-  reviewed activation checkpoint.
+  on branch `task/TASK-012-feedback-detector-subagent`; created, pushed, and
+  verified clean at sync commit `e70d27ef04e550546975c4abb4e90929b5f82180`.
 - TASK-013-handler-telemetry-correlation:
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation`
-  on branch `task/TASK-013-handler-telemetry-correlation`; creation pending
-  reviewed activation checkpoint.
+  on branch `task/TASK-013-handler-telemetry-correlation`; created, pushed, and
+  verified clean at sync commit `e70d27ef04e550546975c4abb4e90929b5f82180`.
 
 ## Monitoring
 
 - Mode: manual until WAVE-006 activation and readiness checkpoints are reviewed,
   committed, pushed, and worker dispatch begins.
 - Cadence: adaptive
-- Status: WAVE-006 activation checkpoint is reviewed/committed/pushed at
-  `eec0846676f37db0e9cc5a580c5a3457cbf18689`; activation-sync marker pending
-  GPT-5.5/xhigh review, commit, and push before task branches/worktrees are
-  created.
+- Status: WAVE-006 activation-sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180` is reviewed/committed/pushed;
+  TASK-011/TASK-012/TASK-013 branches/worktrees are created, pushed, and clean.
+  Worktree-readiness review is pending before dispatch.
 - Scheduler provenance: none yet for WAVE-006
-- Last checked: 2026-07-25T22:40:00Z
-- Next check due: immediately after the reviewed activation checkpoint is
-  pushed.
+- Last checked: 2026-07-25T22:51:45Z
+- Next check due: immediately for worktree-readiness review.
 - Stop condition: all WAVE-006 tasks are merged, blocked, cancelled, or ready
   for `wdd-reconcile-wave`.
 - Fallback prompt: resume WAVE-006 activation for
   EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md,
   shared context, wave-plan.md, and TASK-011/TASK-012/TASK-013 in-progress
-  files. Do not implement task code in the controller checkout. The activation
-  base is pushed Wave 5 reconciliation checkpoint `3231c5be5c736f04d55d8ff94a28a1b1c24de372`.
-  The exact activation checkpoint is
-  `eec0846676f37db0e9cc5a580c5a3457cbf18689`, reviewed 0C/0H/0M/0L in session
-  `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03`. Task branches/worktrees are only
-  allocated and must not be created until the activation-sync marker passes
-  GPT-5.5/xhigh review, is committed, and is pushed. Then complete readiness
-  gates, fast-forward task branches/worktrees, dispatch parallel GPT-5.5/high
-  implementation workers, require GPT-5.5/xhigh reviews, and monitor until
-  WAVE-006 is merged, blocked, cancelled, or ready for `wdd-reconcile-wave`.
+  files. Do not implement task code in the controller checkout. Activation
+  checkpoint `eec0846676f37db0e9cc5a580c5a3457cbf18689` and activation-sync
+  commit `e70d27ef04e550546975c4abb4e90929b5f82180` were both GPT-5.5/xhigh
+  reviewed 0C/0H/0M/0L and pushed. TASK-011/TASK-012/TASK-013 branches and
+  worktrees were created and pushed from the exact sync commit. Run a fresh
+  GPT-5.5/xhigh worktree-readiness review; if it passes, commit and push
+  readiness on the epic branch, fast-forward and push all task branches/worktrees
+  to the exact readiness commit, verify cleanliness and artifacts in each
+  worktree, dispatch parallel GPT-5.5/high implementation workers, require
+  GPT-5.5/xhigh reviews, and monitor until WAVE-006 is merged, blocked,
+  cancelled, or ready for `wdd-reconcile-wave`.
 
 ## Current Task Gates
 
@@ -303,20 +309,26 @@ Active WAVE-006 tasks:
   branch at `08c564a75faa86025c8995822a13e78ad1178861` after repository and
   migration tests, build, scoped lint, diff check, a CI-selected expectation
   fix, GitHub Verify PR, and GPT-5.5/xhigh review passed with 0C/0H/0M.
-- TASK-011-context-lifecycle-migration: in-progress for WAVE-006 activation;
+- TASK-011-context-lifecycle-migration: in-progress for WAVE-006 readiness;
   branch `task/TASK-011-context-lifecycle-migration` and worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-context-lifecycle-migration`
-  are allocated but not created pending reviewed activation checkpoint.
-- TASK-012-feedback-detector-subagent: in-progress for WAVE-006 activation;
+  are created, pushed, and clean at exact sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180`; readiness review/checkpoint is
+  pending before dispatch.
+- TASK-012-feedback-detector-subagent: in-progress for WAVE-006 readiness;
   branch `task/TASK-012-feedback-detector-subagent` and worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent`
-  are allocated but not created pending reviewed activation checkpoint.
-- TASK-013-handler-telemetry-correlation: in-progress for WAVE-006 activation;
+  are created, pushed, and clean at exact sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180`; readiness review/checkpoint is
+  pending before dispatch.
+- TASK-013-handler-telemetry-correlation: in-progress for WAVE-006 readiness;
   branch `task/TASK-013-handler-telemetry-correlation` and worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation`
-  are allocated but not created pending reviewed activation checkpoint.
-- The remaining 10 downstream tasks remain not_started until their planned
-  waves activate.
+  are created, pushed, and clean at exact sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180`; readiness review/checkpoint is
+  pending before dispatch.
+- The remaining downstream tasks remain not_started until their planned waves
+  activate.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
@@ -353,18 +365,21 @@ Active WAVE-006 tasks:
 - WAVE-006 / TASK-011: branch
   `task/TASK-011-context-lifecycle-migration`; worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-context-lifecycle-migration`
-  allocated only. Do not create until the activation checkpoint is reviewed,
-  committed, and pushed.
+  created, pushed, and verified clean at sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180`; readiness checkpoint and
+  fast-forward remain pending before dispatch.
 - WAVE-006 / TASK-012: branch
   `task/TASK-012-feedback-detector-subagent`; worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent`
-  allocated only. Do not create until the activation checkpoint is reviewed,
-  committed, and pushed.
+  created, pushed, and verified clean at sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180`; readiness checkpoint and
+  fast-forward remain pending before dispatch.
 - WAVE-006 / TASK-013: branch
   `task/TASK-013-handler-telemetry-correlation`; worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation`
-  allocated only. Do not create until the activation checkpoint is reviewed,
-  committed, and pushed.
+  created, pushed, and verified clean at sync commit
+  `e70d27ef04e550546975c4abb4e90929b5f82180`; readiness checkpoint and
+  fast-forward remain pending before dispatch.
 
 ## Gate Definitions
 
@@ -1038,13 +1053,18 @@ may remain as historical context.
 - 2026-07-25: GPT-5.5/xhigh WAVE-006 activation review
   `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03` passed 0C/0H/0M/0L. The activation
   checkpoint was committed and pushed at
-  `eec0846676f37db0e9cc5a580c5a3457cbf18689`. Activation-sync review/commit/push
-  remains required before task branch/worktree creation.
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`.
+- 2026-07-25: GPT-5.5/xhigh WAVE-006 activation-sync review
+  `019f9b76-c6a7-7a60-8cd9-2322cfdaf8f7` passed 0C/0H/0M/0L. The sync marker
+  was committed and pushed at `e70d27ef04e550546975c4abb4e90929b5f82180`.
+  TASK-011/TASK-012/TASK-013 task branches/worktrees were created and pushed
+  from that exact commit, and each worktree is clean with the current task file,
+  orchestration.json, and controller-state.md present.
 
 ## Next Action
 
-Run a fresh GPT-5.5/xhigh WAVE-006 activation-sync marker review. If it has no
-Critical/High/Medium findings, commit and push the sync marker on
-`epic/durable-lifecycle-pipeline`, then create the three task branches/worktrees
-from that exact pushed commit. Continue using GPT-5.5/high implementation and
-GPT-5.5/xhigh review only; no GPT-5.6.
+Run a fresh GPT-5.5/xhigh WAVE-006 worktree-readiness review. If it has no
+Critical/High/Medium findings, commit and push the readiness checkpoint on
+`epic/durable-lifecycle-pipeline`, then fast-forward and push the three task
+branches/worktrees to that exact readiness commit before dispatch. Continue
+using GPT-5.5/high implementation and GPT-5.5/xhigh review only; no GPT-5.6.

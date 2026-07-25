@@ -1622,10 +1622,10 @@
     "activeWave": "WAVE-006",
     "nextWave": "WAVE-007",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": false,
+    "activationArtifactsSynced": true,
     "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
     "activationCheckpoint": "eec0846676f37db0e9cc5a580c5a3457cbf18689",
-    "activationSyncCommit": null,
+    "activationSyncCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
@@ -1785,7 +1785,7 @@
       "nextWaveStatus": "activation_started"
     },
     "wave006Activation": {
-      "status": "activation_checkpoint_pushed_sync_pending",
+      "status": "worktrees_created_readiness_review_pending",
       "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
       "tasks": [
         "TASK-011-context-lifecycle-migration",
@@ -1802,14 +1802,21 @@
         "TASK-012-feedback-detector-subagent": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent",
         "TASK-013-handler-telemetry-correlation": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation"
       },
-      "taskBranchesCreated": false,
-      "taskWorktreesCreated": false,
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
       "activationCheckpointReviewModel": "gpt-5.5",
       "activationCheckpointReviewReasoningEffort": "xhigh",
       "activationCheckpointReviewThreadId": "019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03",
       "activationCheckpointReviewCounts": "0C/0H/0M/0L",
       "activationCheckpoint": "eec0846676f37db0e9cc5a580c5a3457cbf18689",
-      "activationSyncCommit": null,
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewThreadId": "019f9b76-c6a7-7a60-8cd9-2322cfdaf8f7",
+      "activationSyncReviewCounts": "0C/0H/0M/0L",
+      "activationSyncCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
       "readinessCommit": null
     }
   },
@@ -1817,12 +1824,12 @@
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave006_activation_sync_marker_pending_review_commit_push",
-    "lastCheckedAt": "2026-07-25T22:40:00Z",
-    "nextCheckDueAt": null,
+    "status": "wave006_worktrees_created_readiness_review_pending",
+    "lastCheckedAt": "2026-07-25T22:51:45Z",
+    "nextCheckDueAt": "2026-07-25T22:51:45Z",
     "schedulerRef": null,
     "schedulerStatus": "not_created_until_after_activation_or_dispatch",
-    "fallbackPrompt": "Resume WAVE-006 activation for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-011/TASK-012/TASK-013 in-progress files. Do not implement task code in the controller checkout. The activation base is pushed Wave 5 reconciliation checkpoint 3231c5be5c736f04d55d8ff94a28a1b1c24de372. The exact activation checkpoint is eec0846676f37db0e9cc5a580c5a3457cbf18689, reviewed 0C/0H/0M/0L in session 019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03. Task branches/worktrees are only allocated and must not be created until the activation-sync marker passes GPT-5.5/xhigh review, is committed, and is pushed. Then complete readiness gates, fast-forward task branches/worktrees, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-006 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "fallbackPrompt": "Resume WAVE-006 readiness for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-011/TASK-012/TASK-013 in-progress files. Do not implement task code in the controller checkout. Activation checkpoint eec0846676f37db0e9cc5a580c5a3457cbf18689 and activation-sync commit e70d27ef04e550546975c4abb4e90929b5f82180 were both GPT-5.5/xhigh reviewed 0C/0H/0M/0L and pushed. TASK-011/TASK-012/TASK-013 branches and worktrees were created and pushed from the exact sync commit. Run a fresh GPT-5.5/xhigh worktree-readiness review; if it passes, commit and push readiness on the epic branch, fast-forward and push all task branches/worktrees to the exact readiness commit, verify cleanliness and artifacts in each worktree, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-006 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopCondition": "All WAVE-006 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopReason": null
   }

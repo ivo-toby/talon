@@ -470,12 +470,15 @@ Activation rule:
   `.worktrees/WAVE-006-feedback-detector-subagent`, and
   `task/TASK-013-handler-telemetry-correlation` /
   `.worktrees/WAVE-006-handler-telemetry-correlation`.
-- Do not create task branches/worktrees until this activation checkpoint passes
-  GPT-5.5/xhigh review, is committed, and is pushed on the epic branch.
 - Activation checkpoint passed GPT-5.5/xhigh review
   `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03` with 0C/0H/0M/0L and was pushed at
-  `eec0846676f37db0e9cc5a580c5a3457cbf18689`. Activation-sync marker review,
-  commit, and push are required before branch/worktree creation.
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`.
+- Activation-sync marker passed GPT-5.5/xhigh review
+  `019f9b76-c6a7-7a60-8cd9-2322cfdaf8f7` with 0C/0H/0M/0L and was pushed at
+  `e70d27ef04e550546975c4abb4e90929b5f82180`.
+- Task branches/worktrees are created, pushed, clean, and verified at exact sync
+  commit `e70d27ef04e550546975c4abb4e90929b5f82180`; worktree-readiness review
+  and readiness checkpoint remain required before dispatch.
 
 Stop condition:
 
