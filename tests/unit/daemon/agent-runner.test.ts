@@ -54,6 +54,11 @@ import type {
   ObservationHandle,
   StartedObservationHandle,
 } from '../../../src/observability/langfuse/observability-types.js';
+import {
+  LifecycleInterceptorEnvelopeSchema,
+  type LifecycleInterceptorEnvelope,
+} from '../../../src/lifecycle/contracts/index.js';
+import { MAX_LIFECYCLE_CONTENT_LENGTH } from '../../../src/lifecycle/contracts/event-contract.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -166,6 +171,17 @@ function makeMockContext(): DaemonContext {
       audit: {} as any,
       message: {
         insert: vi.fn().mockReturnValue(ok({})),
+        insertIfAbsent: vi.fn((input) =>
+          ok({
+            message: {
+              ...input,
+              created_at: Date.now(),
+            },
+            inserted: true,
+          }),
+        ),
+        existsByIdempotencyKey: vi.fn().mockReturnValue(false),
+        deleteByIdempotencyKey: vi.fn().mockReturnValue(ok(1)),
       } as any,
       run: {
         insert: vi.fn().mockReturnValue(ok({})),
@@ -243,6 +259,8 @@ function makeMockContext(): DaemonContext {
     } as any,
     hostToolsBridge: {
       path: '/tmp/test-data/host-tools.sock',
+      registerRunAuthentication: vi.fn(),
+      unregisterRunAuthentication: vi.fn(),
     } as any,
     providerRegistry: new ProviderRegistry(
       {
@@ -253,7 +271,26 @@ function makeMockContext(): DaemonContext {
       },
     ),
     backgroundAgentManager: null,
+    lifecycleRuntime: null,
     logger: mockLogger as any,
+  };
+}
+
+function allowInterception(input: LifecycleInterceptorEnvelope) {
+  return ok({
+    outcome: 'allow' as const,
+    input,
+    signals: [],
+  });
+}
+
+function makeLifecycleRuntime() {
+  return {
+    intercept: vi.fn((_invocation, input: LifecycleInterceptorEnvelope) => allowInterception(input)),
+    publish: vi.fn(() => ok({})),
+    transaction: vi.fn((callback: (transaction: unknown) => ReturnType<typeof ok>) =>
+      callback({}),
+    ),
   };
 }
 
@@ -277,6 +314,24 @@ async function* makeAgentStream(overrides: Record<string, unknown> = {}) {
     usage: { input_tokens: 100, output_tokens: 50 },
     is_error: false,
     ...overrides,
+  };
+}
+
+async function* makeAgentStreamWithText(text: string) {
+  yield {
+    type: 'assistant',
+    message: {
+      content: [{ text }],
+    },
+  };
+  yield {
+    type: 'result',
+    subtype: 'success',
+    result: text,
+    session_id: 'session-abc-123',
+    total_cost_usd: 0.005,
+    usage: { input_tokens: 100, output_tokens: 50 },
+    is_error: false,
   };
 }
 
@@ -535,7 +590,7 @@ describe('AgentRunner', () => {
 
       await runner.run(item);
 
-      expect(ctx.repos.message.insert).toHaveBeenCalledWith(
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
         expect.objectContaining({
           thread_id: 'thread-001',
           direction: 'outbound',
@@ -553,6 +608,587 @@ describe('AgentRunner', () => {
         expect.any(String),
         'completed',
         expect.objectContaining({ ended_at: expect.any(Number) }),
+      );
+    });
+
+    it('publishes run started and completed lifecycle events when lifecycle is enabled', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'run.started.v1',
+            context: expect.objectContaining({
+              aggregate: expect.objectContaining({ type: 'run' }),
+              correlationId: 'qi-001',
+            }),
+            payload: expect.objectContaining({
+              metadata: expect.not.objectContaining({
+                content: expect.anything(),
+              }),
+            }),
+          }),
+          persona: 'TestBot',
+          itemOrigin: 'run',
+          itemType: 'run',
+        }),
+        expect.anything(),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'run.completed.v1' }),
+          persona: 'TestBot',
+          itemOrigin: 'run',
+          itemType: 'run',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('returns an error and marks the run failed when completed lifecycle finalization fails', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.publish.mockImplementation((publication: { event: { type: string } }) =>
+        publication.event.type === 'run.completed.v1'
+          ? err(new Error('publish completed failed'))
+          : ok({}),
+      );
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('failed to finalize completed run');
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({
+          error: expect.stringContaining('failed to finalize completed run'),
+        }),
+      );
+    });
+
+    it('applies run.before_execute transforms before invoking the provider', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
+        if (input.hook !== 'run.before_execute') return allowInterception(input);
+        return ok({
+          outcome: 'allow' as const,
+          input: {
+            ...input,
+            input: {
+              ...input.input,
+              model: 'claude-opus-4-20250514',
+              contextAdditions: { reviewer: 'lifecycle' },
+            },
+          },
+          signals: [],
+        });
+      });
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { model: string; systemPrompt: string };
+      };
+      expect(queryCall.options.model).toBe('claude-opus-4-20250514');
+      expect(queryCall.options.systemPrompt).toContain('"reviewer":"lifecycle"');
+    });
+
+    it('does not invoke the provider when run.before_execute denies execution', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
+        if (input.hook !== 'run.before_execute') return allowInterception(input);
+        return ok({
+          outcome: 'deny' as const,
+          reason: 'policy blocked run',
+          input,
+          signals: [],
+        });
+      });
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('policy blocked run');
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: expect.stringContaining('policy blocked run') }),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'run.failed.v1' }),
+          persona: 'TestBot',
+          itemOrigin: 'run',
+          itemType: 'run',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('records a failed run when run.before_execute selects an unavailable provider', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
+        if (input.hook !== 'run.before_execute') return allowInterception(input);
+        return ok({
+          outcome: 'allow' as const,
+          input: {
+            ...input,
+            input: {
+              ...input.input,
+              provider: 'missing-provider',
+            },
+          },
+          signals: [],
+        });
+      });
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain(
+        'Lifecycle run interceptor selected unavailable provider "missing-provider"',
+      );
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider_name: 'missing-provider',
+          status: 'running',
+        }),
+      );
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({
+          error: 'Lifecycle run interceptor selected unavailable provider "missing-provider"',
+        }),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'run.failed.v1' }),
+          persona: 'TestBot',
+          itemOrigin: 'run',
+          itemType: 'run',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('runs message.before_send before final outbound delivery and publishes sent', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
+        if (input.hook !== 'message.before_send') return allowInterception(input);
+        return ok({
+          outcome: 'allow' as const,
+          input: {
+            ...input,
+            input: {
+              ...input.input,
+              content: 'Transformed outbound',
+            },
+          },
+          signals: [],
+        });
+      });
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(connector.send).toHaveBeenCalledWith('ext-001', { body: 'Transformed outbound' });
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'outbound:qi-001',
+          content: JSON.stringify({ body: 'Transformed outbound' }),
+          idempotency_key: 'outbound:qi-001',
+        }),
+      );
+      const insertCall = vi.mocked(ctx.repos.message.insertIfAbsent).mock.calls[0]![0] as { id: string };
+      const sentPublication = lifecycleRuntime.publish.mock.calls
+        .map(([publication]) => publication as { event: { type: string; payload: { references: unknown[] } } })
+        .find((publication) => publication.event.type === 'message.sent.v1');
+      expect(sentPublication?.event.payload.references).toContainEqual({
+        type: 'message',
+        id: insertCall.id,
+      });
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'message.sent.v1' }),
+          persona: 'TestBot',
+          itemOrigin: 'run',
+          itemType: 'message',
+          messageSource: 'outbound',
+        }),
+      );
+    });
+
+    it('bounds lifecycle input but delivers original over-limit final outbound when unchanged', async () => {
+      const longContent = 'L'.repeat(MAX_LIFECYCLE_CONTENT_LENGTH + 1024);
+      mockQuery.mockReturnValue(makeAgentStreamWithText(longContent));
+      const lifecycleRuntime = makeLifecycleRuntime();
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      const beforeSendCall = lifecycleRuntime.intercept.mock.calls.find(
+        ([invocation, input]) =>
+          invocation.hook === 'message.before_send' &&
+          (input as LifecycleInterceptorEnvelope).input.messageId === 'outbound:qi-001',
+      );
+      expect(beforeSendCall).toBeDefined();
+      const lifecycleInput = beforeSendCall![1] as LifecycleInterceptorEnvelope;
+      expect(LifecycleInterceptorEnvelopeSchema.safeParse(lifecycleInput).success).toBe(true);
+      expect(lifecycleInput.input.content.length).toBeLessThanOrEqual(
+        MAX_LIFECYCLE_CONTENT_LENGTH,
+      );
+      expect(lifecycleInput.input.content).not.toBe(longContent);
+      expect(connector.send).toHaveBeenCalledWith('ext-001', { body: longContent });
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: JSON.stringify({ body: longContent }),
+        }),
+      );
+    });
+
+    it('reserves final outbound delivery before sending to protect retries after post-send failures', async () => {
+      const callOrder: string[] = [];
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockImplementation((input) => {
+        callOrder.push('reserve');
+        return ok({
+          message: {
+            ...input,
+            created_at: Date.now(),
+          },
+          inserted: true,
+        } as any);
+      });
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      vi.mocked(connector.send).mockImplementation(async () => {
+        callOrder.push('send');
+        return ok(undefined);
+      });
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'outbound:qi-001',
+          idempotency_key: 'outbound:qi-001',
+          content: JSON.stringify({ body: 'Hello from the agent!' }),
+        }),
+      );
+      expect(callOrder).toEqual(expect.arrayContaining(['reserve', 'send']));
+      expect(callOrder.indexOf('reserve')).toBeLessThan(callOrder.indexOf('send'));
+    });
+
+    it('does not resend final outbound on retry after a post-send finalization failure', async () => {
+      mockQuery.mockImplementation(() => makeAgentStream());
+      let reserveAttempt = 0;
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockImplementation((input) => {
+        reserveAttempt += 1;
+        return ok({
+          message: {
+            ...input,
+            created_at: Date.now(),
+          },
+          inserted: reserveAttempt === 1,
+        } as any);
+      });
+      let completedStatusAttempt = 0;
+      vi.mocked(ctx.repos.run.updateStatus).mockImplementation((_runId, status) => {
+        if (status === 'completed') {
+          completedStatusAttempt += 1;
+          if (completedStatusAttempt === 1) {
+            return err(new Error('post-send finalization failed')) as any;
+          }
+        }
+        return ok({} as any);
+      });
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const first = await runner.run(makeQueueItem());
+      const second = await runner.run(makeQueueItem());
+
+      expect(first.isErr()).toBe(true);
+      expect(first._unsafeUnwrapErr().message).toContain('post-send finalization failed');
+      expect(second.isOk()).toBe(true);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledTimes(2);
+      expect(connector.send).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not resend intermediate outbound text on retry after a post-send finalization failure', async () => {
+      async function* textToolTextStream() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              { text: 'Before tool.' },
+              { type: 'tool_use', id: 'tu-001', name: 'memory_access', input: {} },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'tu-001', content: 'ok' }],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'After tool.' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: '',
+          session_id: 'session-abc-123',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockImplementation(() => textToolTextStream());
+      const reservedKeys = new Set<string>();
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockImplementation((input) => {
+        const inserted = !reservedKeys.has(input.idempotency_key);
+        if (inserted) {
+          reservedKeys.add(input.idempotency_key);
+        }
+        return ok({
+          message: {
+            ...input,
+            created_at: Date.now(),
+          },
+          inserted,
+        } as any);
+      });
+      let completedStatusAttempt = 0;
+      vi.mocked(ctx.repos.run.updateStatus).mockImplementation((_runId, status) => {
+        if (status === 'completed') {
+          completedStatusAttempt += 1;
+          if (completedStatusAttempt === 1) {
+            return err(new Error('post-send finalization failed')) as any;
+          }
+        }
+        return ok({} as any);
+      });
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const first = await runner.run(makeQueueItem());
+      const second = await runner.run(makeQueueItem());
+
+      expect(first.isErr()).toBe(true);
+      expect(first._unsafeUnwrapErr().message).toContain('post-send finalization failed');
+      expect(second.isOk()).toBe(true);
+      const sentBodies = vi
+        .mocked(connector.send)
+        .mock.calls.map(([, body]) => (body as { body: string }).body);
+      expect(sentBodies).toEqual(['Before tool.', 'After tool.']);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotency_key: 'outbound:qi-001:stream:0' }),
+      );
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotency_key: 'outbound:qi-001' }),
+      );
+    });
+
+    it('does not persist a synthetic final transcript row when stream ends after flushed text', async () => {
+      async function* textToolOnlyStream() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              { text: 'Before tool.' },
+              { type: 'tool_use', id: 'tu-001', name: 'memory_access', input: {} },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [{ type: 'tool_result', tool_use_id: 'tu-001', content: 'ok' }],
+          },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: '',
+          session_id: 'session-abc-123',
+          total_cost_usd: 0.001,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockImplementation(() => textToolOnlyStream());
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(
+        vi.mocked(connector.send).mock.calls.map(([, body]) => (body as { body: string }).body),
+      ).toEqual(['Before tool.']);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledTimes(1);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          content: JSON.stringify({ body: 'Before tool.' }),
+          idempotency_key: 'outbound:qi-001:stream:0',
+        }),
+      );
+      expect(ctx.repos.message.insert).not.toHaveBeenCalled();
+    });
+
+    it('clears final outbound reservation and sends again on retry after connector send failure', async () => {
+      mockQuery.mockImplementation(() => makeAgentStream());
+      const reservedKeys = new Set<string>();
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockImplementation((input) => {
+        const inserted = !reservedKeys.has(input.idempotency_key);
+        if (inserted) {
+          reservedKeys.add(input.idempotency_key);
+        }
+        return ok({
+          message: {
+            ...input,
+            created_at: Date.now(),
+          },
+          inserted,
+        } as any);
+      });
+      vi.mocked(ctx.repos.message.deleteByIdempotencyKey).mockImplementation((key) => {
+        const deleted = reservedKeys.delete(key);
+        return ok(deleted ? 1 : 0);
+      });
+      const connector = ctx.channelRegistry.get('test-channel')!;
+      vi.mocked(connector.send)
+        .mockResolvedValueOnce(err(new Error('transport down')))
+        .mockResolvedValueOnce(ok(undefined));
+
+      const first = await runner.run(makeQueueItem());
+      const second = await runner.run(makeQueueItem());
+
+      expect(first.isErr()).toBe(true);
+      expect(first._unsafeUnwrapErr().message).toContain('transport down');
+      expect(second.isOk()).toBe(true);
+      expect(ctx.repos.message.deleteByIdempotencyKey).toHaveBeenCalledWith('outbound:qi-001');
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledTimes(2);
+      expect(connector.send).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips final outbound connector delivery when the stable outbound reservation exists', async () => {
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockImplementation((input) =>
+        ok({
+          message: {
+            ...input,
+            created_at: Date.now(),
+          },
+          inserted: false,
+        } as any),
+      );
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotency_key: 'outbound:qi-001' }),
+      );
+      expect(connector.send).not.toHaveBeenCalled();
+      expect(ctx.repos.message.insert).not.toHaveBeenCalled();
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'completed',
+        expect.objectContaining({ ended_at: expect.any(Number) }),
+      );
+    });
+
+    it('routes CLI waiting notifications through outbound lifecycle hooks', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      const cliRun = vi.fn().mockResolvedValue({
+        output: 'CLI output',
+        sessionId: undefined,
+        usage: {
+          inputTokens: 10,
+          outputTokens: 5,
+        },
+        isError: false,
+      });
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          type: 'legacy-cli',
+          provider: {
+            name: 'legacy-cli',
+            createExecutionStrategy: () => ({
+              type: 'cli' as const,
+              supportsSessionResumption: false as const,
+              run: cliRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10,
+              metrics: { input_tokens: 10 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'legacy-cli',
+            contextWindowTokens: 1_000_000,
+          }),
+        }),
+      } as any;
+      runner = new AgentRunner(ctx);
+      const connector = ctx.channelRegistry.get('test-channel')!;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(connector.send).toHaveBeenCalledWith('ext-001', { body: 'Thinking...' });
+      expect(lifecycleRuntime.intercept).toHaveBeenCalledWith(
+        expect.objectContaining({
+          hook: 'message.before_send',
+          itemOrigin: 'run',
+          itemType: 'message',
+          messageSource: 'outbound',
+        }),
+        expect.objectContaining({
+          hook: 'message.before_send',
+          input: expect.objectContaining({
+            messageId: 'outbound:qi-001:waiting',
+            content: 'Thinking...',
+          }),
+        }),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: 'message.sent.v1',
+            context: expect.objectContaining({
+              aggregate: expect.objectContaining({ id: 'outbound:qi-001:waiting' }),
+            }),
+          }),
+        }),
       );
     });
 
@@ -884,7 +1520,7 @@ describe('AgentRunner', () => {
       expect(connector.send).toHaveBeenNthCalledWith(1, 'ext-001', {
         body: 'Gemini result',
       });
-      expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledTimes(1);
       expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
         'thread-001',
         'persona-001',
@@ -1215,12 +1851,18 @@ describe('AgentRunner', () => {
         expect(callOrder.indexOf('send')).toBeLessThan(callOrder.indexOf('rotate'));
       });
 
-      it('persists outbound message before running context rotation for SDK providers', async () => {
+      it('reserves outbound message before running context rotation for SDK providers', async () => {
         const callOrder: string[] = [];
 
-        vi.mocked(ctx.repos.message.insert).mockImplementation(() => {
-          callOrder.push('message.insert');
-          return ok({} as any);
+        vi.mocked(ctx.repos.message.insertIfAbsent).mockImplementation((input) => {
+          callOrder.push('message.reserve');
+          return ok({
+            message: {
+              ...input,
+              created_at: Date.now(),
+            },
+            inserted: true,
+          } as any);
         });
 
         ctx.contextRoller = {
@@ -1244,7 +1886,7 @@ describe('AgentRunner', () => {
 
         expect(result.isOk()).toBe(true);
         expect(callOrder).toContain('rotate'); // sanity: rotation was triggered
-        expect(callOrder.indexOf('message.insert')).toBeLessThan(callOrder.indexOf('rotate'));
+        expect(callOrder.indexOf('message.reserve')).toBeLessThan(callOrder.indexOf('rotate'));
       });
 
       it('sends response to channel before context rotation for CLI providers', async () => {
@@ -3249,6 +3891,117 @@ describe('AgentRunner', () => {
       expect(ctx.observability.observeWithTraceparent).not.toHaveBeenCalled();
     });
 
+    it('publishes no-toolUseId provider tool lifecycle start and completion with the same tool_call id', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      async function* streamWithNoIdToolResult() {
+        yield { type: 'tool_use', tool: 'Read', subtype: undefined };
+        yield {
+          type: 'tool_result',
+          tool: 'Read',
+          subtype: 'success',
+          content: 'file contents',
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'Done reading.',
+          session_id: 'session-xyz',
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 200, output_tokens: 100 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithNoIdToolResult());
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      const toolEvents = lifecycleRuntime.publish.mock.calls
+        .map(([publication]) => (publication as { event: any }).event)
+        .filter((event) =>
+          ['provider.tool.started.v1', 'provider.tool.completed.v1'].includes(event.type),
+        );
+      expect(toolEvents).toHaveLength(2);
+      const [started, completed] = toolEvents as [
+        { context: { aggregate: { id: string } }; payload: { references: unknown[] } },
+        { context: { aggregate: { id: string } }; payload: { references: unknown[] } },
+      ];
+      expect(started.context.aggregate.id).toEqual(expect.any(String));
+      expect(completed.context.aggregate.id).toBe(started.context.aggregate.id);
+      expect(started.payload.references).toContainEqual({
+        type: 'tool_call',
+        id: started.context.aggregate.id,
+      });
+      expect(completed.payload.references).toContainEqual({
+        type: 'tool_call',
+        id: started.context.aggregate.id,
+      });
+    });
+
+    it('publishes provider tool lifecycle events with the provider supplied toolUseId', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      async function* streamWithProviderToolUseId() {
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_001',
+                name: 'Read',
+                input: { file_path: 'README.md' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_001',
+                content: 'README contents',
+                is_error: false,
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'Done reading.',
+          session_id: 'session-xyz',
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 200, output_tokens: 100 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithProviderToolUseId());
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      const toolEvents = lifecycleRuntime.publish.mock.calls
+        .map(([publication]) => (publication as { event: any }).event)
+        .filter((event) =>
+          ['provider.tool.started.v1', 'provider.tool.completed.v1'].includes(event.type),
+        );
+      expect(toolEvents).toHaveLength(2);
+      for (const event of toolEvents) {
+        expect(event.context.aggregate).toEqual({ type: 'tool_call', id: 'toolu_001' });
+        expect(event.payload.references).toContainEqual({ type: 'tool_call', id: 'toolu_001' });
+      }
+    });
+
     it('skips duplicate provider tool observations for internal host-tools MCP calls', async () => {
       ctx.observability.startWithTraceparent = vi.fn(() => makeStartedObservationHandle(null));
 
@@ -3597,13 +4350,22 @@ describe('AgentRunner', () => {
       expect(sendCalls[0]![1]).toEqual({ body: 'Before tool.' });
       expect(sendCalls[1]![1]).toEqual({ body: 'After tool.' });
 
-      // Verify DB persistence stores the full transcript with block separators
-      expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
-      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as {
-        content: string;
-      };
-      const persisted = JSON.parse(insertCall.content);
-      expect(persisted.body).toBe('Before tool.\n\nAfter tool.');
+      // Verify DB persistence stores the physical outbound messages with stable delivery keys.
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledTimes(2);
+      const persisted = vi.mocked(ctx.repos.message.insertIfAbsent).mock.calls.map(([input]) => {
+        const row = input as {
+          content: string;
+          idempotency_key: string;
+        };
+        return {
+          body: (JSON.parse(row.content) as { body: string }).body,
+          idempotencyKey: row.idempotency_key,
+        };
+      });
+      expect(persisted).toEqual([
+        { body: 'Before tool.', idempotencyKey: 'outbound:qi-001:stream:0' },
+        { body: 'After tool.', idempotencyKey: 'outbound:qi-001' },
+      ]);
     });
 
     it('sends three separate messages for text → tool → text → tool → text', async () => {
@@ -3667,13 +4429,23 @@ describe('AgentRunner', () => {
       expect(sendCalls[1]![1]).toEqual({ body: 'Block 2.' });
       expect(sendCalls[2]![1]).toEqual({ body: 'Block 3.' });
 
-      // Verify DB persistence stores the full transcript with block separators
-      expect(ctx.repos.message.insert).toHaveBeenCalledTimes(1);
-      const insertCall = vi.mocked(ctx.repos.message.insert).mock.calls[0]![0] as {
-        content: string;
-      };
-      const persisted = JSON.parse(insertCall.content);
-      expect(persisted.body).toBe('Block 1.\n\nBlock 2.\n\nBlock 3.');
+      // Verify DB persistence stores the physical outbound messages with stable delivery keys.
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledTimes(3);
+      const persisted = vi.mocked(ctx.repos.message.insertIfAbsent).mock.calls.map(([input]) => {
+        const row = input as {
+          content: string;
+          idempotency_key: string;
+        };
+        return {
+          body: (JSON.parse(row.content) as { body: string }).body,
+          idempotencyKey: row.idempotency_key,
+        };
+      });
+      expect(persisted).toEqual([
+        { body: 'Block 1.', idempotencyKey: 'outbound:qi-001:stream:0' },
+        { body: 'Block 2.', idempotencyKey: 'outbound:qi-001:stream:1' },
+        { body: 'Block 3.', idempotencyKey: 'outbound:qi-001' },
+      ]);
     });
 
     it('concatenates consecutive text events with no tool between them into a single message', async () => {

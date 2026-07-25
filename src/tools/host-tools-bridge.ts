@@ -7,9 +7,11 @@
  */
 
 import { unlinkSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import net from 'node:net';
 import type Database from 'better-sqlite3';
+import { err, ok } from 'neverthrow';
 import type { DaemonContext } from '../daemon/daemon-context.js';
 import type { ToolCallResult } from './tool-types.js';
 import type { ToolExecutionContext } from './host-tools/channel-send.js';
@@ -34,6 +36,7 @@ import {
   ensureOwnerOnlyDirSync,
   ensureOwnerOnlyFile,
 } from '../core/fs/private-paths.js';
+import type { LifecycleEventEnvelope } from '../lifecycle/contracts/index.js';
 
 /** NDJSON request shape from MCP server. */
 interface BridgeRequest {
@@ -50,6 +53,14 @@ interface BridgeResponse {
   result?: ToolCallResult;
   error?: string;
 }
+
+type LifecycleBridgeJson =
+  | string
+  | number
+  | boolean
+  | null
+  | LifecycleBridgeJson[]
+  | { [key: string]: LifecycleBridgeJson };
 
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
@@ -91,6 +102,8 @@ export class HostToolsBridge {
     this.channelHandler = new ChannelSendHandler({
       channelRegistry: ctx.channelRegistry,
       threadRepository: ctx.repos.thread,
+      personaRepository: ctx.repos.persona,
+      lifecycleRuntime: ctx.lifecycleRuntime ?? undefined,
       logger: ctx.logger,
     });
 
@@ -360,12 +373,56 @@ export class HostToolsBridge {
             return toolResult;
           }
 
+          const lifecyclePreparation = this.prepareLifecycleToolExecution(
+            normalizedTool,
+            args,
+            context,
+          );
+          if (lifecyclePreparation.status === 'error') {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: lifecyclePreparation.error,
+            };
+            toolObservation.update({
+              output: toolResult,
+              level: 'ERROR',
+              statusMessage: toolResult.error,
+            });
+            return toolResult;
+          }
+
+          const effectiveArgs = lifecyclePreparation.args;
+          const started = this.publishToolLifecycleEvent(
+            'provider.tool.started.v1',
+            normalizedTool,
+            effectiveArgs,
+            context,
+            lifecyclePreparation.personaName,
+            { status: 'started' },
+          );
+          if (started.isErr()) {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: `Failed to publish tool start lifecycle event: ${started.error.message}`,
+            };
+            toolObservation.update({
+              output: toolResult,
+              level: 'ERROR',
+              statusMessage: toolResult.error,
+            });
+            return toolResult;
+          }
+
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
-          const requestTimeoutMs = getHostToolRequestTimeoutMs(normalizedTool, args);
+          const requestTimeoutMs = getHostToolRequestTimeoutMs(normalizedTool, effectiveArgs);
 
           try {
             const toolResult = await Promise.race([
-              this.dispatch(normalizedTool, args, context),
+              this.dispatch(normalizedTool, effectiveArgs, context),
               new Promise<never>((_, reject) => {
                 timeoutId = setTimeout(() => {
                   this.ctx.logger.warn(
@@ -383,9 +440,33 @@ export class HostToolsBridge {
               statusMessage: toolResult.status === 'error' ? toolResult.error : undefined,
             });
 
+            this.publishToolLifecycleEvent(
+              'provider.tool.completed.v1',
+              normalizedTool,
+              effectiveArgs,
+              context,
+              lifecyclePreparation.personaName,
+              {
+                status: toolResult.status,
+                hasError: toolResult.status === 'error',
+              },
+            );
+
             return toolResult;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
+            this.publishToolLifecycleEvent(
+              'provider.tool.completed.v1',
+              normalizedTool,
+              effectiveArgs,
+              context,
+              lifecyclePreparation.personaName,
+              {
+                status: 'error',
+                hasError: true,
+                errorLength: message.length,
+              },
+            );
             toolObservation.update({
               level: 'ERROR',
               statusMessage: message,
@@ -534,6 +615,140 @@ export class HostToolsBridge {
       );
       return { allow: [], requireApproval: [] };
     }
+  }
+
+  private resolvePersonaName(personaId: string): string | null {
+    const personaRowResult = this.ctx.repos.persona.findById(personaId);
+    if (personaRowResult.isErr() || personaRowResult.value === null) {
+      return null;
+    }
+    return personaRowResult.value.name;
+  }
+
+  private prepareLifecycleToolExecution(
+    tool: string,
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+  ):
+    | { status: 'ready'; args: Record<string, unknown>; personaName: string }
+    | { status: 'error'; error: string } {
+    if (!this.ctx.lifecycleRuntime) {
+      return { status: 'ready', args, personaName: context.personaId };
+    }
+
+    const personaName = this.resolvePersonaName(context.personaId);
+    if (!personaName) {
+      return {
+        status: 'error',
+        error: `Failed to resolve lifecycle persona for tool call: ${context.personaId}`,
+      };
+    }
+
+    const toolCallId = context.requestId ?? randomUUID();
+    const interception = this.ctx.lifecycleRuntime.intercept(
+      {
+        persona: personaName,
+        hook: 'tool.before_execute',
+        itemOrigin: 'tool',
+        itemType: 'tool_call',
+      },
+      {
+        version: 'v1',
+        interceptionId: randomUUID(),
+        hook: 'tool.before_execute',
+        context: this.lifecycleContext('tool_call', toolCallId, context.runId, 'tool'),
+        input: {
+          toolCallId,
+          toolName: tool,
+          arguments: args as Record<string, LifecycleBridgeJson>,
+        },
+      },
+    );
+    if (interception.isErr()) {
+      return {
+        status: 'error',
+        error: `Lifecycle tool interception failed: ${interception.error.message}`,
+      };
+    }
+    if (interception.value.outcome !== 'allow') {
+      return {
+        status: 'error',
+        error: `Lifecycle tool policy blocked execution: ${interception.value.reason}`,
+      };
+    }
+    return {
+      status: 'ready',
+      args: (interception.value.input.input as { arguments: Record<string, unknown> }).arguments,
+      personaName,
+    };
+  }
+
+  private publishToolLifecycleEvent(
+    type: 'provider.tool.started.v1' | 'provider.tool.completed.v1',
+    tool: string,
+    args: Record<string, unknown>,
+    context: ToolExecutionContext,
+    personaName: string,
+    metadata: Record<string, string | number | boolean | null>,
+  ): import('neverthrow').Result<void, Error> {
+    if (!this.ctx.lifecycleRuntime) return ok(undefined);
+    const toolCallId = context.requestId ?? randomUUID();
+    const publication = this.ctx.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'tool_call',
+        toolCallId,
+        context.runId,
+        'tool',
+        [
+          { type: 'tool_call', id: toolCallId },
+          { type: 'run', id: context.runId },
+          { type: 'thread', id: context.threadId },
+        ],
+        {
+          toolName: tool,
+          argumentKeys: Object.keys(args).length,
+          ...metadata,
+        },
+      ),
+      persona: personaName,
+      itemOrigin: 'tool',
+      itemType: 'tool_call',
+    });
+    return publication.isErr() ? err(new Error(publication.error.message)) : ok(undefined);
+  }
+
+  private lifecycleContext(
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+  ): LifecycleEventEnvelope['context'] {
+    return {
+      aggregate: { type: aggregateType, id: aggregateId },
+      correlationId,
+      recursion: { depth: 0, maxDepth: 8 },
+      provenance: { source, sourceEventIds: [], sourceReferences: [] },
+    };
+  }
+
+  private lifecycleEvent(
+    type: LifecycleEventEnvelope['type'],
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+    references: LifecycleEventEnvelope['payload']['references'],
+    metadata: LifecycleEventEnvelope['payload']['metadata'],
+  ): LifecycleEventEnvelope {
+    return {
+      version: 'v1',
+      type,
+      eventId: randomUUID(),
+      occurredAt: new Date().toISOString(),
+      context: this.lifecycleContext(aggregateType, aggregateId, correlationId, source),
+      payload: { references, metadata },
+    };
   }
 
   private async dispatch(
