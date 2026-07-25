@@ -1,43 +1,39 @@
 ---
-id: TASK-011-context-lifecycle-migration
+id: TASK-012-feedback-detector-subagent
 kind: task
 epic: EPIC-durable-lifecycle-pipeline
-ticket: TICKET-004-context-migration
+ticket: TICKET-005-behavior-learning
 wave: WAVE-006
-slug: context-lifecycle-migration
-title: Migrate observational memory to configured lifecycle handlers
-status: todo
-depends_on: ["TASK-008-run-tool-outbound-events", "TASK-009-context-contracts-projector"]
+slug: feedback-detector-subagent
+title: Ship the typed explicit-feedback detector sub-agent
+status: in-progress
+depends_on: ["TASK-004-subagent-lifecycle-adapter", "TASK-010-behavior-ledger-persistence"]
 conflict_domains:
-  - "src/daemon/agent-runner.ts"
-  - "src/daemon/context-roller.ts"
-  - "src/daemon/daemon-bootstrap.ts"
-  - "src/core/config/config-schema.ts"
-  - "src/queue/**"
+  - "src/lifecycle/behavior/contracts.ts"
+  - "src/subagents/default/behavior-feedback-detector/**"
 assigned_model_class: codexHigh
 review_model_class: reviewGate
-branch: task/TASK-011-context-lifecycle-migration
-worker_worktree: null
-worktree_status: unassigned
+branch: task/TASK-012-feedback-detector-subagent
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_checkpoint_pending
+branch_freshness: pending_activation_checkpoint
 verification:
-  - "npx vitest run tests/unit/daemon/context-roller.test.ts tests/unit/daemon/agent-runner.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/integration/rolling-context-window.test.ts"
+  - "npx vitest run tests/unit/subagents/behavior-feedback-detector.test.ts tests/unit/lifecycle/behavior-contracts.test.ts"
   - "npm run build"
-  - "npm run lint"
   - "git diff --check"
 ---
 
-# TASK-011-context-lifecycle-migration: Migrate observational memory to configured lifecycle handlers
+# TASK-012-feedback-detector-subagent: Ship the typed explicit-feedback detector sub-agent
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
-TICKET-004-context-migration
+TICKET-005-behavior-learning
 
 ## Wave
 
@@ -45,20 +41,19 @@ WAVE-006
 
 ## Objective
 
-Route context thresholds through configured contracts/projector, remove observer/reflector name checks and auto-binding, and translate legacy summarizer config with clear deprecation.
+Add an optional built-in behavior detector implementing talon.behavior.signal.v1 for explicit correction, positive feedback, inferred pattern, missed action, noise, and tool failure.
 
 ## Scope
 
-- Publish threshold/reduction/rotation lifecycle events.
-- Validate configured context handlers/contracts.
-- Translate existing contextManagement summarizer/reflection config.
-- Remove session-observer and session-reflector core name checks.
-- Preserve context, rotation, continuation, and provider-session behavior.
-- Block only the next ordinary thread item while required projection is pending.
+- Define strict behavior signal contracts.
+- Add default detector manifest, prompt, schema, and tests.
+- Require bounded source/provenance/confidence/proposed behavior.
+- Fence untrusted input and produce no side effects.
+- Allow contract-compatible replacement.
 
 ## Non-Scope
 
-No behavior learning or removal of legacy summarizer support before deprecation.
+No persistence, promotion, reduction, prompt editing, or implicit subscription.
 
 ## Relevant Context
 
@@ -78,27 +73,20 @@ No behavior learning or removal of legacy summarizer support before deprecation.
 
 ## Likely Files / Areas
 
-- src/daemon/agent-runner.ts
-- src/daemon/context-roller.ts
-- src/daemon/daemon-bootstrap.ts
-- src/core/config/config-schema.ts
-- src/queue/**
-- src/lifecycle/context/**
-- tests/unit/daemon/**
-- tests/integration/rolling-context-window.test.ts
+- src/lifecycle/behavior/contracts.ts
+- src/subagents/default/behavior-feedback-detector/**
+- tests/unit/subagents/behavior-feedback-detector.test.ts
+- tests/unit/lifecycle/behavior-contracts.test.ts
 
 ## Dependencies
 
-- TASK-008-run-tool-outbound-events
-- TASK-009-context-contracts-projector
+- TASK-004-subagent-lifecycle-adapter
+- TASK-010-behavior-ledger-persistence
 
 ## Conflict Domains
 
-- src/daemon/agent-runner.ts
-- src/daemon/context-roller.ts
-- src/daemon/daemon-bootstrap.ts
-- src/core/config/config-schema.ts
-- src/queue/**
+- src/lifecycle/behavior/contracts.ts
+- src/subagents/default/behavior-feedback-detector/**
 
 ## Assigned Model Class
 
@@ -106,11 +94,14 @@ codexHigh
 
 ## Branch
 
-task/TASK-011-context-lifecycle-migration
+task/TASK-012-feedback-detector-subagent
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent
+
+Allocated by the controller for WAVE-006. Do not create or use this worktree
+until the reviewed activation checkpoint has been committed and pushed.
 
 ## PR / Patch Reference
 
@@ -120,11 +111,11 @@ None. The task PR targets epic/durable-lifecycle-pipeline.
 
 ### RED
 
-Failing tests for contract config, missing handler failure, legacy translation, durable projection, next-item ordering, preserve-session failure, continuation, reduction, and no name checks.
+Failing fixtures for correction, praise, noise, inference, missing provenance, hostile input, overlong output, and invalid schema.
 
 ### GREEN
 
-Switch orchestration to native policy plus configured lifecycle contracts/projector.
+Implement the contract, manifest, prompt, schema, and deterministic fixtures.
 
 ### REFACTOR
 
@@ -158,9 +149,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Validation Steps
 
-- npx vitest run tests/unit/daemon/context-roller.test.ts tests/unit/daemon/agent-runner.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/integration/rolling-context-window.test.ts
+- npx vitest run tests/unit/subagents/behavior-feedback-detector.test.ts tests/unit/lifecycle/behavior-contracts.test.ts
 - npm run build
-- npm run lint
 - git diff --check
 
 ## Verification Evidence

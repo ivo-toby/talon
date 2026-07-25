@@ -6,7 +6,7 @@ ticket: TICKET-003-core-boundary-integration
 wave: WAVE-006
 slug: handler-telemetry-correlation
 title: Add lifecycle audit, metrics, and Langfuse correlation
-status: todo
+status: in-progress
 depends_on: ["TASK-006-durable-event-dispatcher", "TASK-008-run-tool-outbound-events"]
 conflict_domains:
   - "src/observability/**"
@@ -15,11 +15,11 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-013-handler-telemetry-correlation
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_checkpoint_pending
+branch_freshness: pending_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/observability tests/unit/lifecycle/telemetry.test.ts tests/unit/core/logging/audit-logger.test.ts"
   - "npm run build"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -102,7 +102,10 @@ task/TASK-013-handler-telemetry-correlation
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation
+
+Allocated by the controller for WAVE-006. Do not create or use this worktree
+until the reviewed activation checkpoint has been committed and pushed.
 
 ## PR / Patch Reference
 

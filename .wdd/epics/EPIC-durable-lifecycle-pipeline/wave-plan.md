@@ -49,9 +49,9 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-008-run-tool-outbound-events | TICKET-003-core-boundary-integration | TASK-007-daemon-message-queue-schedule-events | AgentRunner, host tools, outbound delivery | done |
 | TASK-009-context-contracts-projector | TICKET-004-context-migration | TASK-004-subagent-lifecycle-adapter, TASK-005-transactional-event-bus | lifecycle context, ContextRoller, memory repository | done |
 | TASK-010-behavior-ledger-persistence | TICKET-005-behavior-learning | TASK-002-lifecycle-event-persistence | database migrations, behavior repositories | done |
-| TASK-011-context-lifecycle-migration | TICKET-004-context-migration | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector | AgentRunner, ContextRoller, daemon bootstrap, config schema, queue | todo |
-| TASK-012-feedback-detector-subagent | TICKET-005-behavior-learning | TASK-004-subagent-lifecycle-adapter, TASK-010-behavior-ledger-persistence | behavior contracts, default detector subagent | todo |
-| TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | todo |
+| TASK-011-context-lifecycle-migration | TICKET-004-context-migration | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector | AgentRunner, ContextRoller, daemon bootstrap, config schema, queue | in-progress |
+| TASK-012-feedback-detector-subagent | TICKET-005-behavior-learning | TASK-004-subagent-lifecycle-adapter, TASK-010-behavior-ledger-persistence | behavior contracts, default detector subagent | in-progress |
+| TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | in-progress |
 | TASK-014-lifecycle-retention-reload-replay | TICKET-002-durable-event-runtime | TASK-006-durable-event-dispatcher, TASK-013-handler-telemetry-correlation | lifecycle admin/retention, lifecycle repositories, daemon reload | todo |
 | TASK-015-behavior-signal-projector | TICKET-005-behavior-learning | TASK-007-daemon-message-queue-schedule-events, TASK-010-behavior-ledger-persistence, TASK-012-feedback-detector-subagent | lifecycle behavior, config schema, behavior integration tests | todo |
 | TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | todo |
@@ -435,7 +435,7 @@ Stop condition:
 
 ### WAVE-006
 
-Status: planned
+Status: in_progress
 
 Tasks:
 
@@ -462,6 +462,16 @@ Activation rule:
 
 - Activate the eligible tasks as one batch after syncing activation artifacts.
 - Create one isolated worktree per writing task from the synced epic branch.
+- Activation started on 2026-07-25 from reviewed/pushed Wave 5 reconciliation
+  checkpoint `3231c5be5c736f04d55d8ff94a28a1b1c24de372`. Task branches/worktrees are allocated as:
+  `task/TASK-011-context-lifecycle-migration` /
+  `.worktrees/WAVE-006-context-lifecycle-migration`,
+  `task/TASK-012-feedback-detector-subagent` /
+  `.worktrees/WAVE-006-feedback-detector-subagent`, and
+  `task/TASK-013-handler-telemetry-correlation` /
+  `.worktrees/WAVE-006-handler-telemetry-correlation`.
+- Do not create task branches/worktrees until this activation checkpoint passes
+  GPT-5.5/xhigh review, is committed, and is pushed on the epic branch.
 
 Stop condition:
 
