@@ -472,6 +472,10 @@ Activation rule:
   `.worktrees/WAVE-006-handler-telemetry-correlation`.
 - Do not create task branches/worktrees until this activation checkpoint passes
   GPT-5.5/xhigh review, is committed, and is pushed on the epic branch.
+- Activation checkpoint passed GPT-5.5/xhigh review
+  `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03` with 0C/0H/0M/0L and was pushed at
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`. Activation-sync marker review,
+  commit, and push are required before branch/worktree creation.
 
 Stop condition:
 

@@ -1622,9 +1622,9 @@
     "activeWave": "WAVE-006",
     "nextWave": "WAVE-007",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
+    "activationArtifactsSynced": false,
     "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
-    "activationCheckpoint": null,
+    "activationCheckpoint": "eec0846676f37db0e9cc5a580c5a3457cbf18689",
     "activationSyncCommit": null,
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
@@ -1785,7 +1785,7 @@
       "nextWaveStatus": "activation_started"
     },
     "wave006Activation": {
-      "status": "pending_review_commit_push",
+      "status": "activation_checkpoint_pushed_sync_pending",
       "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
       "tasks": [
         "TASK-011-context-lifecycle-migration",
@@ -1806,7 +1806,9 @@
       "taskWorktreesCreated": false,
       "activationCheckpointReviewModel": "gpt-5.5",
       "activationCheckpointReviewReasoningEffort": "xhigh",
-      "activationCheckpoint": null,
+      "activationCheckpointReviewThreadId": "019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "eec0846676f37db0e9cc5a580c5a3457cbf18689",
       "activationSyncCommit": null,
       "readinessCommit": null
     }
@@ -1815,12 +1817,12 @@
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave006_activation_checkpoint_pending_review_commit_push",
+    "status": "wave006_activation_sync_marker_pending_review_commit_push",
     "lastCheckedAt": "2026-07-25T22:40:00Z",
     "nextCheckDueAt": null,
     "schedulerRef": null,
     "schedulerStatus": "not_created_until_after_activation_or_dispatch",
-    "fallbackPrompt": "Resume WAVE-006 activation for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-011/TASK-012/TASK-013 in-progress files. Do not implement task code in the controller checkout. The activation base is pushed Wave 5 reconciliation checkpoint 3231c5be5c736f04d55d8ff94a28a1b1c24de372; task branches/worktrees are only allocated and must not be created until this activation checkpoint passes GPT-5.5/xhigh review, is committed, and is pushed. Then record the exact activation checkpoint, complete activation-sync and readiness gates, fast-forward task branches/worktrees, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-006 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "fallbackPrompt": "Resume WAVE-006 activation for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-011/TASK-012/TASK-013 in-progress files. Do not implement task code in the controller checkout. The activation base is pushed Wave 5 reconciliation checkpoint 3231c5be5c736f04d55d8ff94a28a1b1c24de372. The exact activation checkpoint is eec0846676f37db0e9cc5a580c5a3457cbf18689, reviewed 0C/0H/0M/0L in session 019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03. Task branches/worktrees are only allocated and must not be created until the activation-sync marker passes GPT-5.5/xhigh review, is committed, and is pushed. Then complete readiness gates, fast-forward task branches/worktrees, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-006 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopCondition": "All WAVE-006 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopReason": null
   }

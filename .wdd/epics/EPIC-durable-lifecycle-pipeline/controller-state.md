@@ -85,8 +85,11 @@ Every task advances independently as soon as its gates clear.
 - WAVE-005 reconciliation checkpoint: GPT-5.5/xhigh reviewed, committed, and
   pushed at `3231c5be5c736f04d55d8ff94a28a1b1c24de372`; local and remote epic heads match. WAVE-006 activation
   starts from this exact pushed commit.
-- WAVE-006 activation checkpoint: pending GPT-5.5/xhigh review, commit, and
-  push. Task branches/worktrees remain uncreated until that gate passes.
+- WAVE-006 activation checkpoint: GPT-5.5/xhigh reviewed 0C/0H/0M/0L in
+  session `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03`, committed, and pushed at
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`. Activation-sync marker is pending
+  review, commit, and push; task branches/worktrees remain uncreated until that
+  sync gate passes.
 
 ## Pending Waves
 
@@ -132,9 +135,10 @@ Active WAVE-006 tasks:
 - Mode: manual until WAVE-006 activation and readiness checkpoints are reviewed,
   committed, pushed, and worker dispatch begins.
 - Cadence: adaptive
-- Status: WAVE-006 activation artifacts are prepared; activation checkpoint
-  pending GPT-5.5/xhigh review, commit, and push before task branches/worktrees
-  are created.
+- Status: WAVE-006 activation checkpoint is reviewed/committed/pushed at
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`; activation-sync marker pending
+  GPT-5.5/xhigh review, commit, and push before task branches/worktrees are
+  created.
 - Scheduler provenance: none yet for WAVE-006
 - Last checked: 2026-07-25T22:40:00Z
 - Next check due: immediately after the reviewed activation checkpoint is
@@ -145,14 +149,15 @@ Active WAVE-006 tasks:
   EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md,
   shared context, wave-plan.md, and TASK-011/TASK-012/TASK-013 in-progress
   files. Do not implement task code in the controller checkout. The activation
-  base is pushed Wave 5 reconciliation checkpoint `3231c5be5c736f04d55d8ff94a28a1b1c24de372`; task
-  branches/worktrees are only allocated and must not be created until this
-  activation checkpoint passes GPT-5.5/xhigh review, is committed, and is pushed.
-  Then record the exact activation checkpoint, complete activation-sync and
-  readiness gates, fast-forward task branches/worktrees, dispatch parallel
-  GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and
-  monitor until WAVE-006 is merged, blocked, cancelled, or ready for
-  `wdd-reconcile-wave`.
+  base is pushed Wave 5 reconciliation checkpoint `3231c5be5c736f04d55d8ff94a28a1b1c24de372`.
+  The exact activation checkpoint is
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`, reviewed 0C/0H/0M/0L in session
+  `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03`. Task branches/worktrees are only
+  allocated and must not be created until the activation-sync marker passes
+  GPT-5.5/xhigh review, is committed, and is pushed. Then complete readiness
+  gates, fast-forward task branches/worktrees, dispatch parallel GPT-5.5/high
+  implementation workers, require GPT-5.5/xhigh reviews, and monitor until
+  WAVE-006 is merged, blocked, cancelled, or ready for `wdd-reconcile-wave`.
 
 ## Current Task Gates
 
@@ -1030,12 +1035,16 @@ may remain as historical context.
   to `in-progress/`, and their task branches/worktrees were allocated but not
   created. Activation checkpoint review/commit/push is required before branch
   or worktree creation.
+- 2026-07-25: GPT-5.5/xhigh WAVE-006 activation review
+  `019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03` passed 0C/0H/0M/0L. The activation
+  checkpoint was committed and pushed at
+  `eec0846676f37db0e9cc5a580c5a3457cbf18689`. Activation-sync review/commit/push
+  remains required before task branch/worktree creation.
 
 ## Next Action
 
-Run a fresh GPT-5.5/xhigh WAVE-006 activation artifact review. If it has no
-Critical/High/Medium findings, commit and push the activation checkpoint on
-`epic/durable-lifecycle-pipeline`, record the exact checkpoint hash, and proceed
-to activation-sync/readiness before creating or dispatching task worktrees.
-Continue using GPT-5.5/high implementation and GPT-5.5/xhigh review only; no
-GPT-5.6.
+Run a fresh GPT-5.5/xhigh WAVE-006 activation-sync marker review. If it has no
+Critical/High/Medium findings, commit and push the sync marker on
+`epic/durable-lifecycle-pipeline`, then create the three task branches/worktrees
+from that exact pushed commit. Continue using GPT-5.5/high implementation and
+GPT-5.5/xhigh review only; no GPT-5.6.
