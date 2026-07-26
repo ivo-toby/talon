@@ -22,8 +22,8 @@ branch: task/TASK-020-lifecycle-documentation-adoption
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption
 worktree_status: allocated_metadata_only
 pr: null
-current_gate: activation_review_passed_commit_pending
-branch_freshness: branch_not_created_activation_checkpoint_pending
+current_gate: activation_sync_review_pending
+branch_freshness: branch_not_created_activation_sync_review_pending
 verification:
   - "npx vitest run tests/unit/deploy/starter-bundle.test.ts tests/unit/core/config/config-schema.test.ts tests/unit/cli/lifecycle-commands.test.ts"
   - "npm run build"
@@ -116,10 +116,10 @@ task/TASK-020-lifecycle-documentation-adoption
 
 Allocated in controller metadata only. GPT-5.5/xhigh activation checkpoint
 review `019f9dc8-87c5-76f3-8724-e178beced852` passed 0C/0H/0M/0L. The
-controller must not create this branch/worktree until the reviewed activation
-checkpoint is committed and pushed, the exact activation checkpoint is recorded,
-and the activation-sync checkpoint has passed GPT-5.5/xhigh review and been
-committed/pushed.
+reviewed activation checkpoint
+`4c72c9de10cd0b2439929d0a7d20a4616579da9f` is committed, pushed, and recorded.
+The controller must not create this branch/worktree until the activation-sync
+checkpoint has passed GPT-5.5/xhigh review and been committed/pushed.
 
 ## PR / Patch Reference
 

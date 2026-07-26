@@ -58,7 +58,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | done |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | done |
-| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_activation_review_passed_commit_pending |
+| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_activation_sync_review_pending |
 
 ## Dependency Grid
 
@@ -862,8 +862,9 @@ Activation rule:
   recorded, and the activation-sync checkpoint has passed review and been
   committed/pushed.
 - Activation checkpoint review
-  `019f9dc8-87c5-76f3-8724-e178beced852` passed 0C/0H/0M/0L; committing and
-  pushing the reviewed checkpoint is next.
+  `019f9dc8-87c5-76f3-8724-e178beced852` passed 0C/0H/0M/0L, and reviewed
+  activation checkpoint `4c72c9de10cd0b2439929d0a7d20a4616579da9f` is pushed
+  and recorded. Activation-sync review is next.
 
 Stop condition:
 
