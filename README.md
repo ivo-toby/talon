@@ -1253,6 +1253,7 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 | `session-summarizer` | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)      |
 | `session-observer`   | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory |
 | `session-reflector`  | `claude-sonnet-4-6`         | Consolidate observations when log grows too large             |
+| `behavior-feedback-detector` | `gpt-5.5`           | Detect bounded behavior-learning signals from lifecycle events |
 | `spark-coder`        | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)  |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
@@ -1298,7 +1299,7 @@ export async function run(ctx, input) {
 2. Keep running in the background while failover already advances to the next model — producing overlapping, orphaned work
 3. Resolve later with a result that nothing is listening for, masking incidents
 
-All five built-in sub-agents forward both fields. Copy the pattern above when authoring new ones.
+All built-in sub-agents forward both fields. Copy the pattern above when authoring new ones.
 
 **`ctx.providerOptions`** is only non-undefined when the active model entry is on the `ollama` provider slot (Talon's OpenAI-compatible passthrough). The runner wraps the user's override record under the provider name, and typed providers (`anthropic`, `openai`, `google`) receive `undefined` so they never see foreign body fields.
 
@@ -1351,6 +1352,20 @@ If fewer than 10 keyword matches are found, they're returned directly without LL
 | **Output**                | `{ pruned, consolidated, kept }` counts                         |
 
 Uses `generateObject` with a Zod discriminated union schema to ensure the LLM returns valid, typed actions.
+
+#### `behavior-feedback-detector`
+
+**Problem:** Behavior-learning handlers need to inspect lifecycle events without letting model output directly mutate prompts, memory, or tools.
+
+**Solution:** Reads one fenced lifecycle event and emits bounded `behavior.feedback.detected.v1` lifecycle signals. The detector validates model output against the `talon.behavior.signal.v1` contract, ignores `noise`, derives provenance from the trusted lifecycle event, and only accepts source IDs that already appear in trusted lifecycle references.
+
+|                           |                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| **Model**                 | GPT-5.5                                                                          |
+| **Required capabilities** | none                                                                             |
+| **Timeout**               | 30s                                                                              |
+| **Input**                 | Fenced `talon.lifecycle.event.envelope.v1` via lifecycle handler adapter         |
+| **Output**                | `talon.lifecycle.signal.envelopes.v1` with `behavior.feedback.detected.v1` items |
 
 #### `session-summarizer`
 

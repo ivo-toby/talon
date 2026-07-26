@@ -147,6 +147,25 @@ describe('BehaviorSignalRepository', () => {
     expect(repository.findEvidenceByPersona('coach')._unsafeUnwrap()).toHaveLength(1);
   });
 
+  it('persists tool-call evidence through the real behavior ledger constraint', () => {
+    const inserted = repository.recordEvidence(
+      evidence({
+        sourceKind: 'tool_call',
+        sourceId: 'tool-call-evidence-1',
+        sentiment: 'negative',
+        summary: 'A trusted tool call failed during the lifecycle run.',
+        metadata: { category: 'tool_failure' },
+      }),
+    );
+
+    expect(inserted.isOk()).toBe(true);
+    expect(inserted._unsafeUnwrap()).toMatchObject({
+      source_kind: 'tool_call',
+      source_id: 'tool-call-evidence-1',
+      sentiment: 'negative',
+    });
+  });
+
   it('requires distinct persona-local evidence sources before inferred promotion readiness', () => {
     const first = evidence({ evidenceId: 'evidence-a', sourceId: 'message-a' });
     const duplicateSource = evidence({

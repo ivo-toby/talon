@@ -7,7 +7,7 @@
 CREATE TABLE behavior_evidence (
   evidence_id        TEXT PRIMARY KEY CHECK (typeof(evidence_id) = 'text' AND lifecycle_runtime_id_valid(evidence_id)),
   persona            TEXT NOT NULL CHECK (typeof(persona) = 'text' AND lifecycle_persona_valid(persona)),
-  source_kind        TEXT NOT NULL CHECK (source_kind IN ('message', 'schedule', 'run', 'tool', 'manual')),
+  source_kind        TEXT NOT NULL CHECK (source_kind IN ('message', 'schedule', 'run', 'tool', 'tool_call', 'manual')),
   source_id          TEXT NOT NULL CHECK (typeof(source_id) = 'text' AND lifecycle_runtime_id_valid(source_id)),
   source_occurred_at TEXT NOT NULL CHECK (typeof(source_occurred_at) = 'text' AND source_occurred_at GLOB '????-??-??T??:??:??.???Z' AND strftime('%Y-%m-%dT%H:%M:%fZ', source_occurred_at) IS source_occurred_at),
   fingerprint        TEXT NOT NULL CHECK (typeof(fingerprint) = 'text' AND lifecycle_runtime_id_valid(fingerprint)),
