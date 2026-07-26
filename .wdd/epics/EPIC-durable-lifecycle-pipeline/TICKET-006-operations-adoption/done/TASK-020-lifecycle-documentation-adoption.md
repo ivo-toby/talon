@@ -6,7 +6,7 @@ ticket: TICKET-006-operations-adoption
 wave: WAVE-011
 slug: lifecycle-documentation-adoption
 title: Update lifecycle configuration, architecture, setup skills, and operator docs
-status: in-progress
+status: done
 depends_on: ["TASK-019-lifecycle-end-to-end-verification"]
 conflict_domains:
   - "README.md"
@@ -20,10 +20,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-020-lifecycle-documentation-adoption
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption
-worktree_status: task_review_passed_uncommitted
-pr: null
-current_gate: commit_pending
-branch_freshness: branch_current_at_readiness_8ee0b3f_with_reviewed_uncommitted_task_diff
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/278
+current_gate: merged
+branch_freshness: merged_current_at_ee08193
 verification:
   - "npx vitest run tests/unit/deploy/starter-bundle.test.ts tests/unit/core/config/config-schema.test.ts tests/unit/cli/lifecycle-commands.test.ts"
   - "npm run build"
@@ -34,7 +34,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -130,11 +130,13 @@ that lifecycle `budget.maxConcurrency` is accepted by the contract but is not
 currently dispatcher-enforced per handler/subscription. Low/P3 findings remain
 non-blocking follow-ups and were not automatically edited.
 Fresh task review `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed
-0C/0H/0M/3L; commit is now authorized after recording this review evidence.
+0C/0H/0M/3L. Task commit `4421f9defc4386cbfe6adc5ab275fc62abccc405` was pushed,
+PR #278 passed GitHub Verify PR and PR Agent checks, and merged into the epic
+branch at `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+https://github.com/ivo-toby/talon/pull/278
 
 ## RED-GREEN TDD Plan
 
@@ -170,11 +172,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -202,7 +204,17 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L. Low/P3 findings
   remain non-blocking follow-ups: nested `budget`/`failurePolicy` version rows,
   lifecycle disable tombstone wording, and AGENTS migration-location wording.
-  Current gate: commit/push the reviewed task branch.
+- 2026-07-26T10:56:00Z: Task commit
+  `4421f9defc4386cbfe6adc5ab275fc62abccc405` pushed to
+  `task/TASK-020-lifecycle-documentation-adoption`.
+- 2026-07-26T10:58:12Z: PR #278 merged into `epic/durable-lifecycle-pipeline`
+  at `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`. GitHub checks passed:
+  Verify PR / Build, lint, and test; PR Agent. PR Agent left only a
+  non-actionable generated-suggestions comment.
+- 2026-07-26T10:59:00Z: Task worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`
+  verified clean at task head and removed with `git worktree remove`, followed
+  by `git worktree prune`.
 
 ## Review Feedback
 
@@ -238,3 +250,6 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   disabled lifecycle examples in main/starter configs, starter README operator
   guidance, setup/profile/personality/schedule/smoke skill guidance, starter
   skill sync, and drift tests.
+- Merged through PR #278 into the epic branch. No Critical/High/Medium review
+  findings remain open. Low/P3 follow-ups are recorded but intentionally
+  unedited under the delivery-speed policy.

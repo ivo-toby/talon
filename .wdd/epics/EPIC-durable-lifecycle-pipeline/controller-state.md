@@ -2,8 +2,8 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: WAVE-011
-status: wave011_task_review_pending
+active_wave: null
+status: wave011_reconciled_pending_review
 updated_at: 2026-07-26
 ---
 
@@ -245,10 +245,13 @@ Every task advances independently as soon as its gates clear.
   `8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438` was committed/pushed, and
   TASK-020 branch/worktree were fast-forwarded to that exact commit and
   verified before implementation.
-- WAVE-011 implementation checkpoint: TASK-020 documentation/adoption diff is
-  complete and uncommitted in the task worktree. Targeted Vitest passed
-  3 files / 121 tests, `npm run build` passed, and `git diff --check` passed.
-  Current gate: GPT-5.5/xhigh full-diff task review before commit.
+- WAVE-011 implementation/merge checkpoint: TASK-020 documentation/adoption
+  diff passed targeted Vitest, `npm run build`, `git diff --check`, and
+  GPT-5.5/xhigh review `019f9e0a-eb3d-72e0-85b9-928f21d833a6`
+  (0C/0H/0M/3L). PR #278 merged at
+  `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`, and the task worktree was
+  verified clean, removed, and pruned. Current gate: GPT-5.5/xhigh
+  reconciliation review before checkpoint commit.
 
 ## Pending Waves
 
@@ -264,44 +267,38 @@ Every task advances independently as soon as its gates clear.
 | WAVE-008 | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-009 | TASK-018-governed-prompt-promotion | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-010 | TASK-019-lifecycle-end-to-end-verification | full / bundled / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-011 | TASK-020-lifecycle-documentation-adoption | full / bundled / risk_based / adaptive | explicit user implementation request | in_progress_task_review_pending |
+| WAVE-011 | TASK-020-lifecycle-documentation-adoption | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 
 ## Active Wave
 
-WAVE-011 is active at the task-review gate. TASK-020 is moved to
-`in-progress`; its branch/worktree are current at pushed readiness commit
-`8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438`. The documentation/adoption diff is
-complete, its initial GPT-5.5/xhigh review failed 0C/0H/2M/2L, the two Medium
-findings are remediated, targeted verification is green again, and fresh
-GPT-5.5/xhigh review `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed
-0C/0H/0M/3L. Current gate: `commit_pending`; commit and push the task branch.
+All planned waves are complete. WAVE-011 TASK-020 merged through PR #278 after
+targeted verification, GitHub checks, and fresh GPT-5.5/xhigh review
+`019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L. TASK-020 worktree
+was verified clean, removed, and pruned. Current gate: GPT-5.5/xhigh
+reconciliation review, then commit/push this WAVE-011 reconciliation checkpoint
+and proceed to epic validation/final PR handoff.
 
 ## Monitoring
 
 - Mode: manual fallback while the recurring remaining-waves thread monitor remains available.
 - Cadence: adaptive
-- Status: WAVE-011 TASK-020 review passed 0C/0H/0M/3L; task commit/push pending.
+- Status: WAVE-011 TASK-020 merged and worktree cleaned; reconciliation review/commit pending.
 - Scheduler provenance: `talon-issue-256-wdd-remaining-waves-monitor`
-- Last checked: 2026-07-26T10:54:13Z
-- Next check due: 2026-07-26T10:59:13Z
+- Last checked: 2026-07-26T10:59:00Z
+- Next check due: 2026-07-26T11:04:00Z
 - Stop condition: all remaining waves are merged/reconciled and epic validation
   plus final PR handoff are ready, or a real blocker is recorded.
 - Fallback prompt: run one bounded WDD controller heartbeat for
   EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-011
-  TASK-020 implementation is complete and uncommitted in
-  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`
-  on branch `task/TASK-020-lifecycle-documentation-adoption`. Readiness review
-  `019f9de5-d632-7d30-9dec-69e552084d2d` passed 0C/0H/0M/0L and readiness
-  commit `8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438` is pushed/current. Initial
-  task review `019f9e01-d202-7150-a5c5-c8b921a1dcf1` failed 0C/0H/2M/2L; the
-  two Medium findings are remediated and targeted Vitest (3 files / 121 tests),
-  `npm run build`, `git diff --check`, and WDD JSON validation passed. Fresh
-  GPT-5.5/xhigh task review `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed
-  0C/0H/0M/3L; Low/P3 findings remain non-blocking follow-ups. Commit and push
-  the task branch, open/monitor the PR against the epic branch, and continue to
-  WAVE-011 reconciliation after merge. Do not use GPT-5.6, do not run full
-  `npm test` without approval, preserve unrelated changes, and keep `.minispec/`
-  untouched.
+  TASK-020 merged via PR #278 at
+  `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf` after GPT-5.5/xhigh review
+  `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L and GitHub Verify
+  PR/PR Agent checks passed. TASK-020 worktree was verified clean, removed, and
+  pruned; remote task branch is retained. Run a fresh GPT-5.5/xhigh
+  reconciliation review, fix only Critical/High/Medium findings, commit/push
+  the WAVE-011 reconciliation checkpoint if review passes, then proceed to epic
+  validation/final PR handoff. Do not use GPT-5.6, do not run full `npm test`
+  without approval, preserve unrelated changes, and keep `.minispec/` untouched.
 
 ## Current Task Gates
 
@@ -492,12 +489,11 @@ GPT-5.5/xhigh review `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed
   `019f9dbd-a0a6-7d53-9a0d-4729c26ac35a` with 0C/0H/0M/0L; reviewed
   checkpoint `ee1b057166fdd02e6b31b1799b512c5e27f24be4` is pushed and local/
   remote epic heads match.
-- TASK-020-lifecycle-documentation-adoption: active in WAVE-011 task review.
-  Branch `task/TASK-020-lifecycle-documentation-adoption` and worktree
-  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`
-  are current at readiness commit `8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438`.
-  The uncommitted implementation diff passed targeted Vitest, build, and diff
-  checks. Current gate: `task_review_pending`.
+- TASK-020-lifecycle-documentation-adoption: merged; PR #278 merged into the
+  epic branch at `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf` after targeted
+  Vitest/build/diff checks, GitHub Verify PR, PR Agent, and GPT-5.5/xhigh
+  review `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L. The clean
+  task worktree was removed and pruned.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
 
 ## Worker Worktrees
@@ -571,9 +567,9 @@ GPT-5.5/xhigh review `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed
 - WAVE-011 / TASK-020: branch
   `task/TASK-020-lifecycle-documentation-adoption`; worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`
-  is current at readiness commit `8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438`.
-  Documentation/adoption implementation is complete and uncommitted; GPT-5.5/
-  xhigh full-diff task review is required before commit.
+  was verified clean at task head `4421f9defc4386cbfe6adc5ab275fc62abccc405`,
+  removed, and pruned after PR #278 merged at epic commit
+  `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`.
 
 ## Gate Definitions
 
@@ -671,9 +667,10 @@ validation, and worktree cleanup. WAVE-010 reconciliation passed mandatory
 GPT-5.5/xhigh checkpoint review
 `019f9dbd-a0a6-7d53-9a0d-4729c26ac35a` with 0C/0H/0M/0L and was committed and
 pushed at `ee1b057166fdd02e6b31b1799b512c5e27f24be4`. WAVE-011 activation,
-activation-sync, readiness, and initial implementation gates now passed;
-TASK-020 Medium task-review findings are remediated, and branch freshness is now
-`branch_current_at_readiness_8ee0b3f_with_remediated_uncommitted_task_diff`.
+activation-sync, readiness, implementation, review, PR merge, and cleanup gates
+now passed. TASK-020 merged at
+`ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`; reconciliation review/commit is the
+only remaining WAVE-011 gate.
 
 ## Open P1/P2 Feedback
 
@@ -756,10 +753,12 @@ TASK-020 Medium task-review findings are remediated, and branch freshness is now
   `019f9de5-d632-7d30-9dec-69e552084d2d` passed 0C/0H/0M/0L and reviewed
   readiness commit `8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438` was pushed/
   fast-forwarded into TASK-020 before implementation.
-- WAVE-011 TASK-020 implementation is complete and uncommitted. Verification:
-  targeted Vitest passed 3 files / 121 tests, `npm run build` passed, and
-  `git diff --check` passed. The next gate is GPT-5.5/xhigh full-diff review
-  before commit.
+- WAVE-011 TASK-020 implementation, review, PR merge, and worktree cleanup are
+  complete. Verification: targeted Vitest passed 3 files / 121 tests,
+  `npm run build` passed, `git diff --check` passed, GPT-5.5/xhigh task review
+  `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L, and GitHub Verify
+  PR plus PR Agent checks passed on PR #278. The next gate is GPT-5.5/xhigh
+  reconciliation review before checkpoint commit.
 - WAVE-008 activation artifact verification passed: GPT-5.5/xhigh review
   `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` reported 0C/0H/0M/0L, `jq empty`
   passed for orchestration.json, and `git diff --check` passed. Activation-sync
@@ -1545,11 +1544,21 @@ TASK-020 Medium task-review findings are remediated, and branch freshness is now
   findings are non-blocking follow-ups and remain untouched: lifecycle nested
   `budget`/`failurePolicy` version rows, lifecycle disable tombstone wording,
   and AGENTS migration-location wording. Commit/push is now authorized.
+- 2026-07-26T10:58:12Z: TASK-020 task commit
+  `4421f9defc4386cbfe6adc5ab275fc62abccc405` was pushed; PR #278 passed GitHub
+  Verify PR and PR Agent checks and merged into the epic branch at
+  `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`. The PR Agent generated only a
+  non-actionable suggestion-generation comment.
+- 2026-07-26T10:59:00Z: TASK-020 worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`
+  was verified clean, removed, and pruned. WAVE-011 task file was moved to
+  `done/`; all planned waves are now complete and ready for reconciliation
+  review/commit.
 
 ## Next Action
 
-Commit and push the reviewed TASK-020 branch, open the TASK-020 PR against
-`epic/durable-lifecycle-pipeline`, monitor GitHub/PR review gates, merge fresh
-into the epic branch, and reconcile WAVE-011. Continue using GPT-5.5/xhigh
-review only; no GPT-5.6. Low/P3 findings remain follow-ups and must not trigger
-automatic edits.
+Run the GPT-5.5/xhigh WAVE-011 reconciliation review. If it passes with
+0 Critical/High/Medium findings, commit and push the reconciliation checkpoint,
+then proceed to epic validation and final PR handoff. Continue using
+GPT-5.5/xhigh review only; no GPT-5.6. Low/P3 findings remain follow-ups and
+must not trigger automatic edits.

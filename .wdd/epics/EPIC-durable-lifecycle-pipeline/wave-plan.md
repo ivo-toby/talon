@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-WAVES
 kind: wave_plan
 epic: EPIC-durable-lifecycle-pipeline
-status: in_progress
+status: done
 created_at: 2026-07-15
 updated_at: 2026-07-26
 ---
@@ -58,7 +58,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | done |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | done |
-| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_commit_pending |
+| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | done |
 
 ## Dependency Grid
 
@@ -824,9 +824,10 @@ Stop condition:
 
 ### WAVE-011
 
-Status: in_progress
+Status: done
 
 Activated: 2026-07-26
+Completed: 2026-07-26
 
 Tasks:
 
@@ -874,12 +875,16 @@ Activation rule:
   stale-metadata Medium was remediated. Reviewed readiness checkpoint
   `8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438` is pushed and current in the
   TASK-020 branch/worktree.
-- TASK-020 documentation/adoption implementation is complete and uncommitted.
-  Targeted Vitest passed 3 files / 121 tests, `npm run build` passed, and
-  `git diff --check` passed. Initial GPT-5.5/xhigh review failed 0C/0H/2M/2L,
-  the two Medium findings were remediated, and fresh GPT-5.5/xhigh review
-  `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L. Current gate:
-  commit/push the reviewed task branch.
+- TASK-020 documentation/adoption implementation completed. Targeted Vitest
+  passed 3 files / 121 tests, `npm run build` passed, and `git diff --check`
+  passed. Initial GPT-5.5/xhigh review failed 0C/0H/2M/2L, the two Medium
+  findings were remediated, and fresh GPT-5.5/xhigh review
+  `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L.
+- Task commit `4421f9defc4386cbfe6adc5ab275fc62abccc405` was pushed; PR #278
+  passed GitHub Verify PR and PR Agent checks, then merged into the epic branch
+  at `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`.
+- TASK-020 worktree was verified clean, removed, and pruned. WAVE-011 is ready
+  for epic validation/final PR handoff.
 
 Stop condition:
 

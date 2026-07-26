@@ -1645,7 +1645,7 @@
     },
     {
       "id": "WAVE-011",
-      "status": "in_progress",
+      "status": "done",
       "strategy": {
         "profile": "full",
         "executionMode": "bundled",
@@ -1676,8 +1676,8 @@
         {
           "id": "TASK-020-lifecycle-documentation-adoption",
           "ticket": "TICKET-006-operations-adoption",
-          "path": "TICKET-006-operations-adoption/in-progress/TASK-020-lifecycle-documentation-adoption.md",
-          "status": "in_progress",
+          "path": "TICKET-006-operations-adoption/done/TASK-020-lifecycle-documentation-adoption.md",
+          "status": "done",
           "dependsOn": [
             "TASK-019-lifecycle-end-to-end-verification"
           ],
@@ -1692,14 +1692,21 @@
           "assignedModel": "codexHigh",
           "reviewModel": "reviewGate",
           "workerThreadId": "019f9deb-502c-7171-a6b7-a1966bde589a-interrupted-no-edits-controller-finished",
-          "reviewThreadId": null,
+          "reviewThreadId": "019f9e0a-eb3d-72e0-85b9-928f21d833a6",
           "branch": "task/TASK-020-lifecycle-documentation-adoption",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
-          "worktreeStatus": "task_review_passed_uncommitted",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "branch_current_at_readiness_8ee0b3f_with_reviewed_uncommitted_task_diff",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T10:59:00Z",
+            "worktreeRemoved": true,
+            "worktreePruned": true,
+            "remoteBranchRetained": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/278",
+          "latestCommit": "4421f9defc4386cbfe6adc5ab275fc62abccc405",
+          "mergeCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf",
+          "branchFreshness": "merged_current_at_ee08193",
           "blockingFeedback": [
             {
               "severity": "Medium",
@@ -1718,9 +1725,12 @@
             "diffCheck": "git diff --check passed at 2026-07-26T10:45:54Z",
             "wddJson": "jq empty orchestration.json passed at 2026-07-26T10:45:54Z",
             "initialTaskReview": "gpt-5.5/xhigh review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L; Medium findings remediated; Low/P3 left as non-blocking follow-ups",
-            "finalTaskReview": "gpt-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L"
+            "finalTaskReview": "gpt-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L",
+            "githubVerifyPr": "passed for PR #278",
+            "githubPrAgent": "passed for PR #278",
+            "nonActionablePrComment": "PR Agent comment reported failed generated code suggestions; no review threads or actionable findings"
           },
-          "currentGate": "commit_pending"
+          "currentGate": "merged"
         }
       ],
       "activatedAt": "2026-07-26T09:32:42Z",
@@ -1734,11 +1744,15 @@
         ],
         "branch": "task/TASK-020-lifecycle-documentation-adoption",
         "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
-        "worktreeStatus": "task_review_passed_uncommitted",
+        "worktreeStatus": "cleaned_up",
         "workerThreadId": "019f9deb-502c-7171-a6b7-a1966bde589a-interrupted-no-edits-controller-finished",
         "reviewThreadId": "019f9e0a-eb3d-72e0-85b9-928f21d833a6",
-        "currentGate": "commit_pending"
+        "currentGate": "merged"
       }
+      ,
+      "completedAt": "2026-07-26T10:58:12Z",
+      "reconciledAt": "2026-07-26T10:59:00Z",
+      "mergeCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf"
     }
   ],
   "sharedContext": {
@@ -1750,13 +1764,13 @@
       "shared-context/resources/task-findings.md"
     ],
     "pendingReconciliation": [],
-    "lastReconciledWave": "WAVE-009",
-    "lastReconciledTask": "TASK-018-governed-prompt-promotion",
-    "reconciledAtEpicCommit": "2618059965f0a379948d79b8f6bb415419025397"
+    "lastReconciledWave": "WAVE-011",
+    "lastReconciledTask": "TASK-020-lifecycle-documentation-adoption",
+    "reconciledAtEpicCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf"
   },
   "controller": {
-    "activeWave": "WAVE-011",
-    "nextWave": null,
+    "activeWave": null,
+    "nextWave": "epic-validation",
     "epicBranchVerified": true,
     "activationArtifactsSynced": true,
     "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
@@ -2285,12 +2299,12 @@
       "lowFindingDisposition": "restart scenario models retryable post-handoff failure rather than literal process-restart lease claim; left untouched as non-blocking Low/P3",
       "checkpointCommit": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
       "checkpointCommitStatus": "pushed_local_remote_match",
-      "nextWave": "WAVE-011",
-      "nextWaveStatus": "wave011_activation_started_from_reconciliation_checkpoint",
-      "localRemoteVerifiedAt": "2026-07-26T09:32:42Z"
+      "nextWave": "epic-validation",
+      "nextWaveStatus": "all_waves_done_ready_for_epic_validation",
+      "localRemoteVerifiedAt": "2026-07-26T10:59:00Z"
     },
     "wave011Activation": {
-      "status": "commit_pending",
+      "status": "merged_reconciliation_pending",
       "activatedAt": "2026-07-26T09:32:42Z",
       "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
       "tasks": [
@@ -2303,7 +2317,7 @@
         ],
         "branch": "task/TASK-020-lifecycle-documentation-adoption",
         "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
-        "worktreeStatus": "task_review_passed_uncommitted"
+        "worktreeStatus": "cleaned_up"
       },
       "branches": {
         "TASK-020-lifecycle-documentation-adoption": "task/TASK-020-lifecycle-documentation-adoption"
@@ -2326,8 +2340,8 @@
       "activationSyncCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
       "readinessReviewStatus": "passed_committed_pushed_fast_forwarded",
       "readinessCommit": "8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438",
-      "dispatchStatus": "task_review_passed_commit_pending",
-      "notes": "TASK-020 branch/worktree were created and pushed from exact activation-sync commit 0053209080b96c02c2d4fb7af02a24a1af0a477d and verified clean/current. Fresh readiness review 019f9de5-d632-7d30-9dec-69e552084d2d passed 0C/0H/0M/0L; reviewed readiness commit 8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438 was pushed and fast-forwarded into the task branch/worktree. Documentation/adoption implementation is complete; initial GPT-5.5/xhigh task review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L, the two Medium findings are remediated, targeted verification is green again, and fresh GPT-5.5/xhigh task review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L. Commit/push is now authorized.",
+      "dispatchStatus": "merged_cleanup_complete_reconciliation_pending",
+      "notes": "TASK-020 branch/worktree were created and pushed from exact activation-sync commit 0053209080b96c02c2d4fb7af02a24a1af0a477d and verified clean/current. Fresh readiness review 019f9de5-d632-7d30-9dec-69e552084d2d passed 0C/0H/0M/0L; reviewed readiness commit 8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438 was pushed and fast-forwarded into the task branch/worktree. Documentation/adoption implementation completed; initial GPT-5.5/xhigh task review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L, the two Medium findings were remediated, targeted verification was green again, and fresh GPT-5.5/xhigh task review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L. Task commit 4421f9defc4386cbfe6adc5ab275fc62abccc405 was pushed; PR #278 passed GitHub Verify PR and PR Agent, merged at ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf, and the task worktree was cleaned up.",
       "activationCheckpointReviewEvidence": "read-only gpt-5.5/xhigh review verified WDD-only activation metadata, local/remote epic head ee1b057, no TASK-020 branch/worktree, no stale current WAVE-010 pending wording, and .minispec outside scope",
       "activationCheckpointCommitStatus": "pushed_local_remote_match",
       "activationCheckpointRecordedAt": "2026-07-26T09:41:46Z",
@@ -2360,27 +2374,33 @@
       "readinessReviewFinalReasoningEffort": "xhigh",
       "taskBranchesFastForwardedToReadiness": true,
       "taskWorktreesVerifiedBeforeDispatch": true,
-      "implementationStatus": "review_passed_uncommitted_commit_pending",
+      "implementationStatus": "merged_cleaned_up_reconciliation_pending",
       "implementationVerification": {
         "targetedVitest": "passed 3 files / 121 tests at 2026-07-26T10:45:54Z after Medium remediation",
         "build": "npm run build passed at 2026-07-26T10:45:40Z after Medium remediation",
         "diffCheck": "git diff --check passed at 2026-07-26T10:45:54Z",
         "wddJson": "jq empty orchestration.json passed at 2026-07-26T10:45:54Z",
         "initialTaskReview": "gpt-5.5/xhigh review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L; Medium findings remediated; Low/P3 left as non-blocking follow-ups",
-        "finalTaskReview": "gpt-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L"
-      }
+        "finalTaskReview": "gpt-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L",
+        "githubVerifyPr": "passed for PR #278",
+        "githubPrAgent": "passed for PR #278"
+      },
+      "taskCommit": "4421f9defc4386cbfe6adc5ab275fc62abccc405",
+      "taskPr": "https://github.com/ivo-toby/talon/pull/278",
+      "mergeCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf",
+      "cleanupStatus": "worktree_removed_and_pruned"
     }
   },
   "monitoring": {
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave011_commit_pending",
-    "lastCheckedAt": "2026-07-26T10:54:13Z",
-    "nextCheckDueAt": "2026-07-26T10:59:13Z",
+    "status": "wave011_reconciliation_pending_review",
+    "lastCheckedAt": "2026-07-26T10:59:00Z",
+    "nextCheckDueAt": "2026-07-26T11:04:00Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-011 TASK-020 review passed 0C/0H/0M/3L and task commit/push is pending",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-011 TASK-020 implementation is complete and uncommitted in /Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption on branch task/TASK-020-lifecycle-documentation-adoption. Readiness review 019f9de5-d632-7d30-9dec-69e552084d2d passed 0C/0H/0M/0L, readiness commit 8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438 is pushed and fast-forwarded into the task branch/worktree. Initial task review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L; the two Medium findings are remediated and targeted Vitest (3 files / 121 tests), npm run build, git diff --check, and WDD JSON validation passed. Fresh GPT-5.5/xhigh task review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L; Low/P3 findings are non-blocking follow-ups. Commit and push the task branch, open/monitor the PR against the epic branch, then reconcile WAVE-011 after merge. Do not use GPT-5.6, do not run full npm test without explicit user approval, preserve unrelated changes, and keep .minispec untouched.",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-011 TASK-020 merged and cleaned up; reconciliation review/commit is pending",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-011 TASK-020 merged via PR #278 at ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf after GPT-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L and GitHub Verify PR/PR Agent checks passed. TASK-020 worktree was verified clean, removed, and pruned; remote task branch is retained. Current controller checkout has reconciliation metadata changes staged/unstaged only and .minispec remains untouched. Run a fresh GPT-5.5/xhigh reconciliation review, fix only Critical/High/Medium findings, commit/push the WAVE-011 reconciliation checkpoint if review passes, then proceed to epic validation/final PR handoff. Do not use GPT-5.6, do not run full npm test without explicit user approval, preserve unrelated changes, and keep .minispec untouched.",
     "stopCondition": "All remaining waves are merged/reconciled and epic validation plus final PR handoff are ready, or a real blocker is recorded.",
     "stopReason": null
   }
