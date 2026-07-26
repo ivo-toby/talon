@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type Database from 'better-sqlite3';
+import { err } from 'neverthrow';
 
 import {
   BaseRepository,
@@ -17,8 +18,27 @@ import {
   type LifecycleEventHandlerResolver,
   type LifecycleEventPublishInput,
 } from '../../../src/lifecycle/lifecycle-event-bus.js';
+import {
+  LifecycleTelemetry,
+  type LifecycleMetricsRecorder,
+} from '../../../src/lifecycle/telemetry/index.js';
 import { TransactionContext } from '../../../src/lifecycle/transaction-context.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
+
+class CapturingMetrics implements LifecycleMetricsRecorder {
+  readonly increments: Array<{ name: string; labels?: Record<string, unknown>; value?: number }> =
+    [];
+  readonly observations: Array<{ name: string; value: number; labels?: Record<string, unknown> }> =
+    [];
+
+  increment(name: string, labels?: Record<string, unknown>, value?: number): void {
+    this.increments.push({ name, labels, value });
+  }
+
+  observe(name: string, value: number, labels?: Record<string, unknown>): void {
+    this.observations.push({ name, value, labels });
+  }
+}
 
 describe('LifecycleEventBus', () => {
   let db: Database.Database;
@@ -142,6 +162,65 @@ describe('LifecycleEventBus', () => {
     expect(deliveries.findByEventId(eventValue.eventId)._unsafeUnwrap()).toHaveLength(2);
     expect(wakeDispatcher).toHaveBeenCalledOnce();
     expect(wakeDispatcher).toHaveBeenCalledWith(eventValue.eventId);
+  });
+
+  it('emits publication success telemetry only after the durable transaction commits', () => {
+    handlers = [handler('run-handler', 0)];
+    const metrics = new CapturingMetrics();
+    let now = 1_000;
+    const telemetry = new LifecycleTelemetry({ metrics, clock: { now: () => now } });
+    const bus = new LifecycleEventBus(events, resolver, wakeDispatcher, telemetry);
+    const rolledBackEvent = event();
+    const committedEvent = event();
+
+    const rolledBack = bus.transaction((transaction) => {
+      const published = bus.publish(input(rolledBackEvent), transaction);
+      expect(published.isOk()).toBe(true);
+      expect(metrics.increments).toEqual([]);
+      now = 1_025;
+      return err(new Error('domain write rejected after publication'));
+    });
+
+    expect(rolledBack.isErr()).toBe(true);
+    expect(events.findById(rolledBackEvent.eventId)._unsafeUnwrap()).toBeNull();
+    expect(metrics.increments).toContainEqual(
+      expect.objectContaining({
+        name: 'lifecycle.publication.count',
+        labels: expect.objectContaining({ outcome: 'failure', code: 'transaction_rolled_back' }),
+      }),
+    );
+    expect(metrics.increments).not.toContainEqual(
+      expect.objectContaining({
+        name: 'lifecycle.publication.count',
+        labels: expect.objectContaining({ outcome: 'success' }),
+      }),
+    );
+
+    const committed = bus.transaction((transaction) => {
+      now = 2_000;
+      const published = bus.publish(input(committedEvent), transaction);
+      expect(published.isOk()).toBe(true);
+      expect(metrics.increments).not.toContainEqual(
+        expect.objectContaining({
+          name: 'lifecycle.publication.count',
+          labels: expect.objectContaining({ outcome: 'success' }),
+        }),
+      );
+      now = 2_075;
+      return published;
+    });
+
+    expect(committed.isOk()).toBe(true);
+    expect(events.findById(committedEvent.eventId)._unsafeUnwrap()).not.toBeNull();
+    expect(metrics.increments).toContainEqual(
+      expect.objectContaining({
+        name: 'lifecycle.publication.count',
+        labels: expect.objectContaining({ outcome: 'success' }),
+      }),
+    );
+    expect(metrics.observations).toContainEqual(
+      expect.objectContaining({ name: 'lifecycle.publication.latency_ms', value: 75 }),
+    );
   });
 
   it('rolls back a domain write when publication returns Err and preserves the typed Err', () => {

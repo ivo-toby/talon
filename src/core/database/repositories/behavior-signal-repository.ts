@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { err, ok, type Result } from 'neverthrow';
 
 import { DbError } from '../../errors/index.js';
+import type { AuditLogger } from '../../logging/audit-logger.js';
 import {
   BehaviorCandidateKindSchema,
   BehaviorCandidateStatusSchema,
@@ -117,6 +118,19 @@ export interface BehaviorPromotionRollbackInput {
   readonly activationId: string;
   readonly rollbackId: string;
   readonly reason: string;
+}
+
+export interface BehaviorSignalMetricsRecorder {
+  increment(
+    name: string,
+    labels?: Record<string, string | number | boolean>,
+    value?: number,
+  ): void;
+}
+
+export interface BehaviorSignalRepositoryOptions {
+  readonly auditLogger?: Pick<AuditLogger, 'logLifecyclePromotion'>;
+  readonly metrics?: BehaviorSignalMetricsRecorder;
 }
 
 function toDbError(operation: string, cause: unknown): DbError {
@@ -257,7 +271,10 @@ export class BehaviorSignalRepository extends BaseRepository {
   private readonly insertRollbackStmt: Database.Statement;
   private readonly rollbackPromotionStmt: Database.Statement;
 
-  constructor(db: Database.Database) {
+  constructor(
+    db: Database.Database,
+    private readonly options: BehaviorSignalRepositoryOptions = {},
+  ) {
     super(db);
     this.findEvidenceByIdStmt = db.prepare(`SELECT * FROM behavior_evidence WHERE evidence_id = ?`);
     this.findEvidenceByFingerprintStmt = db.prepare(`
@@ -377,6 +394,41 @@ export class BehaviorSignalRepository extends BaseRepository {
         AND status = 'active'
       RETURNING *
     `);
+  }
+
+  private recordPromotionTelemetry(
+    operation: 'create' | 'transition' | 'activate' | 'rollback',
+    row: BehaviorPromotionRow,
+    metadata: Record<string, string | number | boolean | null> = {},
+  ): void {
+    try {
+      this.options.metrics?.increment('lifecycle.behavior.promotion.count', {
+        operation,
+        outcome: 'success',
+        status: row.status,
+        persona: row.persona,
+      });
+    } catch {
+      // Metrics are advisory and must never change durable behavior writes.
+    }
+    try {
+      this.options.auditLogger?.logLifecyclePromotion({
+        action: 'lifecycle.promotion',
+        personaId: row.persona,
+        details: {
+          operation,
+          outcome: 'success',
+          persona: row.persona,
+          promotionId: row.promotion_id,
+          candidateId: row.candidate_id,
+          status: row.status,
+          updatedAt: row.updated_at,
+          ...metadata,
+        },
+      });
+    } catch {
+      // Audit sink failures are contained so repository writes remain authoritative.
+    }
   }
 
   recordEvidence(input: BehaviorEvidenceInput): Result<BehaviorEvidenceRow, DbError> {
@@ -587,7 +639,9 @@ export class BehaviorSignalRepository extends BaseRepository {
         ) as BehaviorPromotionRow;
         return this.validatePromotionRow(row);
       });
-      return ok(write());
+      const row = write();
+      this.recordPromotionTelemetry('create', row);
+      return ok(row);
     } catch (cause) {
       return err(toDbError('create behavior promotion', cause));
     }
@@ -618,6 +672,9 @@ export class BehaviorSignalRepository extends BaseRepository {
         return row ? this.validatePromotionRow(row) : null;
       });
       const row = transition();
+      if (row) {
+        this.recordPromotionTelemetry('transition', row, { targetStatus: status });
+      }
       return row
         ? ok(row)
         : err(new DbError('Failed to transition behavior promotion: illegal transition'));
@@ -658,6 +715,13 @@ export class BehaviorSignalRepository extends BaseRepository {
         return this.validatePromotionRow(row);
       });
       const row = write();
+      if (row) {
+        this.recordPromotionTelemetry('activate', row, {
+          activationId: input.activationId,
+          promptArtifactId: input.promptArtifactId,
+          reloadId: input.reloadId,
+        });
+      }
       return row ? ok(row) : err(new DbError('Failed to activate behavior promotion'));
     } catch (cause) {
       return err(toDbError('activate behavior promotion', cause));
@@ -700,6 +764,13 @@ export class BehaviorSignalRepository extends BaseRepository {
         return this.validatePromotionRow(row);
       });
       const row = write();
+      if (row) {
+        this.recordPromotionTelemetry('rollback', row, {
+          activationId: input.activationId,
+          rollbackId: input.rollbackId,
+          reason: input.reason,
+        });
+      }
       return row ? ok(row) : err(new DbError('Failed to rollback behavior promotion'));
     } catch (cause) {
       return err(toDbError('rollback behavior promotion', cause));

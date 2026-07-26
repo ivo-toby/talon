@@ -15,6 +15,7 @@ import type {
   LifecycleInterceptorResolutionQuery,
   ResolvedLifecycleHandler,
 } from '../handler-registry.js';
+import { noopLifecycleTelemetry, type LifecycleTelemetry } from '../telemetry/index.js';
 
 export const DEFAULT_LIFECYCLE_INTERCEPTOR_HANDLER_TIMEOUT_MS = 100;
 export const DEFAULT_LIFECYCLE_INTERCEPTOR_TOTAL_TIMEOUT_MS = 500;
@@ -58,6 +59,7 @@ export interface LifecycleInterceptorEngineOptions {
   readonly clock?: LifecycleInterceptorClock;
   readonly totalTimeoutMs?: number;
   readonly defaultHandlerTimeoutMs?: number;
+  readonly telemetry?: LifecycleTelemetry;
 }
 
 interface LifecycleInterceptorExecutionBase {
@@ -971,6 +973,18 @@ export class LifecycleInterceptorEngine {
     } catch {
       // Audit storage outages must not make a synchronous policy decision nondeterministic.
     }
+    try {
+      (this.options.telemetry ?? noopLifecycleTelemetry).recordInterceptorDecision({
+        handler,
+        envelope: input,
+        decision,
+        reason,
+        durationMs,
+        ...(transform ? { transform } : {}),
+      });
+    } catch {
+      // Telemetry outages must not make a synchronous policy decision nondeterministic.
+    }
   }
 
   private auditSystem(
@@ -994,6 +1008,16 @@ export class LifecycleInterceptorEngine {
       });
     } catch {
       // See `audit`: audit failures do not change enforcement semantics.
+    }
+    try {
+      (this.options.telemetry ?? noopLifecycleTelemetry).recordInterceptorDecision({
+        envelope: input,
+        decision,
+        reason,
+        durationMs,
+      });
+    } catch {
+      // See `audit`.
     }
   }
 }

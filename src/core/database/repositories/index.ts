@@ -85,7 +85,10 @@ export type {
   LifecycleDeliveryClock,
   LifecycleFailureDiagnostic,
 } from './lifecycle-delivery-repository.js';
-export { LifecycleDeliveryRepository } from './lifecycle-delivery-repository.js';
+export {
+  LifecycleDeliveryRepository,
+  type LifecycleDeliveryRepositoryOptions,
+} from './lifecycle-delivery-repository.js';
 
 export type {
   LifecycleSignalHandoffInput,
@@ -101,6 +104,8 @@ export type {
   BehaviorMetadata,
   BehaviorPromotionActivationInput,
   BehaviorPromotionInput,
+  BehaviorSignalMetricsRecorder,
+  BehaviorSignalRepositoryOptions,
   BehaviorPromotionRollbackInput,
   BehaviorPromotionRow,
 } from './behavior-signal-repository.js';

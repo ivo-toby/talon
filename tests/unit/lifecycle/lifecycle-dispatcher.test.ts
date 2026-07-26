@@ -12,6 +12,16 @@ import {
 } from '../../../src/lifecycle/handler-executor.js';
 import { LifecycleDispatcher } from '../../../src/lifecycle/lifecycle-dispatcher.js';
 import { createLifecycleDispatcherPolicy } from '../../../src/lifecycle/dispatcher-policy.js';
+import { LifecycleTelemetry } from '../../../src/lifecycle/telemetry/index.js';
+import type {
+  ObservationHandle,
+  ObservationInput,
+  ObservationUpdate,
+  ObservabilityService,
+  StartedObservationHandle,
+} from '../../../src/observability/langfuse/observability-types.js';
+
+const CHILD_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-1111111111111111-01';
 
 function claim(
   handlerId = 'projector',
@@ -92,6 +102,44 @@ class FakeSignals {
   readonly handoff = vi.fn(async () => ok(undefined));
 }
 
+class FakeObservability implements ObservabilityService {
+  readonly starts: ObservationInput[] = [];
+
+  start(input: ObservationInput): StartedObservationHandle {
+    return this.startWithTraceparent(null, input);
+  }
+
+  startWithTraceparent(
+    _traceparent: string | null | undefined,
+    input: ObservationInput,
+  ): StartedObservationHandle {
+    this.starts.push(input);
+    return {
+      update: (_update: ObservationUpdate) => undefined,
+      getTraceparent: () => CHILD_TRACEPARENT,
+      end: () => undefined,
+    };
+  }
+
+  async observe<T>(
+    input: ObservationInput,
+    fn: (observation: ObservationHandle) => Promise<T> | T,
+  ): Promise<T> {
+    return await this.observeWithTraceparent(null, input, fn);
+  }
+
+  async observeWithTraceparent<T>(
+    traceparent: string | null | undefined,
+    input: ObservationInput,
+    fn: (observation: ObservationHandle) => Promise<T> | T,
+  ): Promise<T> {
+    const handle = this.startWithTraceparent(traceparent, input);
+    return await fn(handle);
+  }
+
+  async shutdown(): Promise<void> {}
+}
+
 function dispatcher(
   deliveries: FakeDeliveries,
   executor: LifecycleHandlerExecutor,
@@ -105,6 +153,16 @@ function dispatcher(
     clock: { now: () => 1_000 },
     policy: { pollIntervalMs: 86_400_000, ...overrides },
   })._unsafeUnwrap();
+}
+
+function fakeTelemetry(): LifecycleTelemetry {
+  return {
+    startDelivery: vi.fn(() => ({ startedAt: 1_000 })),
+    recordDeliverySuccess: vi.fn(),
+    recordDeliveryFailure: vi.fn(),
+    recordCircuitOpened: vi.fn(),
+    recordSignalHandoff: vi.fn(),
+  } as unknown as LifecycleTelemetry;
 }
 
 describe('LifecycleDispatcher', () => {
@@ -141,6 +199,32 @@ describe('LifecycleDispatcher', () => {
     expect(signals.handoff).toHaveBeenCalledWith(
       expect.objectContaining({ persona: 'assistant', eventId: 'event-projector' }),
     );
+  });
+
+  it('passes the correlated lifecycle handler traceparent to execution', async () => {
+    const deliveries = new FakeDeliveries();
+    const observability = new FakeObservability();
+    deliveries.claimNext.mockReturnValueOnce(ok(claim()));
+    const executor: LifecycleHandlerExecutor = {
+      execute: vi.fn(async (execution) => {
+        expect(execution.traceparent).toBe(CHILD_TRACEPARENT);
+        return success();
+      }),
+    };
+    const subject = LifecycleDispatcher.create({
+      deliveries,
+      executor,
+      signalRouter: new FakeSignals(),
+      clock: { now: () => 1_000 },
+      policy: { pollIntervalMs: 86_400_000 },
+      telemetry: new LifecycleTelemetry({ observability, clock: { now: () => 1_000 } }),
+    })._unsafeUnwrap();
+
+    await expect(subject.dispatchOnce()).resolves.toMatchObject({ value: true });
+    await subject.stop();
+
+    expect(executor.execute).toHaveBeenCalledOnce();
+    expect(observability.starts[0]?.name).toBe('lifecycle.handler');
   });
 
   it('enforces global and per-handler backpressure before claiming another delivery', async () => {
@@ -204,15 +288,63 @@ describe('LifecycleDispatcher', () => {
 
   it('does not overwrite a delivery when its lease completion was lost', async () => {
     const deliveries = new FakeDeliveries();
+    const telemetry = fakeTelemetry();
     deliveries.claimNext.mockReturnValueOnce(ok(claim()));
     deliveries.complete.mockReturnValueOnce(err(new LifecycleError('lease lost')));
-    const subject = dispatcher(deliveries, { execute: async () => success() });
+    const subject = LifecycleDispatcher.create({
+      deliveries,
+      executor: { execute: async () => success() },
+      signalRouter: new FakeSignals(),
+      clock: { now: () => 1_000 },
+      policy: { pollIntervalMs: 86_400_000 },
+      telemetry,
+    })._unsafeUnwrap();
 
     await subject.dispatchOnce();
     await subject.stop();
 
     expect(deliveries.complete).toHaveBeenCalledTimes(1);
     expect(deliveries.fail).not.toHaveBeenCalled();
+    expect(telemetry.recordSignalHandoff).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: 'success', signalCount: 0 }),
+    );
+    expect(telemetry.recordDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: 'signal-handoff-completion-lost',
+        retryable: true,
+        status: 'lost',
+      }),
+    );
+  });
+
+  it('records bounded signal handoff failure before retrying delivery', async () => {
+    const deliveries = new FakeDeliveries();
+    const signals = new FakeSignals();
+    const telemetry = fakeTelemetry();
+    deliveries.claimNext.mockReturnValueOnce(ok(claim()));
+    signals.handoff.mockResolvedValueOnce(err(new LifecycleError('signal store unavailable')));
+    const subject = LifecycleDispatcher.create({
+      deliveries,
+      executor: { execute: async () => success() },
+      signalRouter: signals,
+      clock: { now: () => 1_000 },
+      policy: { pollIntervalMs: 86_400_000 },
+      telemetry,
+    })._unsafeUnwrap();
+
+    await subject.dispatchOnce();
+    await subject.stop();
+
+    expect(telemetry.recordSignalHandoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: 'failure',
+        code: 'signal-handoff-failed',
+        signalCount: 0,
+      }),
+    );
+    expect(telemetry.recordDeliveryFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'signal-handoff-failed', status: 'failed' }),
+    );
   });
 
   it('keeps one captured repository authority from claim through completion', async () => {

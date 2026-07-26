@@ -185,7 +185,8 @@ describe('SubAgentLifecycleAdapter', () => {
       );
     const adapter = new SubAgentLifecycleAdapter({ execute });
 
-    const result = await adapter.invoke(invocation({ maxOutputTokens: 64 }));
+    const traceparent = '00-1234567890abcdef1234567890abcdef-1234567890abcdef-01';
+    const result = await adapter.invoke(invocation({ maxOutputTokens: 64, traceparent }));
 
     expect(result.isOk()).toBe(true);
     expect(execute).toHaveBeenCalledWith(
@@ -202,6 +203,7 @@ describe('SubAgentLifecycleAdapter', () => {
         personaId: 'assistant',
         personaSubagents: ['event-proposer'],
         serviceScope: 'none',
+        traceparent,
         executionLimits: { timeoutMs: 200, maxOutputTokens: 64 },
         lifecycle: expect.objectContaining({ expectedIdentity: handler().identity }),
       }),

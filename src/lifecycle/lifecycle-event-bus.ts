@@ -31,6 +31,7 @@ import type {
   LifecycleEventResolutionQuery,
   ResolvedLifecycleHandler,
 } from './handler-registry.js';
+import { noopLifecycleTelemetry, type LifecycleTelemetry } from './telemetry/index.js';
 import { TransactionContext } from './transaction-context.js';
 
 /** The stable, registry-owned subset needed to resolve event subscribers. */
@@ -58,12 +59,14 @@ type DataRecord = Record<string, unknown>;
 type SqliteConnection = { readonly inTransaction: boolean };
 type TransactionState = 'open' | 'committed' | 'rolled_back';
 type AfterCommitCallback = () => void | Promise<void>;
+type AfterRollbackCallback = () => void | Promise<void>;
 
 interface OwnedTransactionContext {
   owner: object;
   connection: SqliteConnection;
   state: TransactionState;
   afterCommitCallbacks: AfterCommitCallback[];
+  afterRollbackCallbacks: AfterRollbackCallback[];
 }
 
 const PUBLISH_INPUT_KEYS = new Set([
@@ -94,6 +97,7 @@ function createOwnedTransactionContext(
     connection,
     state: 'open',
     afterCommitCallbacks: [],
+    afterRollbackCallbacks: [],
   });
   return context;
 }
@@ -123,6 +127,20 @@ function registerAfterCommit(
   return ok(undefined);
 }
 
+function registerAfterRollback(
+  context: TransactionContext,
+  owner: object,
+  connection: SqliteConnection,
+  callback: AfterRollbackCallback,
+): Result<void, LifecycleError> {
+  const state = getOpenOwnedTransactionContext(context, owner, connection);
+  if (!state) {
+    return err(new LifecycleError('Cannot register an after-rollback callback on this transaction'));
+  }
+  state.afterRollbackCallbacks.push(callback);
+  return ok(undefined);
+}
+
 function commitOwnedTransactionContext(
   context: TransactionContext,
   owner: object,
@@ -133,6 +151,7 @@ function commitOwnedTransactionContext(
 
   state.state = 'committed';
   const callbacks = state.afterCommitCallbacks.splice(0);
+  state.afterRollbackCallbacks.splice(0);
   for (const callback of callbacks) {
     try {
       // A wake is an optimization over durable state. Consume async failures
@@ -153,6 +172,14 @@ function rollbackOwnedTransactionContext(
   if (!state) return;
   state.state = 'rolled_back';
   state.afterCommitCallbacks.splice(0);
+  const callbacks = state.afterRollbackCallbacks.splice(0);
+  for (const callback of callbacks) {
+    try {
+      void Promise.resolve(callback()).catch(() => undefined);
+    } catch {
+      // Telemetry rollback cleanup is advisory; durability already decided.
+    }
+  }
 }
 
 function getRepositoryConnection(repository: LifecycleEventRepository): SqliteConnection {
@@ -288,6 +315,7 @@ export class LifecycleEventBus {
     private readonly eventRepository: LifecycleEventRepository,
     private readonly handlerResolver: LifecycleEventHandlerResolver,
     private readonly wakeDispatcher?: LifecycleDispatcherWake,
+    private readonly telemetry: LifecycleTelemetry = noopLifecycleTelemetry,
   ) {
     this.#connection = getRepositoryConnection(eventRepository);
   }
@@ -417,7 +445,25 @@ export class LifecycleEventBus {
       }
       const materialized = materializePublishInput(input);
       if (!materialized) {
+        this.telemetry.recordPublicationFailure(undefined, undefined, 'invalid_publish_input');
         return err(new LifecycleError('Cannot publish an invalid lifecycle event input'));
+      }
+      const publicationTelemetry = this.telemetry.startPublication(materialized.event);
+      let publicationTelemetrySettled = false;
+      const settlePublicationFailure = (code: string): void => {
+        if (publicationTelemetrySettled) return;
+        publicationTelemetrySettled = true;
+        this.telemetry.recordPublicationFailure(publicationTelemetry, materialized.event, code);
+      };
+      const registeredRollbackTelemetry = registerAfterRollback(
+        transaction,
+        this.#transactionOwner,
+        this.#connection,
+        () => settlePublicationFailure('transaction_rolled_back'),
+      );
+      if (registeredRollbackTelemetry.isErr()) {
+        settlePublicationFailure('after_rollback_registration_failed');
+        return err(registeredRollbackTelemetry.error);
       }
 
       let handlers: ResolvedLifecycleHandler[];
@@ -432,15 +478,35 @@ export class LifecycleEventBus {
           scheduleSource: materialized.scheduleSource,
         });
       } catch {
+        settlePublicationFailure('handler_resolution_failed');
         return err(new LifecycleError('Failed to resolve lifecycle event subscribers'));
       }
       const deliveries = materializeResolvedDeliveries(handlers);
       if (!deliveries) {
+        settlePublicationFailure('subscriber_snapshot_failed');
         return err(new LifecycleError('Failed to snapshot lifecycle event subscribers'));
       }
 
       const publication = this.eventRepository.insertWithDeliveries(materialized.event, deliveries);
-      if (publication.isErr()) return publication;
+      if (publication.isErr()) {
+        settlePublicationFailure('repository_insert_failed');
+        return publication;
+      }
+
+      const registeredTelemetry = registerAfterCommit(
+        transaction,
+        this.#transactionOwner,
+        this.#connection,
+        () => {
+          if (publicationTelemetrySettled) return;
+          publicationTelemetrySettled = true;
+          this.telemetry.recordPublication(publicationTelemetry, materialized.event, publication.value);
+        },
+      );
+      if (registeredTelemetry.isErr()) {
+        settlePublicationFailure('after_commit_registration_failed');
+        return err(registeredTelemetry.error);
+      }
 
       if (publication.value.deliveries.length > 0 && this.wakeDispatcher) {
         const registered = registerAfterCommit(

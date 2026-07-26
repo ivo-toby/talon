@@ -817,6 +817,58 @@ describe('lifecycle event persistence', () => {
     expect(deliveries.findByEventId(input.eventId)._unsafeUnwrap()).toHaveLength(1);
   });
 
+  it('emits bounded audit and metric evidence when reopening a delivery for replay', () => {
+    const now = 1_800_000_000_000;
+    leaseNow = now;
+    const auditLogger = { logLifecycleReplay: vi.fn() };
+    const metrics = { increment: vi.fn() };
+    deliveries = new LifecycleDeliveryRepository(db, {
+      leaseClock: () => leaseNow,
+      auditLogger,
+      metrics,
+    });
+    const input = event();
+    events.insertWithDeliveries(input, [delivery()])._unsafeUnwrap();
+
+    const claim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+    deliveries
+      .fail(
+        input.eventId,
+        'run-projector',
+        claim.delivery.claim_token!,
+        { code: 'permanent-failure' },
+        now + 500,
+        false,
+      )
+      ._unsafeUnwrap();
+
+    const reopened = deliveries.reopen(input.eventId, 'run-projector')._unsafeUnwrap();
+
+    expect(reopened.status).toBe('pending');
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'lifecycle.delivery.replay.count',
+      expect.objectContaining({
+        handler_id: 'run-projector',
+        persona: 'support',
+        outcome: 'success',
+        status: 'pending',
+      }),
+    );
+    expect(auditLogger.logLifecycleReplay).toHaveBeenCalledWith({
+      action: 'lifecycle.replay',
+      details: expect.objectContaining({
+        operation: 'delivery_reopen',
+        outcome: 'success',
+        eventId: input.eventId,
+        handlerId: 'run-projector',
+        persona: 'support',
+        status: 'pending',
+        attempts: 0,
+      }),
+    });
+    expect(JSON.stringify(auditLogger.logLifecycleReplay.mock.calls)).not.toContain('completed');
+  });
+
   it('moves a non-retryable failure directly to dead letter under its current lease', () => {
     const now = 1_800_000_000_000;
     leaseNow = now;

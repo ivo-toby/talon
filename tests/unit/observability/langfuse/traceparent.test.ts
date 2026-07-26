@@ -27,6 +27,7 @@ describe('traceparent helpers', () => {
     expect(parseTraceparent('not-a-traceparent')).toBeNull();
     expect(parseTraceparent('00-short-00f067aa0ba902b7-01')).toBeNull();
     expect(parseTraceparent('00-4bf92f3577b34da6a3ce929d0e0e4736-short-01')).toBeNull();
+    expect(parseTraceparent('ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01')).toBeNull();
     expect(serializeTraceparent(undefined)).toBeNull();
   });
 
