@@ -28,10 +28,14 @@ agentRunner:
 Fields:
 
 - `enabled`: turns automatic summarize-and-rotate on or off for that provider
+- `mode`: `summarizer` for single-summary rotation, or `observation` for
+  observer/reducer-based long-term context
 - `triggerMetric`: the metric used to decide when to rotate
 - `thresholdRatio`: fraction of `contextWindowTokens` that triggers rotation
 - `recentMessageCount`: recent verbatim messages injected into a fresh session
-- `summarizer`: subagent name used to summarize the transcript
+- `summarizer`: subagent name used to summarize the transcript in
+  `mode: summarizer`
+- `observer` / `reducer`: subagent names used by `mode: observation`
 
 ## Strategies
 
@@ -150,3 +154,25 @@ context:
 Existing configs with a top-level `context` block fail validation and must be
 migrated to `agentRunner.providers.<name>.contextManagement`. See
 [README.md](../README.md) for updated examples.
+
+If an existing observational-memory config uses the old shorthand:
+
+```yaml
+contextManagement:
+  enabled: true
+  summarizer: session-observer
+```
+
+Talon still translates it at load time to explicit observation mode for
+compatibility. New configs should spell out the handlers:
+
+```yaml
+contextManagement:
+  enabled: true
+  mode: observation
+  triggerMetric: input_tokens
+  thresholdRatio: 0.75
+  recentMessageCount: 10
+  observer: session-observer
+  reducer: session-reflector
+```

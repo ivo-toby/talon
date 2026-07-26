@@ -101,7 +101,7 @@ If setup is already complete, present:
 
 ```
 What would you like to do?
-  a) Add or configure a provider (Codex, Gemini)
+  a) Add or configure a provider (Claude Code, Codex CLI, Gemini, OpenAI-compatible)
   b) Add a channel
   c) Add a persona
   d) Add a skill to a persona
@@ -140,17 +140,19 @@ Check each prerequisite. Report status. Fix what can be fixed automatically.
 1. Node.js >= 22          → check `node --version`
 2. Dependencies installed → check node_modules/, run `npm install` if not
 3. Project built          → check dist/, run `npm run build` if not
-4. AI providers installed → check `Codex --version` and/or `gemini --version`
+4. AI providers installed → check `claude --version`, `codex --version`, and/or `gemini --version`
 ```
 
 For provider binaries not on PATH, ask for the full path (e.g. `/home/user/.npm-global/bin/gemini`).
 
-At least one provider must be installed and authenticated. Check both:
+At least one provider must be installed and authenticated. Check the selected
+provider candidates:
 
-- **Codex**: `Codex --version`. Auth: `Codex auth login` or valid Anthropic API key.
+- **Claude Code**: `claude --version`. Auth: `claude auth login` or valid Anthropic API key.
+- **Codex CLI**: `codex --version`. Auth: `codex login` or valid OpenAI API key.
 - **Gemini CLI**: `gemini --version`. Auth: run `gemini` once interactively for OAuth, or set `GEMINI_API_KEY`.
 
-If neither is installed, stop and explain how to install at least one.
+If none are installed, stop and explain how to install at least one.
 
 ### Step 2: Bootstrap
 
@@ -167,21 +169,31 @@ This step configures which AI providers Talon uses for interactive conversations
 Ask: **"Which AI providers do you want to use?"**
 
 ```
-a) Codex only (default)
+a) Claude Code only (default)
 b) Gemini CLI only
-c) Both (recommended if both are installed)
-d) OpenAI-compatible / Ollama endpoint
+c) Codex CLI only
+d) Mix multiple providers (recommended if multiple are installed)
+e) OpenAI-compatible / Ollama endpoint
 ```
 
 For each selected provider, run `add-provider`:
 
 ```bash
-# Codex (if selected)
-npx talonctl add-provider --name Codex \
-  --command Codex \
+# Claude Code (if selected)
+npx talonctl add-provider --name claude-code \
+  --command claude \
   --context both \
   --context-window 200000 \
   --threshold-ratio 0.5 \
+  --enabled
+
+# Codex CLI (if selected)
+npx talonctl add-provider --name codex-cli \
+  --command codex \
+  --context both \
+  --context-window 1048576 \
+  --threshold-ratio 0.5 \
+  --default-model gpt-5.4 \
   --enabled
 
 # Gemini (if selected)
@@ -241,7 +253,7 @@ Examples:
 Add matching credentials under `auth.providers.<provider-id>` if the endpoint
 requires them. Local Ollama usually does not require an API key.
 
-If both providers are configured, ask: **"Which should be the default for conversations?"**
+If multiple providers are configured, ask: **"Which should be the default for conversations?"**
 
 ```bash
 npx talonctl set-default-provider --name <choice> --context agent-runner
@@ -253,18 +265,20 @@ Then: **"And for background tasks?"** (explain: background tasks run async, chea
 npx talonctl set-default-provider --name <choice> --context background
 ```
 
-Test each configured provider:
+Run the matching tests for providers present and enabled in `npx talonctl list-providers`:
 
 ```bash
-npx talonctl test-provider --name Codex
+# Run only the lines that match configured providers:
+npx talonctl test-provider --name claude-code
+npx talonctl test-provider --name codex-cli
 npx talonctl test-provider --name gemini-cli
 npx talonctl test-provider --name <openai-compatible-alias>
 ```
 
 If a test fails, troubleshoot:
 
-- Binary not found → check the command path, `which Codex` or `which gemini`
-- Auth failure → Codex: `Codex auth login`. Gemini: run `gemini` interactively once for OAuth.
+- Binary not found → check the command path, `which claude`, `which codex`, or `which gemini`
+- Auth failure → Claude Code: `claude auth login`. Codex CLI: `codex login`. Gemini: run `gemini` interactively once for OAuth.
 - JSON parse failure → Gemini CLI version too old, see https://github.com/google-gemini/gemini-cli for upgrade instructions
 
 ### Step 4: Channel configuration
@@ -413,10 +427,12 @@ Show which env vars are missing. Tell the user to add them to `.env`.
 
 ### Step 10: Provider verification
 
-Test every configured provider one more time:
+Run the matching tests for providers present and enabled in `npx talonctl list-providers` one more time:
 
 ```bash
-npx talonctl test-provider --name Codex
+# Run only the lines that match configured providers:
+npx talonctl test-provider --name claude-code
+npx talonctl test-provider --name codex-cli
 npx talonctl test-provider --name gemini-cli
 ```
 

@@ -488,6 +488,64 @@ dataDir: data
 
 For the context-management strategies and migration details, see [docs/context-management.md](docs/context-management.md).
 
+### Upgrading existing installs
+
+When upgrading an existing Talon install to a release that includes the durable
+lifecycle pipeline:
+
+1. Pull the new code, install dependencies if needed, rebuild, and run database
+   migrations:
+
+   ```bash
+   git pull
+   npm install
+   npm run build
+   npx talonctl migrate --config talond.yaml
+   ```
+
+   Docker starter users should pull the updated bundle/image and restart through
+   Docker Compose; the daemon applies bundled SQLite migrations on boot.
+
+2. Validate the existing config before restarting production:
+
+   ```bash
+   npx talonctl doctor --config talond.yaml
+   npx talonctl env-check --config talond.yaml
+   ```
+
+3. Remove any old top-level `context:` block. Context management now lives under
+   each foreground provider at
+   `agentRunner.providers.<name>.contextManagement`; see
+   [docs/context-management.md](docs/context-management.md) for the migration
+   shape.
+
+4. Lifecycle configuration is opt-in. Existing installs do not need to enable
+   `lifecycle:` just to keep running. Add it only when you intentionally want
+   lifecycle handlers, durable behavior review, prompt promotion, replay, or
+   lifecycle operator telemetry.
+
+5. If you enable model-backed lifecycle behavior handlers, configure both sides
+   explicitly: declare the handler under `lifecycle.handlers[]`, add the handler
+   ref to each participating persona's `subagents`, and add matching
+   `personas[].lifecycle.subscriptions`. Native handlers remain responsible for
+   governed state changes such as prompt promotion.
+
+6. For observational memory, prefer the explicit config:
+
+   ```yaml
+   contextManagement:
+     enabled: true
+     mode: observation
+     triggerMetric: input_tokens
+     thresholdRatio: 0.75
+     recentMessageCount: 10
+     observer: session-observer
+     reducer: session-reflector
+   ```
+
+   The older `summarizer: session-observer` shorthand is still translated at
+   load time for compatibility, but it is deprecated.
+
 ### Environment Variable Substitution
 
 Credential fields support `${ENV_VAR}` syntax so you never hardcode secrets:

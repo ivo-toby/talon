@@ -443,6 +443,7 @@ providers:
       defaultModel: gpt-5.4
     contextManagement:
       enabled: true
+      mode: summarizer
       triggerMetric: cache_read_input_tokens
       thresholdRatio: 0.8
       recentMessageCount: 10
@@ -456,10 +457,14 @@ providers:
 | `contextWindowTokens`                  | integer ≥ 1000 | `200000` | Context window size              |
 | `options`                              | object         | —        | Provider-specific options        |
 | `contextManagement.enabled`            | boolean        | `false`  | Enable rotation                  |
+| `contextManagement.mode`               | `summarizer \| observation` | `summarizer` | Select single-summary rotation or observational-memory handlers |
 | `contextManagement.triggerMetric`      | enum           | —        | Required when enabled            |
 | `contextManagement.thresholdRatio`     | number 0-1     | —        | Required when enabled            |
 | `contextManagement.recentMessageCount` | integer ≥ 0    | `10`     | Messages retained after rotation |
-| `contextManagement.summarizer`         | string         | —        | Required when enabled            |
+| `contextManagement.summarizer`         | string         | —        | Required when `mode: summarizer` |
+| `contextManagement.observer`           | string         | —        | Required when `mode: observation` |
+| `contextManagement.reducer`            | string         | —        | Required when `mode: observation` |
+| `contextManagement.reflectionThresholdChars` | integer ≥ 1000 | `40000` | Observation log size that triggers the reducer |
 
 Built-in schema default:
 

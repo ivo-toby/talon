@@ -145,15 +145,14 @@ by hand** once the daemon is running — talonctl handles it correctly.
 Ask: **"Which AI provider do you want to use?"**
 
 ```
-a) Codex (Anthropic API)            — default, smartest, costs $
+a) Claude Code (Anthropic API)      — default, smartest, costs $
 b) OpenAI-compatible endpoint        — local Ollama, vLLM, Groq, Together, custom
 c) Gemini CLI                        — Google's CLI, preinstalled in the image
 d) Codex CLI                         — OpenAI's CLI, preinstalled in the image
 ```
 
-All four work out of the box. `Codex` (bundled in the Agent SDK),
-`codex`, and `gemini` ship in the container image; `openai-compatible`
-runs in-process.
+All four work out of the box. `claude`, `codex`, and `gemini` ship in the
+container image; `openai-compatible` runs in-process.
 
 For (a) ask for nothing else here — defaults work.
 
@@ -197,7 +196,7 @@ which env var the user needs to fill:
 | Email             | IMAP/SMTP credentials (see add-email skill)                  |
 | Terminal          | `TERMINAL_TOKEN` (just `talonctl chat`)                      |
 
-Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Codex).
+Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Claude Code).
 
 Tell the user **exactly** which lines to uncomment/fill in `.env`.
 Do not write the actual secrets to disk.
@@ -207,7 +206,7 @@ Do not write the actual secrets to disk.
 If `config/talond.yaml` doesn't exist:
 `cp config/talond.example.yaml config/talond.yaml`
 
-The default config uses Codex + Telegram. If the user picked something
+The default config uses Claude Code + Telegram. If the user picked something
 else in step 1, walk them through the edits:
 
 #### Edit the persona
@@ -217,8 +216,8 @@ Find:
 ```yaml
 personas:
   - name: assistant
-    model: Codex-sonnet-4-6
-    provider: Codex
+    model: claude-sonnet-4-6
+    provider: claude-code
 ```
 
 If provider is OpenAI-compatible:
@@ -237,9 +236,9 @@ provider: gemini-cli
 
 #### Replace the `agentRunner.providers` block
 
-For Codex (default), no change.
+For Claude Code (default), no change.
 
-For OpenAI-compatible — replace the `Codex:` block under
+For OpenAI-compatible — replace the `claude-code:` block under
 `agentRunner.providers:` with:
 
 ```yaml
@@ -286,7 +285,7 @@ fresh session and replays assembled prior-conversation state.
 
 #### Replace `auth.providers`
 
-For Codex, the default block is fine.
+For Claude Code, the default block is fine.
 
 For OpenAI-compatible:
 
