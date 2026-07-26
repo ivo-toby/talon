@@ -1695,14 +1695,14 @@
           "reviewThreadId": null,
           "branch": "task/TASK-020-lifecycle-documentation-adoption",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
-          "worktreeStatus": "allocated_metadata_only",
+          "worktreeStatus": "created_clean_at_activation_sync",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "branch_not_created_activation_sync_review_pending",
+          "branchFreshness": "branch_current_at_activation_sync_0053209_pending_readiness_ff",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_sync_review_pending"
+          "currentGate": "worktree_readiness_review_pending"
         }
       ],
       "activatedAt": "2026-07-26T09:32:42Z",
@@ -1716,10 +1716,10 @@
         ],
         "branch": "task/TASK-020-lifecycle-documentation-adoption",
         "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
-        "worktreeStatus": "allocated_metadata_only",
+        "worktreeStatus": "created_clean_at_activation_sync",
         "workerThreadId": null,
         "reviewThreadId": null,
-        "currentGate": "activation_sync_review_pending"
+        "currentGate": "worktree_readiness_review_pending"
       }
     }
   ],
@@ -1743,7 +1743,7 @@
     "activationArtifactsSynced": true,
     "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
     "activationCheckpoint": "4c72c9de10cd0b2439929d0a7d20a4616579da9f",
-    "activationSyncCommit": null,
+    "activationSyncCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
@@ -2272,7 +2272,7 @@
       "localRemoteVerifiedAt": "2026-07-26T09:32:42Z"
     },
     "wave011Activation": {
-      "status": "activation_sync_review_pending",
+      "status": "worktree_readiness_review_pending",
       "activatedAt": "2026-07-26T09:32:42Z",
       "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
       "tasks": [
@@ -2285,7 +2285,7 @@
         ],
         "branch": "task/TASK-020-lifecycle-documentation-adoption",
         "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
-        "worktreeStatus": "allocated_metadata_only"
+        "worktreeStatus": "created_clean_at_activation_sync"
       },
       "branches": {
         "TASK-020-lifecycle-documentation-adoption": "task/TASK-020-lifecycle-documentation-adoption"
@@ -2293,22 +2293,23 @@
       "worktrees": {
         "TASK-020-lifecycle-documentation-adoption": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption"
       },
-      "taskBranchesCreated": false,
-      "taskWorktreesCreated": false,
-      "taskBranchesPushed": false,
-      "worktreesVerifiedClean": false,
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
       "activationCheckpointReviewModel": "gpt-5.5",
       "activationCheckpointReviewReasoningEffort": "xhigh",
       "activationCheckpointReviewStatus": "passed",
       "activationCheckpointReviewThreadId": "019f9dc8-87c5-76f3-8724-e178beced852",
       "activationCheckpointReviewCounts": "0C/0H/0M/0L",
       "activationCheckpoint": "4c72c9de10cd0b2439929d0a7d20a4616579da9f",
-      "activationSyncReviewStatus": "failed_second_blocking_medium_remediated_pending_fresh_review",
-      "activationSyncCommit": null,
-      "readinessReviewStatus": "blocked_until_activation_sync_pushed",
+      "activationSyncReviewStatus": "passed",
+      "activationSyncCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
+      "readinessReviewStatus": "failed_blocking_medium_remediated_pending_fresh_review",
       "readinessCommit": null,
-      "dispatchStatus": "blocked_until_activation_sync_review_commit_push_then_readiness",
-      "notes": "TASK-020 branch/worktree are allocated in metadata only. Do not create them until activation checkpoint review/commit/push, activation-sync review/commit/push, and readiness gates pass.",
+      "dispatchStatus": "blocked_until_readiness_review_commit_push_and_task_ff",
+      "notes": "TASK-020 branch/worktree were created and pushed from exact activation-sync commit 0053209080b96c02c2d4fb7af02a24a1af0a477d and verified clean/current. Do not dispatch until the readiness checkpoint passes GPT-5.5/xhigh review, is committed/pushed, and the task branch/worktree are fast-forwarded to that exact readiness commit and reverified clean/current.",
       "activationCheckpointReviewEvidence": "read-only gpt-5.5/xhigh review verified WDD-only activation metadata, local/remote epic head ee1b057, no TASK-020 branch/worktree, no stale current WAVE-010 pending wording, and .minispec outside scope",
       "activationCheckpointCommitStatus": "pushed_local_remote_match",
       "activationCheckpointRecordedAt": "2026-07-26T09:41:46Z",
@@ -2322,19 +2323,33 @@
       "activationSyncReviewSecondThreadId": "019f9dd3-e852-7e51-970e-4e344b138069",
       "activationSyncReviewSecondCounts": "0C/0H/1M/0L",
       "activationSyncReviewSecondFinding": "remaining current TASK-020 gate summary still named the prior activation checkpoint gate",
-      "activationSyncReviewSecondRemediation": "updated the TASK-020 current gate summary to activation_sync_review_pending"
+      "activationSyncReviewSecondRemediation": "updated the TASK-020 current gate summary to activation_sync_review_pending",
+      "activationSyncReviewFinalThreadId": "019f9dd8-ead7-77f1-ab13-7fa6eae8132c",
+      "activationSyncReviewFinalCounts": "0C/0H/0M/0L",
+      "activationSyncReviewFinalModel": "gpt-5.5",
+      "activationSyncReviewFinalReasoningEffort": "xhigh",
+      "taskBranchesCreatedAt": "2026-07-26T09:59:48Z",
+      "taskWorktreesCreatedAt": "2026-07-26T09:59:48Z",
+      "taskWorktreesVerifiedCleanAt": "2026-07-26T09:59:48Z",
+      "taskWorktreesVerifiedCurrentArtifacts": true,
+      "readinessReviewAttemptThreadId": "019f9de0-4467-7e52-931e-19df30d02e7b",
+      "readinessReviewAttemptCounts": "0C/0H/1M/0L",
+      "readinessReviewAttemptFinding": "stale current branch/worktree note and branch freshness summary contradicted created clean readiness state",
+      "readinessReviewAttemptRemediation": "updated WAVE-011 notes and branch freshness summary to the created-clean activation-sync state",
+      "taskBranchesFastForwardedToReadiness": false,
+      "taskWorktreesVerifiedBeforeDispatch": false
     }
   },
   "monitoring": {
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave011_activation_sync_second_medium_remediated_review_pending",
-    "lastCheckedAt": "2026-07-26T09:52:45Z",
-    "nextCheckDueAt": "2026-07-26T09:57:45Z",
+    "status": "wave011_readiness_medium_remediated_review_pending",
+    "lastCheckedAt": "2026-07-26T10:06:32Z",
+    "nextCheckDueAt": "2026-07-26T10:11:32Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-011 activation-sync second review found one Medium stale current gate marker, remediated pending fresh GPT-5.5/xhigh review",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-011 activation-sync review 019f9dd3-e852-7e51-970e-4e344b138069 failed 0C/0H/1M/0L on a remaining stale current TASK-020 gate marker; the marker remediation is applied and needs fresh GPT-5.5/xhigh review before commit/push. Do not create the TASK-020 branch/worktree until activation-sync review passes and the sync checkpoint is committed/pushed. Use only global old WDD skills, never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation/remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not run full npm test without explicit approval. Preserve unrelated changes and keep .minispec untouched.",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-011 readiness review found one Medium stale metadata note, remediated pending fresh GPT-5.5/xhigh review",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-011 worktree-readiness review 019f9de0-4467-7e52-931e-19df30d02e7b failed 0C/0H/1M/0L on stale current branch/worktree metadata; remediation is applied and needs fresh GPT-5.5/xhigh review before commit/push. Sync checkpoint 0053209080b96c02c2d4fb7af02a24a1af0a477d is pushed and TASK-020 branch/worktree are clean at that exact commit. Do not dispatch TASK-020 until readiness review passes, the readiness checkpoint is committed/pushed, and the task branch/worktree are fast-forwarded to that exact readiness commit and verified clean/current. Use only global old WDD skills, never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation/remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not run full npm test without explicit approval. Preserve unrelated changes and keep .minispec untouched.",
     "stopCondition": "All remaining waves are merged/reconciled and epic validation plus final PR handoff are ready, or a real blocker is recorded.",
     "stopReason": null
   }

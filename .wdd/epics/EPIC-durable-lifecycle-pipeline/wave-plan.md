@@ -58,7 +58,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | done |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | done |
-| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_activation_sync_review_pending |
+| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_worktree_readiness_review_pending |
 
 ## Dependency Grid
 
@@ -853,18 +853,22 @@ Activation rule:
 - Create one isolated worktree from the synced epic branch.
 - Activation started from exact pushed WAVE-010 reconciliation checkpoint
   `ee1b057166fdd02e6b31b1799b512c5e27f24be4`.
-- TASK-020 is allocated to branch
+- TASK-020 was allocated to branch
   `task/TASK-020-lifecycle-documentation-adoption` and worktree
-  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`
-  in metadata only.
-- No TASK-020 branch or worktree may be created until this activation checkpoint
-  passes GPT-5.5/xhigh review, is committed and pushed, its exact commit is
-  recorded, and the activation-sync checkpoint has passed review and been
-  committed/pushed.
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`.
+- TASK-020 branch/worktree creation was blocked until the activation checkpoint
+  passed GPT-5.5/xhigh review, was committed and pushed, its exact commit was
+  recorded, and the activation-sync checkpoint passed review and was committed/
+  pushed.
 - Activation checkpoint review
   `019f9dc8-87c5-76f3-8724-e178beced852` passed 0C/0H/0M/0L, and reviewed
   activation checkpoint `4c72c9de10cd0b2439929d0a7d20a4616579da9f` is pushed
   and recorded. Activation-sync review is next.
+- Activation-sync review `019f9dd8-ead7-77f1-ab13-7fa6eae8132c` passed
+  0C/0H/0M/0L, and reviewed sync checkpoint
+  `0053209080b96c02c2d4fb7af02a24a1af0a477d` is pushed. TASK-020 branch and
+  worktree were created and pushed from that exact commit; the worktree is
+  clean with current WDD artifacts. Worktree-readiness review is next.
 
 Stop condition:
 

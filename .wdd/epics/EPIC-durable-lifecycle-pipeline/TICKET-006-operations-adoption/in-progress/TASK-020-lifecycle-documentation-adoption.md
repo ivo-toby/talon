@@ -20,10 +20,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-020-lifecycle-documentation-adoption
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption
-worktree_status: allocated_metadata_only
+worktree_status: created_clean_at_activation_sync
 pr: null
-current_gate: activation_sync_review_pending
-branch_freshness: branch_not_created_activation_sync_review_pending
+current_gate: worktree_readiness_review_pending
+branch_freshness: branch_current_at_activation_sync_0053209_pending_readiness_ff
 verification:
   - "npx vitest run tests/unit/deploy/starter-bundle.test.ts tests/unit/core/config/config-schema.test.ts tests/unit/cli/lifecycle-commands.test.ts"
   - "npm run build"
@@ -114,12 +114,13 @@ task/TASK-020-lifecycle-documentation-adoption
 
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption
 
-Allocated in controller metadata only. GPT-5.5/xhigh activation checkpoint
-review `019f9dc8-87c5-76f3-8724-e178beced852` passed 0C/0H/0M/0L. The
-reviewed activation checkpoint
-`4c72c9de10cd0b2439929d0a7d20a4616579da9f` is committed, pushed, and recorded.
-The controller must not create this branch/worktree until the activation-sync
-checkpoint has passed GPT-5.5/xhigh review and been committed/pushed.
+Created clean from pushed activation-sync checkpoint
+`0053209080b96c02c2d4fb7af02a24a1af0a477d` after GPT-5.5/xhigh
+activation-sync review `019f9dd8-ead7-77f1-ab13-7fa6eae8132c` passed
+0C/0H/0M/0L. The controller must not dispatch this task until the
+worktree-readiness checkpoint has passed GPT-5.5/xhigh review, been
+committed/pushed, and this branch/worktree has been fast-forwarded to that
+exact readiness commit and reverified clean/current.
 
 ## PR / Patch Reference
 
