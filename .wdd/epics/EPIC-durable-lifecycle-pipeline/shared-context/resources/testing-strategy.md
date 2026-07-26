@@ -123,6 +123,32 @@ run/tool/outbound, context-projector, and behavior-ledger baselines.
 - Final review specifically checks event atomicity, data leakage, replay side
   effects, context races, reload identity, and rollback behavior.
 
+## WAVE-010 Regression Baseline
+
+- Source: TASK-019 / PR #277, merged at `0c30dcc` on 2026-07-26.
+- `tests/integration/lifecycle-end-to-end.test.ts` is the cross-wave event
+  pipeline regression guard. It covers durable SQLite event fan-out, dispatcher
+  retry/idempotency/same-thread ordering, behavior signal projection and persona
+  isolation, replay, retention compaction, privacy tombstoning, handler
+  disablement, scoped interceptor redaction, forged input rejection, and
+  fail-closed timeout paths.
+- Required targeted validation before final epic PR: explicit lifecycle
+  integration bundle with
+  `tests/integration/lifecycle-prompt-promotion.test.ts`,
+  `tests/integration/lifecycle-end-to-end.test.ts`,
+  `tests/integration/lifecycle-behavior-feedback.test.ts`, and
+  `tests/integration/rolling-context-window.test.ts`, plus `npm run build` and
+  `git diff --check`.
+- Isolated Sprites validation passed on Sprite
+  `mcp-codex-pr-talon-277-0c30dcc` against exact merged epic commit `0c30dcc`
+  with 4 files / 17 integration tests, `npm run build`, and
+  `git diff --check`. The Sprite required no secrets; the only environment
+  adjustment was `npm ci --allow-git=all` plus approving/rebuilding
+  `better-sqlite3` inside the throwaway VM.
+- One Low/P3 remains a follow-up: the restart scenario models retryable
+  post-handoff failure rather than literal process-restart lease-claim recovery.
+  Do not auto-remediate it unless it is deliberately promoted into a later task.
+
 ## Durable Memory
 
 ### Lifecycle Epic Verification Standard

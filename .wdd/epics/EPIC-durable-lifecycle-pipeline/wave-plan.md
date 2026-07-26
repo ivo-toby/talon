@@ -57,7 +57,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | done |
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | done |
-| TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | in-progress |
+| TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | done |
 | TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | todo |
 
 ## Dependency Grid
@@ -742,9 +742,11 @@ Stop condition:
 
 ### WAVE-010
 
-Status: in_progress
+Status: done
 
 Activated: 2026-07-26
+
+Completed: 2026-07-26
 
 Tasks:
 
@@ -783,9 +785,37 @@ Activation rule:
   0C/0H/0M/0L, and reviewed sync marker
   `953f9c356520294ebc8b924e5a975ed62f8e1873` is pushed.
 - TASK-019 branch/worktree were created and pushed from the exact sync commit
-  and verified clean. Worker dispatch remains blocked until worktree readiness
-  passes GPT-5.5/xhigh review and commit/push, then the task branch/worktree are
-  fast-forwarded to the exact readiness commit.
+  and verified clean. Worktree readiness review
+  `019f9d94-aa22-7630-8e38-1ff04c881158` passed 0C/0H/0M/0L, and reviewed
+  readiness commit `8507ecdc39a231be1c52200846636880e30d2042` was pushed and
+  fast-forwarded into the task branch/worktree before dispatch.
+
+Outcome:
+
+- TASK-019 merged through PR #277 at epic merge commit
+  `0c30dcca56d94553871412266cf5e492d9302677`.
+- The task added `tests/integration/lifecycle-end-to-end.test.ts`, covering
+  durable event-pipeline retry/idempotency/ordering, replay, retention,
+  disablement, privacy tombstones, scoped interceptor redaction, forged input
+  rejection, and fail-closed timeout behavior.
+- Local Node 24.15.0 verification passed the new e2e test (3/3), the explicit
+  lifecycle integration bundle (4 files / 17 tests), `npm run build`, scoped
+  Prettier, and `git diff --check`. `npm run lint` was attempted and remains
+  blocked by pre-existing source lint debt; full `npm test` was not run without
+  explicit approval.
+- GPT-5.5/xhigh review `019f9da3-e9a8-7dc0-912c-fb694c19f46e` passed
+  0C/0H/0M/1L; the Low/P3 restart wording follow-up is intentionally left
+  untouched.
+- GitHub `Build, lint, and test` and `pr_agent_job` checks passed for PR #277.
+- Isolated Sprites validation on `mcp-codex-pr-talon-277-0c30dcc` checked out
+  exact merged epic commit `0c30dcc` and passed the explicit lifecycle
+  integration bundle (4 files / 17 tests), `npm run build`, and
+  `git diff --check`; the Sprite was destroyed afterward.
+
+Drift notes:
+
+- WAVE-011 can now document the verified lifecycle pipeline and adoption
+  surface. No implementation dependency drift changes its bundled strategy.
 
 Stop condition:
 
@@ -836,9 +866,10 @@ Stop condition:
 - WAVE-001 through WAVE-009 are done and reconciled. WAVE-009 TASK-018 merged
   through PR #276 at `b5a4fc7`, and the clean task worktree was removed and
   pruned.
-- WAVE-010 is active as a bundled TASK-019 work packet. It owns the
-  user-required e2e tests and Sprites event-pipeline validation now that governed
-  prompt promotion has landed; WAVE-011 documents adoption after verification.
+- WAVE-010 TASK-019 is merged through PR #277 at `0c30dcc`; the user-required
+  e2e tests and Sprites event-pipeline validation are complete. WAVE-010
+  reconciliation must be reviewed, committed, and pushed before WAVE-011
+  activation.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

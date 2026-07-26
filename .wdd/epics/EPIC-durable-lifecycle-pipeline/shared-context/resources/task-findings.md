@@ -259,6 +259,18 @@ behavior provenance, and after-commit telemetry boundaries.
   promotion and rollback mutations are serialized across projector instances,
   prompt file mutation, reload verification, and ledger transitions because
   daemon IPC command handling can overlap.
+- Source: TASK-019 / PR #277, reconciled in WAVE-010. The lifecycle event
+  pipeline now has explicit end-to-end regression coverage across durable SQLite
+  fan-out, dispatcher retry/idempotency/order, behavior projection/persona
+  isolation, replay, retention, privacy tombstones, handler disablement,
+  interceptor redaction, forged input rejection, and fail-closed timeout paths.
+  The canonical targeted validation bundle is the three lifecycle integration
+  files plus `rolling-context-window.test.ts`; it passed locally, in GitHub CI,
+  and in isolated Sprites validation at merged epic commit `0c30dcc`.
+- TASK-019 left one non-blocking Low/P3 follow-up untouched: the restart
+  scenario proves retryable post-handoff failure recovery rather than a literal
+  process-restart lease claim. Preserve that distinction in documentation and
+  do not turn it into automatic remediation outside an explicit later task.
 
 ## Durable Memory
 

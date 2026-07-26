@@ -1557,7 +1557,7 @@
     },
     {
       "id": "WAVE-010",
-      "status": "in_progress",
+      "status": "done",
       "activatedAt": "2026-07-26T08:20:58Z",
       "strategy": {
         "profile": "full",
@@ -1589,8 +1589,8 @@
         {
           "id": "TASK-019-lifecycle-end-to-end-verification",
           "ticket": "TICKET-006-operations-adoption",
-          "path": "TICKET-006-operations-adoption/in-progress/TASK-019-lifecycle-end-to-end-verification.md",
-          "status": "in-progress",
+          "path": "TICKET-006-operations-adoption/done/TASK-019-lifecycle-end-to-end-verification.md",
+          "status": "done",
           "dependsOn": [
             "TASK-018-governed-prompt-promotion"
           ],
@@ -1601,18 +1601,24 @@
           ],
           "assignedModel": "codexHigh",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
-          "reviewThreadId": null,
+          "workerThreadId": "019f9d9a-3507-7fc1-bdd6-eb23dc4a65db",
+          "reviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
           "branch": "task/TASK-019-lifecycle-end-to-end-verification",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
-          "worktreeStatus": "created_clean_at_activation_sync",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "branch_current_at_activation_sync_953f9c3_pending_readiness_ff",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T09:11:52Z",
+            "worktreeRemoved": true,
+            "evidence": "task worktree was clean at fc03009 before git worktree remove; git worktree prune completed; unrelated .minispec/ left untouched"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/277",
+          "latestCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+          "branchFreshness": "merged_current_at_0c30dcc",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "worktree_readiness_review_pending"
+          "verification": "TASK-019 local focused Node 24.15.0 validation passed lifecycle-end-to-end 3/3, lifecycle integration bundle 4 files / 17 tests, npm run build, scoped Prettier, and git diff --check. npm run lint remains blocked by pre-existing src lint debt and tests are outside project-service lint scope. GPT-5.5/xhigh review 019f9da3-e9a8-7dc0-912c-fb694c19f46e passed 0C/0H/0M/1L; Low restart wording follow-up left untouched. PR #277 passed GitHub Build/lint/test and PR Agent. Sprites validation on mcp-codex-pr-talon-277-0c30dcc at 0c30dcc passed explicit lifecycle integration bundle 4 files / 17 tests, npm run build, and git diff --check after no-secret npm ci --allow-git=all and isolated better-sqlite3 install-script rebuild; Sprite destroyed.",
+          "currentGate": "merged",
+          "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677"
         }
       ],
       "bundleState": {
@@ -1622,14 +1628,19 @@
         ],
         "branch": "task/TASK-019-lifecycle-end-to-end-verification",
         "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
-        "worktreeStatus": "created_clean_at_activation_sync",
-        "workerThreadId": null,
-        "reviewThreadId": null,
-        "currentGate": "worktree_readiness_review_pending"
+        "worktreeStatus": "cleaned_up",
+        "workerThreadId": "019f9d9a-3507-7fc1-bdd6-eb23dc4a65db",
+        "reviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
+        "currentGate": "merged",
+        "pr": "https://github.com/ivo-toby/talon/pull/277",
+        "latestCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+        "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677"
       },
       "activationPrerequisites": {
         "wave009Reconciliation": "satisfied_by_pushed_checkpoint_2618059965f0a379948d79b8f6bb415419025397"
-      }
+      },
+      "completedAt": "2026-07-26T09:11:52Z",
+      "reconciledAt": "2026-07-26T09:11:52Z"
     },
     {
       "id": "WAVE-011",
@@ -1709,13 +1720,13 @@
     "reconciledAtEpicCommit": "2618059965f0a379948d79b8f6bb415419025397"
   },
   "controller": {
-    "activeWave": "WAVE-010",
+    "activeWave": null,
     "nextWave": "WAVE-011",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
-    "activationBase": "2618059965f0a379948d79b8f6bb415419025397",
-    "activationCheckpoint": "119da93374ed0eaf2ffe9f477c120f33543b1bba",
-    "activationSyncCommit": "953f9c356520294ebc8b924e5a975ed62f8e1873",
+    "activationArtifactsSynced": false,
+    "activationBase": "0c30dcca56d94553871412266cf5e492d9302677",
+    "activationCheckpoint": null,
+    "activationSyncCommit": null,
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
@@ -2145,7 +2156,7 @@
       "reconciledAt": "2026-07-26T07:58:29Z"
     },
     "wave010Activation": {
-      "status": "worktree_readiness_review_pending",
+      "status": "completed_and_reconciled",
       "activationBase": "2618059965f0a379948d79b8f6bb415419025397",
       "tasks": [
         "TASK-019-lifecycle-end-to-end-verification"
@@ -2184,24 +2195,75 @@
       "activationSyncCommit": "953f9c356520294ebc8b924e5a975ed62f8e1873",
       "readinessReviewModel": "gpt-5.5",
       "readinessReviewReasoningEffort": "xhigh",
-      "readinessReviewStatus": "pending",
-      "readinessReviewThreadId": null,
-      "readinessReviewCounts": null,
-      "readinessCommit": null,
-      "taskBranchesFastForwardedToReadiness": false,
-      "taskWorktreesVerifiedBeforeDispatch": false
+      "readinessReviewStatus": "passed",
+      "readinessReviewThreadId": "019f9d94-aa22-7630-8e38-1ff04c881158",
+      "readinessReviewCounts": "0C/0H/0M/0L",
+      "readinessCommit": "8507ecdc39a231be1c52200846636880e30d2042",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true,
+      "workerThreadId": "019f9d9a-3507-7fc1-bdd6-eb23dc4a65db",
+      "reviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
+      "taskCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+      "pr": "https://github.com/ivo-toby/talon/pull/277",
+      "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677",
+      "cleanup": {
+        "status": "cleaned_up",
+        "at": "2026-07-26T09:11:52Z",
+        "worktreeRemoved": true
+      },
+      "spritesValidation": {
+        "status": "passed",
+        "sprite": "mcp-codex-pr-talon-277-0c30dcc",
+        "targetCommit": "0c30dcca56d94553871412266cf5e492d9302677",
+        "checkoutMode": "branch_exact_head_after_pr_merge",
+        "dependencyCheckpoint": "v1",
+        "commands": [
+          "npm ci --allow-git=all",
+          "npm install-scripts approve better-sqlite3",
+          "npm rebuild better-sqlite3",
+          "npx vitest run tests/integration/lifecycle-end-to-end.test.ts",
+          "npx vitest run tests/integration/lifecycle-prompt-promotion.test.ts tests/integration/lifecycle-end-to-end.test.ts tests/integration/lifecycle-behavior-feedback.test.ts tests/integration/rolling-context-window.test.ts",
+          "npm run build",
+          "git diff --check"
+        ],
+        "result": "passed 4 integration files / 17 tests, build, and diff-check; sprite destroyed",
+        "destroyed": true
+      }
+    },
+    "wave010Reconciliation": {
+      "status": "reviewed_pending_checkpoint_commit",
+      "task": "TASK-019-lifecycle-end-to-end-verification",
+      "pr": "https://github.com/ivo-toby/talon/pull/277",
+      "taskCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+      "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677",
+      "mergedAt": "2026-07-26T09:03:21Z",
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "clean_verified_removed_and_pruned",
+      "integratedVerification": "Node 24.15.0 local targeted lifecycle suite passed 4 files / 17 tests, lifecycle-end-to-end passed 3/3, npm run build passed, scoped Prettier passed, git diff --check passed; npm run lint failure is pre-existing src lint debt and tests are outside project-service lint scope; GitHub checks passed; Sprites validation passed 4 files / 17 tests plus build and diff-check at 0c30dcc",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewStatus": "passed",
+      "checkpointReviewThreadId": "019f9dbd-a0a6-7d53-9a0d-4729c26ac35a",
+      "checkpointReviewCounts": "0C/0H/0M/0L",
+      "taskReviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
+      "taskReviewCounts": "0C/0H/0M/1L",
+      "lowFindingDisposition": "restart scenario models retryable post-handoff failure rather than literal process-restart lease claim; left untouched as non-blocking Low/P3",
+      "checkpointCommit": null,
+      "checkpointCommitStatus": "pending_commit",
+      "nextWave": "WAVE-011",
+      "nextWaveStatus": "activation_blocked_until_reconciliation_commit_pushed"
     }
   },
   "monitoring": {
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave010_worktree_readiness_review_pending",
-    "lastCheckedAt": "2026-07-26T08:35:40Z",
-    "nextCheckDueAt": "2026-07-26T08:40:40Z",
+    "status": "wave010_reconciliation_review_passed_commit_pending",
+    "lastCheckedAt": "2026-07-26T09:11:52Z",
+    "nextCheckDueAt": "2026-07-26T09:16:52Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-010 worktree-readiness checkpoint is pending GPT-5.5/xhigh review",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-010 TASK-019 is active at worktree_readiness_review_pending. Activation-sync commit 953f9c356520294ebc8b924e5a975ed62f8e1873 is pushed and recorded; TASK-019 branch/worktree were created and pushed from that exact commit and verified clean with current WDD artifacts. Use only global old WDD skills, never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation/remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not dispatch implementation until worktree-readiness review/commit/push has passed and the task branch/worktree are fast-forwarded to the exact readiness commit. Do not run full npm test without explicit approval. Preserve unrelated changes and keep .minispec untouched.",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-010 reconciliation checkpoint passed GPT-5.5/xhigh review and is pending commit/push before WAVE-011 activation",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-010 TASK-019 merged through PR #277 at epic merge commit 0c30dcca56d94553871412266cf5e492d9302677 and Sprites validation passed. WAVE-010 reconciliation metadata passed GPT-5.5/xhigh review 019f9dbd-a0a6-7d53-9a0d-4729c26ac35a with 0C/0H/0M/0L and is pending commit/push before WAVE-011 activation. Use only global old WDD skills, never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation/remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not activate WAVE-011 until WAVE-010 reconciliation is committed and pushed. Do not run full npm test without explicit approval. Preserve unrelated changes and keep .minispec untouched.",
     "stopCondition": "All remaining waves are merged/reconciled and epic validation plus final PR handoff are ready, or a real blocker is recorded.",
     "stopReason": null
   }

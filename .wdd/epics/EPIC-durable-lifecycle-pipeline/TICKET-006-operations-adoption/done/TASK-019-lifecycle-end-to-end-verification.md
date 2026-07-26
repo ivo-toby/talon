@@ -6,7 +6,7 @@ ticket: TICKET-006-operations-adoption
 wave: WAVE-010
 slug: lifecycle-end-to-end-verification
 title: Add end-to-end lifecycle, restart, and security verification
-status: in-progress
+status: done
 depends_on: ["TASK-018-governed-prompt-promotion"]
 conflict_domains:
   - "tests/integration/**"
@@ -17,10 +17,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-019-lifecycle-end-to-end-verification
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification
-worktree_status: created_clean_at_activation_sync
-pr: null
-current_gate: worktree_readiness_review_pending
-branch_freshness: branch_current_at_activation_sync_953f9c3_pending_readiness_ff
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/277
+current_gate: merged
+branch_freshness: merged_current_at_0c30dcc
 verification:
   - "npx vitest run tests/integration/lifecycle-*.test.ts tests/integration/rolling-context-window.test.ts"
   - "npm run build"
@@ -35,7 +35,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -118,14 +118,15 @@ task/TASK-019-lifecycle-end-to-end-verification
 Allocated by the controller for WAVE-010 bundled execution. Branch/worktree were
 created and pushed from activation-sync commit
 `953f9c356520294ebc8b924e5a975ed62f8e1873` and verified clean with this task,
-orchestration.json, and controller-state.md present. Worker dispatch remains
-blocked until the worktree-readiness checkpoint passes GPT-5.5/xhigh review, is
-committed/pushed, and this branch/worktree are fast-forwarded to the exact
-readiness commit.
+orchestration.json, and controller-state.md present. Readiness review
+`019f9d94-aa22-7630-8e38-1ff04c881158` passed 0C/0H/0M/0L, readiness commit
+`8507ecdc39a231be1c52200846636880e30d2042` was pushed, and the task
+branch/worktree were fast-forwarded before worker dispatch. After PR #277
+merged, the clean task worktree was removed and pruned.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #277: https://github.com/ivo-toby/talon/pull/277
 
 ## RED-GREEN TDD Plan
 
@@ -161,11 +162,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -191,7 +192,33 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   passed 0C/0H/0M/0L. Reviewed sync marker
   `953f9c356520294ebc8b924e5a975ed62f8e1873` is pushed. TASK-019 branch/worktree
   were created and pushed from that exact commit and verified clean with current
-  WDD artifacts; worktree-readiness review is pending before dispatch.
+  WDD artifacts.
+- WAVE-010 worktree-readiness review
+  `019f9d94-aa22-7630-8e38-1ff04c881158` passed 0C/0H/0M/0L. Reviewed
+  readiness commit `8507ecdc39a231be1c52200846636880e30d2042` was pushed, then
+  fast-forwarded into the TASK-019 branch/worktree before worker dispatch.
+- TASK-019 worker `019f9d9a-3507-7fc1-bdd6-eb23dc4a65db` added
+  `tests/integration/lifecycle-end-to-end.test.ts`. Local Node 24.15.0
+  verification passed `npx vitest run tests/integration/lifecycle-end-to-end.test.ts`
+  (3/3), the explicit lifecycle integration bundle (4 files / 17 tests),
+  `npm run build`, scoped Prettier, and `git diff --check`.
+- `npm run lint` was attempted and remains blocked by pre-existing `src/**/*.ts`
+  lint debt; the new integration test is outside the current project-service
+  ESLint scope. Full `npm test` was not run because it requires explicit user
+  approval.
+- GPT-5.5/xhigh task review `019f9da3-e9a8-7dc0-912c-fb694c19f46e` passed
+  0C/0H/0M/1L. The Low/P3 restart-scenario wording follow-up is recorded below
+  and was intentionally not remediated.
+- PR #277 passed GitHub `Build, lint, and test` and `pr_agent_job`, then merged
+  into the epic branch at merge commit
+  `0c30dcca56d94553871412266cf5e492d9302677` on `2026-07-26T09:03:21Z`.
+- Sprites validation used isolated Sprite `mcp-codex-pr-talon-277-0c30dcc`,
+  checked out exact merged epic commit `0c30dcc`, installed dependencies with
+  no secrets via `npm ci --allow-git=all`, approved/rebuilt only
+  `better-sqlite3` inside the throwaway Sprite, and passed the explicit
+  lifecycle integration bundle (4 files / 17 tests), `npm run build`, and
+  `git diff --check`. Dependency checkpoint `v1` was created before test runs;
+  the Sprite was destroyed afterward.
 
 ## Review Feedback
 
@@ -205,8 +232,12 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ### P3
 
-- None.
+- The test's restart scenario models retryable post-handoff failure rather than
+  a literal process-restart lease-claim recovery. This is a non-blocking
+  follow-up and was left untouched per the Low/P3 policy.
 
 ## Completion Notes
 
-- None yet.
+- TASK-019 merged through PR #277 and the event pipeline was validated locally,
+  in GitHub checks, and in Sprites. The clean task worktree was removed and
+  pruned during WAVE-010 reconciliation.
