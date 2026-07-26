@@ -92,6 +92,7 @@ import { createLifecycleHandlerRegistry } from '../lifecycle/handler-registry.js
 import { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
 import {
   BehaviorSignalProjector,
+  BehaviorReviewService,
   NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_REF,
   NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_VERSION,
   createBehaviorSignalRouter,
@@ -927,6 +928,9 @@ export async function bootstrap(
     logger,
     lifecycleRuntime ?? undefined,
   );
+  const behaviorReviewService = new BehaviorReviewService(repos.behaviorSignal, {
+    auditLogger,
+  });
 
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
@@ -992,6 +996,7 @@ export async function bootstrap(
     config.scheduler,
     logger,
     lifecycleRuntime ?? undefined,
+    behaviorReviewService,
   );
 
   // 15. Message pipeline and channel registration

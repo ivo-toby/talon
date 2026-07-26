@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-017-behavior-review-reducers
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers
-worktree_status: created_clean_pending_readiness_review
+worktree_status: implementation_complete_uncommitted
 pr: null
-current_gate: worktree_readiness_review_pending
-branch_freshness: at_activation_sync_commit_pending_readiness
+current_gate: implementation_complete_pending_review
+branch_freshness: at_readiness_commit_c8057fa_with_uncommitted_task_changes
 verification:
   - "npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents"
   - "npm run build"
@@ -167,7 +167,46 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- RED check:
+  `npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents/behavior-reviewer.test.ts`
+  failed before implementation because `src/lifecycle/behavior/behavior-review-service.ts`
+  and `src/lifecycle/behavior/review-contracts.ts` did not exist.
+- GREEN focused implementation check:
+  `npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents/behavior-reviewer.test.ts`
+  passed, 6 tests / 2 files.
+- Scheduler integration check:
+  `npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents/behavior-reviewer.test.ts tests/unit/scheduler/scheduler.test.ts`
+  passed, 45 tests / 3 files.
+- Task-relevant subagent/lifecycle/scheduler check:
+  `npx vitest run tests/unit/subagents/behavior-reviewer.test.ts tests/unit/subagents/behavior-feedback-detector.test.ts tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/scheduler/scheduler.test.ts`
+  passed, 57 tests / 4 files.
+- Broader expected subagent-directory check:
+  `npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents tests/unit/scheduler/scheduler.test.ts`
+  failed only in unrelated `tests/unit/subagents/file-searcher.test.ts`
+  (`searchFiles (rg backend, real fs) > cascades to node backend when rg
+  searches mocked paths`, expected 1 result, got 0). The same isolated file
+  failed when rerun directly with the same assertion; TASK-017 files were not
+  involved.
+- `npm run build` passed after implementation and after bootstrap wiring.
+- `npm run lint` was attempted and failed on existing unrelated repository
+  lint errors outside TASK-017, including WhatsApp, CLI, context assembler,
+  provider, file-searcher, session-observer, and host-tool files.
+- Scoped lint passed:
+  `npx eslint src/core/database/repositories/behavior-signal-repository.ts src/lifecycle/behavior/review-contracts.ts src/lifecycle/behavior/behavior-review-service.ts src/lifecycle/behavior/index.ts src/scheduler/scheduler.ts src/scheduler/schedule-types.ts src/subagents/default/behavior-daily-reviewer/index.ts src/subagents/default/behavior-weekly-reviewer/index.ts src/daemon/daemon-bootstrap.ts`
+- `git diff --check` passed.
+- GPT-5.5/xhigh remediation focused check:
+  `npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/scheduler/scheduler.test.ts`
+  passed, 64 tests / 3 files. Covered collecting-to-ready promotion,
+  SQL-bounded review candidate/evidence reads with aggregate counts, and
+  null-thread native behavior review schedules.
+- GPT-5.5/xhigh remediation build check: `npm run build` passed.
+- GPT-5.5/xhigh remediation scoped Prettier check:
+  `npx prettier --check src/core/database/repositories/behavior-signal-repository.ts src/core/database/repositories/index.ts src/lifecycle/behavior/behavior-review-service.ts src/scheduler/scheduler.ts tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/scheduler/scheduler.test.ts`
+  passed after formatting the touched service/repository test files.
+- GPT-5.5/xhigh remediation scoped source lint:
+  `npx eslint src/core/database/repositories/behavior-signal-repository.ts src/core/database/repositories/index.ts src/lifecycle/behavior/behavior-review-service.ts src/scheduler/scheduler.ts`
+  passed.
+- GPT-5.5/xhigh remediation `git diff --check` passed.
 
 ## Review Feedback
 
@@ -181,8 +220,28 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ### P3
 
-- None.
+- Low/P3 follow-up intentionally left unresolved per worker scope: behavior
+  review payload is not consumed by an external adapter/scheduler path beyond
+  `data.lifecycleResult`.
 
 ## Completion Notes
 
-- None yet.
+- Implemented native daily/weekly behavior review reduction as notes-only
+  proposed promotions using existing behavior ledger guards; no prompt
+  activation, approval, or rollback behavior was added.
+- Added bounded review output contracts, deterministic review promotion ids,
+  duplicate/conflict/source-threshold/expiry handling, optional trace evidence
+  metadata, and bounded audit evidence with `signalCount: 0`.
+- Added default `behavior-daily-reviewer` and `behavior-weekly-reviewer`
+  subagent manifests/prompts using `gpt-5.5`, no filesystem authority, and the
+  existing lifecycle event-to-signal adapter contract.
+- Wired configured scheduler payloads with `behaviorReview.cadence` to run the
+  native review service and advance the schedule without enqueueing a
+  user-facing agent task; normal schedules continue to use the existing queue
+  path.
+- Added repository read support for candidate-linked evidence. No migrations
+  were required.
+- README, `.agents` skills, and AGENTS adoption documentation are intentionally
+  deferred to TASK-020; this task added the runtime primitive and tests only.
+- Controller GPT-5.5/xhigh review, commit, push, and PR remain pending by
+  protocol.
