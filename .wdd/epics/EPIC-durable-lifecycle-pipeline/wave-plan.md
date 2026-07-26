@@ -54,8 +54,8 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | done |
 | TASK-014-lifecycle-retention-reload-replay | TICKET-002-durable-event-runtime | TASK-006-durable-event-dispatcher, TASK-013-handler-telemetry-correlation | lifecycle admin/retention, lifecycle repositories, daemon reload | done |
 | TASK-015-behavior-signal-projector | TICKET-005-behavior-learning | TASK-007-daemon-message-queue-schedule-events, TASK-010-behavior-ledger-persistence, TASK-012-feedback-detector-subagent | lifecycle behavior, config schema, behavior integration tests | done |
-| TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | todo |
-| TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | todo |
+| TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | in-progress |
+| TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | in-progress |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | todo |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | todo |
 | TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | todo |
@@ -579,6 +579,9 @@ Activation rule:
   and `git diff --check`.
 - Both completed task worktrees were verified clean, removed, and pruned during
   reconciliation.
+- The WAVE-007 reconciliation checkpoint was committed and pushed at
+  `5b20a15f15458d9368fed11423ba246c0534e780`; local and remote epic heads
+  matched before WAVE-008 activation.
 
 Stop condition:
 
@@ -587,7 +590,9 @@ Stop condition:
 
 ### WAVE-008
 
-Status: planned
+Status: in_progress
+
+Activated: 2026-07-26
 
 Tasks:
 
@@ -615,6 +620,18 @@ Activation rule:
 
 - Activate the eligible tasks as one batch after syncing activation artifacts.
 - Create one isolated worktree per writing task from the synced epic branch.
+- Activation started from exact pushed WAVE-007 reconciliation checkpoint
+  `5b20a15f15458d9368fed11423ba246c0534e780`.
+- TASK-016 is allocated to branch `task/TASK-016-lifecycle-operator-cli` and
+  worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli`.
+- TASK-017 is allocated to branch `task/TASK-017-behavior-review-reducers` and
+  worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers`.
+- Task branches and worktrees are not created yet. Creation remains forbidden
+  until this activation checkpoint is reviewed by GPT-5.5/xhigh, committed,
+  pushed, recorded exactly, activation sync passes review/commit/push, and the
+  separate worktree-readiness checkpoint passes review/commit/push.
 
 Stop condition:
 

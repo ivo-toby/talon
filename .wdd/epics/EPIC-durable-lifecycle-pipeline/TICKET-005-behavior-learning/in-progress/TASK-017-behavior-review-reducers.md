@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-008
 slug: behavior-review-reducers
 title: Add daily and weekly behavior review reducers
-status: todo
+status: in-progress
 depends_on: ["TASK-013-handler-telemetry-correlation", "TASK-015-behavior-signal-projector"]
 conflict_domains:
   - "src/lifecycle/behavior/behavior-review-service.ts"
@@ -15,11 +15,11 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-017-behavior-review-reducers
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_checkpoint_review_pending
+branch_freshness: pending_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents"
   - "npm run build"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -103,7 +103,12 @@ task/TASK-017-behavior-review-reducers
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers
+
+Allocated by the controller during WAVE-008 activation. Do not create or use
+this worktree until the activation checkpoint is reviewed by GPT-5.5/xhigh,
+committed, pushed, recorded as the exact activation checkpoint, and activation
+sync plus readiness gates have passed.
 
 ## PR / Patch Reference
 
@@ -127,6 +132,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - Start in the assigned task worktree and confirm this task plus current orchestration state exist.
 - Do not switch branches in the controller checkout or start dependent work.
+- Do not begin implementation until the controller confirms the reviewed
+  readiness commit has been pushed, fast-forwarded into this branch/worktree,
+  and verified clean with current WDD state.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
 - Request reviewGate/`gpt-5.5` review with xhigh reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings. Never use GPT-5.6.

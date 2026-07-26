@@ -1364,7 +1364,8 @@
     },
     {
       "id": "WAVE-008",
-      "status": "planned",
+      "status": "in_progress",
+      "activatedAt": "2026-07-26T04:15:00Z",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -1392,8 +1393,8 @@
         {
           "id": "TASK-016-lifecycle-operator-cli",
           "ticket": "TICKET-006-operations-adoption",
-          "path": "TICKET-006-operations-adoption/todo/TASK-016-lifecycle-operator-cli.md",
-          "status": "todo",
+          "path": "TICKET-006-operations-adoption/in-progress/TASK-016-lifecycle-operator-cli.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-014-lifecycle-retention-reload-replay",
             "TASK-015-behavior-signal-projector"
@@ -1408,21 +1409,21 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-016-lifecycle-operator-cli",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli",
+          "worktreeStatus": "allocated_pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_checkpoint_review_pending"
         },
         {
           "id": "TASK-017-behavior-review-reducers",
           "ticket": "TICKET-005-behavior-learning",
-          "path": "TICKET-005-behavior-learning/todo/TASK-017-behavior-review-reducers.md",
-          "status": "todo",
+          "path": "TICKET-005-behavior-learning/in-progress/TASK-017-behavior-review-reducers.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-013-handler-telemetry-correlation",
             "TASK-015-behavior-signal-projector"
@@ -1437,19 +1438,19 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-017-behavior-review-reducers",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers",
+          "worktreeStatus": "allocated_pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_checkpoint_review_pending"
         }
       ],
       "activationPrerequisites": {
-        "wave007Reconciliation": "pending_reviewed_reconciliation_commit"
+        "wave007Reconciliation": "satisfied_by_pushed_checkpoint_5b20a15f15458d9368fed11423ba246c0534e780"
       }
     },
     {
@@ -1646,17 +1647,17 @@
     "reconciledAtEpicCommit": "dde6bacef91462fadb4fa1fb34ed181ba648dcd2"
   },
   "controller": {
-    "activeWave": null,
-    "nextWave": "WAVE-008",
+    "activeWave": "WAVE-008",
+    "nextWave": "WAVE-009",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
-    "activationBase": "898197df00c065923dec5f372943628a695c62a1",
-    "activationCheckpoint": "e6e09fa620e59c08d65ada9345941421abef6d54",
-    "activationSyncCommit": "c7bedf7fb14775d35a09266a8ae36fac8c438905",
-    "readinessCommit": "330fdd9c0e4b2e35b6f9793e27fbb06a151c0ebd",
+    "activationArtifactsSynced": false,
+    "activationBase": "5b20a15f15458d9368fed11423ba246c0534e780",
+    "activationCheckpoint": null,
+    "activationSyncCommit": null,
+    "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
-    "nextWaveActivationAllowed": true,
+    "nextWaveActivationAllowed": false,
     "pauseReason": null,
     "modelPolicyCheckpointReview": {
       "reviewThreadId": "019f6b32-0008-7560-a6a2-8400237b7ca6",
@@ -1878,7 +1879,7 @@
       "nextWaveStatus": "activation_started"
     },
     "wave007Activation": {
-      "status": "completed_tasks_merged_reconciliation_review_passed_pending_commit_push",
+      "status": "completed_reconciled_checkpoint_pushed",
       "activationBase": "898197df00c065923dec5f372943628a695c62a1",
       "tasks": [
         "TASK-014-lifecycle-retention-reload-replay",
@@ -1918,7 +1919,7 @@
       "taskWorktreesVerifiedBeforeDispatch": true
     },
     "wave007Reconciliation": {
-      "status": "review_passed_pending_commit_push",
+      "status": "reviewed_committed_and_pushed",
       "tasks": [
         "TASK-014-lifecycle-retention-reload-replay",
         "TASK-015-behavior-signal-projector"
@@ -1944,22 +1945,55 @@
       "checkpointReviewThreadId": "019f9c98-e5d9-7e00-af27-13cd8aff96c9",
       "checkpointReviewCounts": "0C/0H/0M/1L",
       "checkpointReviewLowDisposition": "non-blocking stale shared-context TASK-014 pending-PR wording left untouched per policy",
+      "checkpointCommit": "5b20a15f15458d9368fed11423ba246c0534e780",
+      "checkpointCommitStatus": "pushed_local_remote_match",
       "nextWave": "WAVE-008",
-      "nextWaveStatus": "activation_ready_after_reviewed_reconciliation_commit",
+      "nextWaveStatus": "activation_started",
       "e2eSpritesRequirement": "TASK-019 must add end-to-end tests for the completed lifecycle waves and validate the event pipeline with Sprites before the epic is considered complete"
+    },
+    "wave008Activation": {
+      "status": "activation_checkpoint_review_pending",
+      "activationBase": "5b20a15f15458d9368fed11423ba246c0534e780",
+      "tasks": [
+        "TASK-016-lifecycle-operator-cli",
+        "TASK-017-behavior-review-reducers"
+      ],
+      "branches": {
+        "TASK-016-lifecycle-operator-cli": "task/TASK-016-lifecycle-operator-cli",
+        "TASK-017-behavior-review-reducers": "task/TASK-017-behavior-review-reducers"
+      },
+      "worktrees": {
+        "TASK-016-lifecycle-operator-cli": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli",
+        "TASK-017-behavior-review-reducers": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers"
+      },
+      "taskBranchesCreated": false,
+      "taskWorktreesCreated": false,
+      "taskBranchesPushed": false,
+      "worktreesVerifiedClean": false,
+      "worktreeBaseCommit": null,
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "pending",
+      "activationCheckpointReviewThreadId": null,
+      "activationCheckpointReviewCounts": null,
+      "activationCheckpoint": null,
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncCommit": null,
+      "readinessCommit": null
     }
   },
   "monitoring": {
-    "mode": "inactive",
+    "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave007_reconciliation_review_passed_pending_commit_push",
-    "lastCheckedAt": "2026-07-26T04:08:41Z",
-    "nextCheckDueAt": null,
-    "schedulerRef": null,
-    "schedulerStatus": "inactive_wave007_tasks_merged",
-    "fallbackPrompt": "WAVE-007 reconciliation passed GPT-5.5/xhigh review 019f9c98-e5d9-7e00-af27-13cd8aff96c9 with 0C/0H/0M/1L; commit and push the checkpoint, then start WAVE-008 activation. Do not use GPT-5.6.",
-    "stopCondition": "WAVE-007 reconciliation checkpoint commit/push is the remaining closeout gate.",
-    "stopReason": "WAVE-007 tasks merged and worktrees cleaned; controller is reconciling the wave."
+    "status": "wave008_activation_checkpoint_review_pending",
+    "lastCheckedAt": "2026-07-26T04:15:00Z",
+    "nextCheckDueAt": "2026-07-26T04:20:00Z",
+    "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; manual fallback until activation checkpoint is committed and pushed",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline WAVE-008 in /Users/ivo.toby/workspace/talon. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-016/TASK-017 files. Do not create task branches/worktrees until the WAVE-008 activation checkpoint passes GPT-5.5/xhigh review, is committed and pushed, its exact hash is recorded as controller.activationCheckpoint, activationArtifactsSynced is true after a fresh activation-sync GPT-5.5/xhigh review, and that sync checkpoint is committed/pushed. Do not use GPT-5.6. Do not implement task code in the controller checkout. Keep .minispec untouched.",
+    "stopCondition": "WAVE-008 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "stopReason": null
   }
 }
