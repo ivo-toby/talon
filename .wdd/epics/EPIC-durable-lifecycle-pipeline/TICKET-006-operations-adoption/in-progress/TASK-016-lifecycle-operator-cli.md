@@ -18,8 +18,8 @@ branch: task/TASK-016-lifecycle-operator-cli
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli
 worktree_status: allocated_pending_creation
 pr: null
-current_gate: activation_checkpoint_review_pending
-branch_freshness: pending_activation_checkpoint
+current_gate: activation_sync_review_pending
+branch_freshness: pending_activation_sync_checkpoint
 verification:
   - "npx vitest run tests/unit/cli/lifecycle-commands.test.ts tests/unit/ipc"
   - "npm run build"
@@ -105,10 +105,10 @@ task/TASK-016-lifecycle-operator-cli
 
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli
 
-Allocated by the controller during WAVE-008 activation. Do not create or use
-this worktree until the activation checkpoint is reviewed by GPT-5.5/xhigh,
-committed, pushed, recorded as the exact activation checkpoint, and activation
-sync plus readiness gates have passed.
+Allocated by the controller during WAVE-008 activation. The activation
+checkpoint was reviewed by GPT-5.5/xhigh and pushed at
+`104dfa4c00501c85663adc6c6db6e7524f85ed60`. Do not create or use this worktree
+until the activation-sync checkpoint and readiness gates have passed.
 
 ## PR / Patch Reference
 

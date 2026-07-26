@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
 active_wave: WAVE-008
-status: wave008_activation_checkpoint_review_pending
+status: wave008_activation_sync_review_pending
 updated_at: 2026-07-26
 ---
 
@@ -131,9 +131,11 @@ Every task advances independently as soon as its gates clear.
   match. WAVE-008 activation starts from this exact pushed checkpoint.
 - WAVE-008 activation artifacts: TASK-016/TASK-017 task files moved to
   `in-progress/`; task branches/worktrees are allocated but not created.
-  Activation checkpoint review by GPT-5.5/xhigh is required before commit,
-  push, activation-sync, branch creation, worktree creation, readiness, or
-  worker dispatch.
+  Activation checkpoint review `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` passed
+  0C/0H/0M/0L and the reviewed checkpoint was committed/pushed at
+  `104dfa4c00501c85663adc6c6db6e7524f85ed60`. Activation-sync review is
+  required before branch creation, worktree creation, readiness, or worker
+  dispatch.
 
 ## Pending Waves
 
@@ -167,31 +169,32 @@ Activation batch:
   branch `task/TASK-017-behavior-review-reducers`; allocated worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers`.
 
-No WAVE-008 task branch or worktree has been created. Creation remains blocked
-until the activation checkpoint passes GPT-5.5/xhigh review, is committed and
-pushed, its exact hash is recorded, activation sync passes GPT-5.5/xhigh
-review/commit/push, and the separate worktree-readiness checkpoint passes
-GPT-5.5/xhigh review/commit/push.
+No WAVE-008 task branch or worktree has been created. The activation checkpoint
+is reviewed, pushed, and recorded as
+`104dfa4c00501c85663adc6c6db6e7524f85ed60`, and activation artifacts are synced
+in orchestration state. Creation remains blocked until the activation-sync
+checkpoint passes GPT-5.5/xhigh review/commit/push and the separate
+worktree-readiness checkpoint passes GPT-5.5/xhigh review/commit/push.
 
 ## Monitoring
 
 - Mode: manual fallback while the recurring thread monitor remains available.
 - Cadence: adaptive
-- Status: WAVE-008 activation checkpoint review pending.
+- Status: WAVE-008 activation-sync review pending.
 - Scheduler provenance: `talon-issue-256-wdd-remaining-waves-monitor`
-- Last checked: 2026-07-26T04:15:00Z
-- Next check due: 2026-07-26T04:20:00Z
+- Last checked: 2026-07-26T04:32:00Z
+- Next check due: 2026-07-26T04:37:00Z
 - Stop condition: WAVE-008 tasks are merged, blocked, cancelled, or ready for
   `wdd-reconcile-wave`.
 - Fallback prompt: run one bounded WDD controller heartbeat for
   EPIC-durable-lifecycle-pipeline WAVE-008. Read constitution, epic,
   orchestration.json, controller-state.md, shared context, wave-plan.md, and
-  TASK-016/TASK-017. Do not create task branches/worktrees until the WAVE-008
-  activation checkpoint passes GPT-5.5/xhigh review, is committed and pushed,
-  its exact hash is recorded, activation sync passes GPT-5.5/xhigh review and
-  commit/push, and readiness passes GPT-5.5/xhigh review and commit/push. Do
-  not use GPT-5.6. Do not implement task code in the controller checkout. Keep
-  `.minispec/` untouched.
+  TASK-016/TASK-017. Do not create task branches/worktrees until activation
+  checkpoint `104dfa4c00501c85663adc6c6db6e7524f85ed60` is recorded,
+  activationArtifactsSynced is true, activation sync passes GPT-5.5/xhigh
+  review and commit/push, and readiness passes GPT-5.5/xhigh review and
+  commit/push. Do not use GPT-5.6. Do not implement task code in the controller
+  checkout. Keep `.minispec/` untouched.
 
 ## Current Task Gates
 
@@ -358,9 +361,9 @@ GPT-5.5/xhigh review/commit/push.
   branch at `61b552a209db197c65b7ea48f18dff05c68d84d2` after focused behavior
   tests, build, scoped lint, diff check, GitHub checks, and GPT-5.5/xhigh
   review passed 0C/0H/0M/0L.
-- TASK-016-lifecycle-operator-cli: activation_checkpoint_review_pending; branch
+- TASK-016-lifecycle-operator-cli: activation_sync_review_pending; branch
   and worktree are allocated but not created.
-- TASK-017-behavior-review-reducers: activation_checkpoint_review_pending;
+- TASK-017-behavior-review-reducers: activation_sync_review_pending;
   branch and worktree are allocated but not created.
 - TASK-018/TASK-019/TASK-020 remain not_started until their planned waves
   activate. TASK-019 carries the user-required e2e/Sprites event-pipeline gate.
@@ -513,10 +516,10 @@ may remain as historical context.
 
 WAVE-006 and WAVE-007 subsequently completed, reconciled, and pushed. Current
 local and remote epic heads match at WAVE-007 reconciliation checkpoint
-`5b20a15f15458d9368fed11423ba246c0534e780`. WAVE-008 branch freshness is
-pending activation checkpoint review/commit/push; task branches/worktrees do
-not exist yet and must be created only from a reviewed and pushed activation
-sync commit.
+`5b20a15f15458d9368fed11423ba246c0534e780`. WAVE-008 activation checkpoint
+`104dfa4c00501c85663adc6c6db6e7524f85ed60` is reviewed, pushed, and recorded.
+Task branches/worktrees do not exist yet and must be created only from a
+reviewed and pushed activation-sync commit.
 
 ## Open P1/P2 Feedback
 
@@ -539,16 +542,17 @@ sync commit.
 - TASK-007 has no unresolved Critical/High/Medium feedback. Its final reviews,
   Verify PR run, PR Agent gate, freshness, merge, and cleanup all passed. Known
   Low/P3 follow-ups remain untouched and non-blocking.
-- WAVE-008 has no implementation feedback yet. Activation checkpoint review is
+- WAVE-008 has no implementation feedback yet. Activation-sync review is
   pending; any Critical/High/Medium finding must be fixed before commit, while
   Low/P3 findings remain non-blocking follow-ups.
 
 ## Verification Status
 
-- WAVE-008 activation artifact verification is pending. Required pre-commit
-  checks for this controller checkpoint are JSON parse, `git diff --check`, and
-  GPT-5.5/xhigh review with 0 Critical/High/Medium findings. No task code,
-  task branch, or task worktree exists for WAVE-008 yet.
+- WAVE-008 activation artifact verification passed: GPT-5.5/xhigh review
+  `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` reported 0C/0H/0M/0L, `jq empty`
+  passed for orchestration.json, and `git diff --check` passed. Activation-sync
+  marker verification is pending. No task code, task branch, or task worktree
+  exists for WAVE-008 yet.
 - WAVE-001 final task and refresh verification passed 130/130 focused tests, build,
   TypeScript, cumulative task-source ESLint, changed-TS Prettier, diff checks,
   branch-refresh fidelity, and GitHub Verify PR run `29458737878`.
@@ -1180,11 +1184,18 @@ sync commit.
   match. WAVE-008 activation started from that exact checkpoint. TASK-016 and
   TASK-017 task files moved to `in-progress/`; branches/worktrees are allocated
   but not created. Activation checkpoint review is next.
+- 2026-07-26: WAVE-008 activation checkpoint review
+  `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` passed 0C/0H/0M/0L. The reviewed
+  activation checkpoint was committed and pushed at
+  `104dfa4c00501c85663adc6c6db6e7524f85ed60`; local and remote epic heads
+  matched after push. Activation-sync review is next; task branches/worktrees
+  remain forbidden.
 
 ## Next Action
 
-Run GPT-5.5/xhigh review for the WAVE-008 activation checkpoint. If it reports
-0 Critical/High/Medium findings, commit and push the activation checkpoint on
-`epic/durable-lifecycle-pipeline`, record the exact commit hash, and proceed to
-the activation-sync review/commit/push gate. Continue using GPT-5.5/high
-implementation and GPT-5.5/xhigh review only; no GPT-5.6.
+Run GPT-5.5/xhigh review for the WAVE-008 activation-sync marker. If it reports
+0 Critical/High/Medium findings, commit and push the activation-sync checkpoint
+on `epic/durable-lifecycle-pipeline`; only after that may the controller create
+TASK-016/TASK-017 branches and worktrees from that exact pushed sync commit.
+Continue using GPT-5.5/high implementation and GPT-5.5/xhigh review only; no
+GPT-5.6.

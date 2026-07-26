@@ -1414,10 +1414,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "pending_activation_checkpoint",
+          "branchFreshness": "pending_activation_sync_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_checkpoint_review_pending"
+          "currentGate": "activation_sync_review_pending"
         },
         {
           "id": "TASK-017-behavior-review-reducers",
@@ -1443,10 +1443,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "pending_activation_checkpoint",
+          "branchFreshness": "pending_activation_sync_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_checkpoint_review_pending"
+          "currentGate": "activation_sync_review_pending"
         }
       ],
       "activationPrerequisites": {
@@ -1650,9 +1650,9 @@
     "activeWave": "WAVE-008",
     "nextWave": "WAVE-009",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": false,
+    "activationArtifactsSynced": true,
     "activationBase": "5b20a15f15458d9368fed11423ba246c0534e780",
-    "activationCheckpoint": null,
+    "activationCheckpoint": "104dfa4c00501c85663adc6c6db6e7524f85ed60",
     "activationSyncCommit": null,
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
@@ -1952,7 +1952,7 @@
       "e2eSpritesRequirement": "TASK-019 must add end-to-end tests for the completed lifecycle waves and validate the event pipeline with Sprites before the epic is considered complete"
     },
     "wave008Activation": {
-      "status": "activation_checkpoint_review_pending",
+      "status": "activation_sync_review_pending",
       "activationBase": "5b20a15f15458d9368fed11423ba246c0534e780",
       "tasks": [
         "TASK-016-lifecycle-operator-cli",
@@ -1973,12 +1973,15 @@
       "worktreeBaseCommit": null,
       "activationCheckpointReviewModel": "gpt-5.5",
       "activationCheckpointReviewReasoningEffort": "xhigh",
-      "activationCheckpointReviewStatus": "pending",
-      "activationCheckpointReviewThreadId": null,
-      "activationCheckpointReviewCounts": null,
-      "activationCheckpoint": null,
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9ca8-adb5-7822-b8ac-ddc66ad76f64",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "104dfa4c00501c85663adc6c6db6e7524f85ed60",
       "activationSyncReviewModel": "gpt-5.5",
       "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewStatus": "pending",
+      "activationSyncReviewThreadId": null,
+      "activationSyncReviewCounts": null,
       "activationSyncCommit": null,
       "readinessCommit": null
     }
@@ -1987,12 +1990,12 @@
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave008_activation_checkpoint_review_pending",
-    "lastCheckedAt": "2026-07-26T04:15:00Z",
-    "nextCheckDueAt": "2026-07-26T04:20:00Z",
+    "status": "wave008_activation_sync_review_pending",
+    "lastCheckedAt": "2026-07-26T04:32:00Z",
+    "nextCheckDueAt": "2026-07-26T04:37:00Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; manual fallback until activation checkpoint is committed and pushed",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline WAVE-008 in /Users/ivo.toby/workspace/talon. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-016/TASK-017 files. Do not create task branches/worktrees until the WAVE-008 activation checkpoint passes GPT-5.5/xhigh review, is committed and pushed, its exact hash is recorded as controller.activationCheckpoint, activationArtifactsSynced is true after a fresh activation-sync GPT-5.5/xhigh review, and that sync checkpoint is committed/pushed. Do not use GPT-5.6. Do not implement task code in the controller checkout. Keep .minispec untouched.",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; manual fallback until activation-sync checkpoint is reviewed, committed, and pushed",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline WAVE-008 in /Users/ivo.toby/workspace/talon. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-016/TASK-017 files. Do not create task branches/worktrees until the WAVE-008 activation checkpoint 104dfa4c00501c85663adc6c6db6e7524f85ed60 is recorded, activationArtifactsSynced is true, a fresh activation-sync GPT-5.5/xhigh review passes, and that sync checkpoint is committed/pushed. Do not use GPT-5.6. Do not implement task code in the controller checkout. Keep .minispec untouched.",
     "stopCondition": "WAVE-008 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopReason": null
   }
