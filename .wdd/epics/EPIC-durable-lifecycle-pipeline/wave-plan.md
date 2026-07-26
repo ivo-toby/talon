@@ -557,8 +557,14 @@ Activation rule:
 - Activation checkpoint passed GPT-5.5/xhigh review
   `019f9c37-3c18-7713-a8a4-4d6767ada6b3` with 0C/0H/0M/0L and was pushed at
   `e6e09fa620e59c08d65ada9345941421abef6d54`.
-- Activation-sync review, commit, and push are required before branch or
-  worktree creation.
+- Activation-sync marker passed GPT-5.5/xhigh review
+  `019f9c3b-ae91-7c53-835a-71e0f7633c59` with 0C/0H/0M/1L and was pushed at
+  `c7bedf7fb14775d35a09266a8ae36fac8c438905`; the Low/P3 stale per-task gate
+  wording remains untouched.
+- TASK-014/TASK-015 branches/worktrees were created and pushed from the exact
+  activation-sync commit. Readiness review, commit, push, task-branch
+  fast-forward, and worktree artifact verification are required before worker
+  dispatch.
 
 Stop condition:
 
