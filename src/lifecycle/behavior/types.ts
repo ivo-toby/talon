@@ -12,6 +12,7 @@ export const BehaviorEvidenceSourceKindSchema = z.enum([
   'schedule',
   'run',
   'tool',
+  'tool_call',
   'manual',
 ]);
 
