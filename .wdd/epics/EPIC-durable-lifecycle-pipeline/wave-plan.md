@@ -54,8 +54,8 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | done |
 | TASK-014-lifecycle-retention-reload-replay | TICKET-002-durable-event-runtime | TASK-006-durable-event-dispatcher, TASK-013-handler-telemetry-correlation | lifecycle admin/retention, lifecycle repositories, daemon reload | done |
 | TASK-015-behavior-signal-projector | TICKET-005-behavior-learning | TASK-007-daemon-message-queue-schedule-events, TASK-010-behavior-ledger-persistence, TASK-012-feedback-detector-subagent | lifecycle behavior, config schema, behavior integration tests | done |
-| TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | in-progress |
-| TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | in-progress |
+| TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | done |
+| TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | todo |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | todo |
 | TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | todo |
@@ -359,9 +359,9 @@ Drift notes:
   sub-agent assignment, or capability-authority changes before mutation. TASK-014
   must test and extend this restart-required baseline rather than assuming live
   lifecycle runtime reconstruction already exists.
-- WAVE-005 remains planned and inactive. The epic is paused after this
-  reconciliation; `nextWaveActivationAllowed` remains false until new user
-  direction.
+- At WAVE-004 reconciliation time, WAVE-005 remained planned and inactive until
+  the user explicitly resumed the epic. That pause has since been superseded;
+  WAVE-005 through WAVE-008 are now reconciled.
 
 Stop condition:
 
@@ -590,7 +590,10 @@ Stop condition:
 
 ### WAVE-008
 
-Status: in_progress
+Status: done
+
+Completed: 2026-07-26
+Reconciled: 2026-07-26
 
 Activated: 2026-07-26
 
@@ -628,20 +631,29 @@ Activation rule:
 - TASK-017 is allocated to branch `task/TASK-017-behavior-review-reducers` and
   worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers`.
-- Task branches and worktrees are not created yet. Creation remains forbidden
-  until this activation checkpoint is reviewed by GPT-5.5/xhigh, committed,
-  pushed, recorded exactly, activation sync passes review/commit/push, and the
-  separate worktree-readiness checkpoint passes review/commit/push.
+- Task branches/worktrees were created only after activation, activation-sync,
+  and worktree-readiness checkpoints passed GPT-5.5/xhigh review and were
+  committed/pushed.
 - Activation checkpoint review `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` passed
   0C/0H/0M/0L and the reviewed checkpoint was committed/pushed at
-  `104dfa4c00501c85663adc6c6db6e7524f85ed60`. The activation-sync marker is the
-  next gate before branch/worktree creation.
+  `104dfa4c00501c85663adc6c6db6e7524f85ed60`.
 - Activation-sync review `019f9caf-0a93-7411-94ab-416736a58509` passed
   0C/0H/0M/0L and the reviewed sync checkpoint was committed/pushed at
   `723b07444b53adc4dc310d036f30e998ff1b0f99`. TASK-016/TASK-017 branches and
   clean worktrees were created and pushed from that exact commit. Worktree
-  readiness review/commit/push and fast-forward into both task branches/worktrees
-  is required before worker dispatch.
+  readiness review `019f9cb4-b944-78e0-bc9a-2fc3a43c5973` passed 0C/0H/0M/0L,
+  the readiness checkpoint was committed/pushed at
+  `c8057fa9ebba53c5b1ddcafe280389519510b04b`, and both task
+  branches/worktrees were fast-forwarded and verified clean before worker
+  dispatch.
+- TASK-017 merged via PR #274 at epic commit
+  `a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d` after focused verification,
+  GitHub checks, and GPT-5.5/xhigh review passed.
+- TASK-016 merged via PR #275 at epic commit
+  `3854e86e922b784d574b98bbe054b7b357b6a0b5` after post-PR274 integration,
+  focused verification, GitHub Verify PR, and fresh GPT-5.5/xhigh review
+  passed.
+- Both clean task worktrees were removed and pruned during reconciliation.
 
 Stop condition:
 
@@ -757,13 +769,12 @@ Stop condition:
 
 ## Activation Rules
 
-- WAVE-001 through WAVE-004 are done. WAVE-003 merged PRs #261 and #262 and its
-  reconciliation passed Sol/high review 0C/0H/0M/2L before commit `7e3402c`
-  was pushed. WAVE-004 TASK-007 final commit `fab9495` merged through PR #263 at
-  epic commit `67e93ac`; its clean worktree was removed and pruned, and WAVE-004
-  reconciliation completed.
-- Reconciliation of WAVE-004 is the terminal action for this run. WAVE-005 must
-  remain planned and inactive until the user explicitly resumes the epic.
+- WAVE-001 through WAVE-008 are done and reconciled. WAVE-008 TASK-017 merged
+  through PR #274 at `a7ac0cd`, TASK-016 merged through PR #275 at `3854e86`,
+  and both clean task worktrees were removed and pruned.
+- WAVE-009 is the next activation target. WAVE-010 owns the user-required e2e
+  tests and Sprites event-pipeline validation after governed prompt promotion
+  lands; WAVE-011 documents adoption after verification.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

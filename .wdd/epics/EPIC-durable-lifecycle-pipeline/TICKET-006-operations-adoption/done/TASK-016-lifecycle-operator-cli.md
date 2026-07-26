@@ -6,7 +6,7 @@ ticket: TICKET-006-operations-adoption
 wave: WAVE-008
 slug: lifecycle-operator-cli
 title: Add lifecycle operator CLI, IPC, health, and backlog controls
-status: in-progress
+status: done
 depends_on: ['TASK-014-lifecycle-retention-reload-replay', 'TASK-015-behavior-signal-projector']
 conflict_domains:
   - 'src/cli/index.ts'
@@ -16,22 +16,22 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-016-lifecycle-operator-cli
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli
-worktree_status: created_clean_pending_readiness_review
-pr: null
-current_gate: worktree_readiness_review_pending
-branch_freshness: at_activation_sync_commit_pending_readiness
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/275
+current_gate: merged
+branch_freshness: merged_clean_after_green_github_checks
 verification:
-  - 'npx vitest run tests/unit/cli/lifecycle-commands.test.ts tests/unit/ipc'
-  - 'npm run build'
-  - 'npm run lint'
-  - 'git diff --check'
+  - "npx vitest run tests/unit/cli/lifecycle-commands.test.ts tests/unit/ipc"
+  - "npm run build"
+  - "scoped eslint/prettier for touched files"
+  - "git diff --check"
 ---
 
 # TASK-016-lifecycle-operator-cli: Add lifecycle operator CLI, IPC, health, and backlog controls
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -107,13 +107,17 @@ task/TASK-016-lifecycle-operator-cli
 
 Created clean by the controller from reviewed activation-sync commit
 `723b07444b53adc4dc310d036f30e998ff1b0f99` on branch
-`task/TASK-016-lifecycle-operator-cli`, which is pushed to origin. Do not begin
-implementation until the readiness checkpoint is reviewed by GPT-5.5/xhigh,
-committed, pushed, fast-forwarded into this branch/worktree, and verified clean.
+`task/TASK-016-lifecycle-operator-cli`, then fast-forwarded to reviewed
+readiness checkpoint `c8057fa9ebba53c5b1ddcafe280389519510b04b`. Worker
+session `019f9cbd-8878-7f91-8243-b5a56236233f` produced reviewed commit
+`1c1e650`, pushed to `task/TASK-016-lifecycle-operator-cli`. After PR #274
+merged, this branch was refreshed onto epic commit `a7ac0cd`; the single
+behavior repository conflict was resolved and reviewed in integration commit
+`e26385d`.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+https://github.com/ivo-toby/talon/pull/275 targets epic/durable-lifecycle-pipeline.
 
 ## RED-GREEN TDD Plan
 
@@ -133,9 +137,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - Start in the assigned task worktree and confirm this task plus current orchestration state exist.
 - Do not switch branches in the controller checkout or start dependent work.
-- Do not begin implementation until the controller confirms the reviewed
-  readiness commit has been pushed, fast-forwarded into this branch/worktree,
-  and verified clean with current WDD state.
+- Implementation began after the controller confirmed the reviewed readiness
+  commit was pushed, fast-forwarded into this branch/worktree, and verified
+  clean with current WDD state.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
 - Request reviewGate/`gpt-5.5` review with xhigh reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings. Never use GPT-5.6.
@@ -154,8 +158,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - [x] Objective and scoped behavior are complete.
 - [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
 - [ ] Shared-context findings are proposed when needed.
 
 ## Validation Steps
@@ -180,6 +184,13 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Remediation scoped lint passed: `npx eslint --no-warn-ignored src/cli/commands/daemon-control.ts src/cli/commands/lifecycle.ts src/cli/commands/queue-purge.ts src/cli/index.ts src/ipc/daemon-ipc.ts src/ipc/daemon-ipc-client.ts src/ipc/daemon-ipc-server.ts src/core/database/repositories/lifecycle-delivery-repository.ts src/core/database/repositories/behavior-signal-repository.ts src/core/database/repositories/index.ts src/daemon/daemon.ts tests/unit/cli/lifecycle-commands.test.ts tests/unit/ipc/lifecycle-daemon-ipc.test.ts tests/unit/ipc/daemon-ipc-server.test.ts tests/unit/daemon/daemon.test.ts`.
 - Remediation Prettier check passed: `npx prettier --check .wdd/epics/EPIC-durable-lifecycle-pipeline/TICKET-006-operations-adoption/in-progress/TASK-016-lifecycle-operator-cli.md README.md src/cli/commands/daemon-control.ts src/cli/commands/lifecycle.ts src/cli/commands/queue-purge.ts src/cli/index.ts src/ipc/daemon-ipc.ts src/ipc/daemon-ipc-client.ts src/ipc/daemon-ipc-server.ts src/core/database/repositories/lifecycle-delivery-repository.ts src/core/database/repositories/behavior-signal-repository.ts src/core/database/repositories/index.ts src/daemon/daemon.ts tests/unit/cli/lifecycle-commands.test.ts tests/unit/ipc/lifecycle-daemon-ipc.test.ts tests/unit/ipc/daemon-ipc-server.test.ts tests/unit/daemon/daemon.test.ts`.
 - Remediation whitespace check passed: `git diff --check`.
+- Fresh GPT-5.5/xhigh review `019f9ce5-400e-7430-860a-3f7ad042d99d` passed 0C/0H/0M/1L. The sole Low/P3 secondary `statusTiming` aggregation finding remains non-blocking per policy.
+- Post-PR274 integration tests passed under Node 24.15.0: `mise exec node@24.15.0 -- npm run test -- tests/unit/cli/lifecycle-commands.test.ts tests/unit/ipc tests/unit/daemon/daemon.test.ts tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/scheduler/scheduler.test.ts tests/unit/subagents/behavior-reviewer.test.ts` passed 9 files / 155 tests.
+- Post-PR274 integration build passed: `mise exec node@24.15.0 -- npm run build`.
+- Post-PR274 integration scoped ESLint passed for changed TypeScript files.
+- Post-PR274 integration scoped Prettier and diff checks passed.
+- Fresh post-integration GPT-5.5/xhigh review `019f9cf0-fdb6-7d62-b306-953b03bdb399` passed 0C/0H/0M/0L.
+- GitHub Verify PR passed on PR #275 commit `e26385d`; PR #275 merged into `epic/durable-lifecycle-pipeline` at `3854e86e922b784d574b98bbe054b7b357b6a0b5`.
 
 ## Review Feedback
 
@@ -193,7 +204,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ### P3
 
-- None.
+- Low/P3: secondary daemon `statusTiming` aggregation can overwrite timing per grouped persona row. The main handler `timing` used by `talonctl lifecycle handlers` is merged correctly, so this is non-blocking and intentionally left as a follow-up.
 
 ### GPT-5.5/xhigh Medium Remediation
 
@@ -207,5 +218,6 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Added `talonctl lifecycle` subcommands for handler/backlog health, delivery inspection, exact replay, handler disablement, and behavior-candidate provenance.
 - Added typed daemon IPC command variants for lifecycle operator actions and daemon handlers that use repository read models plus `LifecycleAdminService` for replay/disable mutations.
 - Added bounded lifecycle delivery status/handler summary repository methods and bounded behavior-candidate summary/provenance repository methods.
-- Updated README for the public `talonctl lifecycle` CLI. No guided `.agents/skills` update was made because the existing skills cover setup/channel/persona workflows, not lifecycle operator administration.
-- No commit, push, PR, full `npm test`, dependency install, dependency rebuild, or `.minispec` changes were performed. Controller GPT-5.5/xhigh review remains pending before commit.
+- Updated README for the public `talonctl lifecycle` CLI. No guided `.agents/skills` update was made because existing Talon skills cover setup/channel/persona workflows, not lifecycle operator administration.
+- Commit `1c1e650` was pushed to `task/TASK-016-lifecycle-operator-cli`; PR #275 opened against `epic/durable-lifecycle-pipeline`.
+- Integration commit `e26385d` refreshed PR #275 after PR #274 merged into the epic branch at `a7ac0cd`; PR #275 merged into the epic branch at `3854e86e922b784d574b98bbe054b7b357b6a0b5`.

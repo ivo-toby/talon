@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-008
 slug: behavior-review-reducers
 title: Add daily and weekly behavior review reducers
-status: in-progress
+status: done
 depends_on: ["TASK-013-handler-telemetry-correlation", "TASK-015-behavior-signal-projector"]
 conflict_domains:
   - "src/lifecycle/behavior/behavior-review-service.ts"
@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-017-behavior-review-reducers
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers
-worktree_status: implementation_complete_uncommitted
-pr: null
-current_gate: implementation_complete_pending_review
-branch_freshness: at_readiness_commit_c8057fa_with_uncommitted_task_changes
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/274
+current_gate: merged
+branch_freshness: merged_clean_after_green_github_checks
 verification:
   - "npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents"
   - "npm run build"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -107,13 +107,15 @@ task/TASK-017-behavior-review-reducers
 
 Created clean by the controller from reviewed activation-sync commit
 `723b07444b53adc4dc310d036f30e998ff1b0f99` on branch
-`task/TASK-017-behavior-review-reducers`, which is pushed to origin. Do not
-begin implementation until the readiness checkpoint is reviewed by GPT-5.5/xhigh,
-committed, pushed, fast-forwarded into this branch/worktree, and verified clean.
+`task/TASK-017-behavior-review-reducers`, then fast-forwarded to reviewed
+readiness checkpoint `c8057fa9ebba53c5b1ddcafe280389519510b04b`. Worker
+session `019f9cbd-8878-7221-9357-c941677f850b` produced reviewed commit
+`16d2fef`, pushed to `task/TASK-017-behavior-review-reducers`. PR #274 merged
+into the epic branch at `a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d`.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+https://github.com/ivo-toby/talon/pull/274 merged into epic/durable-lifecycle-pipeline.
 
 ## RED-GREEN TDD Plan
 
@@ -133,9 +135,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - Start in the assigned task worktree and confirm this task plus current orchestration state exist.
 - Do not switch branches in the controller checkout or start dependent work.
-- Do not begin implementation until the controller confirms the reviewed
-  readiness commit has been pushed, fast-forwarded into this branch/worktree,
-  and verified clean with current WDD state.
+- Implementation began after the controller confirmed the reviewed readiness
+  commit was pushed, fast-forwarded into this branch/worktree, and verified
+  clean with current WDD state.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
 - Request reviewGate/`gpt-5.5` review with xhigh reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings. Never use GPT-5.6.
@@ -152,10 +154,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
 - [ ] Shared-context findings are proposed when needed.
 
 ## Validation Steps
@@ -207,6 +209,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   `npx eslint src/core/database/repositories/behavior-signal-repository.ts src/core/database/repositories/index.ts src/lifecycle/behavior/behavior-review-service.ts src/scheduler/scheduler.ts`
   passed.
 - GPT-5.5/xhigh remediation `git diff --check` passed.
+- Fresh GPT-5.5/xhigh review `019f9cdf-5e75-7fc3-9205-e669b9fab14b` passed 0C/0H/0M/1L. The sole Low/P3 external adapter payload follow-up remains non-blocking per policy.
+- GitHub PR Agent and Verify PR checks passed on PR #274 before merge.
 
 ## Review Feedback
 
@@ -243,5 +247,4 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   were required.
 - README, `.agents` skills, and AGENTS adoption documentation are intentionally
   deferred to TASK-020; this task added the runtime primitive and tests only.
-- Controller GPT-5.5/xhigh review, commit, push, and PR remain pending by
-  protocol.
+- PR #274 merged into `epic/durable-lifecycle-pipeline` at `a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d`.

@@ -1364,7 +1364,7 @@
     },
     {
       "id": "WAVE-008",
-      "status": "in_progress",
+      "status": "done",
       "activatedAt": "2026-07-26T04:15:00Z",
       "strategy": {
         "profile": "full",
@@ -1393,8 +1393,8 @@
         {
           "id": "TASK-016-lifecycle-operator-cli",
           "ticket": "TICKET-006-operations-adoption",
-          "path": "TICKET-006-operations-adoption/in-progress/TASK-016-lifecycle-operator-cli.md",
-          "status": "in-progress",
+          "path": "TICKET-006-operations-adoption/done/TASK-016-lifecycle-operator-cli.md",
+          "status": "done",
           "dependsOn": [
             "TASK-014-lifecycle-retention-reload-replay",
             "TASK-015-behavior-signal-projector"
@@ -1406,24 +1406,30 @@
           ],
           "assignedModel": "codexHigh",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
-          "reviewThreadId": null,
+          "workerThreadId": "019f9cbd-8878-7f91-8243-b5a56236233f",
+          "reviewThreadId": "019f9cf0-fdb6-7d62-b306-953b03bdb399",
           "branch": "task/TASK-016-lifecycle-operator-cli",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli",
-          "worktreeStatus": "created_clean_pending_readiness_review",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "at_activation_sync_commit_pending_readiness",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T05:52:38Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/275",
+          "latestCommit": "e26385d",
+          "branchFreshness": "merged_clean_after_green_github_checks",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "worktree_readiness_review_pending"
+          "verification": "TASK-016 post-PR274 integration tests passed 144/144 under Node 24.15.0; npm run build passed; scoped ESLint and Prettier passed; git diff checks passed; GPT-5.5/xhigh review 019f9cf0-fdb6-7d62-b306-953b03bdb399 passed 0C/0H/0M/0L; GitHub Verify PR passed",
+          "currentGate": "merged",
+          "mergeCommit": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
         },
         {
           "id": "TASK-017-behavior-review-reducers",
           "ticket": "TICKET-005-behavior-learning",
-          "path": "TICKET-005-behavior-learning/in-progress/TASK-017-behavior-review-reducers.md",
-          "status": "in-progress",
+          "path": "TICKET-005-behavior-learning/done/TASK-017-behavior-review-reducers.md",
+          "status": "done",
           "dependsOn": [
             "TASK-013-handler-telemetry-correlation",
             "TASK-015-behavior-signal-projector"
@@ -1435,23 +1441,32 @@
           ],
           "assignedModel": "codexHigh",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
-          "reviewThreadId": null,
+          "workerThreadId": "019f9cbd-8878-7221-9357-c941677f850b",
+          "reviewThreadId": "019f9cdf-5e75-7fc3-9205-e669b9fab14b",
           "branch": "task/TASK-017-behavior-review-reducers",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers",
-          "worktreeStatus": "created_clean_pending_readiness_review",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "at_activation_sync_commit_pending_readiness",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T05:52:38Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/274",
+          "latestCommit": "16d2fef",
+          "branchFreshness": "merged_clean_after_green_github_checks",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "worktree_readiness_review_pending"
+          "verification": "TASK-017 focused behavior review/repository/scheduler/subagent tests passed 67/67; npm run build passed; scoped ESLint and Prettier passed; git diff --check passed; GPT-5.5/xhigh review 019f9cdf-5e75-7fc3-9205-e669b9fab14b passed 0C/0H/0M/1L; GitHub PR Agent and Verify PR passed",
+          "currentGate": "merged",
+          "mergeCommit": "a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d"
         }
       ],
       "activationPrerequisites": {
         "wave007Reconciliation": "satisfied_by_pushed_checkpoint_5b20a15f15458d9368fed11423ba246c0534e780"
-      }
+      },
+      "completedAt": "2026-07-26T05:48:48Z",
+      "reconciledAt": "2026-07-26",
+      "mergeCommit": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
     },
     {
       "id": "WAVE-009",
@@ -1642,19 +1657,19 @@
       "shared-context/resources/task-findings.md"
     ],
     "pendingReconciliation": [],
-    "lastReconciledWave": "WAVE-007",
-    "lastReconciledTask": "TASK-014-lifecycle-retention-reload-replay,TASK-015-behavior-signal-projector",
-    "reconciledAtEpicCommit": "dde6bacef91462fadb4fa1fb34ed181ba648dcd2"
+    "lastReconciledWave": "WAVE-008",
+    "lastReconciledTask": "TASK-016-lifecycle-operator-cli,TASK-017-behavior-review-reducers",
+    "reconciledAtEpicCommit": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
   },
   "controller": {
-    "activeWave": "WAVE-008",
+    "activeWave": null,
     "nextWave": "WAVE-009",
     "epicBranchVerified": true,
     "activationArtifactsSynced": true,
     "activationBase": "5b20a15f15458d9368fed11423ba246c0534e780",
     "activationCheckpoint": "104dfa4c00501c85663adc6c6db6e7524f85ed60",
     "activationSyncCommit": "723b07444b53adc4dc310d036f30e998ff1b0f99",
-    "readinessCommit": null,
+    "readinessCommit": "c8057fa9ebba53c5b1ddcafe280389519510b04b",
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
     "nextWaveActivationAllowed": false,
@@ -1952,7 +1967,7 @@
       "e2eSpritesRequirement": "TASK-019 must add end-to-end tests for the completed lifecycle waves and validate the event pipeline with Sprites before the epic is considered complete"
     },
     "wave008Activation": {
-      "status": "worktree_readiness_review_pending",
+      "status": "reconciled",
       "activationBase": "5b20a15f15458d9368fed11423ba246c0534e780",
       "tasks": [
         "TASK-016-lifecycle-operator-cli",
@@ -1985,25 +2000,47 @@
       "activationSyncCommit": "723b07444b53adc4dc310d036f30e998ff1b0f99",
       "readinessReviewModel": "gpt-5.5",
       "readinessReviewReasoningEffort": "xhigh",
-      "readinessReviewStatus": "pending",
-      "readinessReviewThreadId": null,
-      "readinessReviewCounts": null,
-      "readinessCommit": null,
-      "taskBranchesFastForwardedToReadiness": false,
-      "taskWorktreesVerifiedBeforeDispatch": false
+      "readinessReviewStatus": "passed",
+      "readinessReviewThreadId": "019f9cb4-b944-78e0-bc9a-2fc3a43c5973",
+      "readinessReviewCounts": "0C/0H/0M/0L",
+      "readinessCommit": "c8057fa9ebba53c5b1ddcafe280389519510b04b",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true,
+      "workersDispatchedAt": "2026-07-26T04:45:10Z",
+      "mergedPrs": [
+        "https://github.com/ivo-toby/talon/pull/274",
+        "https://github.com/ivo-toby/talon/pull/275"
+      ],
+      "mergeCommits": {
+        "TASK-017-behavior-review-reducers": "a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d",
+        "TASK-016-lifecycle-operator-cli": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
+      },
+      "cleanup": {
+        "TASK-016-lifecycle-operator-cli": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T05:52:38Z",
+          "worktreeRemoved": true
+        },
+        "TASK-017-behavior-review-reducers": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T05:52:38Z",
+          "worktreeRemoved": true
+        }
+      },
+      "reconciledAt": "2026-07-26T05:52:38Z"
     }
   },
   "monitoring": {
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave008_worktree_readiness_review_pending",
-    "lastCheckedAt": "2026-07-26T04:40:00Z",
-    "nextCheckDueAt": "2026-07-26T04:45:00Z",
+    "status": "wave008_reconciled_remaining_waves_monitor_continues",
+    "lastCheckedAt": "2026-07-26T05:52:38Z",
+    "nextCheckDueAt": "2026-07-26T05:57:38Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; manual fallback until worktree-readiness checkpoint is reviewed, committed, pushed, and fast-forwarded into task branches/worktrees",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline WAVE-008 in /Users/ivo.toby/workspace/talon. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-016/TASK-017 files. TASK-016/TASK-017 branches/worktrees were created clean from activation-sync commit 723b07444b53adc4dc310d036f30e998ff1b0f99. Do not dispatch workers until a fresh GPT-5.5/xhigh worktree-readiness review passes, the readiness checkpoint is committed/pushed on the epic branch, both task branches/worktrees are fast-forwarded to that exact pushed readiness commit, and each worktree is clean with current WDD state. Do not use GPT-5.6. Do not implement task code in the controller checkout. Keep .minispec untouched.",
-    "stopCondition": "WAVE-008 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
-    "stopReason": null
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-008 reconciled and monitor continues for remaining waves",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline remaining waves in /Users/ivo.toby/workspace/talon. WAVE-008 is reconciled at epic commit 3854e86e922b784d574b98bbe054b7b357b6a0b5. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and the next planned wave task files. Do not use GPT-5.6. Route only Critical/High/Medium findings; Low/P3 findings are follow-ups. Keep .minispec untouched.",
+    "stopCondition": "All remaining waves are merged/reconciled, blocked, cancelled, or ready for final epic validation.",
+    "stopReason": "WAVE-008 reconciliation complete; monitor continues for WAVE-009+"
   }
 }
