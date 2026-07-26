@@ -776,8 +776,10 @@ Activation rule:
 - TASK-019 is allocated to branch `task/TASK-019-lifecycle-end-to-end-verification`
   and worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification`.
-- Branch/worktree creation remains blocked until the activation checkpoint
-  passes GPT-5.5/xhigh review, is committed and pushed, activation sync passes
+- Activation checkpoint review `019f9d87-e141-7180-846b-9cb0e2eef260` passed
+  0C/0H/0M/0L, and reviewed activation checkpoint
+  `119da93374ed0eaf2ffe9f477c120f33543b1bba` is pushed and recorded.
+- Branch/worktree creation remains blocked until activation sync passes
   GPT-5.5/xhigh review and commit/push, and worktree readiness passes
   GPT-5.5/xhigh review and commit/push.
 

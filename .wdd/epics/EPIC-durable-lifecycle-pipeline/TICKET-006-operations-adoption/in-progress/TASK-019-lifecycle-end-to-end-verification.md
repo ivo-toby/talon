@@ -17,10 +17,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-019-lifecycle-end-to-end-verification
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification
-worktree_status: allocated_pending_activation_checkpoint
+worktree_status: allocated_pending_activation_sync_checkpoint
 pr: null
-current_gate: activation_checkpoint_pending
-branch_freshness: pending_activation_checkpoint
+current_gate: activation_sync_checkpoint_pending
+branch_freshness: pending_activation_sync_checkpoint
 verification:
   - "npx vitest run tests/integration/lifecycle-*.test.ts tests/integration/rolling-context-window.test.ts"
   - "npm run build"
@@ -116,10 +116,9 @@ task/TASK-019-lifecycle-end-to-end-verification
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification
 
 Allocated by the controller for WAVE-010 bundled execution. Branch/worktree
-creation remains blocked until this activation checkpoint passes GPT-5.5/xhigh
-review, is committed/pushed to the epic branch, the activation-sync checkpoint
-passes GPT-5.5/xhigh review and is committed/pushed, and the worktree-readiness
-checkpoint passes GPT-5.5/xhigh review and is committed/pushed.
+creation remains blocked until the activation-sync checkpoint passes GPT-5.5/xhigh
+review and is committed/pushed, and the worktree-readiness checkpoint passes
+GPT-5.5/xhigh review and is committed/pushed.
 
 ## PR / Patch Reference
 
@@ -181,6 +180,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   checkpoint `2618059965f0a379948d79b8f6bb415419025397`. Branch/worktree
   creation and implementation remain blocked until the reviewed activation,
   activation-sync, and worktree-readiness gates pass.
+- WAVE-010 activation checkpoint review
+  `019f9d87-e141-7180-846b-9cb0e2eef260` passed 0C/0H/0M/0L. Reviewed
+  activation checkpoint `119da93374ed0eaf2ffe9f477c120f33543b1bba` is pushed
+  and recorded for activation-sync review; no TASK-019 branch/worktree exists.
 
 ## Review Feedback
 
