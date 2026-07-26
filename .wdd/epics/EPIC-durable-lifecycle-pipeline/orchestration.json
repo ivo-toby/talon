@@ -1770,7 +1770,7 @@
   },
   "controller": {
     "activeWave": null,
-    "nextWave": "epic-validation",
+    "nextWave": "final-pr",
     "epicBranchVerified": true,
     "activationArtifactsSynced": true,
     "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
@@ -2304,7 +2304,7 @@
       "localRemoteVerifiedAt": "2026-07-26T10:59:00Z"
     },
     "wave011Activation": {
-      "status": "merged_reconciliation_pending",
+      "status": "reconciled",
       "activatedAt": "2026-07-26T09:32:42Z",
       "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
       "tasks": [
@@ -2340,7 +2340,7 @@
       "activationSyncCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
       "readinessReviewStatus": "passed_committed_pushed_fast_forwarded",
       "readinessCommit": "8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438",
-      "dispatchStatus": "merged_cleanup_complete_reconciliation_pending",
+      "dispatchStatus": "merged_cleanup_complete_reconciled",
       "notes": "TASK-020 branch/worktree were created and pushed from exact activation-sync commit 0053209080b96c02c2d4fb7af02a24a1af0a477d and verified clean/current. Fresh readiness review 019f9de5-d632-7d30-9dec-69e552084d2d passed 0C/0H/0M/0L; reviewed readiness commit 8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438 was pushed and fast-forwarded into the task branch/worktree. Documentation/adoption implementation completed; initial GPT-5.5/xhigh task review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L, the two Medium findings were remediated, targeted verification was green again, and fresh GPT-5.5/xhigh task review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L. Task commit 4421f9defc4386cbfe6adc5ab275fc62abccc405 was pushed; PR #278 passed GitHub Verify PR and PR Agent, merged at ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf, and the task worktree was cleaned up.",
       "activationCheckpointReviewEvidence": "read-only gpt-5.5/xhigh review verified WDD-only activation metadata, local/remote epic head ee1b057, no TASK-020 branch/worktree, no stale current WAVE-010 pending wording, and .minispec outside scope",
       "activationCheckpointCommitStatus": "pushed_local_remote_match",
@@ -2374,7 +2374,7 @@
       "readinessReviewFinalReasoningEffort": "xhigh",
       "taskBranchesFastForwardedToReadiness": true,
       "taskWorktreesVerifiedBeforeDispatch": true,
-      "implementationStatus": "merged_cleaned_up_reconciliation_pending",
+      "implementationStatus": "merged_cleaned_up_reconciled",
       "implementationVerification": {
         "targetedVitest": "passed 3 files / 121 tests at 2026-07-26T10:45:54Z after Medium remediation",
         "build": "npm run build passed at 2026-07-26T10:45:40Z after Medium remediation",
@@ -2389,19 +2389,40 @@
       "taskPr": "https://github.com/ivo-toby/talon/pull/278",
       "mergeCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf",
       "cleanupStatus": "worktree_removed_and_pruned"
+    },
+    "epicValidation": {
+      "status": "passed",
+      "validatedAt": "2026-07-26T11:20:00Z",
+      "report": ".wdd/epics/EPIC-durable-lifecycle-pipeline/epic-validation.md",
+      "allWavesDone": true,
+      "allTasksDone": true,
+      "taskPrRange": "#257-#278",
+      "wave011ReconciliationCheckpoint": "45b5ee52d0937a3e8427cb8b5cf928bf0b4e6ef2",
+      "criticalHighMediumOpen": 0,
+      "spritesValidation": "passed on mcp-codex-pr-talon-277-0c30dcc at 0c30dcca56d94553871412266cf5e492d9302677",
+      "fullNpmTest": "not_run_without_explicit_user_approval",
+      "runtimeSmoke": "not_run_without_explicit_user_approval",
+      "nextAction": "create_final_pr"
+    },
+    "finalPr": {
+      "status": "ready",
+      "draft": ".wdd/epics/EPIC-durable-lifecycle-pipeline/final-pr.md",
+      "sourceBranch": "epic/durable-lifecycle-pipeline",
+      "targetBranch": "main",
+      "title": "feat(lifecycle): complete durable lifecycle pipeline"
     }
   },
   "monitoring": {
-    "mode": "manual",
+    "mode": "final_handoff",
     "formerMode": "codex_thread_heartbeat",
-    "cadence": "adaptive",
-    "status": "wave011_reconciliation_pending_review",
-    "lastCheckedAt": "2026-07-26T10:59:00Z",
-    "nextCheckDueAt": "2026-07-26T11:04:00Z",
+    "cadence": "stopped",
+    "status": "all_waves_reconciled_epic_validation_passed_final_pr_ready",
+    "lastCheckedAt": "2026-07-26T11:20:00Z",
+    "nextCheckDueAt": null,
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-011 TASK-020 merged and cleaned up; reconciliation review/commit is pending",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-011 TASK-020 merged via PR #278 at ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf after GPT-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L and GitHub Verify PR/PR Agent checks passed. TASK-020 worktree was verified clean, removed, and pruned; remote task branch is retained. Current controller checkout has reconciliation metadata changes staged/unstaged only and .minispec remains untouched. Run a fresh GPT-5.5/xhigh reconciliation review, fix only Critical/High/Medium findings, commit/push the WAVE-011 reconciliation checkpoint if review passes, then proceed to epic validation/final PR handoff. Do not use GPT-5.6, do not run full npm test without explicit user approval, preserve unrelated changes, and keep .minispec untouched.",
+    "schedulerStatus": "stop_requested_after_final_pr_handoff",
+    "fallbackPrompt": null,
     "stopCondition": "All remaining waves are merged/reconciled and epic validation plus final PR handoff are ready, or a real blocker is recorded.",
-    "stopReason": null
+    "stopReason": "all_waves_reconciled_and_epic_validation_passed"
   }
 }

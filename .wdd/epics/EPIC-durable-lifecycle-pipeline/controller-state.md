@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
 active_wave: null
-status: wave011_reconciled_pending_review
+status: final_pr_ready
 updated_at: 2026-07-26
 ---
 
@@ -250,8 +250,16 @@ Every task advances independently as soon as its gates clear.
   GPT-5.5/xhigh review `019f9e0a-eb3d-72e0-85b9-928f21d833a6`
   (0C/0H/0M/3L). PR #278 merged at
   `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`, and the task worktree was
-  verified clean, removed, and pruned. Current gate: GPT-5.5/xhigh
-  reconciliation review before checkpoint commit.
+  verified clean, removed, and pruned.
+- WAVE-011 reconciliation checkpoint: GPT-5.5/xhigh reviewed
+  `019f9e1e-2cfb-7802-b461-57393048e4a5` with 0C/0H/0M/0L, committed, and
+  pushed at `45b5ee52d0937a3e8427cb8b5cf928bf0b4e6ef2`; local and remote epic
+  heads matched before final validation edits.
+- Epic validation: passed on 2026-07-26. All 11 waves and 20 tasks are done and
+  reconciled, task PRs #257-#278 are merged, WAVE-010 e2e/Sprites validation
+  passed, and WAVE-011 adoption documentation verification passed. Full local
+  `npm test` and runtime smoke remain explicit-approval gates; final PR CI is
+  the next repository-native integration gate.
 
 ## Pending Waves
 
@@ -271,34 +279,21 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-All planned waves are complete. WAVE-011 TASK-020 merged through PR #278 after
-targeted verification, GitHub checks, and fresh GPT-5.5/xhigh review
-`019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L. TASK-020 worktree
-was verified clean, removed, and pruned. Current gate: GPT-5.5/xhigh
-reconciliation review, then commit/push this WAVE-011 reconciliation checkpoint
-and proceed to epic validation/final PR handoff.
+All planned waves are complete and reconciled. Epic validation passed, local and
+remote epic heads matched at WAVE-011 reconciliation checkpoint
+`45b5ee52d0937a3e8427cb8b5cf928bf0b4e6ef2`, and final PR preparation is ready.
 
 ## Monitoring
 
-- Mode: manual fallback while the recurring remaining-waves thread monitor remains available.
-- Cadence: adaptive
-- Status: WAVE-011 TASK-020 merged and worktree cleaned; reconciliation review/commit pending.
+- Mode: final handoff
+- Cadence: stopped
+- Status: all waves reconciled; epic validation passed; final PR ready.
 - Scheduler provenance: `talon-issue-256-wdd-remaining-waves-monitor`
-- Last checked: 2026-07-26T10:59:00Z
-- Next check due: 2026-07-26T11:04:00Z
+- Last checked: 2026-07-26T11:20:00Z
+- Next check due: none
 - Stop condition: all remaining waves are merged/reconciled and epic validation
   plus final PR handoff are ready, or a real blocker is recorded.
-- Fallback prompt: run one bounded WDD controller heartbeat for
-  EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-011
-  TASK-020 merged via PR #278 at
-  `ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf` after GPT-5.5/xhigh review
-  `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L and GitHub Verify
-  PR/PR Agent checks passed. TASK-020 worktree was verified clean, removed, and
-  pruned; remote task branch is retained. Run a fresh GPT-5.5/xhigh
-  reconciliation review, fix only Critical/High/Medium findings, commit/push
-  the WAVE-011 reconciliation checkpoint if review passes, then proceed to epic
-  validation/final PR handoff. Do not use GPT-5.6, do not run full `npm test`
-  without approval, preserve unrelated changes, and keep `.minispec/` untouched.
+- Fallback prompt: none; final PR handoff is the durable next action.
 
 ## Current Task Gates
 
@@ -669,8 +664,8 @@ GPT-5.5/xhigh checkpoint review
 pushed at `ee1b057166fdd02e6b31b1799b512c5e27f24be4`. WAVE-011 activation,
 activation-sync, readiness, implementation, review, PR merge, and cleanup gates
 now passed. TASK-020 merged at
-`ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`; reconciliation review/commit is the
-only remaining WAVE-011 gate.
+`ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf`; WAVE-011 reconciliation then passed
+and was committed/pushed at `45b5ee52d0937a3e8427cb8b5cf928bf0b4e6ef2`.
 
 ## Open P1/P2 Feedback
 
@@ -757,8 +752,9 @@ only remaining WAVE-011 gate.
   complete. Verification: targeted Vitest passed 3 files / 121 tests,
   `npm run build` passed, `git diff --check` passed, GPT-5.5/xhigh task review
   `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L, and GitHub Verify
-  PR plus PR Agent checks passed on PR #278. The next gate is GPT-5.5/xhigh
-  reconciliation review before checkpoint commit.
+  PR plus PR Agent checks passed on PR #278. WAVE-011 reconciliation review
+  later passed 0C/0H/0M/0L and was committed/pushed at
+  `45b5ee52d0937a3e8427cb8b5cf928bf0b4e6ef2`.
 - WAVE-008 activation artifact verification passed: GPT-5.5/xhigh review
   `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` reported 0C/0H/0M/0L, `jq empty`
   passed for orchestration.json, and `git diff --check` passed. Activation-sync
@@ -1557,8 +1553,7 @@ only remaining WAVE-011 gate.
 
 ## Next Action
 
-Run the GPT-5.5/xhigh WAVE-011 reconciliation review. If it passes with
-0 Critical/High/Medium findings, commit and push the reconciliation checkpoint,
-then proceed to epic validation and final PR handoff. Continue using
-GPT-5.5/xhigh review only; no GPT-5.6. Low/P3 findings remain follow-ups and
-must not trigger automatic edits.
+Create the final PR from `epic/durable-lifecycle-pipeline` into `main` using
+the reviewed final PR draft. Final PR CI is the next repository-native gate.
+Continue using GPT-5.5/xhigh review only for any future commit; no GPT-5.6.
+Low/P3 findings remain follow-ups and must not trigger automatic edits.
