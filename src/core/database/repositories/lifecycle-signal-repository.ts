@@ -1,6 +1,7 @@
 /** Durable, idempotent handoff storage for validated lifecycle signals. */
 
 import type Database from 'better-sqlite3';
+import { isDeepStrictEqual } from 'node:util';
 import { err, ok, type Result } from 'neverthrow';
 
 import { DbError } from '../../errors/index.js';
@@ -47,6 +48,7 @@ export class LifecycleSignalRepository extends BaseRepository {
   private readonly insertHandoffStmt: Database.Statement;
   private readonly insertSignalStmt: Database.Statement;
   private readonly countSignalsStmt: Database.Statement;
+  private readonly findSignalsStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -65,6 +67,11 @@ export class LifecycleSignalRepository extends BaseRepository {
     `);
     this.countSignalsStmt = db.prepare(`
       SELECT COUNT(*) AS count FROM lifecycle_signals WHERE handoff_key = ?
+    `);
+    this.findSignalsStmt = db.prepare(`
+      SELECT signal_id, handoff_key, persona, version, type, context, payload, occurred_at, created_at
+      FROM lifecycle_signals
+      WHERE handoff_key = ?
     `);
   }
 
@@ -85,6 +92,10 @@ export class LifecycleSignalRepository extends BaseRepository {
           const count = this.countSignalsStmt.get(input.idempotencyKey) as { count: number };
           if (count.count !== signals.length) {
             throw new Error('lifecycle signal handoff is incomplete');
+          }
+          const rows = this.findSignalsStmt.all(input.idempotencyKey) as LifecycleSignalRow[];
+          if (!sameSignals(rows, signals)) {
+            throw new Error('lifecycle signal handoff content mismatch');
           }
           return;
         }
@@ -129,4 +140,42 @@ export class LifecycleSignalRepository extends BaseRepository {
     }
     return parsed;
   }
+}
+
+function sameSignals(
+  rows: readonly LifecycleSignalRow[],
+  signals: readonly LifecycleSignalEnvelope[],
+): boolean {
+  if (rows.length !== signals.length) return false;
+  const rowsById = new Map(rows.map((row) => [row.signal_id, row]));
+  if (rowsById.size !== rows.length) return false;
+
+  for (const signal of signals) {
+    const row = rowsById.get(signal.signalId);
+    if (!row || !sameSignal(row, signal)) return false;
+  }
+  return true;
+}
+
+function sameSignal(row: LifecycleSignalRow, signal: LifecycleSignalEnvelope): boolean {
+  if (
+    row.version !== signal.version ||
+    row.type !== signal.type ||
+    row.occurred_at !== signal.occurredAt
+  ) {
+    return false;
+  }
+
+  try {
+    return (
+      isDeepStrictEqual(JSON.parse(row.context), toJsonValue(signal.context)) &&
+      isDeepStrictEqual(JSON.parse(row.payload), toJsonValue(signal.payload))
+    );
+  } catch {
+    return false;
+  }
+}
+
+function toJsonValue(value: unknown): unknown {
+  return JSON.parse(JSON.stringify(value));
 }

@@ -69,7 +69,7 @@ import { CodexCliProvider } from '../providers/codex-cli-provider.js';
 import { OpenAiCompatibleProvider } from '../providers/openai-compatible-provider.js';
 import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider-registry.js';
 import { recoverFromCrash } from './lifecycle.js';
-import { ContextRoller } from './context-roller.js';
+import { ContextRoller, type SummarizerRunFn } from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
 import { loadToolInstructions } from '../tools/tool-instructions.js';
@@ -81,12 +81,21 @@ import { OAuthTokenStore } from '../auth/oauth-token-store.js';
 import { LifecycleEventBus } from '../lifecycle/lifecycle-event-bus.js';
 import { LifecycleDispatcher } from '../lifecycle/lifecycle-dispatcher.js';
 import { CapturedLifecycleHandlerExecutor } from '../lifecycle/handler-executor.js';
-import type { LifecycleRuntimeCapability } from '../lifecycle/handler-executor.js';
+import type {
+  LifecycleRuntimeCapability,
+  LifecycleRuntimeHandler,
+} from '../lifecycle/handler-executor.js';
 import { LifecycleInterceptorEngine } from '../lifecycle/interceptors/interceptor-engine.js';
 import { nativeAllowInterceptor } from '../lifecycle/interceptors/native-example-handlers.js';
 import { SubAgentLifecycleAdapter } from '../lifecycle/adapters/subagent-lifecycle-adapter.js';
 import { createLifecycleHandlerRegistry } from '../lifecycle/handler-registry.js';
 import { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
+import {
+  BehaviorSignalProjector,
+  NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_REF,
+  NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_VERSION,
+  createBehaviorSignalRouter,
+} from '../lifecycle/behavior/index.js';
 import {
   LifecycleTelemetry,
   LoggerLifecycleMetricsRecorder,
@@ -95,7 +104,9 @@ import {
   LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
   LIFECYCLE_EVENT_INPUT_CONTRACT,
   LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
+  LIFECYCLE_SIGNAL_INPUT_CONTRACT,
   LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+  type LifecycleHandlerResult,
 } from '../lifecycle/contracts/index.js';
 
 /** Lifecycle attachment requires both a loaded capability and persona opt-in. */
@@ -111,6 +122,22 @@ export function supportsLifecycleBootstrapHandler(
   mode: 'event' | 'signal' | 'interceptor',
 ): boolean {
   return runtimeKind === 'native' || mode !== 'interceptor';
+}
+
+function nativeNoSignalSuccess(): Promise<Result<LifecycleHandlerResult, LifecycleError>> {
+  return Promise.resolve(
+    ok({
+      outcome: 'success',
+      outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+      signals: [],
+    }),
+  );
+}
+
+function nativeInterceptorDispatcherRejection(): Promise<
+  Result<LifecycleHandlerResult, LifecycleError>
+> {
+  return Promise.resolve(err(new LifecycleError('Lifecycle interceptors are not dispatcher jobs')));
 }
 
 // ---------------------------------------------------------------------------
@@ -649,7 +676,7 @@ export async function bootstrap(
         memoryRepo: repos.memory,
         sessionTracker,
         summarizerRun: defaultSummarizer,
-        resolveSummarizerRun: (name) => boundSummarizers.get(name) ?? null,
+        resolveSummarizerRun: (name): SummarizerRunFn | null => boundSummarizers.get(name) ?? null,
         logger,
       });
 
@@ -667,7 +694,9 @@ export async function bootstrap(
     }
   } else if (enabledContextProviders.length > 0) {
     await cleanupBootstrapFailure(db, observability, logger);
-    return err(new DaemonError('Context management is enabled, but no model resolver is available'));
+    return err(
+      new DaemonError('Context management is enabled, but no model resolver is available'),
+    );
   }
 
   // 10. Crash recovery
@@ -683,21 +712,13 @@ export async function bootstrap(
   // workload when enabled.
   let lifecycleRuntime: LifecycleRuntime | null = null;
   if (config.lifecycle?.enabled) {
-    const nativeImplementations = {
-      'native-noop-event': () =>
-        Promise.resolve(
-          ok({
-            outcome: 'success' as const,
-            outputContract:
-              LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT as typeof LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
-            signals: [],
-          }),
-        ),
+    const nativeImplementations: Record<string, LifecycleRuntimeHandler> = {
+      'native-noop-event': nativeNoSignalSuccess,
       // Interceptors execute synchronously through LifecycleInterceptorEngine;
       // retaining this identity in the captured executor prevents a divergent
       // authority catalog from ever selecting a different implementation.
-      'native-allow-interceptor': () =>
-        Promise.resolve(err(new LifecycleError('Lifecycle interceptors are not dispatcher jobs'))),
+      'native-allow-interceptor': nativeInterceptorDispatcherRejection,
+      [NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_REF]: nativeNoSignalSuccess,
     };
     const nativeImplementationCatalog = [
       {
@@ -714,6 +735,13 @@ export async function bootstrap(
         inputContract: LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
         outputContract: LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
         interceptorSafety: 'enforcing' as const,
+      },
+      {
+        ref: NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_REF,
+        implementationVersion: NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_VERSION,
+        mode: 'signal' as const,
+        inputContract: LIFECYCLE_SIGNAL_INPUT_CONTRACT,
+        outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
       },
     ];
     const loadedSubagentCatalog = [...mergedAgentMap.values()].flatMap((agent) =>
@@ -749,10 +777,7 @@ export async function bootstrap(
     const subagentAdapter = subAgentRunner ? new SubAgentLifecycleAdapter(subAgentRunner) : null;
     for (const handler of resolvedHandlers) {
       if (handler.identity.runtimeKind === 'native') {
-        const implementation =
-          nativeImplementations[
-            handler.identity.implementationRef as keyof typeof nativeImplementations
-          ];
+        const implementation = nativeImplementations[handler.identity.implementationRef];
         if (implementation) {
           // Native handlers have no persona authority. Capture each immutable
           // identity once even when configuration attaches it to many personas.
@@ -854,6 +879,9 @@ export async function bootstrap(
       auditLogger,
       metrics: lifecycleMetrics,
     });
+    const behaviorSignalProjector = new BehaviorSignalProjector(repos.behaviorSignal, {
+      auditLogger,
+    });
     const interceptorEngine = new LifecycleInterceptorEngine({
       resolveHandlers: (
         query,
@@ -866,21 +894,11 @@ export async function bootstrap(
     const dispatcherResult = LifecycleDispatcher.create({
       deliveries: repos.lifecycleDelivery,
       executor: executorResult.value,
-      signalRouter: {
-        handoff: (handoff) => {
-          if (handoff.signals.length === 0) return Promise.resolve(ok(undefined));
-          const persisted = repos.lifecycleSignal.handoff(handoff);
-          return Promise.resolve(
-            persisted.isErr()
-              ? err(
-                  new LifecycleError(
-                    `Failed to persist lifecycle signals: ${persisted.error.message}`,
-                  ),
-                )
-              : ok(undefined),
-          );
-        },
-      },
+      signalRouter: createBehaviorSignalRouter({
+        signalRepository: repos.lifecycleSignal,
+        projector: behaviorSignalProjector,
+        registry: registryResult.value,
+      }),
       telemetry: lifecycleTelemetry,
     });
     if (dispatcherResult.isErr()) {

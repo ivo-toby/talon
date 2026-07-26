@@ -202,6 +202,47 @@ describe('BehaviorSignalRepository', () => {
     expect(repository.countDistinctEvidenceSources(candidateId)._unsafeUnwrap()).toBe(2);
   });
 
+  it('idempotently links later evidence to an existing candidate lineage', () => {
+    const first = evidence({ evidenceId: 'lineage-evidence-a', sourceId: 'message-a' });
+    const second = evidence({ evidenceId: 'lineage-evidence-b', sourceId: 'message-b' });
+    const third = evidence({ evidenceId: 'lineage-evidence-c', sourceId: 'message-c' });
+    expect(repository.recordEvidence(first).isOk()).toBe(true);
+    expect(repository.recordEvidence(second).isOk()).toBe(true);
+    expect(repository.recordEvidence(third).isOk()).toBe(true);
+
+    const candidateId = 'lineage-append-candidate';
+    expect(
+      repository
+        .createCandidate(
+          candidate({
+            candidateId,
+            createdFromEvidenceIds: [first.evidenceId],
+          }),
+        )
+        .isOk(),
+    ).toBe(true);
+
+    expect(
+      repository
+        .linkCandidateEvidence({
+          persona: 'support',
+          candidateId,
+          evidenceIds: [first.evidenceId, second.evidenceId],
+        })
+        ._unsafeUnwrap(),
+    ).toEqual({ linkedEvidenceCount: 1, distinctSourceCount: 2 });
+    expect(
+      repository
+        .linkCandidateEvidence({
+          persona: 'support',
+          candidateId,
+          evidenceIds: [second.evidenceId, third.evidenceId],
+        })
+        ._unsafeUnwrap(),
+    ).toEqual({ linkedEvidenceCount: 1, distinctSourceCount: 3 });
+    expect(repository.transitionCandidate('support', candidateId, 'ready').isOk()).toBe(true);
+  });
+
   it('rejects ready candidates without created evidence provenance', () => {
     expect(
       repository.createCandidate(
