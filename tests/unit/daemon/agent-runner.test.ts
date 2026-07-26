@@ -192,7 +192,9 @@ function makeMockContext(): DaemonContext {
         getLatestProviderName: vi.fn().mockReturnValue(ok(null)),
       } as any,
       binding: {} as any,
-      memory: {} as any,
+      memory: {
+        findByThread: vi.fn().mockReturnValue(ok([])),
+      } as any,
     },
     channelRegistry: {
       get: vi.fn().mockReturnValue({
@@ -1358,6 +1360,7 @@ describe('AgentRunner', () => {
           inputTokens: 100,
           rawMetric: 80_000,
           rawMetricName: 'cache_read_input_tokens',
+          rotationCauseQueueItemId: 'qi-001',
         },
         0.4,
         'session-summarizer',
@@ -1404,6 +1407,7 @@ describe('AgentRunner', () => {
           inputTokens: 100,
           rawMetric: 118_353,
           rawMetricName: 'cache_total_input_tokens',
+          rotationCauseQueueItemId: 'qi-001',
         },
         0.39,
         'session-summarizer',
@@ -1521,18 +1525,7 @@ describe('AgentRunner', () => {
         body: 'Gemini result',
       });
       expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledTimes(1);
-      expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
-        'thread-001',
-        'persona-001',
-        {
-          ratio: 0.5,
-          inputTokens: 500_000,
-          rawMetric: 500_000,
-          rawMetricName: 'input_tokens',
-        },
-        0.8,
-        'session-summarizer',
-      );
+      expect(ctx.contextRoller.checkAndRotate).not.toHaveBeenCalled();
     });
 
     it('skips context rotation when provider context management is disabled', async () => {
@@ -1674,6 +1667,7 @@ describe('AgentRunner', () => {
           inputTokens: 210_000,
           rawMetric: 210_000,
           rawMetricName: 'input_tokens',
+          rotationCauseQueueItemId: 'qi-001',
         },
         0.75,
         'session-summarizer',
@@ -1702,7 +1696,7 @@ describe('AgentRunner', () => {
         } as any),
       );
       ctx.queueManager = {
-        enqueue: vi.fn().mockReturnValue(ok({})),
+        enqueueWithId: vi.fn().mockReturnValue(ok({})),
       } as any;
       ctx.contextRoller = {
         checkAndRotate: vi.fn().mockResolvedValue({
@@ -1743,12 +1737,338 @@ describe('AgentRunner', () => {
       const result = await runner.run(makeQueueItem());
 
       expect(result.isOk()).toBe(true);
-      expect(ctx.queueManager.enqueue).toHaveBeenCalledWith(
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'context-rotation-continue:qi-001',
+          idempotency_key: 'context-rotation-continue:qi-001',
+        }),
+      );
+      expect(ctx.queueManager.enqueueWithId).toHaveBeenCalledWith(
+        'context-rotation-continue:qi-001',
         'thread-001',
         'message',
         { personaId: 'persona-001', content: 'continue' },
-        expect.any(String),
+        'context-rotation-continue:qi-001',
         { persona: 'TestBot', itemType: 'message' },
+      );
+    });
+
+    it('fails the run when required continuation queue work cannot be ensured', async () => {
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 210_000, outputTokens: 90 },
+        }),
+      );
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'qwen3.5-9b-optiq-4bit',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are an OpenAI-compatible test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      ctx.queueManager = {
+        enqueueWithId: vi.fn().mockReturnValue(err(new Error('queue unavailable'))),
+      } as any;
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue({
+          rotated: true,
+          hasOpenThreads: true,
+        }),
+      } as any;
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'openai-compatible',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              requiresContinuationAfterContextRotation: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 210_000,
+              metrics: {
+                input_tokens: 210_000,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain(
+        'failed to enqueue continuation after context rotation',
+      );
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 'context-rotation-continue:qi-001',
+          idempotency_key: 'context-rotation-continue:qi-001',
+        }),
+      );
+    });
+
+    it('repairs persisted continuation queue work on retry even when usage is below threshold', async () => {
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 10_000, outputTokens: 90 },
+        }),
+      );
+      const continuationId = 'context-rotation-continue:qi-001';
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'qwen3.5-9b-optiq-4bit',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are an OpenAI-compatible test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      vi.mocked(ctx.repos.message.existsByIdempotencyKey).mockImplementation(
+        (key) => key === continuationId,
+      );
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockImplementation((input) =>
+        ok({
+          message: {
+            ...input,
+            created_at: Date.now(),
+          },
+          inserted: input.idempotency_key !== continuationId,
+        } as any),
+      );
+      ctx.queueManager = {
+        enqueueWithId: vi.fn().mockReturnValue(ok({})),
+      } as any;
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue({ rotated: false, hasOpenThreads: false }),
+      } as any;
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'openai-compatible',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              requiresContinuationAfterContextRotation: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10_000,
+              metrics: {
+                input_tokens: 10_000,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.contextRoller.checkAndRotate).not.toHaveBeenCalled();
+      expect(ctx.queueManager.enqueueWithId).toHaveBeenCalledWith(
+        continuationId,
+        'thread-001',
+        'message',
+        { personaId: 'persona-001', content: 'continue' },
+        continuationId,
+        { persona: 'TestBot', itemType: 'message' },
+      );
+    });
+
+    it('repairs missing continuation from the durable rotation marker on retry below threshold', async () => {
+      const sdkRun = vi.fn().mockReturnValue(
+        makeProviderStream({
+          usage: { inputTokens: 10_000, outputTokens: 90 },
+        }),
+      );
+      const continuationId = 'context-rotation-continue:qi-001';
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'qwen3.5-9b-optiq-4bit',
+            provider: 'openai-compatible',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are an OpenAI-compatible test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      vi.mocked(ctx.repos.memory.findByThread).mockReturnValue(
+        ok([
+          {
+            id: 'summary-001',
+            thread_id: 'thread-001',
+            type: 'summary',
+            content: 'Summary',
+            metadata: JSON.stringify({
+              source: 'context-roller',
+              rotatedThroughTs: 7_000,
+              hasOpenThreads: true,
+              openThreadCount: 1,
+              rotationCauseQueueItemId: 'qi-001',
+            }),
+            created_at: 7_100,
+            updated_at: 7_100,
+            embedding_ref: null,
+          },
+        ] as any),
+      );
+      ctx.queueManager = {
+        enqueueWithId: vi.fn().mockReturnValue(ok({})),
+      } as any;
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue({ rotated: false, hasOpenThreads: false }),
+      } as any;
+      ctx.providerRegistry = {
+        getDefault: vi.fn().mockReturnValue({
+          provider: {
+            name: 'openai-compatible',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: true as const,
+              requiresContinuationAfterContextRotation: true as const,
+              run: sdkRun,
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 10_000,
+              metrics: {
+                input_tokens: 10_000,
+              },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'node',
+            contextWindowTokens: 256_000,
+            contextManagement: makeContextManagement({
+              triggerMetric: 'input_tokens',
+              thresholdRatio: 0.75,
+            }),
+          }),
+        }),
+      } as any;
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.contextRoller.checkAndRotate).not.toHaveBeenCalled();
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: continuationId,
+          idempotency_key: continuationId,
+        }),
+      );
+      expect(ctx.queueManager.enqueueWithId).toHaveBeenCalledWith(
+        continuationId,
+        'thread-001',
+        'message',
+        { personaId: 'persona-001', content: 'continue' },
+        continuationId,
+        { persona: 'TestBot', itemType: 'message' },
+      );
+    });
+
+    it('ensures continuation queue work when the stable continuation message already exists', () => {
+      const continuationId = 'context-rotation-continue:qi-001';
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockReturnValueOnce(
+        ok({
+          message: {
+            id: continuationId,
+            thread_id: 'thread-001',
+            direction: 'inbound',
+            content: JSON.stringify({ body: 'continue' }),
+            idempotency_key: continuationId,
+            provider_id: null,
+            run_id: null,
+            created_at: Date.now(),
+          },
+          inserted: false,
+        }),
+      );
+      ctx.queueManager = {
+        enqueueWithId: vi.fn().mockReturnValue(ok({})),
+      } as any;
+
+      const result = (runner as any).enqueueContextContinuation(
+        'thread-001',
+        'persona-001',
+        'TestBot',
+        'qi-001',
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: continuationId,
+          idempotency_key: continuationId,
+        }),
+      );
+      expect(ctx.queueManager.enqueueWithId).toHaveBeenCalledWith(
+        continuationId,
+        'thread-001',
+        'message',
+        { personaId: 'persona-001', content: 'continue' },
+        continuationId,
+        { persona: 'TestBot', itemType: 'message' },
+      );
+    });
+
+    it('returns an error when required continuation message persistence fails', () => {
+      vi.mocked(ctx.repos.message.insertIfAbsent).mockReturnValueOnce(
+        err(new Error('message store unavailable')),
+      );
+
+      const result = (runner as any).enqueueContextContinuation(
+        'thread-001',
+        'persona-001',
+        'TestBot',
+        'qi-001',
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain(
+        'failed to persist continuation after context rotation',
       );
     });
 
@@ -1889,6 +2209,56 @@ describe('AgentRunner', () => {
         expect(callOrder.indexOf('message.reserve')).toBeLessThan(callOrder.indexOf('rotate'));
       });
 
+      it('keeps the queue item claimed until post-send context projection settles', async () => {
+        const callOrder: string[] = [];
+        let resolveRotation!: (result: { rotated: false; hasOpenThreads: false }) => void;
+
+        const connector = ctx.channelRegistry.get('test-channel')!;
+        vi.mocked(connector.send).mockImplementation(async () => {
+          callOrder.push('send');
+          return ok(undefined);
+        });
+
+        ctx.contextRoller = {
+          checkAndRotate: vi.fn().mockImplementation(
+            () =>
+              new Promise<{ rotated: false; hasOpenThreads: false }>((resolve) => {
+                callOrder.push('rotate.start');
+                resolveRotation = resolve;
+              }),
+          ),
+        } as any;
+
+        mockQuery.mockReturnValue(
+          makeAgentStream({
+            usage: {
+              input_tokens: 100,
+              output_tokens: 50,
+              cache_read_input_tokens: 80_000,
+              cache_creation_input_tokens: 2_000,
+            },
+          }),
+        );
+
+        let settled = false;
+        const runPromise = runner.run(makeQueueItem()).then((result) => {
+          settled = true;
+          return result;
+        });
+
+        await vi.waitFor(() => expect(callOrder).toContain('rotate.start'));
+        await Promise.resolve();
+
+        expect(callOrder.indexOf('send')).toBeLessThan(callOrder.indexOf('rotate.start'));
+        expect(settled).toBe(false);
+
+        resolveRotation({ rotated: false, hasOpenThreads: false });
+        const result = await runPromise;
+
+        expect(result.isOk()).toBe(true);
+        expect(settled).toBe(true);
+      });
+
       it('sends response to channel before context rotation for CLI providers', async () => {
         const callOrder: string[] = [];
 
@@ -1941,8 +2311,7 @@ describe('AgentRunner', () => {
         const result = await runner.run(makeQueueItem());
 
         expect(result.isOk()).toBe(true);
-        expect(callOrder).toContain('rotate');
-        expect(callOrder.indexOf('send')).toBeLessThan(callOrder.indexOf('rotate'));
+        expect(callOrder).toEqual(['send', 'send']);
       });
     });
   });
@@ -2075,6 +2444,82 @@ describe('AgentRunner', () => {
         expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
         expect.any(Function),
       );
+    });
+
+    it('does not restore a DB session at or before the latest durable context rotation after restart', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);
+      vi.mocked(ctx.repos.memory.findByThread).mockReturnValue(
+        ok([
+          {
+            id: 'context-observation:context-roller-om:thread-001:5000',
+            thread_id: 'thread-001',
+            type: 'observation',
+            content: 'Date: 2026-07-26\n- 🔴 09:00 projected',
+            metadata: JSON.stringify({
+              source: 'context-roller-om',
+              rotatedThroughTs: 5_000,
+              taskComplete: false,
+              suggestedContinuation: 'continue',
+            }),
+            created_at: 5_100,
+            updated_at: 5_100,
+            embedding_ref: null,
+          },
+        ] as any),
+      );
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockImplementation(
+        (_threadId, _providerName, options?: { sinceCreatedAt?: number }) =>
+          ok(options?.sinceCreatedAt === 5_100 ? null : 'stale-session-from-db'),
+      );
+      const item = makeQueueItem();
+
+      await runner.run(item);
+
+      const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
+      expect(queryCall.options.resume).toBeUndefined();
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'claude-code', {
+        excludeCollaboration: true,
+        modelName: 'claude-sonnet-4-20250514',
+        reasoningEffort: null,
+        sinceCreatedAt: 5_100,
+      });
+    });
+
+    it('does not restore a DB session at or before a summary-mode context rotation after restart', async () => {
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);
+      vi.mocked(ctx.repos.memory.findByThread).mockReturnValue(
+        ok([
+          {
+            id: 'summary-001',
+            thread_id: 'thread-001',
+            type: 'summary',
+            content: 'Summary',
+            metadata: JSON.stringify({
+              source: 'context-roller',
+              rotatedThroughTs: 7_000,
+            }),
+            created_at: 7_100,
+            updated_at: 7_100,
+            embedding_ref: null,
+          },
+        ] as any),
+      );
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockImplementation(
+        (_threadId, _providerName, options?: { sinceCreatedAt?: number }) =>
+          ok(options?.sinceCreatedAt === 7_100 ? null : 'stale-session-from-db'),
+      );
+      const item = makeQueueItem();
+
+      await runner.run(item);
+
+      const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
+      expect(queryCall.options.resume).toBeUndefined();
+      expect(ctx.repos.run.getLatestSessionId).toHaveBeenCalledWith('thread-001', 'claude-code', {
+        excludeCollaboration: true,
+        modelName: 'claude-sonnet-4-20250514',
+        reasoningEffort: null,
+        sinceCreatedAt: 7_100,
+      });
     });
 
     it('does not restore an explicit-effort DB session when persona omits reasoningEffort', async () => {

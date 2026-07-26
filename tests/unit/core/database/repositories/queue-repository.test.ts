@@ -61,6 +61,36 @@ describe('QueueRepository', () => {
       expect(row.attempts).toBe(0);
       expect(row.claimed_at).toBeNull();
     });
+
+    it('idempotently returns an existing deterministic item', () => {
+      const input = makeItem({ id: 'context-rotation-continue:qi-001' });
+
+      const first = repo.enqueueIfAbsent(input);
+      const second = repo.enqueueIfAbsent(input);
+
+      expect(first.isOk()).toBe(true);
+      expect(second.isOk()).toBe(true);
+      expect(first._unsafeUnwrap().inserted).toBe(true);
+      expect(second._unsafeUnwrap().inserted).toBe(false);
+      expect(second._unsafeUnwrap().item.id).toBe(input.id);
+      expect(
+        (db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number }).count,
+      ).toBe(1);
+    });
+
+    it('rejects deterministic id collisions with different work payloads', () => {
+      const input = makeItem({ id: 'context-rotation-continue:qi-001' });
+      const collision = makeItem({
+        ...input,
+        payload: JSON.stringify({ different: true }),
+      });
+
+      expect(repo.enqueueIfAbsent(input).isOk()).toBe(true);
+      const result = repo.enqueueIfAbsent(collision);
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('Queue item id collision');
+    });
   });
 
   describe('claimNext', () => {

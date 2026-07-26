@@ -397,7 +397,7 @@ describe('context projector', () => {
     expect(metadata.suggestedContinuation).toBe('Finish reducer');
   });
 
-  it('does not recreate a reduced observation when the original projection replays', () => {
+  it('does not recreate a reduced observation and preserves open-thread continuation when replayed', () => {
     const memory = new Map<string, { content: string; metadata: string }>();
     const repo = makeStatefulRepo(memory);
     const observationInput = {
@@ -416,7 +416,9 @@ describe('context projector', () => {
         observations: [
           { date: '2026-07-25', time: '10:00', priority: 'medium', text: 'Work continued.' },
         ],
-        taskComplete: true,
+        taskComplete: false,
+        currentTask: 'Finish the migration',
+        suggestedContinuation: 'Continue with the reducer follow-up',
         memoryUpdates: [],
       },
     };
@@ -452,6 +454,9 @@ describe('context projector', () => {
       source: 'context-projector-reduced-observation-tombstone',
       reducedInto: reductionId,
       rotatedThroughTs: 2_000,
+      taskComplete: false,
+      currentTask: 'Finish the migration',
+      suggestedContinuation: 'Continue with the reducer follow-up',
     }));
 
     const replay = projectContextObservation(observationInput);
@@ -459,8 +464,85 @@ describe('context projector', () => {
     if (replay.isOk()) {
       expect(replay.value.memoryUpdatesApplied).toBe(0);
       expect(replay.value.preRollSaved).toBe(false);
+      expect(replay.value.hasOpenThreads).toBe(true);
     }
     expect(memory.get(observationId)?.content).toBe('');
     expect(memory.get(reductionId)?.content).toBe('Date: 2026-07-25\n- consolidated');
+  });
+
+  it('replays a reduced observation tombstone without requiring fresh observer observations', () => {
+    const memory = new Map<string, { content: string; metadata: string }>();
+    const repo = makeStatefulRepo(memory);
+    const observationId = 'context-observation:projection-1:1234';
+    memory.set(observationId, {
+      content: '',
+      metadata: JSON.stringify({
+        source: 'context-projector-reduced-observation-tombstone',
+        rotatedThroughTs: 1234,
+        taskComplete: false,
+        suggestedContinuation: 'continue the retry',
+      }),
+    });
+
+    const result = projectContextObservation({
+      repo,
+      threadId: 'thread-1',
+      projectionId: 'projection-1',
+      messages: [],
+      rotatedThroughTs: 1234,
+      contextUsage: {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 75_000,
+        rawMetricName: 'cache_read_input_tokens',
+      },
+      observerOutput: { observations: [], taskComplete: true, memoryUpdates: [] },
+    });
+
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      expect(result.value).toMatchObject({
+        memoryItemId: observationId,
+        memoryUpdatesApplied: 0,
+        preRollSaved: false,
+        hasOpenThreads: true,
+      });
+    }
+    expect(repo.upsertByKey).not.toHaveBeenCalled();
+  });
+
+  it('rejects empty fresh observer observations without overwriting unreduced context', () => {
+    const memory = new Map<string, { content: string; metadata: string }>();
+    const repo = makeStatefulRepo(memory);
+    const observationId = 'context-observation:projection-1:1234';
+    memory.set(observationId, {
+      content: 'Date: 2026-07-25\n- 🔴 09:00 keep this observation',
+      metadata: JSON.stringify({
+        source: 'context-roller-om',
+        rotatedThroughTs: 1234,
+        taskComplete: false,
+        suggestedContinuation: 'continue the retry',
+      }),
+    });
+
+    const result = projectContextObservation({
+      repo,
+      threadId: 'thread-1',
+      projectionId: 'projection-1',
+      messages: [],
+      rotatedThroughTs: 1234,
+      contextUsage: {
+        ratio: 0.5,
+        inputTokens: 100_000,
+        rawMetric: 75_000,
+        rawMetricName: 'cache_read_input_tokens',
+      },
+      observerOutput: { observations: [], taskComplete: true, memoryUpdates: [] },
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(memory.get(observationId)?.content).toBe(
+      'Date: 2026-07-25\n- 🔴 09:00 keep this observation',
+    );
   });
 });

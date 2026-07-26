@@ -723,11 +723,17 @@ describe('AgentRunnerConfigSchema', () => {
             contextWindowTokens: 200000,
             contextManagement: {
               enabled: true,
+              mode: 'summarizer',
               triggerMetric: 'cache_read_input_tokens',
               thresholdRatio: 0.5,
               recentMessageCount: 10,
               summarizer: 'session-summarizer',
+              observerInputContract: 'talon.context.observer.input.v1',
+              observerOutputContract: 'talon.context.observer.v1',
+              reducerInputContract: 'talon.context.reducer.input.v1',
+              reducerOutputContract: 'talon.context.reducer.v1',
               reflectionThresholdChars: 40_000,
+              deprecatedLegacySummarizer: false,
             },
           },
         },
@@ -761,12 +767,82 @@ describe('AgentRunnerConfigSchema', () => {
         contextWindowTokens: 1000000,
         contextManagement: {
           enabled: true,
+          mode: 'summarizer',
           triggerMetric: 'cache_read_input_tokens',
           thresholdRatio: 0.5,
           recentMessageCount: 12,
           summarizer: 'session-summarizer',
+          observerInputContract: 'talon.context.observer.input.v1',
+          observerOutputContract: 'talon.context.observer.v1',
+          reducerInputContract: 'talon.context.reducer.input.v1',
+          reducerOutputContract: 'talon.context.reducer.v1',
           reflectionThresholdChars: 40_000,
+          deprecatedLegacySummarizer: false,
         },
+      });
+    }
+  });
+
+  it('ignores incomplete contextManagement settings on disabled providers', () => {
+    const result = AgentRunnerConfigSchema.safeParse({
+      defaultProvider: 'claude-code',
+      providers: {
+        'claude-code': {
+          enabled: true,
+          command: 'claude',
+          contextWindowTokens: 200000,
+          contextManagement: {
+            enabled: true,
+            triggerMetric: 'cache_read_input_tokens',
+            thresholdRatio: 0.5,
+            summarizer: 'session-summarizer',
+          },
+        },
+        stale_disabled_provider: {
+          enabled: false,
+          command: 'codex',
+          contextWindowTokens: 200000,
+          contextManagement: {
+            enabled: true,
+            mode: 'observation',
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts explicit observation-mode context handlers and contracts', () => {
+    const result = AgentRunnerConfigSchema.safeParse({
+      providers: {
+        'claude-code': {
+          enabled: true,
+          command: 'claude',
+          contextWindowTokens: 200000,
+          contextManagement: {
+            enabled: true,
+            mode: 'observation',
+            triggerMetric: 'cache_read_input_tokens',
+            thresholdRatio: 0.5,
+            recentMessageCount: 10,
+            observer: 'session-observer',
+            reducer: 'session-reflector',
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.providers['claude-code']?.contextManagement).toMatchObject({
+        mode: 'observation',
+        observer: 'session-observer',
+        reducer: 'session-reflector',
+        observerInputContract: 'talon.context.observer.input.v1',
+        observerOutputContract: 'talon.context.observer.v1',
+        reducerInputContract: 'talon.context.reducer.input.v1',
+        reducerOutputContract: 'talon.context.reducer.v1',
       });
     }
   });
@@ -936,11 +1012,17 @@ describe('TalondConfigSchema', () => {
             contextWindowTokens: 200000,
             contextManagement: {
               enabled: true,
+              mode: 'summarizer',
               triggerMetric: 'cache_read_input_tokens',
               thresholdRatio: 0.5,
               recentMessageCount: 10,
               summarizer: 'session-summarizer',
+              observerInputContract: 'talon.context.observer.input.v1',
+              observerOutputContract: 'talon.context.observer.v1',
+              reducerInputContract: 'talon.context.reducer.input.v1',
+              reducerOutputContract: 'talon.context.reducer.v1',
               reflectionThresholdChars: 40_000,
+              deprecatedLegacySummarizer: false,
             },
           },
         },

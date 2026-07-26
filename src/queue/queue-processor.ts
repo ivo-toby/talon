@@ -98,8 +98,8 @@ export class QueueProcessor {
       // per-thread single-inflight invariant.
       const oldestIsCollaboration = oldestPendingTypeByThread.get(threadId) === 'collaboration';
 
-      // Whether to claim only a collaboration item — determined below only
-      // when the thread is confirmed to be in-flight.
+      // Whether to claim only a collaboration item because the thread is
+      // currently in-flight.
       let claimCollaborationOnly = false;
 
       if (!oldestIsCollaboration) {

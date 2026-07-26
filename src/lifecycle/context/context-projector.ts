@@ -107,6 +107,9 @@ function projectionError(message: string): Error {
 function validateContextObservations(
   observations: readonly ContextObservation[],
 ): Result<readonly ContextObservation[], Error> {
+  if (observations.length === 0) {
+    return err(projectionError('observation contract validation: at least one observation is required'));
+  }
   const parsedObservations: ContextObservation[] = [];
   for (const observation of observations) {
     const parsed = ContextObservationSchema.safeParse(observation);
@@ -293,6 +296,9 @@ function observationMetadata(input: ProjectContextObservationInput): Record<stri
     contextUsage: input.contextUsage,
     createdAt: input.createdAt ?? new Date().toISOString(),
   };
+  if (input.contextUsage.rotationCauseQueueItemId) {
+    metadata.rotationCauseQueueItemId = input.contextUsage.rotationCauseQueueItemId;
+  }
   if (!taskComplete && input.observerOutput.currentTask) {
     metadata.currentTask = input.observerOutput.currentTask;
   }
@@ -302,15 +308,17 @@ function observationMetadata(input: ProjectContextObservationInput): Record<stri
   return metadata;
 }
 
+function hasOpenThreadsFromObservationMetadata(metadata: Record<string, unknown>): boolean {
+  return (
+    metadata.taskComplete === false &&
+    typeof metadata.suggestedContinuation === 'string' &&
+    metadata.suggestedContinuation.trim().length > 0
+  );
+}
+
 export function projectContextObservation(
   input: ProjectContextObservationInput,
 ): Result<ContextProjectionResult, Error> {
-  const observations = validateContextObservations(input.observerOutput.observations);
-  if (observations.isErr()) {
-    return err(observations.error);
-  }
-
-  const observationContent = formatContextObservationBlock(observations.value);
   const memoryItemId = `context-observation:${input.projectionId}:${input.rotatedThroughTs}`;
   const preRollContent = input.messages.length > 0 ? buildPreRollTailContent(input.messages) : null;
 
@@ -319,15 +327,23 @@ export function projectContextObservation(
     return err(projectionError(`find ${memoryItemId}: ${existingObservation.error.message}`));
   }
   if (existingObservation.value && isReducedObservationTombstone(existingObservation.value.metadata)) {
+    const tombstoneMetadata = parseObservationMetadata(existingObservation.value.metadata);
     return ok({
       projectionId: input.projectionId,
       memoryItemId,
       memoryUpdatesApplied: 0,
       preRollSaved: false,
-      hasOpenThreads: false,
+      hasOpenThreads: hasOpenThreadsFromObservationMetadata(tombstoneMetadata),
       rotatedThroughTs: input.rotatedThroughTs,
     });
   }
+
+  const observations = validateContextObservations(input.observerOutput.observations);
+  if (observations.isErr()) {
+    return err(observations.error);
+  }
+
+  const observationContent = formatContextObservationBlock(observations.value);
 
   const txResult = input.repo.runInTransaction(() => {
     throwIfErr(
@@ -422,6 +438,24 @@ function reducedObservationTombstoneMetadata(
   if (typeof originalMetadata.projectionId === 'string' && originalMetadata.projectionId.length > 0) {
     metadata.originalProjectionId = originalMetadata.projectionId;
   }
+  if (typeof originalMetadata.taskComplete === 'boolean') {
+    metadata.taskComplete = originalMetadata.taskComplete;
+  }
+  if (
+    typeof originalMetadata.rotationCauseQueueItemId === 'string' &&
+    originalMetadata.rotationCauseQueueItemId.length > 0
+  ) {
+    metadata.rotationCauseQueueItemId = originalMetadata.rotationCauseQueueItemId;
+  }
+  if (typeof originalMetadata.currentTask === 'string' && originalMetadata.currentTask.length > 0) {
+    metadata.currentTask = originalMetadata.currentTask;
+  }
+  if (
+    typeof originalMetadata.suggestedContinuation === 'string' &&
+    originalMetadata.suggestedContinuation.trim().length > 0
+  ) {
+    metadata.suggestedContinuation = originalMetadata.suggestedContinuation.trim();
+  }
   return metadata;
 }
 
@@ -445,6 +479,12 @@ function reductionMetadata(
   }
   if (typeof newestMetadata.taskComplete === 'boolean') {
     metadata.taskComplete = newestMetadata.taskComplete;
+  }
+  if (
+    typeof newestMetadata.rotationCauseQueueItemId === 'string' &&
+    newestMetadata.rotationCauseQueueItemId.length > 0
+  ) {
+    metadata.rotationCauseQueueItemId = newestMetadata.rotationCauseQueueItemId;
   }
   if (typeof newestMetadata.currentTask === 'string' && newestMetadata.currentTask.length > 0) {
     metadata.currentTask = newestMetadata.currentTask;

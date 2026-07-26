@@ -204,6 +204,105 @@ export class QueueManager {
   }
 
   /**
+   * Idempotently enqueue a caller-owned deterministic work item.
+   *
+   * Used only for crash-recovery paths that can first persist a message and
+   * then need to ensure the matching queue row exists on retry. Fresh inserts
+   * still publish queue lifecycle events in the same transaction as the row.
+   */
+  enqueueWithId(
+    id: string,
+    threadId: string,
+    type: 'message' | 'schedule' | 'collaboration',
+    payload: Record<string, unknown>,
+    messageId?: string,
+    lifecycleScope?: LifecycleQueueScope,
+  ): Result<QueueItem, QueueError> {
+    const threadResult = this.threadRepo.findById(threadId);
+    if (threadResult.isErr()) {
+      return err(
+        new QueueError(
+          `Failed to look up thread ${threadId}: ${threadResult.error.message}`,
+          threadResult.error,
+        ),
+      );
+    }
+    if (!threadResult.value) {
+      return err(new QueueError(`Thread not found: ${threadId}`));
+    }
+
+    const enabledLifecycleScope = this.lifecycleRuntime ? lifecycleScope : undefined;
+    if (
+      this.lifecycleRuntime &&
+      (type === 'message' || type === 'schedule') &&
+      !enabledLifecycleScope
+    ) {
+      return err(
+        new QueueError(
+          'Lifecycle-enabled message and schedule queue items require manager-owned lifecycle scope',
+        ),
+      );
+    }
+    const scopeError = this.validateLifecycleScope(type, enabledLifecycleScope);
+    if (scopeError) return err(scopeError);
+
+    const input = {
+      id,
+      thread_id: threadId,
+      message_id: messageId ?? null,
+      type,
+      payload: JSON.stringify(payload),
+      max_attempts: this.config.maxAttempts,
+      lifecycle_persona: enabledLifecycleScope?.persona ?? null,
+      lifecycle_item_type: enabledLifecycleScope?.itemType ?? null,
+    };
+
+    const result =
+      this.lifecycleRuntime && enabledLifecycleScope
+        ? this.lifecycleRuntime.transaction((transaction) => {
+            const queued = this.queueRepo.enqueueIfAbsent(input);
+            if (queued.isErr())
+              return err(
+                new QueueError(
+                  `Failed to idempotently enqueue item for lifecycle event: ${queued.error.message}`,
+                ),
+              );
+            if (!queued.value.inserted) return ok(queued.value.item);
+            const publication = this.lifecycleRuntime!.publish(
+              this.lifecyclePublishInput(
+                'queue.item.enqueued.v1',
+                queued.value.item.id,
+                threadId,
+                enabledLifecycleScope,
+                queued.value.item.message_id,
+              ),
+              transaction,
+            );
+            if (publication.isErr())
+              return err(
+                new QueueError(
+                  `Failed to publish queue enqueue event: ${publication.error.message}`,
+                ),
+              );
+            return ok(queued.value.item);
+          })
+        : this.queueRepo.enqueueIfAbsent(input).map((queued) => queued.item);
+
+    if (result.isErr()) {
+      return err(
+        new QueueError(
+          `Failed to idempotently enqueue item for thread ${threadId}: ${result.error.message}`,
+          result.error,
+        ),
+      );
+    }
+
+    const item = rowToQueueItem(result.value);
+    this.logger.info({ itemId: item.id, threadId, type }, 'queue item ensured');
+    return ok(item);
+  }
+
+  /**
    * Enqueues and publishes through an already-open lifecycle bus transaction.
    * This is intentionally not a general transaction API: callers receive the
    * opaque context only from LifecycleRuntime, preserving exact bus authority.
@@ -439,4 +538,5 @@ export class QueueManager {
       this.activeCount--;
     }
   }
+
 }

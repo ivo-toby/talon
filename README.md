@@ -1417,7 +1417,7 @@ Agent run completes → selected trigger metric exceeds threshold?
 - **80K threshold** — leaves headroom for current turn I/O (~10-20K) within Sonnet's 200K window. Fresh sessions start at ~10-15K, giving ~70K of organic conversation before the next rotation.
 - **Summaries are memory items** — stored as `memory_items` with type `summary`, so they're subject to `memory-groomer` consolidation. Old summaries get merged/pruned automatically.
 - **Daemon-side, not agent-side** — the agent never knows its session was rotated. Context injection happens in the system prompt before the agent sees its first message.
-- **Awaited, not fire-and-forget** — rotation completes before the next queue item is processed, preventing race conditions.
+- **Projected after the response, before queue completion** — rotation starts after the user-visible response is sent. The current queue item remains claimed until required projection settles, preserving durable per-thread ordering through queue lease/recovery; collaboration items can still bypass in-flight work to avoid await-reply deadlocks.
 - **Prompt injection mitigation** — injected historical content is framed as "prior-conversation state" and replayed turns use bracketed state tags (`[previous turn, user]: …`) rather than `User:` / `Assistant:` role markers, so the main agent doesn't mistake historical context for live instructions. Recent Messages is scoped to turns AFTER the most recent rotation via `metadata.rotatedThroughTs`; pre-rotation turns are already compressed in the summary/observation.
 - **Bounded observation replay** — for the observational-memory path, the ContextAssembler replays observations up to a character budget (~20K) rather than concatenating the full log. This keeps prompt size flat over the thread's lifetime while preserving the newest state snapshot plus recent consolidated history.
 - **Durable completion state** — each observation persists `taskComplete` in metadata. When the observer flags the prior turn as complete, the assembler suppresses "Current task:" / "Next step:" hints so stale task pointers don't survive rotation and cause the agent to re-enter old work.
@@ -1426,7 +1426,7 @@ Agent run completes → selected trigger metric exceeds threshold?
 
 #### Observational memory (long-term context)
 
-The default `session-summarizer` produces a single summary blob that gets overwritten on each rotation — history beyond the last rotation is lost. For long-running conversations (e.g. Telegram threads spanning days), switch to **observational memory** by setting `summarizer: session-observer`.
+The default `session-summarizer` produces a single summary blob that gets overwritten on each rotation — history beyond the last rotation is lost. For long-running conversations (e.g. Telegram threads spanning days), switch to **observational memory** by setting `mode: observation` with explicit observer and reducer handlers.
 
 Instead of overwriting, observations **append** over time as a dated, prioritized decision log:
 
@@ -1449,14 +1449,16 @@ Each observation also carries `taskComplete`, `currentTask`, and `suggestedConti
 **Priority levels:** 🔴 high (critical decisions, goals, deadlines) · 🟡 medium (questions, preferences, conditional info) · 🟢 low (ephemeral context, minor details)
 
 ```yaml
-# 1. Set the provider's summarizer to session-observer
+# 1. Set the provider to observation mode with explicit handlers
 contextManagement:
   enabled: true
+  mode: observation
   triggerMetric: input_tokens
   thresholdRatio: 0.75
   recentMessageCount: 10
-  summarizer: session-observer # enables observational memory
-  reflectionThresholdChars: 40000 # observation-log size that triggers session-reflector (default 40000)
+  observer: session-observer
+  reducer: session-reflector
+  reflectionThresholdChars: 40000 # observation-log size that triggers the reducer (default 40000)
 
 # 2. Add the observer and reflector to the persona's subagents list
 personas:
@@ -1470,6 +1472,8 @@ personas:
 ```
 
 **Important:** Personas only load sub-agents explicitly listed in their `subagents` config. Without `session-observer` and `session-reflector` in the list, the context-roller won't find them at runtime. You can remove `session-summarizer` from personas using OM since it won't be called.
+
+Legacy configs that use `summarizer: session-observer` are translated at load time to `mode: observation`, `observer: session-observer`, and `reducer: session-reflector`. That compatibility path is deprecated; new configs should use the explicit observation-mode fields.
 
 For multi-step agent providers that expose both cumulative and final-step usage, Talon keeps cumulative usage for accounting and Langfuse, but gates context rotation on the final model step. Codex CLI provides this through its `token_count.last_token_usage` events; this prevents tool-heavy turns from rotating simply because cumulative billed input crossed the threshold.
 

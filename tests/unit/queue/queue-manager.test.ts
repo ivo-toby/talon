@@ -182,6 +182,61 @@ describe('QueueManager', () => {
       );
     });
 
+    it('idempotently ensures deterministic queue work and publishes only fresh inserts', () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn((callback) => callback({})),
+        publish: vi.fn(() => ok({})),
+      };
+      const lifecycleManager = new QueueManager(
+        queueRepo,
+        threadRepo,
+        DEFAULT_CONFIG,
+        createTestLogger(),
+        lifecycleRuntime as any,
+      );
+      const messageId = uuid();
+      expect(
+        new MessageRepository(db)
+          .insert({
+            id: messageId,
+            thread_id: threadId,
+            direction: 'inbound',
+            content: '{}',
+            idempotency_key: uuid(),
+            provider_id: null,
+            run_id: null,
+          })
+          .isOk(),
+      ).toBe(true);
+
+      const first = lifecycleManager.enqueueWithId(
+        'context-rotation-continue:qi-001',
+        threadId,
+        'message',
+        { personaId: 'persona-001', content: 'continue' },
+        messageId,
+        { persona: 'assistant', itemType: 'message' },
+      );
+      const second = lifecycleManager.enqueueWithId(
+        'context-rotation-continue:qi-001',
+        threadId,
+        'message',
+        { personaId: 'persona-001', content: 'continue' },
+        messageId,
+        { persona: 'assistant', itemType: 'message' },
+      );
+
+      expect(first.isOk()).toBe(true);
+      expect(second.isOk()).toBe(true);
+      expect(first._unsafeUnwrap().id).toBe('context-rotation-continue:qi-001');
+      expect(second._unsafeUnwrap().id).toBe('context-rotation-continue:qi-001');
+      expect(lifecycleRuntime.transaction).toHaveBeenCalledTimes(2);
+      expect(lifecycleRuntime.publish).toHaveBeenCalledTimes(1);
+      expect(
+        (db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number }).count,
+      ).toBe(1);
+    });
+
     it('uses the queue item id as the stable schedule correlation chain', () => {
       const lifecycleRuntime = {
         transaction: vi.fn((callback) => callback({})),

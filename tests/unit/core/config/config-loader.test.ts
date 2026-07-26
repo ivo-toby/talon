@@ -250,11 +250,17 @@ agentRunner:
         contextWindowTokens: 1000000,
         contextManagement: {
           enabled: true,
+          mode: 'summarizer',
           triggerMetric: 'cache_read_input_tokens',
           thresholdRatio: 0.5,
           recentMessageCount: 10,
           summarizer: 'session-summarizer',
+          observerInputContract: 'talon.context.observer.input.v1',
+          observerOutputContract: 'talon.context.observer.v1',
+          reducerInputContract: 'talon.context.reducer.input.v1',
+          reducerOutputContract: 'talon.context.reducer.v1',
           reflectionThresholdChars: 40_000,
+          deprecatedLegacySummarizer: false,
         },
       });
     }
@@ -285,12 +291,47 @@ agentRunner:
         contextWindowTokens: 1000000,
         contextManagement: {
           enabled: true,
+          mode: 'summarizer',
           triggerMetric: 'cache_total_input_tokens',
           thresholdRatio: 0.5,
           recentMessageCount: 10,
           summarizer: 'session-summarizer',
+          observerInputContract: 'talon.context.observer.input.v1',
+          observerOutputContract: 'talon.context.observer.v1',
+          reducerInputContract: 'talon.context.reducer.input.v1',
+          reducerOutputContract: 'talon.context.reducer.v1',
           reflectionThresholdChars: 40_000,
+          deprecatedLegacySummarizer: false,
         },
+      });
+    }
+  });
+
+  it('translates legacy session-observer summarizer config to explicit observation mode', () => {
+    const yaml = `
+agentRunner:
+  providers:
+    claude-code:
+      enabled: true
+      command: claude
+      contextWindowTokens: 200000
+      contextManagement:
+        enabled: true
+        triggerMetric: cache_read_input_tokens
+        thresholdRatio: 0.5
+        recentMessageCount: 10
+        summarizer: session-observer
+`;
+    const result = loadConfigFromString(yaml);
+    expect(result.isOk()).toBe(true);
+    if (result.isOk()) {
+      const cm = result.value.agentRunner.providers['claude-code']?.contextManagement;
+      expect(cm).toMatchObject({
+        enabled: true,
+        mode: 'observation',
+        observer: 'session-observer',
+        reducer: 'session-reflector',
+        deprecatedLegacySummarizer: true,
       });
     }
   });
