@@ -247,7 +247,7 @@ behavior provenance, and after-commit telemetry boundaries.
   after successful native review, and do not enqueue a user-facing agent task.
   Normal schedules continue through the existing queue/lifecycle publication
   path.
-- Source: TASK-018 / worker proposal, pending review. Governed prompt promotion
+- Source: TASK-018 / worker proposal, reconciled in WAVE-009. Governed prompt promotion
   applies only structured `talon.behavior.prompt_patch.v1` append/replace
   operations to a persona-owned `systemPromptFile`. Relative prompt paths must
   resolve exactly like the daemon persona loader/runtime layout, not relative to

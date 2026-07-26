@@ -2,8 +2,8 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: WAVE-009
-status: wave009_worktree_readiness_review_pending
+active_wave: null
+status: wave009_reconciled_next_wave_ready
 updated_at: 2026-07-26
 ---
 
@@ -177,8 +177,18 @@ Every task advances independently as soon as its gates clear.
 - WAVE-009 worktree-readiness review attempt
   `019f9d20-b7c0-7d53-8526-1ba021c57451` exited before verdict with a Codex
   usage-limit error. The user reported quota reset, so readiness review is
-  pending again. Readiness commit, task-branch fast-forward, and worker dispatch
-  remain blocked until a valid GPT-5.5/xhigh readiness review passes.
+  pending again. Fresh readiness review
+  `019f9d29-2367-74e3-943f-a795f6de8245` later passed 0C/0H/0M/0L; reviewed
+  readiness commit `9c6e82e84a14a2d95056e7d414e8c067fcc9f20c` was pushed,
+  fast-forwarded into TASK-018, and verified clean before dispatch.
+- WAVE-009 implementation head: TASK-018 task commit
+  `e083437ad3feb052d75c2e032babc9865ebd635a` passed GPT-5.5/xhigh review
+  `019f9d59-a303-7590-9179-077f65d8a1a3` with 0C/0H/0M/0L. CI remediation
+  commit `0ae7416ab939e536cfcb5e141d35785b83100b12` passed focused
+  GPT-5.5/xhigh review `019f9d67-ac6e-76e2-92a7-c203626ac098` with
+  0C/0H/0M/0L. PR #276 passed GitHub Verify PR and merged into the epic branch
+  at `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`; the clean TASK-018 worktree
+  was removed and pruned during reconciliation.
 
 ## Pending Waves
 
@@ -192,54 +202,37 @@ Every task advances independently as soon as its gates clear.
 | WAVE-006 | TASK-011-context-lifecycle-migration, TASK-012-feedback-detector-subagent, TASK-013-handler-telemetry-correlation | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-007 | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | full / parallel / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-008 | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | full / parallel / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-009 | TASK-018-governed-prompt-promotion | full / bundled / risk_based / adaptive | explicit user implementation request | in_progress |
+| WAVE-009 | TASK-018-governed-prompt-promotion | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-010 | TASK-019-lifecycle-end-to-end-verification | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-011 | TASK-020-lifecycle-documentation-adoption | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
 
 ## Active Wave
 
-WAVE-009 is active from exact pushed reconciliation checkpoint
-`dd2ca290d89157b674d1cbc67d440c9d295f3cbd`.
-
-Activation batch:
-
-- TASK-018-governed-prompt-promotion: task file moved to
-  `TICKET-005-behavior-learning/in-progress/TASK-018-governed-prompt-promotion.md`;
-  branch `task/TASK-018-governed-prompt-promotion`; allocated worktree
-  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion`;
-  current gate `worktree_readiness_review_pending`.
-
-The TASK-018 branch and worktree now exist at exact pushed activation-sync
-commit `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d`. Worker dispatch is blocked
-until a reviewed/pushed worktree-readiness checkpoint is fast-forwarded into the
-task branch/worktree and verified clean.
+No active wave after WAVE-009 reconciliation. TASK-018 is done and merged through
+PR #276 at epic commit `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`; its clean
+worktree was removed and pruned. The next phase is WAVE-010 activation for
+TASK-019 lifecycle end-to-end verification, including the user-required e2e
+tests and Sprites event-pipeline validation.
 
 ## Monitoring
 
-- Mode: manual fallback while the recurring thread monitor remains available.
+- Mode: manual fallback while the recurring remaining-waves thread monitor remains available.
 - Cadence: adaptive
-- Status: WAVE-009 worktree-readiness review pending after quota reset.
+- Status: WAVE-009 reconciled; WAVE-010 activation is next.
 - Scheduler provenance: `talon-issue-256-wdd-remaining-waves-monitor`
-- Last checked: 2026-07-26T06:40:57Z
-- Next check due: 2026-07-26T06:45:57Z
-- Stop condition: WAVE-009 task merged, blocked, cancelled, or ready for
-  wdd-reconcile-wave.
+- Last checked: 2026-07-26T07:58:29Z
+- Next check due: 2026-07-26T08:03:29Z
+- Stop condition: all remaining waves are merged/reconciled and epic validation
+  plus final PR handoff are ready, or a real blocker is recorded.
 - Fallback prompt: run one bounded WDD controller heartbeat for
-  EPIC-durable-lifecycle-pipeline WAVE-009. Read constitution, epic,
-  orchestration.json, controller-state.md, shared context, wave-plan.md, and
-  TASK-018. Activation checkpoint
-  `25fb028bfec71dd1ca86db38e9726822932a96bf` and activation-sync commit
-  `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d` are pushed and recorded.
-  TASK-018 branch/worktree were created and pushed from the sync commit. The
-  first GPT-5.5/xhigh worktree-readiness review attempt
-  `019f9d20-b7c0-7d53-8526-1ba021c57451` hit a usage-limit error before verdict.
-  The user reported quota reset, so retry the mandatory readiness review now.
-  Do not dispatch the worker until worktree-readiness passes GPT-5.5/xhigh
-  review, the exact readiness commit is pushed, and that commit is fast-forwarded
-  into the task branch/worktree and verified clean with current
-  task/orchestration/controller artifacts. Do not use GPT-5.6. Route only
-  Critical/High/Medium findings; Low/P3 findings are follow-ups. Do not
-  implement task code in the controller checkout. Keep `.minispec/` untouched.
+  EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-009
+  TASK-018 has merged through PR #276 at
+  `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0` and reconciled locally; the next
+  phase is WAVE-010 activation for TASK-019. Use only global old WDD skills,
+  never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation and
+  remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not run
+  the full npm test suite without explicit approval. Preserve unrelated changes
+  and keep `.minispec/` untouched.
 
 ## Current Task Gates
 
@@ -416,13 +409,12 @@ task branch/worktree and verified clean.
   at `a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d` after GitHub PR Agent, Verify
   PR, and GPT-5.5/xhigh review passed. The Low/P3 adapter payload follow-up is
   intentionally left unresolved.
-- TASK-018-governed-prompt-promotion: worktree-readiness review pending after
-  quota reset.
-  Branch `task/TASK-018-governed-prompt-promotion` and worktree
-  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion`
-  were created and pushed from exact activation-sync commit
-  `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d`; implementation remains blocked
-  until readiness gates pass.
+- TASK-018-governed-prompt-promotion: merged; PR #276 passed GitHub Verify PR and
+  merged into the epic branch at `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`.
+  GPT-5.5/xhigh pre-commit review `019f9d59-a303-7590-9179-077f65d8a1a3`
+  passed 0C/0H/0M/0L, focused CI remediation review
+  `019f9d67-ac6e-76e2-92a7-c203626ac098` passed 0C/0H/0M/0L, and the clean task
+  worktree was removed and pruned.
 - TASK-019/TASK-020 remain not_started until their planned waves activate.
   TASK-019 carries the user-required e2e/Sprites event-pipeline gate.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
@@ -487,11 +479,10 @@ task branch/worktree and verified clean.
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers`
   was removed and pruned after PR #274 merged at epic commit `a7ac0cd`.
 - WAVE-009 / TASK-018: branch
-  `task/TASK-018-governed-prompt-promotion`; allocated worktree
+  `task/TASK-018-governed-prompt-promotion`; clean merged worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion`.
-  The branch and worktree were created and pushed from exact activation-sync
-  commit `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d` and verified clean with
-  current WDD state. Worker dispatch remains blocked until readiness passes.
+  The worktree was verified clean, removed, and pruned after PR #276 merged at
+  epic commit `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`.
 
 ## Gate Definitions
 
@@ -575,13 +566,14 @@ items are non-blocking and intentionally not remediated: untracked `.minispec/`
 must remain outside the commit, and the historical WAVE-004 Wave-5 pause wording
 may remain as historical context.
 
-WAVE-006, WAVE-007, and WAVE-008 subsequently completed. WAVE-008 activation,
-activation-sync, readiness, implementation, integration, PR merge, cleanup, and
-reconciliation gates all passed under the GPT-5.5 policy. PR #274 and PR #275
-merged into the epic branch; both WAVE-008 task worktrees were verified clean,
-removed, and pruned. WAVE-009 activation has started from exact pushed
-reconciliation checkpoint `dd2ca290d89157b674d1cbc67d440c9d295f3cbd`, with
-TASK-018 allocated but not yet branched or dispatched.
+WAVE-006, WAVE-007, WAVE-008, and WAVE-009 subsequently completed. WAVE-008
+activation, activation-sync, readiness, implementation, integration, PR merge,
+cleanup, and reconciliation gates all passed under the GPT-5.5 policy. PR #274
+and PR #275 merged into the epic branch; both WAVE-008 task worktrees were
+verified clean, removed, and pruned. WAVE-009 TASK-018 later passed activation,
+activation-sync, readiness, implementation, review, CI remediation, PR merge,
+and cleanup gates; PR #276 merged at
+`b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`. WAVE-010 is the next planned wave.
 
 ## Open P1/P2 Feedback
 
@@ -620,11 +612,13 @@ TASK-018 allocated but not yet branched or dispatched.
   `019f9d19-d543-7a52-ab93-09d31ff743f4` with 0C/0H/0M/0L. Reviewed sync marker
   `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d` is pushed; TASK-018 branch/worktree
   were created and pushed from that exact commit and verified clean with current
-  WDD artifacts. Worktree-readiness verification is pending.
+  WDD artifacts. Worktree-readiness review
+  `019f9d29-2367-74e3-943f-a795f6de8245` later passed 0C/0H/0M/0L.
 - Worktree-readiness review attempt `019f9d20-b7c0-7d53-8526-1ba021c57451`
   exited before verdict with a Codex usage-limit error; the user reported quota
-  reset and the readiness review is pending again. Readiness commit and worker
-  dispatch remain blocked until a valid GPT-5.5/xhigh review passes.
+  reset, then fresh GPT-5.5/xhigh readiness review passed. Readiness commit
+  `9c6e82e84a14a2d95056e7d414e8c067fcc9f20c` was pushed, fast-forwarded into
+  TASK-018, and verified before worker dispatch.
 - WAVE-008 activation artifact verification passed: GPT-5.5/xhigh review
   `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` reported 0C/0H/0M/0L, `jq empty`
   passed for orchestration.json, and `git diff --check` passed. Activation-sync
@@ -1338,14 +1332,18 @@ TASK-018 allocated but not yet branched or dispatched.
   passes.
 - 2026-07-26T06:40:57Z: User reported quota reset; worktree-readiness review is
   pending again for the same staged WDD metadata and clean TASK-018 worktree.
+- 2026-07-26T07:58:29Z: WAVE-009 TASK-018 merged through PR #276 at epic commit
+  `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0` after GPT-5.5/xhigh review gates,
+  focused verification, GitHub Verify PR, and CI remediation. The TASK-018
+  worktree was verified clean, removed, and pruned. WAVE-009 is reconciled
+  locally and WAVE-010 activation is next after the reconciliation checkpoint is
+  reviewed, committed, and pushed.
 
 ## Next Action
 
-Retry the mandatory GPT-5.5/xhigh worktree-readiness review for WAVE-009
-metadata and TASK-018 branch/worktree state when quota is available. If it
-passes with 0 Critical/High/Medium findings, commit and push the readiness
-checkpoint, fast-forward TASK-018 branch/worktree to that exact pushed readiness
-commit, verify the worktree clean with current task/orchestration/controller
-artifacts, then dispatch the GPT-5.5/high TASK-018 worker. Continue using
+Run GPT-5.5/xhigh review for this WAVE-009 reconciliation checkpoint. If it
+passes with 0 Critical/High/Medium findings, commit and push the checkpoint,
+then start WAVE-010 activation for TASK-019 lifecycle end-to-end verification,
+including e2e tests and Sprites event-pipeline validation. Continue using
 GPT-5.5/xhigh review only; no GPT-5.6. Low/P3 findings remain follow-ups and
 must not trigger automatic edits.

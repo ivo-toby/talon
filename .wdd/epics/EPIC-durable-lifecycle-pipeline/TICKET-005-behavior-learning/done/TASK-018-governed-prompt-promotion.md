@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-009
 slug: governed-prompt-promotion
 title: Implement governed prompt promotion, evaluation, reload, and rollback
-status: in-progress
+status: done
 depends_on: ["TASK-016-lifecycle-operator-cli", "TASK-017-behavior-review-reducers"]
 conflict_domains:
   - "src/lifecycle/behavior/**"
@@ -17,10 +17,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-018-governed-prompt-promotion
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
-worktree_status: ci_remediation_review_passed
+worktree_status: cleaned_up
 pr: https://github.com/ivo-toby/talon/pull/276
-current_gate: ci_fix_commit_pending
-branch_freshness: current_at_readiness_9c6e82e
+current_gate: merged
+branch_freshness: merged_current_at_b5a4fc7
 verification:
   - "npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts"
   - "npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
@@ -34,7 +34,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -113,14 +113,15 @@ task/TASK-018-governed-prompt-promotion
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
 
 Allocated by the controller for WAVE-009 bundled execution. Branch/worktree
-creation remains blocked until the activation checkpoint passes GPT-5.5/xhigh
-review, is committed/pushed to the epic branch, the activation-sync checkpoint
-passes GPT-5.5/xhigh review and is committed/pushed, and the worktree-readiness
-checkpoint passes GPT-5.5/xhigh review and is committed/pushed.
+was created after activation-sync, fast-forwarded to the reviewed readiness
+checkpoint, used for TASK-018 implementation, verified clean after PR merge, and
+removed during WAVE-009 reconciliation.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #276: https://github.com/ivo-toby/talon/pull/276. Merged into
+`epic/durable-lifecycle-pipeline` at
+`b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`.
 
 ## RED-GREEN TDD Plan
 
@@ -162,7 +163,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - [x] Objective and scoped behavior are complete.
 - [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
 - [x] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
+- [x] PR targets the epic branch and freshness is checked.
 - [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
@@ -182,12 +183,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d` was committed and pushed.
   TASK-018 branch/worktree were created and pushed from that exact commit, and
   the worktree is clean with current task, orchestration, and controller
-  artifacts present. Worktree-readiness review is pending before dispatch.
+  artifacts present. Worktree-readiness passed before dispatch.
 - Worktree-readiness review attempt `019f9d20-b7c0-7d53-8526-1ba021c57451`
   exited before verdict with a Codex usage-limit error. The user reported quota
-  reset, so readiness review is pending again; readiness commit and worker
-  dispatch remain blocked until a valid GPT-5.5/xhigh readiness review passes
-  with 0C/0H/0M.
+  reset, then fresh GPT-5.5/xhigh readiness review passed with 0C/0H/0M.
 - Worktree-readiness review `019f9d29-2367-74e3-943f-a795f6de8245`
   passed 0C/0H/0M/0L. Reviewed readiness commit
   `9c6e82e84a14a2d95056e7d414e8c067fcc9f20c` was committed and pushed on the
@@ -242,6 +241,14 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   test expectation and WDD evidence, confirmed migrations 015 through 020 apply
   from a v14 fixture, and reran the affected 33-test suite plus
   `git diff --check`.
+- CI rerun for PR #276 passed GitHub Verify PR `Build, lint, and test` on
+  2026-07-26. PR #276 was mergeable/clean and merged into
+  `epic/durable-lifecycle-pipeline` at
+  `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`.
+- The task worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion`
+  was verified clean after merge, removed with `git worktree remove`, and
+  `git worktree prune` completed.
 
 ## Review Feedback
 
@@ -296,6 +303,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Added lifecycle IPC/CLI actions for `promote` and `rollback-promotion`.
 - Updated README, example config, AGENTS architecture notes, and affected
   Talon setup skills under `.agents/skills/`.
+- PR #276 merged into the epic branch and the clean TASK-018 worktree was
+  removed during WAVE-009 reconciliation.
 - Verification:
   - `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts`
     passed: 3 files / 42 tests.

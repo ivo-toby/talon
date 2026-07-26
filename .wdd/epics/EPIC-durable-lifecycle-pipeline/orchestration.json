@@ -1470,7 +1470,7 @@
     },
     {
       "id": "WAVE-009",
-      "status": "in_progress",
+      "status": "done",
       "activatedAt": "2026-07-26T06:12:25Z",
       "strategy": {
         "profile": "full",
@@ -1496,8 +1496,8 @@
         {
           "id": "TASK-018-governed-prompt-promotion",
           "ticket": "TICKET-005-behavior-learning",
-          "path": "TICKET-005-behavior-learning/in-progress/TASK-018-governed-prompt-promotion.md",
-          "status": "in-progress",
+          "path": "TICKET-005-behavior-learning/done/TASK-018-governed-prompt-promotion.md",
+          "status": "done",
           "dependsOn": [
             "TASK-016-lifecycle-operator-cli",
             "TASK-017-behavior-review-reducers"
@@ -1510,18 +1510,24 @@
           ],
           "assignedModel": "codexHigh",
           "reviewModel": "reviewGate",
-          "workerThreadId": null,
-          "reviewThreadId": null,
+          "workerThreadId": "019f9d2d-c40c-7e11-995b-59b63183cb4a",
+          "reviewThreadId": "019f9d59-a303-7590-9179-077f65d8a1a3",
           "branch": "task/TASK-018-governed-prompt-promotion",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion",
-          "worktreeStatus": "created_clean_pending_readiness",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "current_at_activation_sync_d1a5152",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T07:58:29Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/276",
+          "latestCommit": "0ae7416ab939e536cfcb5e141d35785b83100b12",
+          "branchFreshness": "merged_current_at_b5a4fc7",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "worktree_readiness_review_pending"
+          "verification": "Readiness review 019f9d29-2367-74e3-943f-a795f6de8245 passed 0C/0H/0M/0L; task pre-commit review 019f9d59-a303-7590-9179-077f65d8a1a3 passed 0C/0H/0M/0L after blocking rollback, runtime path, auto-policy, approved_by, and prompt-mutation concurrency fixes; focused CI remediation review 019f9d67-ac6e-76e2-92a7-c203626ac098 passed 0C/0H/0M/0L; Node 24.15.0 focused suites passed 42 prompt/reload tests, 33 behavior/migration tests, and 33 lifecycle-event repository tests; npm run build, scoped ESLint, scoped Prettier, git diff --check, PR Agent, and GitHub Verify PR passed",
+          "currentGate": "merged",
+          "mergeCommit": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
         }
       ],
       "bundleState": {
@@ -1531,15 +1537,23 @@
         ],
         "branch": "task/TASK-018-governed-prompt-promotion",
         "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion",
-        "worktreeStatus": "created_clean_pending_readiness",
-        "workerThreadId": null,
-        "reviewThreadId": null,
-        "currentGate": "worktree_readiness_review_pending",
-        "cleanup": null
+        "worktreeStatus": "cleaned_up",
+        "workerThreadId": "019f9d2d-c40c-7e11-995b-59b63183cb4a",
+        "reviewThreadId": "019f9d59-a303-7590-9179-077f65d8a1a3",
+        "currentGate": "merged",
+        "cleanup": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T07:58:29Z",
+          "worktreeRemoved": true,
+          "evidence": "git status clean before git worktree remove; git worktree prune completed"
+        }
       },
       "activationPrerequisites": {
         "wave008Reconciliation": "satisfied_by_pushed_checkpoint_dd2ca290d89157b674d1cbc67d440c9d295f3cbd"
-      }
+      },
+      "completedAt": "2026-07-26T07:56:21Z",
+      "reconciledAt": "2026-07-26T07:58:29Z",
+      "mergeCommit": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
     },
     {
       "id": "WAVE-010",
@@ -1674,22 +1688,22 @@
       "shared-context/resources/task-findings.md"
     ],
     "pendingReconciliation": [],
-    "lastReconciledWave": "WAVE-008",
-    "lastReconciledTask": "TASK-016-lifecycle-operator-cli,TASK-017-behavior-review-reducers",
-    "reconciledAtEpicCommit": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
+    "lastReconciledWave": "WAVE-009",
+    "lastReconciledTask": "TASK-018-governed-prompt-promotion",
+    "reconciledAtEpicCommit": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
   },
   "controller": {
-    "activeWave": "WAVE-009",
+    "activeWave": null,
     "nextWave": "WAVE-010",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
-    "activationBase": "dd2ca290d89157b674d1cbc67d440c9d295f3cbd",
-    "activationCheckpoint": "25fb028bfec71dd1ca86db38e9726822932a96bf",
-    "activationSyncCommit": "d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d",
+    "activationArtifactsSynced": false,
+    "activationBase": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0",
+    "activationCheckpoint": null,
+    "activationSyncCommit": null,
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
-    "nextWaveActivationAllowed": false,
+    "nextWaveActivationAllowed": true,
     "pauseReason": null,
     "modelPolicyCheckpointReview": {
       "reviewThreadId": "019f6b32-0008-7560-a6a2-8400237b7ca6",
@@ -2047,7 +2061,7 @@
       "reconciledAt": "2026-07-26T05:52:38Z"
     },
     "wave009Activation": {
-      "status": "worktree_readiness_review_pending",
+      "status": "completed_and_reconciled",
       "activationBase": "dd2ca290d89157b674d1cbc67d440c9d295f3cbd",
       "tasks": [
         "TASK-018-governed-prompt-promotion"
@@ -2059,7 +2073,7 @@
         ],
         "branch": "task/TASK-018-governed-prompt-promotion",
         "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion",
-        "worktreeStatus": "created_clean_pending_readiness"
+        "worktreeStatus": "cleaned_up"
       },
       "branches": {
         "TASK-018-governed-prompt-promotion": "task/TASK-018-governed-prompt-promotion"
@@ -2086,26 +2100,46 @@
       "activationSyncCommit": "d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d",
       "readinessReviewModel": "gpt-5.5",
       "readinessReviewReasoningEffort": "xhigh",
-      "readinessReviewStatus": "pending",
-      "readinessReviewThreadId": null,
-      "readinessReviewCounts": null,
+      "readinessReviewStatus": "passed",
+      "readinessReviewThreadId": "019f9d29-2367-74e3-943f-a795f6de8245",
+      "readinessReviewCounts": "0C/0H/0M/0L",
       "readinessReviewPriorAttempt": "019f9d20-b7c0-7d53-8526-1ba021c57451 exited before verdict with codex exec gpt-5.5/xhigh usage limit",
-      "readinessCommit": null,
-      "taskBranchesFastForwardedToReadiness": false,
-      "taskWorktreesVerifiedBeforeDispatch": false
+      "readinessCommit": "9c6e82e84a14a2d95056e7d414e8c067fcc9f20c",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true,
+      "workerDispatchedAt": "2026-07-26T07:04:00Z",
+      "workerThreadId": "019f9d2d-c40c-7e11-995b-59b63183cb4a",
+      "preCommitReviewThreadId": "019f9d59-a303-7590-9179-077f65d8a1a3",
+      "preCommitReviewCounts": "0C/0H/0M/0L",
+      "ciRemediationReviewThreadId": "019f9d67-ac6e-76e2-92a7-c203626ac098",
+      "ciRemediationReviewCounts": "0C/0H/0M/0L",
+      "mergedPrs": [
+        "https://github.com/ivo-toby/talon/pull/276"
+      ],
+      "mergeCommits": {
+        "TASK-018-governed-prompt-promotion": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
+      },
+      "cleanup": {
+        "TASK-018-governed-prompt-promotion": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T07:58:29Z",
+          "worktreeRemoved": true
+        }
+      },
+      "reconciledAt": "2026-07-26T07:58:29Z"
     }
   },
   "monitoring": {
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave009_worktree_readiness_review_pending",
-    "lastCheckedAt": "2026-07-26T06:40:57Z",
-    "nextCheckDueAt": "2026-07-26T06:45:57Z",
+    "status": "wave009_reconciled_next_wave_ready",
+    "lastCheckedAt": "2026-07-26T07:58:29Z",
+    "nextCheckDueAt": "2026-07-26T08:03:29Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-009 worktree-readiness review pending after quota reset",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline WAVE-009 in /Users/ivo.toby/workspace/talon. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-018. Activation checkpoint 25fb028bfec71dd1ca86db38e9726822932a96bf and activation-sync commit d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d are pushed and recorded. TASK-018 branch/worktree were created and pushed from d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d. Prior gpt-5.5/xhigh worktree-readiness review attempt 019f9d20-b7c0-7d53-8526-1ba021c57451 hit a usage-limit error before verdict; quota is now reported reset, so retry the mandatory gpt-5.5/xhigh worktree-readiness review. Do not dispatch TASK-018 until worktree-readiness passes GPT-5.5/xhigh review, the exact readiness commit is pushed, fast-forwarded into the task branch/worktree, and verified clean with current task/orchestration/controller artifacts. Do not use GPT-5.6. Do not implement task code in the controller checkout. Keep .minispec untouched.",
-    "stopCondition": "WAVE-009 task is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-009 reconciled and WAVE-010 activation is next",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-009 TASK-018 merged through PR #276 at b5a4fc785534300b37cd4dc4f6eb3c971e6262a0 and reconciled locally; next phase is WAVE-010 activation for TASK-019. Use only global old WDD skills, never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation/remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not run full npm test without explicit approval. Preserve unrelated changes and keep .minispec untouched.",
+    "stopCondition": "All remaining waves are merged/reconciled and epic validation plus final PR handoff are ready, or a real blocker is recorded.",
     "stopReason": null
   }
 }
