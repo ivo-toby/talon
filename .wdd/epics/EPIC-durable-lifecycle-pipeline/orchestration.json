@@ -1138,7 +1138,7 @@
     },
     {
       "id": "WAVE-006",
-      "status": "in_progress",
+      "status": "done",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -1169,8 +1169,8 @@
         {
           "id": "TASK-011-context-lifecycle-migration",
           "ticket": "TICKET-004-context-migration",
-          "path": "TICKET-004-context-migration/in-progress/TASK-011-context-lifecycle-migration.md",
-          "status": "in-progress",
+          "path": "TICKET-004-context-migration/done/TASK-011-context-lifecycle-migration.md",
+          "status": "done",
           "dependsOn": [
             "TASK-008-run-tool-outbound-events",
             "TASK-009-context-contracts-projector"
@@ -1188,20 +1188,21 @@
           "reviewThreadId": null,
           "branch": "task/TASK-011-context-lifecycle-migration",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-context-lifecycle-migration",
-          "worktreeStatus": "allocated_pending_creation",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "pending_activation_checkpoint",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": "clean_verified_removed_and_pruned_2026-07-26",
+          "pr": "https://github.com/ivo-toby/talon/pull/271",
+          "latestCommit": "3324d2441f44a810b524815cfd57b40af779edfc",
+          "mergeCommit": "3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d",
+          "branchFreshness": "merged_clean_after_green_github_checks",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "activation_checkpoint_pending"
+          "verification": "task focused tests/build/scoped lint/diff passed; GitHub PR Agent and Verify PR passed; integrated Wave 6 suite passed 19 files / 647 tests plus build/scoped lint/diff",
+          "currentGate": "merged"
         },
         {
           "id": "TASK-012-feedback-detector-subagent",
           "ticket": "TICKET-005-behavior-learning",
-          "path": "TICKET-005-behavior-learning/in-progress/TASK-012-feedback-detector-subagent.md",
-          "status": "in-progress",
+          "path": "TICKET-005-behavior-learning/done/TASK-012-feedback-detector-subagent.md",
+          "status": "done",
           "dependsOn": [
             "TASK-004-subagent-lifecycle-adapter",
             "TASK-010-behavior-ledger-persistence"
@@ -1216,20 +1217,21 @@
           "reviewThreadId": null,
           "branch": "task/TASK-012-feedback-detector-subagent",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent",
-          "worktreeStatus": "allocated_pending_creation",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "pending_activation_checkpoint",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": "clean_verified_removed_and_pruned_2026-07-26",
+          "pr": "https://github.com/ivo-toby/talon/pull/269",
+          "latestCommit": "463e534576f42a88307e4bae67a975ecc95659a6",
+          "mergeCommit": "af75d4be155a528b576f9518edd8e93af6ba5016",
+          "branchFreshness": "merged_clean_after_green_github_checks",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "activation_checkpoint_pending"
+          "verification": "task focused tests/build/scoped lint/diff passed; GitHub PR Agent and Verify PR passed; integrated Wave 6 suite passed 19 files / 647 tests plus build/scoped lint/diff",
+          "currentGate": "merged"
         },
         {
           "id": "TASK-013-handler-telemetry-correlation",
           "ticket": "TICKET-003-core-boundary-integration",
-          "path": "TICKET-003-core-boundary-integration/in-progress/TASK-013-handler-telemetry-correlation.md",
-          "status": "in-progress",
+          "path": "TICKET-003-core-boundary-integration/done/TASK-013-handler-telemetry-correlation.md",
+          "status": "done",
           "dependsOn": [
             "TASK-006-durable-event-dispatcher",
             "TASK-008-run-tool-outbound-events"
@@ -1245,14 +1247,15 @@
           "reviewThreadId": null,
           "branch": "task/TASK-013-handler-telemetry-correlation",
           "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation",
-          "worktreeStatus": "allocated_pending_creation",
-          "cleanup": null,
-          "pr": null,
-          "latestCommit": null,
-          "branchFreshness": "pending_activation_checkpoint",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": "clean_verified_removed_and_pruned_2026-07-26",
+          "pr": "https://github.com/ivo-toby/talon/pull/270",
+          "latestCommit": "806e1c33c63c66f3d3b594650a41562918ce1244",
+          "mergeCommit": "3e09c376f21fdc5697c673def4ec99eb10dd0291",
+          "branchFreshness": "merged_clean_after_green_github_checks",
           "blockingFeedback": [],
-          "verification": null,
-          "currentGate": "activation_checkpoint_pending"
+          "verification": "task focused tests/build/scoped lint/diff passed; GitHub PR Agent and Verify PR passed; integrated Wave 6 suite passed 19 files / 647 tests plus build/scoped lint/diff",
+          "currentGate": "merged"
         }
       ]
     },
@@ -1614,19 +1617,19 @@
       "shared-context/resources/task-findings.md"
     ],
     "pendingReconciliation": [],
-    "lastReconciledWave": "WAVE-005",
-    "lastReconciledTask": "TASK-008-run-tool-outbound-events,TASK-009-context-contracts-projector,TASK-010-behavior-ledger-persistence",
-    "reconciledAtEpicCommit": "6921a9ec7a8c053ae7af616abfb832a7bf548c19"
+    "lastReconciledWave": "WAVE-006",
+    "lastReconciledTask": "TASK-011-context-lifecycle-migration,TASK-012-feedback-detector-subagent,TASK-013-handler-telemetry-correlation",
+    "reconciledAtEpicCommit": "af75d4be155a528b576f9518edd8e93af6ba5016"
   },
   "controller": {
-    "activeWave": "WAVE-006",
+    "activeWave": null,
     "nextWave": "WAVE-007",
     "epicBranchVerified": true,
     "activationArtifactsSynced": true,
     "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
     "activationCheckpoint": "eec0846676f37db0e9cc5a580c5a3457cbf18689",
     "activationSyncCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
-    "readinessCommit": null,
+    "readinessCommit": "566a9a91d1f57bfcd9938011027d87f668fea13e",
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
     "nextWaveActivationAllowed": true,
@@ -1785,7 +1788,7 @@
       "nextWaveStatus": "activation_started"
     },
     "wave006Activation": {
-      "status": "worktrees_created_readiness_review_pending",
+      "status": "completed_and_reconciled_pending_checkpoint_review",
       "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
       "tasks": [
         "TASK-011-context-lifecycle-migration",
@@ -1806,7 +1809,7 @@
       "taskWorktreesCreated": true,
       "taskBranchesPushed": true,
       "worktreesVerifiedClean": true,
-      "worktreeBaseCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
+      "worktreeBaseCommit": "566a9a91d1f57bfcd9938011027d87f668fea13e",
       "activationCheckpointReviewModel": "gpt-5.5",
       "activationCheckpointReviewReasoningEffort": "xhigh",
       "activationCheckpointReviewThreadId": "019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03",
@@ -1817,20 +1820,51 @@
       "activationSyncReviewThreadId": "019f9b76-c6a7-7a60-8cd9-2322cfdaf8f7",
       "activationSyncReviewCounts": "0C/0H/0M/0L",
       "activationSyncCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
-      "readinessCommit": null
+      "readinessCommit": "566a9a91d1f57bfcd9938011027d87f668fea13e"
+    },
+    "wave006Reconciliation": {
+      "status": "reviewed_commit_pending",
+      "tasks": [
+        "TASK-011-context-lifecycle-migration",
+        "TASK-012-feedback-detector-subagent",
+        "TASK-013-handler-telemetry-correlation"
+      ],
+      "prs": [
+        "https://github.com/ivo-toby/talon/pull/271",
+        "https://github.com/ivo-toby/talon/pull/269",
+        "https://github.com/ivo-toby/talon/pull/270"
+      ],
+      "mergeCommits": {
+        "TASK-011-context-lifecycle-migration": "3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d",
+        "TASK-012-feedback-detector-subagent": "af75d4be155a528b576f9518edd8e93af6ba5016",
+        "TASK-013-handler-telemetry-correlation": "3e09c376f21fdc5697c673def4ec99eb10dd0291"
+      },
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "all_three_clean_verified_removed_and_pruned",
+      "integratedVerification": "Node 24.15.0 targeted Wave 6 suite passed 19 files / 647 tests; npm run build passed; scoped ESLint passed with 0 errors and known warnings only; git diff --check passed",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewThreadId": "019f9c30-44ae-7581-9776-6a2dc5211281",
+      "checkpointReviewCounts": "0C/0H/0M/1L",
+      "checkpointReviewStatus": "passed",
+      "lowFindingDisposition": "controller-state historical readiness wording left untouched as non-blocking Low/P3",
+      "checkpointCommit": null,
+      "checkpointCommitStatus": "pending",
+      "nextWave": "WAVE-007",
+      "nextWaveStatus": "activation_pending"
     }
   },
   "monitoring": {
-    "mode": "manual",
+    "mode": "inactive",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave006_worktrees_created_readiness_review_pending",
-    "lastCheckedAt": "2026-07-25T22:51:45Z",
-    "nextCheckDueAt": "2026-07-25T22:51:45Z",
+    "status": "wave006_reconciled_checkpoint_commit_pending",
+    "lastCheckedAt": "2026-07-26T02:05:00Z",
+    "nextCheckDueAt": null,
     "schedulerRef": null,
-    "schedulerStatus": "not_created_until_after_activation_or_dispatch",
-    "fallbackPrompt": "Resume WAVE-006 readiness for EPIC-durable-lifecycle-pipeline. Read orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-011/TASK-012/TASK-013 in-progress files. Do not implement task code in the controller checkout. Activation checkpoint eec0846676f37db0e9cc5a580c5a3457cbf18689 and activation-sync commit e70d27ef04e550546975c4abb4e90929b5f82180 were both GPT-5.5/xhigh reviewed 0C/0H/0M/0L and pushed. TASK-011/TASK-012/TASK-013 branches and worktrees were created and pushed from the exact sync commit. Run a fresh GPT-5.5/xhigh worktree-readiness review; if it passes, commit and push readiness on the epic branch, fast-forward and push all task branches/worktrees to the exact readiness commit, verify cleanliness and artifacts in each worktree, dispatch parallel GPT-5.5/high implementation workers, require GPT-5.5/xhigh reviews, and monitor until WAVE-006 is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
-    "stopCondition": "All WAVE-006 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
-    "stopReason": null
+    "schedulerStatus": "not_active",
+    "fallbackPrompt": "Resume EPIC-durable-lifecycle-pipeline after WAVE-006 reconciliation. Read orchestration.json, controller-state.md, wave-plan.md, shared context, and the WAVE-007 task files. Do not use GPT-5.6. Commit and push the reviewed WAVE-006 reconciliation checkpoint if it is not yet committed/pushed; then activate WAVE-007 from the pushed checkpoint.",
+    "stopCondition": "WAVE-006 tasks merged and reconciled; WAVE-007 activation pending.",
+    "stopReason": "wave006_tasks_merged_worktrees_cleaned_reconciliation_checkpoint_commit_pending"
   }
 }

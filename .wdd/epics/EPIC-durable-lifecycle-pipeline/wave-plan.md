@@ -4,7 +4,7 @@ kind: wave_plan
 epic: EPIC-durable-lifecycle-pipeline
 status: in_progress
 created_at: 2026-07-15
-updated_at: 2026-07-25
+updated_at: 2026-07-26
 ---
 
 # Wave Plan: EPIC-durable-lifecycle-pipeline
@@ -49,9 +49,9 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-008-run-tool-outbound-events | TICKET-003-core-boundary-integration | TASK-007-daemon-message-queue-schedule-events | AgentRunner, host tools, outbound delivery | done |
 | TASK-009-context-contracts-projector | TICKET-004-context-migration | TASK-004-subagent-lifecycle-adapter, TASK-005-transactional-event-bus | lifecycle context, ContextRoller, memory repository | done |
 | TASK-010-behavior-ledger-persistence | TICKET-005-behavior-learning | TASK-002-lifecycle-event-persistence | database migrations, behavior repositories | done |
-| TASK-011-context-lifecycle-migration | TICKET-004-context-migration | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector | AgentRunner, ContextRoller, daemon bootstrap, config schema, queue | in-progress |
-| TASK-012-feedback-detector-subagent | TICKET-005-behavior-learning | TASK-004-subagent-lifecycle-adapter, TASK-010-behavior-ledger-persistence | behavior contracts, default detector subagent | in-progress |
-| TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | in-progress |
+| TASK-011-context-lifecycle-migration | TICKET-004-context-migration | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector | AgentRunner, ContextRoller, daemon bootstrap, config schema, queue | done |
+| TASK-012-feedback-detector-subagent | TICKET-005-behavior-learning | TASK-004-subagent-lifecycle-adapter, TASK-010-behavior-ledger-persistence | behavior contracts, default detector subagent | done |
+| TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | done |
 | TASK-014-lifecycle-retention-reload-replay | TICKET-002-durable-event-runtime | TASK-006-durable-event-dispatcher, TASK-013-handler-telemetry-correlation | lifecycle admin/retention, lifecycle repositories, daemon reload | todo |
 | TASK-015-behavior-signal-projector | TICKET-005-behavior-learning | TASK-007-daemon-message-queue-schedule-events, TASK-010-behavior-ledger-persistence, TASK-012-feedback-detector-subagent | lifecycle behavior, config schema, behavior integration tests | todo |
 | TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | todo |
@@ -435,7 +435,9 @@ Stop condition:
 
 ### WAVE-006
 
-Status: in_progress
+Status: done
+
+Completed: 2026-07-26
 
 Tasks:
 
@@ -476,14 +478,45 @@ Activation rule:
 - Activation-sync marker passed GPT-5.5/xhigh review
   `019f9b76-c6a7-7a60-8cd9-2322cfdaf8f7` with 0C/0H/0M/0L and was pushed at
   `e70d27ef04e550546975c4abb4e90929b5f82180`.
-- Task branches/worktrees are created, pushed, clean, and verified at exact sync
-  commit `e70d27ef04e550546975c4abb4e90929b5f82180`; worktree-readiness review
-  and readiness checkpoint remain required before dispatch.
+- Task branches/worktrees were created, pushed, reviewed, and dispatched from
+  the readiness checkpoint `566a9a91d1f57bfcd9938011027d87f668fea13e`.
+- TASK-011 merged through PR #271 at
+  `3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d`, TASK-013 merged through PR #270
+  at `3e09c376f21fdc5697c673def4ec99eb10dd0291`, and TASK-012 merged through
+  PR #269 at final Wave 6 epic head
+  `af75d4be155a528b576f9518edd8e93af6ba5016`.
 
 Stop condition:
 
-- All active tasks are done, blocked, cancelled, or explicitly closed.
-- Reviews, verification, freshness, shared-context reconciliation, and wdd-reconcile-wave complete before the next wave.
+- All active tasks are done. PR Agent and Verify PR checks passed for #269,
+  #270, and #271. Each task had GPT-5.5/xhigh review with no remaining
+  Critical/High/Medium findings.
+- Integrated Wave 6 verification passed on the epic branch: 19 targeted files /
+  647 tests, `npm run build`, scoped ESLint with 0 errors and known warnings
+  only, and `git diff --check`.
+- The three clean task worktrees were removed and pruned during reconciliation.
+
+Outcome:
+
+- Context rotation now flows through configured lifecycle projection modes,
+  with durable restart boundaries and idempotent stateless-provider continuation
+  repair for rotation/retry crash windows.
+- The explicit-feedback detector now emits typed `talon.behavior.signal.v1`
+  signals only from trusted lifecycle evidence, including `tool_call`
+  provenance that matches the real behavior ledger SQL constraint.
+- Lifecycle publication, dispatch, handoff, replay/reopen, promotion, audit,
+  metric, and Langfuse/trace-evidence seams now have bounded correlated
+  telemetry, with success evidence tied to durable commit boundaries.
+
+Drift notes:
+
+- TASK-014 can consume the new telemetry and replay/reopen audit seams when
+  adding retention/reload/replay behavior.
+- TASK-015 can consume the strict behavior detector contract and the persisted
+  `tool_call` evidence source kind when projecting behavior signals.
+- TASK-019 must include end-to-end coverage for the merged lifecycle event
+  pipeline and run the final event-pipeline validation in Sprites before the
+  epic is considered complete.
 
 ### WAVE-007
 

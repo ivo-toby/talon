@@ -6,7 +6,7 @@ ticket: TICKET-003-core-boundary-integration
 wave: WAVE-006
 slug: handler-telemetry-correlation
 title: Add lifecycle audit, metrics, and Langfuse correlation
-status: in-progress
+status: done
 depends_on: ["TASK-006-durable-event-dispatcher", "TASK-008-run-tool-outbound-events"]
 conflict_domains:
   - "src/observability/**"
@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-013-handler-telemetry-correlation
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation
-worktree_status: active
-pr: null
-current_gate: final_review_pending
-branch_freshness: synced_to_readiness_checkpoint_566a9a91d1f57bfcd9938011027d87f668fea13e
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/270
+current_gate: merged
+branch_freshness: merged_into_epic_at_3e09c376f21fdc5697c673def4ec99eb10dd0291
 verification:
   - "npx vitest run tests/unit/observability tests/unit/lifecycle/telemetry.test.ts tests/unit/core/logging/audit-logger.test.ts"
   - "npm run build"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -109,7 +109,9 @@ until the reviewed activation checkpoint has been committed and pushed.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #270: https://github.com/ivo-toby/talon/pull/270
+
+Merged into `epic/durable-lifecycle-pipeline` at `3e09c376f21fdc5697c673def4ec99eb10dd0291` on 2026-07-26.
 
 ## RED-GREEN TDD Plan
 
@@ -147,9 +149,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - [x] Objective and scoped behavior are complete.
 - [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -201,6 +203,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - 2026-07-26: `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npm run build` passed after replay/lost-status remediation.
 - 2026-07-26: `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npx eslint src/core/database/repositories/behavior-signal-repository.ts src/core/database/repositories/lifecycle-delivery-repository.ts src/core/database/repositories/index.ts src/core/logging/audit-logger.ts src/daemon/daemon-bootstrap.ts src/daemon/daemon-context.ts src/lifecycle/handler-executor.ts src/lifecycle/interceptors/interceptor-engine.ts src/lifecycle/lifecycle-dispatcher.ts src/lifecycle/lifecycle-event-bus.ts src/lifecycle/telemetry/index.ts src/lifecycle/trace-evidence-provider.ts src/observability/langfuse/traceparent.ts tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/repositories/lifecycle-event-repository.test.ts tests/unit/core/logging/audit-logger.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/lifecycle/lifecycle-dispatcher.test.ts tests/unit/lifecycle/lifecycle-event-bus.test.ts tests/unit/lifecycle/subagent-lifecycle-adapter.test.ts tests/unit/lifecycle/telemetry.test.ts tests/unit/observability/langfuse/traceparent.test.ts` passed after replay/lost-status remediation with 0 errors; existing explicit-return-type and ignored-test warnings remain.
 - 2026-07-26: `git diff --check origin/epic/durable-lifecycle-pipeline` passed after replay/lost-status remediation.
+- 2026-07-26: MERGED: PR #270 merged into `epic/durable-lifecycle-pipeline` at `3e09c376f21fdc5697c673def4ec99eb10dd0291` after GitHub PR Agent and Verify PR checks passed.
+- 2026-07-26: WAVE-006 INTEGRATED VERIFICATION: after PR #271, #270, and #269 merged, the epic branch passed the combined Wave 6 targeted suite: 19 files / 647 tests, `npm run build`, scoped ESLint with 0 errors and known warnings only, and `git diff --check`.
 
 ## Review Feedback
 

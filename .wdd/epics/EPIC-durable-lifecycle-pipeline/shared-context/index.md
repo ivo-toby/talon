@@ -2,7 +2,7 @@
 id: EPIC-durable-lifecycle-pipeline-SHARED-CONTEXT
 kind: shared_context_index
 epic: EPIC-durable-lifecycle-pipeline
-updated_at: 2026-07-25
+updated_at: 2026-07-26
 ---
 
 # Shared Context: EPIC-durable-lifecycle-pipeline
@@ -84,3 +84,7 @@ delivery from user-facing work, and treat pluggable reasoning as untrusted.
   outbound idempotency, context observer/reducer contracts, native context
   projection, behavior-ledger migration 018, and the remaining non-blocking
   TASK-009 P3 tombstone-visibility follow-up.
+- WAVE-006 / TASK-011, TASK-012, and TASK-013 merged in PRs #271, #269, and
+  #270 at epic head `af75d4b`. See `resources/task-findings.md` for configured
+  context lifecycle migration, durable continuation repair, typed feedback
+  detector provenance, and bounded telemetry/audit/trace-evidence rules.

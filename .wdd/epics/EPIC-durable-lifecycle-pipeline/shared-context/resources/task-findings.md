@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-RESOURCE-task-findings
 kind: shared_context_resource
 epic: EPIC-durable-lifecycle-pipeline
 resource: task-findings
-updated_at: 2026-07-25
+updated_at: 2026-07-26
 ---
 
 # Shared Context Resource: Task Findings
@@ -24,6 +24,10 @@ WAVE-005 added run/tool/outbound publishers, context contracts/projector, and
 behavior-ledger persistence. Later tasks must consume these APIs and resolved
 identities rather than re-deriving authority, safety, causality, durability,
 compatibility, context projection, behavior evidence, or execution policy.
+WAVE-006 migrated context rotation to configured lifecycle handlers, added the
+typed explicit-feedback detector, and wired bounded lifecycle telemetry/
+correlation. Later tasks must preserve durable restart/retry recovery, trusted
+behavior provenance, and after-commit telemetry boundaries.
 
 ## Details
 
@@ -181,10 +185,44 @@ compatibility, context projection, behavior evidence, or execution policy.
   repository/migration tests plus CI-selected migration coverage, build, scoped
   lint, diff checks, GitHub Verify PR/PR Agent gates as applicable, and
   GPT-5.5/xhigh reviews. No Critical/High/Medium findings remain.
+- Source: TASK-011 / PR #271, merged at `3bba6a0` on 2026-07-26. Context
+  rotation now uses explicit `summarizer` or `observation` context-management
+  modes and configured summarizer/observer/reducer handlers rather than
+  hard-coded `session-observer`/`session-reflector` names. Legacy
+  `summarizer: session-observer` configs translate to observation mode with a
+  deprecation path.
+- Context projection must remain durable across crash/retry windows. Persisted
+  summary or observation rotation metadata defines the restart session boundary
+  before DB session restoration. Stateless-provider continuation work uses a
+  stable queue-item-derived id/idempotency key and can be repaired below the
+  current threshold from either an existing continuation message or a durable
+  same-queue-item open rotation marker.
+- Source: TASK-012 / PR #269, merged at `af75d4b` on 2026-07-26. The
+  `behavior-feedback-detector` is repository-free and emits only typed
+  `talon.behavior.signal.v1` outputs derived from trusted lifecycle references.
+  Model output cannot choose its own provenance; the detector validates source
+  ids against trusted input and supports `tool_call` evidence consistently
+  through contract validation and behavior ledger persistence.
+- Source: TASK-013 / PR #270, merged at `3e09c37` on 2026-07-26. Lifecycle
+  telemetry and audit evidence are bounded and correlated across publication,
+  handler delivery, interceptor decisions, signal handoff, replay/reopen, and
+  behavior promotion mutations. Publication success evidence is emitted only
+  after the lifecycle event-bus transaction commits; rollback paths emit no
+  false success metrics.
+- Trace evidence remains optional and bounded. Traceparent normalization rejects
+  invalid W3C `ff` versions. Langfuse observations are parent-linked only when
+  valid trace context exists; interceptor/retry/signal-handoff paths may remain
+  audit/metric evidence instead of trace-nested spans.
+- WAVE-006 evidence passed three GitHub PR gates (#269/#270/#271), task-level
+  GPT-5.5/xhigh reviews with no remaining Critical/High/Medium findings, and
+  integrated epic verification: 19 targeted files / 647 tests, `npm run build`,
+  scoped ESLint with 0 errors and known warnings only, and `git diff --check`.
+  All three clean worktrees were removed and pruned.
 
 ## Durable Memory
 
 - Preserve these authority, causality, compatibility, bounded-input,
   persistence, interceptor, sub-agent, transaction, dispatch, migration, context
-  projection, behavior-ledger, outbound idempotency, and review-throughput rules
-  in later lifecycle implementation and review prompts.
+  projection, behavior-ledger, outbound idempotency, durable continuation
+  repair, telemetry commit-boundary, trusted behavior provenance, and
+  review-throughput rules in later lifecycle implementation and review prompts.

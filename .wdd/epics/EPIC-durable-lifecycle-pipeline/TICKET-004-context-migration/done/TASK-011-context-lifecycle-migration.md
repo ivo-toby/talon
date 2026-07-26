@@ -6,7 +6,7 @@ ticket: TICKET-004-context-migration
 wave: WAVE-006
 slug: context-lifecycle-migration
 title: Migrate observational memory to configured lifecycle handlers
-status: in-progress
+status: done
 depends_on: ["TASK-008-run-tool-outbound-events", "TASK-009-context-contracts-projector"]
 conflict_domains:
   - "src/daemon/agent-runner.ts"
@@ -18,10 +18,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-011-context-lifecycle-migration
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-context-lifecycle-migration
-worktree_status: active
-pr: null
-current_gate: pr_pending
-branch_freshness: synced_to_readiness_checkpoint_566a9a91d1f57bfcd9938011027d87f668fea13e
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/271
+current_gate: merged
+branch_freshness: merged_into_epic_at_3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d
 verification:
 - "npx vitest run tests/unit/daemon/context-roller.test.ts tests/unit/daemon/agent-runner.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/integration/rolling-context-window.test.ts"
 - "npx vitest run tests/unit/lifecycle/context/context-projector.test.ts tests/unit/core/database/repositories/queue-repository.test.ts tests/unit/queue/queue-manager.test.ts"
@@ -34,7 +34,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -118,7 +118,9 @@ until the reviewed activation checkpoint has been committed and pushed.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #271: https://github.com/ivo-toby/talon/pull/271
+
+Merged into `epic/durable-lifecycle-pipeline` at `3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d` on 2026-07-26.
 
 ## RED-GREEN TDD Plan
 
@@ -157,8 +159,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - [x] Objective and scoped behavior are complete.
 - [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
 - [x] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -241,6 +243,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - PASS: `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npx eslint src/core/config/config-loader.ts src/core/config/config-schema.ts src/daemon/agent-runner.ts src/daemon/context-roller.ts src/daemon/daemon-bootstrap.ts src/lifecycle/context/context-projector.ts src/queue/queue-manager.ts src/queue/queue-processor.ts src/core/database/repositories/queue-repository.ts src/providers/provider-types.ts tests/unit/core/config/config-loader.test.ts tests/unit/core/config/config-schema.test.ts tests/unit/core/database/repositories/queue-repository.test.ts tests/unit/daemon/agent-runner.test.ts tests/unit/daemon/context-roller.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/lifecycle/context/context-projector.test.ts tests/unit/queue/queue-manager.test.ts tests/unit/queue/queue-processor.test.ts` — 0 errors, 13 warnings after threshold-independent continuation repair remediation.
 - PASS: `git diff --check origin/epic/durable-lifecycle-pipeline` after threshold-independent continuation repair remediation.
 - REVIEW PASS: final reviewGate/`gpt-5.5` xhigh reviewed the full working-tree diff against `origin/epic/durable-lifecycle-pipeline` plus `git diff --check`; result 0 Critical / 0 High / 0 Medium / 0 Low. Prior High was verified fixed: threshold-independent continuation repair now uses stable queue-item-derived continuation ids and durable same-queue-item rotation markers before ensuring continuation queue work.
+- MERGED: PR #271 merged into `epic/durable-lifecycle-pipeline` at `3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d` after GitHub PR Agent and Verify PR checks passed.
+- WAVE-006 INTEGRATED VERIFICATION: after PR #271, #270, and #269 merged, the epic branch passed the combined Wave 6 targeted suite: 19 files / 647 tests, `npm run build`, scoped ESLint with 0 errors and known warnings only, and `git diff --check`.
 
 ## Review Feedback
 

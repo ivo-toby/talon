@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-006
 slug: feedback-detector-subagent
 title: Ship the typed explicit-feedback detector sub-agent
-status: in-progress
+status: done
 depends_on: ["TASK-004-subagent-lifecycle-adapter", "TASK-010-behavior-ledger-persistence"]
 conflict_domains:
   - "src/lifecycle/behavior/contracts.ts"
@@ -15,10 +15,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-012-feedback-detector-subagent
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent
-worktree_status: active
-pr: null
-current_gate: final_review_pending
-branch_freshness: synced_to_readiness_checkpoint_566a9a91d1f57bfcd9938011027d87f668fea13e
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/269
+current_gate: merged
+branch_freshness: merged_into_epic_at_af75d4be155a528b576f9518edd8e93af6ba5016
 verification:
   - "npx vitest run tests/unit/subagents/behavior-feedback-detector.test.ts tests/unit/lifecycle/behavior-contracts.test.ts"
   - "npm run build"
@@ -29,7 +29,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -105,7 +105,9 @@ until the reviewed activation checkpoint has been committed and pushed.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #269: https://github.com/ivo-toby/talon/pull/269
+
+Merged into `epic/durable-lifecycle-pipeline` at `af75d4be155a528b576f9518edd8e93af6ba5016` on 2026-07-26.
 
 ## RED-GREEN TDD Plan
 
@@ -143,9 +145,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - [x] Objective and scoped behavior are complete.
 - [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -170,6 +172,8 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - 2026-07-26: `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npm run build` passed after ledger-constraint remediation.
 - 2026-07-26: `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npx eslint src/lifecycle/behavior/types.ts src/lifecycle/behavior/contracts.ts src/subagents/default/behavior-feedback-detector/index.ts tests/unit/lifecycle/behavior-contracts.test.ts tests/unit/subagents/behavior-feedback-detector.test.ts tests/unit/core/database/repositories/behavior-signal-repository.test.ts` passed with 0 errors and 3 test-file ignore warnings.
 - 2026-07-26: `git diff --check origin/epic/durable-lifecycle-pipeline` passed after ledger-constraint remediation.
+- 2026-07-26: MERGED: PR #269 merged into `epic/durable-lifecycle-pipeline` at `af75d4be155a528b576f9518edd8e93af6ba5016` after GitHub PR Agent and Verify PR checks passed.
+- 2026-07-26: WAVE-006 INTEGRATED VERIFICATION: after PR #271, #270, and #269 merged, the epic branch passed the combined Wave 6 targeted suite: 19 files / 647 tests, `npm run build`, scoped ESLint with 0 errors and known warnings only, and `git diff --check`.
 
 ## Review Feedback
 
