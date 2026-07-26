@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
 active_wave: WAVE-009
-status: wave009_activation_checkpoint_review_pending
+status: wave009_activation_sync_review_pending
 updated_at: 2026-07-26
 ---
 
@@ -162,6 +162,12 @@ Every task advances independently as soon as its gates clear.
   are allocated in metadata only. No task branch or worktree may be created
   until the activation checkpoint is reviewed, committed, pushed, recorded
   exactly, and followed by the required activation-sync and readiness gates.
+- WAVE-009 activation checkpoint: GPT-5.5/xhigh review
+  `019f9d13-d0be-7d90-84ef-b4a9e96e23d3` passed 0C/0H/0M/0L, and the reviewed
+  checkpoint was committed and pushed at
+  `25fb028bfec71dd1ca86db38e9726822932a96bf`. Activation-sync review is now
+  required before branch creation, worktree creation, readiness, or worker
+  dispatch.
 
 ## Pending Waves
 
@@ -190,7 +196,7 @@ Activation batch:
   `TICKET-005-behavior-learning/in-progress/TASK-018-governed-prompt-promotion.md`;
   branch `task/TASK-018-governed-prompt-promotion`; allocated worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion`;
-  current gate `activation_checkpoint_review_pending`.
+  current gate `activation_sync_review_pending`.
 
 The TASK-018 branch and worktree are not created yet. Creation is blocked until
 the WAVE-009 activation checkpoint passes GPT-5.5/xhigh review and is
@@ -202,17 +208,18 @@ fast-forwarded into the task branch/worktree.
 
 - Mode: manual fallback while the recurring thread monitor remains available.
 - Cadence: adaptive
-- Status: WAVE-009 activation checkpoint review pending.
+- Status: WAVE-009 activation-sync review pending.
 - Scheduler provenance: `talon-issue-256-wdd-remaining-waves-monitor`
-- Last checked: 2026-07-26T06:12:25Z
-- Next check due: 2026-07-26T06:17:25Z
+- Last checked: 2026-07-26T06:23:49Z
+- Next check due: 2026-07-26T06:28:49Z
 - Stop condition: WAVE-009 task merged, blocked, cancelled, or ready for
   wdd-reconcile-wave.
 - Fallback prompt: run one bounded WDD controller heartbeat for
   EPIC-durable-lifecycle-pipeline WAVE-009. Read constitution, epic,
   orchestration.json, controller-state.md, shared context, wave-plan.md, and
-  TASK-018. Do not create TASK-018 branch/worktree until the activation
-  checkpoint is pushed, recorded exactly, activation-sync passes GPT-5.5/xhigh
+  TASK-018. Activation checkpoint
+  `25fb028bfec71dd1ca86db38e9726822932a96bf` is pushed and recorded. Do not
+  create TASK-018 branch/worktree until activation-sync passes GPT-5.5/xhigh
   review and is pushed, and worktree-readiness passes GPT-5.5/xhigh review and
   is pushed. Do not dispatch the worker until the exact readiness commit is
   fast-forwarded into the task branch/worktree and verified clean with current
@@ -395,11 +402,11 @@ fast-forwarded into the task branch/worktree.
   at `a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d` after GitHub PR Agent, Verify
   PR, and GPT-5.5/xhigh review passed. The Low/P3 adapter payload follow-up is
   intentionally left unresolved.
-- TASK-018-governed-prompt-promotion: activation checkpoint review pending.
+- TASK-018-governed-prompt-promotion: activation-sync review pending.
   Branch `task/TASK-018-governed-prompt-promotion` and worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion`
   are allocated but not created; implementation remains blocked until
-  activation checkpoint, activation-sync, and readiness gates pass.
+  activation-sync and readiness gates pass.
 - TASK-019/TASK-020 remain not_started until their planned waves activate.
   TASK-019 carries the user-required e2e/Sprites event-pipeline gate.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
@@ -587,10 +594,12 @@ TASK-018 allocated but not yet branched or dispatched.
 
 ## Verification Status
 
-- WAVE-009 activation artifact verification is pending GPT-5.5/xhigh review.
-  Expected local pre-review gates are limited to WDD metadata integrity:
-  `jq empty` for orchestration.json, `git diff --check`, staged-scope proof, and
-  confirmation that TASK-018 branch/worktree do not yet exist.
+- WAVE-009 activation artifact verification passed: GPT-5.5/xhigh review
+  `019f9d13-d0be-7d90-84ef-b4a9e96e23d3` reported 0C/0H/0M/0L, `jq empty`
+  passed for orchestration.json, `git diff --check` passed, staged scope was
+  limited to WDD metadata, and no TASK-018 branch/worktree existed. Reviewed
+  checkpoint `25fb028bfec71dd1ca86db38e9726822932a96bf` is pushed and recorded.
+  Activation-sync verification is pending.
 - WAVE-008 activation artifact verification passed: GPT-5.5/xhigh review
   `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` reported 0C/0H/0M/0L, `jq empty`
   passed for orchestration.json, and `git diff --check` passed. Activation-sync
@@ -1285,12 +1294,17 @@ TASK-018 allocated but not yet branched or dispatched.
   are allocated in metadata only. No TASK-018 branch/worktree exists or may be
   created until activation checkpoint review/commit/push, activation-sync
   review/commit/push, and worktree-readiness review/commit/push gates pass.
+- 2026-07-26T06:23:49Z: WAVE-009 activation checkpoint review
+  `019f9d13-d0be-7d90-84ef-b4a9e96e23d3` passed 0C/0H/0M/0L. Reviewed
+  activation checkpoint `25fb028bfec71dd1ca86db38e9726822932a96bf` was
+  committed and pushed; local and remote epic heads match. Activation-sync
+  review is next, and TASK-018 branch/worktree creation remains blocked.
 
 ## Next Action
 
-Run the mandatory GPT-5.5/xhigh review for the WAVE-009 activation metadata.
+Run the mandatory GPT-5.5/xhigh activation-sync review for WAVE-009 metadata.
 If it passes with 0 Critical/High/Medium findings, commit and push the
-activation checkpoint, record its exact hash, then run the activation-sync
-review before any TASK-018 branch/worktree creation. Continue using GPT-5.5/xhigh
-review only; no GPT-5.6. Low/P3 findings remain follow-ups and must not trigger
-automatic edits.
+activation-sync marker, then create TASK-018 branch/worktree from that exact
+pushed state and run the worktree-readiness review before dispatch. Continue
+using GPT-5.5/xhigh review only; no GPT-5.6. Low/P3 findings remain follow-ups
+and must not trigger automatic edits.

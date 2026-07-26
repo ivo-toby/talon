@@ -1518,10 +1518,10 @@
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "pending_activation_checkpoint",
+          "branchFreshness": "pending_activation_sync",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "activation_checkpoint_review_pending"
+          "currentGate": "activation_sync_review_pending"
         }
       ],
       "bundleState": {
@@ -1534,7 +1534,7 @@
         "worktreeStatus": "allocated_pending_creation",
         "workerThreadId": null,
         "reviewThreadId": null,
-        "currentGate": "activation_checkpoint_review_pending",
+        "currentGate": "activation_sync_review_pending",
         "cleanup": null
       },
       "activationPrerequisites": {
@@ -1682,9 +1682,9 @@
     "activeWave": "WAVE-009",
     "nextWave": "WAVE-010",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": false,
+    "activationArtifactsSynced": true,
     "activationBase": "dd2ca290d89157b674d1cbc67d440c9d295f3cbd",
-    "activationCheckpoint": null,
+    "activationCheckpoint": "25fb028bfec71dd1ca86db38e9726822932a96bf",
     "activationSyncCommit": null,
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
@@ -2047,7 +2047,7 @@
       "reconciledAt": "2026-07-26T05:52:38Z"
     },
     "wave009Activation": {
-      "status": "activation_checkpoint_review_pending",
+      "status": "activation_sync_review_pending",
       "activationBase": "dd2ca290d89157b674d1cbc67d440c9d295f3cbd",
       "tasks": [
         "TASK-018-governed-prompt-promotion"
@@ -2074,10 +2074,10 @@
       "worktreeBaseCommit": null,
       "activationCheckpointReviewModel": "gpt-5.5",
       "activationCheckpointReviewReasoningEffort": "xhigh",
-      "activationCheckpointReviewStatus": "pending",
-      "activationCheckpointReviewThreadId": null,
-      "activationCheckpointReviewCounts": null,
-      "activationCheckpoint": null,
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9d13-d0be-7d90-84ef-b4a9e96e23d3",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "25fb028bfec71dd1ca86db38e9726822932a96bf",
       "activationSyncReviewModel": "gpt-5.5",
       "activationSyncReviewReasoningEffort": "xhigh",
       "activationSyncReviewStatus": "pending",
@@ -2098,12 +2098,12 @@
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave009_activation_checkpoint_review_pending",
-    "lastCheckedAt": "2026-07-26T06:12:25Z",
-    "nextCheckDueAt": "2026-07-26T06:17:25Z",
+    "status": "wave009_activation_sync_review_pending",
+    "lastCheckedAt": "2026-07-26T06:23:49Z",
+    "nextCheckDueAt": "2026-07-26T06:28:49Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-009 activation checkpoint review pending",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline WAVE-009 in /Users/ivo.toby/workspace/talon. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-018. Do not create the bundle branch/worktree until the WAVE-009 activation checkpoint passes GPT-5.5/xhigh review, is committed and pushed, its exact hash is recorded, activation sync passes GPT-5.5/xhigh review and commit/push, and readiness passes GPT-5.5/xhigh review and commit/push. Do not use GPT-5.6. Do not implement task code in the controller checkout. Keep .minispec untouched.",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-009 activation-sync review pending",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline WAVE-009 in /Users/ivo.toby/workspace/talon. Read .wdd/constitution.md, epic.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-018. Activation checkpoint 25fb028bfec71dd1ca86db38e9726822932a96bf is pushed and recorded. Do not create the bundle branch/worktree until activation sync passes GPT-5.5/xhigh review and commit/push, and readiness passes GPT-5.5/xhigh review and commit/push. Do not dispatch TASK-018 until the exact readiness commit is pushed, fast-forwarded into the task branch/worktree, and verified clean with current task/orchestration/controller artifacts. Do not use GPT-5.6. Do not implement task code in the controller checkout. Keep .minispec untouched.",
     "stopCondition": "WAVE-009 task is merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopReason": null
   }

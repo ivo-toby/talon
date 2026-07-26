@@ -19,8 +19,8 @@ branch: task/TASK-018-governed-prompt-promotion
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
 worktree_status: allocated_pending_creation
 pr: null
-current_gate: activation_checkpoint_review_pending
-branch_freshness: pending_activation_checkpoint
+current_gate: activation_sync_review_pending
+branch_freshness: pending_activation_sync
 verification:
   - "npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts"
   - "npm run build"
@@ -172,7 +172,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet; activation checkpoint review is pending.
+- Activation checkpoint review `019f9d13-d0be-7d90-84ef-b4a9e96e23d3` passed
+  0C/0H/0M/0L. Reviewed activation checkpoint
+  `25fb028bfec71dd1ca86db38e9726822932a96bf` was committed and pushed.
+  Activation-sync review is pending before branch/worktree creation.
 
 ## Review Feedback
 
