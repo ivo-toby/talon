@@ -295,12 +295,38 @@ describe('DaemonIpcServer', () => {
       expect(errorFiles.length).toBeGreaterThan(0);
     });
 
-    it('creates a .error.json companion file for invalid commands', async () => {
+    it('rejects malformed lifecycle payloads before invoking the handler', async () => {
+      const badCommand = {
+        id: randomUUID(),
+        command: 'lifecycle-disable',
+        payload: {},
+      };
       await fs.writeFile(
-        path.join(inputDir, '000000000001000-bad.json'),
-        'not json',
+        path.join(inputDir, '000000000001000-bad-lifecycle.json'),
+        JSON.stringify(badCommand),
         'utf8',
       );
+      const commandHandler = vi.fn(async (cmd: DaemonCommand) => ({
+        ...DEFAULT_RESPONSE,
+        commandId: cmd.id,
+      }));
+      const server = new DaemonIpcServer({
+        inputDir,
+        outputDir,
+        errorsDir,
+        logger: makeLogger(),
+        commandHandler,
+      });
+
+      const processed = await server.pollOnce();
+
+      expect(processed).toHaveLength(0);
+      expect(commandHandler).not.toHaveBeenCalled();
+      expect(await fs.readdir(outputDir)).toHaveLength(0);
+    });
+
+    it('creates a .error.json companion file for invalid commands', async () => {
+      await fs.writeFile(path.join(inputDir, '000000000001000-bad.json'), 'not json', 'utf8');
 
       const server = new DaemonIpcServer({
         inputDir,

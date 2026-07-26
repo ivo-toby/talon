@@ -104,6 +104,20 @@ export interface LifecycleDeliveryRetentionResult {
   disabledDeliveries: number;
 }
 
+export interface LifecycleDeliveryStatusCount {
+  readonly status: LifecycleDeliveryStatus;
+  readonly count: number;
+}
+
+export interface LifecycleHandlerBacklogSummary {
+  readonly handler_id: string;
+  readonly persona: string;
+  readonly status: LifecycleDeliveryStatus;
+  readonly count: number;
+  readonly oldest_created_at: number | null;
+  readonly next_retry_at: number | null;
+}
+
 /** Persisted failure diagnostics intentionally carry only a stable, non-secret code. */
 export interface LifecycleFailureDiagnostic {
   code: string;
@@ -135,6 +149,9 @@ export class LifecycleDeliveryRepository extends BaseRepository {
   private readonly claimNextStmt: Database.Statement;
   private readonly findByKeyStmt: Database.Statement;
   private readonly findByEventIdStmt: Database.Statement;
+  private readonly countByStatusStmt: Database.Statement;
+  private readonly summarizeHandlersStmt: Database.Statement;
+  private readonly summarizeHandlersByIdsStmt: Database.Statement;
   private readonly completeStmt: Database.Statement;
   private readonly failStmt: Database.Statement;
   private readonly expireClaimsStmt: Database.Statement;
@@ -200,6 +217,40 @@ export class LifecycleDeliveryRepository extends BaseRepository {
     `);
     this.findByEventIdStmt = db.prepare(`
       SELECT * FROM lifecycle_event_deliveries WHERE event_id = ? ORDER BY priority DESC, created_at ASC
+    `);
+    this.countByStatusStmt = db.prepare(`
+      SELECT status, COUNT(*) AS count
+      FROM lifecycle_event_deliveries
+      GROUP BY status
+      ORDER BY status ASC
+    `);
+    this.summarizeHandlersStmt = db.prepare(`
+      SELECT
+        handler_id,
+        persona,
+        status,
+        COUNT(*) AS count,
+        MIN(created_at) AS oldest_created_at,
+        MIN(next_retry_at) AS next_retry_at
+      FROM lifecycle_event_deliveries
+      GROUP BY handler_id, persona, status
+      ORDER BY handler_id ASC, persona ASC, status ASC
+      LIMIT ?
+    `);
+    this.summarizeHandlersByIdsStmt = db.prepare(`
+      SELECT
+        handler_id,
+        persona,
+        status,
+        COUNT(*) AS count,
+        MIN(created_at) AS oldest_created_at,
+        MIN(next_retry_at) AS next_retry_at
+      FROM lifecycle_event_deliveries
+      WHERE handler_id IN (
+        SELECT value FROM json_each(@handler_ids)
+      )
+      GROUP BY handler_id, persona, status
+      ORDER BY handler_id ASC, persona ASC, status ASC
     `);
     this.completeStmt = db.prepare(`
       UPDATE lifecycle_event_deliveries
@@ -601,6 +652,50 @@ export class LifecycleDeliveryRepository extends BaseRepository {
     }
   }
 
+  countByStatus(): Result<LifecycleDeliveryStatusCount[], DbError> {
+    try {
+      const rows = this.countByStatusStmt.all() as LifecycleDeliveryStatusCount[];
+      return ok(
+        rows.map((row) => ({
+          status: this.parseStatus(row.status),
+          count: Number(row.count),
+        })),
+      );
+    } catch (cause) {
+      return err(toDbError('count lifecycle deliveries by status', cause));
+    }
+  }
+
+  summarizeHandlers(limit = 50): Result<LifecycleHandlerBacklogSummary[], DbError> {
+    try {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return err(new DbError('Failed to summarize lifecycle handlers: invalid limit'));
+      }
+      const rows = this.summarizeHandlersStmt.all(limit) as LifecycleHandlerBacklogSummary[];
+      return ok(rows.map((row) => this.validateHandlerBacklogSummary(row)));
+    } catch (cause) {
+      return err(toDbError('summarize lifecycle handlers', cause));
+    }
+  }
+
+  summarizeHandlersByIds(
+    handlerIds: readonly string[],
+  ): Result<LifecycleHandlerBacklogSummary[], DbError> {
+    try {
+      const ids = [...new Set(handlerIds)];
+      if (ids.length > 100 || ids.some((handlerId) => !this.isIdentifier(handlerId))) {
+        return err(new DbError('Failed to summarize lifecycle handlers: invalid handler ids'));
+      }
+      if (ids.length === 0) return ok([]);
+      const rows = this.summarizeHandlersByIdsStmt.all({
+        handler_ids: JSON.stringify(ids),
+      }) as LifecycleHandlerBacklogSummary[];
+      return ok(rows.map((row) => this.validateHandlerBacklogSummary(row)));
+    } catch (cause) {
+      return err(toDbError('summarize lifecycle handlers', cause));
+    }
+  }
+
   /** Terminally disables outstanding work for one stable handler identity. */
   disableHandler(handlerId: string): Result<LifecycleDeliveryRetentionResult, DbError> {
     try {
@@ -676,6 +771,20 @@ export class LifecycleDeliveryRepository extends BaseRepository {
     const excludedHandlerIds = this.normalizeExcludedHandlerIds(snapshot.excludedHandlerIds);
     if (!excludedHandlerIds) return null;
     return { leaseMs, excludedHandlerIds };
+  }
+
+  private validateHandlerBacklogSummary(
+    row: LifecycleHandlerBacklogSummary,
+  ): LifecycleHandlerBacklogSummary {
+    return {
+      handler_id: this.asIdentifier(row.handler_id),
+      persona: this.asPersona(row.persona),
+      status: this.parseStatus(row.status),
+      count: Number(row.count),
+      oldest_created_at:
+        row.oldest_created_at === null ? null : this.asSafeInteger(row.oldest_created_at),
+      next_retry_at: row.next_retry_at === null ? null : this.asSafeInteger(row.next_retry_at),
+    };
   }
 
   private normalizeExcludedHandlerIds(value: unknown): string[] | null {
@@ -895,6 +1004,27 @@ export class LifecycleDeliveryRepository extends BaseRepository {
       ) &&
       this.parses(LifecycleFilterOwnerNameSchema, value)
     );
+  }
+
+  private parseStatus(value: unknown): LifecycleDeliveryStatus {
+    const parsed = LifecycleDeliveryStatusSchema.safeParse(value);
+    if (!parsed.success) throw new Error('invalid persisted lifecycle delivery status');
+    return parsed.data;
+  }
+
+  private asIdentifier(value: unknown): string {
+    if (!this.isIdentifier(value)) throw new Error('invalid persisted lifecycle handler id');
+    return value as string;
+  }
+
+  private asPersona(value: unknown): string {
+    if (!this.isBoundedPersona(value)) throw new Error('invalid persisted lifecycle persona');
+    return value as string;
+  }
+
+  private asSafeInteger(value: unknown): number {
+    if (!Number.isSafeInteger(value)) throw new Error('invalid persisted lifecycle timestamp');
+    return value as number;
   }
 
   private isNullableTimestamp(value: unknown): boolean {

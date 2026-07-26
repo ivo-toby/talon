@@ -9,6 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ok, err } from 'neverthrow';
 import type pino from 'pino';
+import Database from 'better-sqlite3';
+import { randomUUID } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks
@@ -51,6 +53,20 @@ import { injectSiblingBotIds } from '../../../src/channels/channel-setup.js';
 import { DaemonError } from '../../../src/core/errors/index.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { createDiscardLogger } from './helpers.js';
+import {
+  BaseRepository,
+  BehaviorSignalRepository,
+  LifecycleDeliveryRepository,
+  LifecycleEventRepository,
+  type LifecycleDeliveryFanoutInput,
+} from '../../../src/core/database/repositories/index.js';
+import {
+  DaemonCommandSchema,
+  type DaemonCommand,
+  type DaemonResponse,
+} from '../../../src/ipc/daemon-ipc.js';
+import type { LifecycleEventEnvelope } from '../../../src/lifecycle/contracts/index.js';
+import { createTestDb } from '../core/database/repositories/helpers.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -171,6 +187,72 @@ function setupSuccessfulBootstrap(overrides: Partial<DaemonContext> = {}) {
   return ctx;
 }
 
+function setDaemonContext(target: TalondDaemon, ctx: DaemonContext): void {
+  (target as unknown as { ctx: DaemonContext }).ctx = ctx;
+}
+
+async function handleDaemonCommand(
+  target: TalondDaemon,
+  command: DaemonCommand,
+): Promise<DaemonResponse> {
+  return (
+    target as unknown as {
+      handleIpcCommand(command: DaemonCommand): Promise<DaemonResponse>;
+    }
+  ).handleIpcCommand(command);
+}
+
+function lifecycleCommand(
+  command: DaemonCommand['command'],
+  payload?: Record<string, unknown>,
+): DaemonCommand {
+  return DaemonCommandSchema.parse({
+    id: randomUUID(),
+    command,
+    ...(payload !== undefined ? { payload } : {}),
+  });
+}
+
+function lifecycleEvent(overrides: Partial<LifecycleEventEnvelope> = {}): LifecycleEventEnvelope {
+  return {
+    version: 'v1',
+    eventId: randomUUID(),
+    type: 'run.completed.v1',
+    occurredAt: '2026-07-16T10:00:00.000Z',
+    context: {
+      aggregate: { type: 'thread', id: `thread-${randomUUID()}` },
+      correlationId: randomUUID(),
+      recursion: { depth: 0, maxDepth: 4 },
+      provenance: { source: 'daemon' },
+    },
+    payload: {
+      references: [{ type: 'run', id: randomUUID() }],
+      metadata: { outcome: 'completed' },
+    },
+    ...overrides,
+  };
+}
+
+function lifecycleDelivery(handlerId: string, persona: string): LifecycleDeliveryFanoutInput {
+  return {
+    handlerId,
+    persona,
+    priority: 0,
+    identity: {
+      version: 'v1',
+      handlerId,
+      runtimeKind: 'native',
+      implementationRef: handlerId,
+      implementationVersion: '1.0.0',
+      mode: 'event',
+      inputContract: 'talon.lifecycle.event.envelope.v1',
+      outputContract: 'talon.lifecycle.signal.envelopes.v1',
+    },
+    failurePolicy: { version: 'v1', mode: 'dead_letter' },
+    maxAttempts: 2,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -209,6 +291,293 @@ describe('TalondDaemon', () => {
         claimed: 0,
         processing: 0,
         deadLetter: 0,
+      });
+    });
+  });
+
+  describe('lifecycle IPC operator commands', () => {
+    let db: Database.Database | null = null;
+
+    afterEach(() => {
+      db?.close();
+      db = null;
+    });
+
+    function installRealLifecycleRepos(): {
+      ctx: DaemonContext;
+      events: LifecycleEventRepository;
+      deliveries: LifecycleDeliveryRepository;
+      behavior: BehaviorSignalRepository;
+    } {
+      BaseRepository.__resetMonotonicClockForTests();
+      db = createTestDb();
+      const events = new LifecycleEventRepository(db);
+      const deliveries = new LifecycleDeliveryRepository(db, () => 1_800_000_000_000);
+      const behavior = new BehaviorSignalRepository(db);
+      const ctx = makeMockContext();
+      ctx.repos = {
+        ...ctx.repos,
+        lifecycleEvent: events,
+        lifecycleDelivery: deliveries,
+        behaviorSignal: behavior,
+      } as any;
+      setDaemonContext(daemon, ctx);
+      return { ctx, events, deliveries, behavior };
+    }
+
+    it('summarizes displayed handler backlog without truncating grouped persona rows', async () => {
+      const dateNow = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+      const { ctx, events, deliveries } = installRealLifecycleRepos();
+      const personas = Array.from({ length: 60 }, (_, index) => `persona-${index}`);
+      ctx.config.lifecycle = {
+        enabled: true,
+        handlers: [
+          { id: 'handler-a', mode: 'event', runtime: { kind: 'native' } },
+          { id: 'handler-b', mode: 'event', runtime: { kind: 'native' } },
+          { id: 'handler-c', mode: 'event', runtime: { kind: 'native' } },
+        ],
+      } as any;
+      ctx.config.personas = personas.map((name) => ({
+        name,
+        lifecycle: {
+          subscriptions: [{ handler: 'handler-a' }, { handler: 'handler-b' }],
+        },
+      })) as any;
+      ctx.lifecycleRuntime = {
+        dispatcher: {
+          snapshot: vi.fn().mockReturnValue({
+            running: true,
+            stopping: false,
+            inFlight: 0,
+            handlers: [{ handlerId: 'handler-b', circuit: 'open' }],
+          }),
+        },
+      } as any;
+
+      const failedEvent = lifecycleEvent();
+      events
+        .insertWithDeliveries(failedEvent, [lifecycleDelivery('handler-b', 'persona-failed')])
+        ._unsafeUnwrap();
+      const failedClaim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+      deliveries
+        .fail(
+          failedEvent.eventId,
+          'handler-b',
+          failedClaim.delivery.claim_token!,
+          { code: 'transient-failure' },
+          1_800_000_060_000,
+        )
+        ._unsafeUnwrap();
+      const failedRow = deliveries.findByKey(failedEvent.eventId, 'handler-b')._unsafeUnwrap()!;
+      dateNow.mockReturnValue(1_800_000_120_000);
+
+      for (const persona of personas.slice(0, 5)) {
+        const input = lifecycleEvent();
+        events
+          .insertWithDeliveries(input, [lifecycleDelivery('handler-b', persona)])
+          ._unsafeUnwrap();
+        const claim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+        deliveries
+          .complete(input.eventId, 'handler-b', claim.delivery.claim_token!)
+          ._unsafeUnwrap();
+      }
+      for (const persona of personas) {
+        events
+          .insertWithDeliveries(lifecycleEvent(), [lifecycleDelivery('handler-a', persona)])
+          ._unsafeUnwrap();
+      }
+      for (const persona of personas.slice(5)) {
+        events
+          .insertWithDeliveries(lifecycleEvent(), [lifecycleDelivery('handler-b', persona)])
+          ._unsafeUnwrap();
+      }
+      events
+        .insertWithDeliveries(lifecycleEvent(), [lifecycleDelivery('handler-c', 'persona-extra')])
+        ._unsafeUnwrap();
+
+      const response = await handleDaemonCommand(
+        daemon,
+        lifecycleCommand('lifecycle-handlers', { limit: 2 }),
+      );
+
+      expect(response.success).toBe(true);
+      expect(response.data).toMatchObject({
+        backlog: { pending: 116, failed: 1, completed: 5 },
+        handlers: [
+          { handlerId: 'handler-a', backlog: { pending: 60 } },
+          {
+            handlerId: 'handler-b',
+            backlog: { pending: 55, failed: 1, completed: 5 },
+            timing: {
+              oldestCreatedAt: failedRow.created_at,
+              oldestAgeMs: 1_800_000_120_000 - failedRow.created_at,
+              nextRetryAt: failedRow.next_retry_at,
+            },
+            statusTiming: {
+              failed: {
+                oldestCreatedAt: failedRow.created_at,
+                oldestAgeMs: 1_800_000_120_000 - failedRow.created_at,
+                nextRetryAt: failedRow.next_retry_at,
+              },
+            },
+            circuit: 'open',
+          },
+        ],
+      });
+      dateNow.mockRestore();
+    });
+
+    it('inspects, replays, disables, and audits lifecycle delivery mutations', async () => {
+      const { ctx, events, deliveries } = installRealLifecycleRepos();
+      const auditLogger = {
+        logLifecycleDisablement: vi.fn(),
+      };
+      ctx.auditLogger = auditLogger as any;
+      const replayEvent = lifecycleEvent();
+      events
+        .insertWithDeliveries(replayEvent, [lifecycleDelivery('replay-handler', 'support')])
+        ._unsafeUnwrap();
+      const replayClaim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+      deliveries
+        .complete(replayEvent.eventId, 'replay-handler', replayClaim.delivery.claim_token!)
+        ._unsafeUnwrap();
+      const disabledEvent = lifecycleEvent();
+      events
+        .insertWithDeliveries(disabledEvent, [lifecycleDelivery('disabled-handler', 'support')])
+        ._unsafeUnwrap();
+
+      const inspect = await handleDaemonCommand(
+        daemon,
+        lifecycleCommand('lifecycle-inspect', {
+          eventId: replayEvent.eventId,
+          handlerId: 'replay-handler',
+        }),
+      );
+      const replay = await handleDaemonCommand(
+        daemon,
+        lifecycleCommand('lifecycle-replay', {
+          eventId: replayEvent.eventId,
+          handlerId: 'replay-handler',
+        }),
+      );
+      const disabled = await handleDaemonCommand(
+        daemon,
+        lifecycleCommand('lifecycle-disable', { handlerId: 'disabled-handler' }),
+      );
+
+      expect(inspect.success).toBe(true);
+      expect(inspect.data).toMatchObject({
+        event: { eventId: replayEvent.eventId },
+        deliveries: [{ handlerId: 'replay-handler', status: 'completed' }],
+      });
+      expect(replay.success).toBe(true);
+      expect(replay.data).toMatchObject({
+        eventId: replayEvent.eventId,
+        handlerId: 'replay-handler',
+        status: 'pending',
+        attempts: 0,
+      });
+      expect(disabled.success).toBe(true);
+      expect(disabled.data).toEqual({
+        handlerId: 'disabled-handler',
+        disabledDeliveries: 1,
+      });
+      expect(auditLogger.logLifecycleDisablement).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'lifecycle.disablement',
+          details: expect.objectContaining({
+            handlerId: 'disabled-handler',
+            disabledDeliveries: 1,
+          }),
+        }),
+      );
+    });
+
+    it('returns repository errors from lifecycle handler reads', async () => {
+      const ctx = makeMockContext({
+        repos: {
+          ...makeMockContext().repos,
+          lifecycleDelivery: {
+            countByStatus: vi.fn().mockReturnValue(err(new Error('count failed'))),
+          },
+        } as any,
+      });
+      setDaemonContext(daemon, ctx);
+
+      const response = await handleDaemonCommand(
+        daemon,
+        lifecycleCommand('lifecycle-handlers', { limit: 10 }),
+      );
+
+      expect(response).toMatchObject({
+        success: false,
+        error: 'count failed',
+      });
+    });
+
+    it('lists behavior candidates through the storage-bounded summary query', async () => {
+      const { behavior } = installRealLifecycleRepos();
+      const firstEvidenceId = randomUUID();
+      const secondEvidenceId = randomUUID();
+      expect(
+        behavior
+          .recordEvidence({
+            evidenceId: firstEvidenceId,
+            persona: 'support',
+            sourceKind: 'message',
+            sourceId: randomUUID(),
+            sourceOccurredAt: '2026-07-25T12:00:00.000Z',
+            fingerprint: randomUUID(),
+            sentiment: 'positive',
+            confidence: 0.8,
+            summary: 'The user prefers concise responses.',
+          })
+          .isOk(),
+      ).toBe(true);
+      expect(
+        behavior
+          .recordEvidence({
+            evidenceId: secondEvidenceId,
+            persona: 'support',
+            sourceKind: 'tool_call',
+            sourceId: randomUUID(),
+            sourceOccurredAt: '2026-07-25T12:01:00.000Z',
+            fingerprint: randomUUID(),
+            sentiment: 'positive',
+            confidence: 0.7,
+            summary: 'A tool call confirmed the concise preference.',
+          })
+          .isOk(),
+      ).toBe(true);
+      for (const [index, candidateId] of ['candidate-a', 'candidate-b', 'candidate-c'].entries()) {
+        expect(
+          behavior
+            .createCandidate({
+              candidateId,
+              persona: 'support',
+              kind: 'style',
+              status: index === 0 ? 'ready' : 'collecting',
+              summary: `Candidate ${index}`,
+              proposedBehavior: `Apply candidate ${index}`,
+              confidence: 0.5,
+              createdFromEvidenceIds: index === 0 ? [firstEvidenceId, secondEvidenceId] : [],
+            })
+            .isOk(),
+        ).toBe(true);
+      }
+
+      const response = await handleDaemonCommand(
+        daemon,
+        lifecycleCommand('lifecycle-candidates', { persona: 'support', limit: 2 }),
+      );
+
+      expect(response.success).toBe(true);
+      expect(response.data).toMatchObject({
+        persona: 'support',
+        candidates: [
+          { candidateId: 'candidate-a', evidenceSources: 2 },
+          { candidateId: 'candidate-b', evidenceSources: 0 },
+        ],
       });
     });
   });

@@ -96,6 +96,10 @@ export interface BehaviorCandidateRow {
   expired_at: number | null;
 }
 
+export interface BehaviorCandidateSummaryRow extends BehaviorCandidateRow {
+  evidence_sources: number;
+}
+
 export interface BehaviorCandidateReviewRow extends BehaviorCandidateRow {
   evidence_count: number;
   distinct_source_count: number;
@@ -282,6 +286,7 @@ export class BehaviorSignalRepository extends BaseRepository {
   private readonly insertCandidateEvidenceStmt: Database.Statement;
   private readonly findCandidateStmt: Database.Statement;
   private readonly findCandidatesByPersonaStmt: Database.Statement;
+  private readonly findCandidateSummariesByPersonaStmt: Database.Statement;
   private readonly findReviewCandidatesByPersonaStmt: Database.Statement;
   private readonly transitionCandidateStmt: Database.Statement;
   private readonly expireCandidateStmt: Database.Statement;
@@ -355,6 +360,27 @@ export class BehaviorSignalRepository extends BaseRepository {
     `);
     this.findCandidatesByPersonaStmt = db.prepare(`
       SELECT * FROM behavior_candidates WHERE persona = ? ORDER BY created_at ASC, candidate_id ASC
+    `);
+    this.findCandidateSummariesByPersonaStmt = db.prepare(`
+      SELECT
+        c.*,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM (
+            SELECT e.source_kind, e.source_id
+            FROM behavior_candidate_evidence ce
+            JOIN behavior_evidence e
+              ON e.evidence_id = ce.evidence_id
+             AND e.persona = ce.persona
+            WHERE ce.persona = c.persona
+              AND ce.candidate_id = c.candidate_id
+            GROUP BY e.source_kind, e.source_id
+          )
+        ), 0) AS evidence_sources
+      FROM behavior_candidates c
+      WHERE c.persona = ?
+      ORDER BY c.created_at ASC, c.candidate_id ASC
+      LIMIT ?
     `);
     this.findReviewCandidatesByPersonaStmt = db.prepare(`
       SELECT
@@ -663,6 +689,35 @@ export class BehaviorSignalRepository extends BaseRepository {
       return ok(rows.map((row) => this.validateCandidateRow(row)));
     } catch (cause) {
       return err(toDbError('find behavior candidates', cause));
+    }
+  }
+
+  findCandidateSummariesByPersona(
+    persona: string,
+    limit = 50,
+  ): Result<BehaviorCandidateSummaryRow[], DbError> {
+    try {
+      if (!isBehaviorPersona(persona)) {
+        return err(new DbError('Failed to summarize behavior candidates: invalid persona'));
+      }
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return err(new DbError('Failed to summarize behavior candidates: invalid limit'));
+      }
+      const rows = this.findCandidateSummariesByPersonaStmt.all(
+        persona,
+        limit,
+      ) as BehaviorCandidateSummaryRow[];
+      return ok(
+        rows.map((row) => {
+          const candidate = this.validateCandidateRow(row);
+          if (!Number.isSafeInteger(row.evidence_sources) || row.evidence_sources < 0) {
+            throw new Error('invalid persisted behavior candidate summary row');
+          }
+          return { ...candidate, evidence_sources: row.evidence_sources };
+        }),
+      );
+    } catch (cause) {
+      return err(toDbError('summarize behavior candidates', cause));
     }
   }
 

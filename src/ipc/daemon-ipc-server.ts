@@ -265,11 +265,7 @@ export class DaemonIpcServer {
    * Writes a sibling `.error.json` annotation file alongside the original
    * content so operators can inspect what went wrong.
    */
-  private async moveToErrors(
-    filepath: string,
-    rawContent: string,
-    reason: string,
-  ): Promise<void> {
+  private async moveToErrors(filepath: string, rawContent: string, reason: string): Promise<void> {
     try {
       await ensureOwnerOnlyDir(this.opts.errorsDir);
 
