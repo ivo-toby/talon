@@ -2,8 +2,8 @@
 id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
-active_wave: null
-status: wave006_reconciled_checkpoint_commit_pending
+active_wave: WAVE-007
+status: wave007_activation_checkpoint_review_pending
 updated_at: 2026-07-26
 ---
 
@@ -105,6 +105,13 @@ Every task advances independently as soon as its gates clear.
   Reconciliation artifacts passed GPT-5.5/xhigh review
   `019f9c30-44ae-7581-9776-6a2dc5211281` with 0C/0H/0M/1L; the Low/P3
   historical-readiness wording was left untouched.
+- WAVE-006 reconciliation checkpoint: committed and pushed at
+  `898197df00c065923dec5f372943628a695c62a1`; local and remote epic heads
+  match. WAVE-007 activation starts from this exact pushed checkpoint.
+- WAVE-007 activation artifacts: TASK-014/TASK-015 task files moved to
+  `in-progress/`; task branches/worktrees are allocated but not created.
+  Activation checkpoint review/commit/push is required before branch or
+  worktree creation.
 
 ## Pending Waves
 
@@ -116,7 +123,7 @@ Every task advances independently as soon as its gates clear.
 | WAVE-004 | TASK-007-daemon-message-queue-schedule-events | full / bundled / risk_based / adaptive | explicit user implementation request | done |
 | WAVE-005 | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector, TASK-010-behavior-ledger-persistence | full / parallel / risk_based / adaptive | explicit user resume on 2026-07-25 | done |
 | WAVE-006 | TASK-011-context-lifecycle-migration, TASK-012-feedback-detector-subagent, TASK-013-handler-telemetry-correlation | full / parallel / risk_based / adaptive | explicit user implementation request | done |
-| WAVE-007 | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
+| WAVE-007 | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | full / parallel / risk_based / adaptive | explicit user implementation request | in_progress |
 | WAVE-008 | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | full / parallel / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-009 | TASK-018-governed-prompt-promotion | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
 | WAVE-010 | TASK-019-lifecycle-end-to-end-verification | full / bundled / risk_based / adaptive | explicit user implementation request | planned |
@@ -124,27 +131,43 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-No active wave. WAVE-006 tasks are merged and reconciled pending the final
-GPT-5.5/xhigh reconciliation checkpoint review/commit/push. Next activation is
-WAVE-007 from final Wave 6 head `af75d4be155a528b576f9518edd8e93af6ba5016`.
+WAVE-007 is activating as a full-profile parallel batch from reviewed/pushed
+Wave 6 reconciliation checkpoint `898197df00c065923dec5f372943628a695c62a1`.
+Activation artifacts are prepared; task branches/worktrees are not created yet.
+
+Active WAVE-007 tasks:
+
+- TASK-014-lifecycle-retention-reload-replay:
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay`
+  on branch `task/TASK-014-lifecycle-retention-reload-replay`; allocated only,
+  pending activation checkpoint review/commit/push.
+- TASK-015-behavior-signal-projector:
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector`
+  on branch `task/TASK-015-behavior-signal-projector`; allocated only, pending
+  activation checkpoint review/commit/push.
 
 ## Monitoring
 
-- Mode: inactive until the reviewed WAVE-006 reconciliation checkpoint is
-  committed and pushed.
+- Mode: manual until WAVE-007 activation and readiness checkpoints are reviewed,
+  committed, pushed, and worker dispatch begins.
 - Cadence: adaptive
-- Status: WAVE-006 tasks merged; worktrees cleaned; reconciliation artifacts
-  passed checkpoint review and are ready to commit/push.
-- Scheduler provenance: none active
-- Last checked: 2026-07-26T02:05:00Z
-- Next check due: immediately for reconciliation checkpoint review.
-- Stop condition: WAVE-006 reconciliation checkpoint committed and pushed; then
-  activate WAVE-007.
-- Fallback prompt: resume EPIC-durable-lifecycle-pipeline after WAVE-006
-  reconciliation. Read orchestration.json, controller-state.md, wave-plan.md,
-  shared context, and WAVE-007 task files. Do not use GPT-5.6. Commit and push
-  the reviewed WAVE-006 reconciliation checkpoint if it is not yet committed
-  and pushed; then activate WAVE-007 from the pushed checkpoint.
+- Status: WAVE-007 activation artifacts prepared; activation checkpoint review
+  is pending before branch/worktree creation.
+- Scheduler provenance: none yet for WAVE-007
+- Last checked: 2026-07-26T02:20:00Z
+- Next check due: immediately for activation checkpoint review.
+- Stop condition: all WAVE-007 tasks are merged, blocked, cancelled, or ready
+  for `wdd-reconcile-wave`.
+- Fallback prompt: resume WAVE-007 activation for
+  EPIC-durable-lifecycle-pipeline. Read `.wdd/constitution.md`,
+  orchestration.json, controller-state.md, shared context, wave-plan.md, and
+  TASK-014/TASK-015 in-progress files. Do not use GPT-5.6. Do not create task
+  branches/worktrees until the Wave 7 activation checkpoint has passed
+  GPT-5.5/xhigh review and is committed/pushed. After the reviewed activation
+  checkpoint is pushed, create/verify the two task branches/worktrees from that
+  exact commit, run readiness review, fast-forward/push both branches to the
+  readiness commit, verify clean worktrees and current artifacts, then dispatch
+  independent GPT-5.5/high workers.
 
 ## Current Task Gates
 
@@ -303,6 +326,17 @@ WAVE-007 from final Wave 6 head `af75d4be155a528b576f9518edd8e93af6ba5016`.
   `3e09c376f21fdc5697c673def4ec99eb10dd0291` after telemetry/dispatcher/audit/
   trace tests, build, scoped lint, diff check, GitHub PR Agent/Verify PR, and
   GPT-5.5/xhigh review passed with no remaining Critical/High/Medium blockers.
+- TASK-014-lifecycle-retention-reload-replay: in-progress for WAVE-007
+  activation; branch `task/TASK-014-lifecycle-retention-reload-replay` and
+  worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay`
+  are allocated only. Activation checkpoint review/commit/push is pending
+  before branch or worktree creation.
+- TASK-015-behavior-signal-projector: in-progress for WAVE-007 activation;
+  branch `task/TASK-015-behavior-signal-projector` and worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector`
+  are allocated only. Activation checkpoint review/commit/push is pending
+  before branch or worktree creation.
 - The remaining downstream tasks remain not_started until their planned waves
   activate.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
@@ -350,6 +384,16 @@ WAVE-007 from final Wave 6 head `af75d4be155a528b576f9518edd8e93af6ba5016`.
   `task/TASK-013-handler-telemetry-correlation`; clean worktree
   `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation`
   was removed and pruned after PR #270 merged at epic commit `3e09c37`.
+- WAVE-007 / TASK-014: branch
+  `task/TASK-014-lifecycle-retention-reload-replay`; worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay`
+  allocated only, not created. Activation checkpoint review/commit/push is
+  pending before branch or worktree creation.
+- WAVE-007 / TASK-015: branch
+  `task/TASK-015-behavior-signal-projector`; worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector`
+  allocated only, not created. Activation checkpoint review/commit/push is
+  pending before branch or worktree creation.
 
 ## Gate Definitions
 
@@ -1040,9 +1084,17 @@ may remain as historical context.
   `019f9c30-44ae-7581-9776-6a2dc5211281` passed with 0C/0H/0M/1L. The Low/P3
   historical-readiness wording in controller-state was left untouched per
   delivery-speed policy. Commit and push are next.
+- 2026-07-26: WAVE-006 reconciliation checkpoint was committed and pushed at
+  `898197df00c065923dec5f372943628a695c62a1`; local and remote epic heads
+  match. WAVE-007 activation started from that exact pushed checkpoint.
+  TASK-014/TASK-015 task files moved to `in-progress/`, and their task
+  branches/worktrees were allocated but not created. Activation checkpoint
+  review/commit/push is required before branch or worktree creation.
 
 ## Next Action
 
-Commit and push the reviewed WAVE-006 reconciliation checkpoint on
-`epic/durable-lifecycle-pipeline`, then activate WAVE-007. Continue using
+Run a fresh GPT-5.5/xhigh WAVE-007 activation review. If it has no
+Critical/High/Medium findings, commit and push the activation checkpoint on
+`epic/durable-lifecycle-pipeline`, then create/verify the TASK-014/TASK-015
+branches and worktrees from that exact pushed commit. Continue using
 GPT-5.5/high implementation and GPT-5.5/xhigh review only; no GPT-5.6.

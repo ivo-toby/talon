@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-007
 slug: behavior-signal-projector
 title: Implement feedback projection and evidence deduplication
-status: todo
+status: in-progress
 depends_on: ["TASK-007-daemon-message-queue-schedule-events", "TASK-010-behavior-ledger-persistence", "TASK-012-feedback-detector-subagent"]
 conflict_domains:
   - "src/lifecycle/behavior/**"
@@ -15,11 +15,11 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-015-behavior-signal-projector
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_checkpoint_pending
+branch_freshness: pending_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/lifecycle/behavior tests/integration/lifecycle-behavior-feedback.test.ts"
   - "npm run build"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -104,7 +104,10 @@ task/TASK-015-behavior-signal-projector
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector
+
+Allocated by the controller for WAVE-007. Do not create or use this worktree
+until the reviewed activation checkpoint has been committed and pushed.
 
 ## PR / Patch Reference
 

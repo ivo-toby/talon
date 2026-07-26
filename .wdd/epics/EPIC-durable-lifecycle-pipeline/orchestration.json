@@ -1261,7 +1261,7 @@
     },
     {
       "id": "WAVE-007",
-      "status": "planned",
+      "status": "in_progress",
       "strategy": {
         "profile": "full",
         "executionMode": "parallel",
@@ -1289,8 +1289,8 @@
         {
           "id": "TASK-014-lifecycle-retention-reload-replay",
           "ticket": "TICKET-002-durable-event-runtime",
-          "path": "TICKET-002-durable-event-runtime/todo/TASK-014-lifecycle-retention-reload-replay.md",
-          "status": "todo",
+          "path": "TICKET-002-durable-event-runtime/in-progress/TASK-014-lifecycle-retention-reload-replay.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-006-durable-event-dispatcher",
             "TASK-013-handler-telemetry-correlation"
@@ -1305,21 +1305,21 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-014-lifecycle-retention-reload-replay",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay",
+          "worktreeStatus": "allocated_pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_checkpoint_pending"
         },
         {
           "id": "TASK-015-behavior-signal-projector",
           "ticket": "TICKET-005-behavior-learning",
-          "path": "TICKET-005-behavior-learning/todo/TASK-015-behavior-signal-projector.md",
-          "status": "todo",
+          "path": "TICKET-005-behavior-learning/in-progress/TASK-015-behavior-signal-projector.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-007-daemon-message-queue-schedule-events",
             "TASK-010-behavior-ledger-persistence",
@@ -1335,15 +1335,15 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-015-behavior-signal-projector",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector",
+          "worktreeStatus": "allocated_pending_creation",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_checkpoint_pending"
         }
       ]
     },
@@ -1622,14 +1622,14 @@
     "reconciledAtEpicCommit": "af75d4be155a528b576f9518edd8e93af6ba5016"
   },
   "controller": {
-    "activeWave": null,
-    "nextWave": "WAVE-007",
+    "activeWave": "WAVE-007",
+    "nextWave": "WAVE-008",
     "epicBranchVerified": true,
     "activationArtifactsSynced": true,
-    "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
-    "activationCheckpoint": "eec0846676f37db0e9cc5a580c5a3457cbf18689",
-    "activationSyncCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
-    "readinessCommit": "566a9a91d1f57bfcd9938011027d87f668fea13e",
+    "activationBase": "898197df00c065923dec5f372943628a695c62a1",
+    "activationCheckpoint": null,
+    "activationSyncCommit": null,
+    "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
     "nextWaveActivationAllowed": true,
@@ -1823,7 +1823,7 @@
       "readinessCommit": "566a9a91d1f57bfcd9938011027d87f668fea13e"
     },
     "wave006Reconciliation": {
-      "status": "reviewed_commit_pending",
+      "status": "reviewed_committed_and_pushed",
       "tasks": [
         "TASK-011-context-lifecycle-migration",
         "TASK-012-feedback-detector-subagent",
@@ -1848,23 +1848,47 @@
       "checkpointReviewCounts": "0C/0H/0M/1L",
       "checkpointReviewStatus": "passed",
       "lowFindingDisposition": "controller-state historical readiness wording left untouched as non-blocking Low/P3",
-      "checkpointCommit": null,
-      "checkpointCommitStatus": "pending",
+      "checkpointCommit": "898197df00c065923dec5f372943628a695c62a1",
+      "checkpointCommitStatus": "pushed_local_remote_match",
       "nextWave": "WAVE-007",
-      "nextWaveStatus": "activation_pending"
+      "nextWaveStatus": "activation_started"
+    },
+    "wave007Activation": {
+      "status": "activation_checkpoint_review_pending",
+      "activationBase": "898197df00c065923dec5f372943628a695c62a1",
+      "tasks": [
+        "TASK-014-lifecycle-retention-reload-replay",
+        "TASK-015-behavior-signal-projector"
+      ],
+      "branches": {
+        "TASK-014-lifecycle-retention-reload-replay": "task/TASK-014-lifecycle-retention-reload-replay",
+        "TASK-015-behavior-signal-projector": "task/TASK-015-behavior-signal-projector"
+      },
+      "worktrees": {
+        "TASK-014-lifecycle-retention-reload-replay": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay",
+        "TASK-015-behavior-signal-projector": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector"
+      },
+      "taskBranchesCreated": false,
+      "taskWorktreesCreated": false,
+      "taskBranchesPushed": false,
+      "worktreesVerifiedClean": false,
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "pending",
+      "activationCheckpoint": null
     }
   },
   "monitoring": {
-    "mode": "inactive",
+    "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave006_reconciled_checkpoint_commit_pending",
-    "lastCheckedAt": "2026-07-26T02:05:00Z",
-    "nextCheckDueAt": null,
+    "status": "wave007_activation_checkpoint_review_pending",
+    "lastCheckedAt": "2026-07-26T02:20:00Z",
+    "nextCheckDueAt": "2026-07-26T02:20:00Z",
     "schedulerRef": null,
-    "schedulerStatus": "not_active",
-    "fallbackPrompt": "Resume EPIC-durable-lifecycle-pipeline after WAVE-006 reconciliation. Read orchestration.json, controller-state.md, wave-plan.md, shared context, and the WAVE-007 task files. Do not use GPT-5.6. Commit and push the reviewed WAVE-006 reconciliation checkpoint if it is not yet committed/pushed; then activate WAVE-007 from the pushed checkpoint.",
-    "stopCondition": "WAVE-006 tasks merged and reconciled; WAVE-007 activation pending.",
-    "stopReason": "wave006_tasks_merged_worktrees_cleaned_reconciliation_checkpoint_commit_pending"
+    "schedulerStatus": "not_created_until_after_activation_or_dispatch",
+    "fallbackPrompt": "Resume WAVE-007 activation for EPIC-durable-lifecycle-pipeline. Read .wdd/constitution.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-014/TASK-015 in-progress files. Do not use GPT-5.6. Do not create task branches/worktrees until the Wave 7 activation checkpoint has passed GPT-5.5/xhigh review and is committed/pushed. After the reviewed activation checkpoint is pushed, create/verify the two task branches/worktrees from that exact commit, run readiness review, fast-forward/push both branches to the readiness commit, verify clean worktrees and current artifacts, then dispatch independent GPT-5.5/high workers.",
+    "stopCondition": "All WAVE-007 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
+    "stopReason": null
   }
 }

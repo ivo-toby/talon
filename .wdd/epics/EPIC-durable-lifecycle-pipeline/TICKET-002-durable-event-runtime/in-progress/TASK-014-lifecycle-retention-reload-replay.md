@@ -6,7 +6,7 @@ ticket: TICKET-002-durable-event-runtime
 wave: WAVE-007
 slug: lifecycle-retention-reload-replay
 title: Implement retention, privacy deletion, reload identity, and safe replay
-status: todo
+status: in-progress
 depends_on: ["TASK-006-durable-event-dispatcher", "TASK-013-handler-telemetry-correlation"]
 conflict_domains:
   - "src/lifecycle/retention-service.ts"
@@ -17,11 +17,11 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-014-lifecycle-retention-reload-replay
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_checkpoint_pending
+branch_freshness: pending_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/lifecycle/retention-service.test.ts tests/unit/lifecycle/lifecycle-admin-service.test.ts tests/unit/daemon/reload.test.ts"
   - "npm run build"
@@ -33,7 +33,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -114,7 +114,10 @@ task/TASK-014-lifecycle-retention-reload-replay
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay
+
+Allocated by the controller for WAVE-007. Do not create or use this worktree
+until the reviewed activation checkpoint has been committed and pushed.
 
 ## PR / Patch Reference
 
