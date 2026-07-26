@@ -17,10 +17,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-018-governed-prompt-promotion
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
-worktree_status: allocated_pending_creation
+worktree_status: created_clean_pending_readiness
 pr: null
-current_gate: activation_sync_review_pending
-branch_freshness: pending_activation_sync
+current_gate: worktree_readiness_review_pending
+branch_freshness: current_at_activation_sync_d1a5152
 verification:
   - "npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts"
   - "npm run build"
@@ -175,7 +175,17 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - Activation checkpoint review `019f9d13-d0be-7d90-84ef-b4a9e96e23d3` passed
   0C/0H/0M/0L. Reviewed activation checkpoint
   `25fb028bfec71dd1ca86db38e9726822932a96bf` was committed and pushed.
-  Activation-sync review is pending before branch/worktree creation.
+- Activation-sync review `019f9d19-d543-7a52-ab93-09d31ff743f4` passed
+  0C/0H/0M/0L. Reviewed sync marker
+  `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d` was committed and pushed.
+  TASK-018 branch/worktree were created and pushed from that exact commit, and
+  the worktree is clean with current task, orchestration, and controller
+  artifacts present. Worktree-readiness review is pending before dispatch.
+- Worktree-readiness review attempt `019f9d20-b7c0-7d53-8526-1ba021c57451`
+  exited before verdict with a Codex usage-limit error. The user reported quota
+  reset, so readiness review is pending again; readiness commit and worker
+  dispatch remain blocked until a valid GPT-5.5/xhigh readiness review passes
+  with 0C/0H/0M.
 
 ## Review Feedback
 

@@ -702,6 +702,17 @@ Activation rule:
   0C/0H/0M/0L, and reviewed activation checkpoint
   `25fb028bfec71dd1ca86db38e9726822932a96bf` is pushed and recorded for the
   activation-sync review. Branch/worktree creation remains blocked.
+- Activation-sync review `019f9d19-d543-7a52-ab93-09d31ff743f4` passed
+  0C/0H/0M/0L, and reviewed sync marker
+  `d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d` is pushed. TASK-018 branch and
+  worktree were created and pushed from that exact commit; the worktree is
+  clean with current WDD artifacts. Worker dispatch remains blocked until
+  worktree-readiness review/commit/push passes and the exact readiness commit
+  is fast-forwarded into the task branch/worktree.
+- Worktree-readiness review attempt `019f9d20-b7c0-7d53-8526-1ba021c57451`
+  hit a GPT-5.5 usage-limit error before verdict. The user reported quota reset,
+  so the readiness checkpoint is pending fresh GPT-5.5/xhigh review before
+  commit, push, branch fast-forward, or worker dispatch.
 
 Stop condition:
 
