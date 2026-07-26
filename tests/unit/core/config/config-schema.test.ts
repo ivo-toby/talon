@@ -1311,6 +1311,41 @@ describe('TalondConfigSchema', () => {
       }
     });
 
+    it('validates lifecycle retention compaction policy when lifecycle is configured', () => {
+      const defaulted = TalondConfigSchema.safeParse({
+        lifecycle: { enabled: true, handlers: [] },
+      });
+
+      expect(defaulted.success).toBe(true);
+      if (defaulted.success) {
+        expect(defaulted.data.lifecycle?.retention.completedAuditWindowMs).toBe(
+          30 * 24 * 60 * 60 * 1000,
+        );
+      }
+
+      const configured = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [],
+          retention: { completedAuditWindowMs: 86_400_000 },
+        },
+      });
+      expect(configured.success).toBe(true);
+      if (configured.success) {
+        expect(configured.data.lifecycle?.retention.completedAuditWindowMs).toBe(86_400_000);
+      }
+
+      expect(
+        TalondConfigSchema.safeParse({
+          lifecycle: {
+            enabled: true,
+            handlers: [],
+            retention: { completedAuditWindowMs: -1 },
+          },
+        }).success,
+      ).toBe(false);
+    });
+
     it('preserves duplicate owner names unless lifecycle registry validation is enabled', () => {
       const duplicateOwnerNames = {
         channels: [

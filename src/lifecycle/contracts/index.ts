@@ -96,6 +96,7 @@ export {
 } from './signal-contract.js';
 export {
   LifecycleConfigSchema,
+  LifecycleRetentionConfigSchema,
   LifecycleEventSubscriptionContractSchema,
   LifecycleInterceptorSubscriptionContractSchema,
   LifecycleSubscriptionContractSchema,
@@ -103,6 +104,7 @@ export {
   PersonaLifecycleConfigSchema,
   PersonaLifecycleSubscriptionSchema,
   type LifecycleConfig,
+  type LifecycleRetentionConfig,
   type LifecycleSubscriptionContract,
   type PersonaLifecycleConfig,
   type PersonaLifecycleSubscription,

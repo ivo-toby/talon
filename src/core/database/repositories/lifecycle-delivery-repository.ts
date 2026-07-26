@@ -26,6 +26,7 @@ import {
   validIdentity,
   validPayload,
   validProvenance,
+  withLifecycleRetentionMutationAuthorization,
 } from '../lifecycle-sql-functions.js';
 import { BaseRepository } from './base-repository.js';
 import {
@@ -72,6 +73,7 @@ export interface LifecycleDeliveryRow {
   claim_token: string | null;
   claim_expires_at: number | null;
   last_error: string | null;
+  terminal_tombstone_reason: 'handler-disabled' | 'privacy-deleted' | null;
   completed_at: number | null;
   created_at: number;
   updated_at: number;
@@ -96,6 +98,10 @@ export interface LifecycleDeliveryRepositoryOptions {
   readonly leaseClock?: LifecycleDeliveryClock;
   readonly auditLogger?: Pick<AuditLogger, 'logLifecycleReplay'>;
   readonly metrics?: Pick<LifecycleMetricsRecorder, 'increment'>;
+}
+
+export interface LifecycleDeliveryRetentionResult {
+  disabledDeliveries: number;
 }
 
 /** Persisted failure diagnostics intentionally carry only a stable, non-secret code. */
@@ -135,6 +141,9 @@ export class LifecycleDeliveryRepository extends BaseRepository {
   private readonly canReopenStmt: Database.Statement;
   private readonly reopenStmt: Database.Statement;
   private readonly findEventStmt: Database.Statement;
+  private readonly disableHandlerStmt: Database.Statement;
+  private readonly tombstoneThreadDeliveriesStmt: Database.Statement;
+  private readonly tombstonePersonaDeliveriesStmt: Database.Statement;
   private readonly leaseClock: LifecycleDeliveryClock;
   private readonly auditLogger?: Pick<AuditLogger, 'logLifecycleReplay'>;
   private readonly metrics?: Pick<LifecycleMetricsRecorder, 'increment'>;
@@ -229,12 +238,14 @@ export class LifecycleDeliveryRepository extends BaseRepository {
     this.canReopenStmt = db.prepare(`
       SELECT 1
       FROM lifecycle_event_deliveries target_delivery
+      JOIN lifecycle_events target_event ON target_event.event_id = target_delivery.event_id
       WHERE target_delivery.event_id = @event_id AND target_delivery.handler_id = @handler_id
         AND target_delivery.status IN ('completed', 'dead_letter')
+        AND target_delivery.terminal_tombstone_reason IS NULL
+        AND target_event.retention_tombstone_reason IS NULL
         AND NOT EXISTS (
           SELECT 1
           FROM lifecycle_event_deliveries later_delivery
-          JOIN lifecycle_events target_event ON target_event.event_id = target_delivery.event_id
           JOIN lifecycle_events later_event ON later_event.event_id = later_delivery.event_id
           WHERE later_delivery.handler_id = target_delivery.handler_id
             AND later_event.aggregate_type = target_event.aggregate_type
@@ -248,9 +259,16 @@ export class LifecycleDeliveryRepository extends BaseRepository {
       UPDATE lifecycle_event_deliveries
       SET status = 'pending', attempts = 0, next_retry_at = NULL,
           claim_token = NULL, claim_expires_at = NULL, last_error = NULL,
-          completed_at = NULL, updated_at = @write_now
+          terminal_tombstone_reason = NULL, completed_at = NULL, updated_at = @write_now
       WHERE event_id = @event_id AND handler_id = @handler_id
         AND status IN ('completed', 'dead_letter')
+        AND terminal_tombstone_reason IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM lifecycle_events target_event
+          WHERE target_event.event_id = lifecycle_event_deliveries.event_id
+            AND target_event.retention_tombstone_reason IS NOT NULL
+        )
         AND NOT EXISTS (
           SELECT 1
           FROM lifecycle_event_deliveries later_delivery
@@ -266,6 +284,64 @@ export class LifecycleDeliveryRepository extends BaseRepository {
       RETURNING *
     `);
     this.findEventStmt = db.prepare(`SELECT * FROM lifecycle_events WHERE event_id = ?`);
+    this.disableHandlerStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'dead_letter',
+          attempts = CASE WHEN attempts < 1 THEN 1 ELSE attempts END,
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          last_error = '{"code":"handler-disabled"}',
+          terminal_tombstone_reason = 'handler-disabled',
+          completed_at = NULL,
+          updated_at = @write_now
+      WHERE handler_id = @handler_id
+        AND status IN ('pending', 'failed', 'claimed')
+    `);
+    this.tombstoneThreadDeliveriesStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'dead_letter',
+          attempts = CASE WHEN attempts < 1 THEN 1 ELSE attempts END,
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          last_error = '{"code":"privacy-deleted"}',
+          terminal_tombstone_reason = 'privacy-deleted',
+          completed_at = NULL,
+          updated_at = @write_now
+      WHERE status IN ('pending', 'failed', 'claimed')
+        AND event_id IN (
+          SELECT e.event_id
+          FROM lifecycle_events e
+          WHERE (e.aggregate_type = 'thread' AND e.aggregate_id = @thread_id)
+            OR EXISTS (
+              SELECT 1
+              FROM json_each(e.payload, '$.references') reference
+              WHERE json_extract(reference.value, '$.type') = 'thread'
+                AND json_extract(reference.value, '$.id') = @thread_id
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM json_each(e.provenance, '$.sourceReferences') reference
+              WHERE json_extract(reference.value, '$.type') = 'thread'
+                AND json_extract(reference.value, '$.id') = @thread_id
+            )
+        )
+    `);
+    this.tombstonePersonaDeliveriesStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'dead_letter',
+          attempts = CASE WHEN attempts < 1 THEN 1 ELSE attempts END,
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          last_error = '{"code":"privacy-deleted"}',
+          terminal_tombstone_reason = 'privacy-deleted',
+          completed_at = NULL,
+          updated_at = @write_now
+      WHERE persona = @persona
+        AND status IN ('pending', 'failed', 'claimed')
+    `);
   }
 
   /**
@@ -437,12 +513,14 @@ export class LifecycleDeliveryRepository extends BaseRepository {
           lease_now: leaseNow,
           write_now: writeNow,
         });
-        const row = this.reopenStmt.get({
-          event_id: eventId,
-          handler_id: handlerId,
-          lease_now: leaseNow,
-          write_now: writeNow,
-        }) as LifecycleDeliveryRow | undefined;
+        const row = withLifecycleRetentionMutationAuthorization(this.db, () =>
+          this.reopenStmt.get({
+            event_id: eventId,
+            handler_id: handlerId,
+            lease_now: leaseNow,
+            write_now: writeNow,
+          }),
+        ) as LifecycleDeliveryRow | undefined;
         if (!row) {
           // The eligibility check and state transition share one SQLite
           // transaction. If they diverge, roll back expiry recovery too.
@@ -520,6 +598,64 @@ export class LifecycleDeliveryRepository extends BaseRepository {
       return ok(row ? this.validateDeliveryRow(row) : null);
     } catch (cause) {
       return err(toDbError('find lifecycle delivery by key', cause));
+    }
+  }
+
+  /** Terminally disables outstanding work for one stable handler identity. */
+  disableHandler(handlerId: string): Result<LifecycleDeliveryRetentionResult, DbError> {
+    try {
+      if (!this.isIdentifier(handlerId)) {
+        return err(new DbError('Failed to disable lifecycle handler: invalid handler id'));
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.disableHandlerStmt.run({
+          handler_id: handlerId,
+          write_now: this.now(),
+        }),
+      );
+      return ok({ disabledDeliveries: info.changes });
+    } catch (cause) {
+      return err(toDbError('disable lifecycle handler', cause));
+    }
+  }
+
+  /** Dead-letters outstanding delivery detail for a privacy-deleted thread. */
+  tombstoneThread(threadId: string): Result<LifecycleDeliveryRetentionResult, DbError> {
+    try {
+      if (!this.isRuntimeId(threadId)) {
+        return err(
+          new DbError('Failed to tombstone lifecycle thread deliveries: invalid thread id'),
+        );
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.tombstoneThreadDeliveriesStmt.run({
+          thread_id: threadId,
+          write_now: this.now(),
+        }),
+      );
+      return ok({ disabledDeliveries: info.changes });
+    } catch (cause) {
+      return err(toDbError('tombstone lifecycle thread deliveries', cause));
+    }
+  }
+
+  /** Dead-letters outstanding delivery detail for a privacy-deleted persona. */
+  tombstonePersona(persona: string): Result<LifecycleDeliveryRetentionResult, DbError> {
+    try {
+      if (!this.isBoundedPersona(persona)) {
+        return err(
+          new DbError('Failed to tombstone lifecycle persona deliveries: invalid persona'),
+        );
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.tombstonePersonaDeliveriesStmt.run({
+          persona,
+          write_now: this.now(),
+        }),
+      );
+      return ok({ disabledDeliveries: info.changes });
+    } catch (cause) {
+      return err(toDbError('tombstone lifecycle persona deliveries', cause));
     }
   }
 
@@ -646,6 +782,7 @@ export class LifecycleDeliveryRepository extends BaseRepository {
       !this.isNullableTimestamp(row.completed_at) ||
       !Number.isSafeInteger(row.created_at) ||
       !Number.isSafeInteger(row.updated_at) ||
+      !this.hasValidTerminalTombstone(row, diagnostic) ||
       !this.hasValidStatusFields(row, diagnostic)
     ) {
       throw new Error('invalid persisted lifecycle delivery row');
@@ -762,6 +899,20 @@ export class LifecycleDeliveryRepository extends BaseRepository {
 
   private isNullableTimestamp(value: unknown): boolean {
     return value === null || Number.isSafeInteger(value);
+  }
+
+  private hasValidTerminalTombstone(
+    row: LifecycleDeliveryRow,
+    diagnostic: LifecycleFailureDiagnostic | null,
+  ): boolean {
+    if (row.terminal_tombstone_reason === null) return true;
+    if (
+      row.terminal_tombstone_reason !== 'handler-disabled' &&
+      row.terminal_tombstone_reason !== 'privacy-deleted'
+    ) {
+      return false;
+    }
+    return row.status === 'dead_letter' && diagnostic?.code === row.terminal_tombstone_reason;
   }
 
   private hasValidStatusFields(

@@ -117,6 +117,7 @@ describe('lifecycle event persistence', () => {
     // updates; removing the guards in this isolated test database lets reload
     // validation remain tested as a separate defense in depth.
     db.exec('DROP TRIGGER IF EXISTS lifecycle_events_reject_updates');
+    db.exec('DROP TRIGGER IF EXISTS lifecycle_events_guard_retention_updates');
     db.exec('DROP TRIGGER IF EXISTS lifecycle_event_deliveries_guard_transitions');
     db.pragma('ignore_check_constraints = ON');
     try {
@@ -817,6 +818,133 @@ describe('lifecycle event persistence', () => {
     expect(deliveries.findByEventId(input.eventId)._unsafeUnwrap()).toHaveLength(1);
   });
 
+  it('reopens ordinary dead-letters that use tombstone-like diagnostic codes', () => {
+    const now = 1_800_000_000_000;
+    leaseNow = now;
+
+    for (const code of ['privacy-deleted', 'handler-disabled'] as const) {
+      const handlerId = `ordinary-${code}`;
+      const input = event();
+      events.insertWithDeliveries(input, [delivery(handlerId)])._unsafeUnwrap();
+      const claim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+      expect(claim.delivery.event_id).toBe(input.eventId);
+      deliveries
+        .fail(input.eventId, handlerId, claim.delivery.claim_token!, { code }, now + 500, false)
+        ._unsafeUnwrap();
+
+      const reopened = deliveries.reopen(input.eventId, handlerId)._unsafeUnwrap();
+
+      expect(reopened).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        last_error: null,
+        terminal_tombstone_reason: null,
+      });
+      const replayClaim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+      expect(replayClaim.delivery.event_id).toBe(input.eventId);
+      deliveries
+        .complete(input.eventId, handlerId, replayClaim.delivery.claim_token!)
+        ._unsafeUnwrap();
+    }
+  });
+
+  it('rejects direct SQL replay of tombstoned terminal deliveries', () => {
+    const now = 1_800_000_000_000;
+    leaseNow = now;
+    const directReplay = (eventId: string, handlerId: string): void => {
+      db.prepare(
+        `UPDATE lifecycle_event_deliveries
+         SET status = 'pending',
+             attempts = 0,
+             next_retry_at = NULL,
+             claim_token = NULL,
+             claim_expires_at = NULL,
+             last_error = NULL,
+             completed_at = NULL,
+             updated_at = 2
+         WHERE event_id = ? AND handler_id = ?`,
+      ).run(eventId, handlerId);
+    };
+    const complete = (input: LifecycleEventEnvelope, handlerId: string): void => {
+      const claim = deliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+      expect(claim.delivery.event_id).toBe(input.eventId);
+      deliveries.complete(input.eventId, handlerId, claim.delivery.claim_token!)._unsafeUnwrap();
+    };
+
+    const retentionCompacted = event();
+    events
+      .insertWithDeliveries(retentionCompacted, [delivery('retention-handler')])
+      ._unsafeUnwrap();
+    complete(retentionCompacted, 'retention-handler');
+    expect(events.compactCompletedBefore(Number.MAX_SAFE_INTEGER)._unsafeUnwrap()).toEqual({
+      compactedEvents: 1,
+    });
+    expect(deliveries.reopen(retentionCompacted.eventId, 'retention-handler').isErr()).toBe(true);
+    expect(() => directReplay(retentionCompacted.eventId, 'retention-handler')).toThrow(
+      /invalid lifecycle delivery update/,
+    );
+
+    const privacyThreadId = `thread-${uuid()}`;
+    const privacyDeletedEvent = event({
+      context: { ...event().context, aggregate: { type: 'thread', id: privacyThreadId } },
+    });
+    events
+      .insertWithDeliveries(privacyDeletedEvent, [delivery('privacy-event-handler')])
+      ._unsafeUnwrap();
+    complete(privacyDeletedEvent, 'privacy-event-handler');
+    expect(events.tombstoneThread(privacyThreadId)._unsafeUnwrap()).toEqual({
+      compactedEvents: 1,
+    });
+    expect(deliveries.reopen(privacyDeletedEvent.eventId, 'privacy-event-handler').isErr()).toBe(
+      true,
+    );
+    expect(() => directReplay(privacyDeletedEvent.eventId, 'privacy-event-handler')).toThrow(
+      /invalid lifecycle delivery update/,
+    );
+
+    const handlerDisabled = event();
+    events
+      .insertWithDeliveries(handlerDisabled, [delivery('disabled-replay-handler')])
+      ._unsafeUnwrap();
+    expect(deliveries.disableHandler('disabled-replay-handler')._unsafeUnwrap()).toEqual({
+      disabledDeliveries: 1,
+    });
+    expect(deliveries.reopen(handlerDisabled.eventId, 'disabled-replay-handler').isErr()).toBe(
+      true,
+    );
+    expect(() => directReplay(handlerDisabled.eventId, 'disabled-replay-handler')).toThrow(
+      /invalid lifecycle delivery update/,
+    );
+
+    const privacyDeliveryThreadId = `thread-${uuid()}`;
+    const privacyDeletedDelivery = event({
+      context: { ...event().context, aggregate: { type: 'thread', id: privacyDeliveryThreadId } },
+    });
+    events
+      .insertWithDeliveries(privacyDeletedDelivery, [delivery('privacy-delivery-handler')])
+      ._unsafeUnwrap();
+    expect(deliveries.tombstoneThread(privacyDeliveryThreadId)._unsafeUnwrap()).toEqual({
+      disabledDeliveries: 1,
+    });
+    expect(
+      deliveries.reopen(privacyDeletedDelivery.eventId, 'privacy-delivery-handler').isErr(),
+    ).toBe(true);
+    expect(() => directReplay(privacyDeletedDelivery.eventId, 'privacy-delivery-handler')).toThrow(
+      /invalid lifecycle delivery update/,
+    );
+
+    for (const [eventId, handlerId] of [
+      [retentionCompacted.eventId, 'retention-handler'],
+      [privacyDeletedEvent.eventId, 'privacy-event-handler'],
+      [handlerDisabled.eventId, 'disabled-replay-handler'],
+      [privacyDeletedDelivery.eventId, 'privacy-delivery-handler'],
+    ] as const) {
+      expect(deliveries.findByKey(eventId, handlerId)._unsafeUnwrap()?.status).toMatch(
+        /^(completed|dead_letter)$/,
+      );
+    }
+  });
+
   it('emits bounded audit and metric evidence when reopening a delivery for replay', () => {
     const now = 1_800_000_000_000;
     leaseNow = now;
@@ -905,24 +1033,90 @@ describe('lifecycle event persistence', () => {
     try {
       expect(runMigrations(legacyDb, committedV14Migrations())._unsafeUnwrap()).toBe(15);
       expect(legacyDb.pragma('user_version', { simple: true })).toBe(14);
-      const legacyEvents = new LifecycleEventRepository(legacyDb);
-      const legacyDeliveries = new LifecycleDeliveryRepository(legacyDb, () => upgradeLeaseNow);
       const input = event();
-      legacyEvents.insertWithDeliveries(input, [{ ...delivery(), maxAttempts: 3 }])._unsafeUnwrap();
-      const lease = legacyDeliveries.claimNext({ leaseMs: 100 })._unsafeUnwrap()!;
+      const inputDelivery = delivery();
+      const claimToken = uuid();
+      legacyDb
+        .prepare(
+          `INSERT INTO lifecycle_events (
+            event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+            causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+            occurred_at, created_at
+          ) VALUES (
+            @eventId, @version, @type, @aggregateType, @aggregateId, @correlationId,
+            NULL, @recursionDepth, @recursionMaxDepth, @provenance, @payload,
+            @occurredAt, @createdAt
+          )`,
+        )
+        .run({
+          eventId: input.eventId,
+          version: input.version,
+          type: input.type,
+          aggregateType: input.context.aggregate.type,
+          aggregateId: input.context.aggregate.id,
+          correlationId: input.context.correlationId,
+          recursionDepth: input.context.recursion.depth,
+          recursionMaxDepth: input.context.recursion.maxDepth,
+          provenance: JSON.stringify({
+            source: input.context.provenance.source,
+            sourceEventIds: [],
+            sourceReferences: [],
+          }),
+          payload: JSON.stringify(input.payload),
+          occurredAt: input.occurredAt,
+          createdAt: upgradeLeaseNow,
+        });
+      legacyDb
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+            event_id, handler_id, persona, priority, handler_identity, failure_policy,
+            status, attempts, max_attempts, created_at, updated_at
+          ) VALUES (
+            @eventId, @handlerId, @persona, @priority, @identity, @failurePolicy,
+            'pending', 0, 3, @createdAt, @updatedAt
+          )`,
+        )
+        .run({
+          eventId: input.eventId,
+          handlerId: inputDelivery.handlerId,
+          persona: inputDelivery.persona,
+          priority: inputDelivery.priority,
+          identity: JSON.stringify(inputDelivery.identity),
+          failurePolicy: JSON.stringify(inputDelivery.failurePolicy),
+          createdAt: upgradeLeaseNow,
+          updatedAt: upgradeLeaseNow,
+        });
+      legacyDb
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET status = 'claimed',
+               next_retry_at = NULL,
+               claim_token = ?,
+               claim_expires_at = ?,
+               last_error = NULL,
+               updated_at = ?
+           WHERE event_id = ? AND handler_id = ?`,
+        )
+        .run(
+          claimToken,
+          upgradeLeaseNow + 100,
+          upgradeLeaseNow + 1,
+          input.eventId,
+          inputDelivery.handlerId,
+        );
 
       const currentMigrations = join(
         import.meta.dirname,
         '../../../../../src/core/database/migrations',
       );
-      expect(runMigrations(legacyDb, currentMigrations)._unsafeUnwrap()).toBe(4);
-      expect(legacyDb.pragma('user_version', { simple: true })).toBe(18);
+      expect(runMigrations(legacyDb, currentMigrations)._unsafeUnwrap()).toBe(5);
+      expect(legacyDb.pragma('user_version', { simple: true })).toBe(19);
       const upgradedDeliveries = new LifecycleDeliveryRepository(legacyDb, () => upgradeLeaseNow);
       const terminal = upgradedDeliveries
         .fail(
           input.eventId,
           'run-projector',
-          lease.delivery.claim_token!,
+          claimToken,
           { code: 'permanent-failure' },
           upgradeLeaseNow + 500,
           false,

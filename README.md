@@ -2517,6 +2517,28 @@ When using Anthropic API keys, Talon records token usage from Claude runtime res
 
 Per-persona budget limits and a `talonctl usage` report command are planned (TASK-047).
 
+## Lifecycle Retention
+
+Lifecycle events are durable by default. When lifecycle retention is invoked by
+operator/admin wiring, completed events and events with no subscribers can have
+their payload/provenance detail compacted after the configured audit window.
+Pending, failed, claimed, dead-letter, privacy-deleted, and handler-disabled
+deliveries keep their operational safety semantics; exact replay remains
+limited to ordinary terminal handler failures.
+
+```yaml
+lifecycle:
+  enabled: true
+  handlers: []
+  retention:
+    completedAuditWindowMs: 2592000000 # 30 days
+```
+
+Thread/persona privacy deletion uses the same retention service to tombstone
+matching lifecycle event detail and dead-letter outstanding matching deliveries.
+Operator CLI commands for invoking these primitives are owned by the lifecycle
+operator CLI workstream.
+
 ---
 
 ## Observability with Langfuse

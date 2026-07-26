@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../../../../src/core/database/migrations/runner.js';
+import { withLifecycleRetentionMutationAuthorization } from '../../../../../src/core/database/lifecycle-sql-functions.js';
 
 /** Creates an isolated in-memory database with WAL disabled (not needed for tests). */
 function freshDb(): Database.Database {
@@ -439,8 +440,8 @@ describe('runMigrations', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(13);
 
     const upgrade = runMigrations(db, realMigrationsDir);
-    expect(upgrade._unsafeUnwrap()).toBe(5);
-    expect(db.pragma('user_version', { simple: true })).toBe(18);
+    expect(upgrade._unsafeUnwrap()).toBe(6);
+    expect(db.pragma('user_version', { simple: true })).toBe(19);
     for (const table of [
       'lifecycle_events',
       'lifecycle_event_deliveries',
@@ -611,6 +612,18 @@ describe('runMigrations', () => {
     expect(() =>
       db
         .prepare(
+          `UPDATE lifecycle_events
+           SET payload = ?, provenance = ?, retention_tombstone_reason = 'privacy-deleted'
+           WHERE event_id = 'event-1'`,
+        )
+        .run(
+          '{"references":[],"metadata":{"lifecycleRetention":"privacy-deleted"}}',
+          '{"source":"retention-service","sourceEventIds":[],"sourceReferences":[]}',
+        ),
+    ).toThrow();
+    expect(() =>
+      db
+        .prepare(
           `INSERT INTO lifecycle_event_deliveries (
           event_id, handler_id, persona, priority, handler_identity, failure_policy,
           status, attempts, max_attempts, created_at, updated_at
@@ -703,8 +716,8 @@ describe('runMigrations', () => {
         )
         .run(identityFor('preserved-handler'));
 
-      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(4);
-      expect(preservedDb.pragma('user_version', { simple: true })).toBe(18);
+      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(5);
+      expect(preservedDb.pragma('user_version', { simple: true })).toBe(19);
       expect(
         preservedDb
           .prepare(
@@ -768,6 +781,165 @@ describe('runMigrations', () => {
         failurePolicy,
       }),
     ).not.toThrow();
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_events (
+            event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+            causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+            retention_tombstone_reason, occurred_at, created_at
+          ) VALUES ('forged-retention-event', 'v1', 'run.completed.v1', 'thread',
+            'forged-thread', 'forged-correlation', NULL, 0, 1,
+            '{"source":"retention-service","sourceEventIds":[],"sourceReferences":[]}',
+            '{"references":[],"metadata":{"lifecycleRetention":"retention-compacted"}}',
+            'retention-compacted', '2026-07-16T10:00:00.000Z', 1)`,
+        )
+        .run(),
+    ).toThrow(/system-owned/);
+    expect(() =>
+      db
+        .prepare(
+          `INSERT INTO lifecycle_event_deliveries (
+            event_id, handler_id, persona, priority, handler_identity, failure_policy,
+            status, attempts, max_attempts, terminal_tombstone_reason, created_at, updated_at
+          ) VALUES ('event-1', 'forged-terminal-handler', 'support', 0, ?, ?,
+            'pending', 0, 1, 'handler-disabled', 1, 1)`,
+        )
+        .run(identityFor('forged-terminal-handler'), failurePolicy),
+    ).toThrow(/system-owned/);
+    expect(() =>
+      db
+        .prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET status = 'dead_letter',
+               attempts = 1,
+               next_retry_at = NULL,
+               claim_token = NULL,
+               claim_expires_at = NULL,
+               last_error = '{"code":"privacy-deleted"}',
+               terminal_tombstone_reason = 'privacy-deleted',
+               completed_at = NULL,
+               updated_at = 2
+           WHERE event_id = 'event-1' AND handler_id = 'handler-4'`,
+        )
+        .run(),
+    ).toThrow();
+
+    const retentionProvenance =
+      '{"source":"retention-service","sourceEventIds":[],"sourceReferences":[]}';
+    const tombstonePayload = (reason: 'privacy-deleted' | 'retention-compacted'): string =>
+      JSON.stringify({ references: [], metadata: { lifecycleRetention: reason } });
+    const insertReplayGuardEvent = (eventId: string): void => {
+      db.prepare(
+        `INSERT INTO lifecycle_events (
+          event_id, version, type, aggregate_type, aggregate_id, correlation_id,
+          causation_id, recursion_depth, recursion_max_depth, provenance, payload,
+          occurred_at, created_at
+        ) VALUES (@eventId, 'v1', 'run.completed.v1', 'thread', @eventId, @eventId,
+          NULL, 0, 1, '{"source":"daemon","sourceEventIds":[],"sourceReferences":[]}',
+          '{"references":[],"metadata":{}}', '2026-07-16T10:00:00.000Z', 1)`,
+      ).run({ eventId });
+    };
+    const insertReplayGuardDelivery = (eventId: string, handlerId: string): void => {
+      db.prepare(
+        `INSERT INTO lifecycle_event_deliveries (
+          event_id, handler_id, persona, priority, handler_identity, failure_policy,
+          status, attempts, max_attempts, created_at, updated_at
+        ) VALUES (?, ?, 'support', 0, ?, ?, 'pending', 0, 2, 1, 1)`,
+      ).run(eventId, handlerId, identityFor(handlerId), failurePolicy);
+    };
+    const completeReplayGuardDelivery = (eventId: string, handlerId: string): void => {
+      const claimToken = `${handlerId}-claim`;
+      db.prepare(
+        `UPDATE lifecycle_event_deliveries
+         SET status = 'claimed',
+             next_retry_at = NULL,
+             claim_token = ?,
+             claim_expires_at = 100,
+             last_error = NULL,
+             updated_at = 2
+         WHERE event_id = ? AND handler_id = ?`,
+      ).run(claimToken, eventId, handlerId);
+      db.prepare(
+        `UPDATE lifecycle_event_deliveries
+         SET status = 'completed',
+             next_retry_at = NULL,
+             claim_token = NULL,
+             claim_expires_at = NULL,
+             last_error = NULL,
+             completed_at = 3,
+             updated_at = 3
+         WHERE event_id = ? AND handler_id = ?`,
+      ).run(eventId, handlerId);
+    };
+    const tombstoneReplayGuardEvent = (
+      eventId: string,
+      reason: 'privacy-deleted' | 'retention-compacted',
+    ): void => {
+      withLifecycleRetentionMutationAuthorization(db, () => {
+        db.prepare(
+          `UPDATE lifecycle_events
+           SET payload = ?, provenance = ?, retention_tombstone_reason = ?
+           WHERE event_id = ?`,
+        ).run(tombstonePayload(reason), retentionProvenance, reason, eventId);
+      });
+    };
+    const deadLetterReplayGuardDelivery = (
+      eventId: string,
+      handlerId: string,
+      code: 'handler-disabled' | 'privacy-deleted',
+    ): void => {
+      withLifecycleRetentionMutationAuthorization(db, () => {
+        db.prepare(
+          `UPDATE lifecycle_event_deliveries
+           SET status = 'dead_letter',
+               attempts = 1,
+               next_retry_at = NULL,
+               claim_token = NULL,
+               claim_expires_at = NULL,
+               last_error = ?,
+               terminal_tombstone_reason = ?,
+               completed_at = NULL,
+               updated_at = 2
+           WHERE event_id = ? AND handler_id = ?`,
+        ).run(JSON.stringify({ code }), code, eventId, handlerId);
+      });
+    };
+    const directReplay = (eventId: string, handlerId: string): void => {
+      db.prepare(
+        `UPDATE lifecycle_event_deliveries
+         SET status = 'pending',
+             attempts = 0,
+             next_retry_at = NULL,
+             claim_token = NULL,
+             claim_expires_at = NULL,
+             last_error = NULL,
+             completed_at = NULL,
+             updated_at = 4
+         WHERE event_id = ? AND handler_id = ?`,
+      ).run(eventId, handlerId);
+    };
+
+    for (const [eventId, handlerId, reason] of [
+      ['retention-replay-event', 'retention-replay-handler', 'retention-compacted'],
+      ['privacy-replay-event', 'privacy-replay-handler', 'privacy-deleted'],
+    ] as const) {
+      insertReplayGuardEvent(eventId);
+      insertReplayGuardDelivery(eventId, handlerId);
+      completeReplayGuardDelivery(eventId, handlerId);
+      tombstoneReplayGuardEvent(eventId, reason);
+      expect(() => directReplay(eventId, handlerId)).toThrow();
+    }
+    for (const [eventId, handlerId, code] of [
+      ['handler-disabled-replay-event', 'handler-disabled-replay-handler', 'handler-disabled'],
+      ['delivery-privacy-replay-event', 'delivery-privacy-replay-handler', 'privacy-deleted'],
+    ] as const) {
+      insertReplayGuardEvent(eventId);
+      insertReplayGuardDelivery(eventId, handlerId);
+      deadLetterReplayGuardDelivery(eventId, handlerId, code);
+      expect(() => directReplay(eventId, handlerId)).toThrow();
+    }
+
     // Identity and policy are one authority decision. A syntactically valid
     // policy cannot be paired with the wrong handler mode on INSERT or UPDATE.
     for (const [handlerId, identity, incompatiblePolicy] of [

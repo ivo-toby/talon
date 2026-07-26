@@ -64,14 +64,28 @@ export const PersonaLifecycleConfigSchema = z
   })
   .strict();
 
+export const LifecycleRetentionConfigSchema = z
+  .object({
+    completedAuditWindowMs: z
+      .number()
+      .int()
+      .min(0)
+      .default(30 * 24 * 60 * 60 * 1000),
+  })
+  .strict();
+
 export const LifecycleConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     handlers: z.array(LifecycleHandlerContractSchema).max(MAX_LIFECYCLE_ATTACHMENTS).default([]),
+    retention: LifecycleRetentionConfigSchema.default(() =>
+      LifecycleRetentionConfigSchema.parse({}),
+    ),
   })
   .strict();
 
 export type LifecycleSubscriptionContract = z.infer<typeof LifecycleSubscriptionContractSchema>;
 export type PersonaLifecycleSubscription = z.infer<typeof PersonaLifecycleSubscriptionSchema>;
 export type PersonaLifecycleConfig = z.infer<typeof PersonaLifecycleConfigSchema>;
+export type LifecycleRetentionConfig = z.infer<typeof LifecycleRetentionConfigSchema>;
 export type LifecycleConfig = z.infer<typeof LifecycleConfigSchema>;
