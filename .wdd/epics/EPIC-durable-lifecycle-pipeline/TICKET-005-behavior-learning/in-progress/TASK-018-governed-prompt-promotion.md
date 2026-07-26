@@ -17,9 +17,9 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-018-governed-prompt-promotion
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
-worktree_status: implementation_complete_review_passed
-pr: null
-current_gate: commit_pending
+worktree_status: ci_remediation_review_passed
+pr: https://github.com/ivo-toby/talon/pull/276
+current_gate: ci_fix_commit_pending
 branch_freshness: current_at_readiness_9c6e82e
 verification:
   - "npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts"
@@ -228,6 +228,20 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   prompt path resolution, outbound-channel auto-policy blocking, durable
   `approved_by` provenance, and ran build, 75 focused tests, scoped ESLint,
   scoped Prettier, and `git diff --check`.
+- Task commit `e083437ad3feb052d75c2e032babc9865ebd635a` was pushed and PR
+  #276 opened against `epic/durable-lifecycle-pipeline`. PR Agent passed; Verify
+  PR failed because a v14 lifecycle-event repository upgrade test still expected
+  5 applied migrations and `user_version` 19. TASK-018 adds migration 020, so
+  the current expected upgrade is 6 applied migrations and `user_version` 20.
+- CI remediation verification under Node `v24.15.0`:
+  - `npx vitest run tests/unit/core/database/repositories/lifecycle-event-repository.test.ts`
+    passed: 1 file / 33 tests.
+  - `git diff --check` passed.
+- Focused CI remediation review `019f9d67-ac6e-76e2-92a7-c203626ac098` passed
+  0C/0H/0M/0L. Reviewer verified the delta was limited to the migration-count
+  test expectation and WDD evidence, confirmed migrations 015 through 020 apply
+  from a v14 fixture, and reran the affected 33-test suite plus
+  `git diff --check`.
 
 ## Review Feedback
 
