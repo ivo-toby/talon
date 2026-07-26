@@ -16,6 +16,7 @@ import { getNextCronTime } from './cron-evaluator.js';
 import type { ScheduleConfig, SchedulePayload } from './schedule-types.js';
 import { v4 as uuidv4 } from 'uuid';
 import type { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
+import type { BehaviorReviewService } from '../lifecycle/behavior/index.js';
 
 export interface SchedulerDrainResult {
   readonly status: 'drained' | 'timed_out';
@@ -47,6 +48,7 @@ export class Scheduler {
     private readonly config: ScheduleConfig,
     private readonly logger: pino.Logger,
     private readonly lifecycleRuntime?: LifecycleRuntime,
+    private readonly behaviorReviewService?: Pick<BehaviorReviewService, 'review'>,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -169,6 +171,65 @@ export class Scheduler {
       'scheduler: firing schedule',
     );
 
+    let rawPayload: Record<string, unknown> = {};
+    try {
+      const parsed: unknown = JSON.parse(schedule.payload);
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        rawPayload = parsed as Record<string, unknown>;
+      } else {
+        this.logger.warn(
+          { scheduleId: schedule.id, raw: schedule.payload },
+          'scheduler: schedule payload is not a JSON object — using empty object',
+        );
+      }
+    } catch {
+      this.logger.warn(
+        { scheduleId: schedule.id, raw: schedule.payload },
+        'scheduler: schedule has invalid JSON payload — using empty object',
+      );
+    }
+
+    const schedulePayload = rawPayload as SchedulePayload & Record<string, unknown>;
+    const behaviorReview = parseBehaviorReviewSchedule(schedulePayload);
+    if (behaviorReview) {
+      const persona = this.personaLoader.getById(schedule.persona_id);
+      const personaName = persona.isOk() && persona.value ? persona.value.config.name : undefined;
+      if (!personaName) {
+        this.logger.error(
+          { scheduleId: schedule.id, personaId: schedule.persona_id },
+          'scheduler: behavior review persona unavailable; schedule will be retried',
+        );
+        return;
+      }
+      if (!this.behaviorReviewService) {
+        this.logger.error(
+          { scheduleId: schedule.id, personaId: schedule.persona_id },
+          'scheduler: behavior review service unavailable; schedule will be retried',
+        );
+        return;
+      }
+      const reviewed = await this.behaviorReviewService.review({
+        persona: personaName,
+        cadence: behaviorReview.cadence,
+        now: new Date(now).toISOString(),
+        trigger: {
+          kind: 'schedule',
+          scheduleId: schedule.id,
+          firedAt: new Date(now).toISOString(),
+        },
+      });
+      if (!this.isCurrentGeneration(gen)) return;
+      if (reviewed.isErr()) {
+        this.logger.error(
+          { scheduleId: schedule.id, err: reviewed.error },
+          'scheduler: behavior review failed',
+        );
+        return;
+      }
+      this.advanceScheduleAfterNativeRun(schedule, now);
+      return;
+    }
+
     // Enqueue only if a thread_id is set; schedules without a thread cannot
     // be enqueued (the queue FK requires an existing thread).
     if (schedule.thread_id === null) {
@@ -179,25 +240,7 @@ export class Scheduler {
       // Still advance / disable so we do not loop on it forever.
     } else {
       const threadId = schedule.thread_id;
-      let rawPayload: Record<string, unknown> = {};
-      try {
-        const parsed: unknown = JSON.parse(schedule.payload);
-        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          rawPayload = parsed as Record<string, unknown>;
-        } else {
-          this.logger.warn(
-            { scheduleId: schedule.id, raw: schedule.payload },
-            'scheduler: schedule payload is not a JSON object — using empty object',
-          );
-        }
-      } catch {
-        this.logger.warn(
-          { scheduleId: schedule.id, raw: schedule.payload },
-          'scheduler: schedule has invalid JSON payload — using empty object',
-        );
-      }
 
-      const schedulePayload = rawPayload as SchedulePayload & Record<string, unknown>;
       let promptFile =
         typeof schedulePayload.promptFile === 'string' ? schedulePayload.promptFile : undefined;
       let content = typeof schedulePayload.prompt === 'string' ? schedulePayload.prompt : '';
@@ -449,6 +492,29 @@ export class Scheduler {
     }
   }
 
+  private advanceScheduleAfterNativeRun(schedule: ScheduleRow, now: number): void {
+    const nextRun = this.computeNextRun(schedule);
+    if (nextRun === null) {
+      const disableResult = this.scheduleRepo.disable(schedule.id);
+      if (disableResult.isErr()) {
+        this.logger.error(
+          { scheduleId: schedule.id, err: disableResult.error },
+          'scheduler: failed to disable native schedule',
+        );
+      }
+      this.scheduleRepo.updateNextRun(schedule.id, now, null);
+      return;
+    }
+
+    const updateResult = this.scheduleRepo.updateNextRun(schedule.id, now, nextRun);
+    if (updateResult.isErr()) {
+      this.logger.error(
+        { scheduleId: schedule.id, err: updateResult.error },
+        'scheduler: failed to update native schedule next_run_at',
+      );
+    }
+  }
+
   private launchTick(gen: number): void {
     const tick = this.tick(gen);
     this.activeTicks.add(tick);
@@ -458,4 +524,13 @@ export class Scheduler {
   private isCurrentGeneration(gen: number): boolean {
     return this.running && gen === this.generation;
   }
+}
+
+function parseBehaviorReviewSchedule(
+  payload: SchedulePayload & Record<string, unknown>,
+): { cadence: 'daily' | 'weekly' } | null {
+  const review = payload.behaviorReview;
+  if (!review || typeof review !== 'object' || Array.isArray(review)) return null;
+  const cadence = (review as Record<string, unknown>).cadence;
+  return cadence === 'daily' || cadence === 'weekly' ? { cadence } : null;
 }

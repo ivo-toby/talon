@@ -108,9 +108,7 @@ describe('BehaviorSignalRepository', () => {
         .isOk(),
     ).toBe(true);
     for (const status of ['evaluating', 'approved', 'activating'] as const) {
-      expect(repository.transitionPromotion('support', ids.promotionId, status).isOk()).toBe(
-        true,
-      );
+      expect(repository.transitionPromotion('support', ids.promotionId, status).isOk()).toBe(true);
     }
     expect(
       repository
@@ -245,12 +243,14 @@ describe('BehaviorSignalRepository', () => {
 
   it('rejects ready candidates without created evidence provenance', () => {
     expect(
-      repository.createCandidate(
-        candidate({
-          status: 'ready',
-          createdFromEvidenceIds: [],
-        }),
-      ).isErr(),
+      repository
+        .createCandidate(
+          candidate({
+            status: 'ready',
+            createdFromEvidenceIds: [],
+          }),
+        )
+        .isErr(),
     ).toBe(true);
   });
 
@@ -404,6 +404,58 @@ describe('BehaviorSignalRepository', () => {
     ]);
   });
 
+  it('returns SQL-bounded review candidates with aggregate counts and bounded evidence', () => {
+    const evidenceIds = ['review-evidence-a', 'review-evidence-b', 'review-evidence-c'].map(
+      (evidenceId, index) => {
+        const input = evidence({
+          evidenceId,
+          sourceId: `review-message-${index}`,
+          sourceOccurredAt: `2026-07-25T12:0${index}:00.000Z`,
+        });
+        expect(repository.recordEvidence(input).isOk()).toBe(true);
+        return input.evidenceId;
+      },
+    );
+    const firstCandidateId = 'review-candidate-a';
+    expect(
+      repository
+        .createCandidate(
+          candidate({
+            candidateId: firstCandidateId,
+            createdFromEvidenceIds: evidenceIds,
+          }),
+        )
+        .isOk(),
+    ).toBe(true);
+    expect(
+      repository.createCandidate(candidate({ candidateId: 'review-candidate-b' })).isOk(),
+    ).toBe(true);
+    expect(
+      repository.createCandidate(candidate({ candidateId: 'review-candidate-c' })).isOk(),
+    ).toBe(true);
+
+    const reviewCandidates = repository.findReviewCandidatesByPersona('support', 2);
+    expect(reviewCandidates.isOk()).toBe(true);
+    expect(reviewCandidates._unsafeUnwrap()).toMatchObject([
+      {
+        candidate_id: firstCandidateId,
+        evidence_count: 3,
+        distinct_source_count: 3,
+        latest_source_occurred_at: '2026-07-25T12:02:00.000Z',
+      },
+      { candidate_id: 'review-candidate-b', evidence_count: 0, distinct_source_count: 0 },
+    ]);
+
+    const boundedEvidence = repository.findEvidenceByCandidate('support', firstCandidateId, 2);
+    expect(boundedEvidence.isOk()).toBe(true);
+    expect(boundedEvidence._unsafeUnwrap().map((row) => row.evidence_id)).toEqual([
+      'review-evidence-a',
+      'review-evidence-b',
+    ]);
+    expect(repository.findReviewCandidatesByPersona('support', 0).isErr()).toBe(true);
+    expect(repository.findEvidenceByCandidate('support', firstCandidateId, 0).isErr()).toBe(true);
+  });
+
   it('persists evaluation, activation, rollback lineage, expiry, and reopen transitions', () => {
     const [firstEvidence, secondEvidence] = recordDistinctEvidence();
     const candidateId = uuid();
@@ -455,8 +507,7 @@ describe('BehaviorSignalRepository', () => {
       activation_id: 'activation-1',
       activated_at: db
         .prepare(`SELECT updated_at FROM behavior_promotions WHERE promotion_id = ?`)
-        .get(promotionId)
-        ?.updated_at,
+        .get(promotionId)?.updated_at,
     });
     expect(repository.transitionPromotion('support', promotionId, 'rolled_back').isErr()).toBe(
       true,
@@ -558,7 +609,9 @@ describe('BehaviorSignalRepository', () => {
       }),
     );
 
-    const auditDetails = auditLogger.logLifecyclePromotion.mock.calls.map(([entry]) => entry.details);
+    const auditDetails = auditLogger.logLifecyclePromotion.mock.calls.map(
+      ([entry]) => entry.details,
+    );
     expect(auditDetails).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ operation: 'create', promotionId, candidateId }),
@@ -750,8 +803,9 @@ describe('BehaviorSignalRepository', () => {
         .isOk(),
     ).toBe(true);
     for (const status of ['evaluating', 'approved', 'activating'] as const) {
-      expect(repository.transitionPromotion('support', 'rollback-active-promotion', status).isOk())
-        .toBe(true);
+      expect(
+        repository.transitionPromotion('support', 'rollback-active-promotion', status).isOk(),
+      ).toBe(true);
     }
     db.prepare(
       `INSERT INTO behavior_promotion_activations (
@@ -844,8 +898,9 @@ describe('BehaviorSignalRepository', () => {
         .isOk(),
     ).toBe(true);
     for (const status of ['evaluating', 'approved', 'activating'] as const) {
-      expect(repository.transitionPromotion('support', 'rollback-after-promotion', status).isOk())
-        .toBe(true);
+      expect(
+        repository.transitionPromotion('support', 'rollback-after-promotion', status).isOk(),
+      ).toBe(true);
     }
     const activatingPromotion = db
       .prepare(
@@ -1030,7 +1085,11 @@ describe('BehaviorSignalRepository', () => {
     BaseRepository.seedMonotonicClockFromDb(db);
     const afterRestart = new BehaviorSignalRepository(db);
 
-    const transitioned = afterRestart.transitionCandidate('support', 'future-candidate', 'rejected');
+    const transitioned = afterRestart.transitionCandidate(
+      'support',
+      'future-candidate',
+      'rejected',
+    );
     expect(transitioned.isOk()).toBe(true);
     expect(transitioned._unsafeUnwrap().updated_at).toBeGreaterThan(futureTs);
   });

@@ -5,7 +5,10 @@
  * schedule types so consumers only need to import from this module.
  */
 
-export type { ScheduleType, ScheduleRow } from '../core/database/repositories/schedule-repository.js';
+export type {
+  ScheduleType,
+  ScheduleRow,
+} from '../core/database/repositories/schedule-repository.js';
 
 // ---------------------------------------------------------------------------
 // Schedule payload
@@ -19,6 +22,10 @@ export interface SchedulePayload {
   prompt?: string;
   /** Persona-relative prompt file alias from `prompts/*.md`. */
   promptFile?: string;
+  /** Native behavior-learning review cadence. When set, no agent queue item is enqueued. */
+  behaviorReview?: {
+    cadence: 'daily' | 'weekly';
+  };
 }
 
 // ---------------------------------------------------------------------------

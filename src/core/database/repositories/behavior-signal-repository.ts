@@ -100,6 +100,12 @@ export interface BehaviorCandidateSummaryRow extends BehaviorCandidateRow {
   evidence_sources: number;
 }
 
+export interface BehaviorCandidateReviewRow extends BehaviorCandidateRow {
+  evidence_count: number;
+  distinct_source_count: number;
+  latest_source_occurred_at: string | null;
+}
+
 export interface BehaviorPromotionInput {
   readonly promotionId: string;
   readonly persona: string;
@@ -226,6 +232,10 @@ function boundedMetadata(value: unknown): BehaviorMetadata | null {
   return result;
 }
 
+function isBoundedReadLimit(value: number): boolean {
+  return Number.isInteger(value) && value >= 1 && value <= 100;
+}
+
 interface NormalizedEvidence {
   evidenceId: string;
   persona: string;
@@ -270,11 +280,14 @@ export class BehaviorSignalRepository extends BaseRepository {
   private readonly findEvidenceByFingerprintStmt: Database.Statement;
   private readonly insertEvidenceStmt: Database.Statement;
   private readonly findEvidenceByPersonaStmt: Database.Statement;
+  private readonly findEvidenceByCandidateStmt: Database.Statement;
+  private readonly findEvidenceByCandidateBoundedStmt: Database.Statement;
   private readonly insertCandidateStmt: Database.Statement;
   private readonly insertCandidateEvidenceStmt: Database.Statement;
   private readonly findCandidateStmt: Database.Statement;
   private readonly findCandidatesByPersonaStmt: Database.Statement;
   private readonly findCandidateSummariesByPersonaStmt: Database.Statement;
+  private readonly findReviewCandidatesByPersonaStmt: Database.Statement;
   private readonly transitionCandidateStmt: Database.Statement;
   private readonly expireCandidateStmt: Database.Statement;
   private readonly countDistinctSourcesStmt: Database.Statement;
@@ -309,6 +322,23 @@ export class BehaviorSignalRepository extends BaseRepository {
     `);
     this.findEvidenceByPersonaStmt = db.prepare(`
       SELECT * FROM behavior_evidence WHERE persona = ? ORDER BY created_at ASC, evidence_id ASC
+    `);
+    this.findEvidenceByCandidateStmt = db.prepare(`
+      SELECT e.*
+      FROM behavior_evidence e
+      JOIN behavior_candidate_evidence ce
+        ON ce.persona = e.persona AND ce.evidence_id = e.evidence_id
+      WHERE ce.persona = ? AND ce.candidate_id = ?
+      ORDER BY e.created_at ASC, e.evidence_id ASC
+    `);
+    this.findEvidenceByCandidateBoundedStmt = db.prepare(`
+      SELECT e.*
+      FROM behavior_evidence e
+      JOIN behavior_candidate_evidence ce
+        ON ce.persona = e.persona AND ce.evidence_id = e.evidence_id
+      WHERE ce.persona = @persona AND ce.candidate_id = @candidate_id
+      ORDER BY e.created_at ASC, e.evidence_id ASC
+      LIMIT @limit
     `);
     this.insertCandidateStmt = db.prepare(`
       INSERT INTO behavior_candidates (
@@ -349,6 +379,43 @@ export class BehaviorSignalRepository extends BaseRepository {
         ), 0) AS evidence_sources
       FROM behavior_candidates c
       WHERE c.persona = ?
+      ORDER BY c.created_at ASC, c.candidate_id ASC
+      LIMIT ?
+    `);
+    this.findReviewCandidatesByPersonaStmt = db.prepare(`
+      SELECT
+        c.*,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM behavior_candidate_evidence ce
+          WHERE ce.persona = c.persona
+            AND ce.candidate_id = c.candidate_id
+        ), 0) AS evidence_count,
+        COALESCE((
+          SELECT COUNT(*)
+          FROM (
+            SELECT e.source_kind, e.source_id
+            FROM behavior_candidate_evidence ce
+            JOIN behavior_evidence e
+              ON e.evidence_id = ce.evidence_id
+             AND e.persona = ce.persona
+            WHERE ce.persona = c.persona
+              AND ce.candidate_id = c.candidate_id
+            GROUP BY e.source_kind, e.source_id
+          )
+        ), 0) AS distinct_source_count,
+        (
+          SELECT MAX(e.source_occurred_at)
+          FROM behavior_candidate_evidence ce
+          JOIN behavior_evidence e
+            ON e.evidence_id = ce.evidence_id
+           AND e.persona = ce.persona
+          WHERE ce.persona = c.persona
+            AND ce.candidate_id = c.candidate_id
+        ) AS latest_source_occurred_at
+      FROM behavior_candidates c
+      WHERE c.persona = ?
+        AND c.status IN ('collecting', 'ready')
       ORDER BY c.created_at ASC, c.candidate_id ASC
       LIMIT ?
     `);
@@ -529,6 +596,32 @@ export class BehaviorSignalRepository extends BaseRepository {
     }
   }
 
+  findEvidenceByCandidate(
+    persona: string,
+    candidateId: string,
+    limit?: number,
+  ): Result<BehaviorEvidenceRow[], DbError> {
+    try {
+      if (!isBehaviorPersona(persona) || !isBehaviorRuntimeId(candidateId)) {
+        return err(new DbError('Failed to find behavior candidate evidence: invalid scope'));
+      }
+      if (limit !== undefined && !isBoundedReadLimit(limit)) {
+        return err(new DbError('Failed to find behavior candidate evidence: invalid limit'));
+      }
+      const rows =
+        limit === undefined
+          ? (this.findEvidenceByCandidateStmt.all(persona, candidateId) as BehaviorEvidenceRow[])
+          : (this.findEvidenceByCandidateBoundedStmt.all({
+              persona,
+              candidate_id: candidateId,
+              limit,
+            }) as BehaviorEvidenceRow[]);
+      return ok(rows.map((row) => this.validateEvidenceRow(row)));
+    } catch (cause) {
+      return err(toDbError('find behavior candidate evidence', cause));
+    }
+  }
+
   createCandidate(input: BehaviorCandidateInput): Result<BehaviorCandidateRow, DbError> {
     try {
       const normalized = this.normalizeCandidate(input);
@@ -625,6 +718,27 @@ export class BehaviorSignalRepository extends BaseRepository {
       );
     } catch (cause) {
       return err(toDbError('summarize behavior candidates', cause));
+    }
+  }
+
+  findReviewCandidatesByPersona(
+    persona: string,
+    limit: number,
+  ): Result<BehaviorCandidateReviewRow[], DbError> {
+    try {
+      if (!isBehaviorPersona(persona)) {
+        return err(new DbError('Failed to find behavior review candidates: invalid persona'));
+      }
+      if (!isBoundedReadLimit(limit)) {
+        return err(new DbError('Failed to find behavior review candidates: invalid limit'));
+      }
+      const rows = this.findReviewCandidatesByPersonaStmt.all(
+        persona,
+        limit,
+      ) as BehaviorCandidateReviewRow[];
+      return ok(rows.map((row) => this.validateCandidateReviewRow(row)));
+    } catch (cause) {
+      return err(toDbError('find behavior review candidates', cause));
     }
   }
 
@@ -1098,6 +1212,26 @@ export class BehaviorSignalRepository extends BaseRepository {
       throw new Error('invalid persisted behavior candidate row');
     }
     return row;
+  }
+
+  private validateCandidateReviewRow(row: BehaviorCandidateReviewRow): BehaviorCandidateReviewRow {
+    const candidate = this.validateCandidateRow(row);
+    if (
+      !Number.isSafeInteger(row.evidence_count) ||
+      row.evidence_count < 0 ||
+      !Number.isSafeInteger(row.distinct_source_count) ||
+      row.distinct_source_count < 0 ||
+      (row.latest_source_occurred_at !== null &&
+        !BehaviorTimestampSchema.safeParse(row.latest_source_occurred_at).success)
+    ) {
+      throw new Error('invalid persisted behavior review candidate row');
+    }
+    return {
+      ...candidate,
+      evidence_count: row.evidence_count,
+      distinct_source_count: row.distinct_source_count,
+      latest_source_occurred_at: row.latest_source_occurred_at,
+    };
   }
 
   private validatePromotionRow(row: BehaviorPromotionRow): BehaviorPromotionRow {
