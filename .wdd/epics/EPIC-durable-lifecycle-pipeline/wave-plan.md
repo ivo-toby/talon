@@ -58,7 +58,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | done |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | done |
-| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | todo |
+| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_activation_review_passed_commit_pending |
 
 ## Dependency Grid
 
@@ -824,7 +824,9 @@ Stop condition:
 
 ### WAVE-011
 
-Status: planned
+Status: in_progress
+
+Activated: 2026-07-26
 
 Tasks:
 
@@ -849,6 +851,19 @@ Activation rule:
 
 - Activate the eligible task after syncing activation artifacts.
 - Create one isolated worktree from the synced epic branch.
+- Activation started from exact pushed WAVE-010 reconciliation checkpoint
+  `ee1b057166fdd02e6b31b1799b512c5e27f24be4`.
+- TASK-020 is allocated to branch
+  `task/TASK-020-lifecycle-documentation-adoption` and worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption`
+  in metadata only.
+- No TASK-020 branch or worktree may be created until this activation checkpoint
+  passes GPT-5.5/xhigh review, is committed and pushed, its exact commit is
+  recorded, and the activation-sync checkpoint has passed review and been
+  committed/pushed.
+- Activation checkpoint review
+  `019f9dc8-87c5-76f3-8724-e178beced852` passed 0C/0H/0M/0L; committing and
+  pushing the reviewed checkpoint is next.
 
 Stop condition:
 
@@ -868,8 +883,9 @@ Stop condition:
   pruned.
 - WAVE-010 TASK-019 is merged through PR #277 at `0c30dcc`; the user-required
   e2e tests and Sprites event-pipeline validation are complete. WAVE-010
-  reconciliation must be reviewed, committed, and pushed before WAVE-011
-  activation.
+  reconciliation was reviewed, committed, and pushed at
+  `ee1b057166fdd02e6b31b1799b512c5e27f24be4`; WAVE-011 activation starts from
+  that exact checkpoint.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

@@ -6,7 +6,7 @@ ticket: TICKET-006-operations-adoption
 wave: WAVE-011
 slug: lifecycle-documentation-adoption
 title: Update lifecycle configuration, architecture, setup skills, and operator docs
-status: todo
+status: in-progress
 depends_on: ["TASK-019-lifecycle-end-to-end-verification"]
 conflict_domains:
   - "README.md"
@@ -19,11 +19,11 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-020-lifecycle-documentation-adoption
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption
+worktree_status: allocated_metadata_only
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_review_passed_commit_pending
+branch_freshness: branch_not_created_activation_checkpoint_pending
 verification:
   - "npx vitest run tests/unit/deploy/starter-bundle.test.ts tests/unit/core/config/config-schema.test.ts tests/unit/cli/lifecycle-commands.test.ts"
   - "npm run build"
@@ -34,7 +34,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -112,7 +112,14 @@ task/TASK-020-lifecycle-documentation-adoption
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption
+
+Allocated in controller metadata only. GPT-5.5/xhigh activation checkpoint
+review `019f9dc8-87c5-76f3-8724-e178beced852` passed 0C/0H/0M/0L. The
+controller must not create this branch/worktree until the reviewed activation
+checkpoint is committed and pushed, the exact activation checkpoint is recorded,
+and the activation-sync checkpoint has passed GPT-5.5/xhigh review and been
+committed/pushed.
 
 ## PR / Patch Reference
 
