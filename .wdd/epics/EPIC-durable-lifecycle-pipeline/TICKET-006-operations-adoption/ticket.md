@@ -50,7 +50,7 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 | Task | Status | Wave | Summary |
 |------|--------|------|---------|
 | TASK-016-lifecycle-operator-cli | todo | WAVE-008 | Expose effective handlers, delivery/backlog/health state, exact replay, disablement, and behavior-candidate provenance through protected typed IPC and talonctl commands. |
-| TASK-019-lifecycle-end-to-end-verification | todo | WAVE-010 | Prove inbound-to-outbound async analysis, context rotation, restart/replay, retention, isolation, interceptors, and governed behavior promotion across real SQLite and daemon boundaries. |
+| TASK-019-lifecycle-end-to-end-verification | todo | WAVE-010 | Prove inbound-to-outbound async analysis, context rotation, restart/replay, retention, isolation, interceptors, governed behavior promotion, e2e coverage, and Sprites event-pipeline validation across real SQLite and daemon boundaries. |
 | TASK-020-lifecycle-documentation-adoption | todo | WAVE-011 | Synchronize README, architecture self-doc, config/starter examples, AGENTS, default sub-agent docs, and affected setup/profile/personality/schedule/smoke skills with the verified implementation. |
 
 ## Dependencies

@@ -4,7 +4,7 @@ kind: ticket
 epic: EPIC-durable-lifecycle-pipeline
 slug: TICKET-003-core-boundary-integration
 title: Core Boundary Integration and Telemetry
-status: in_progress
+status: done
 task_count: 3
 depends_on: []
 conflict_domains:
@@ -49,8 +49,8 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 | Task | Status | Wave | Summary |
 |------|--------|------|---------|
 | TASK-007-daemon-message-queue-schedule-events | done | WAVE-004 | Construct/supervise lifecycle services and publish message, routing, queue, and schedule events while enforcing message.before_persist without disabled-behavior drift. |
-| TASK-008-run-tool-outbound-events | todo | WAVE-005 | Publish run/tool/outbound events and enforce run, tool, and send interceptors while preserving approvals, delivery idempotency, audit, and originating-run semantics. |
-| TASK-013-handler-telemetry-correlation | todo | WAVE-006 | Instrument publication/interceptor/handler/delivery behavior with bounded audit, metrics, and existing Langfuse observations plus an optional issue-70 trace-evidence seam. |
+| TASK-008-run-tool-outbound-events | done | WAVE-005 | Publish run/tool/outbound events and enforce run, tool, and send interceptors while preserving approvals, delivery idempotency, audit, and originating-run semantics. |
+| TASK-013-handler-telemetry-correlation | done | WAVE-006 | Instrument publication/interceptor/handler/delivery behavior with bounded audit, metrics, and existing Langfuse observations plus an optional issue-70 trace-evidence seam. |
 
 ## Dependencies
 
@@ -77,6 +77,6 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 
 ## Completion Criteria
 
-- [ ] All child task review and verification gates are resolved.
-- [ ] Shared-context updates are reconciled.
-- [ ] Ticket status matches child task state.
+- [x] All child task review and verification gates are resolved.
+- [x] Shared-context updates are reconciled.
+- [x] Ticket status matches child task state.

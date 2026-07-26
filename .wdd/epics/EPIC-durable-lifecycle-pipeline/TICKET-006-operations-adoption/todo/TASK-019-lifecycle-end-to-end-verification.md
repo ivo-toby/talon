@@ -27,6 +27,7 @@ verification:
   - "npm run lint"
   - "npm test (controller obtains explicit user approval before running the slow full suite)"
   - "$run-talon-smoke -- no-cost daemon and terminal round trip, then verify no listeners remain"
+  - "Sprites event-pipeline validation for the completed lifecycle pipeline"
   - "git diff --check"
 ---
 
@@ -46,7 +47,10 @@ WAVE-010
 
 ## Objective
 
-Prove inbound-to-outbound async analysis, context rotation, restart/replay, retention, isolation, interceptors, and governed behavior promotion across real SQLite and daemon boundaries.
+Prove inbound-to-outbound async analysis, context rotation, restart/replay,
+retention, isolation, interceptors, governed behavior promotion, and the
+completed event pipeline across real SQLite, daemon, e2e, and Sprites
+validation boundaries.
 
 ## Scope
 
@@ -56,6 +60,9 @@ Prove inbound-to-outbound async analysis, context rotation, restart/replay, rete
 - Test restart/lease recovery, dead-letter, replay, reload, retention, privacy, and disablement.
 - Test scope/capability isolation, prompt injection, schema rejection, secret redaction, timeouts, recursion, and side-effect dedup.
 - Test migration from current schema and targeted runtime-smoke assertions.
+- Add e2e tests for the completed lifecycle waves before documentation adoption.
+- Validate the completed event pipeline using Sprites before the epic is
+  considered complete.
 
 ## Non-Scope
 
@@ -159,6 +166,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 - npm run lint
 - npm test (controller obtains explicit user approval before running the slow full suite)
 - $run-talon-smoke -- no-cost daemon and terminal round trip, then verify no listeners remain
+- Sprites event-pipeline validation for the completed lifecycle pipeline
 - git diff --check
 
 ## Verification Evidence

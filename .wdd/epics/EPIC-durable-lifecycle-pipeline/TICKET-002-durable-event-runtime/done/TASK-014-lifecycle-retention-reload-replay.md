@@ -6,7 +6,7 @@ ticket: TICKET-002-durable-event-runtime
 wave: WAVE-007
 slug: lifecycle-retention-reload-replay
 title: Implement retention, privacy deletion, reload identity, and safe replay
-status: in-progress
+status: done
 depends_on: ["TASK-006-durable-event-dispatcher", "TASK-013-handler-telemetry-correlation"]
 conflict_domains:
   - "src/lifecycle/retention-service.ts"
@@ -18,10 +18,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-014-lifecycle-retention-reload-replay
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay
-worktree_status: pre_commit_review_passed
-pr: null
-current_gate: pre_commit_review_passed
-branch_freshness: task_branch_current_before_commit
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/273
+current_gate: merged
+branch_freshness: merged_current_at_dde6bac
 verification:
   - "npx vitest run tests/unit/lifecycle/retention-service.test.ts tests/unit/lifecycle/lifecycle-admin-service.test.ts tests/unit/daemon/reload.test.ts"
   - "npm run build"
@@ -33,7 +33,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -116,12 +116,15 @@ task/TASK-014-lifecycle-retention-reload-replay
 
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay
 
-Allocated by the controller for WAVE-007. Do not create or use this worktree
-until the reviewed activation checkpoint has been committed and pushed.
+Allocated and used by the controller for WAVE-007, then verified clean, removed,
+and pruned during WAVE-007 reconciliation after PR #273 merged.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #273: https://github.com/ivo-toby/talon/pull/273
+
+Task commit: `9efed95`
+Epic merge commit: `dde6bacef91462fadb4fa1fb34ed181ba648dcd2`
 
 ## RED-GREEN TDD Plan
 
@@ -159,11 +162,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -202,6 +205,13 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   `019f9c80-79e8-7770-bcf4-8ef4f8d2a5fb`: 0 Critical / 0 High /
   0 Medium / 0 Low. Reviewer re-ran the six-file focused suite
   (`190 tests`), `npm run build`, `git diff --check`, and scoped ESLint.
+- GitHub PR #273 passed `Build, lint, and test` and `pr_agent_job`; the only
+  PR comment was the non-actionable GitHub Actions “Failed to generate code
+  suggestions for PR” note.
+- PR #273 was squash-merged into the epic branch at
+  `dde6bacef91462fadb4fa1fb34ed181ba648dcd2`.
+- During WAVE-007 reconciliation, the task worktree was verified clean, removed,
+  and pruned.
 
 ## Review Feedback
 
@@ -254,3 +264,5 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   blocked replay for real retention/privacy/disablement tombstones.
 - Migration 019 now requires a repository-controlled SQLite authorization function for canonical event tombstones and privacy/disablement terminal delivery tombstones; direct SQL regression coverage was added.
 - TASK-014 now exposes validated `lifecycle.retention.completedAuditWindowMs` config and documents the service-level retention/privacy primitives. Operator CLI invocation remains scoped to downstream TASK-016.
+- PR #273 merged into `epic/durable-lifecycle-pipeline` at `dde6bac`; the clean
+  task worktree was removed during WAVE-007 reconciliation.

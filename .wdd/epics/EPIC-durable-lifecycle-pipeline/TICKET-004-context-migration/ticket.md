@@ -4,7 +4,7 @@ kind: ticket
 epic: EPIC-durable-lifecycle-pipeline
 slug: TICKET-004-context-migration
 title: Observational Memory Contract Migration
-status: planned
+status: done
 task_count: 2
 depends_on: []
 conflict_domains:
@@ -46,8 +46,8 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 
 | Task | Status | Wave | Summary |
 |------|--------|------|---------|
-| TASK-009-context-contracts-projector | todo | WAVE-005 | Define talon.context.observer.v1 and reducer.v1 plus an idempotent native projector preserving observation, memory, pre-roll, reduction, continuation, boundary, and session invariants. |
-| TASK-011-context-lifecycle-migration | todo | WAVE-006 | Route context thresholds through configured contracts/projector, remove observer/reflector name checks and auto-binding, and translate legacy summarizer config with clear deprecation. |
+| TASK-009-context-contracts-projector | done | WAVE-005 | Define talon.context.observer.v1 and reducer.v1 plus an idempotent native projector preserving observation, memory, pre-roll, reduction, continuation, boundary, and session invariants. |
+| TASK-011-context-lifecycle-migration | done | WAVE-006 | Route context thresholds through configured contracts/projector, remove observer/reflector name checks and auto-binding, and translate legacy summarizer config with clear deprecation. |
 
 ## Dependencies
 
@@ -72,6 +72,6 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 
 ## Completion Criteria
 
-- [ ] All child task review and verification gates are resolved.
-- [ ] Shared-context updates are reconciled.
-- [ ] Ticket status matches child task state.
+- [x] All child task review and verification gates are resolved.
+- [x] Shared-context updates are reconciled.
+- [x] Ticket status matches child task state.

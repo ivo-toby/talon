@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-007
 slug: behavior-signal-projector
 title: Implement feedback projection and evidence deduplication
-status: in-progress
+status: done
 depends_on: ["TASK-007-daemon-message-queue-schedule-events", "TASK-010-behavior-ledger-persistence", "TASK-012-feedback-detector-subagent"]
 conflict_domains:
   - "src/lifecycle/behavior/**"
@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-015-behavior-signal-projector
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector
-worktree_status: allocated_pending_creation
-pr: null
-current_gate: activation_checkpoint_pending
-branch_freshness: pending_activation_checkpoint
+worktree_status: cleaned_up
+pr: https://github.com/ivo-toby/talon/pull/272
+current_gate: merged
+branch_freshness: merged_current_at_61b552a
 verification:
   - "npx vitest run tests/unit/lifecycle/behavior tests/integration/lifecycle-behavior-feedback.test.ts"
   - "npm run build"
@@ -31,7 +31,7 @@ verification:
 
 ## Status
 
-in-progress
+done
 
 ## Parent Ticket
 
@@ -106,12 +106,15 @@ task/TASK-015-behavior-signal-projector
 
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector
 
-Allocated by the controller for WAVE-007. Do not create or use this worktree
-until the reviewed activation checkpoint has been committed and pushed.
+Allocated and used by the controller for WAVE-007, then verified clean, removed,
+and pruned during WAVE-007 reconciliation after PR #272 merged.
 
 ## PR / Patch Reference
 
-None. The task PR targets epic/durable-lifecycle-pipeline.
+PR #272: https://github.com/ivo-toby/talon/pull/272
+
+Task commit: `a50b490`
+Epic merge commit: `61b552a209db197c65b7ea48f18dff05c68d84d2`
 
 ## RED-GREEN TDD Plan
 
@@ -147,11 +150,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
-- [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
+- [x] PR targets the epic branch and freshness is checked.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -220,6 +223,17 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   untracked integration test was also checked with
   `git diff --no-index --check /dev/null tests/integration/lifecycle-behavior-feedback.test.ts`
   and produced no whitespace warnings.
+- 2026-07-26: Fresh full-diff GPT-5.5/xhigh review
+  `019f9c6e-b676-7190-9059-eb08ff4360a4` passed with 0 Critical / 0 High /
+  0 Medium / 0 Low findings.
+- 2026-07-26: Task commit `a50b490` was pushed and PR #272 passed
+  `Build, lint, and test` and `pr_agent_job`; the only PR comment was the
+  non-actionable GitHub Actions “Failed to generate code suggestions for PR”
+  note.
+- 2026-07-26: PR #272 was squash-merged into the epic branch at
+  `61b552a209db197c65b7ea48f18dff05c68d84d2`.
+- During WAVE-007 reconciliation, the task worktree was verified clean, removed,
+  and pruned.
 
 ## Review Feedback
 
@@ -238,7 +252,13 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - None.
 
-## Blockers
+### Fresh Full-Diff Review
+
+- Passed: GPT-5.5/xhigh review
+  `019f9c6e-b676-7190-9059-eb08ff4360a4` found 0 Critical, 0 High,
+  0 Medium, and 0 Low findings after the blocking handoff-forgery remediation.
+
+## Resolved Blockers
 
 - 2026-07-26: Required GPT-5.5/xhigh review could not complete in this
   sandbox. First attempt failed because `codex exec --sandbox read-only` could
@@ -251,7 +271,15 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   `git add ...` failed with `fatal: Unable to create
   '/Users/ivo.toby/workspace/talon/.git/worktrees/WAVE-007-behavior-signal-projector/index.lock':
   Operation not permitted`.
+- Resolved in controller-managed handoff: final review completed, commit
+  `a50b490` was pushed, PR #272 passed GitHub checks, and the task merged at
+  `61b552a`.
 
 ## Completion Notes
 
-- None yet.
+- TASK-015 projects validated behavior feedback signals into the persona behavior
+  ledger with deterministic evidence fingerprints, configured detector
+  provenance enforcement, append-only evidence accumulation, and forged same-key
+  signal handoff protection.
+- PR #272 merged into `epic/durable-lifecycle-pipeline` at `61b552a`; the clean
+  task worktree was removed during WAVE-007 reconciliation.

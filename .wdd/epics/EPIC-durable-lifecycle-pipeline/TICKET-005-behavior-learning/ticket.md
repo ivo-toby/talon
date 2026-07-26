@@ -4,7 +4,7 @@ kind: ticket
 epic: EPIC-durable-lifecycle-pipeline
 slug: TICKET-005-behavior-learning
 title: Behavior Feedback and Governed Self-Improvement
-status: planned
+status: in_progress
 task_count: 5
 depends_on: []
 conflict_domains:
@@ -47,9 +47,9 @@ Complete the child tasks, reconcile durable findings, and preserve the epic nati
 
 | Task | Status | Wave | Summary |
 |------|--------|------|---------|
-| TASK-010-behavior-ledger-persistence | todo | WAVE-005 | Add dedicated behavior signal/evidence/evaluation/promotion/activation/rollback storage with provenance, evidence fingerprints, persona scope, and guarded transitions. |
-| TASK-012-feedback-detector-subagent | todo | WAVE-006 | Add an optional built-in behavior detector implementing talon.behavior.signal.v1 for explicit correction, positive feedback, inferred pattern, missed action, noise, and tool failure. |
-| TASK-015-behavior-signal-projector | todo | WAVE-007 | Project validated signals into the persona ledger with provenance, deterministic source fingerprints, schedule/direct copy suppression, distinct-source thresholds, scope enforcement, and notes-only behavior. |
+| TASK-010-behavior-ledger-persistence | done | WAVE-005 | Add dedicated behavior signal/evidence/evaluation/promotion/activation/rollback storage with provenance, evidence fingerprints, persona scope, and guarded transitions. |
+| TASK-012-feedback-detector-subagent | done | WAVE-006 | Add an optional built-in behavior detector implementing talon.behavior.signal.v1 for explicit correction, positive feedback, inferred pattern, missed action, noise, and tool failure. |
+| TASK-015-behavior-signal-projector | done | WAVE-007 | Project validated signals into the persona ledger with provenance, deterministic source fingerprints, schedule/direct copy suppression, distinct-source thresholds, scope enforcement, and notes-only behavior. |
 | TASK-017-behavior-review-reducers | todo | WAVE-008 | Add typed optional daily/weekly review sub-agents and native bounded evidence orchestration that groups independent signals, rejects duplicates/conflicts, and records notes-only proposals. |
 | TASK-018-governed-prompt-promotion | todo | WAVE-009 | Apply accepted behavior proposals through native structured patching with default approval, pre-authorized narrow policy, evaluation, atomic write, verified reload, activation evidence, and rollback. |
 

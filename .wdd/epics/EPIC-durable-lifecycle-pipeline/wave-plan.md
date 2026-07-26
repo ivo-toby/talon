@@ -52,8 +52,8 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-011-context-lifecycle-migration | TICKET-004-context-migration | TASK-008-run-tool-outbound-events, TASK-009-context-contracts-projector | AgentRunner, ContextRoller, daemon bootstrap, config schema, queue | done |
 | TASK-012-feedback-detector-subagent | TICKET-005-behavior-learning | TASK-004-subagent-lifecycle-adapter, TASK-010-behavior-ledger-persistence | behavior contracts, default detector subagent | done |
 | TASK-013-handler-telemetry-correlation | TICKET-003-core-boundary-integration | TASK-006-durable-event-dispatcher, TASK-008-run-tool-outbound-events | observability, audit logger, lifecycle telemetry | done |
-| TASK-014-lifecycle-retention-reload-replay | TICKET-002-durable-event-runtime | TASK-006-durable-event-dispatcher, TASK-013-handler-telemetry-correlation | lifecycle admin/retention, lifecycle repositories, daemon reload | in-progress |
-| TASK-015-behavior-signal-projector | TICKET-005-behavior-learning | TASK-007-daemon-message-queue-schedule-events, TASK-010-behavior-ledger-persistence, TASK-012-feedback-detector-subagent | lifecycle behavior, config schema, behavior integration tests | in-progress |
+| TASK-014-lifecycle-retention-reload-replay | TICKET-002-durable-event-runtime | TASK-006-durable-event-dispatcher, TASK-013-handler-telemetry-correlation | lifecycle admin/retention, lifecycle repositories, daemon reload | done |
+| TASK-015-behavior-signal-projector | TICKET-005-behavior-learning | TASK-007-daemon-message-queue-schedule-events, TASK-010-behavior-ledger-persistence, TASK-012-feedback-detector-subagent | lifecycle behavior, config schema, behavior integration tests | done |
 | TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | todo |
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | todo |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | todo |
@@ -520,9 +520,11 @@ Drift notes:
 
 ### WAVE-007
 
-Status: in_progress
+Status: done
 
 Activated: 2026-07-26
+
+Completed: 2026-07-26
 
 Tasks:
 
@@ -562,14 +564,26 @@ Activation rule:
   `c7bedf7fb14775d35a09266a8ae36fac8c438905`; the Low/P3 stale per-task gate
   wording remains untouched.
 - TASK-014/TASK-015 branches/worktrees were created and pushed from the exact
-  activation-sync commit. Readiness review, commit, push, task-branch
-  fast-forward, and worktree artifact verification are required before worker
-  dispatch.
+  activation-sync commit. Readiness review passed, the readiness checkpoint was
+  pushed at `330fdd9c0e4b2e35b6f9793e27fbb06a151c0ebd`, both task branches
+  were fast-forwarded to that exact commit, and independent GPT-5.5/high
+  workers completed the parallel tasks.
+- TASK-015 PR #272 merged into the epic branch at
+  `61b552a209db197c65b7ea48f18dff05c68d84d2` after GitHub checks and
+  GPT-5.5/xhigh review passed.
+- TASK-014 PR #273 merged into the epic branch at
+  `dde6bacef91462fadb4fa1fb34ed181ba648dcd2` after GitHub checks and
+  GPT-5.5/xhigh review passed.
+- Integrated WAVE-007 verification on the merged epic branch passed 11 focused
+  files / 227 tests, `npm run build`, scoped ESLint on merged task-owned source,
+  and `git diff --check`.
+- Both completed task worktrees were verified clean, removed, and pruned during
+  reconciliation.
 
 Stop condition:
 
-- All active tasks are done, blocked, cancelled, or explicitly closed.
-- Reviews, verification, freshness, shared-context reconciliation, and wdd-reconcile-wave complete before the next wave.
+- Done: all active tasks merged, reviewed, verified, reconciled, and task
+  worktrees cleaned up before WAVE-008 activation.
 
 ### WAVE-008
 
@@ -594,6 +608,8 @@ Rationale:
 
 - Operator IPC/CLI and behavior review reducers touch distinct CLI versus sub-agent/scheduler domains.
 - Stable replay and projection semantics make this parallelism safe.
+- WAVE-007 landed the lifecycle retention/admin primitives and behavior signal
+  projector required by both WAVE-008 tasks.
 
 Activation rule:
 
@@ -660,6 +676,8 @@ Rationale:
 
 - Final black-box verification must settle behavior before adoption documentation begins.
 - One focused verification worker owns the full-suite approval and runtime-smoke evidence.
+- TASK-019 must create e2e tests for the completed lifecycle waves and validate
+  the event pipeline using Sprites before the epic is considered complete.
 
 Activation rule:
 
