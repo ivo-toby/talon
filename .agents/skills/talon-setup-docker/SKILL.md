@@ -359,6 +359,9 @@ Once boot is verified, anything else uses `talonctl`:
   for an existing prompt-patch-backed candidate, and `rollback-promotion` if an
   activation needs to be restored. Notes-only candidates are review evidence,
   not directly applicable prompt edits.
+- **Tune lifecycle telemetry** — successful `lifecycle.publish` Langfuse spans
+  are off by default to avoid noisy dashboards. Keep this default unless the
+  operator explicitly wants every durable lifecycle event in Langfuse.
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   GitHub, Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.

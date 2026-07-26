@@ -1346,6 +1346,43 @@ describe('TalondConfigSchema', () => {
       ).toBe(false);
     });
 
+    it('defaults lifecycle Langfuse publication spans off while keeping failure and handler spans on', () => {
+      const defaulted = TalondConfigSchema.safeParse({
+        lifecycle: { enabled: true, handlers: [] },
+      });
+
+      expect(defaulted.success).toBe(true);
+      if (defaulted.success) {
+        expect(defaulted.data.lifecycle?.telemetry.langfuse).toEqual({
+          publications: false,
+          publicationFailures: true,
+          handlerDeliveries: true,
+        });
+      }
+
+      const configured = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [],
+          telemetry: {
+            langfuse: {
+              publications: true,
+              publicationFailures: false,
+              handlerDeliveries: false,
+            },
+          },
+        },
+      });
+      expect(configured.success).toBe(true);
+      if (configured.success) {
+        expect(configured.data.lifecycle?.telemetry.langfuse).toEqual({
+          publications: true,
+          publicationFailures: false,
+          handlerDeliveries: false,
+        });
+      }
+    });
+
     it('preserves duplicate owner names unless lifecycle registry validation is enabled', () => {
       const duplicateOwnerNames = {
         channels: [

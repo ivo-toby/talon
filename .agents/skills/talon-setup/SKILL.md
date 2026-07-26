@@ -400,6 +400,10 @@ rewrite prompts directly; governed prompt changes must go through
 `npx talonctl lifecycle candidates`, `promote`, and `rollback-promotion`.
 `promote` applies only prompt-patch-backed behavior promotions; notes-only
 candidates are review evidence, not directly applicable prompt edits.
+If Langfuse is enabled, successful `lifecycle.publish` spans are still off by
+default to avoid noisy dashboards; only turn on
+`lifecycle.telemetry.langfuse.publications` for short, detailed lifecycle
+debugging windows.
 
 Common cron expressions for reference:
 

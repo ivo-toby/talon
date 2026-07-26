@@ -482,6 +482,7 @@ dataDir: data
 | `schedules`            | Agent-managed schedule entries (cron, interval, one-shot)                     |
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
+| `lifecycle`            | Optional durable lifecycle handlers, retention, and telemetry detail          |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
 | `logLevel` / `dataDir` | Runtime logging level and data root                                           |
@@ -522,7 +523,10 @@ lifecycle pipeline:
 4. Lifecycle configuration is opt-in. Existing installs do not need to enable
    `lifecycle:` just to keep running. Add it only when you intentionally want
    lifecycle handlers, durable behavior review, prompt promotion, replay, or
-   lifecycle operator telemetry.
+   lifecycle operator telemetry. If Langfuse is enabled, ordinary
+   `lifecycle.publish` spans are disabled by default to avoid high-volume trace
+   noise; lifecycle database records, audit events, local metrics, publication
+   failure spans, and handler-delivery spans still run.
 
 5. If you enable model-backed lifecycle behavior handlers, configure both sides
    explicitly: declare the handler under `lifecycle.handlers[]`, add the handler
@@ -2651,6 +2655,11 @@ limited to ordinary terminal handler failures.
 ```yaml
 lifecycle:
   enabled: true
+  telemetry:
+    langfuse:
+      publications: false # opt in only when every lifecycle.publish span is useful
+      publicationFailures: true
+      handlerDeliveries: true
   handlers: []
   retention:
     completedAuditWindowMs: 2592000000 # 30 days
@@ -2679,7 +2688,7 @@ Running autonomous agents across multiple channels means you lose visibility fas
 
 ### How it works
 
-Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. Durable lifecycle publication and handler-delivery observations are emitted as lifecycle observations; they are parent-linked to an existing trace only when a valid trace context is available, otherwise they remain separately correlated by event, aggregate, and correlation identifiers. Interceptors, retry/dead-letter outcomes, and signal handoff are recorded as bounded audit and metric evidence even when they do not create separate Langfuse observations. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
+Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. Lifecycle handler-delivery observations and publication-failure observations are emitted by default when Langfuse is enabled; high-volume successful `lifecycle.publish` observations are disabled by default and can be restored with `lifecycle.telemetry.langfuse.publications: true`. Lifecycle observations are parent-linked to an existing trace only when a valid trace context is available, otherwise they remain separately correlated by event, aggregate, and correlation identifiers. Interceptors, retry/dead-letter outcomes, and signal handoff are recorded as bounded audit and metric evidence even when they do not create separate Langfuse observations. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
 
 Lifecycle telemetry also records bounded audit events and structured local metric samples. Optional trace-evidence providers can attach an existing W3C `traceparent` to lifecycle deliveries; malformed evidence is ignored rather than trusted.
 
@@ -2726,6 +2735,11 @@ All fields except `enabled`, `publicKey`, and `secretKey` have sensible defaults
 | `exportMode`           | `batched`                    | `batched` buffers spans; `immediate` sends one by one |
 | `flushAt`              | `20`                         | Number of spans buffered before a flush               |
 | `flushIntervalSeconds` | `5`                          | Maximum seconds between flushes                       |
+
+Lifecycle-specific Langfuse detail is configured under `lifecycle.telemetry.langfuse`.
+Successful lifecycle publication spans default to off (`publications: false`) to
+avoid span floods during event-heavy runs. Publication failures and handler
+delivery attempts stay on by default.
 
 ---
 

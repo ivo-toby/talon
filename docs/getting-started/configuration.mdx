@@ -257,6 +257,12 @@ langfuse:
   flushIntervalSeconds: 5
 ```
 
+When the durable lifecycle pipeline is enabled, high-volume successful
+`lifecycle.publish` spans stay out of Langfuse by default. Publication failures
+and handler deliveries are still traced; set
+`lifecycle.telemetry.langfuse.publications: true` only for detailed lifecycle
+debugging.
+
 ## IPC
 
 ```yaml

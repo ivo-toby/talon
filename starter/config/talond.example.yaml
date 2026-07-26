@@ -57,6 +57,11 @@ bindings:
 # also add that handler ref to the persona's subagents list.
 # lifecycle:
 #   enabled: false
+#   telemetry:
+#     langfuse:
+#       publications: false # keep high-volume lifecycle.publish spans out of Langfuse
+#       publicationFailures: true
+#       handlerDeliveries: true
 #   handlers: []
 #   retention:
 #     completedAuditWindowMs: 2592000000 # 30 days

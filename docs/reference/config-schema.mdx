@@ -224,6 +224,11 @@ extension surface:
 ```yaml
 lifecycle:
   enabled: true
+  telemetry:
+    langfuse:
+      publications: false
+      publicationFailures: true
+      handlerDeliveries: true
   handlers:
     - version: v1
       id: behavior-feedback-detector
@@ -242,11 +247,14 @@ lifecycle:
     completedAuditWindowMs: 2592000000
 ```
 
-| Field                              | Type          | Default      | Description                                                               |
-| ---------------------------------- | ------------- | ------------ | ------------------------------------------------------------------------- |
-| `enabled`                          | boolean       | `false`      | Enable lifecycle registry validation, publication, and delivery           |
-| `handlers`                         | array, max 32 | `[]`         | Global handler declarations that personas can subscribe to                |
-| `retention.completedAuditWindowMs` | integer ≥ 0   | `2592000000` | Audit window before completed/no-subscriber event detail may be compacted |
+| Field                                    | Type          | Default      | Description                                                               |
+| ---------------------------------------- | ------------- | ------------ | ------------------------------------------------------------------------- |
+| `enabled`                                | boolean       | `false`      | Enable lifecycle registry validation, publication, and delivery           |
+| `handlers`                               | array, max 32 | `[]`         | Global handler declarations that personas can subscribe to                |
+| `telemetry.langfuse.publications`        | boolean       | `false`      | Emit a Langfuse observation for every successful lifecycle publication    |
+| `telemetry.langfuse.publicationFailures` | boolean       | `true`       | Emit Langfuse observations when lifecycle publication fails               |
+| `telemetry.langfuse.handlerDeliveries`   | boolean       | `true`       | Emit Langfuse observations for lifecycle handler delivery attempts        |
+| `retention.completedAuditWindowMs`       | integer ≥ 0   | `2592000000` | Audit window before completed/no-subscriber event detail may be compacted |
 
 ### `lifecycle.handlers[]`
 

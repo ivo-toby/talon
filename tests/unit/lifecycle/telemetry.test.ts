@@ -193,7 +193,7 @@ describe('LifecycleTelemetry', () => {
     );
   });
 
-  it('records publication metrics, usage/cost metrics, audit, and an observation', () => {
+  it('records publication metrics, usage/cost metrics, and audit without a Langfuse publication span by default', () => {
     const metrics = new CapturingMetrics();
     const observability = new CapturingObservability();
     const audit = auditLogger();
@@ -227,8 +227,8 @@ describe('LifecycleTelemetry', () => {
         expect.objectContaining({ name: 'lifecycle.cost.usd', value: 0.01 }),
       ]),
     );
-    expect(observability.starts[0]?.input.name).toBe('lifecycle.publish');
-    expect(observability.ended).toBe(1);
+    expect(observability.starts).toHaveLength(0);
+    expect(observability.ended).toBe(0);
     expect(audit.entries[0]?.details).toMatchObject({
       operation: 'publication',
       outcome: 'success',
@@ -237,13 +237,110 @@ describe('LifecycleTelemetry', () => {
     });
   });
 
+  it('records Langfuse publication spans when explicitly enabled', () => {
+    const metrics = new CapturingMetrics();
+    const observability = new CapturingObservability();
+    const subject = new LifecycleTelemetry({
+      metrics,
+      observability,
+      langfuse: { publications: true },
+      clock: { now: () => 1_000 },
+    });
+    const lifecycleEvent = event();
+    const publication = subject.startPublication(lifecycleEvent);
+
+    subject.recordPublication(publication, lifecycleEvent, {
+      event: { event_id: 'event-1' },
+      deliveries: [],
+    } as LifecycleEventFanoutResult);
+
+    expect(observability.starts[0]?.input.name).toBe('lifecycle.publish');
+    expect(observability.updates[0]?.metadata).toMatchObject({
+      outcome: 'success',
+      deliveryCount: 0,
+    });
+    expect(observability.ended).toBe(1);
+  });
+
+  it('records success publication spans when failure publication spans are disabled', () => {
+    const observability = new CapturingObservability();
+    const subject = new LifecycleTelemetry({
+      observability,
+      langfuse: { publications: true, publicationFailures: false },
+      clock: { now: () => 1_000 },
+    });
+    const lifecycleEvent = event();
+    const publication = subject.startPublication(lifecycleEvent);
+
+    expect(observability.starts).toHaveLength(0);
+
+    subject.recordPublication(publication, lifecycleEvent, {
+      event: { event_id: 'event-1' },
+      deliveries: [],
+    } as LifecycleEventFanoutResult);
+
+    expect(observability.starts[0]?.input.name).toBe('lifecycle.publish');
+    expect(observability.updates[0]?.metadata).toMatchObject({
+      outcome: 'success',
+      deliveryCount: 0,
+    });
+    expect(observability.ended).toBe(1);
+  });
+
+  it('records Langfuse publication failure spans even when success publication spans are disabled', () => {
+    const observability = new CapturingObservability();
+    const audit = auditLogger();
+    const subject = new LifecycleTelemetry({
+      observability,
+      auditLogger: audit.audit,
+      clock: { now: () => 1_250 },
+    });
+    const lifecycleEvent = event();
+    const publication = subject.startPublication(lifecycleEvent);
+
+    subject.recordPublicationFailure(publication, lifecycleEvent, 'insert_failed');
+
+    expect(observability.starts[0]?.input.name).toBe('lifecycle.publish');
+    expect(observability.updates[0]).toMatchObject({
+      level: 'ERROR',
+      statusMessage: 'insert_failed',
+      metadata: { outcome: 'failure', code: 'insert_failed', durationMs: 0 },
+    });
+    expect(observability.ended).toBe(1);
+    expect(audit.entries[0]?.details).toMatchObject({
+      operation: 'publication',
+      outcome: 'failure',
+      code: 'insert_failed',
+    });
+  });
+
+  it('suppresses failure publication spans when failure publication spans are disabled', () => {
+    const observability = new CapturingObservability();
+    const subject = new LifecycleTelemetry({
+      observability,
+      langfuse: { publications: true, publicationFailures: false },
+      clock: { now: () => 1_250 },
+    });
+    const lifecycleEvent = event();
+    const publication = subject.startPublication(lifecycleEvent);
+
+    subject.recordPublicationFailure(publication, lifecycleEvent, 'insert_failed');
+
+    expect(observability.starts).toHaveLength(0);
+    expect(observability.ended).toBe(0);
+  });
+
   it('correlates handler delivery with trace evidence and records timeout dead-letter metrics', () => {
     const metrics = new CapturingMetrics();
     const observability = new CapturingObservability();
     const audit = auditLogger();
     const traceEvidenceProvider: TraceEvidenceProvider = {
       findEvidence: vi.fn(() =>
-        ok({ source: 'issue-70', traceparent: VALID_TRACEPARENT, metadata: { sourceRun: 'run-1' } }),
+        ok({
+          source: 'issue-70',
+          traceparent: VALID_TRACEPARENT,
+          metadata: { sourceRun: 'run-1' },
+        }),
       ),
     };
     const subject = new LifecycleTelemetry({
@@ -284,6 +381,35 @@ describe('LifecycleTelemetry', () => {
       status: 'dead_letter',
       code: 'handler-timeout',
     });
+  });
+
+  it('keeps handler trace evidence but suppresses Langfuse handler spans when disabled', () => {
+    const metrics = new CapturingMetrics();
+    const observability = new CapturingObservability();
+    const traceEvidenceProvider: TraceEvidenceProvider = {
+      findEvidence: vi.fn(() =>
+        ok({
+          source: 'issue-70',
+          traceparent: VALID_TRACEPARENT,
+          metadata: { sourceRun: 'run-1' },
+        }),
+      ),
+    };
+    const subject = new LifecycleTelemetry({
+      metrics,
+      observability,
+      traceEvidenceProvider,
+      langfuse: { handlerDeliveries: false },
+      clock: { now: () => 1_000 },
+    });
+
+    const delivery = subject.startDelivery(claim(), 'handler-1');
+
+    expect(delivery.traceparent).toBe(VALID_TRACEPARENT);
+    expect(observability.starts).toHaveLength(0);
+    expect(metrics.observations).toContainEqual(
+      expect.objectContaining({ name: 'lifecycle.delivery.lag_ms', value: 250 }),
+    );
   });
 
   it('preserves lost delivery status in metrics, audit, and observations', () => {
@@ -444,6 +570,8 @@ describe('TraceEvidenceProvider seam', () => {
       findEvidence: () => ok({ source: 'issue-70', metadata: { tooLarge: 'x'.repeat(300) } }),
     };
 
-    expect(safeFindTraceEvidence(provider, { correlationId: 'correlation-1' })._unsafeUnwrap()).toBeNull();
+    expect(
+      safeFindTraceEvidence(provider, { correlationId: 'correlation-1' })._unsafeUnwrap(),
+    ).toBeNull();
   });
 });

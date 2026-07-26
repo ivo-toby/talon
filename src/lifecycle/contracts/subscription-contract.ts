@@ -74,10 +74,29 @@ export const LifecycleRetentionConfigSchema = z
   })
   .strict();
 
+export const LifecycleLangfuseTelemetryConfigSchema = z
+  .object({
+    publications: z.boolean().default(false),
+    publicationFailures: z.boolean().default(true),
+    handlerDeliveries: z.boolean().default(true),
+  })
+  .strict();
+
+export const LifecycleTelemetryConfigSchema = z
+  .object({
+    langfuse: LifecycleLangfuseTelemetryConfigSchema.default(() =>
+      LifecycleLangfuseTelemetryConfigSchema.parse({}),
+    ),
+  })
+  .strict();
+
 export const LifecycleConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     handlers: z.array(LifecycleHandlerContractSchema).max(MAX_LIFECYCLE_ATTACHMENTS).default([]),
+    telemetry: LifecycleTelemetryConfigSchema.default(() =>
+      LifecycleTelemetryConfigSchema.parse({}),
+    ),
     retention: LifecycleRetentionConfigSchema.default(() =>
       LifecycleRetentionConfigSchema.parse({}),
     ),
@@ -87,5 +106,9 @@ export const LifecycleConfigSchema = z
 export type LifecycleSubscriptionContract = z.infer<typeof LifecycleSubscriptionContractSchema>;
 export type PersonaLifecycleSubscription = z.infer<typeof PersonaLifecycleSubscriptionSchema>;
 export type PersonaLifecycleConfig = z.infer<typeof PersonaLifecycleConfigSchema>;
+export type LifecycleLangfuseTelemetryConfig = z.infer<
+  typeof LifecycleLangfuseTelemetryConfigSchema
+>;
+export type LifecycleTelemetryConfig = z.infer<typeof LifecycleTelemetryConfigSchema>;
 export type LifecycleRetentionConfig = z.infer<typeof LifecycleRetentionConfigSchema>;
 export type LifecycleConfig = z.infer<typeof LifecycleConfigSchema>;

@@ -922,6 +922,7 @@ export async function bootstrap(
       observability,
       auditLogger,
       metrics: lifecycleMetrics,
+      langfuse: config.lifecycle?.telemetry.langfuse,
     });
     const behaviorSignalProjector = new BehaviorSignalProjector(repos.behaviorSignal, {
       auditLogger,

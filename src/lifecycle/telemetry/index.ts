@@ -79,7 +79,14 @@ export interface LifecycleTelemetryOptions {
   readonly metrics?: LifecycleMetricsRecorder;
   readonly auditLogger?: AuditLogger;
   readonly traceEvidenceProvider?: TraceEvidenceProvider;
+  readonly langfuse?: Partial<LifecycleLangfuseTelemetryOptions>;
   readonly clock?: LifecycleTelemetryClock;
+}
+
+export interface LifecycleLangfuseTelemetryOptions {
+  readonly publications: boolean;
+  readonly publicationFailures: boolean;
+  readonly handlerDeliveries: boolean;
 }
 
 export interface LifecycleDeliveryObservation {
@@ -95,6 +102,11 @@ export interface LifecyclePublicationObservation {
 }
 
 const MAX_LABEL_LENGTH = 96;
+const DEFAULT_LANGFUSE_TELEMETRY: LifecycleLangfuseTelemetryOptions = {
+  publications: false,
+  publicationFailures: true,
+  handlerDeliveries: true,
+};
 
 function boundedLabel(value: unknown, fallback = 'unknown'): string {
   if (typeof value !== 'string' || value.length === 0) return fallback;
@@ -145,7 +157,9 @@ function metadataNumber(
   return undefined;
 }
 
-function transformMetadata(transform: LifecycleInterceptorTransform | undefined): Record<string, unknown> {
+function transformMetadata(
+  transform: LifecycleInterceptorTransform | undefined,
+): Record<string, unknown> {
   if (!transform) return {};
   switch (transform.hook) {
     case 'message.before_persist':
@@ -172,51 +186,23 @@ export class LifecycleTelemetry {
   private readonly observability: ObservabilityService;
   private readonly metrics: LifecycleMetricsRecorder;
   private readonly traceEvidenceProvider: TraceEvidenceProvider;
+  private readonly langfuse: LifecycleLangfuseTelemetryOptions;
   private readonly clock: LifecycleTelemetryClock;
 
   constructor(private readonly options: LifecycleTelemetryOptions = {}) {
     this.observability = options.observability ?? new NoopObservabilityService();
     this.metrics = options.metrics ?? new NoopLifecycleMetricsRecorder();
     this.traceEvidenceProvider = options.traceEvidenceProvider ?? new NoopTraceEvidenceProvider();
+    this.langfuse = { ...DEFAULT_LANGFUSE_TELEMETRY, ...(options.langfuse ?? {}) };
     this.clock = options.clock ?? { now: (): number => Date.now() };
   }
 
   startPublication(event: LifecycleEventEnvelope): LifecyclePublicationObservation {
     const startedAt = this.clock.now();
-    try {
-      return {
-        startedAt,
-        observation: this.observability.startWithTraceparent(null, {
-          type: 'tool',
-          name: 'lifecycle.publish',
-          input: {
-            eventId: event.eventId,
-            eventType: event.type,
-            aggregateType: event.context.aggregate.type,
-          },
-          metadata: {
-            eventId: event.eventId,
-            eventType: event.type,
-            correlationId: event.context.correlationId,
-            aggregateType: event.context.aggregate.type,
-            aggregateId: event.context.aggregate.id,
-            causationId: event.context.causationId ?? null,
-          },
-          trace: {
-            name: 'lifecycle.publish',
-            sessionId: event.context.aggregate.id,
-            metadata: {
-              eventId: event.eventId,
-              eventType: event.type,
-              correlationId: event.context.correlationId,
-            },
-            tags: ['lifecycle', 'publication'],
-          },
-        }),
-      };
-    } catch {
+    if (!this.langfuse.publications || !this.langfuse.publicationFailures) {
       return { startedAt };
     }
+    return { startedAt, observation: this.startPublicationObservation(event) };
   }
 
   recordPublication(
@@ -231,7 +217,11 @@ export class LifecycleTelemetry {
         outcome: 'success',
       });
       this.metrics.observe('lifecycle.publication.latency_ms', durationMs, eventLabels(event));
-      this.metrics.observe('lifecycle.publication.delivery_count', result.deliveries.length, eventLabels(event));
+      this.metrics.observe(
+        'lifecycle.publication.delivery_count',
+        result.deliveries.length,
+        eventLabels(event),
+      );
       this.recordUsageMetrics(event);
     });
     this.safeAudit(() =>
@@ -249,7 +239,10 @@ export class LifecycleTelemetry {
         },
       }),
     );
-    this.finishObservation(publication.observation, {
+    const observation =
+      publication.observation ??
+      (this.langfuse.publications ? this.startPublicationObservation(event) : undefined);
+    this.finishObservation(observation, {
       output: { deliveryCount: result.deliveries.length },
       metadata: { outcome: 'success', durationMs, deliveryCount: result.deliveries.length },
     });
@@ -260,7 +253,9 @@ export class LifecycleTelemetry {
     event: LifecycleEventEnvelope | undefined,
     code: string,
   ): void {
-    const labels = event ? eventLabels(event) : { event_type: 'unknown', aggregate_type: 'unknown' };
+    const labels = event
+      ? eventLabels(event)
+      : { event_type: 'unknown', aggregate_type: 'unknown' };
     const durationMs = publication ? durationSince(this.clock, publication.startedAt) : 0;
     this.safeMetric(() => {
       this.metrics.increment('lifecycle.publication.count', {
@@ -284,7 +279,10 @@ export class LifecycleTelemetry {
         },
       }),
     );
-    this.finishObservation(publication?.observation, {
+    const observation = this.langfuse.publicationFailures
+      ? (publication?.observation ?? (event ? this.startPublicationObservation(event) : undefined))
+      : undefined;
+    this.finishObservation(observation, {
       level: 'ERROR',
       statusMessage: code,
       metadata: { outcome: 'failure', code, durationMs },
@@ -327,6 +325,14 @@ export class LifecycleTelemetry {
       );
     }
 
+    if (!this.langfuse.handlerDeliveries) {
+      return {
+        startedAt,
+        ...(traceparent ? { traceparent } : {}),
+        ...(evidence ? { evidence } : {}),
+      };
+    }
+
     try {
       const observationInput: ObservationInput = {
         type: 'tool',
@@ -359,7 +365,10 @@ export class LifecycleTelemetry {
           tags: ['lifecycle', 'handler'],
         },
       };
-      const observation = this.observability.startWithTraceparent(traceparent ?? null, observationInput);
+      const observation = this.observability.startWithTraceparent(
+        traceparent ?? null,
+        observationInput,
+      );
       return {
         startedAt,
         traceparent: observation.getTraceparent() ?? traceparent,
@@ -367,7 +376,11 @@ export class LifecycleTelemetry {
         ...(evidence ? { evidence } : {}),
       };
     } catch {
-      return { startedAt, ...(traceparent ? { traceparent } : {}), ...(evidence ? { evidence } : {}) };
+      return {
+        startedAt,
+        ...(traceparent ? { traceparent } : {}),
+        ...(evidence ? { evidence } : {}),
+      };
     }
   }
 
@@ -476,7 +489,13 @@ export class LifecycleTelemetry {
     this.finishObservation(input.lifecycle.observation, {
       level: input.status === 'failed' ? undefined : 'ERROR',
       statusMessage: input.code,
-      metadata: { outcome, code: input.code, retryable: input.retryable, status: input.status, durationMs },
+      metadata: {
+        outcome,
+        code: input.code,
+        retryable: input.retryable,
+        status: input.status,
+        durationMs,
+      },
     });
   }
 
@@ -574,23 +593,68 @@ export class LifecycleTelemetry {
     );
   }
 
+  private startPublicationObservation(
+    event: LifecycleEventEnvelope,
+  ): StartedObservationHandle | undefined {
+    try {
+      return this.observability.startWithTraceparent(null, {
+        type: 'tool',
+        name: 'lifecycle.publish',
+        input: {
+          eventId: event.eventId,
+          eventType: event.type,
+          aggregateType: event.context.aggregate.type,
+        },
+        metadata: {
+          eventId: event.eventId,
+          eventType: event.type,
+          correlationId: event.context.correlationId,
+          aggregateType: event.context.aggregate.type,
+          aggregateId: event.context.aggregate.id,
+          causationId: event.context.causationId ?? null,
+        },
+        trace: {
+          name: 'lifecycle.publish',
+          sessionId: event.context.aggregate.id,
+          metadata: {
+            eventId: event.eventId,
+            eventType: event.type,
+            correlationId: event.context.correlationId,
+          },
+          tags: ['lifecycle', 'publication'],
+        },
+      });
+    } catch {
+      return undefined;
+    }
+  }
+
   private recordUsageMetrics(event: LifecycleEventEnvelope): void {
     const metadata = event.payload.metadata;
     const labels = eventLabels(event);
     const inputTokens = metadataNumber(metadata, ['inputTokens', 'input_tokens']);
     const outputTokens = metadataNumber(metadata, ['outputTokens', 'output_tokens']);
-    const cacheReadTokens = metadataNumber(metadata, ['cacheReadTokens', 'cache_read_tokens', 'cache_read_input_tokens']);
+    const cacheReadTokens = metadataNumber(metadata, [
+      'cacheReadTokens',
+      'cache_read_tokens',
+      'cache_read_input_tokens',
+    ]);
     const cacheWriteTokens = metadataNumber(metadata, [
       'cacheWriteTokens',
       'cache_write_tokens',
       'cache_creation_input_tokens',
     ]);
     const totalCostUsd = metadataNumber(metadata, ['totalCostUsd', 'costUsd', 'cost_usd']);
-    if (inputTokens !== undefined) this.metrics.observe('lifecycle.tokens.input', inputTokens, labels);
-    if (outputTokens !== undefined) this.metrics.observe('lifecycle.tokens.output', outputTokens, labels);
-    if (cacheReadTokens !== undefined) this.metrics.observe('lifecycle.tokens.cache_read', cacheReadTokens, labels);
-    if (cacheWriteTokens !== undefined) this.metrics.observe('lifecycle.tokens.cache_write', cacheWriteTokens, labels);
-    if (totalCostUsd !== undefined) this.metrics.observe('lifecycle.cost.usd', totalCostUsd, labels);
+    if (inputTokens !== undefined)
+      this.metrics.observe('lifecycle.tokens.input', inputTokens, labels);
+    if (outputTokens !== undefined)
+      this.metrics.observe('lifecycle.tokens.output', outputTokens, labels);
+    if (cacheReadTokens !== undefined)
+      this.metrics.observe('lifecycle.tokens.cache_read', cacheReadTokens, labels);
+    if (cacheWriteTokens !== undefined)
+      this.metrics.observe('lifecycle.tokens.cache_write', cacheWriteTokens, labels);
+    if (totalCostUsd !== undefined)
+      this.metrics.observe('lifecycle.cost.usd', totalCostUsd, labels);
   }
 
   private finishObservation(
