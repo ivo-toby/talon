@@ -398,6 +398,13 @@ export class PromptImprovementProjector {
     if (!candidate) return err(new LifecycleError('behavior prompt promotion candidate missing'));
     const policy = parsePolicyMetadata(promotion.policy);
     if (policy.isErr()) return err(policy.error);
+    if (typeof policy.value.promptPatchJson !== 'string') {
+      return err(
+        new LifecycleError(
+          'behavior prompt promotion has no prompt patch; only prompt-patch-backed promotions can be applied',
+        ),
+      );
+    }
     const patch = parsePromptPatchJson(persona, policy.value.promptPatchJson);
     if (patch.isErr()) return err(patch.error);
     return ok({ promotion, candidate, policy: policy.value, patch: patch.value });

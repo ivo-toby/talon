@@ -1905,6 +1905,33 @@ describe('TalondConfigSchema', () => {
         personas: [{ name: 'assistant' }],
       });
       expect(subagentEnforcement.success).toBe(false);
+
+      const subagentAdvisory = TalondConfigSchema.safeParse({
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              version: 'v1',
+              id: 'subagent-advisor',
+              mode: 'interceptor',
+              inputContract: 'talon.lifecycle.interceptor.input.v1',
+              outputContract: 'talon.lifecycle.advisory.interceptor.output.v1',
+              runtime: {
+                kind: 'subagent',
+                ref: 'review-agent',
+                implementationVersion: '1.0.0',
+              },
+            },
+          ],
+        },
+        personas: [{ name: 'assistant' }],
+      });
+      expect(subagentAdvisory.success).toBe(false);
+      expect(
+        subagentAdvisory.success
+          ? ''
+          : subagentAdvisory.error.issues.map((issue) => issue.message).join('\n'),
+      ).toMatch(/lifecycle interceptors must use a native implementation/i);
     });
   });
 

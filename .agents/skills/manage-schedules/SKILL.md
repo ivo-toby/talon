@@ -5,12 +5,12 @@ description: |
   "add schedule", "create schedule", "list schedules", "remove schedule",
   "scheduled task", or "cron job".
 triggers:
-  - "add schedule"
-  - "create schedule"
-  - "list schedules"
-  - "remove schedule"
-  - "scheduled task"
-  - "cron job"
+  - 'add schedule'
+  - 'create schedule'
+  - 'list schedules'
+  - 'remove schedule'
+  - 'scheduled task'
+  - 'cron job'
 ---
 
 # Manage Schedules
@@ -21,6 +21,7 @@ Schedules live in the database (not the config file) and require a running daemo
 ## Phase 1: Determine Action
 
 Ask what they want to do:
+
 1. **Create** a new scheduled task
 2. **List** existing schedules
 3. **Remove** a schedule
@@ -59,6 +60,9 @@ npx talonctl lifecycle candidates <persona> --limit 25
 npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <operator-id>
 npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
 ```
+
+`promote` applies only prompt-patch-backed behavior promotions. Notes-only
+candidate rows are review evidence, not directly applicable prompt edits.
 
 ## Phase 2b: List Schedules
 

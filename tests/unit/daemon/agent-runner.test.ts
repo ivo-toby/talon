@@ -288,11 +288,11 @@ function allowInterception(input: LifecycleInterceptorEnvelope) {
 
 function makeLifecycleRuntime() {
   return {
-    intercept: vi.fn((_invocation, input: LifecycleInterceptorEnvelope) => allowInterception(input)),
-    publish: vi.fn(() => ok({})),
-    transaction: vi.fn((callback: (transaction: unknown) => ReturnType<typeof ok>) =>
-      callback({}),
+    intercept: vi.fn((_invocation, input: LifecycleInterceptorEnvelope) =>
+      allowInterception(input),
     ),
+    publish: vi.fn(() => ok({})),
+    transaction: vi.fn((callback: (transaction: unknown) => ReturnType<typeof ok>) => callback({})),
   };
 }
 
@@ -652,7 +652,7 @@ describe('AgentRunner', () => {
       );
     });
 
-    it('returns an error and marks the run failed when completed lifecycle finalization fails', async () => {
+    it('keeps the run completed when completed lifecycle publication fails', async () => {
       const lifecycleRuntime = makeLifecycleRuntime();
       lifecycleRuntime.publish.mockImplementation((publication: { event: { type: string } }) =>
         publication.event.type === 'run.completed.v1'
@@ -664,34 +664,56 @@ describe('AgentRunner', () => {
 
       const result = await runner.run(makeQueueItem());
 
-      expect(result.isErr()).toBe(true);
-      expect(result._unsafeUnwrapErr().message).toContain('failed to finalize completed run');
+      expect(result.isOk()).toBe(true);
       expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
         expect.any(String),
-        'failed',
-        expect.objectContaining({
-          error: expect.stringContaining('failed to finalize completed run'),
-        }),
+        'completed',
+        expect.objectContaining({ ended_at: expect.any(Number) }),
+      );
+    });
+
+    it('keeps the run insert when started lifecycle publication fails', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.publish.mockImplementation((publication: { event: { type: string } }) =>
+        publication.event.type === 'run.started.v1'
+          ? err(new Error('publish started failed'))
+          : ok({}),
+      );
+      ctx.lifecycleRuntime = lifecycleRuntime as any;
+      runner = new AgentRunner(ctx);
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'running' }),
+      );
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'completed',
+        expect.objectContaining({ ended_at: expect.any(Number) }),
       );
     });
 
     it('applies run.before_execute transforms before invoking the provider', async () => {
       const lifecycleRuntime = makeLifecycleRuntime();
-      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
-        if (input.hook !== 'run.before_execute') return allowInterception(input);
-        return ok({
-          outcome: 'allow' as const,
-          input: {
-            ...input,
+      lifecycleRuntime.intercept.mockImplementation(
+        (_invocation, input: LifecycleInterceptorEnvelope) => {
+          if (input.hook !== 'run.before_execute') return allowInterception(input);
+          return ok({
+            outcome: 'allow' as const,
             input: {
-              ...input.input,
-              model: 'claude-opus-4-20250514',
-              contextAdditions: { reviewer: 'lifecycle' },
+              ...input,
+              input: {
+                ...input.input,
+                model: 'claude-opus-4-20250514',
+                contextAdditions: { reviewer: 'lifecycle' },
+              },
             },
-          },
-          signals: [],
-        });
-      });
+            signals: [],
+          });
+        },
+      );
       ctx.lifecycleRuntime = lifecycleRuntime as any;
       runner = new AgentRunner(ctx);
 
@@ -707,15 +729,17 @@ describe('AgentRunner', () => {
 
     it('does not invoke the provider when run.before_execute denies execution', async () => {
       const lifecycleRuntime = makeLifecycleRuntime();
-      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
-        if (input.hook !== 'run.before_execute') return allowInterception(input);
-        return ok({
-          outcome: 'deny' as const,
-          reason: 'policy blocked run',
-          input,
-          signals: [],
-        });
-      });
+      lifecycleRuntime.intercept.mockImplementation(
+        (_invocation, input: LifecycleInterceptorEnvelope) => {
+          if (input.hook !== 'run.before_execute') return allowInterception(input);
+          return ok({
+            outcome: 'deny' as const,
+            reason: 'policy blocked run',
+            input,
+            signals: [],
+          });
+        },
+      );
       ctx.lifecycleRuntime = lifecycleRuntime as any;
       runner = new AgentRunner(ctx);
 
@@ -742,20 +766,22 @@ describe('AgentRunner', () => {
 
     it('records a failed run when run.before_execute selects an unavailable provider', async () => {
       const lifecycleRuntime = makeLifecycleRuntime();
-      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
-        if (input.hook !== 'run.before_execute') return allowInterception(input);
-        return ok({
-          outcome: 'allow' as const,
-          input: {
-            ...input,
+      lifecycleRuntime.intercept.mockImplementation(
+        (_invocation, input: LifecycleInterceptorEnvelope) => {
+          if (input.hook !== 'run.before_execute') return allowInterception(input);
+          return ok({
+            outcome: 'allow' as const,
             input: {
-              ...input.input,
-              provider: 'missing-provider',
+              ...input,
+              input: {
+                ...input.input,
+                provider: 'missing-provider',
+              },
             },
-          },
-          signals: [],
-        });
-      });
+            signals: [],
+          });
+        },
+      );
       ctx.lifecycleRuntime = lifecycleRuntime as any;
       runner = new AgentRunner(ctx);
 
@@ -792,20 +818,22 @@ describe('AgentRunner', () => {
 
     it('runs message.before_send before final outbound delivery and publishes sent', async () => {
       const lifecycleRuntime = makeLifecycleRuntime();
-      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
-        if (input.hook !== 'message.before_send') return allowInterception(input);
-        return ok({
-          outcome: 'allow' as const,
-          input: {
-            ...input,
+      lifecycleRuntime.intercept.mockImplementation(
+        (_invocation, input: LifecycleInterceptorEnvelope) => {
+          if (input.hook !== 'message.before_send') return allowInterception(input);
+          return ok({
+            outcome: 'allow' as const,
             input: {
-              ...input.input,
-              content: 'Transformed outbound',
+              ...input,
+              input: {
+                ...input.input,
+                content: 'Transformed outbound',
+              },
             },
-          },
-          signals: [],
-        });
-      });
+            signals: [],
+          });
+        },
+      );
       ctx.lifecycleRuntime = lifecycleRuntime as any;
       runner = new AgentRunner(ctx);
       const connector = ctx.channelRegistry.get('test-channel')!;
@@ -821,9 +849,14 @@ describe('AgentRunner', () => {
           idempotency_key: 'outbound:qi-001',
         }),
       );
-      const insertCall = vi.mocked(ctx.repos.message.insertIfAbsent).mock.calls[0]![0] as { id: string };
+      const insertCall = vi.mocked(ctx.repos.message.insertIfAbsent).mock.calls[0]![0] as {
+        id: string;
+      };
       const sentPublication = lifecycleRuntime.publish.mock.calls
-        .map(([publication]) => publication as { event: { type: string; payload: { references: unknown[] } } })
+        .map(
+          ([publication]) =>
+            publication as { event: { type: string; payload: { references: unknown[] } } },
+        )
         .find((publication) => publication.event.type === 'message.sent.v1');
       expect(sentPublication?.event.payload.references).toContainEqual({
         type: 'message',
@@ -859,9 +892,7 @@ describe('AgentRunner', () => {
       expect(beforeSendCall).toBeDefined();
       const lifecycleInput = beforeSendCall![1] as LifecycleInterceptorEnvelope;
       expect(LifecycleInterceptorEnvelopeSchema.safeParse(lifecycleInput).success).toBe(true);
-      expect(lifecycleInput.input.content.length).toBeLessThanOrEqual(
-        MAX_LIFECYCLE_CONTENT_LENGTH,
-      );
+      expect(lifecycleInput.input.content.length).toBeLessThanOrEqual(MAX_LIFECYCLE_CONTENT_LENGTH);
       expect(lifecycleInput.input.content).not.toBe(longContent);
       expect(connector.send).toHaveBeenCalledWith('ext-001', { body: longContent });
       expect(ctx.repos.message.insertIfAbsent).toHaveBeenCalledWith(

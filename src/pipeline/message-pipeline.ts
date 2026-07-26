@@ -220,6 +220,16 @@ export class MessagePipeline {
             return ok('denied');
           }
           content = (interception.value.input.input as { content: string }).content;
+        } else {
+          this.logger.warn(
+            {
+              channelId,
+              threadId,
+              channelName: event.channelName,
+              hook: 'message.before_persist',
+            },
+            'pipeline: lifecycle inbound interception skipped because no persona binding was resolved',
+          );
         }
       }
 
@@ -488,8 +498,12 @@ export class MessagePipeline {
       },
       transaction,
     );
-    return publication.isErr()
-      ? err(new PipelineError(`Failed to publish ${type}: ${publication.error.message}`))
-      : ok(undefined);
+    if (publication.isErr()) {
+      this.logger.warn(
+        { err: publication.error.message, messageId, threadId, type },
+        'pipeline: continuing after lifecycle message publication failure',
+      );
+    }
+    return ok(undefined);
   }
 }

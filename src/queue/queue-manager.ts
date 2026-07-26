@@ -179,12 +179,16 @@ export class QueueManager {
               ),
               transaction,
             );
-            if (publication.isErr())
-              return err(
-                new QueueError(
-                  `Failed to publish queue enqueue event: ${publication.error.message}`,
-                ),
+            if (publication.isErr()) {
+              this.logger.warn(
+                {
+                  err: publication.error.message,
+                  itemId: queued.value.id,
+                  type: 'queue.item.enqueued.v1',
+                },
+                'queue-manager: continuing after lifecycle queue publication failure',
               );
+            }
             return ok(queued.value);
           })
         : this.queueRepo.enqueue(input);
@@ -278,12 +282,16 @@ export class QueueManager {
               ),
               transaction,
             );
-            if (publication.isErr())
-              return err(
-                new QueueError(
-                  `Failed to publish queue enqueue event: ${publication.error.message}`,
-                ),
+            if (publication.isErr()) {
+              this.logger.warn(
+                {
+                  err: publication.error.message,
+                  itemId: queued.value.item.id,
+                  type: 'queue.item.enqueued.v1',
+                },
+                'queue-manager: continuing after lifecycle queue publication failure',
               );
+            }
             return ok(queued.value.item);
           })
         : this.queueRepo.enqueueIfAbsent(input).map((queued) => queued.item);
@@ -352,8 +360,13 @@ export class QueueManager {
       transaction,
     );
     if (publication.isErr()) {
-      return err(
-        new QueueError(`Failed to publish queue enqueue event: ${publication.error.message}`),
+      this.logger.warn(
+        {
+          err: publication.error.message,
+          itemId: queued.value.id,
+          type: 'queue.item.enqueued.v1',
+        },
+        'queue-manager: continuing after lifecycle queue publication failure',
       );
     }
     return ok(rowToQueueItem(queued.value));
@@ -538,5 +551,4 @@ export class QueueManager {
       this.activeCount--;
     }
   }
-
 }

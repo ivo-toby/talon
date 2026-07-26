@@ -833,14 +833,10 @@ export function collectLifecycleValidationIssues(
       });
     }
 
-    if (
-      handler.mode === 'interceptor' &&
-      handler.runtime.kind !== 'native' &&
-      handler.interceptorSafety === 'enforcing'
-    ) {
+    if (handler.mode === 'interceptor' && handler.runtime.kind !== 'native') {
       issues.push({
-        path: ['lifecycle', 'handlers', index, 'interceptorSafety'],
-        message: 'enforcing interceptors must use a native implementation',
+        path: ['lifecycle', 'handlers', index, 'runtime', 'kind'],
+        message: 'lifecycle interceptors must use a native implementation',
       });
     }
 

@@ -139,6 +139,25 @@ describe('PromptImprovementProjector', () => {
     expect(reloads).toEqual([]);
   });
 
+  it('reports notes-only promotions as not directly applicable', async () => {
+    const { promotionId } = recordPromotion({
+      policy: {
+        notesOnly: true,
+        promptPatchUnavailableReason: 'unbounded-or-invalid-proposed-behavior',
+      },
+    });
+
+    const result = await createProjector().apply({
+      persona: 'support',
+      promotionId,
+      approvedBy: 'operator-ivo',
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('has no prompt patch');
+    expect(await readFile(promptFile, 'utf8')).toBe('# Support\n\nBe helpful.\n');
+  });
+
   it('auto-promotes only explicit narrow append-only policies after evaluation and reload', async () => {
     const { promotionId } = recordPromotion({
       policy: {

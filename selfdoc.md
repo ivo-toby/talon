@@ -94,12 +94,14 @@ validates source ids, fingerprints evidence, enforces persona scope, stores
 ledger evidence, and creates bounded candidates.
 
 Prompt promotion is native-only. Talon resolves the persona-owned
-`systemPromptFile`, validates a bounded prompt patch, defaults to operator
-approval, allows only explicit narrow auto-policy for append-only style,
-preference, or context changes, evaluates the candidate, writes through an
-atomic same-file rename, verifies daemon reload, records provenance, and keeps
-rollback evidence. Safety, capability, tool, integration, or notification
-expansions require explicit operator approval.
+`systemPromptFile`, validates a bounded prompt patch emitted by behavior review,
+defaults to operator approval, allows only explicit narrow auto-policy for
+append-only style, preference, or context changes, evaluates the candidate,
+writes through an atomic same-file rename, verifies daemon reload, records
+provenance, and keeps rollback evidence. Candidates that cannot be represented
+as small bounded prompt patches remain notes-only and are not applicable through
+`talonctl lifecycle promote`. Safety, capability, tool, integration, or
+notification expansions require explicit operator approval.
 
 Operators inspect and control this surface with:
 
@@ -135,6 +137,7 @@ native code decides otherwise. Talon enforces that with:
 - fenced prompts for sub-agent lifecycle input;
 - explicit persona subscriptions and filters;
 - native-only enforcing interceptors;
+- native-only lifecycle interceptors;
 - native-only governed prompt promotion;
 - capability-filtered host tools;
 - audit records for lifecycle publication, delivery, retries, decisions,

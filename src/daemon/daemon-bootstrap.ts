@@ -815,12 +815,55 @@ export async function bootstrap(
       );
       const personaRow = repos.persona.findByName(handler.persona);
       const agent = mergedAgentMap.get(handler.identity.implementationRef);
+      if (!subagentAdapter) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" requires the background sub-agent adapter`,
+          ),
+        );
+      }
+      if (!loadedPersona) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" references unloaded persona "${handler.persona}"`,
+          ),
+        );
+      }
+      if (personaRow.isErr()) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" failed to load persona row "${handler.persona}": ${personaRow.error.message}`,
+          ),
+        );
+      }
+      if (!personaRow.value) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" references missing persona row "${handler.persona}"`,
+          ),
+        );
+      }
+      if (!agent) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" references unloaded sub-agent "${handler.identity.implementationRef}"`,
+          ),
+        );
+      }
+      if (!agent.lifecycleRun) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" requires sub-agent "${handler.identity.implementationRef}" to declare a lifecycleRun contract`,
+          ),
+        );
+      }
       if (
-        !subagentAdapter ||
-        !loadedPersona ||
-        personaRow.isErr() ||
-        !personaRow.value ||
-        !agent?.lifecycleRun ||
         !hasExplicitLifecycleSubagentAuthority(
           loadedPersona.config.subagents,
           handler.identity.implementationRef,
@@ -829,7 +872,7 @@ export async function bootstrap(
         await cleanupBootstrapFailure(db, observability, logger);
         return err(
           new DaemonError(
-            `Failed to construct lifecycle sub-agent capability for ${handler.identity.handlerId}`,
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" for persona "${handler.persona}" requires "${handler.identity.implementationRef}" in personas[].subagents`,
           ),
         );
       }

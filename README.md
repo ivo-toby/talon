@@ -1388,12 +1388,23 @@ before creating a ready inferred-pattern candidate.
 
 Accepted behavior promotions are applied only by the native governed prompt
 promotion path. Talon resolves the persona-owned `systemPromptFile`, validates a
-bounded `talon.behavior.prompt_patch.v1` patch, defaults to operator approval,
-allows only explicit append-only auto-policy for narrow style/preference/context
-changes, runs a bounded evaluator, writes the prompt through a same-file atomic
-rename, verifies daemon reload, records activation provenance, and restores the
-previous prompt on failure. Safety, tooling, capability, integration, and
-notification increases require explicit operator approval.
+bounded `talon.behavior.prompt_patch.v1` patch emitted by the behavior review,
+defaults to operator approval, allows only explicit append-only auto-policy for
+narrow style/preference/context changes, runs a bounded evaluator, writes the
+prompt through a same-file atomic rename, verifies daemon reload, records
+activation provenance, and restores the previous prompt on failure. Candidates
+whose proposed behavior cannot be represented as a bounded prompt patch remain
+notes-only and cannot be applied with `lifecycle promote`. Safety, tooling,
+capability, integration, and notification increases require explicit operator
+approval.
+
+Lifecycle interceptors are native-only. Model-backed sub-agents may inspect
+fenced lifecycle events or signals, but they cannot be configured as
+`message.before_persist`, `run.before_execute`, `tool.before_execute`, or
+`message.before_send` interceptors. The `message.before_persist` hook runs only
+after an inbound message resolves to a persona binding; unbound inbound messages
+are dropped on the legacy no-persona path and Talon logs that lifecycle
+interception/publication was skipped.
 
 #### `session-summarizer`
 
@@ -1635,15 +1646,15 @@ npx talonctl chat --token mytoken --persona assistant
 
 **`lifecycle`** subcommands:
 
-| Subcommand                       | Description                                                                     |
-| -------------------------------- | ------------------------------------------------------------------------------- |
-| `handlers`                       | List configured lifecycle handlers with dispatcher health and bounded backlog   |
-| `inspect <event-id>`             | Show one lifecycle event and its handler deliveries                             |
-| `replay <event-id> <handler-id>` | Reopen one ordinary terminal delivery for exact replay                          |
-| `disable <handler-id>`           | Dead-letter pending, failed, or claimed deliveries for one handler and audit it |
-| `candidates <persona>`           | List bounded behavior-candidate summaries and distinct evidence-source counts   |
-| `promote <persona> <promotion-id>` | Apply one governed behavior prompt promotion after policy/evaluation/reload gates |
-| `rollback-promotion <persona> <activation-id>` | Restore the saved pre-activation prompt and mark the activation rolled back |
+| Subcommand                                     | Description                                                                       |
+| ---------------------------------------------- | --------------------------------------------------------------------------------- |
+| `handlers`                                     | List configured lifecycle handlers with dispatcher health and bounded backlog     |
+| `inspect <event-id>`                           | Show one lifecycle event and its handler deliveries                               |
+| `replay <event-id> <handler-id>`               | Reopen one ordinary terminal delivery for exact replay                            |
+| `disable <handler-id>`                         | Dead-letter pending, failed, or claimed deliveries for one handler and audit it   |
+| `candidates <persona>`                         | List bounded behavior-candidate summaries and distinct evidence-source counts     |
+| `promote <persona> <promotion-id>`             | Apply one governed behavior prompt promotion after policy/evaluation/reload gates |
+| `rollback-promotion <persona> <activation-id>` | Restore the saved pre-activation prompt and mark the activation rolled back       |
 
 All lifecycle subcommands accept `--ipc-dir <path>` and `--timeout <ms>`.
 `handlers` and `candidates` also accept `--limit <n>` capped at 100. `inspect`
@@ -1678,18 +1689,18 @@ auto-policy. `rollback-promotion` accepts `--reason <id>`.
 
 **`add-persona`** options:
 
-| Option                        | Description                                                              | Default       |
-| ----------------------------- | ------------------------------------------------------------------------ | ------------- |
-| `--name <name>`               | Persona name (required)                                                  | —             |
-| `--model <model>`             | Model name                                                               | —             |
-| `--provider <provider>`       | Provider name                                                            | —             |
-| `--capabilities <caps>`       | Comma-separated capabilities allow list                                  | —             |
-| `--require-approval <caps>`   | Set the `requireApproval` capability list (not currently bridge-enforced) | —           |
-| `--skills <skills>`           | Comma-separated skill names                                              | —             |
-| `--system-prompt-file <path>` | Path to a system prompt markdown file                                    | —             |
-| `--description <text>`        | Short description (written to system.md frontmatter)                     | —             |
-| `--templates-dir <path>`      | Path to templates directory                                              | `templates`   |
-| `--config <path>`             | Path to talond.yaml                                                      | `talond.yaml` |
+| Option                        | Description                                                               | Default       |
+| ----------------------------- | ------------------------------------------------------------------------- | ------------- |
+| `--name <name>`               | Persona name (required)                                                   | —             |
+| `--model <model>`             | Model name                                                                | —             |
+| `--provider <provider>`       | Provider name                                                             | —             |
+| `--capabilities <caps>`       | Comma-separated capabilities allow list                                   | —             |
+| `--require-approval <caps>`   | Set the `requireApproval` capability list (not currently bridge-enforced) | —             |
+| `--skills <skills>`           | Comma-separated skill names                                               | —             |
+| `--system-prompt-file <path>` | Path to a system prompt markdown file                                     | —             |
+| `--description <text>`        | Short description (written to system.md frontmatter)                      | —             |
+| `--templates-dir <path>`      | Path to templates directory                                               | `templates`   |
+| `--config <path>`             | Path to talond.yaml                                                       | `talond.yaml` |
 
 **`add-skill`** options:
 
@@ -1748,15 +1759,15 @@ npx talonctl add-mcp --skill web-search --name tavily \
 
 **`set-capabilities`** options:
 
-| Option                        | Description                                                          | Default       |
-| ----------------------------- | -------------------------------------------------------------------- | ------------- |
-| `--persona <name>`            | Persona name (required)                                              | —             |
-| `--allow <labels>`            | Replace allow list (comma-separated)                                 | —             |
-| `--add <labels>`              | Add to allow list (comma-separated)                                  | —             |
-| `--remove <labels>`           | Remove from allow list (comma-separated)                             | —             |
-| `--require-approval <labels>` | Replace `requireApproval` list (not currently bridge-enforced)      | —             |
-| `--show`                      | Show current capabilities without modifying                          | —             |
-| `--config <path>`             | Path to talond.yaml                                                  | `talond.yaml` |
+| Option                        | Description                                                    | Default       |
+| ----------------------------- | -------------------------------------------------------------- | ------------- |
+| `--persona <name>`            | Persona name (required)                                        | —             |
+| `--allow <labels>`            | Replace allow list (comma-separated)                           | —             |
+| `--add <labels>`              | Add to allow list (comma-separated)                            | —             |
+| `--remove <labels>`           | Remove from allow list (comma-separated)                       | —             |
+| `--require-approval <labels>` | Replace `requireApproval` list (not currently bridge-enforced) | —             |
+| `--show`                      | Show current capabilities without modifying                    | —             |
+| `--config <path>`             | Path to talond.yaml                                            | `talond.yaml` |
 
 **`config-show`** options:
 
@@ -2190,21 +2201,21 @@ planned as an additional layer.
 
 Agents interact with the host through a small set of MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
 
-| Tool                  | Purpose                                                                  |
-| --------------------- | ------------------------------------------------------------------------ |
-| `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
+| Tool                  | Purpose                                                                                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts)                                                                                               |
 | `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting; CLI-created schedules must pass it or use `channel_list` / `channel_broadcast`) |
-| `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`) |
-| `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
-| `persona_send`        | Submit a delegated A2A task to another persona                           |
-| `persona_task_status` | Fetch the status or result of a delegated A2A task                       |
-| `persona_list`        | List personas available for delegation                                   |
-| `memory_access`       | Read/write per-thread memory                                             |
-| `net_http`            | Fetch external URLs                                                      |
-| `db_query`            | Read-only database queries                                               |
-| `subagent_invoke`     | Invoke a sub-agent by name                                               |
-| `background_agent`    | Launch and manage long-running background workers                        |
-| `execution_env`       | Create, exec, upload, download, checkpoint, and restore Sprite VMs       |
+| `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`)                                                                            |
+| `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning                                                |
+| `persona_send`        | Submit a delegated A2A task to another persona                                                                                                                         |
+| `persona_task_status` | Fetch the status or result of a delegated A2A task                                                                                                                     |
+| `persona_list`        | List personas available for delegation                                                                                                                                 |
+| `memory_access`       | Read/write per-thread memory                                                                                                                                           |
+| `net_http`            | Fetch external URLs                                                                                                                                                    |
+| `db_query`            | Read-only database queries                                                                                                                                             |
+| `subagent_invoke`     | Invoke a sub-agent by name                                                                                                                                             |
+| `background_agent`    | Launch and manage long-running background workers                                                                                                                      |
+| `execution_env`       | Create, exec, upload, download, checkpoint, and restore Sprite VMs                                                                                                     |
 
 ### Capability System
 

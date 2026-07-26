@@ -371,7 +371,13 @@ export class AgentRunner {
             personaName,
             transaction,
           );
-          return published.isErr() ? err(published.error) : ok(inserted.value);
+          if (published.isErr()) {
+            this.ctx.logger.warn(
+              { err: published.error.message, runId, type: 'run.started.v1' },
+              'agent-runner: continuing after lifecycle run publication failure',
+            );
+          }
+          return ok(inserted.value);
         })
       : this.ctx.repos.run.insert(runInput);
 
@@ -1250,9 +1256,7 @@ export class AgentRunner {
                 itemType: 'message',
                 messageId: finalOutboundIdentity.messageId,
                 idempotencyKey: finalOutboundIdentity.idempotencyKey,
-                ...(hasReservedIntermediateTextOutbound
-                  ? { reservationContent: outputText }
-                  : {}),
+                ...(hasReservedIntermediateTextOutbound ? { reservationContent: outputText } : {}),
               });
               if (sendResult.isErr()) {
                 throw new Error(`channel send failed: ${sendResult.error.message}`);
@@ -1314,9 +1318,7 @@ export class AgentRunner {
               // the 524K threshold. Use cumulative `usage` for codex-cli
               // resumed runs so the roller fires when the session log
               // itself crosses the threshold.
-              const usageForRotation = ranOnResumedCodexSession
-                ? usage
-                : lastStepUsage ?? usage;
+              const usageForRotation = ranOnResumedCodexSession ? usage : (lastStepUsage ?? usage);
               const contextUsage: ContextUsage =
                 providerEntry.provider.estimateContextUsage(usageForRotation);
               const triggerMetric = enabledContextManagement.triggerMetric as ContextMetricName;
@@ -1349,18 +1351,15 @@ export class AgentRunner {
                       rotationCauseQueueItemId: item.id,
                     };
                     if (contextUsagePayload.ratio >= enabledContextManagement.thresholdRatio) {
-                      this.publishContextEvent(
-                        'context.threshold_exceeded.v1',
-                        {
-                          runId,
-                          queueItemId: item.id,
-                          threadId: item.threadId,
-                          personaName,
-                          provider: providerEntry.provider.name,
-                          model,
-                          contextUsage: contextUsagePayload,
-                        },
-                      );
+                      this.publishContextEvent('context.threshold_exceeded.v1', {
+                        runId,
+                        queueItemId: item.id,
+                        threadId: item.threadId,
+                        personaName,
+                        provider: providerEntry.provider.name,
+                        model,
+                        contextUsage: contextUsagePayload,
+                      });
 
                       try {
                         const rotation = await this.runContextProjection({
@@ -1605,7 +1604,8 @@ export class AgentRunner {
     queueItemId: string,
     segment: string = 'final',
   ): OutboundDeliveryIdentity {
-    const key = segment === 'final' ? `outbound:${queueItemId}` : `outbound:${queueItemId}:${segment}`;
+    const key =
+      segment === 'final' ? `outbound:${queueItemId}` : `outbound:${queueItemId}:${segment}`;
     return {
       messageId: key,
       idempotencyKey: key,
@@ -1741,10 +1741,14 @@ export class AgentRunner {
         },
       );
       if (interception.isErr()) {
-        return err(new Error(`Lifecycle outbound interception failed: ${interception.error.message}`));
+        return err(
+          new Error(`Lifecycle outbound interception failed: ${interception.error.message}`),
+        );
       }
       if (interception.value.outcome !== 'allow') {
-        return err(new Error(`Lifecycle outbound policy blocked delivery: ${interception.value.reason}`));
+        return err(
+          new Error(`Lifecycle outbound policy blocked delivery: ${interception.value.reason}`),
+        );
       }
       const resolvedContent = resolveLifecycleOutboundContent({
         originalContent: content,
@@ -1775,9 +1779,7 @@ export class AgentRunner {
         run_id: input.runId,
       });
       if (reserved.isErr()) {
-        return err(
-          new Error(`failed to reserve outbound delivery: ${reserved.error.message}`),
-        );
+        return err(new Error(`failed to reserve outbound delivery: ${reserved.error.message}`));
       }
       if (!reserved.value.inserted) {
         this.ctx.logger.info(
@@ -2110,9 +2112,7 @@ export class AgentRunner {
           inputTokens: input.contextUsage.inputTokens,
           rawMetric: input.contextUsage.rawMetric,
           rawMetricName: input.contextUsage.rawMetricName,
-          ...(input.hasOpenThreads !== undefined
-            ? { hasOpenThreads: input.hasOpenThreads }
-            : {}),
+          ...(input.hasOpenThreads !== undefined ? { hasOpenThreads: input.hasOpenThreads } : {}),
           ...(input.observationChars !== undefined
             ? { observationChars: input.observationChars }
             : {}),
@@ -2168,7 +2168,18 @@ export class AgentRunner {
         personaName,
         transaction,
       );
-      return published.isErr() ? err(published.error) : ok(undefined);
+      if (published.isErr()) {
+        this.ctx.logger.warn(
+          {
+            err: published.error.message,
+            runId,
+            status,
+            type: status === 'completed' ? 'run.completed.v1' : 'run.failed.v1',
+          },
+          'agent-runner: continuing after lifecycle run publication failure',
+        );
+      }
+      return ok(undefined);
     });
     if (result.isErr()) {
       this.ctx.logger.error(
@@ -2314,7 +2325,8 @@ export class AgentRunner {
           toolName: event.tool ?? event.messageType,
           messageType: event.messageType,
           ...(event.serverName ? { serverName: event.serverName } : {}),
-          status: type === 'provider.tool.started.v1' ? 'started' : event.isError ? 'error' : 'completed',
+          status:
+            type === 'provider.tool.started.v1' ? 'started' : event.isError ? 'error' : 'completed',
         },
       ),
       persona: metadata.persona,

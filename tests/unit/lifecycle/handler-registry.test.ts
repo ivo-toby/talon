@@ -2310,7 +2310,7 @@ describe('LifecycleHandlerRegistry', () => {
     expect(overrideOnly._unsafeUnwrapErr().message).toMatch(/loaded subagent catalog/i);
   });
 
-  it('canonicalizes advisory interceptors to fail-open and rejects blocking overrides', () => {
+  it('rejects sub-agent lifecycle interceptors during registry validation', () => {
     const input = makeRegistryInput();
     input.lifecycle!.handlers.push({
       version: 'v1',
@@ -2323,26 +2323,14 @@ describe('LifecycleHandlerRegistry', () => {
     input.loadedSubagentCatalog = [
       loadedSubagentRegistration('review-agent', { mode: 'interceptor' }),
     ];
-    expect(createLifecycleHandlerRegistry(input).isOk()).toBe(true);
-
-    input.personas[0].lifecycle!.subscriptions.push({
-      version: 'v1',
-      handler: 'subagent-advisor',
-      failurePolicy: { version: 'v1', mode: 'fail_closed' },
-      subscription: {
-        version: 'v1',
-        kind: 'interceptor',
-        interceptors: [{ version: 'v1', hook: 'run.before_execute' }],
-      },
-    });
-    const overridden = createLifecycleHandlerRegistry(input);
-    expect(overridden.isErr()).toBe(true);
-    expect(overridden._unsafeUnwrapErr().message).toMatch(
-      /advisory interceptors must use fail_open/i,
+    const result = createLifecycleHandlerRegistry(input);
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toMatch(
+      /lifecycle interceptors must use a native implementation/i,
     );
   });
 
-  it('rejects unattached subagent enforcement and advisory blocking policies with canonical diagnostics', () => {
+  it('rejects unsupported sub-agent interceptors and advisory blocking policies with canonical diagnostics', () => {
     const enforcingSubagent = makeRegistryInput();
     enforcingSubagent.lifecycle!.handlers.push({
       version: 'v1',
@@ -2359,7 +2347,7 @@ describe('LifecycleHandlerRegistry', () => {
     const enforcingResult = createLifecycleHandlerRegistry(enforcingSubagent);
     expect(enforcingResult.isErr()).toBe(true);
     const enforcingMessage = enforcingResult._unsafeUnwrapErr().message;
-    expect(enforcingMessage).toMatch(/enforcing interceptors must use a native implementation/i);
+    expect(enforcingMessage).toMatch(/interceptors must use a native implementation/i);
     expect(enforcingMessage).not.toMatch(/output contract.*incompatible/i);
 
     const handlerPolicy = makeRegistryInput();

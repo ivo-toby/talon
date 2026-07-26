@@ -149,8 +149,10 @@ queue:
 # lifecycle event payload/provenance detail after the audit window; pending,
 # failed, claimed, dead-letter, and privacy-deleted rows keep their safety
 # semantics. Behavior prompt promotions default to operator approval; only
-# explicit narrow append-only style/preference/context policies may auto-apply
-# after validation, evaluation, atomic prompt write, reload, and rollback gates.
+# prompt-patch-backed, explicit narrow append-only style/preference/context
+# policies may auto-apply after validation, evaluation, atomic prompt write,
+# reload, and rollback gates. Notes-only candidates are reviewable but not
+# applicable through lifecycle promote.
 # lifecycle:
 #   enabled: false
 #   handlers:
@@ -158,6 +160,7 @@ queue:
 #     # signals, but native handlers own durable state mutation and governed
 #     # prompt promotion. Personas must also list a sub-agent handler's ref
 #     # under their own subagents list before it can execute for that persona.
+#     # Lifecycle interceptors are native-only.
 #     # - version: v1
 #     #   id: behavior-feedback-detector
 #     #   mode: event

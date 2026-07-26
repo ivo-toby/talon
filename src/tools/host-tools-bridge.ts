@@ -18,9 +18,15 @@ import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
 import { ChannelSendHandler, type ChannelSendArgs } from './host-tools/channel-send.js';
 import { ChannelListHandler, type ChannelListArgs } from './host-tools/channel-list.js';
-import { ChannelBroadcastHandler, type ChannelBroadcastArgs } from './host-tools/channel-broadcast.js';
+import {
+  ChannelBroadcastHandler,
+  type ChannelBroadcastArgs,
+} from './host-tools/channel-broadcast.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
-import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
+import {
+  PersonaTaskStatusHandler,
+  type PersonaTaskStatusArgs,
+} from './host-tools/persona-task-status.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
@@ -34,10 +40,7 @@ import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
 import { bridgeSecretsMatch } from './host-tools-bridge-auth.js';
-import {
-  ensureOwnerOnlyDirSync,
-  ensureOwnerOnlyFile,
-} from '../core/fs/private-paths.js';
+import { ensureOwnerOnlyDirSync, ensureOwnerOnlyFile } from '../core/fs/private-paths.js';
 import type { LifecycleEventEnvelope } from '../lifecycle/contracts/index.js';
 
 /** NDJSON request shape from MCP server. */
@@ -428,18 +431,15 @@ export class HostToolsBridge {
             { status: 'started' },
           );
           if (started.isErr()) {
-            const toolResult: ToolCallResult = {
-              requestId: context.requestId ?? 'unknown',
-              tool: normalizedTool,
-              status: 'error',
-              error: `Failed to publish tool start lifecycle event: ${started.error.message}`,
-            };
-            toolObservation.update({
-              output: toolResult,
-              level: 'ERROR',
-              statusMessage: toolResult.error,
-            });
-            return toolResult;
+            this.ctx.logger.warn(
+              {
+                err: started.error.message,
+                runId: context.runId,
+                tool: normalizedTool,
+                type: 'provider.tool.started.v1',
+              },
+              'host-tools-bridge: continuing after lifecycle tool publication failure',
+            );
           }
 
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -813,7 +813,10 @@ export class HostToolsBridge {
         return this.channelListHandler.execute(args as unknown as ChannelListArgs, context);
 
       case 'channel.broadcast':
-        return this.channelBroadcastHandler.execute(args as unknown as ChannelBroadcastArgs, context);
+        return this.channelBroadcastHandler.execute(
+          args as unknown as ChannelBroadcastArgs,
+          context,
+        );
 
       case 'persona.send':
         if (!this.personaSendHandler) {
@@ -835,7 +838,10 @@ export class HostToolsBridge {
             error: 'A2A task mapper not initialized',
           };
         }
-        return this.personaTaskStatusHandler.execute(args as unknown as PersonaTaskStatusArgs, context);
+        return this.personaTaskStatusHandler.execute(
+          args as unknown as PersonaTaskStatusArgs,
+          context,
+        );
 
       case 'persona.list':
         return this.personaListHandler.execute({}, context);
@@ -869,10 +875,7 @@ export class HostToolsBridge {
             error: 'Background agent system not initialized',
           };
         }
-        return this.backgroundAgentHandler.execute(
-          args as unknown as BackgroundAgentArgs,
-          context,
-        );
+        return this.backgroundAgentHandler.execute(args as unknown as BackgroundAgentArgs, context);
 
       case 'execution.env':
         if (!this.executionEnvHandler) {

@@ -108,7 +108,7 @@ describe('BehaviorReviewService', () => {
     return created._unsafeUnwrap().candidate_id;
   }
 
-  it('creates a bounded notes-only daily review promotion with schedule provenance and trace metadata', async () => {
+  it('creates a bounded prompt-patch-backed daily review promotion with schedule provenance and trace metadata', async () => {
     const candidateId = candidate('concise', [evidence('1'), evidence('2')]);
 
     const reviewed = await service.review({
@@ -140,8 +140,22 @@ describe('BehaviorReviewService', () => {
       contract: 'talon.behavior.review.proposal.v1',
       cadence: 'daily',
       scheduleId: 'schedule-daily',
-      notesOnly: true,
+      notesOnly: false,
+      autoPromote: true,
+      autoScope: 'persona-system-prompt-append-only',
       evidenceCount: 2,
+    });
+    const policy = JSON.parse(promotions[0]!.policy) as { promptPatchJson: string };
+    expect(JSON.parse(policy.promptPatchJson)).toMatchObject({
+      contract: 'talon.behavior.prompt_patch.v1',
+      target: { kind: 'persona-system-prompt', persona: 'support' },
+      operations: [
+        {
+          op: 'append_section',
+          heading: 'Behavior style',
+          content: 'Keep answers concise by default.',
+        },
+      ],
     });
     expect(JSON.parse(promotions[0]!.evaluation)).toMatchObject({
       reviewer: 'native-behavior-review-service',
@@ -196,6 +210,27 @@ describe('BehaviorReviewService', () => {
       evidenceCount: 2,
       distinctSourceCount: 3,
     });
+  });
+
+  it('keeps oversized proposed behavior as notes-only instead of producing an invalid patch', async () => {
+    candidate('oversized', [evidence('1'), evidence('2')], {
+      proposedBehavior: 'x'.repeat(600),
+    });
+
+    const reviewed = await service.review({
+      persona: 'support',
+      cadence: 'daily',
+      now: '2026-07-26T12:00:00.000Z',
+      trigger: { kind: 'manual' },
+    });
+
+    expect(reviewed.isOk()).toBe(true);
+    const [promotion] = repository.findPromotionsByPersona('support')._unsafeUnwrap();
+    expect(JSON.parse(promotion!.policy)).toMatchObject({
+      notesOnly: true,
+      promptPatchUnavailableReason: 'unbounded-or-invalid-proposed-behavior',
+    });
+    expect(JSON.parse(promotion!.policy)).not.toHaveProperty('promptPatchJson');
   });
 
   it('suppresses duplicate promotions and conflicting candidates in the same review window', async () => {

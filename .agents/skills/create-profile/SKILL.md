@@ -133,8 +133,10 @@ npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <operator-
 npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
 ```
 
-Summarize this as a follow-up config step instead of editing the lifecycle YAML
-implicitly during profile creation.
+`promote` applies only prompt-patch-backed promotions. Notes-only candidates are
+review evidence, not directly applicable prompt edits. Summarize lifecycle setup
+as a follow-up config step instead of editing the lifecycle YAML implicitly
+during profile creation.
 
 ### Description
 

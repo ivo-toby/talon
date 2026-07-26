@@ -11,7 +11,7 @@ import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import type { ChannelRegistry } from '../../../src/channels/channel-registry.js';
-import { ok } from 'neverthrow';
+import { err, ok } from 'neverthrow';
 import type { LifecycleInterceptorEnvelope } from '../../../src/lifecycle/contracts/index.js';
 
 // Mock createDatabase so it doesn't try to open a real file for the readonly connection.
@@ -140,30 +140,32 @@ describe('HostToolsBridge', () => {
         audit: {} as any,
         message: {} as any,
         run: {
-          findById: vi.fn().mockImplementation((runId: string) => ok(
-            runId === 'run-001'
-              ? {
-                  id: 'run-001',
-                  thread_id: 'thread-001',
-                  persona_id: 'persona-001',
-                  provider_name: 'claude-code',
-                  sandbox_id: null,
-                  session_id: null,
-                  status: 'running',
-                  parent_run_id: null,
-                  queue_item_id: null,
-                  input_tokens: 0,
-                  output_tokens: 0,
-                  cache_read_tokens: 0,
-                  cache_write_tokens: 0,
-                  cost_usd: 0,
-                  error: null,
-                  started_at: 1,
-                  ended_at: null,
-                  created_at: 1,
-                }
-              : null,
-          )),
+          findById: vi.fn().mockImplementation((runId: string) =>
+            ok(
+              runId === 'run-001'
+                ? {
+                    id: 'run-001',
+                    thread_id: 'thread-001',
+                    persona_id: 'persona-001',
+                    provider_name: 'claude-code',
+                    sandbox_id: null,
+                    session_id: null,
+                    status: 'running',
+                    parent_run_id: null,
+                    queue_item_id: null,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cache_read_tokens: 0,
+                    cache_write_tokens: 0,
+                    cost_usd: 0,
+                    error: null,
+                    started_at: 1,
+                    ended_at: null,
+                    created_at: 1,
+                  }
+                : null,
+            ),
+          ),
         } as any,
         binding: {} as any,
         memory: {
@@ -178,23 +180,25 @@ describe('HostToolsBridge', () => {
       queueManager: {} as any,
       scheduler: {} as any,
       personaLoader: {
-        getByName: vi.fn().mockReturnValue(ok({
-          config: { skills: [] },
-          systemPromptContent: 'Base system prompt.',
-          personalityContent: 'Friendly personality.',
-          resolvedCapabilities: {
-            allow: [
-              'schedule.manage',
-              'channel.send:*',
-              'memory.access',
-              'net.http',
-              'db.query',
-              'execution.env',
-              'subagent.background',
-            ],
-            requireApproval: [],
-          },
-        })),
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { skills: [] },
+            systemPromptContent: 'Base system prompt.',
+            personalityContent: 'Friendly personality.',
+            resolvedCapabilities: {
+              allow: [
+                'schedule.manage',
+                'channel.send:*',
+                'memory.access',
+                'net.http',
+                'db.query',
+                'execution.env',
+                'subagent.background',
+              ],
+              requireApproval: [],
+            },
+          }),
+        ),
       } as any,
       sessionTracker: {} as any,
       threadWorkspace: {} as any,
@@ -207,14 +211,20 @@ describe('HostToolsBridge', () => {
       toolInstructions: new Map(),
       messagePipeline: {} as any,
       observability: {
-        observe: vi.fn(async (_input, fn) => await fn({
-          update: vi.fn(),
-          getTraceparent: vi.fn().mockReturnValue(null),
-        })),
-        observeWithTraceparent: vi.fn(async (_traceparent, _input, fn) => await fn({
-          update: vi.fn(),
-          getTraceparent: vi.fn().mockReturnValue(null),
-        })),
+        observe: vi.fn(
+          async (_input, fn) =>
+            await fn({
+              update: vi.fn(),
+              getTraceparent: vi.fn().mockReturnValue(null),
+            }),
+        ),
+        observeWithTraceparent: vi.fn(
+          async (_traceparent, _input, fn) =>
+            await fn({
+              update: vi.fn(),
+              getTraceparent: vi.fn().mockReturnValue(null),
+            }),
+        ),
         shutdown: vi.fn().mockResolvedValue(undefined),
       } as any,
       backgroundAgentManager: {
@@ -226,23 +236,25 @@ describe('HostToolsBridge', () => {
       } as any,
       lifecycleRuntime: null,
       executionEnvManager: {
-        create: vi.fn().mockResolvedValue(ok({
-          id: 'env-1',
-          provider: 'sprites',
-          spriteId: 'sprite-1',
-          threadId: 'thread-001',
-          personaId: 'persona-001',
-          ownerTaskId: null,
-          status: 'ready',
-          workingDirectory: '/workspace',
-          baseSnapshot: null,
-          autoDestroy: true,
-          resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
-          metadata: null,
-          createdAt: 1,
-          updatedAt: 1,
-          destroyedAt: null,
-        })),
+        create: vi.fn().mockResolvedValue(
+          ok({
+            id: 'env-1',
+            provider: 'sprites',
+            spriteId: 'sprite-1',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            ownerTaskId: null,
+            status: 'ready',
+            workingDirectory: '/workspace',
+            baseSnapshot: null,
+            autoDestroy: true,
+            resourceLimits: { cpus: 2, memoryMb: 4096, diskGb: 20 },
+            metadata: null,
+            createdAt: 1,
+            updatedAt: 1,
+            destroyedAt: null,
+          }),
+        ),
         exec: vi.fn(),
         upload: vi.fn(),
         download: vi.fn(),
@@ -295,10 +307,12 @@ describe('HostToolsBridge', () => {
           updated_at: 1,
         }),
       ),
-      findEnabled: vi.fn().mockReturnValue(ok([
-        { id: 'channel-001', name: 'telegram-main' },
-        { id: 'channel-002', name: 'slack-general' },
-      ])),
+      findEnabled: vi.fn().mockReturnValue(
+        ok([
+          { id: 'channel-001', name: 'telegram-main' },
+          { id: 'channel-002', name: 'slack-general' },
+        ]),
+      ),
     } as any;
   });
 
@@ -350,19 +364,21 @@ describe('HostToolsBridge', () => {
 
       const response = await new Promise<Record<string, unknown>>((resolve, reject) => {
         const client = createConnection(bridge.path, () => {
-          client.write(JSON.stringify({
-            id: randomUUID(),
-            tool: 'memory_access',
-            args: {
-              operation: 'list',
-            },
-            context: {
-              runId: 'run-001',
-              threadId: 'thread-001',
-              personaId: 'persona-001',
-              requestId: 'req-001',
-            },
-          }) + '\n');
+          client.write(
+            JSON.stringify({
+              id: randomUUID(),
+              tool: 'memory_access',
+              args: {
+                operation: 'list',
+              },
+              context: {
+                runId: 'run-001',
+                threadId: 'thread-001',
+                personaId: 'persona-001',
+                requestId: 'req-001',
+              },
+            }) + '\n',
+          );
         });
 
         let data = '';
@@ -641,28 +657,35 @@ describe('HostToolsBridge', () => {
 
     it('runs tool.before_execute, dispatches transformed arguments, and publishes tool lifecycle events', async () => {
       const lifecycleRuntime = makeLifecycleRuntime();
-      lifecycleRuntime.intercept.mockImplementation((_invocation, input: LifecycleInterceptorEnvelope) => {
-        if (input.hook !== 'tool.before_execute') {
-          return ok({ outcome: 'allow' as const, input, signals: [] });
-        }
-        return ok({
-          outcome: 'allow' as const,
-          input: {
-            ...input,
+      lifecycleRuntime.intercept.mockImplementation(
+        (_invocation, input: LifecycleInterceptorEnvelope) => {
+          if (input.hook !== 'tool.before_execute') {
+            return ok({ outcome: 'allow' as const, input, signals: [] });
+          }
+          return ok({
+            outcome: 'allow' as const,
             input: {
-              ...input.input,
-              arguments: { action: 'list' },
+              ...input,
+              input: {
+                ...input.input,
+                arguments: { action: 'list' },
+              },
             },
-          },
-          signals: [],
-        });
-      });
+            signals: [],
+          });
+        },
+      );
       mockCtx.lifecycleRuntime = lifecycleRuntime as any;
       bridge = new HostToolsBridge(mockCtx);
       registerActiveRunAuth();
       const dispatch = vi
         .spyOn(bridge as any, 'dispatch')
-        .mockResolvedValue({ requestId: 'req-001', tool: 'schedule.manage', status: 'success', result: { ok: true } });
+        .mockResolvedValue({
+          requestId: 'req-001',
+          tool: 'schedule.manage',
+          status: 'success',
+          result: { ok: true },
+        });
 
       const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
       await (bridge as any).handleRequest(
@@ -704,6 +727,50 @@ describe('HostToolsBridge', () => {
       );
     });
 
+    it('dispatches the tool when lifecycle start publication fails', async () => {
+      const lifecycleRuntime = makeLifecycleRuntime();
+      lifecycleRuntime.publish.mockImplementation((publication: { event: { type: string } }) =>
+        publication.event.type === 'provider.tool.started.v1'
+          ? err(new Error('outbox unavailable'))
+          : ok({}),
+      );
+      mockCtx.lifecycleRuntime = lifecycleRuntime as any;
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      vi.spyOn(bridge as any, 'dispatch').mockResolvedValue({
+        requestId: 'req-001',
+        tool: 'schedule.manage',
+        status: 'success',
+        result: { ok: true },
+      });
+
+      const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'req-001',
+          tool: 'schedule_manage',
+          args: { action: 'list' },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'req-001',
+          },
+        }),
+        socket,
+      );
+
+      const response = JSON.parse((socket.write as any).mock.calls[0]?.[0] as string) as {
+        result: { status: string };
+      };
+      expect(response.result.status).toBe('success');
+      expect(mockCtx.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'provider.tool.started.v1' }),
+        expect.stringContaining('continuing after lifecycle tool publication failure'),
+      );
+    });
+
     it('keeps default-deny capability rejection authoritative before lifecycle interception', async () => {
       const lifecycleRuntime = makeLifecycleRuntime();
       mockCtx.lifecycleRuntime = lifecycleRuntime as any;
@@ -733,15 +800,17 @@ describe('HostToolsBridge', () => {
     });
 
     it('dispatches skill.load before capability checks for persona-owned skills', async () => {
-      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          skills: ['brainstorming'],
-        },
-        resolvedCapabilities: {
-          allow: [],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            skills: ['brainstorming'],
+          },
+          resolvedCapabilities: {
+            allow: [],
+            requireApproval: [],
+          },
+        } as any),
+      );
       mockCtx.loadedSkills = [
         {
           manifest: { name: 'brainstorming' },
@@ -778,15 +847,17 @@ describe('HostToolsBridge', () => {
     });
 
     it('reports only loadable Talon persona skills when skill.load lookup fails', async () => {
-      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
-        config: {
-          skills: ['brainstorming', 'missing-from-disk'],
-        },
-        resolvedCapabilities: {
-          allow: [],
-          requireApproval: [],
-        },
-      } as any));
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            skills: ['brainstorming', 'missing-from-disk'],
+          },
+          resolvedCapabilities: {
+            allow: [],
+            requireApproval: [],
+          },
+        } as any),
+      );
       mockCtx.loadedSkills = [
         {
           manifest: { name: 'brainstorming' },
@@ -828,11 +899,13 @@ describe('HostToolsBridge', () => {
 
     it('traces rejected tool calls as failed tool observations', async () => {
       const update = vi.fn();
-      mockCtx.observability.observeWithTraceparent = vi.fn(async (_traceparent, _input, fn) =>
-        await fn({
-          update,
-          getTraceparent: vi.fn().mockReturnValue(null),
-        }));
+      mockCtx.observability.observeWithTraceparent = vi.fn(
+        async (_traceparent, _input, fn) =>
+          await fn({
+            update,
+            getTraceparent: vi.fn().mockReturnValue(null),
+          }),
+      );
 
       bridge = new HostToolsBridge(mockCtx);
       registerActiveRunAuth();
@@ -877,11 +950,13 @@ describe('HostToolsBridge', () => {
       vi.useFakeTimers();
       try {
         const update = vi.fn();
-        mockCtx.observability.observeWithTraceparent = vi.fn(async (_traceparent, _input, fn) =>
-          await fn({
-            update,
-            getTraceparent: vi.fn().mockReturnValue(null),
-          }));
+        mockCtx.observability.observeWithTraceparent = vi.fn(
+          async (_traceparent, _input, fn) =>
+            await fn({
+              update,
+              getTraceparent: vi.fn().mockReturnValue(null),
+            }),
+        );
 
         bridge = new HostToolsBridge(mockCtx);
         registerActiveRunAuth();

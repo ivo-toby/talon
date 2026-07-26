@@ -332,10 +332,12 @@ export class QueueProcessor {
         this.lifecycleEvent(item, type, scope.persona, scope.itemType),
         transaction,
       );
-      if (publication.isErr())
-        return err(
-          new QueueError(`Failed to publish queue transition: ${publication.error.message}`),
+      if (publication.isErr()) {
+        this.logger.warn(
+          { err: publication.error.message, itemId: item.id, type },
+          'queue-processor: continuing after lifecycle queue publication failure',
         );
+      }
       return ok(undefined);
     });
     return result.isErr() ? err(new QueueError(result.error.message, result.error)) : ok(undefined);
@@ -368,16 +370,18 @@ export class QueueProcessor {
         return err(new QueueError(transition.error.message, transition.error));
       if (!transition.value) return ok(undefined);
       const eventType =
-        transition.value === 'dead_letter'
-          ? 'queue.item.dead_lettered.v1'
-          : 'queue.item.failed.v1';
+        transition.value === 'dead_letter' ? 'queue.item.dead_lettered.v1' : 'queue.item.failed.v1';
       const publication = this.lifecycleRuntime!.publish(
         this.lifecycleEvent(item, eventType, scope.persona, scope.itemType),
         transaction,
       );
-      return publication.isErr()
-        ? err(new QueueError(`Failed to publish queue transition: ${publication.error.message}`))
-        : ok(undefined);
+      if (publication.isErr()) {
+        this.logger.warn(
+          { err: publication.error.message, itemId: item.id, type: eventType },
+          'queue-processor: continuing after lifecycle queue publication failure',
+        );
+      }
+      return ok(undefined);
     });
     return result.isErr() ? err(new QueueError(result.error.message, result.error)) : ok(undefined);
   }
@@ -391,7 +395,8 @@ export class QueueProcessor {
     ) {
       return undefined;
     }
-    const expectedItemType = row.type === 'schedule' ? 'schedule' : row.type === 'message' ? 'message' : null;
+    const expectedItemType =
+      row.type === 'schedule' ? 'schedule' : row.type === 'message' ? 'message' : null;
     return expectedItemType === row.lifecycle_item_type
       ? { persona: row.lifecycle_persona, itemType: row.lifecycle_item_type }
       : undefined;

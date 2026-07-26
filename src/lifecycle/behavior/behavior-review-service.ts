@@ -10,7 +10,12 @@ import type {
 } from '../../core/database/repositories/index.js';
 import type { AuditLogger } from '../../core/logging/audit-logger.js';
 import { BEHAVIOR_REVIEW_PROPOSAL_CONTRACT } from './review-contracts.js';
-import { BehaviorTimestampSchema, isBehaviorPersona } from './types.js';
+import { BehaviorTimestampSchema, isBehaviorPersona, type BehaviorCandidateKind } from './types.js';
+import {
+  parsePromptPatchJson,
+  PROMPT_PROMOTION_AUTO_SCOPE,
+  PROMPT_PATCH_CONTRACT,
+} from './promotion-policy.js';
 
 export const NATIVE_BEHAVIOR_REVIEW_SERVICE_REF = 'native-behavior-review-service';
 
@@ -220,6 +225,7 @@ export class BehaviorReviewService {
           return err(toLifecycleError('failed to ready behavior review candidate', ready.error));
         }
       }
+      const promptPatchJson = promptPatchJsonForCandidate(input.persona, state);
       const created = this.repository.createPromotion({
         promotionId,
         persona: input.persona,
@@ -228,7 +234,16 @@ export class BehaviorReviewService {
           contract: BEHAVIOR_REVIEW_PROPOSAL_CONTRACT,
           reviewer: NATIVE_BEHAVIOR_REVIEW_SERVICE_REF,
           cadence: input.cadence,
-          notesOnly: true,
+          notesOnly: promptPatchJson === null,
+          ...(promptPatchJson
+            ? {
+                promptPatchJson,
+                autoPromote: isAutoPromotableCandidateKind(state.candidate.kind),
+                autoScope: PROMPT_PROMOTION_AUTO_SCOPE,
+              }
+            : {
+                promptPatchUnavailableReason: 'unbounded-or-invalid-proposed-behavior',
+              }),
           scheduleId: input.trigger.scheduleId ?? null,
           firedAt: input.trigger.firedAt ?? input.now,
           evidenceCount: Math.min(state.evidenceCount, this.maxEvidencePerCandidate),
@@ -366,6 +381,49 @@ function isExpired(state: CandidateReviewState, cutoffMs: number): boolean {
 
 function normalizeText(value: string): string {
   return value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function promptPatchJsonForCandidate(persona: string, state: CandidateReviewState): string | null {
+  const proposedBehavior = state.candidate.proposed_behavior.trim();
+  if (proposedBehavior.length === 0 || proposedBehavior.length > 512) {
+    return null;
+  }
+
+  const patch = {
+    contract: PROMPT_PATCH_CONTRACT,
+    target: { kind: 'persona-system-prompt', persona },
+    operations: [
+      {
+        op: 'append_section',
+        heading: promptPatchHeading(state.candidate.kind),
+        content: proposedBehavior,
+      },
+    ],
+  } as const;
+  const serialized = JSON.stringify(patch);
+  if (serialized.length > 1024) {
+    return null;
+  }
+  return parsePromptPatchJson(persona, serialized).isOk() ? serialized : null;
+}
+
+function promptPatchHeading(kind: BehaviorCandidateKind): string {
+  switch (kind) {
+    case 'style':
+      return 'Behavior style';
+    case 'preference':
+      return 'Behavior preference';
+    case 'safety':
+      return 'Behavior safety';
+    case 'tooling':
+      return 'Behavior tooling';
+    case 'context':
+      return 'Behavior context';
+  }
+}
+
+function isAutoPromotableCandidateKind(kind: BehaviorCandidateKind): boolean {
+  return kind === 'style' || kind === 'preference' || kind === 'context';
 }
 
 function reviewOutcome(input: {

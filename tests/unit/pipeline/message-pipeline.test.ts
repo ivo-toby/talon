@@ -198,7 +198,9 @@ describe('MessagePipeline', () => {
       );
       vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok('persona-uuid-1'));
       vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
-      vi.mocked(mocks.queueManager.enqueueInLifecycleTransaction).mockReturnValue(ok(makeQueueItem()));
+      vi.mocked(mocks.queueManager.enqueueInLifecycleTransaction).mockReturnValue(
+        ok(makeQueueItem()),
+      );
     });
 
     it('returns Ok("enqueued") on a successful end-to-end run', async () => {
@@ -265,7 +267,9 @@ describe('MessagePipeline', () => {
       );
       vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok('persona-uuid-1'));
       vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
-      vi.mocked(mocks.queueManager.enqueueInLifecycleTransaction).mockReturnValue(ok(makeQueueItem()));
+      vi.mocked(mocks.queueManager.enqueueInLifecycleTransaction).mockReturnValue(
+        ok(makeQueueItem()),
+      );
     });
 
     it('transforms before persistence and publishes bounded persisted/routed events', () => {
@@ -352,61 +356,137 @@ describe('MessagePipeline', () => {
       expect(runtime.publish).not.toHaveBeenCalled();
     });
 
-    it.each([1, 2, 3])('rolls back stage %i and recovers idempotently on retry', (failureAt) => {
-      const db: Database.Database = createTestDb();
-      const channels = new ChannelRepository(db);
-      const threads = new ThreadRepository(db);
-      const messages = new MessageRepository(db);
-      const queue = new QueueRepository(db);
-      const channelId = uuid();
-      const threadId = uuid();
-      const personaId = uuid();
-      let injectFailure = true;
-      channels.insert({
-        id: channelId,
-        type: 'terminal',
-        name: 'test-bot',
-        config: '{}',
-        credentials_ref: null,
-        enabled: 1,
-      });
-      threads.insert({ id: threadId, channel_id: channelId, external_id: 'ext-thread-001', metadata: '{}' });
-      let publications = 0;
-      const runtime = new LifecycleRuntime(
-        new LifecycleEventBus(new LifecycleEventRepository(db), {
-          resolveEventHandlers: () => {
-            publications += 1;
-            if (injectFailure && publications === failureAt) throw new Error('injected publication failure');
-            return [];
-          },
-        }),
-        new LifecycleInterceptorEngine({ resolveHandlers: () => [], implementations: {} }),
-        {} as any,
-      );
-      const pipelineUnderTest = new MessagePipeline(
-        messages,
-        threads,
-        channels,
-        new QueueManager(queue, threads, { maxAttempts: 3, backoffBaseMs: 10, backoffMaxMs: 100, concurrencyLimit: 1 }, silentLogger(), runtime),
-        { resolvePersona: () => ok(personaId) } as unknown as ChannelRouter,
+    it.each([1, 2, 3])(
+      'persists and deduplicates when lifecycle publication stage %i fails',
+      (failureAt) => {
+        const db: Database.Database = createTestDb();
+        const channels = new ChannelRepository(db);
+        const threads = new ThreadRepository(db);
+        const messages = new MessageRepository(db);
+        const queue = new QueueRepository(db);
+        const channelId = uuid();
+        const threadId = uuid();
+        const personaId = uuid();
+        let injectFailure = true;
+        channels.insert({
+          id: channelId,
+          type: 'terminal',
+          name: 'test-bot',
+          config: '{}',
+          credentials_ref: null,
+          enabled: 1,
+        });
+        threads.insert({
+          id: threadId,
+          channel_id: channelId,
+          external_id: 'ext-thread-001',
+          metadata: '{}',
+        });
+        let publications = 0;
+        const runtime = new LifecycleRuntime(
+          new LifecycleEventBus(new LifecycleEventRepository(db), {
+            resolveEventHandlers: () => {
+              publications += 1;
+              if (injectFailure && publications === failureAt)
+                throw new Error('injected publication failure');
+              return [];
+            },
+          }),
+          new LifecycleInterceptorEngine({ resolveHandlers: () => [], implementations: {} }),
+          {} as any,
+        );
+        const pipelineUnderTest = new MessagePipeline(
+          messages,
+          threads,
+          channels,
+          new QueueManager(
+            queue,
+            threads,
+            { maxAttempts: 3, backoffBaseMs: 10, backoffMaxMs: 100, concurrencyLimit: 1 },
+            silentLogger(),
+            runtime,
+          ),
+          { resolvePersona: () => ok(personaId) } as unknown as ChannelRouter,
+          mocks.auditLogger,
+          silentLogger(),
+          runtime,
+          () => ok('assistant'),
+        );
+
+        expect(pipelineUnderTest.handleInboundEvent(makeEvent())._unsafeUnwrap()).toBe('enqueued');
+        expect(
+          (db.prepare('SELECT COUNT(*) AS count FROM messages').get() as { count: number }).count,
+        ).toBe(1);
+        expect(
+          (db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number })
+            .count,
+        ).toBe(1);
+        expect(
+          (db.prepare('SELECT COUNT(*) AS count FROM lifecycle_events').get() as { count: number })
+            .count,
+        ).toBe(2);
+
+        publications = 0;
+        injectFailure = false;
+        expect(pipelineUnderTest.handleInboundEvent(makeEvent())._unsafeUnwrap()).toBe('duplicate');
+        expect(
+          (db.prepare('SELECT COUNT(*) AS count FROM messages').get() as { count: number }).count,
+        ).toBe(1);
+        expect(
+          (db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number })
+            .count,
+        ).toBe(1);
+        expect(
+          (db.prepare('SELECT COUNT(*) AS count FROM lifecycle_events').get() as { count: number })
+            .count,
+        ).toBe(2);
+        db.close();
+      },
+    );
+
+    it('logs that lifecycle interception is skipped for unbound inbound messages', () => {
+      const runtime = {
+        transaction: vi.fn((callback) => callback({})),
+        intercept: vi.fn(() =>
+          ok({
+            outcome: 'allow' as const,
+            signals: [],
+            input: {
+              hook: 'message.before_persist' as const,
+              input: { content: 'redacted' },
+            },
+          }),
+        ),
+        publish: vi.fn(() => ok({})),
+      };
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+        child: vi.fn().mockReturnThis(),
+      } as unknown as pino.Logger;
+      vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok(null));
+      pipeline = new MessagePipeline(
+        mocks.messageRepo,
+        mocks.threadRepo,
+        mocks.channelRepo,
+        mocks.queueManager,
+        mocks.router,
         mocks.auditLogger,
-        silentLogger(),
-        runtime,
-        () => ok('assistant'),
+        logger,
+        runtime as any,
+        () => ok(undefined),
       );
 
-      expect(pipelineUnderTest.handleInboundEvent(makeEvent()).isErr()).toBe(true);
-      expect((db.prepare('SELECT COUNT(*) AS count FROM messages').get() as { count: number }).count).toBe(0);
-      expect((db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number }).count).toBe(0);
-      expect((db.prepare('SELECT COUNT(*) AS count FROM lifecycle_events').get() as { count: number }).count).toBe(0);
+      const result = pipeline.handleInboundEvent(makeEvent());
 
-      publications = 0;
-      injectFailure = false;
-      expect(pipelineUnderTest.handleInboundEvent(makeEvent())._unsafeUnwrap()).toBe('enqueued');
-      expect((db.prepare('SELECT COUNT(*) AS count FROM messages').get() as { count: number }).count).toBe(1);
-      expect((db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number }).count).toBe(1);
-      expect((db.prepare('SELECT COUNT(*) AS count FROM lifecycle_events').get() as { count: number }).count).toBe(3);
-      db.close();
+      expect(result._unsafeUnwrap()).toBe('no_persona');
+      expect(runtime.intercept).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ hook: 'message.before_persist' }),
+        expect.stringContaining('lifecycle inbound interception skipped'),
+      );
     });
   });
 

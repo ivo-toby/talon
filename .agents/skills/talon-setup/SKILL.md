@@ -6,15 +6,15 @@ description: |
   talon", "add a channel", "add a persona", "add provider", "set up the daemon",
   "add schedule", or "configure providers".
 triggers:
-  - "setup talon"
-  - "configure talon"
-  - "talon setup"
-  - "add channel"
-  - "add persona"
-  - "add provider"
-  - "set up the daemon"
-  - "configure providers"
-  - "add schedule"
+  - 'setup talon'
+  - 'configure talon'
+  - 'talon setup'
+  - 'add channel'
+  - 'add persona'
+  - 'add provider'
+  - 'set up the daemon'
+  - 'configure providers'
+  - 'add schedule'
 ---
 
 # Talon setup skill
@@ -34,43 +34,43 @@ conversational wizard. Ask one question at a time, act on the answer, move on.
 
 All config mutations go through these commands:
 
-| Command | Purpose |
-|---------|---------|
-| `npx talonctl setup` | Bootstrap (dirs, config, migrations) |
-| `npx talonctl add-channel --name <n> --type <t>` | Add a channel |
-| `npx talonctl add-persona --name <n>` | Scaffold persona + add to config |
-| `npx talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Add a skill to a persona |
-| `npx talonctl bind --persona <p> --channel <c>` | Bind persona to channel |
-| `npx talonctl unbind --persona <p> --channel <c>` | Remove binding |
-| `npx talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add MCP server |
-| `npx talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]` | Add a provider |
-| `npx talonctl set-default-provider --name <n> --context <ctx>` | Set default provider |
-| `npx talonctl test-provider --name <n>` | Test a provider works |
-| `npx talonctl list-providers` | Show all providers |
-| `npx talonctl list-channels` | Show channels |
-| `npx talonctl list-personas` | Show personas |
-| `npx talonctl list-skills` | Show skills |
-| `npx talonctl list-schedules` | Show scheduled tasks |
-| `npx talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add scheduled task |
-| `npx talonctl remove-schedule <id>` | Remove a scheduled task |
-| `npx talonctl lifecycle handlers` | Show lifecycle handler health, backlog, and dispatcher status |
-| `npx talonctl lifecycle inspect <event-id> --handler <handler-id>` | Inspect a durable lifecycle event and delivery state |
-| `npx talonctl lifecycle replay <event-id> <handler-id>` | Reopen one terminal lifecycle delivery for exact replay |
-| `npx talonctl lifecycle disable <handler-id>` | Dead-letter pending/failed/claimed deliveries for one handler |
-| `npx talonctl lifecycle candidates <persona> --limit <n>` | List behavior-candidate provenance for a persona |
-| `npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>` | Apply a governed behavior prompt promotion |
-| `npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>` | Roll back an active behavior prompt promotion |
-| `npx talonctl list-capabilities` | Show all available capability labels |
-| `npx talonctl set-capabilities --persona <p> --allow <labels>` | Set persona capabilities |
-| `npx talonctl set-capabilities --persona <p> --add <labels>` | Add capabilities to persona |
-| `npx talonctl set-capabilities --persona <p> --remove <labels>` | Remove capabilities from persona |
-| `npx talonctl set-capabilities --persona <p> --show` | Show persona's current capabilities |
-| `npx talonctl env-check` | Audit env var placeholders |
-| `npx talonctl config-show` | Show effective config (secrets masked) |
-| `npx talonctl remove-channel --name <n>` | Remove a channel |
-| `npx talonctl remove-persona --name <n>` | Remove a persona |
-| `npx talonctl migrate` | Run database migrations |
-| `npx talonctl doctor` | Validate configuration |
+| Command                                                                                           | Purpose                                                       |
+| ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `npx talonctl setup`                                                                              | Bootstrap (dirs, config, migrations)                          |
+| `npx talonctl add-channel --name <n> --type <t>`                                                  | Add a channel                                                 |
+| `npx talonctl add-persona --name <n>`                                                             | Scaffold persona + add to config                              |
+| `npx talonctl add-skill --name <n> --persona <p> [--format <fmt>]`                                | Add a skill to a persona                                      |
+| `npx talonctl bind --persona <p> --channel <c>`                                                   | Bind persona to channel                                       |
+| `npx talonctl unbind --persona <p> --channel <c>`                                                 | Remove binding                                                |
+| `npx talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>`                     | Add MCP server                                                |
+| `npx talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]`                | Add a provider                                                |
+| `npx talonctl set-default-provider --name <n> --context <ctx>`                                    | Set default provider                                          |
+| `npx talonctl test-provider --name <n>`                                                           | Test a provider works                                         |
+| `npx talonctl list-providers`                                                                     | Show all providers                                            |
+| `npx talonctl list-channels`                                                                      | Show channels                                                 |
+| `npx talonctl list-personas`                                                                      | Show personas                                                 |
+| `npx talonctl list-skills`                                                                        | Show skills                                                   |
+| `npx talonctl list-schedules`                                                                     | Show scheduled tasks                                          |
+| `npx talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add scheduled task                                            |
+| `npx talonctl remove-schedule <id>`                                                               | Remove a scheduled task                                       |
+| `npx talonctl lifecycle handlers`                                                                 | Show lifecycle handler health, backlog, and dispatcher status |
+| `npx talonctl lifecycle inspect <event-id> --handler <handler-id>`                                | Inspect a durable lifecycle event and delivery state          |
+| `npx talonctl lifecycle replay <event-id> <handler-id>`                                           | Reopen one terminal lifecycle delivery for exact replay       |
+| `npx talonctl lifecycle disable <handler-id>`                                                     | Dead-letter pending/failed/claimed deliveries for one handler |
+| `npx talonctl lifecycle candidates <persona> --limit <n>`                                         | List behavior-candidate provenance for a persona              |
+| `npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>`                      | Apply a governed prompt-patch-backed behavior promotion       |
+| `npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>`               | Roll back an active behavior prompt promotion                 |
+| `npx talonctl list-capabilities`                                                                  | Show all available capability labels                          |
+| `npx talonctl set-capabilities --persona <p> --allow <labels>`                                    | Set persona capabilities                                      |
+| `npx talonctl set-capabilities --persona <p> --add <labels>`                                      | Add capabilities to persona                                   |
+| `npx talonctl set-capabilities --persona <p> --remove <labels>`                                   | Remove capabilities from persona                              |
+| `npx talonctl set-capabilities --persona <p> --show`                                              | Show persona's current capabilities                           |
+| `npx talonctl env-check`                                                                          | Audit env var placeholders                                    |
+| `npx talonctl config-show`                                                                        | Show effective config (secrets masked)                        |
+| `npx talonctl remove-channel --name <n>`                                                          | Remove a channel                                              |
+| `npx talonctl remove-persona --name <n>`                                                          | Remove a persona                                              |
+| `npx talonctl migrate`                                                                            | Run database migrations                                       |
+| `npx talonctl doctor`                                                                             | Validate configuration                                        |
 
 ## State detection
 
@@ -88,12 +88,12 @@ Check these files/directories:
 
 ### Entry points
 
-| State | Action |
-|-------|--------|
-| No `talond.yaml` | Full flow from step 1 |
-| Config exists, no providers configured | Skip to provider setup |
-| Config exists, no channels | Skip to channel configuration |
-| Config exists, has channels and personas | Show menu |
+| State                                    | Action                        |
+| ---------------------------------------- | ----------------------------- |
+| No `talond.yaml`                         | Full flow from step 1         |
+| Config exists, no providers configured   | Skip to provider setup        |
+| Config exists, no channels               | Skip to channel configuration |
+| Config exists, has channels and personas | Show menu                     |
 
 ### Returning user menu
 
@@ -121,6 +121,7 @@ When adding a skill, choose a format with `--format`:
 - **skill.yaml** (`--format yaml`, default/legacy): Separate YAML manifest file plus a `prompts/` directory for prompt fragments.
 
 Example:
+
 ```bash
 # New style (recommended)
 npx talonctl add-skill --name my-skill --persona assistant --format skillmd
@@ -226,15 +227,16 @@ use `previous_response_id` session mode for background-only providers, Ollama,
 vLLM, Groq, or ordinary chat-completions-only endpoints.
 
 Examples:
+
 - Existing Ollama Cloud can remain named `openai-compatible` with
   `providerId: ollama`.
 - A separate local Mac endpoint can be named `ollama-mac` with
   `--type openai-compatible --base-url http://<mac-host>:11434/v1
-  --provider-id ollama-mac`.
+--provider-id ollama-mac`.
 - A local oMLX endpoint can be named `omlx-local` with
   `--type openai-compatible --base-url http://<mac-host>:8000/v1
-  --provider-id omlx-local --context agent-runner --api-mode responses
-  --session-mode previous_response_id`.
+--provider-id omlx-local --context agent-runner --api-mode responses
+--session-mode previous_response_id`.
 
 Add matching credentials under `auth.providers.<provider-id>` if the endpoint
 requires them. Local Ollama usually does not require an API key.
@@ -260,6 +262,7 @@ npx talonctl test-provider --name <openai-compatible-alias>
 ```
 
 If a test fails, troubleshoot:
+
 - Binary not found → check the command path, `which Codex` or `which gemini`
 - Auth failure → Codex: `Codex auth login`. Gemini: run `gemini` interactively once for OAuth.
 - JSON parse failure → Gemini CLI version too old, see https://github.com/google-gemini/gemini-cli for upgrade instructions
@@ -280,13 +283,13 @@ g) Skip for now
 
 Invoke the matching per-channel skill for the full setup walkthrough:
 
-| Channel | Skill to invoke |
-|---------|----------------|
+| Channel  | Skill to invoke |
+| -------- | --------------- |
 | Telegram | `/add-telegram` |
-| Slack | `/add-slack` |
-| Discord | `/add-discord` |
+| Slack    | `/add-slack`    |
+| Discord  | `/add-discord`  |
 | WhatsApp | `/add-whatsapp` |
-| Email | `/add-email` |
+| Email    | `/add-email`    |
 | Terminal | `/add-terminal` |
 
 Each skill handles: bot/app creation, credentials, config, env vars, verification, and troubleshooting.
@@ -381,8 +384,11 @@ example: "Review recent lifecycle behavior candidates for this persona and
 summarize which ones need operator approval." Do not instruct the schedule to
 rewrite prompts directly; governed prompt changes must go through
 `npx talonctl lifecycle candidates`, `promote`, and `rollback-promotion`.
+`promote` applies only prompt-patch-backed behavior promotions; notes-only
+candidates are review evidence, not directly applicable prompt edits.
 
 Common cron expressions for reference:
+
 - `0 7 * * 1-5` — weekdays at 7am
 - `0 18 * * 1-5` — weekdays at 6pm
 - `0 16 * * 5` — Friday at 4pm
@@ -421,6 +427,7 @@ Only declare setup complete if at least one provider passes.
 Ask: **"Want to install talond as a systemd service?"**
 
 If yes, tell the user to run:
+
 ```bash
 sudo ./deploy/install-service.sh --user $(whoami) --dir $(pwd)
 ```
@@ -428,6 +435,7 @@ sudo ./deploy/install-service.sh --user $(whoami) --dir $(pwd)
 ### Step 12: Summary
 
 Run these to build the summary:
+
 ```bash
 npx talonctl list-providers
 npx talonctl list-channels

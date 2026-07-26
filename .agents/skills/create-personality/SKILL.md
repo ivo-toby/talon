@@ -5,12 +5,12 @@ description: |
   "create personality", "add personality", "define personality",
   "customize persona", "persona voice", or "persona tone".
 triggers:
-  - "create personality"
-  - "add personality"
-  - "define personality"
-  - "customize persona"
-  - "persona voice"
-  - "persona tone"
+  - 'create personality'
+  - 'add personality'
+  - 'define personality'
+  - 'customize persona'
+  - 'persona voice'
+  - 'persona tone'
 ---
 
 # Create Personality Files
@@ -21,8 +21,8 @@ get appended to the system prompt (after `system.md`, before skills).
 
 This skill is for explicit operator-authored personality files. Do not use it
 to apply lifecycle behavior-learning candidates automatically; those changes
-must go through `talonctl lifecycle candidates`, `promote`, and
-`rollback-promotion`.
+must go through `talonctl lifecycle candidates`, prompt-patch-backed `promote`,
+and `rollback-promotion`.
 
 ## Phase 1: Select Persona
 
@@ -49,6 +49,7 @@ for traits the user provided — don't create empty placeholder files.
 ### File templates
 
 **`01-tone.md`** — Voice and tone guidelines:
+
 ```markdown
 # Tone & Voice
 
@@ -56,6 +57,7 @@ for traits the user provided — don't create empty placeholder files.
 ```
 
 **`02-background.md`** — Role and expertise:
+
 ```markdown
 # Background & Role
 
@@ -63,6 +65,7 @@ for traits the user provided — don't create empty placeholder files.
 ```
 
 **`03-style.md`** — Communication and formatting:
+
 ```markdown
 # Communication Style
 
@@ -70,6 +73,7 @@ for traits the user provided — don't create empty placeholder files.
 ```
 
 **`04-boundaries.md`** — What to avoid:
+
 ```markdown
 # Boundaries
 
@@ -77,6 +81,7 @@ for traits the user provided — don't create empty placeholder files.
 ```
 
 **`05-examples.md`** — Few-shot examples:
+
 ```markdown
 # Response Examples
 

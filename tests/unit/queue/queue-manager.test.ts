@@ -182,6 +182,36 @@ describe('QueueManager', () => {
       );
     });
 
+    it('keeps the queue item when lifecycle enqueue publication fails', () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn((callback) => callback({})),
+        publish: vi.fn(() => err(new Error('outbox unavailable'))),
+      };
+      const lifecycleManager = new QueueManager(
+        queueRepo,
+        threadRepo,
+        DEFAULT_CONFIG,
+        createTestLogger(),
+        lifecycleRuntime as any,
+      );
+
+      const result = lifecycleManager.enqueue(
+        threadId,
+        'message',
+        { content: 'hello' },
+        undefined,
+        {
+          persona: 'assistant',
+          itemType: 'message',
+        },
+      );
+
+      expect(result.isOk()).toBe(true);
+      const stored = queueRepo.findById(result._unsafeUnwrap().id)._unsafeUnwrap();
+      expect(stored?.status).toBe('pending');
+      expect(stored?.lifecycle_persona).toBe('assistant');
+    });
+
     it('idempotently ensures deterministic queue work and publishes only fresh inserts', () => {
       const lifecycleRuntime = {
         transaction: vi.fn((callback) => callback({})),
