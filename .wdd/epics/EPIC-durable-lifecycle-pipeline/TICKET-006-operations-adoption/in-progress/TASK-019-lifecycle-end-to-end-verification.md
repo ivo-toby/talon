@@ -17,10 +17,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-019-lifecycle-end-to-end-verification
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification
-worktree_status: allocated_pending_activation_sync_checkpoint
+worktree_status: created_clean_at_activation_sync
 pr: null
-current_gate: activation_sync_checkpoint_pending
-branch_freshness: pending_activation_sync_checkpoint
+current_gate: worktree_readiness_review_pending
+branch_freshness: branch_current_at_activation_sync_953f9c3_pending_readiness_ff
 verification:
   - "npx vitest run tests/integration/lifecycle-*.test.ts tests/integration/rolling-context-window.test.ts"
   - "npm run build"
@@ -115,10 +115,13 @@ task/TASK-019-lifecycle-end-to-end-verification
 
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification
 
-Allocated by the controller for WAVE-010 bundled execution. Branch/worktree
-creation remains blocked until the activation-sync checkpoint passes GPT-5.5/xhigh
-review and is committed/pushed, and the worktree-readiness checkpoint passes
-GPT-5.5/xhigh review and is committed/pushed.
+Allocated by the controller for WAVE-010 bundled execution. Branch/worktree were
+created and pushed from activation-sync commit
+`953f9c356520294ebc8b924e5a975ed62f8e1873` and verified clean with this task,
+orchestration.json, and controller-state.md present. Worker dispatch remains
+blocked until the worktree-readiness checkpoint passes GPT-5.5/xhigh review, is
+committed/pushed, and this branch/worktree are fast-forwarded to the exact
+readiness commit.
 
 ## PR / Patch Reference
 
@@ -184,6 +187,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   `019f9d87-e141-7180-846b-9cb0e2eef260` passed 0C/0H/0M/0L. Reviewed
   activation checkpoint `119da93374ed0eaf2ffe9f477c120f33543b1bba` is pushed
   and recorded for activation-sync review; no TASK-019 branch/worktree exists.
+- WAVE-010 activation-sync review `019f9d8d-0bb8-7b82-8797-c8b5559a2c2a`
+  passed 0C/0H/0M/0L. Reviewed sync marker
+  `953f9c356520294ebc8b924e5a975ed62f8e1873` is pushed. TASK-019 branch/worktree
+  were created and pushed from that exact commit and verified clean with current
+  WDD artifacts; worktree-readiness review is pending before dispatch.
 
 ## Review Feedback
 

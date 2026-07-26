@@ -3,7 +3,7 @@ id: EPIC-durable-lifecycle-pipeline-CONTROLLER
 kind: controller_state
 epic: EPIC-durable-lifecycle-pipeline
 active_wave: WAVE-010
-status: wave010_activation_sync_checkpoint_pending
+status: wave010_worktree_readiness_review_pending
 updated_at: 2026-07-26
 ---
 
@@ -204,6 +204,12 @@ Every task advances independently as soon as its gates clear.
   `119da93374ed0eaf2ffe9f477c120f33543b1bba`. Activation-sync review is now
   required before branch creation, worktree creation, readiness, or worker
   dispatch.
+- WAVE-010 activation-sync marker: GPT-5.5/xhigh review
+  `019f9d8d-0bb8-7b82-8797-c8b5559a2c2a` passed 0C/0H/0M/0L, and the reviewed
+  sync marker was committed and pushed at
+  `953f9c356520294ebc8b924e5a975ed62f8e1873`. TASK-019 branch/worktree were
+  created and pushed from that exact commit; the worktree is clean with current
+  WDD artifacts. Worktree-readiness review is required before dispatch.
 
 ## Pending Waves
 
@@ -223,39 +229,42 @@ Every task advances independently as soon as its gates clear.
 
 ## Active Wave
 
-WAVE-010 is active as a bundled TASK-019 activation-sync batch. It starts from
-exact pushed WAVE-009 reconciliation checkpoint
+WAVE-010 is active as a bundled TASK-019 worktree-readiness batch. It starts
+from exact pushed WAVE-009 reconciliation checkpoint
 `2618059965f0a379948d79b8f6bb415419025397`, and reviewed activation checkpoint
-`119da93374ed0eaf2ffe9f477c120f33543b1bba` is pushed and recorded. TASK-019 is moved to
+`119da93374ed0eaf2ffe9f477c120f33543b1bba` plus reviewed activation-sync commit
+`953f9c356520294ebc8b924e5a975ed62f8e1873` are pushed and recorded. TASK-019 is
+moved to
 `TICKET-006-operations-adoption/in-progress/TASK-019-lifecycle-end-to-end-verification.md`,
 with branch `task/TASK-019-lifecycle-end-to-end-verification` and worktree
 `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification`
-allocated in metadata only. Current gate: `activation_sync_checkpoint_pending`;
-no branch, worktree, dispatch, or implementation is authorized until
-activation-sync and readiness checkpoints each pass GPT-5.5/xhigh review and
-are committed/pushed in order.
+created from the exact sync commit and verified clean with current WDD artifacts.
+Current gate: `worktree_readiness_review_pending`; no dispatch or
+implementation is authorized until the readiness checkpoint passes
+GPT-5.5/xhigh review, is committed/pushed, and the task branch/worktree are
+fast-forwarded to the exact readiness commit.
 
 ## Monitoring
 
 - Mode: manual fallback while the recurring remaining-waves thread monitor remains available.
 - Cadence: adaptive
-- Status: WAVE-010 activation-sync checkpoint is pending GPT-5.5/xhigh review.
+- Status: WAVE-010 worktree-readiness checkpoint is pending GPT-5.5/xhigh review.
 - Scheduler provenance: `talon-issue-256-wdd-remaining-waves-monitor`
-- Last checked: 2026-07-26T08:29:17Z
-- Next check due: 2026-07-26T08:34:17Z
+- Last checked: 2026-07-26T08:35:40Z
+- Next check due: 2026-07-26T08:40:40Z
 - Stop condition: all remaining waves are merged/reconciled and epic validation
   plus final PR handoff are ready, or a real blocker is recorded.
 - Fallback prompt: run one bounded WDD controller heartbeat for
   EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-010
-  TASK-019 is active at `activation_sync_checkpoint_pending`. Activation
-  checkpoint `119da93374ed0eaf2ffe9f477c120f33543b1bba` is pushed and recorded;
-  `activationArtifactsSynced` is true. Use only global old WDD skills,
+  TASK-019 is active at `worktree_readiness_review_pending`. Activation-sync
+  commit `953f9c356520294ebc8b924e5a975ed62f8e1873` is pushed and recorded;
+  TASK-019 branch/worktree were created and pushed from that exact commit and
+  verified clean with current WDD artifacts. Use only global old WDD skills,
   never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation and
   remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not
-  create TASK-019 branch/worktree or dispatch implementation until
-  activation-sync review/commit/push has passed and worktree-readiness
-  review/commit/push has passed with the task branch/worktree fast-forwarded to
-  the exact readiness commit. Do not run
+  dispatch implementation until worktree-readiness review/commit/push has
+  passed and the task branch/worktree are fast-forwarded to the exact readiness
+  commit. Do not run
   the full npm test suite without explicit approval. Preserve unrelated changes
   and keep `.minispec/` untouched.
 
@@ -440,10 +449,12 @@ are committed/pushed in order.
   passed 0C/0H/0M/0L, focused CI remediation review
   `019f9d67-ac6e-76e2-92a7-c203626ac098` passed 0C/0H/0M/0L, and the clean task
   worktree was removed and pruned.
-- TASK-019-lifecycle-end-to-end-verification: activation_sync_checkpoint_pending.
-  Branch/worktree are allocated in metadata only; no branch/worktree exists or
-  may be created before reviewed activation-sync and readiness gates pass.
-  TASK-019 carries the user-required e2e/Sprites event-pipeline gate.
+- TASK-019-lifecycle-end-to-end-verification: worktree_readiness_review_pending.
+  Branch/worktree exist, are pushed from exact activation-sync commit
+  `953f9c356520294ebc8b924e5a975ed62f8e1873`, and are clean with current WDD
+  artifacts. Worker dispatch remains blocked until reviewed readiness
+  commit/push and fast-forward. TASK-019 carries the user-required e2e/Sprites
+  event-pipeline gate.
 - TASK-020 remains not_started until WAVE-011 activates after TASK-019 is done
   and reconciled.
 - orchestration.json is authoritative for paths, dependencies, conflicts, models, branches, worktrees, freshness, feedback, verification, and gates.
@@ -604,10 +615,11 @@ activation-sync, readiness, implementation, review, CI remediation, PR merge,
 and cleanup gates; PR #276 merged at
 `b5a4fc785534300b37cd4dc4f6eb3c971e6262a0`. WAVE-009 reconciliation checkpoint
 `2618059965f0a379948d79b8f6bb415419025397` is pushed. WAVE-010 TASK-019 is
-allocated to branch `task/TASK-019-lifecycle-end-to-end-verification` and
-worktree `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification`
-in metadata only; branch/worktree creation remains blocked until reviewed
-activation, activation-sync, and readiness checkpoints pass.
+now on branch `task/TASK-019-lifecycle-end-to-end-verification` and worktree
+`/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification`,
+created from pushed activation-sync commit
+`953f9c356520294ebc8b924e5a975ed62f8e1873` and verified clean. Worker dispatch
+remains blocked until reviewed readiness commit/push and fast-forward.
 
 ## Open P1/P2 Feedback
 
@@ -650,11 +662,16 @@ activation, activation-sync, and readiness checkpoints pass.
   limited to WDD metadata, no TASK-019 branch/worktree existed, and `.minispec/`
   was outside the diff. Reviewed checkpoint
   `119da93374ed0eaf2ffe9f477c120f33543b1bba` is pushed and recorded.
-- WAVE-010 activation-sync artifact verification is pending. The activation
-  checkpoint is recorded exactly, `activationArtifactsSynced` is true, and
-  TASK-019 branch/worktree remain absent. Required next review: GPT-5.5/xhigh
-  activation-sync checkpoint review with 0 Critical/High/Medium before
-  commit/push.
+- WAVE-010 activation-sync artifact verification passed: GPT-5.5/xhigh review
+  `019f9d8d-0bb8-7b82-8797-c8b5559a2c2a` reported 0C/0H/0M/0L. Reviewed sync
+  marker `953f9c356520294ebc8b924e5a975ed62f8e1873` is pushed and recorded.
+  TASK-019 branch/worktree were created and pushed from that exact commit and
+  verified clean with current task, orchestration, and controller artifacts.
+- WAVE-010 worktree-readiness artifact verification is pending. The readiness
+  metadata records the pushed task branch/worktree, the exact sync base, and the
+  clean artifact checks. Required next review: GPT-5.5/xhigh readiness review
+  with 0 Critical/High/Medium before commit/push and branch/worktree
+  fast-forward.
 - WAVE-008 activation artifact verification passed: GPT-5.5/xhigh review
   `019f9ca8-adb5-7822-b8ac-ddc66ad76f64` reported 0C/0H/0M/0L, `jq empty`
   passed for orchestration.json, and `git diff --check` passed. Activation-sync
@@ -1384,13 +1401,18 @@ activation, activation-sync, and readiness checkpoints pass.
   activation checkpoint `119da93374ed0eaf2ffe9f477c120f33543b1bba` is pushed
   and recorded; `activationArtifactsSynced=true`. The next gate is fresh
   GPT-5.5/xhigh activation-sync review before branch/worktree creation.
+- 2026-07-26T08:35:40Z: WAVE-010 activation-sync review
+  `019f9d8d-0bb8-7b82-8797-c8b5559a2c2a` passed 0C/0H/0M/0L. Reviewed sync
+  marker `953f9c356520294ebc8b924e5a975ed62f8e1873` is pushed; TASK-019
+  branch/worktree were created and pushed from that exact commit and verified
+  clean with task, orchestration, and controller artifacts present.
+  Worktree-readiness review is next.
 
 ## Next Action
 
-Run GPT-5.5/xhigh review for this WAVE-010 activation-sync checkpoint. If it
+Run GPT-5.5/xhigh review for this WAVE-010 worktree-readiness checkpoint. If it
 passes with 0 Critical/High/Medium findings, commit and push the checkpoint,
-record its exact hash, then create the TASK-019 branch/worktree from that exact
-pushed commit and prepare worktree-readiness review. Do not dispatch
-implementation until activation-sync and readiness checkpoints have passed in
-order. Continue using GPT-5.5/xhigh review only; no GPT-5.6. Low/P3 findings
-remain follow-ups and must not trigger automatic edits.
+record its exact hash, fast-forward/push TASK-019 branch and worktree to that
+exact readiness commit, verify clean/current WDD artifacts, then dispatch the
+TASK-019 implementation worker. Continue using GPT-5.5/xhigh review only; no
+GPT-5.6. Low/P3 findings remain follow-ups and must not trigger automatic edits.
