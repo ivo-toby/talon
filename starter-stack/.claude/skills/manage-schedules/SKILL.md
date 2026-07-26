@@ -24,6 +24,7 @@ Ask what they want to do:
 1. **Create** a new scheduled task
 2. **List** existing schedules
 3. **Remove** a schedule
+4. **Create a behavior-review reminder** for lifecycle candidates
 
 ## Phase 2a: Create Schedule
 
@@ -42,6 +43,23 @@ Ask what they want to do:
 8. Run: `npx talonctl add-schedule --persona <name> --channel <channel> --cron "<expr>" --label "<label>" --prompt "<prompt>" --config talond.yaml`
 9. Confirm with schedule ID and next run time.
 
+For behavior-review reminders, suggest a narrow operator-facing prompt such as:
+
+```text
+Review recent lifecycle behavior candidates for this persona. Summarize the
+candidate IDs, evidence-source counts, confidence, and whether any need
+operator approval. Do not edit prompt files directly; tell the operator to use
+talonctl lifecycle promote or rollback-promotion.
+```
+
+The actual promotion/rollback path is governed by lifecycle IPC commands:
+
+```bash
+npx talonctl lifecycle candidates <persona> --limit 25
+npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <operator-id>
+npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
+```
+
 ## Phase 2b: List Schedules
 
 Run: `npx talonctl list-schedules --config talond.yaml`
@@ -58,4 +76,6 @@ Optionally filter: `--persona <name>`
 - Schedules fire in system local time (CET on the VM).
 - Schedule output is silent -- the agent only sends messages if it explicitly uses channel.send.
 - The daemon must be running for schedules to fire (they live in the DB, not the config).
+- Behavior-review schedules may summarize candidates, but they must not directly
+  rewrite system prompts. Use lifecycle promotion commands for governed changes.
 - After creating schedules, remind the user: schedules require a running daemon to execute.

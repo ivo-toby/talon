@@ -53,6 +53,11 @@ All config mutations go through these commands:
 | `npx talonctl list-schedules` | Show scheduled tasks |
 | `npx talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add scheduled task |
 | `npx talonctl remove-schedule <id>` | Remove a scheduled task |
+| `npx talonctl lifecycle handlers` | Show lifecycle handler health, backlog, and dispatcher status |
+| `npx talonctl lifecycle inspect <event-id> --handler <handler-id>` | Inspect a durable lifecycle event and delivery state |
+| `npx talonctl lifecycle replay <event-id> <handler-id>` | Reopen one terminal lifecycle delivery for exact replay |
+| `npx talonctl lifecycle disable <handler-id>` | Dead-letter pending/failed/claimed deliveries for one handler |
+| `npx talonctl lifecycle candidates <persona> --limit <n>` | List behavior-candidate provenance for a persona |
 | `npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>` | Apply a governed behavior prompt promotion |
 | `npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>` | Roll back an active behavior prompt promotion |
 | `npx talonctl list-capabilities` | Show all available capability labels |
@@ -352,9 +357,10 @@ Suggested schedules (optional):
   a) Morning briefing (weekdays 7am) — calendar, email, Jira, GitHub summary
   b) End-of-day summary (weekdays 6pm) — recap and tomorrow preview
   c) Weekly review (Friday 4pm) — stale tickets, forgotten follow-ups
-  d) Week planning (Sunday 7pm) — upcoming week overview
-  e) Custom schedule
-  f) Done, skip the rest
+  d) Behavior review / preference digest — lifecycle candidates needing approval
+  e) Week planning (Sunday 7pm) — upcoming week overview
+  f) Custom schedule
+  g) Done, skip the rest
 ```
 
 For each selected, the user needs a task prompt file at `personas/<name>/prompts/<prompt-name>.md`. Either use the defaults that ship with the assistant persona or help the user write one.
@@ -369,6 +375,12 @@ npx talonctl add-schedule \
   --label "<label>" \
   --prompt "Run the <prompt-name> task prompt"
 ```
+
+For behavior-review schedules, keep the prompt narrow and operator-facing, for
+example: "Review recent lifecycle behavior candidates for this persona and
+summarize which ones need operator approval." Do not instruct the schedule to
+rewrite prompts directly; governed prompt changes must go through
+`npx talonctl lifecycle candidates`, `promote`, and `rollback-promotion`.
 
 Common cron expressions for reference:
 - `0 7 * * 1-5` — weekdays at 7am

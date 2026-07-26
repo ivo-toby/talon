@@ -205,6 +205,154 @@ queue:
 
 ---
 
+## `lifecycle`
+
+Durable lifecycle processing is opt-in. When enabled, Talon validates handler
+declarations and persona subscriptions, persists bounded event envelopes, and
+delivers them through the lifecycle dispatcher. Handlers are a two-lane
+extension surface:
+
+- `native` handlers are trusted implementation catalog entries shipped by
+  Talon. They are the only handlers allowed to enforce interceptor decisions or
+  mutate governed state such as behavior prompt promotions.
+- `subagent` handlers run through Talon's model-backed sub-agent adapter. They
+  receive fenced lifecycle input and may emit bounded lifecycle signals, but
+  they do not get direct write authority over prompts, memory, tools, or
+  config.
+
+```yaml
+lifecycle:
+  enabled: true
+  handlers:
+    - version: v1
+      id: behavior-feedback-detector
+      displayName: Behavior feedback detector
+      mode: event
+      inputContract: talon.lifecycle.event.envelope.v1
+      outputContract: talon.lifecycle.signal.envelopes.v1
+      runtime:
+        kind: subagent
+        ref: behavior-feedback-detector
+        implementationVersion: 1.0.0
+      failurePolicy:
+        version: v1
+        mode: preserve_session
+  retention:
+    completedAuditWindowMs: 2592000000
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Enable lifecycle registry validation, publication, and delivery |
+| `handlers` | array, max 32 | `[]` | Global handler declarations that personas can subscribe to |
+| `retention.completedAuditWindowMs` | integer ≥ 0 | `2592000000` | Audit window before completed/no-subscriber event detail may be compacted |
+
+### `lifecycle.handlers[]`
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `version` | `v1` | required | Contract version |
+| `id` | lifecycle identifier | required | Stable handler id used by persona subscriptions and `talonctl lifecycle` |
+| `displayName` | string | — | Optional operator-facing name |
+| `mode` | `event \| signal \| interceptor` | required | Handler lane |
+| `inputContract` | versioned contract name | required | Input contract the handler accepts |
+| `outputContract` | versioned contract name | required | Output contract the handler returns |
+| `runtime.kind` | `native \| subagent` | required | Trusted native catalog entry or model-backed sub-agent |
+| `runtime.ref` | string | required | Native implementation ref or loaded sub-agent name |
+| `runtime.implementationVersion` | string | required | Implementation version captured on durable deliveries |
+| `budget.timeoutMs` | integer 1..3600000 | — | Optional per-delivery timeout |
+| `budget.maxConcurrency` | integer 1..256 | — | Accepted by the budget contract for compatibility; current dispatcher concurrency is enforced by dispatcher policy, not per handler/subscription budget |
+| `failurePolicy.mode` | `fail_closed \| fail_open \| dead_letter \| preserve_session` | handler/runtime default | Failure behavior |
+| `interceptorSafety` | `advisory \| enforcing` | — | Valid only for interceptor handlers; `enforcing` requires `native` runtime and `fail_closed` policy |
+
+Supported lifecycle event types are currently:
+`message.persisted.v1`, `message.routed.v1`, `queue.item.enqueued.v1`,
+`queue.item.completed.v1`, `queue.item.failed.v1`,
+`queue.item.dead_lettered.v1`, `run.started.v1`,
+`provider.tool.started.v1`, `provider.tool.completed.v1`,
+`run.completed.v1`, `run.failed.v1`, `message.sent.v1`,
+`message.send_failed.v1`, `context.threshold_exceeded.v1`,
+`context.rotated.v1`, `context.observation_log_threshold_exceeded.v1`, and
+`schedule.fired.v1`.
+
+Supported lifecycle signal types are currently:
+`context.rotate.requested.v1`, `context.observation.proposed.v1`,
+`context.reduction.proposed.v1`, `behavior.feedback.detected.v1`, and
+`behavior.candidate.proposed.v1`.
+
+Supported interceptor hooks are currently:
+`message.before_persist`, `run.before_execute`, `tool.before_execute`, and
+`message.before_send`.
+
+### `personas[].lifecycle`
+
+Personas opt in to lifecycle handlers explicitly. A handler declared globally
+does nothing until a persona subscribes to its event, signal, or interceptor
+contract. For `subagent` handlers, the persona must also list the handler's
+`runtime.ref` in `personas[].subagents`; a lifecycle subscription alone does
+not load or authorize model-backed handler execution.
+
+```yaml
+personas:
+  - name: assistant
+    subagents:
+      - behavior-feedback-detector
+    lifecycle:
+      subscriptions:
+        - version: v1
+          handler: behavior-feedback-detector
+          priority: 100
+          subscription:
+            version: v1
+            kind: event
+            events:
+              - version: v1
+                type: run.completed.v1
+            filter:
+              version: v1
+              personas:
+                - assistant
+              itemOrigins:
+                - run
+          failurePolicy:
+            version: v1
+            mode: preserve_session
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `subscriptions` | array, max 32 | `[]` | Persona-scoped lifecycle attachments |
+| `subscriptions[].version` | `v1` | required | Contract version |
+| `subscriptions[].handler` | lifecycle identifier | required | Handler id from `lifecycle.handlers[]` |
+| `subscriptions[].priority` | integer -1000..1000 | `0` | Delivery order within the matching lane |
+| `subscriptions[].subscription.kind` | `event \| signal \| interceptor` | required | Must match the handler mode |
+| `subscriptions[].subscription.events[].type` | lifecycle event type | required for `event` | Event names to match |
+| `subscriptions[].subscription.signals[].type` | lifecycle signal type | required for `signal` | Signal names to match |
+| `subscriptions[].subscription.interceptors[].hook` | interceptor hook | required for `interceptor` | Hook names to match |
+| `subscriptions[].subscription.filter` | object | — | Strict filters by item origin/type, channel, persona, message source, or schedule source |
+| `subscriptions[].budget` | object | — | Optional subscription-local timeout budget; `maxConcurrency` is parsed but not currently used for dispatcher concurrency |
+| `subscriptions[].failurePolicy` | object | — | Optional subscription-local failure behavior |
+
+Lifecycle payloads are intentionally bounded: durable events and signals carry
+references plus scalar metadata, not raw transcripts or arbitrary JSON blobs.
+Retention compaction may remove completed/no-subscriber event detail after the
+audit window; pending, failed, claimed, dead-letter, privacy-deleted, and
+handler-disabled rows keep their operational safety semantics.
+
+Operator controls are exposed through daemon IPC:
+
+```bash
+talonctl lifecycle handlers
+talonctl lifecycle inspect <event-id> --handler <handler-id>
+talonctl lifecycle replay <event-id> <handler-id>
+talonctl lifecycle disable <handler-id>
+talonctl lifecycle candidates <persona> --limit 25
+talonctl lifecycle promote <persona> <promotion-id> --approved-by operator
+talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
+```
+
+---
+
 ## `scheduler`
 
 ```yaml
