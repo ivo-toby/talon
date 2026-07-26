@@ -1557,7 +1557,8 @@
     },
     {
       "id": "WAVE-010",
-      "status": "planned",
+      "status": "in_progress",
+      "activatedAt": "2026-07-26T08:20:58Z",
       "strategy": {
         "profile": "full",
         "executionMode": "bundled",
@@ -1588,8 +1589,8 @@
         {
           "id": "TASK-019-lifecycle-end-to-end-verification",
           "ticket": "TICKET-006-operations-adoption",
-          "path": "TICKET-006-operations-adoption/todo/TASK-019-lifecycle-end-to-end-verification.md",
-          "status": "todo",
+          "path": "TICKET-006-operations-adoption/in-progress/TASK-019-lifecycle-end-to-end-verification.md",
+          "status": "in-progress",
           "dependsOn": [
             "TASK-018-governed-prompt-promotion"
           ],
@@ -1603,17 +1604,32 @@
           "workerThreadId": null,
           "reviewThreadId": null,
           "branch": "task/TASK-019-lifecycle-end-to-end-verification",
-          "workerWorktree": null,
-          "worktreeStatus": "unassigned",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
+          "worktreeStatus": "allocated_pending_activation_checkpoint",
           "cleanup": null,
           "pr": null,
           "latestCommit": null,
-          "branchFreshness": "unknown",
+          "branchFreshness": "pending_activation_checkpoint",
           "blockingFeedback": [],
           "verification": null,
-          "currentGate": "not_started"
+          "currentGate": "activation_checkpoint_pending"
         }
-      ]
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-010",
+        "taskIds": [
+          "TASK-019-lifecycle-end-to-end-verification"
+        ],
+        "branch": "task/TASK-019-lifecycle-end-to-end-verification",
+        "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
+        "worktreeStatus": "allocated_pending_activation_checkpoint",
+        "workerThreadId": null,
+        "reviewThreadId": null,
+        "currentGate": "activation_checkpoint_pending"
+      },
+      "activationPrerequisites": {
+        "wave009Reconciliation": "satisfied_by_pushed_checkpoint_2618059965f0a379948d79b8f6bb415419025397"
+      }
     },
     {
       "id": "WAVE-011",
@@ -1690,20 +1706,20 @@
     "pendingReconciliation": [],
     "lastReconciledWave": "WAVE-009",
     "lastReconciledTask": "TASK-018-governed-prompt-promotion",
-    "reconciledAtEpicCommit": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
+    "reconciledAtEpicCommit": "2618059965f0a379948d79b8f6bb415419025397"
   },
   "controller": {
-    "activeWave": null,
-    "nextWave": "WAVE-010",
+    "activeWave": "WAVE-010",
+    "nextWave": "WAVE-011",
     "epicBranchVerified": true,
     "activationArtifactsSynced": false,
-    "activationBase": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0",
+    "activationBase": "2618059965f0a379948d79b8f6bb415419025397",
     "activationCheckpoint": null,
     "activationSyncCommit": null,
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
     "pauseAfterWave": null,
-    "nextWaveActivationAllowed": true,
+    "nextWaveActivationAllowed": false,
     "pauseReason": null,
     "modelPolicyCheckpointReview": {
       "reviewThreadId": "019f6b32-0008-7560-a6a2-8400237b7ca6",
@@ -2127,18 +2143,55 @@
         }
       },
       "reconciledAt": "2026-07-26T07:58:29Z"
+    },
+    "wave010Activation": {
+      "status": "activation_checkpoint_pending",
+      "activationBase": "2618059965f0a379948d79b8f6bb415419025397",
+      "tasks": [
+        "TASK-019-lifecycle-end-to-end-verification"
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-010",
+        "taskIds": [
+          "TASK-019-lifecycle-end-to-end-verification"
+        ],
+        "branch": "task/TASK-019-lifecycle-end-to-end-verification",
+        "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
+        "worktreeStatus": "allocated_pending_activation_checkpoint"
+      },
+      "branches": {
+        "TASK-019-lifecycle-end-to-end-verification": "task/TASK-019-lifecycle-end-to-end-verification"
+      },
+      "worktrees": {
+        "TASK-019-lifecycle-end-to-end-verification": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification"
+      },
+      "taskBranchesCreated": false,
+      "taskWorktreesCreated": false,
+      "taskBranchesPushed": false,
+      "worktreesVerifiedClean": false,
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "pending",
+      "activationCheckpointReviewThreadId": null,
+      "activationCheckpointReviewCounts": null,
+      "activationCheckpoint": null,
+      "activationSyncReviewStatus": "blocked_until_activation_checkpoint_pushed",
+      "readinessReviewStatus": "blocked_until_activation_sync_pushed",
+      "readinessCommit": null,
+      "taskBranchesFastForwardedToReadiness": false,
+      "taskWorktreesVerifiedBeforeDispatch": false
     }
   },
   "monitoring": {
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave009_reconciled_next_wave_ready",
-    "lastCheckedAt": "2026-07-26T07:58:29Z",
-    "nextCheckDueAt": "2026-07-26T08:03:29Z",
+    "status": "wave010_activation_checkpoint_pending",
+    "lastCheckedAt": "2026-07-26T08:20:58Z",
+    "nextCheckDueAt": "2026-07-26T08:25:58Z",
     "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
-    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-009 reconciled and WAVE-010 activation is next",
-    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-009 TASK-018 merged through PR #276 at b5a4fc785534300b37cd4dc4f6eb3c971e6262a0 and reconciled locally; next phase is WAVE-010 activation for TASK-019. Use only global old WDD skills, never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation/remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not run full npm test without explicit approval. Preserve unrelated changes and keep .minispec untouched.",
+    "schedulerStatus": "active_recurring_thread_monitor_recorded_by_user_controller; WAVE-010 activation checkpoint is pending GPT-5.5/xhigh review",
+    "fallbackPrompt": "Run one bounded WDD controller heartbeat for EPIC-durable-lifecycle-pipeline in /Users/ivo.toby/workspace/talon. WAVE-010 TASK-019 is active at activation_checkpoint_pending from exact pushed WAVE-009 reconciliation checkpoint 2618059965f0a379948d79b8f6bb415419025397. Use only global old WDD skills, never repo-local WDD cruft or wddctl. Do not use GPT-5.6. Implementation/remediation are capped at GPT-5.5/high; reviews are GPT-5.5/xhigh. Do not create TASK-019 branch/worktree or dispatch implementation until the activation checkpoint is reviewed/committed/pushed, its exact hash is recorded, activationArtifactsSynced is true, activation-sync review/commit/push has passed, and worktree-readiness review/commit/push has passed with the task branch/worktree fast-forwarded to the exact readiness commit. Do not run full npm test without explicit approval. Preserve unrelated changes and keep .minispec untouched.",
     "stopCondition": "All remaining waves are merged/reconciled and epic validation plus final PR handoff are ready, or a real blocker is recorded.",
     "stopReason": null
   }

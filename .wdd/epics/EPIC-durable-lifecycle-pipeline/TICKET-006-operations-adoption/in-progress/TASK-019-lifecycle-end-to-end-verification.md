@@ -6,7 +6,7 @@ ticket: TICKET-006-operations-adoption
 wave: WAVE-010
 slug: lifecycle-end-to-end-verification
 title: Add end-to-end lifecycle, restart, and security verification
-status: todo
+status: in-progress
 depends_on: ["TASK-018-governed-prompt-promotion"]
 conflict_domains:
   - "tests/integration/**"
@@ -16,11 +16,11 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-019-lifecycle-end-to-end-verification
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification
+worktree_status: allocated_pending_activation_checkpoint
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_checkpoint_pending
+branch_freshness: pending_activation_checkpoint
 verification:
   - "npx vitest run tests/integration/lifecycle-*.test.ts tests/integration/rolling-context-window.test.ts"
   - "npm run build"
@@ -35,7 +35,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -113,7 +113,13 @@ task/TASK-019-lifecycle-end-to-end-verification
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification
+
+Allocated by the controller for WAVE-010 bundled execution. Branch/worktree
+creation remains blocked until this activation checkpoint passes GPT-5.5/xhigh
+review, is committed/pushed to the epic branch, the activation-sync checkpoint
+passes GPT-5.5/xhigh review and is committed/pushed, and the worktree-readiness
+checkpoint passes GPT-5.5/xhigh review and is committed/pushed.
 
 ## PR / Patch Reference
 
@@ -171,7 +177,10 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- WAVE-010 activation started from exact pushed WAVE-009 reconciliation
+  checkpoint `2618059965f0a379948d79b8f6bb415419025397`. Branch/worktree
+  creation and implementation remain blocked until the reviewed activation,
+  activation-sync, and worktree-readiness gates pass.
 
 ## Review Feedback
 
