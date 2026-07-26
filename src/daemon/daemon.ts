@@ -10,12 +10,13 @@
  *   - IPC command dispatch
  */
 
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { ok, err, type Result } from 'neverthrow';
 import type pino from 'pino';
 
 import { loadConfig } from '../core/config/config-loader.js';
-import { DaemonError } from '../core/errors/error-types.js';
+import { DaemonError, LifecycleError } from '../core/errors/error-types.js';
 import { SkillLoader } from '../skills/skill-loader.js';
 import { McpRegistry } from '../mcp/mcp-registry.js';
 
@@ -32,12 +33,18 @@ import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 import { LifecycleAdminService } from '../lifecycle/lifecycle-admin-service.js';
+import { PromptImprovementProjector } from '../lifecycle/behavior/prompt-improvement-projector.js';
 
 type LifecycleHandlersCommand = Extract<DaemonCommand, { command: 'lifecycle-handlers' }>;
 type LifecycleInspectCommand = Extract<DaemonCommand, { command: 'lifecycle-inspect' }>;
 type LifecycleReplayCommand = Extract<DaemonCommand, { command: 'lifecycle-replay' }>;
 type LifecycleDisableCommand = Extract<DaemonCommand, { command: 'lifecycle-disable' }>;
 type LifecycleCandidatesCommand = Extract<DaemonCommand, { command: 'lifecycle-candidates' }>;
+type LifecyclePromoteCommand = Extract<DaemonCommand, { command: 'lifecycle-promote' }>;
+type LifecycleRollbackPromotionCommand = Extract<
+  DaemonCommand,
+  { command: 'lifecycle-rollback-promotion' }
+>;
 type LifecycleBacklog = ReturnType<typeof emptyLifecycleBacklog>;
 type LifecycleBacklogTiming = ReturnType<typeof emptyLifecycleBacklogTiming>;
 
@@ -707,6 +714,12 @@ export class TalondDaemon {
 
       case 'lifecycle-candidates':
         return this.handleLifecycleCandidatesCommand(command, responseId);
+
+      case 'lifecycle-promote':
+        return await this.handleLifecyclePromoteCommand(command, responseId);
+
+      case 'lifecycle-rollback-promotion':
+        return await this.handleLifecycleRollbackPromotionCommand(command, responseId);
     }
   }
 
@@ -909,6 +922,61 @@ export class TalondDaemon {
       success: true,
       data: { persona, candidates: data },
     };
+  }
+
+  private async handleLifecyclePromoteCommand(
+    command: LifecyclePromoteCommand,
+    responseId: string,
+  ): Promise<DaemonResponse> {
+    if (!this.ctx) return this.ipcError(responseId, command.id, 'Daemon not running');
+    const service = this.promptImprovementProjector();
+    const applied = await service.apply({
+      persona: command.payload.persona,
+      promotionId: command.payload.promotionId,
+      approvedBy: command.payload.approvedBy,
+    });
+    if (applied.isErr()) return this.ipcError(responseId, command.id, applied.error.message);
+    return {
+      id: responseId,
+      commandId: command.id,
+      success: true,
+      data: { ...applied.value },
+    };
+  }
+
+  private async handleLifecycleRollbackPromotionCommand(
+    command: LifecycleRollbackPromotionCommand,
+    responseId: string,
+  ): Promise<DaemonResponse> {
+    if (!this.ctx) return this.ipcError(responseId, command.id, 'Daemon not running');
+    const service = this.promptImprovementProjector();
+    const rolledBack = await service.rollback({
+      persona: command.payload.persona,
+      activationId: command.payload.activationId,
+      reason: command.payload.reason,
+    });
+    if (rolledBack.isErr()) return this.ipcError(responseId, command.id, rolledBack.error.message);
+    return {
+      id: responseId,
+      commandId: command.id,
+      success: true,
+      data: { ...rolledBack.value },
+    };
+  }
+
+  private promptImprovementProjector(): PromptImprovementProjector {
+    if (!this.ctx) throw new LifecycleError('Daemon not running');
+    return new PromptImprovementProjector(this.ctx.repos.behaviorSignal, {
+      config: this.ctx.config,
+      auditLogger: this.ctx.auditLogger,
+      reload: async (): Promise<Result<string, LifecycleError>> => {
+        const reloaded = await this.reload(this.ctx?.configPath);
+        if (reloaded.isErr()) {
+          return err(new LifecycleError(reloaded.error.message, reloaded.error));
+        }
+        return ok(`prompt-reload-${randomUUID()}`);
+      },
+    });
   }
 
   private lifecycleDeliveryData(delivery: {

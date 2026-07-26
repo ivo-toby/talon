@@ -26,7 +26,9 @@ export type DaemonCommandType =
   | 'lifecycle-inspect'
   | 'lifecycle-replay'
   | 'lifecycle-disable'
-  | 'lifecycle-candidates';
+  | 'lifecycle-candidates'
+  | 'lifecycle-promote'
+  | 'lifecycle-rollback-promotion';
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -76,6 +78,20 @@ const LifecycleReplayPayloadSchema = z
 const LifecycleDisablePayloadSchema = z.object({ handlerId: z.string().min(1) }).strict();
 const LifecycleCandidatesPayloadSchema = z
   .object({ persona: z.string().min(1), limit: LifecycleLimitSchema })
+  .strict();
+const LifecyclePromotePayloadSchema = z
+  .object({
+    persona: z.string().min(1),
+    promotionId: z.string().min(1),
+    approvedBy: z.string().min(1).optional(),
+  })
+  .strict();
+const LifecycleRollbackPromotionPayloadSchema = z
+  .object({
+    persona: z.string().min(1),
+    activationId: z.string().min(1),
+    reason: z.string().min(1),
+  })
   .strict();
 
 /** Zod schema for validating serialised {@link DaemonCommand} objects. */
@@ -141,6 +157,20 @@ export const DaemonCommandSchema = z.discriminatedUnion('command', [
       id: CommandIdSchema,
       command: z.literal('lifecycle-candidates'),
       payload: LifecycleCandidatesPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-promote'),
+      payload: LifecyclePromotePayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-rollback-promotion'),
+      payload: LifecycleRollbackPromotionPayloadSchema,
     })
     .strict(),
 ]);

@@ -483,6 +483,29 @@ describe('TalondDaemon.reload()', () => {
       expect(result.isOk()).toBe(true);
       expect(ctx.personaLoader.loadFromConfig).toHaveBeenCalledWith(newConfig.personas);
     });
+
+    it('allows system prompt file content changes when persona authority is unchanged', async () => {
+      const persona = {
+        name: 'assistant',
+        model: 'claude-sonnet-4-6',
+        systemPromptFile: 'personas/assistant/system.md',
+        skills: [],
+        capabilities: { allow: [], requireApproval: [] },
+        mounts: [],
+        lifecycle: { subscriptions: [] },
+      };
+      const ctx = setupSuccessfulStart({ personas: [persona] });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({ personas: [persona] });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.personaLoader.loadFromConfig).toHaveBeenCalledWith(newConfig.personas);
+      expect(ctx.config.personas).toEqual([persona]);
+    });
   });
 
   // -------------------------------------------------------------------------

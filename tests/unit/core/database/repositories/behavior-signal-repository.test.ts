@@ -540,6 +540,50 @@ describe('BehaviorSignalRepository', () => {
     ).toEqual([{ rollback_id: 'rollback-1', reason: 'operator-rejected' }]);
   });
 
+  it('requires rollback of the latest active behavior promotion activation', () => {
+    createActivePromotion({
+      candidateId: 'rollback-order-first-candidate',
+      promotionId: 'rollback-order-first-promotion',
+      activationId: 'rollback-order-first-activation',
+      promptArtifactId: 'rollback-order-first-prompt',
+      reloadId: 'rollback-order-first-reload',
+    });
+    createActivePromotion({
+      candidateId: 'rollback-order-second-candidate',
+      promotionId: 'rollback-order-second-promotion',
+      activationId: 'rollback-order-second-activation',
+      promptArtifactId: 'rollback-order-second-prompt',
+      reloadId: 'rollback-order-second-reload',
+    });
+
+    expect(
+      repository
+        .rollbackActivation({
+          persona: 'support',
+          activationId: 'rollback-order-first-activation',
+          rollbackId: 'rollback-order-first',
+          reason: 'operator-rejected',
+        })
+        .isErr(),
+    ).toBe(true);
+    expect(db.prepare(`SELECT rollback_id FROM behavior_promotion_rollbacks`).all()).toEqual([]);
+
+    expect(
+      repository
+        .rollbackActivation({
+          persona: 'support',
+          activationId: 'rollback-order-second-activation',
+          rollbackId: 'rollback-order-second',
+          reason: 'operator-rejected',
+        })
+        .isOk(),
+    ).toBe(true);
+    expect(repository.findPromotionsByPersona('support')._unsafeUnwrap()).toMatchObject([
+      { promotion_id: 'rollback-order-first-promotion', status: 'active' },
+      { promotion_id: 'rollback-order-second-promotion', status: 'rolled_back' },
+    ]);
+  });
+
   it('emits bounded audit and metric evidence for behavior promotion mutations', () => {
     const auditLogger = { logLifecyclePromotion: vi.fn() };
     const metrics = { increment: vi.fn() };
@@ -581,6 +625,7 @@ describe('BehaviorSignalRepository', () => {
           activationId: 'activation-audit',
           promptArtifactId: 'prompt-artifact-audit',
           reloadId: 'reload-audit',
+          approvedBy: 'operator-ivo',
         })
         .isOk(),
     ).toBe(true);
@@ -621,6 +666,7 @@ describe('BehaviorSignalRepository', () => {
           activationId: 'activation-audit',
           promptArtifactId: 'prompt-artifact-audit',
           reloadId: 'reload-audit',
+          approvedBy: 'operator-ivo',
         }),
         expect.objectContaining({
           operation: 'rollback',

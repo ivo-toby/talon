@@ -148,7 +148,9 @@ queue:
 # Durable lifecycle event handling. Retention compaction rewrites completed
 # lifecycle event payload/provenance detail after the audit window; pending,
 # failed, claimed, dead-letter, and privacy-deleted rows keep their safety
-# semantics.
+# semantics. Behavior prompt promotions default to operator approval; only
+# explicit narrow append-only style/preference/context policies may auto-apply
+# after validation, evaluation, atomic prompt write, reload, and rollback gates.
 # lifecycle:
 #   enabled: false
 #   handlers: []

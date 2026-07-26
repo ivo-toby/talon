@@ -1,6 +1,13 @@
 import { sendDaemonControlCommand } from './daemon-control.js';
 
-type LifecycleAction = 'handlers' | 'inspect' | 'replay' | 'disable' | 'candidates';
+type LifecycleAction =
+  | 'handlers'
+  | 'inspect'
+  | 'replay'
+  | 'disable'
+  | 'candidates'
+  | 'promote'
+  | 'rollback-promotion';
 
 export interface LifecycleCommandOptions {
   readonly action: LifecycleAction;
@@ -10,6 +17,10 @@ export interface LifecycleCommandOptions {
   readonly eventId?: string;
   readonly handlerId?: string;
   readonly persona?: string;
+  readonly promotionId?: string;
+  readonly activationId?: string;
+  readonly approvedBy?: string;
+  readonly reason?: string;
 }
 
 interface LifecycleBacklogSummary {
@@ -88,6 +99,23 @@ interface LifecycleCandidatesData {
   readonly candidates?: readonly LifecycleCandidateSummary[];
 }
 
+interface LifecyclePromoteData {
+  readonly status?: string;
+  readonly promotionId?: string;
+  readonly activationId?: string;
+  readonly promptArtifactId?: string;
+  readonly reloadId?: string;
+  readonly policyMode?: string;
+  readonly reasons?: readonly string[];
+}
+
+interface LifecycleRollbackPromotionData {
+  readonly status?: string;
+  readonly activationId?: string;
+  readonly rollbackId?: string;
+  readonly reloadId?: string;
+}
+
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
@@ -125,6 +153,10 @@ function commandForAction(action: LifecycleAction) {
       return 'lifecycle-disable' as const;
     case 'candidates':
       return 'lifecycle-candidates' as const;
+    case 'promote':
+      return 'lifecycle-promote' as const;
+    case 'rollback-promotion':
+      return 'lifecycle-rollback-promotion' as const;
   }
 }
 
@@ -151,6 +183,23 @@ function payloadForAction(
     case 'candidates':
       if (!options.persona) return fail('persona is required for lifecycle candidates');
       return { persona: options.persona, limit };
+    case 'promote':
+      if (!options.persona) return fail('persona is required for lifecycle promote');
+      if (!options.promotionId) return fail('promotion id is required for lifecycle promote');
+      return {
+        persona: options.persona,
+        promotionId: options.promotionId,
+        ...(options.approvedBy ? { approvedBy: options.approvedBy } : {}),
+      };
+    case 'rollback-promotion':
+      if (!options.persona) return fail('persona is required for lifecycle rollback-promotion');
+      if (!options.activationId)
+        return fail('activation id is required for lifecycle rollback-promotion');
+      return {
+        persona: options.persona,
+        activationId: options.activationId,
+        reason: options.reason ?? 'operator-rejected',
+      };
   }
 }
 
@@ -181,6 +230,12 @@ function renderLifecycleResponse(action: LifecycleAction, data: Record<string, u
       break;
     case 'candidates':
       renderCandidates(data as LifecycleCandidatesData);
+      break;
+    case 'promote':
+      renderPromote(data as LifecyclePromoteData);
+      break;
+    case 'rollback-promotion':
+      renderRollbackPromotion(data as LifecycleRollbackPromotionData);
       break;
   }
 }
@@ -282,6 +337,25 @@ function renderCandidates(data: LifecycleCandidatesData): void {
         .join(' '),
     );
   }
+}
+
+function renderPromote(data: LifecyclePromoteData): void {
+  if (data.status === 'approval_required') {
+    console.log(`Behavior promotion "${data.promotionId ?? 'unknown'}" requires approval.`);
+    console.log(`Reasons: ${(data.reasons ?? []).join(', ') || 'operator-approval-required'}`);
+    return;
+  }
+  console.log(`Activated behavior promotion "${data.promotionId ?? 'unknown'}".`);
+  console.log(`Activation: ${data.activationId ?? 'unknown'}`);
+  console.log(`Prompt artifact: ${data.promptArtifactId ?? 'unknown'}`);
+  console.log(`Reload: ${data.reloadId ?? 'unknown'}`);
+  console.log(`Policy: ${data.policyMode ?? 'unknown'}`);
+}
+
+function renderRollbackPromotion(data: LifecycleRollbackPromotionData): void {
+  console.log(`Rolled back behavior promotion activation "${data.activationId ?? 'unknown'}".`);
+  console.log(`Rollback: ${data.rollbackId ?? 'unknown'}`);
+  console.log(`Reload: ${data.reloadId ?? 'unknown'}`);
 }
 
 function formatBacklog(backlog: LifecycleBacklogSummary): string {

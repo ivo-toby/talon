@@ -127,6 +127,8 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl list-schedules` | Configured scheduled tasks |
 | `talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add a scheduled task |
 | `talonctl remove-schedule <id>` | Remove a scheduled task |
+| `talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>` | Apply a governed behavior prompt promotion |
+| `talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>` | Roll back an active behavior prompt promotion |
 
 Use these for all post-boot mutations. **Do not edit `config/talond.yaml`
 by hand** once the daemon is running — talonctl handles it correctly.
@@ -365,9 +367,9 @@ talonctl test-provider --name <n>   # if a provider was added
 
 1. **Never write actual secrets.** Only `${ENV_VAR}` placeholders in
    `config/talond.yaml`. Real values are in `.env`, edited by the user.
-2. **Use `talonctl` for all post-boot mutations.** Exceptions: persona
-   `system.md` files (these are agent-facing prompts and benefit from
-   hand-editing) and `.env`.
+2. **Use `talonctl` for all post-boot mutations.** Exceptions: initial persona
+   `system.md` drafts (these are agent-facing prompts and benefit from
+   hand-editing), governed prompt-promotion rollback backups, and `.env`.
 3. **One question per message.** Do not batch.
 4. **Show command output.** Let the user see what happened.
 5. **Don't start or stop the daemon** without telling the user. Boot

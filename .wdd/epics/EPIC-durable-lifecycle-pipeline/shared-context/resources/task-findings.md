@@ -247,11 +247,24 @@ behavior provenance, and after-commit telemetry boundaries.
   after successful native review, and do not enqueue a user-facing agent task.
   Normal schedules continue through the existing queue/lifecycle publication
   path.
+- Source: TASK-018 / worker proposal, pending review. Governed prompt promotion
+  applies only structured `talon.behavior.prompt_patch.v1` append/replace
+  operations to a persona-owned `systemPromptFile`. Relative prompt paths must
+  resolve exactly like the daemon persona loader/runtime layout, not relative to
+  `/config/talond.yaml` in Docker. Rollback is intentionally latest-active
+  activation only; older activation rollback is rejected rather than replaying
+  prompt history or erasing newer active changes. Operator-approved activations
+  persist `approved_by`; narrow auto-promotion remains append-only and blocks
+  outbound channel/integration/notification language. Same-persona prompt
+  promotion and rollback mutations are serialized across projector instances,
+  prompt file mutation, reload verification, and ledger transitions because
+  daemon IPC command handling can overlap.
 
 ## Durable Memory
 
 - Preserve these authority, causality, compatibility, bounded-input,
   persistence, interceptor, sub-agent, transaction, dispatch, migration, context
   projection, behavior-ledger, outbound idempotency, durable continuation
-  repair, telemetry commit-boundary, trusted behavior provenance, and
-  review-throughput rules in later lifecycle implementation and review prompts.
+  repair, telemetry commit-boundary, trusted behavior provenance, prompt
+  promotion rollback, runtime path, and review-throughput rules in later
+  lifecycle implementation and review prompts.

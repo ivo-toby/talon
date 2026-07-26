@@ -1377,6 +1377,15 @@ out-of-scope signals with bounded audit, creates collecting candidates for
 explicit feedback, and requires three distinct inferred sources before creating
 a ready inferred-pattern candidate.
 
+Accepted behavior promotions are applied only by the native governed prompt
+promotion path. Talon resolves the persona-owned `systemPromptFile`, validates a
+bounded `talon.behavior.prompt_patch.v1` patch, defaults to operator approval,
+allows only explicit append-only auto-policy for narrow style/preference/context
+changes, runs a bounded evaluator, writes the prompt through a same-file atomic
+rename, verifies daemon reload, records activation provenance, and restores the
+previous prompt on failure. Safety, tooling, capability, integration, and
+notification increases require explicit operator approval.
+
 #### `session-summarizer`
 
 **Problem:** Long conversations consume context window space. When the agent resumes a thread, it needs the key facts without replaying the entire transcript.
@@ -1610,6 +1619,8 @@ npx talonctl lifecycle inspect <event-id> --handler <handler-id>
 npx talonctl lifecycle replay <event-id> <handler-id>
 npx talonctl lifecycle disable <handler-id>
 npx talonctl lifecycle candidates <persona> --limit 25
+npx talonctl lifecycle promote <persona> <promotion-id> --approved-by operator-ivo
+npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
 npx talonctl chat --token mytoken --persona assistant
 ```
 
@@ -1622,10 +1633,14 @@ npx talonctl chat --token mytoken --persona assistant
 | `replay <event-id> <handler-id>` | Reopen one ordinary terminal delivery for exact replay                          |
 | `disable <handler-id>`           | Dead-letter pending, failed, or claimed deliveries for one handler and audit it |
 | `candidates <persona>`           | List bounded behavior-candidate summaries and distinct evidence-source counts   |
+| `promote <persona> <promotion-id>` | Apply one governed behavior prompt promotion after policy/evaluation/reload gates |
+| `rollback-promotion <persona> <activation-id>` | Restore the saved pre-activation prompt and mark the activation rolled back |
 
 All lifecycle subcommands accept `--ipc-dir <path>` and `--timeout <ms>`.
 `handlers` and `candidates` also accept `--limit <n>` capped at 100. `inspect`
-accepts `--handler <handler-id>` to narrow delivery output.
+accepts `--handler <handler-id>` to narrow delivery output. `promote` accepts
+`--approved-by <id>` for proposals that are not covered by explicit narrow
+auto-policy. `rollback-promotion` accepts `--reason <id>`.
 
 ### Setup and Configuration
 

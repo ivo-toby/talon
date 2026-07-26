@@ -53,6 +53,8 @@ All config mutations go through these commands:
 | `npx talonctl list-schedules` | Show scheduled tasks |
 | `npx talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add scheduled task |
 | `npx talonctl remove-schedule <id>` | Remove a scheduled task |
+| `npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>` | Apply a governed behavior prompt promotion |
+| `npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>` | Roll back an active behavior prompt promotion |
 | `npx talonctl list-capabilities` | Show all available capability labels |
 | `npx talonctl set-capabilities --persona <p> --allow <labels>` | Set persona capabilities |
 | `npx talonctl set-capabilities --persona <p> --add <labels>` | Add capabilities to persona |

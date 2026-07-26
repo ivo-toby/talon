@@ -17,14 +17,16 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-018-governed-prompt-promotion
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
-worktree_status: created_clean_pending_readiness
+worktree_status: implementation_complete_review_passed
 pr: null
-current_gate: worktree_readiness_review_pending
-branch_freshness: current_at_activation_sync_d1a5152
+current_gate: commit_pending
+branch_freshness: current_at_readiness_9c6e82e
 verification:
   - "npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts"
+  - "npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/migrations/runner.test.ts"
   - "npm run build"
-  - "npm run lint"
+  - "npx eslint <touched source files>"
+  - "npx prettier --check <touched TypeScript files>"
   - "git diff --check"
 ---
 
@@ -157,11 +159,11 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Task-Level Definition of Done
 
-- [ ] Objective and scoped behavior are complete.
-- [ ] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
-- [ ] Required review has no unresolved P1/P2 findings.
+- [x] Objective and scoped behavior are complete.
+- [x] Focused RED/GREEN, build/lint, and listed validation evidence are recorded.
+- [x] Required review has no unresolved P1/P2 findings.
 - [ ] PR targets the epic branch and freshness is checked.
-- [ ] Shared-context findings are proposed when needed.
+- [x] Shared-context findings are proposed when needed.
 
 ## Validation Steps
 
@@ -186,16 +188,79 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
   reset, so readiness review is pending again; readiness commit and worker
   dispatch remain blocked until a valid GPT-5.5/xhigh readiness review passes
   with 0C/0H/0M.
+- Worktree-readiness review `019f9d29-2367-74e3-943f-a795f6de8245`
+  passed 0C/0H/0M/0L. Reviewed readiness commit
+  `9c6e82e84a14a2d95056e7d414e8c067fcc9f20c` was committed and pushed on the
+  epic branch, fast-forwarded into the task branch/worktree, and pushed.
+- Implementation worker `019f9d2d-c40c-7e11-995b-59b63183cb4a` completed the
+  first TASK-018 patch. The first pre-commit review
+  `019f9d3e-cdbf-7b91-b7f5-3ef5b7f435e7` returned FAIL with 0C/3H/1M/0L.
+- Remediation addressed the blocking findings by adding latest-active
+  activation rollback gating at both service pre-mutation and repository
+  transaction boundaries, runtime-base prompt path resolution, stronger
+  outbound-channel auto-policy blocking, and durable `approved_by` activation
+  provenance.
+- Follow-up pre-commit review `019f9d4d-d056-7281-b541-8e6d55e71040` returned
+  FAIL with 0C/1H/0M/1L. The blocking High identified overlapping
+  same-persona prompt mutations under concurrent IPC command handling.
+- Review attempt `019f9d56-9120-7443-84f2-a2ab73733b03` was interrupted after
+  identifying that an instance-local lock did not close the concurrency issue
+  because daemon IPC constructs a fresh projector per operator command.
+- Remediation serialized prompt promotion and rollback mutations per persona
+  across projector instances with a process-wide mutation queue, covering prompt
+  reads, writes, reload verification, and activation/rollback ledger
+  transitions. A concurrency regression launches two same-persona prompt
+  promotions through separate projector instances with delayed prompt reads and
+  verifies no prompt read overlap plus both final prompt changes.
+- Post-remediation verification under Node `v24.15.0`:
+  - `npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts`
+    passed: 3 files / 42 tests.
+  - `npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/migrations/runner.test.ts`
+    passed: 2 files / 33 tests.
+  - `npm run build` passed.
+  - `npx eslint` over touched source files passed.
+  - `npx prettier --check` over touched TypeScript files passed.
+  - `git diff --check` passed.
+- Fresh pre-commit review `019f9d59-a303-7590-9179-077f65d8a1a3` passed
+  0C/0H/0M/0L. Reviewer explicitly inspected tracked and untracked task changes
+  from readiness base `9c6e82e84a14a2d95056e7d414e8c067fcc9f20c`, verified the
+  process-wide projector mutation queue, latest-active rollback gating, runtime
+  prompt path resolution, outbound-channel auto-policy blocking, durable
+  `approved_by` provenance, and ran build, 75 focused tests, scoped ESLint,
+  scoped Prettier, and `git diff --check`.
 
 ## Review Feedback
 
 ### P1
 
-- None.
+- 2026-07-26 review `019f9d3e-cdbf-7b91-b7f5-3ef5b7f435e7`: High - rollback
+  could erase later active promotions while leaving their ledger rows active.
+  Fixed with latest-active activation validation before any rollback file
+  mutation.
+- 2026-07-26 review `019f9d3e-cdbf-7b91-b7f5-3ef5b7f435e7`: High - prompt
+  promotion resolved relative `systemPromptFile` paths from config directory
+  instead of daemon runtime layout. Fixed by resolving from runtime working
+  directory, with explicit test-only prompt base injection.
+- 2026-07-26 review `019f9d3e-cdbf-7b91-b7f5-3ef5b7f435e7`: High - auto-policy
+  missed concrete outbound notification/channel instructions. Fixed by blocking
+  email/mail/Slack/Discord/Telegram/WhatsApp/Teams/SMS/post/publish/DM/alert
+  language from auto-promotion.
+- 2026-07-26 review `019f9d4d-d056-7281-b541-8e6d55e71040`: High -
+  same-persona prompt promotion/rollback mutations could overlap under
+  concurrent daemon IPC polling and leave prompt files inconsistent with active
+  activation rows. Fixed by serializing projector mutations per persona across
+  projector instances and adding a concurrent-promotion regression.
+- 2026-07-26 interrupted review `019f9d56-9120-7443-84f2-a2ab73733b03`: High
+  remained because the first serialization attempt was instance-local while the
+  daemon creates one projector per IPC command. Fixed with a process-wide
+  per-persona mutation queue and a two-projector concurrency regression.
 
 ### P2
 
-- None.
+- 2026-07-26 review `019f9d3e-cdbf-7b91-b7f5-3ef5b7f435e7`: Medium -
+  operator-approved activations did not durably record the approver. Fixed with
+  nullable `behavior_promotion_activations.approved_by`, repository validation,
+  service propagation, audit details, and regression coverage.
 
 ### P3
 
@@ -203,4 +268,27 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Completion Notes
 
-- None yet.
+- Implemented native governed prompt promotion modules with structured
+  `talon.behavior.prompt_patch.v1` parsing, default approval, explicit narrow
+  auto-policy, bounded evaluation, atomic prompt write, reload verification,
+  failure restore, activation provenance, and explicit rollback.
+- Added durable `approved_by` activation provenance and latest-active
+  activation rollback gating so rollbacks cannot erase newer active prompt
+  changes.
+- Serialized same-persona prompt promotion/rollback mutations across projector
+  instances with a process-wide mutation queue so overlapping daemon IPC
+  commands cannot interleave prompt file writes with activation ledger
+  transitions.
+- Added lifecycle IPC/CLI actions for `promote` and `rollback-promotion`.
+- Updated README, example config, AGENTS architecture notes, and affected
+  Talon setup skills under `.agents/skills/`.
+- Verification:
+  - `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts`
+    passed: 3 files / 42 tests.
+  - `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npx vitest run tests/unit/core/database/repositories/behavior-signal-repository.test.ts tests/unit/core/database/migrations/runner.test.ts`
+    passed: 2 files / 33 tests.
+  - `env PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin npm run build`
+    passed.
+  - Task-scoped `npx eslint` over touched source files passed.
+  - `npx prettier --check` over touched TypeScript files passed.
+  - `git diff --check` passed.
