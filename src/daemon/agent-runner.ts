@@ -29,11 +29,13 @@ import type {
   AgentUsage,
   ContextUsage,
   ContextMetricName,
+  ResolvedContextUsage,
   CanonicalMcpSdkServer,
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
 import type { LifecycleEventEnvelope } from '../lifecycle/contracts/index.js';
 import type { TransactionContext } from '../lifecycle/transaction-context.js';
+import type { ContextRotationResult } from './context-roller.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
 import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-tools-bridge-auth.js';
 
@@ -43,6 +45,12 @@ const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 interface OutboundDeliveryIdentity {
   readonly messageId: string;
   readonly idempotencyKey: string;
+}
+
+interface DurableContextRotationState {
+  readonly boundary: number;
+  readonly hasOpenThreads: boolean;
+  readonly rotationCauseQueueItemId?: string;
 }
 
 interface PendingNoIdProviderToolObservation {
@@ -249,12 +257,20 @@ export class AgentRunner {
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
     if (strategy.supportsSessionResumption && !isA2ATask) {
+      const durableContextRotation = this.latestDurableContextRotationState(item.threadId);
+      const durableContextRotationAt = durableContextRotation?.boundary;
+      const sessionLookupSinceCreatedAt =
+        providerAffinityResetAt === undefined
+          ? durableContextRotationAt
+          : durableContextRotationAt === undefined
+            ? providerAffinityResetAt
+            : Math.max(providerAffinityResetAt, durableContextRotationAt);
       const sessionLookupOptions = {
         excludeCollaboration: true,
         modelName: model,
         reasoningEffort: reasoningEffort ?? null,
-        ...(providerAffinityResetAt !== undefined
-          ? { sinceCreatedAt: providerAffinityResetAt }
+        ...(sessionLookupSinceCreatedAt !== undefined
+          ? { sinceCreatedAt: sessionLookupSinceCreatedAt }
           : {}),
       };
 
@@ -542,7 +558,10 @@ export class AgentRunner {
               (contextManagement.triggerMetric === undefined ||
                 contextManagement.thresholdRatio === undefined ||
                 contextManagement.recentMessageCount === undefined ||
-                contextManagement.summarizer === undefined)
+                ((contextManagement.mode ?? 'summarizer') === 'observation'
+                  ? contextManagement.observer === undefined ||
+                    contextManagement.reducer === undefined
+                  : contextManagement.summarizer === undefined))
             ) {
               throw new Error(
                 `Provider "${providerEntry.provider.name}" has incomplete contextManagement configuration. Check agentRunner.providers.${providerEntry.provider.name}.contextManagement.`,
@@ -550,10 +569,13 @@ export class AgentRunner {
             }
             const enabledContextManagement = contextManagement?.enabled
               ? {
-                  triggerMetric: contextManagement.triggerMetric,
-                  thresholdRatio: contextManagement.thresholdRatio,
+                  triggerMetric: contextManagement.triggerMetric!,
+                  thresholdRatio: contextManagement.thresholdRatio!,
                   recentMessageCount: contextManagement.recentMessageCount,
+                  mode: contextManagement.mode ?? 'summarizer',
                   summarizer: contextManagement.summarizer,
+                  observer: contextManagement.observer,
+                  reducer: contextManagement.reducer,
                   reflectionThresholdChars: contextManagement.reflectionThresholdChars,
                 }
               : null;
@@ -1251,12 +1273,12 @@ export class AgentRunner {
             }
 
             // Check if context needs rotation (rolling window).
-            // Runs AFTER connector.send() and the final outbound reservation so the
-            // user receives their response immediately — context rotation may invoke
-            // a summarizer LLM call that takes 5-15 s. The queue item stays in-flight
-            // (claimed) until run() returns, so the next item for this thread cannot
-            // be picked up until rotation completes, preserving per-thread ordering.
-            // (issue #164)
+            // Runs AFTER connector.send() and the final outbound reservation so
+            // the user receives their response before projection starts. The
+            // current queue item remains claimed until projection settles, which
+            // keeps ordering durable through the queue lease/recovery path while
+            // still allowing collaboration items to use the queue's existing
+            // in-flight bypass.
             if (this.ctx.contextRoller && enabledContextManagement) {
               // Gate rotation on per-step usage when the provider reports
               // it; cumulative `usage` across a multi-tool agent loop can
@@ -1269,6 +1291,13 @@ export class AgentRunner {
                 providerEntry.provider.estimateContextUsage(usageForRotation);
               const triggerMetric = enabledContextManagement.triggerMetric as ContextMetricName;
               const selectedMetricValue: number | undefined = contextUsage.metrics[triggerMetric];
+              let requiredContinuationError: Error | null = null;
+              let continuationEnsured = false;
+              const needsContinuationAfterRotation =
+                !strategy.supportsSessionResumption ||
+                strategy.requiresContinuationAfterContextRotation === true;
+              const canAutoContinueAfterRotation =
+                needsContinuationAfterRotation && !isA2ATask && item.type !== 'schedule';
               if (selectedMetricValue === undefined) {
                 this.ctx.logger.error(
                   {
@@ -1287,78 +1316,74 @@ export class AgentRunner {
                       inputTokens: contextUsage.inputTokens,
                       rawMetric: selectedMetricValue,
                       rawMetricName: triggerMetric,
+                      rotationCauseQueueItemId: item.id,
                     };
-                    // Route to observational memory path when configured with
-                    // session-observer; otherwise use the legacy summarizer.
-                    const useOM = enabledContextManagement.summarizer === 'session-observer';
-                    const rotation = useOM
-                      ? await this.ctx.contextRoller.checkAndRotateOM(
-                          item.threadId,
-                          personaId,
-                          contextUsagePayload,
-                          enabledContextManagement.thresholdRatio,
-                          enabledContextManagement.summarizer,
-                          'session-reflector',
-                          enabledContextManagement.reflectionThresholdChars,
-                          threadResult.isOk() && threadResult.value
-                            ? threadResult.value.metadata
-                            : null,
-                          threadResult.isOk() && threadResult.value
-                            ? threadResult.value.channel_id
-                            : undefined,
-                        )
-                      : await this.ctx.contextRoller.checkAndRotate(
-                          item.threadId,
-                          personaId,
-                          contextUsagePayload,
-                          enabledContextManagement.thresholdRatio,
-                          enabledContextManagement.summarizer,
-                        );
-
-                    // Some providers need a fresh turn after context rotation
-                    // to continue open work. Stateless providers need it
-                    // because rotation clears model history; stateful
-                    // Responses API providers also opt in because rotation
-                    // intentionally drops the previous_response_id chain.
-                    // Only auto-enqueue when the summarizer found open
-                    // threads — otherwise the task was complete and a
-                    // "continue" would cause the agent to invent work.
-                    const needsContinuationAfterRotation =
-                      !strategy.supportsSessionResumption ||
-                      strategy.requiresContinuationAfterContextRotation === true;
-                    if (
-                      rotation.rotated &&
-                      rotation.hasOpenThreads &&
-                      needsContinuationAfterRotation &&
-                      !isA2ATask &&
-                      item.type !== 'schedule'
-                    ) {
-                      const continueMessageId = uuidv4();
-                      this.ctx.repos.message.insert({
-                        id: continueMessageId,
-                        thread_id: item.threadId,
-                        direction: 'inbound',
-                        content: JSON.stringify({ body: 'continue' }),
-                        idempotency_key: `context-rotation-continue:${runId}`,
-                        provider_id: null,
-                        run_id: null,
-                      });
-                      const enqueueResult = this.ctx.queueManager.enqueue(
-                        item.threadId,
-                        'message',
-                        { personaId, content: 'continue' },
-                        continueMessageId,
-                        { persona: personaName, itemType: 'message' },
+                    if (contextUsagePayload.ratio >= enabledContextManagement.thresholdRatio) {
+                      this.publishContextEvent(
+                        'context.threshold_exceeded.v1',
+                        {
+                          runId,
+                          queueItemId: item.id,
+                          threadId: item.threadId,
+                          personaName,
+                          provider: providerEntry.provider.name,
+                          model,
+                          contextUsage: contextUsagePayload,
+                        },
                       );
-                      if (enqueueResult.isOk()) {
-                        this.ctx.logger.info(
-                          { threadId: item.threadId, provider: providerEntry.provider.name },
-                          'agent-runner: auto-enqueued continuation after context rotation for stateless provider',
-                        );
-                      } else {
-                        this.ctx.logger.warn(
-                          { threadId: item.threadId, err: enqueueResult.error.message },
-                          'agent-runner: failed to auto-enqueue continuation after context rotation',
+
+                      try {
+                        const rotation = await this.runContextProjection({
+                          item,
+                          personaId,
+                          personaName,
+                          runId,
+                          model,
+                          provider: providerEntry.provider.name,
+                          contextUsage: contextUsagePayload,
+                          contextManagement: enabledContextManagement,
+                          threadMetadata:
+                            threadResult.isOk() && threadResult.value
+                              ? threadResult.value.metadata
+                              : null,
+                          channelId:
+                            threadResult.isOk() && threadResult.value
+                              ? threadResult.value.channel_id
+                              : undefined,
+                        });
+
+                        this.publishPostProjectionEvents({
+                          runId,
+                          queueItemId: item.id,
+                          threadId: item.threadId,
+                          personaName,
+                          provider: providerEntry.provider.name,
+                          model,
+                          contextUsage: contextUsagePayload,
+                          rotation,
+                        });
+
+                        if (
+                          rotation.rotated &&
+                          rotation.hasOpenThreads &&
+                          canAutoContinueAfterRotation
+                        ) {
+                          const continuation = this.enqueueContextContinuation(
+                            item.threadId,
+                            personaId,
+                            personaName,
+                            item.id,
+                          );
+                          if (continuation.isErr()) {
+                            requiredContinuationError = continuation.error;
+                          } else {
+                            continuationEnsured = true;
+                          }
+                        }
+                      } catch (e: unknown) {
+                        this.ctx.logger.error(
+                          { threadId: item.threadId, err: e },
+                          'agent-runner: context rotation failed',
                         );
                       }
                     }
@@ -1369,6 +1394,25 @@ export class AgentRunner {
                     'agent-runner: context rotation failed',
                   );
                 }
+              }
+
+              if (
+                !requiredContinuationError &&
+                !continuationEnsured &&
+                canAutoContinueAfterRotation
+              ) {
+                const repair = this.repairContextContinuationAfterDurableRotation({
+                  threadId: item.threadId,
+                  personaId,
+                  personaName,
+                  queueItemId: item.id,
+                });
+                if (repair.isErr()) {
+                  requiredContinuationError = repair.error;
+                }
+              }
+              if (requiredContinuationError) {
+                throw requiredContinuationError;
               }
             }
 
@@ -1538,6 +1582,88 @@ export class AgentRunner {
     };
   }
 
+  private latestDurableContextRotationState(
+    threadId: string,
+  ): DurableContextRotationState | undefined {
+    const memoryItems = this.ctx.repos.memory.findByThread(threadId);
+    if (memoryItems.isErr()) {
+      this.ctx.logger.warn(
+        { threadId, err: memoryItems.error.message },
+        'agent-runner: failed to inspect durable context rotation boundary',
+      );
+      return undefined;
+    }
+    let latest: DurableContextRotationState | undefined;
+    for (const item of memoryItems.value) {
+      try {
+        const metadata = JSON.parse(item.metadata) as unknown;
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
+        const record = metadata as Record<string, unknown>;
+        const source = typeof record.source === 'string' ? record.source : undefined;
+        const isObservationRotation =
+          item.type === 'observation' &&
+          (source === 'context-roller-om' ||
+            source === 'context-projector-reduced-observation-tombstone');
+        const isSummaryRotation = item.type === 'summary' && source === 'context-roller';
+        if (!isObservationRotation && !isSummaryRotation) {
+          continue;
+        }
+        const rotatedThroughTs = Number(record.rotatedThroughTs);
+        if (!Number.isFinite(rotatedThroughTs) || rotatedThroughTs <= 0) continue;
+        const rotationPersistedAt = Number(item.created_at);
+        const durableBoundary =
+          Number.isFinite(rotationPersistedAt) && rotationPersistedAt > 0
+            ? Math.max(rotatedThroughTs, rotationPersistedAt)
+            : rotatedThroughTs;
+        if (latest !== undefined && latest.boundary >= durableBoundary) continue;
+        latest = {
+          boundary: durableBoundary,
+          hasOpenThreads: isObservationRotation
+            ? this.observationRotationHasOpenThreads(record)
+            : this.summaryRotationHasOpenThreads(record),
+          ...(this.readRotationCauseQueueItemId(record)
+            ? { rotationCauseQueueItemId: this.readRotationCauseQueueItemId(record) }
+            : {}),
+        };
+      } catch {
+        continue;
+      }
+    }
+    return latest;
+  }
+
+  private observationRotationHasOpenThreads(record: Record<string, unknown>): boolean {
+    return (
+      record.taskComplete === false &&
+      typeof record.suggestedContinuation === 'string' &&
+      record.suggestedContinuation.trim().length > 0
+    );
+  }
+
+  private summaryRotationHasOpenThreads(record: Record<string, unknown>): boolean {
+    if (record.hasOpenThreads === true) return true;
+    const openThreadCount = Number(record.openThreadCount);
+    return Number.isFinite(openThreadCount) && openThreadCount > 0;
+  }
+
+  private readRotationCauseQueueItemId(record: Record<string, unknown>): string | undefined {
+    if (
+      typeof record.rotationCauseQueueItemId === 'string' &&
+      record.rotationCauseQueueItemId.length > 0
+    ) {
+      return record.rotationCauseQueueItemId;
+    }
+    const contextUsage = record.contextUsage;
+    if (!contextUsage || typeof contextUsage !== 'object' || Array.isArray(contextUsage)) {
+      return undefined;
+    }
+    const usageRecord = contextUsage as Record<string, unknown>;
+    return typeof usageRecord.rotationCauseQueueItemId === 'string' &&
+      usageRecord.rotationCauseQueueItemId.length > 0
+      ? usageRecord.rotationCauseQueueItemId
+      : undefined;
+  }
+
   private async sendLifecycleOutboundMessage(input: {
     content: string;
     persistedContent?: string;
@@ -1701,6 +1827,277 @@ export class AgentRunner {
       this.ctx.logger.error(
         { err: publication.error.message, runId: input.runId, messageId: input.messageId, type },
         'agent-runner: failed to publish outbound lifecycle event',
+      );
+    }
+  }
+
+  private async runContextProjection(input: {
+    item: QueueItem;
+    personaId: string;
+    personaName: string;
+    runId: string;
+    provider: string;
+    model: string;
+    contextUsage: ResolvedContextUsage;
+    contextManagement: {
+      mode: unknown;
+      thresholdRatio: number;
+      summarizer?: string;
+      observer?: string;
+      reducer?: string;
+      reflectionThresholdChars: number;
+    };
+    threadMetadata: string | null;
+    channelId?: string;
+  }): Promise<ContextRotationResult> {
+    const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
+    if (!this.ctx.contextRoller) return noRotation;
+
+    if (input.contextManagement.mode === 'observation') {
+      if (!input.contextManagement.observer || !input.contextManagement.reducer) {
+        this.ctx.logger.error(
+          {
+            threadId: input.item.threadId,
+            provider: input.provider,
+            mode: input.contextManagement.mode,
+          },
+          'agent-runner: context observation mode missing observer or reducer handler',
+        );
+        return noRotation;
+      }
+
+      return await this.ctx.contextRoller.checkAndRotateOM(
+        input.item.threadId,
+        input.personaId,
+        input.contextUsage,
+        input.contextManagement.thresholdRatio,
+        input.contextManagement.observer,
+        input.contextManagement.reducer,
+        input.contextManagement.reflectionThresholdChars,
+        input.threadMetadata,
+        input.channelId,
+      );
+    }
+
+    if (!input.contextManagement.summarizer) {
+      this.ctx.logger.error(
+        {
+          threadId: input.item.threadId,
+          provider: input.provider,
+          mode: input.contextManagement.mode,
+        },
+        'agent-runner: context summarizer mode missing summarizer handler',
+      );
+      return noRotation;
+    }
+
+    return await this.ctx.contextRoller.checkAndRotate(
+      input.item.threadId,
+      input.personaId,
+      input.contextUsage,
+      input.contextManagement.thresholdRatio,
+      input.contextManagement.summarizer,
+    );
+  }
+
+  private publishPostProjectionEvents(input: {
+    runId: string;
+    queueItemId: string;
+    threadId: string;
+    personaName: string;
+    provider: string;
+    model: string;
+    contextUsage: ResolvedContextUsage;
+    rotation: ContextRotationResult;
+  }): void {
+    if (input.rotation.reduction?.thresholdExceeded) {
+      this.publishContextEvent('context.observation_log_threshold_exceeded.v1', {
+        ...input,
+        observationChars: input.rotation.reduction.observationChars,
+        thresholdChars: input.rotation.reduction.thresholdChars,
+        reduced: input.rotation.reduction.reduced,
+        projectionId: input.rotation.reduction.projectionId,
+        memoryItemId: input.rotation.reduction.memoryItemId,
+      });
+    }
+
+    if (!input.rotation.rotated) {
+      return;
+    }
+
+    this.publishContextEvent('context.rotated.v1', {
+      ...input,
+      hasOpenThreads: input.rotation.hasOpenThreads,
+    });
+  }
+
+  private enqueueContextContinuation(
+    threadId: string,
+    personaId: string,
+    personaName: string,
+    queueItemId: string,
+  ): Result<void, Error> {
+    const continuationKey = this.contextContinuationKey(queueItemId);
+    const inserted = this.ctx.repos.message.insertIfAbsent({
+      id: continuationKey,
+      thread_id: threadId,
+      direction: 'inbound',
+      content: JSON.stringify({ body: 'continue' }),
+      idempotency_key: continuationKey,
+      provider_id: null,
+      run_id: null,
+    });
+    if (inserted.isErr()) {
+      const error = new Error(
+        `failed to persist continuation after context rotation: ${inserted.error.message}`,
+      );
+      this.ctx.logger.warn(
+        { threadId, err: inserted.error.message },
+        'agent-runner: failed to persist continuation after context rotation',
+      );
+      return err(error);
+    }
+    if (!inserted.value.inserted) {
+      this.ctx.logger.info(
+        { threadId, messageId: inserted.value.message.id },
+        'agent-runner: continuation after context rotation already persisted, ensuring queue item',
+      );
+    }
+
+    const enqueueResult = this.ctx.queueManager.enqueueWithId(
+      continuationKey,
+      threadId,
+      'message',
+      { personaId, content: 'continue' },
+      inserted.value.message.id,
+      { persona: personaName, itemType: 'message' },
+    );
+    if (enqueueResult.isOk()) {
+      this.ctx.logger.info(
+        { threadId },
+        'agent-runner: auto-enqueued continuation after context rotation for stateless provider',
+      );
+      return ok(undefined);
+    } else {
+      const error = new Error(
+        `failed to enqueue continuation after context rotation: ${enqueueResult.error.message}`,
+      );
+      this.ctx.logger.warn(
+        { threadId, err: enqueueResult.error.message },
+        'agent-runner: failed to auto-enqueue continuation after context rotation',
+      );
+      return err(error);
+    }
+  }
+
+  private repairContextContinuationAfterDurableRotation(input: {
+    threadId: string;
+    personaId: string;
+    personaName: string;
+    queueItemId: string;
+  }): Result<boolean, Error> {
+    const continuationKey = this.contextContinuationKey(input.queueItemId);
+    let shouldEnsureContinuation = false;
+    try {
+      shouldEnsureContinuation =
+        this.ctx.repos.message.existsByIdempotencyKey(continuationKey) === true;
+    } catch (cause) {
+      return err(
+        new Error(
+          `failed to inspect continuation after context rotation: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        ),
+      );
+    }
+
+    if (!shouldEnsureContinuation) {
+      const rotation = this.latestDurableContextRotationState(input.threadId);
+      shouldEnsureContinuation =
+        rotation?.hasOpenThreads === true &&
+        rotation.rotationCauseQueueItemId === input.queueItemId;
+    }
+
+    if (!shouldEnsureContinuation) {
+      return ok(false);
+    }
+
+    const ensured = this.enqueueContextContinuation(
+      input.threadId,
+      input.personaId,
+      input.personaName,
+      input.queueItemId,
+    );
+    if (ensured.isErr()) return err(ensured.error);
+    return ok(true);
+  }
+
+  private contextContinuationKey(queueItemId: string): string {
+    return `context-rotation-continue:${queueItemId}`;
+  }
+
+  private publishContextEvent(
+    type:
+      | 'context.threshold_exceeded.v1'
+      | 'context.rotated.v1'
+      | 'context.observation_log_threshold_exceeded.v1',
+    input: {
+      runId: string;
+      queueItemId: string;
+      threadId: string;
+      personaName: string;
+      provider: string;
+      model: string;
+      contextUsage: ResolvedContextUsage;
+      hasOpenThreads?: boolean;
+      observationChars?: number;
+      thresholdChars?: number;
+      reduced?: boolean;
+      projectionId?: string;
+      memoryItemId?: string;
+    },
+  ): void {
+    if (!this.ctx.lifecycleRuntime) return;
+    const projectionId = input.projectionId ?? `context-projection:${input.runId}`;
+    const publication = this.ctx.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'context_projection',
+        projectionId,
+        input.runId,
+        'context',
+        [
+          { type: 'context_projection', id: projectionId },
+          { type: 'thread', id: input.threadId },
+          { type: 'run', id: input.runId },
+          { type: 'queue_item', id: input.queueItemId },
+          ...(input.memoryItemId ? [{ type: 'memory_item', id: input.memoryItemId }] : []),
+        ],
+        {
+          provider: input.provider,
+          model: input.model,
+          ratio: input.contextUsage.ratio,
+          inputTokens: input.contextUsage.inputTokens,
+          rawMetric: input.contextUsage.rawMetric,
+          rawMetricName: input.contextUsage.rawMetricName,
+          ...(input.hasOpenThreads !== undefined
+            ? { hasOpenThreads: input.hasOpenThreads }
+            : {}),
+          ...(input.observationChars !== undefined
+            ? { observationChars: input.observationChars }
+            : {}),
+          ...(input.thresholdChars !== undefined ? { thresholdChars: input.thresholdChars } : {}),
+          ...(input.reduced !== undefined ? { reduced: input.reduced } : {}),
+        },
+      ),
+      persona: input.personaName,
+      itemOrigin: 'context',
+      itemType: 'context_projection',
+    });
+    if (publication.isErr()) {
+      this.ctx.logger.error(
+        { err: publication.error.message, runId: input.runId, type },
+        'agent-runner: failed to publish context lifecycle event',
       );
     }
   }

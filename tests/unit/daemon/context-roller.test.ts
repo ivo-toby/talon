@@ -2046,6 +2046,104 @@ describe('ContextRoller', () => {
       expect(deps.messageRepo.findLatestByThreadSince).toHaveBeenCalledWith('thread-1', prevTs, 10_000);
     });
 
+    it('checkAndRotateOM: replays reduced observation tombstones before the no-new-messages shortcut', async () => {
+      const prevTs = 8500;
+      const tombstoneId = `context-observation:context-roller-om:thread-1:${prevTs}`;
+      const tombstone = {
+        id: tombstoneId,
+        thread_id: 'thread-1',
+        type: 'observation' as const,
+        content: '',
+        metadata: JSON.stringify({
+          source: 'context-projector-reduced-observation-tombstone',
+          rotatedThroughTs: prevTs,
+          taskComplete: false,
+          suggestedContinuation: 'continue step 4',
+        }),
+        created_at: 9_000,
+        updated_at: 9_000,
+        embedding_ref: null,
+      };
+      const observerRun = vi.fn();
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok([])),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+        } as any,
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockImplementation((_threadId: string, id: string) =>
+            ok(id === tombstoneId ? tombstone : null),
+          ),
+          findByThread: vi.fn().mockReturnValue(ok([tombstone])),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+        resolveSummarizerRun: () => observerRun,
+      });
+
+      const result = await (new ContextRoller(deps)).checkAndRotateOM(
+        'thread-1',
+        'persona-1',
+        highUsage,
+      );
+
+      expect(result).toEqual({ rotated: true, hasOpenThreads: true });
+      expect(observerRun).not.toHaveBeenCalled();
+      expect(deps.memoryRepo.upsertByKey).not.toHaveBeenCalled();
+      expect(deps.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-1');
+    });
+
+    it('checkAndRotateOM: replays unreduced observations when no newer messages exist', async () => {
+      const prevTs = 8500;
+      const observationId = `context-observation:context-roller-om:thread-1:${prevTs}`;
+      const observation = {
+        id: observationId,
+        thread_id: 'thread-1',
+        type: 'observation' as const,
+        content: 'Date: 2026-05-28\n- 🔴 09:00 important unfinished work',
+        metadata: JSON.stringify({
+          source: 'context-roller-om',
+          rotatedThroughTs: prevTs,
+          taskComplete: false,
+          suggestedContinuation: 'continue step 4',
+        }),
+        created_at: 9_000,
+        updated_at: 9_000,
+        embedding_ref: null,
+      };
+      const observerRun = vi.fn();
+      const deps = makeDeps({
+        messageRepo: {
+          findLatestByThread: vi.fn().mockReturnValue(ok([])),
+          findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+        } as any,
+        memoryRepo: {
+          insert: vi.fn().mockReturnValue(ok({})),
+          findById: vi.fn().mockImplementation((_threadId: string, id: string) =>
+            ok(id === observationId ? observation : null),
+          ),
+          findByThread: vi.fn().mockReturnValue(ok([observation])),
+          upsertByKey: vi.fn().mockReturnValue(ok({})),
+          delete: vi.fn().mockReturnValue(ok(undefined)),
+          runInTransaction: vi.fn().mockImplementation((fn: () => unknown) => ok(fn())),
+        } as any,
+        resolveSummarizerRun: () => observerRun,
+      });
+
+      const result = await (new ContextRoller(deps)).checkAndRotateOM(
+        'thread-1',
+        'persona-1',
+        highUsage,
+      );
+
+      expect(result).toEqual({ rotated: true, hasOpenThreads: true });
+      expect(observerRun).not.toHaveBeenCalled();
+      expect(deps.memoryRepo.upsertByKey).not.toHaveBeenCalled();
+      expect(deps.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-1');
+    });
+
     it('checkAndRotateOM: falls back to findLatestByThread when prior observation metadata is malformed', async () => {
       const msgs = [makeMsg('m1', 1000), makeMsg('m2', 2000)];
       const badObservation = { ...makeObservation(5000), metadata: 'not-json' };

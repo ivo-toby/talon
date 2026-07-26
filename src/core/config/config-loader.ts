@@ -103,6 +103,24 @@ function normalizeLegacyConfig(raw: unknown): unknown {
           delete normalizedProvider['rotationThreshold'];
           normalizedProviders[name] = normalizedProvider;
         }
+
+        const contextManagement = provider['contextManagement'];
+        if (isRecord(contextManagement)) {
+          const summarizer = contextManagement['summarizer'];
+          const mode = contextManagement['mode'];
+          if (summarizer === 'session-observer' && mode === undefined) {
+            normalizedProviders[name] = {
+              ...provider,
+              contextManagement: {
+                ...contextManagement,
+                mode: 'observation',
+                observer: contextManagement['observer'] ?? 'session-observer',
+                reducer: contextManagement['reducer'] ?? 'session-reflector',
+                deprecatedLegacySummarizer: true,
+              },
+            };
+          }
+        }
       }
       const normalizedAgentRunner = { ...agentRunner, providers: normalizedProviders };
       root['agentRunner'] = normalizedAgentRunner;

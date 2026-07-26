@@ -26,6 +26,12 @@ export interface ResolvedContextUsage {
   inputTokens: number;
   rawMetric: number;
   rawMetricName: string;
+  /**
+   * Queue item that caused this usage-triggered rotation, when known.
+   * Stored in durable rotation metadata so retries can repair required
+   * post-rotation continuation work without re-crossing the token threshold.
+   */
+  rotationCauseQueueItemId?: string;
 }
 
 export interface CanonicalMcpStdioServer {

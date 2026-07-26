@@ -418,43 +418,49 @@ export async function bootstrap(
   // 9b. Context roller (needs configured summarizer sub-agents)
   let contextRoller: ContextRoller | null = null;
   const enabledContextProviders = Object.entries(config.agentRunner.providers).filter(
-    ([, providerConfig]) => providerConfig.contextManagement.enabled,
+    ([, providerConfig]) => providerConfig.enabled && providerConfig.contextManagement.enabled,
   );
-  const configuredSummarizers = enabledContextProviders
-    .map(([, providerConfig]) => providerConfig.contextManagement.summarizer)
-    .filter((name): name is string => typeof name === 'string' && name.length > 0);
-  const usesObservationalMemory = configuredSummarizers.includes('session-observer');
-  // The observer/reflector path is a pair: once the observation log crosses
-  // MAX_OBSERVATION_CHARS the context-roller calls the reflector to
-  // consolidate. If the reflector isn't bound alongside the observer, the
-  // lookup misses at runtime and the log grows unbounded — the warning
-  // "context-roller-om: reflector not available, skipping consolidation"
-  // indicates this miswiring. Auto-include the reflector whenever any
-  // provider opts into observational memory so a single config key keeps
-  // both halves working.
+  for (const [providerName, providerConfig] of enabledContextProviders) {
+    if (providerConfig.contextManagement.deprecatedLegacySummarizer) {
+      logger.warn(
+        { provider: providerName },
+        'bootstrap: contextManagement.summarizer=session-observer is deprecated; use mode=observation with observer and reducer',
+      );
+    }
+  }
   const requestedSummarizers = [
     ...new Set([
-      ...configuredSummarizers,
-      ...(usesObservationalMemory ? ['session-reflector'] : []),
+      ...enabledContextProviders.flatMap(([, providerConfig]) => {
+        const contextManagement = providerConfig.contextManagement;
+        return contextManagement.mode === 'observation'
+          ? [contextManagement.observer, contextManagement.reducer]
+          : [contextManagement.summarizer];
+      }),
     ]),
-  ];
+  ].filter((name): name is string => typeof name === 'string' && name.length > 0);
 
   if (enabledContextProviders.length === 0) {
     logger.info('bootstrap: context rotation disabled for all agent runner providers');
-  } else if (modelResolver) {
+  } else {
+    for (const summarizerName of requestedSummarizers) {
+      if (!mergedAgentMap.has(summarizerName)) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Configured context management handler "${summarizerName}" was not found in loaded sub-agents`,
+          ),
+        );
+      }
+    }
+  }
+
+  if (enabledContextProviders.length > 0 && modelResolver) {
     const boundSummarizers = new Map<string, import('./context-roller.js').SummarizerRunFn>();
 
     const subagentOverrides = config.subagents ?? {};
 
     for (const summarizerName of requestedSummarizers) {
-      const summarizerAgent = mergedAgentMap.get(summarizerName);
-      if (!summarizerAgent) {
-        logger.warn(
-          { summarizer: summarizerName },
-          'bootstrap: configured summarizer sub-agent not found, skipping',
-        );
-        continue;
-      }
+      const summarizerAgent = mergedAgentMap.get(summarizerName)!;
 
       // Verify at least one model in the chain can resolve at boot time.
       const overrideConfig = subagentOverrides[summarizerName];
@@ -482,11 +488,12 @@ export async function bootstrap(
       ).catch(() => false);
 
       if (!anyResolvable) {
-        logger.warn(
-          { summarizer: summarizerName },
-          'bootstrap: no model in override chain could resolve for summarizer, skipping',
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `No model in override chain could resolve for configured context management handler "${summarizerName}"`,
+          ),
         );
-        continue;
       }
 
       const summarizerPrompt = summarizerAgent.promptContents.join('\n\n');
@@ -639,11 +646,16 @@ export async function bootstrap(
         'bootstrap: context roller initialized',
       );
     } else {
-      logger.warn(
-        { requestedSummarizers },
-        'bootstrap: no configured summarizer sub-agents were available, session rotation disabled',
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Context management is enabled, but no configured context management handlers were bound: ${requestedSummarizers.join(', ')}`,
+        ),
       );
     }
+  } else if (enabledContextProviders.length > 0) {
+    await cleanupBootstrapFailure(db, observability, logger);
+    return err(new DaemonError('Context management is enabled, but no model resolver is available'));
   }
 
   // 10. Crash recovery

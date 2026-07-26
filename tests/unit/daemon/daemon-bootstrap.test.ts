@@ -219,7 +219,7 @@ function makeAgentRunnerProviderConfig(
     enabled: true,
     command: 'claude',
     contextWindowTokens: 200000,
-    contextManagement: makeContextManagementConfig(),
+    contextManagement: { enabled: false },
     ...overrides,
   };
 }
@@ -231,6 +231,7 @@ function makeBackgroundProviderConfig(
     enabled: true,
     command: 'claude',
     contextWindowTokens: 200000,
+    contextManagement: { enabled: false },
     ...overrides,
   };
 }
@@ -294,6 +295,20 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
     },
     ...overrides,
   };
+}
+
+function makeContextEnabledConfig(overrides: Record<string, unknown> = {}): unknown {
+  return makeConfig({
+    agentRunner: {
+      defaultProvider: 'claude-code',
+      providers: {
+        'claude-code': makeAgentRunnerProviderConfig({
+          contextManagement: makeContextManagementConfig(),
+        }),
+      },
+    },
+    ...overrides,
+  });
 }
 
 function makeMockDb() {
@@ -697,10 +712,7 @@ describe('bootstrap', () => {
                   ...makeAgentRunnerProviderConfig({
                     command: 'codex',
                     contextWindowTokens: 400000,
-                    contextManagement: makeContextManagementConfig({
-                      triggerMetric: 'input_tokens',
-                      thresholdRatio: 0.8,
-                    }),
+                    contextManagement: { enabled: false },
                   }),
                   options: {
                     defaultModel: 'gpt-5.4',
@@ -858,10 +870,7 @@ describe('bootstrap', () => {
                   ...makeAgentRunnerProviderConfig({
                     command: 'gemini',
                     contextWindowTokens: 1000000,
-                    contextManagement: makeContextManagementConfig({
-                      triggerMetric: 'input_tokens',
-                      thresholdRatio: 0.8,
-                    }),
+                    contextManagement: { enabled: false },
                   }),
                   options: {
                     defaultModel: 'gemini-2.5-pro',
@@ -921,10 +930,7 @@ describe('bootstrap', () => {
                   ...makeAgentRunnerProviderConfig({
                     command: 'codex',
                     contextWindowTokens: 200000,
-                    contextManagement: makeContextManagementConfig({
-                      triggerMetric: 'input_tokens',
-                      thresholdRatio: 0.6,
-                    }),
+                    contextManagement: { enabled: false },
                   }),
                   options: {
                     defaultModel: 'gpt-5-codex',
@@ -989,10 +995,7 @@ describe('bootstrap', () => {
                   ...makeAgentRunnerProviderConfig({
                     command: 'node',
                     contextWindowTokens: 256000,
-                    contextManagement: makeContextManagementConfig({
-                      triggerMetric: 'input_tokens',
-                      thresholdRatio: 0.75,
-                    }),
+                    contextManagement: { enabled: false },
                   }),
                   options: {
                     defaultModel: 'qwen3-coder:30b',
@@ -1074,10 +1077,7 @@ describe('bootstrap', () => {
                     type: 'openai-compatible',
                     command: 'node',
                     contextWindowTokens: 128000,
-                    contextManagement: makeContextManagementConfig({
-                      triggerMetric: 'input_tokens',
-                      thresholdRatio: 0.75,
-                    }),
+                    contextManagement: { enabled: false },
                   }),
                   options: {
                     defaultModel: 'qwen3-coder:30b',
@@ -1358,7 +1358,7 @@ describe('bootstrap', () => {
         const { bootstrap: isolatedBootstrap } =
           await import('../../../src/daemon/daemon-bootstrap.js');
 
-        const config = makeConfig();
+        const config = makeContextEnabledConfig();
         const db = makeMockDb();
         const observability = {
           observe: vi.fn(),
@@ -1400,14 +1400,192 @@ describe('bootstrap', () => {
       }
     });
 
-    it('auto-binds session-reflector alongside session-observer for the OM path', async () => {
-      // When a provider opts into observational memory by setting
-      // summarizer: session-observer, bootstrap must also bind
-      // session-reflector so the context-roller can consolidate the
-      // observation log once it crosses MAX_OBSERVATION_CHARS. Without
-      // this the roller logs "reflector not available, skipping
-      // consolidation" and the log grows unbounded. Regression test for
-      // the miswiring observed on the ollama/openai-compatible persona.
+    it('fails bootstrap when an enabled context handler is not loaded', async () => {
+      vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
+        SubAgentLoader: vi.fn().mockImplementation(() => ({
+          loadAll: vi.fn().mockResolvedValue(ok([])),
+        })),
+      }));
+      vi.doMock('../../../src/subagents/model-resolver.js', () => ({
+        ModelResolver: vi.fn().mockImplementation(() => ({
+          resolve: vi.fn().mockReturnValue(ok({ provider: 'anthropic', model: 'resolved-model' })),
+        })),
+      }));
+      vi.resetModules();
+
+      try {
+        const { loadConfig: isolatedLoadConfig } =
+          await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } =
+          await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } =
+          await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } =
+          await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } =
+          await import('../../../src/daemon/daemon-bootstrap.js');
+
+        const observability = {
+          observe: vi.fn(),
+          observeWithTraceparent: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+
+        vi.mocked(isolatedLoadConfig).mockReturnValue(ok(makeContextEnabledConfig() as any));
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(makeMockDb() as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toContain(
+          'Configured context management handler "session-summarizer" was not found',
+        );
+        expect(observability.shutdown).toHaveBeenCalledOnce();
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-loader.js');
+        vi.doUnmock('../../../src/subagents/model-resolver.js');
+        vi.resetModules();
+      }
+    });
+
+    it('ignores context handlers configured only on disabled providers', async () => {
+      vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
+        SubAgentLoader: vi.fn().mockImplementation(() => ({
+          loadAll: vi.fn().mockResolvedValue(ok([])),
+        })),
+      }));
+      vi.doMock('../../../src/subagents/model-resolver.js', () => ({
+        ModelResolver: vi.fn().mockImplementation(() => ({
+          resolve: vi.fn().mockReturnValue(ok({ provider: 'anthropic', model: 'resolved-model' })),
+        })),
+      }));
+      vi.resetModules();
+
+      try {
+        const { loadConfig: isolatedLoadConfig } =
+          await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } =
+          await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } =
+          await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } =
+          await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } =
+          await import('../../../src/daemon/daemon-bootstrap.js');
+
+        const observability = {
+          observe: vi.fn(),
+          observeWithTraceparent: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+        const config = makeConfig({
+          agentRunner: {
+            defaultProvider: 'claude-code',
+            providers: {
+              'claude-code': makeAgentRunnerProviderConfig({
+                contextManagement: { enabled: false },
+              }),
+              'disabled-codex': makeAgentRunnerProviderConfig({
+                enabled: false,
+                command: 'codex',
+                contextManagement: makeContextManagementConfig({
+                  summarizer: 'missing-disabled-provider-summarizer',
+                }),
+              }),
+            },
+          },
+        });
+
+        vi.mocked(isolatedLoadConfig).mockReturnValue(ok(config as any));
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(makeMockDb() as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+
+        expect(result.isOk()).toBe(true);
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-loader.js');
+        vi.doUnmock('../../../src/subagents/model-resolver.js');
+        vi.resetModules();
+      }
+    });
+
+    it('fails bootstrap when an enabled context handler model cannot resolve', async () => {
+      vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
+        SubAgentLoader: vi.fn().mockImplementation(() => ({
+          loadAll: vi.fn().mockImplementation(async (dir: string) => {
+            if (!dir.includes('subagents/default')) return ok([]);
+            return ok([
+              {
+                manifest: {
+                  name: 'session-summarizer',
+                  version: '0.1.0',
+                  description: 'Test summarizer',
+                  model: {
+                    provider: 'anthropic',
+                    name: 'claude-sonnet-4-6',
+                    maxTokens: 12345,
+                  },
+                  requiredCapabilities: [],
+                  rootPaths: [],
+                  timeoutMs: 30000,
+                },
+                promptContents: ['Summarize the transcript.'],
+                run: vi.fn(),
+                rootDir: '/tmp/session-summarizer',
+              },
+            ]);
+          }),
+        })),
+      }));
+      vi.doMock('../../../src/subagents/model-resolver.js', () => ({
+        ModelResolver: vi.fn().mockImplementation(() => ({
+          resolve: vi.fn().mockReturnValue(err(new Error('no model'))),
+        })),
+      }));
+      vi.resetModules();
+
+      try {
+        const { loadConfig: isolatedLoadConfig } =
+          await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } =
+          await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } =
+          await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } =
+          await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } =
+          await import('../../../src/daemon/daemon-bootstrap.js');
+
+        const observability = {
+          observe: vi.fn(),
+          observeWithTraceparent: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+
+        vi.mocked(isolatedLoadConfig).mockReturnValue(ok(makeContextEnabledConfig() as any));
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(makeMockDb() as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toContain(
+          'No model in override chain could resolve for configured context management handler "session-summarizer"',
+        );
+        expect(observability.shutdown).toHaveBeenCalledOnce();
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-loader.js');
+        vi.doUnmock('../../../src/subagents/model-resolver.js');
+        vi.resetModules();
+      }
+    });
+
+    it('binds explicitly configured observer and reducer handlers for observation mode', async () => {
       const observerRun = vi.fn().mockResolvedValue(ok({ summary: 'obs' }));
       const reflectorRun = vi.fn().mockResolvedValue(ok({ summary: 'reflected' }));
 
@@ -1467,13 +1645,18 @@ describe('bootstrap', () => {
         const { bootstrap: isolatedBootstrap } =
           await import('../../../src/daemon/daemon-bootstrap.js');
 
-        // Configure the provider to use the observer-based OM path.
+        // Configure the provider to use the observer-based observation path.
         const config = makeConfig({
           agentRunner: {
             defaultProvider: 'claude-code',
             providers: {
               'claude-code': makeAgentRunnerProviderConfig({
-                contextManagement: makeContextManagementConfig({ summarizer: 'session-observer' }),
+                contextManagement: makeContextManagementConfig({
+                  mode: 'observation',
+                  observer: 'session-observer',
+                  reducer: 'session-reflector',
+                  summarizer: undefined,
+                }),
               }),
             },
           },
@@ -1504,7 +1687,8 @@ describe('bootstrap', () => {
 
         // Observer IS resolvable (existing behavior).
         expect(resolver!('session-observer')).toBeTypeOf('function');
-        // Reflector MUST be resolvable too — this is the fix.
+        // Reducer is resolvable because it is explicitly configured, not
+        // inferred from the observer name.
         expect(resolver!('session-reflector')).toBeTypeOf('function');
 
         // And calling the reflector through the resolver actually reaches

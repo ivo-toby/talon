@@ -67,6 +67,35 @@ function extractPreviousRotationBoundary(
 }
 const DIRECT_CONTEXT_BUDGET_RATIO = 0.25;
 
+function parseExistingObservationReplay(
+  metadata: string,
+  rotatedThroughTs: number,
+): { hasOpenThreads: boolean } | null {
+  try {
+    const parsed = JSON.parse(metadata) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const source = record.source;
+    if (
+      source !== 'context-roller-om' &&
+      source !== 'context-projector-reduced-observation-tombstone'
+    ) {
+      return null;
+    }
+    if (Number(record.rotatedThroughTs) !== rotatedThroughTs) {
+      return null;
+    }
+    return {
+      hasOpenThreads:
+        record.taskComplete === false &&
+        typeof record.suggestedContinuation === 'string' &&
+        record.suggestedContinuation.trim().length > 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Number of messages to preserve as a pre-roll tail so the agent retains
  * conversational continuity after a context rotation. Stored as a separate
@@ -98,6 +127,17 @@ export interface ContextRotationResult {
   rotated: boolean;
   /** Whether the summarizer found unfinished work (open threads). */
   hasOpenThreads: boolean;
+  /** Observation-log reduction lifecycle details, when reducer threshold was evaluated. */
+  reduction?: ContextReductionLifecycleResult;
+}
+
+export interface ContextReductionLifecycleResult {
+  thresholdExceeded: boolean;
+  reduced: boolean;
+  observationChars: number;
+  thresholdChars: number;
+  projectionId?: string;
+  memoryItemId?: string;
 }
 
 /**
@@ -283,6 +323,7 @@ export class ContextRoller {
 
     summaryParts.push('Open threads:', ...(data?.openThreads ?? []).map((t) => `- ${t}`));
     const summaryContent = summaryParts.join('\n');
+    const hasOpenThreads = (data?.openThreads ?? []).length > 0;
 
     // 5. Persist summary + all memory updates in a single transaction.
     // If any write fails, the entire batch is rolled back atomically.
@@ -298,7 +339,12 @@ export class ContextRoller {
           source: 'context-roller',
           messageCount: messages.length,
           rotatedThroughTs,
+          hasOpenThreads,
+          openThreadCount: data?.openThreads?.length ?? 0,
           contextUsage,
+          ...(contextUsage.rotationCauseQueueItemId
+            ? { rotationCauseQueueItemId: contextUsage.rotationCauseQueueItemId }
+            : {}),
           ...(contextUsage.rawMetricName === 'cache_read_input_tokens'
             ? { cacheReadTokens: contextUsage.rawMetric }
             : {}),
@@ -351,7 +397,6 @@ export class ContextRoller {
       'context-roller: session rotated successfully',
     );
 
-    const hasOpenThreads = (data?.openThreads ?? []).length > 0;
     return { rotated: true, hasOpenThreads };
   }
 
@@ -412,6 +457,12 @@ export class ContextRoller {
 
     const messages = messagesResult.value;
     if (messages.length === 0) {
+      const replayed = prevBoundary === null
+        ? null
+        : this.replayExistingObservationProjection(threadId, prevBoundary);
+      if (replayed) {
+        return replayed;
+      }
       this.deps.logger.warn({ threadId }, 'context-roller-om: no messages found, skipping rotation');
       return noRotation;
     }
@@ -556,14 +607,53 @@ export class ContextRoller {
     );
 
     // 5. Check if accumulated observations need reflection (consolidation).
-    await this.maybeReflect(threadId, personaId, reflectorName, reflectionThresholdChars);
+    const reduction = await this.maybeReflect(
+      threadId,
+      personaId,
+      reflectorName,
+      reflectionThresholdChars,
+    );
 
     // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
     // Fire it only when the observer explicitly flags unfinished work — i.e.
     // taskComplete === false AND a non-empty suggestedContinuation. The
     // `taskComplete` local declared earlier (persisted to metadata) carries
     // the same semantics — reuse it here.
-    return { rotated: true, hasOpenThreads: projectionResult.value.hasOpenThreads };
+    return {
+      rotated: true,
+      hasOpenThreads: projectionResult.value.hasOpenThreads,
+      ...(reduction ? { reduction } : {}),
+    };
+  }
+
+  private replayExistingObservationProjection(
+    threadId: string,
+    rotatedThroughTs: number,
+  ): ContextRotationResult | null {
+    const projectionId = `context-roller-om:${threadId}`;
+    const memoryItemId = `context-observation:${projectionId}:${rotatedThroughTs}`;
+    const existing = this.deps.memoryRepo.findById(threadId, memoryItemId);
+    if (existing.isErr() || !existing.value) {
+      return null;
+    }
+    const replay = parseExistingObservationReplay(existing.value.metadata, rotatedThroughTs);
+    if (!replay) {
+      return null;
+    }
+    this.deps.sessionTracker.rotateSession(threadId);
+    this.deps.logger.info(
+      {
+        threadId,
+        projectionId,
+        rotatedThroughTs,
+        hasOpenThreads: replay.hasOpenThreads,
+      },
+      'context-roller-om: replayed existing observation projection',
+    );
+    return {
+      rotated: true,
+      hasOpenThreads: replay.hasOpenThreads,
+    };
   }
 
   /**
@@ -574,18 +664,25 @@ export class ContextRoller {
     personaId: string,
     reflectorName: string,
     reflectionThresholdChars: number,
-  ): Promise<void> {
+  ): Promise<ContextReductionLifecycleResult | null> {
     const observationsResult = this.deps.memoryRepo.findByThread(threadId, 'observation');
     if (observationsResult.isErr() || observationsResult.value.length === 0) {
-      return;
+      return null;
     }
 
     const allObservations = observationsResult.value;
     const fullLog = allObservations.map((o) => o.content).join('\n\n');
 
     if (fullLog.length < reflectionThresholdChars) {
-      return;
+      return null;
     }
+
+    const thresholdResult: ContextReductionLifecycleResult = {
+      thresholdExceeded: true,
+      reduced: false,
+      observationChars: fullLog.length,
+      thresholdChars: reflectionThresholdChars,
+    };
 
     this.deps.logger.info(
       { threadId, observationChars: fullLog.length, threshold: reflectionThresholdChars },
@@ -598,7 +695,7 @@ export class ContextRoller {
         { threadId, observationChars: fullLog.length, error: reducerInput.error.message },
         'context-roller-om: observation log failed reducer input contract validation, skipping consolidation',
       );
-      return;
+      return thresholdResult;
     }
 
     // Resolve the reflector sub-agent. Try the dedicated reflector resolver
@@ -617,7 +714,7 @@ export class ContextRoller {
         { threadId, reflector: reflectorName },
         'context-roller-om: reflector not available, skipping consolidation',
       );
-      return;
+      return thresholdResult;
     }
 
     const reflectorResult = await reflectorRun(threadId, personaId, reducerInput.data);
@@ -626,13 +723,13 @@ export class ContextRoller {
         { threadId, error: reflectorResult.error.message },
         'context-roller-om: reflection failed, keeping current observations',
       );
-      return;
+      return thresholdResult;
     }
 
     const reducerOutput = ContextReducerOutputSchema.safeParse(reflectorResult.value.data);
     if (!reducerOutput.success) {
       this.deps.logger.warn({ threadId }, 'context-roller-om: reflector returned empty output');
-      return;
+      return thresholdResult;
     }
 
     const projectionResult = projectContextReduction({
@@ -648,7 +745,7 @@ export class ContextRoller {
         { threadId, error: projectionResult.error.message },
         'context-roller-om: reflection transaction failed',
       );
-      return;
+      return thresholdResult;
     }
 
     const reflectorReduction = fullLog.length > 0
@@ -665,6 +762,12 @@ export class ContextRoller {
       },
       'context-roller-om: observations consolidated by reflector',
     );
+    return {
+      ...thresholdResult,
+      reduced: true,
+      projectionId: projectionResult.value.projectionId,
+      memoryItemId: projectionResult.value.memoryItemId,
+    };
   }
 
   private buildObservationTranscript(

@@ -48,9 +48,15 @@ export type EnqueueInput = Pick<
 > &
   Partial<Pick<QueueItemRow, 'lifecycle_persona' | 'lifecycle_item_type'>>;
 
+export interface EnqueueIfAbsentOutcome {
+  readonly item: QueueItemRow;
+  readonly inserted: boolean;
+}
+
 /** Repository for durable queue operations. */
 export class QueueRepository extends BaseRepository {
   private readonly enqueueStmt: Database.Statement;
+  private readonly enqueueIfAbsentStmt: Database.Statement;
   private readonly claimNextStmt: Database.Statement;
   private readonly completeStmt: Database.Statement;
   private readonly completeClaimedStmt: Database.Statement;
@@ -69,6 +75,16 @@ export class QueueRepository extends BaseRepository {
 
     this.enqueueStmt = db.prepare(`
       INSERT INTO queue_items
+        (id, thread_id, message_id, type, status, attempts, max_attempts,
+         next_retry_at, error, payload, lifecycle_persona, lifecycle_item_type,
+         claimed_at, created_at, updated_at)
+      VALUES
+        (@id, @thread_id, @message_id, @type, 'pending', 0, @max_attempts,
+         NULL, NULL, @payload, @lifecycle_persona, @lifecycle_item_type,
+         NULL, @created_at, @updated_at)
+    `);
+    this.enqueueIfAbsentStmt = db.prepare(`
+      INSERT OR IGNORE INTO queue_items
         (id, thread_id, message_id, type, status, attempts, max_attempts,
          next_retry_at, error, payload, lifecycle_persona, lifecycle_item_type,
          claimed_at, created_at, updated_at)
@@ -186,6 +202,48 @@ export class QueueRepository extends BaseRepository {
       return ok(row);
     } catch (cause) {
       return err(new DbError(`Failed to enqueue item: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /**
+   * Idempotently inserts a queue item with a caller-owned stable id.
+   *
+   * This is intentionally stricter than a general upsert: an existing row is
+   * accepted only when it matches the deterministic work item being recovered.
+   */
+  enqueueIfAbsent(input: EnqueueInput): Result<EnqueueIfAbsentOutcome, DbError> {
+    try {
+      const ts = this.now();
+      const normalized = {
+        ...input,
+        lifecycle_persona: input.lifecycle_persona ?? null,
+        lifecycle_item_type: input.lifecycle_item_type ?? null,
+        created_at: ts,
+        updated_at: ts,
+      };
+      const result = this.enqueueIfAbsentStmt.run(normalized);
+      const row = this.findByIdStmt.get(input.id) as QueueItemRow | undefined;
+      if (!row) {
+        return err(new DbError(`Failed to re-read queue item after idempotent enqueue: ${input.id}`));
+      }
+      if (
+        row.thread_id !== normalized.thread_id ||
+        row.message_id !== normalized.message_id ||
+        row.type !== normalized.type ||
+        row.payload !== normalized.payload ||
+        row.lifecycle_persona !== normalized.lifecycle_persona ||
+        row.lifecycle_item_type !== normalized.lifecycle_item_type
+      ) {
+        return err(new DbError(`Queue item id collision for idempotent enqueue: ${input.id}`));
+      }
+      return ok({ item: row, inserted: result.changes === 1 });
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to idempotently enqueue item: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
   }
 
