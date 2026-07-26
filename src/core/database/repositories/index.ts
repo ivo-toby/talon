@@ -100,6 +100,7 @@ export { LifecycleSignalRepository } from './lifecycle-signal-repository.js';
 
 export type {
   BehaviorCandidateInput,
+  BehaviorCandidateReviewRow,
   BehaviorCandidateRow,
   BehaviorEvidenceInput,
   BehaviorEvidenceRow,

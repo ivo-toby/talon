@@ -330,6 +330,57 @@ describe('Scheduler', () => {
       );
     });
 
+    it('runs native behavior reviews from configured schedules without queue enqueue', async () => {
+      const reviewService = {
+        review: vi.fn().mockResolvedValue(
+          ok({
+            outcome: 'proposal_created',
+            cadence: 'daily',
+            reviewedCandidateCount: 1,
+            createdPromotionIds: ['promotion-1'],
+            skippedCandidateIds: [],
+            expiredCandidateIds: [],
+            traceEvidenceStatus: 'unavailable',
+            signalCount: 0,
+          }),
+        ),
+      };
+      scheduler = new Scheduler(
+        scheduleRepo,
+        queueStub,
+        personaLoader,
+        FAST_CONFIG,
+        logger,
+        undefined,
+        reviewService,
+      );
+      const scheduleId = seedDueSchedule(db, personaId, threadId, {
+        type: 'one_shot',
+        payload: JSON.stringify({
+          label: 'daily behavior review',
+          behaviorReview: { cadence: 'daily' },
+        }),
+      });
+
+      scheduler.start();
+      await wait(150);
+      await scheduler.stop();
+
+      expect(reviewService.review).toHaveBeenCalledWith({
+        persona: 'assistant',
+        cadence: 'daily',
+        now: expect.any(String),
+        trigger: {
+          kind: 'schedule',
+          scheduleId,
+          firedAt: expect.any(String),
+        },
+      });
+      expect(queueStub.enqueue).not.toHaveBeenCalled();
+      expect(queueStub.enqueueInLifecycleTransaction).not.toHaveBeenCalled();
+      expect(scheduleRepo.findById(scheduleId)._unsafeUnwrap()?.enabled).toBe(0);
+    });
+
     it('disables the schedule after firing', async () => {
       const scheduleId = seedDueSchedule(db, personaId, threadId, { type: 'one_shot' });
 
@@ -721,6 +772,56 @@ describe('Scheduler', () => {
 
       // enqueue should not have been called since there is no thread
       expect(queueStub.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('runs native behavior reviews for schedules without a thread_id', async () => {
+      const reviewService = {
+        review: vi.fn().mockResolvedValue(
+          ok({
+            outcome: 'proposal_created',
+            cadence: 'daily',
+            reviewedCandidateCount: 1,
+            createdPromotionIds: ['promotion-1'],
+            skippedCandidateIds: [],
+            expiredCandidateIds: [],
+            traceEvidenceStatus: 'unavailable',
+            signalCount: 0,
+          }),
+        ),
+      };
+      scheduler = new Scheduler(
+        scheduleRepo,
+        queueStub,
+        personaLoader,
+        FAST_CONFIG,
+        logger,
+        undefined,
+        reviewService,
+      );
+      const scheduleId = seedDueSchedule(db, personaId, null, {
+        type: 'one_shot',
+        payload: JSON.stringify({
+          label: 'daily behavior review',
+          behaviorReview: { cadence: 'daily' },
+        }),
+      });
+
+      scheduler.start();
+      await wait(150);
+      await scheduler.stop();
+
+      expect(reviewService.review).toHaveBeenCalledWith({
+        persona: 'assistant',
+        cadence: 'daily',
+        now: expect.any(String),
+        trigger: {
+          kind: 'schedule',
+          scheduleId,
+          firedAt: expect.any(String),
+        },
+      });
+      expect(queueStub.enqueue).not.toHaveBeenCalled();
+      expect(scheduleRepo.findById(scheduleId)._unsafeUnwrap()?.enabled).toBe(0);
     });
   });
 

@@ -234,6 +234,19 @@ behavior provenance, and after-commit telemetry boundaries.
   integrated epic verification: 19 targeted files / 647 tests, `npm run build`,
   scoped ESLint with 0 errors and known warnings only, and `git diff --check`.
   All three clean worktrees were removed and pruned.
+- Source: TASK-017 / worker proposal, pending review. Daily/weekly behavior
+  review reduction is native and notes-only: it creates proposed behavior
+  promotions from existing ledger candidates, not prompt activations. The
+  reducer enforces bounded candidate/evidence reads, duplicate suppression,
+  same-kind conflict suppression, cadence-specific source thresholds, stale
+  collecting-candidate expiry, optional trace-evidence metadata, and bounded
+  `lifecycle.behavior_review` audit with `signalCount: 0`.
+- TASK-017 scheduler integration is opt-in through schedule payload
+  `behaviorReview.cadence` (`daily` or `weekly`). Such schedules run the native
+  review service, preserve schedule provenance in review metadata, advance only
+  after successful native review, and do not enqueue a user-facing agent task.
+  Normal schedules continue through the existing queue/lifecycle publication
+  path.
 
 ## Durable Memory
 

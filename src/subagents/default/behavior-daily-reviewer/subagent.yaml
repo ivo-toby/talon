@@ -1,0 +1,19 @@
+name: behavior-daily-reviewer
+version: '0.1.0'
+description: 'Reviews daily behavior-learning evidence for notes-only proposals'
+
+model:
+  provider: openai
+  name: gpt-5.5
+  maxTokens: 2048
+
+requiredCapabilities: []
+
+rootPaths: []
+
+timeoutMs: 30000
+
+lifecycleCapabilities:
+  - mode: event
+    inputContract: talon.lifecycle.event.envelope.v1
+    outputContract: talon.lifecycle.signal.envelopes.v1
