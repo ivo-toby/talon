@@ -428,6 +428,51 @@ describe('CodexCliProvider', () => {
     expect(Object.values(invocation.env ?? {})).toContain('sse-secret-token');
   });
 
+  it('writes an empty AGENTS.md into cwd to block codex walk-up AGENTS.md injection', () => {
+    const provider = makeProvider();
+    const realCwd = mkdtempSync(join(tmpdir(), 'talon-codex-cwd-'));
+    cleanupPaths.push(realCwd);
+
+    // Place a repo-level AGENTS.md in the parent to prove codex would
+    // walk up and inject it without our stub.
+    const parentAgents = join(realCwd, '..', 'AGENTS.md');
+    writeFileSync(parentAgents, '# ROOT AGENTS — should NOT be injected\n', 'utf8');
+    cleanupPaths.push(parentAgents);
+
+    provider.prepareBackgroundInvocation({
+      prompt: 'Refactor',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: realCwd,
+      timeoutMs: 60_000,
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+    });
+
+    const stubPath = join(realCwd, 'AGENTS.md');
+    expect(existsSync(stubPath)).toBe(true);
+    expect(readFileSync(stubPath, 'utf8')).toBe('');
+  });
+
+  it('survives a non-writable cwd without throwing (AGENTS.md stub is best-effort)', () => {
+    const provider = makeProvider();
+    // A cwd that does not exist — writeFileSync will throw ENOENT,
+    // but seedCodexHome should swallow it and still produce an invocation.
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Refactor',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/nonexistent/path/that/does/not/exist',
+      timeoutMs: 60_000,
+      model: 'gpt-5.4',
+      reasoningEffort: 'high',
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+  });
+
   it('quotes TOML table names for MCP servers with dotted or spaced names', () => {
     const provider = makeProvider();
     const result = provider.prepareBackgroundInvocation({

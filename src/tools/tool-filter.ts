@@ -39,6 +39,8 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
 }> = [
   { capabilityPrefix: 'schedule.manage', internalName: 'schedule.manage', mcpName: 'schedule_manage' },
   { capabilityPrefix: 'channel.send', internalName: 'channel.send', mcpName: 'channel_send' },
+  { capabilityPrefix: 'channel.send', internalName: 'channel.list', mcpName: 'channel_list' },
+  { capabilityPrefix: 'channel.send', internalName: 'channel.broadcast', mcpName: 'channel_broadcast' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.send', mcpName: 'persona_send' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.task_status', mcpName: 'persona_task_status' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.list', mcpName: 'persona_list' },
@@ -99,7 +101,7 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     toolPrefix: 'channel.send',
     mcpName: 'channel_send',
     labels: [
-      { label: 'channel.send:*', description: 'Send messages to any channel' },
+      { label: 'channel.send:*', description: 'Send messages to any channel; also grants channel.list (discover targets) and channel.broadcast (fan out to all bound chats)' },
     ],
   },
   {
