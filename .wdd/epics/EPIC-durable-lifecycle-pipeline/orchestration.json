@@ -1625,9 +1625,9 @@
     "activeWave": "WAVE-007",
     "nextWave": "WAVE-008",
     "epicBranchVerified": true,
-    "activationArtifactsSynced": true,
+    "activationArtifactsSynced": false,
     "activationBase": "898197df00c065923dec5f372943628a695c62a1",
-    "activationCheckpoint": null,
+    "activationCheckpoint": "e6e09fa620e59c08d65ada9345941421abef6d54",
     "activationSyncCommit": null,
     "readinessCommit": null,
     "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
@@ -1854,7 +1854,7 @@
       "nextWaveStatus": "activation_started"
     },
     "wave007Activation": {
-      "status": "activation_checkpoint_review_pending",
+      "status": "activation_checkpoint_pushed_sync_pending",
       "activationBase": "898197df00c065923dec5f372943628a695c62a1",
       "tasks": [
         "TASK-014-lifecycle-retention-reload-replay",
@@ -1874,20 +1874,24 @@
       "worktreesVerifiedClean": false,
       "activationCheckpointReviewModel": "gpt-5.5",
       "activationCheckpointReviewReasoningEffort": "xhigh",
-      "activationCheckpointReviewStatus": "pending",
-      "activationCheckpoint": null
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9c37-3c18-7713-a8a4-4d6767ada6b3",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "e6e09fa620e59c08d65ada9345941421abef6d54",
+      "activationSyncCommit": null,
+      "readinessCommit": null
     }
   },
   "monitoring": {
     "mode": "manual",
     "formerMode": "codex_thread_heartbeat",
     "cadence": "adaptive",
-    "status": "wave007_activation_checkpoint_review_pending",
-    "lastCheckedAt": "2026-07-26T02:20:00Z",
-    "nextCheckDueAt": "2026-07-26T02:20:00Z",
+    "status": "wave007_activation_sync_marker_pending_review_commit_push",
+    "lastCheckedAt": "2026-07-26T02:21:24Z",
+    "nextCheckDueAt": null,
     "schedulerRef": null,
     "schedulerStatus": "not_created_until_after_activation_or_dispatch",
-    "fallbackPrompt": "Resume WAVE-007 activation for EPIC-durable-lifecycle-pipeline. Read .wdd/constitution.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-014/TASK-015 in-progress files. Do not use GPT-5.6. Do not create task branches/worktrees until the Wave 7 activation checkpoint has passed GPT-5.5/xhigh review and is committed/pushed. After the reviewed activation checkpoint is pushed, create/verify the two task branches/worktrees from that exact commit, run readiness review, fast-forward/push both branches to the readiness commit, verify clean worktrees and current artifacts, then dispatch independent GPT-5.5/high workers.",
+    "fallbackPrompt": "Resume WAVE-007 activation for EPIC-durable-lifecycle-pipeline. Read .wdd/constitution.md, orchestration.json, controller-state.md, shared context, wave-plan.md, and TASK-014/TASK-015 in-progress files. Do not use GPT-5.6. Do not create task branches/worktrees until the activation-sync marker has passed GPT-5.5/xhigh review and is committed/pushed. The exact activation checkpoint is e6e09fa620e59c08d65ada9345941421abef6d54, reviewed 0C/0H/0M/0L in session 019f9c37-3c18-7713-a8a4-4d6767ada6b3. After the activation-sync marker is reviewed and pushed, create/verify the two task branches/worktrees from that exact sync commit, run readiness review, fast-forward/push both branches to the readiness commit, verify clean worktrees and current artifacts, then dispatch independent GPT-5.5/high workers.",
     "stopCondition": "All WAVE-007 tasks are merged, blocked, cancelled, or ready for wdd-reconcile-wave.",
     "stopReason": null
   }

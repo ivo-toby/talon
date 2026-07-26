@@ -554,7 +554,10 @@ Activation rule:
   `.worktrees/WAVE-007-lifecycle-retention-reload-replay`, and
   `task/TASK-015-behavior-signal-projector` /
   `.worktrees/WAVE-007-behavior-signal-projector`.
-- Activation checkpoint review, commit, and push are required before branch or
+- Activation checkpoint passed GPT-5.5/xhigh review
+  `019f9c37-3c18-7713-a8a4-4d6767ada6b3` with 0C/0H/0M/0L and was pushed at
+  `e6e09fa620e59c08d65ada9345941421abef6d54`.
+- Activation-sync review, commit, and push are required before branch or
   worktree creation.
 
 Stop condition:
