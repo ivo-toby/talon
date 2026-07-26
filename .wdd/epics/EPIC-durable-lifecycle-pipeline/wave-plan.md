@@ -58,7 +58,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
 | TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | done |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | done |
-| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_worktree_readiness_review_pending |
+| TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | in_progress_commit_pending |
 
 ## Dependency Grid
 
@@ -868,7 +868,18 @@ Activation rule:
   0C/0H/0M/0L, and reviewed sync checkpoint
   `0053209080b96c02c2d4fb7af02a24a1af0a477d` is pushed. TASK-020 branch and
   worktree were created and pushed from that exact commit; the worktree is
-  clean with current WDD artifacts. Worktree-readiness review is next.
+  clean with current WDD artifacts.
+- Worktree-readiness review
+  `019f9de5-d632-7d30-9dec-69e552084d2d` passed 0C/0H/0M/0L after a prior
+  stale-metadata Medium was remediated. Reviewed readiness checkpoint
+  `8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438` is pushed and current in the
+  TASK-020 branch/worktree.
+- TASK-020 documentation/adoption implementation is complete and uncommitted.
+  Targeted Vitest passed 3 files / 121 tests, `npm run build` passed, and
+  `git diff --check` passed. Initial GPT-5.5/xhigh review failed 0C/0H/2M/2L,
+  the two Medium findings were remediated, and fresh GPT-5.5/xhigh review
+  `019f9e0a-eb3d-72e0-85b9-928f21d833a6` passed 0C/0H/0M/3L. Current gate:
+  commit/push the reviewed task branch.
 
 Stop condition:
 

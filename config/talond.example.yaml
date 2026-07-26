@@ -153,7 +153,20 @@ queue:
 # after validation, evaluation, atomic prompt write, reload, and rollback gates.
 # lifecycle:
 #   enabled: false
-#   handlers: []
+#   handlers:
+#     # Model-backed handlers may inspect fenced event data and emit bounded
+#     # signals, but native handlers own durable state mutation and governed
+#     # prompt promotion. Personas must also list a sub-agent handler's ref
+#     # under their own subagents list before it can execute for that persona.
+#     # - version: v1
+#     #   id: behavior-feedback-detector
+#     #   mode: event
+#     #   inputContract: talon.lifecycle.event.envelope.v1
+#     #   outputContract: talon.lifecycle.signal.envelopes.v1
+#     #   runtime:
+#     #     kind: subagent
+#     #     ref: behavior-feedback-detector
+#     #     implementationVersion: 1.0.0
 #   retention:
 #     completedAuditWindowMs: 2592000000 # 30 days
 

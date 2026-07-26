@@ -202,6 +202,7 @@ backgroundAgent:
 - **Sub-agent system** — Route mechanical LLM tasks (summarization, memory grooming, search) to cheap models via pluggable sub-agents
 - **Background agents** — Launch long-running provider workers for deep tasks without blocking the foreground conversation
 - **Sandboxed execution environments** — Isolate background agent work in persistent Firecracker VMs via [Sprites.dev](https://sprites.dev), with file transfer, checkpointing, and automatic cleanup
+- **Durable lifecycle pipeline** — Publish bounded daemon events for context rotation, behavior learning, telemetry, replay, and governed prompt promotion without letting model-backed handlers mutate state directly
 - **Hot reload** — Change config, personas, and skills without restarting the daemon
 - **Systemd integration** — Watchdog heartbeat, graceful shutdown, timer-based wake-only mode
 - **Session persistence** — Resumable agent sessions resume across messages in the same thread, scoped by provider, model, and configured reasoning effort so model or effort swaps start fresh
@@ -225,7 +226,7 @@ backgroundAgent:
 
 ## Architecture
 
-Messages arrive from channels, pass through a durable queue, and get dispatched to the agent runner. The runner resolves a provider from the registry and executes via that provider's strategy (SDK streaming or CLI). Agents interact with the host through MCP host-tools on a Unix socket. Background agents run as separate provider-managed processes.
+Messages arrive from channels, pass through a durable queue, and get dispatched to the agent runner. The runner resolves a provider from the registry and executes via that provider's strategy (SDK streaming or CLI). Agents interact with the host through MCP host-tools on a Unix socket. Background agents run as separate provider-managed processes. For the compact maintainer map, see [`selfdoc.md`](selfdoc.md).
 
 ```mermaid
 graph TB
@@ -1367,15 +1368,16 @@ Uses `generateObject` with a Zod discriminated union schema to ensure the LLM re
 | **Input**                 | Fenced `talon.lifecycle.event.envelope.v1` via lifecycle handler adapter         |
 | **Output**                | `talon.lifecycle.signal.envelopes.v1` with `behavior.feedback.detected.v1` items |
 
-Personas must explicitly subscribe a lifecycle event handler such as
-`behavior-feedback-detector` to the bounded events they want inspected, and
-explicitly subscribe the native `native-behavior-signal-projector` signal
-handler to `behavior.feedback.detected.v1`. The native projector persists only
-persona-scoped ledger evidence and notes-only candidates: it fingerprints source
-evidence to collapse schedule/direct copies, suppresses duplicate or
-out-of-scope signals with bounded audit, creates collecting candidates for
-explicit feedback, and requires three distinct inferred sources before creating
-a ready inferred-pattern candidate.
+Personas must list `behavior-feedback-detector` in `subagents`, explicitly
+subscribe its lifecycle event handler to the bounded events they want inspected,
+and explicitly subscribe the native `native-behavior-signal-projector` signal
+handler to `behavior.feedback.detected.v1`. The lifecycle subscription does not
+load or authorize the model-backed handler by itself. The native projector
+persists only persona-scoped ledger evidence and notes-only candidates: it
+fingerprints source evidence to collapse schedule/direct copies, suppresses
+duplicate or out-of-scope signals with bounded audit, creates collecting
+candidates for explicit feedback, and requires three distinct inferred sources
+before creating a ready inferred-pattern candidate.
 
 Accepted behavior promotions are applied only by the native governed prompt
 promotion path. Talon resolves the persona-owned `systemPromptFile`, validates a

@@ -53,6 +53,20 @@ bindings:
     isDefault: true
 
 # ---------------------------------------------------------------------------
+# Durable lifecycle (optional)
+# ---------------------------------------------------------------------------
+# Leave disabled until you intentionally configure lifecycle handlers and
+# persona subscriptions. Lifecycle events are bounded and durable; model-backed
+# handlers may propose signals, while native handlers own governed state changes
+# such as behavior prompt promotion. If a lifecycle handler uses a sub-agent,
+# also add that handler ref to the persona's subagents list.
+# lifecycle:
+#   enabled: false
+#   handlers: []
+#   retention:
+#     completedAuditWindowMs: 2592000000 # 30 days
+
+# ---------------------------------------------------------------------------
 # Agent runtime
 # ---------------------------------------------------------------------------
 agentRunner:

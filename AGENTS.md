@@ -41,6 +41,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal                                 |
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                                                                         |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter                                                          |
+| Lifecycle | `src/lifecycle/`           | Durable event contracts, publication, dispatcher execution, interceptors, telemetry, retention, and behavior governance    |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                                                                                      |
 | Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly                                                                    |
 | Tools     | `src/tools/`               | 11 host-tools + capability-based filtering via `tool-filter.ts`                                                            |
@@ -70,7 +71,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 ### Database
 
-Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`.
+Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`, lifecycle event/delivery tables, and behavior ledger/candidate/promotion tables.
 
 Table names to know: `memory_items` (not `memory`), `schedules` (column `expression` not `cron_expression`).
 

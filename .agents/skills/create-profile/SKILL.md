@@ -27,6 +27,9 @@ show the draft, refine it, then scaffold it.
 - **Confirm before mutating files.** Show the inferred summary first.
 - **Write/send defaults are gated.** Put write/send capabilities in
   `requireApproval` unless the user explicitly wants broader access.
+- **Lifecycle behavior changes are governed.** If the persona should learn from
+  behavior feedback, mention lifecycle subscriptions as an advanced config step;
+  do not instruct model-backed agents to rewrite prompt files directly.
 - **Preview before reload.** The operator can inspect and edit generated files
   before running `talonctl reload`.
 
@@ -45,6 +48,8 @@ If needed, follow up one question at a time to learn:
 - Main purpose
 - Whether it needs file read/write, messaging, HTTP/API access, memory,
   subagent delegation, scheduling, or database access
+- Whether it should participate in lifecycle behavior review/prompt promotion
+  after setup
 - Whether quality or speed/cost matters more
 
 ## Phase 2: Infer defaults
@@ -114,6 +119,22 @@ Rules:
 ### Skills
 
 Default to no skills unless the user explicitly asks for one.
+
+### Lifecycle behavior review
+
+If the user wants the persona to learn preferences over time, explain that this
+is not part of `talonctl add-persona` yet. It requires explicit
+`personas[].lifecycle.subscriptions` to the configured behavior handlers, then
+operator review through:
+
+```bash
+npx talonctl lifecycle candidates <persona> --limit 25
+npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <operator-id>
+npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
+```
+
+Summarize this as a follow-up config step instead of editing the lifecycle YAML
+implicitly during profile creation.
 
 ### Description
 

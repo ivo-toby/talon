@@ -127,6 +127,11 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl list-schedules` | Configured scheduled tasks |
 | `talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add a scheduled task |
 | `talonctl remove-schedule <id>` | Remove a scheduled task |
+| `talonctl lifecycle handlers` | Show lifecycle handler health, backlog, and dispatcher status |
+| `talonctl lifecycle inspect <event-id> --handler <handler-id>` | Inspect a durable lifecycle event and delivery state |
+| `talonctl lifecycle replay <event-id> <handler-id>` | Reopen one terminal lifecycle delivery for exact replay |
+| `talonctl lifecycle disable <handler-id>` | Dead-letter pending/failed/claimed deliveries for one handler |
+| `talonctl lifecycle candidates <persona> --limit <n>` | List behavior-candidate provenance for a persona |
 | `talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>` | Apply a governed behavior prompt promotion |
 | `talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>` | Roll back an active behavior prompt promotion |
 
@@ -344,6 +349,11 @@ Once boot is verified, anything else uses `talonctl`:
 - **Adjust capabilities** — `talonctl set-capabilities --persona <p> --show`
   to see current, then `--add` or `--remove`.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
+- **Inspect lifecycle health/provenance** — `talonctl lifecycle handlers` and
+  `talonctl lifecycle candidates <persona> --limit 25`.
+- **Apply governed behavior changes** — use `talonctl lifecycle promote` only
+  for an existing candidate, and `rollback-promotion` if an activation needs to
+  be restored.
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   GitHub, Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
