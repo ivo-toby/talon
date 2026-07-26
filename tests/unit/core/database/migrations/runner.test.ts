@@ -440,8 +440,8 @@ describe('runMigrations', () => {
     expect(db.pragma('user_version', { simple: true })).toBe(13);
 
     const upgrade = runMigrations(db, realMigrationsDir);
-    expect(upgrade._unsafeUnwrap()).toBe(6);
-    expect(db.pragma('user_version', { simple: true })).toBe(19);
+    expect(upgrade._unsafeUnwrap()).toBe(7);
+    expect(db.pragma('user_version', { simple: true })).toBe(20);
     for (const table of [
       'lifecycle_events',
       'lifecycle_event_deliveries',
@@ -457,6 +457,10 @@ describe('runMigrations', () => {
         db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?`).get(table),
       ).toBeDefined();
     }
+    const activationColumns = db
+      .prepare(`PRAGMA table_info('behavior_promotion_activations')`)
+      .all() as Array<{ name: string }>;
+    expect(activationColumns.map((column) => column.name)).toContain('approved_by');
 
     const indexes = db.prepare(`PRAGMA index_list('lifecycle_event_deliveries')`).all() as Array<{
       name: string;
@@ -716,8 +720,8 @@ describe('runMigrations', () => {
         )
         .run(identityFor('preserved-handler'));
 
-      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(5);
-      expect(preservedDb.pragma('user_version', { simple: true })).toBe(19);
+      expect(runMigrations(preservedDb, realMigrationsDir)._unsafeUnwrap()).toBe(6);
+      expect(preservedDb.pragma('user_version', { simple: true })).toBe(20);
       expect(
         preservedDb
           .prepare(

@@ -340,6 +340,52 @@ lifecycle
     });
   });
 
+lifecycle
+  .command('promote <persona> <promotion-id>')
+  .description('Apply one governed behavior prompt promotion')
+  .option('--approved-by <id>', 'Operator approval identity for non-auto promotions')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
+  .action(
+    async (
+      persona: string,
+      promotionId: string,
+      opts: { approvedBy?: string; ipcDir?: string; timeout: string },
+    ) => {
+      await lifecycleCommand({
+        action: 'promote',
+        persona,
+        promotionId,
+        approvedBy: opts.approvedBy,
+        ipcDir: opts.ipcDir,
+        timeoutMs: parseInt(opts.timeout, 10),
+      });
+    },
+  );
+
+lifecycle
+  .command('rollback-promotion <persona> <activation-id>')
+  .description('Restore the previous prompt for one active behavior promotion')
+  .option('--reason <id>', 'Bounded rollback reason', 'operator-rejected')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
+  .action(
+    async (
+      persona: string,
+      activationId: string,
+      opts: { reason?: string; ipcDir?: string; timeout: string },
+    ) => {
+      await lifecycleCommand({
+        action: 'rollback-promotion',
+        persona,
+        activationId,
+        reason: opts.reason,
+        ipcDir: opts.ipcDir,
+        timeoutMs: parseInt(opts.timeout, 10),
+      });
+    },
+  );
+
 program
   .command('chat')
   .description('Connect to a Talon persona via terminal channel')

@@ -132,6 +132,7 @@ export interface BehaviorPromotionActivationInput {
   readonly activationId: string;
   readonly promptArtifactId: string;
   readonly reloadId: string;
+  readonly approvedBy?: string | null;
 }
 
 export interface BehaviorPromotionRollbackInput {
@@ -139,6 +140,16 @@ export interface BehaviorPromotionRollbackInput {
   readonly activationId: string;
   readonly rollbackId: string;
   readonly reason: string;
+}
+
+export interface BehaviorPromotionActivationRow {
+  activation_id: string;
+  persona: string;
+  promotion_id: string;
+  prompt_artifact_id: string;
+  reload_id: string;
+  approved_by: string | null;
+  activated_at: number;
 }
 
 export interface BehaviorSignalMetricsRecorder {
@@ -299,6 +310,7 @@ export class BehaviorSignalRepository extends BaseRepository {
   private readonly insertActivationStmt: Database.Statement;
   private readonly activatePromotionStmt: Database.Statement;
   private readonly findActivationStmt: Database.Statement;
+  private readonly findActiveActivationsByPersonaStmt: Database.Statement;
   private readonly insertRollbackStmt: Database.Statement;
   private readonly rollbackPromotionStmt: Database.Statement;
 
@@ -472,9 +484,9 @@ export class BehaviorSignalRepository extends BaseRepository {
     `);
     this.insertActivationStmt = db.prepare(`
       INSERT INTO behavior_promotion_activations (
-        activation_id, persona, promotion_id, prompt_artifact_id, reload_id, activated_at
+        activation_id, persona, promotion_id, prompt_artifact_id, reload_id, approved_by, activated_at
       ) VALUES (
-        @activation_id, @persona, @promotion_id, @prompt_artifact_id, @reload_id, @activated_at
+        @activation_id, @persona, @promotion_id, @prompt_artifact_id, @reload_id, @approved_by, @activated_at
       )
     `);
     this.activatePromotionStmt = db.prepare(`
@@ -487,6 +499,21 @@ export class BehaviorSignalRepository extends BaseRepository {
     this.findActivationStmt = db.prepare(`
       SELECT activation_id, persona, promotion_id FROM behavior_promotion_activations
       WHERE persona = ? AND activation_id = ?
+    `);
+    this.findActiveActivationsByPersonaStmt = db.prepare(`
+      SELECT
+        a.activation_id,
+        a.persona,
+        a.promotion_id,
+        a.prompt_artifact_id,
+        a.reload_id,
+        a.approved_by,
+        a.activated_at
+      FROM behavior_promotion_activations a
+      JOIN behavior_promotions p
+        ON p.persona = a.persona AND p.promotion_id = a.promotion_id
+      WHERE a.persona = ? AND p.status = 'active'
+      ORDER BY a.activated_at DESC, a.activation_id DESC
     `);
     this.insertRollbackStmt = db.prepare(`
       INSERT INTO behavior_promotion_rollbacks (
@@ -913,12 +940,14 @@ export class BehaviorSignalRepository extends BaseRepository {
     input: BehaviorPromotionActivationInput,
   ): Result<BehaviorPromotionRow, DbError> {
     try {
+      const approvedBy = input.approvedBy ?? null;
       if (
         !isBehaviorPersona(input.persona) ||
         !isBehaviorRuntimeId(input.promotionId) ||
         !isBehaviorRuntimeId(input.activationId) ||
         !isBehaviorRuntimeId(input.promptArtifactId) ||
-        !isBehaviorRuntimeId(input.reloadId)
+        !isBehaviorRuntimeId(input.reloadId) ||
+        (approvedBy !== null && !isBehaviorRuntimeId(approvedBy))
       ) {
         return err(new DbError('Failed to activate behavior promotion: invalid activation'));
       }
@@ -930,6 +959,7 @@ export class BehaviorSignalRepository extends BaseRepository {
           promotion_id: input.promotionId,
           prompt_artifact_id: input.promptArtifactId,
           reload_id: input.reloadId,
+          approved_by: approvedBy,
           activated_at: now,
         });
         const row = this.activatePromotionStmt.get({
@@ -946,11 +976,28 @@ export class BehaviorSignalRepository extends BaseRepository {
           activationId: input.activationId,
           promptArtifactId: input.promptArtifactId,
           reloadId: input.reloadId,
+          approvedBy,
         });
       }
       return row ? ok(row) : err(new DbError('Failed to activate behavior promotion'));
     } catch (cause) {
       return err(toDbError('activate behavior promotion', cause));
+    }
+  }
+
+  findActiveActivationsByPersona(
+    persona: string,
+  ): Result<BehaviorPromotionActivationRow[], DbError> {
+    try {
+      if (!isBehaviorPersona(persona)) {
+        return err(new DbError('Failed to find behavior promotion activations: invalid persona'));
+      }
+      const rows = this.findActiveActivationsByPersonaStmt.all(
+        persona,
+      ) as BehaviorPromotionActivationRow[];
+      return ok(rows.map((row) => this.validateActivationRow(row)));
+    } catch (cause) {
+      return err(toDbError('find active behavior promotion activations', cause));
     }
   }
 
@@ -970,6 +1017,12 @@ export class BehaviorSignalRepository extends BaseRepository {
           | { activation_id: string; persona: string; promotion_id: string }
           | undefined;
         if (!activation) return null;
+        const latestActive = this.findActiveActivationsByPersonaStmt.get(input.persona) as
+          | BehaviorPromotionActivationRow
+          | undefined;
+        if (!latestActive || latestActive.activation_id !== input.activationId) {
+          return null;
+        }
         const now = this.now();
         this.insertRollbackStmt.run({
           rollback_id: input.rollbackId,
@@ -1246,6 +1299,23 @@ export class BehaviorSignalRepository extends BaseRepository {
       !Number.isSafeInteger(row.updated_at)
     ) {
       throw new Error('invalid persisted behavior promotion row');
+    }
+    return row;
+  }
+
+  private validateActivationRow(
+    row: BehaviorPromotionActivationRow,
+  ): BehaviorPromotionActivationRow {
+    if (
+      !isBehaviorRuntimeId(row.activation_id) ||
+      !isBehaviorPersona(row.persona) ||
+      !isBehaviorRuntimeId(row.promotion_id) ||
+      !isBehaviorRuntimeId(row.prompt_artifact_id) ||
+      !isBehaviorRuntimeId(row.reload_id) ||
+      (row.approved_by !== null && !isBehaviorRuntimeId(row.approved_by)) ||
+      !Number.isSafeInteger(row.activated_at)
+    ) {
+      throw new Error('invalid persisted behavior promotion activation row');
     }
     return row;
   }

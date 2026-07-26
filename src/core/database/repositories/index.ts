@@ -109,6 +109,7 @@ export type {
   BehaviorEvidenceRow,
   BehaviorMetadata,
   BehaviorPromotionActivationInput,
+  BehaviorPromotionActivationRow,
   BehaviorPromotionInput,
   BehaviorSignalMetricsRecorder,
   BehaviorSignalRepositoryOptions,
