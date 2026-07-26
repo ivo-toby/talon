@@ -7,6 +7,7 @@ import {
 } from '../../../../../src/core/database/repositories/index.js';
 import { createTestDb, uuid } from './helpers.js';
 import { lifecycleSignalHandoffKey } from '../../../../../src/lifecycle/handler-executor.js';
+import type { LifecycleSignalEnvelope } from '../../../../../src/lifecycle/contracts/index.js';
 
 describe('LifecycleSignalRepository', () => {
   let db: Database.Database;
@@ -21,8 +22,7 @@ describe('LifecycleSignalRepository', () => {
 
   afterEach(() => db.close());
 
-  it('durably persists a causally valid signal once for a stable delivery handoff', () => {
-    const eventId = uuid();
+  function insertEvent(eventId = uuid()): string {
     expect(
       events
         .insert({
@@ -40,6 +40,32 @@ describe('LifecycleSignalRepository', () => {
         })
         .isOk(),
     ).toBe(true);
+    return eventId;
+  }
+
+  function signal(
+    eventId: string,
+    overrides: Partial<LifecycleSignalEnvelope> = {},
+  ): LifecycleSignalEnvelope {
+    return {
+      version: 'v1',
+      type: 'behavior.feedback.detected.v1',
+      signalId: uuid(),
+      occurredAt: '2026-07-16T12:00:01.000Z',
+      context: {
+        aggregate: { type: 'thread', id: uuid() },
+        correlationId: uuid(),
+        causationId: eventId,
+        recursion: { depth: 1, maxDepth: 4 },
+        provenance: { source: 'subagent' },
+      },
+      payload: { references: [], metadata: { verdict: 'positive' } },
+      ...overrides,
+    };
+  }
+
+  it('durably persists a causally valid signal once for a stable delivery handoff', () => {
+    const eventId = insertEvent();
     const signalId = uuid();
     const input = {
       eventId,
@@ -71,21 +97,59 @@ describe('LifecycleSignalRepository', () => {
     ).toEqual([{ signal_id: signalId, persona: 'assistant', handoff_key: input.idempotencyKey }]);
   });
 
-  it('rejects an idempotency-key collision instead of crossing persona ownership', () => {
-    const eventId = uuid();
-    events.insert({
-      version: 'v1',
+  it('rejects same-key replay when signal IDs or durable content differ', () => {
+    const eventId = insertEvent();
+    const idempotencyKey = `${eventId}:signal-producer`;
+    const original = signal(eventId, { signalId: uuid() });
+    const handoff = {
       eventId,
-      type: 'message.persisted.v1',
-      occurredAt: '2026-07-16T12:00:00.000Z',
-      context: {
-        aggregate: { type: 'thread', id: uuid() },
-        correlationId: uuid(),
-        recursion: { depth: 0, maxDepth: 4 },
-        provenance: { source: 'test' },
+      handlerId: 'signal-producer',
+      persona: 'assistant',
+      idempotencyKey,
+      signals: [original],
+    };
+
+    expect(signals.handoff(handoff).isOk()).toBe(true);
+    expect(
+      signals
+        .handoff({
+          ...handoff,
+          signals: [
+            signal(eventId, {
+              signalId: uuid(),
+              payload: { references: [], metadata: { verdict: 'positive' } },
+            }),
+          ],
+        })
+        .isErr(),
+    ).toBe(true);
+    expect(
+      signals
+        .handoff({
+          ...handoff,
+          signals: [
+            {
+              ...original,
+              payload: { references: [], metadata: { verdict: 'negative' } },
+            },
+          ],
+        })
+        .isErr(),
+    ).toBe(true);
+    expect(
+      db.prepare('SELECT signal_id, payload FROM lifecycle_signals WHERE handoff_key = ?').all(
+        idempotencyKey,
+      ),
+    ).toEqual([
+      {
+        signal_id: original.signalId,
+        payload: JSON.stringify(original.payload),
       },
-      payload: { references: [], metadata: {} },
-    });
+    ]);
+  });
+
+  it('rejects an idempotency-key collision instead of crossing persona ownership', () => {
+    const eventId = insertEvent();
     const input = {
       eventId,
       handlerId: 'signal-producer',

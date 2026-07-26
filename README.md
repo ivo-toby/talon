@@ -1245,16 +1245,16 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 
 **Built-in sub-agent names** (use these as keys under `subagents:` in `talond.yaml`):
 
-| Name                 | Default model               | Description                                                   |
-| -------------------- | --------------------------- | ------------------------------------------------------------- |
-| `file-searcher`      | `claude-haiku-4-5-20251001` | Search files by content, return ranked results with snippets  |
-| `memory-retriever`   | `claude-haiku-4-5-20251001` | Find relevant memories via keyword pre-filter + LLM rerank    |
-| `memory-groomer`     | `claude-haiku-4-5-20251001` | Prune stale, consolidate duplicate memory items               |
-| `session-summarizer` | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)      |
-| `session-observer`   | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory |
-| `session-reflector`  | `claude-sonnet-4-6`         | Consolidate observations when log grows too large             |
-| `behavior-feedback-detector` | `gpt-5.5`           | Detect bounded behavior-learning signals from lifecycle events |
-| `spark-coder`        | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)  |
+| Name                         | Default model               | Description                                                    |
+| ---------------------------- | --------------------------- | -------------------------------------------------------------- |
+| `file-searcher`              | `claude-haiku-4-5-20251001` | Search files by content, return ranked results with snippets   |
+| `memory-retriever`           | `claude-haiku-4-5-20251001` | Find relevant memories via keyword pre-filter + LLM rerank     |
+| `memory-groomer`             | `claude-haiku-4-5-20251001` | Prune stale, consolidate duplicate memory items                |
+| `session-summarizer`         | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)       |
+| `session-observer`           | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory  |
+| `session-reflector`          | `claude-sonnet-4-6`         | Consolidate observations when log grows too large              |
+| `behavior-feedback-detector` | `gpt-5.5`                   | Detect bounded behavior-learning signals from lifecycle events |
+| `spark-coder`                | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)   |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
@@ -1366,6 +1366,16 @@ Uses `generateObject` with a Zod discriminated union schema to ensure the LLM re
 | **Timeout**               | 30s                                                                              |
 | **Input**                 | Fenced `talon.lifecycle.event.envelope.v1` via lifecycle handler adapter         |
 | **Output**                | `talon.lifecycle.signal.envelopes.v1` with `behavior.feedback.detected.v1` items |
+
+Personas must explicitly subscribe a lifecycle event handler such as
+`behavior-feedback-detector` to the bounded events they want inspected, and
+explicitly subscribe the native `native-behavior-signal-projector` signal
+handler to `behavior.feedback.detected.v1`. The native projector persists only
+persona-scoped ledger evidence and notes-only candidates: it fingerprints source
+evidence to collapse schedule/direct copies, suppresses duplicate or
+out-of-scope signals with bounded audit, creates collecting candidates for
+explicit feedback, and requires three distinct inferred sources before creating
+a ready inferred-pattern candidate.
 
 #### `session-summarizer`
 

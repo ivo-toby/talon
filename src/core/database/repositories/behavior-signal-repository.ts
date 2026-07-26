@@ -72,6 +72,17 @@ export interface BehaviorCandidateInput {
   readonly createdFromEvidenceIds?: readonly string[];
 }
 
+export interface BehaviorCandidateEvidenceInput {
+  readonly candidateId: string;
+  readonly persona: string;
+  readonly evidenceIds: readonly string[];
+}
+
+export interface BehaviorCandidateEvidenceLinkResult {
+  readonly linkedEvidenceCount: number;
+  readonly distinctSourceCount: number;
+}
+
 export interface BehaviorCandidateRow {
   candidate_id: string;
   persona: string;
@@ -239,6 +250,12 @@ interface NormalizedCandidate {
   evidenceIds: string[];
 }
 
+interface NormalizedCandidateEvidence {
+  candidateId: string;
+  persona: string;
+  evidenceIds: string[];
+}
+
 interface NormalizedPromotion {
   promotionId: string;
   persona: string;
@@ -302,7 +319,9 @@ export class BehaviorSignalRepository extends BaseRepository {
       )
     `);
     this.insertCandidateEvidenceStmt = db.prepare(`
-      INSERT INTO behavior_candidate_evidence (candidate_id, persona, evidence_id, created_at)
+      INSERT OR IGNORE INTO behavior_candidate_evidence (
+        candidate_id, persona, evidence_id, created_at
+      )
       VALUES (@candidate_id, @persona, @evidence_id, @created_at)
     `);
     this.findCandidateStmt = db.prepare(`
@@ -495,7 +514,15 @@ export class BehaviorSignalRepository extends BaseRepository {
         return err(new DbError('Failed to create behavior candidate: invalid candidate'));
       }
       const write = this.db.transaction((): BehaviorCandidateRow => {
-        if (!this.hasDistinctEvidenceSources(normalized.persona, normalized.evidenceIds)) {
+        const minimumDistinctSources = normalized.status === 'ready' ? 2 : 1;
+        if (
+          normalized.evidenceIds.length > 0 &&
+          !this.hasDistinctEvidenceSources(
+            normalized.persona,
+            normalized.evidenceIds,
+            minimumDistinctSources,
+          )
+        ) {
           throw new Error('behavior candidate needs distinct evidence sources');
         }
         const now = this.now();
@@ -547,6 +574,40 @@ export class BehaviorSignalRepository extends BaseRepository {
       return ok(rows.map((row) => this.validateCandidateRow(row)));
     } catch (cause) {
       return err(toDbError('find behavior candidates', cause));
+    }
+  }
+
+  linkCandidateEvidence(
+    input: BehaviorCandidateEvidenceInput,
+  ): Result<BehaviorCandidateEvidenceLinkResult, DbError> {
+    try {
+      const normalized = this.normalizeCandidateEvidence(input);
+      if (!normalized) {
+        return err(new DbError('Failed to link behavior candidate evidence: invalid lineage'));
+      }
+      const write = this.db.transaction((): BehaviorCandidateEvidenceLinkResult => {
+        const candidate = this.findCandidateStmt.get(normalized.persona, normalized.candidateId) as
+          | BehaviorCandidateRow
+          | undefined;
+        if (!candidate) {
+          throw new Error('behavior candidate missing');
+        }
+        let linkedEvidenceCount = 0;
+        for (const evidenceId of normalized.evidenceIds) {
+          const result = this.insertCandidateEvidenceStmt.run({
+            candidate_id: normalized.candidateId,
+            persona: normalized.persona,
+            evidence_id: evidenceId,
+            created_at: this.now(),
+          });
+          linkedEvidenceCount += result.changes;
+        }
+        const row = this.countDistinctSourcesStmt.get(normalized.candidateId) as { count: number };
+        return { linkedEvidenceCount, distinctSourceCount: row.count };
+      });
+      return ok(write());
+    } catch (cause) {
+      return err(toDbError('link behavior candidate evidence', cause));
     }
   }
 
@@ -880,6 +941,28 @@ export class BehaviorSignalRepository extends BaseRepository {
     };
   }
 
+  private normalizeCandidateEvidence(
+    input: BehaviorCandidateEvidenceInput,
+  ): NormalizedCandidateEvidence | null {
+    const record = readRecord(input, ['candidateId', 'persona', 'evidenceIds']);
+    if (!record) return null;
+    const evidenceIds = readStringArray(record.evidenceIds, 32);
+    if (
+      !isBehaviorRuntimeId(record.candidateId) ||
+      !isBehaviorPersona(record.persona) ||
+      !evidenceIds ||
+      evidenceIds.length === 0 ||
+      new Set(evidenceIds).size !== evidenceIds.length
+    ) {
+      return null;
+    }
+    return {
+      candidateId: record.candidateId,
+      persona: record.persona,
+      evidenceIds,
+    };
+  }
+
   private normalizePromotion(input: BehaviorPromotionInput): NormalizedPromotion | null {
     const record = readRecord(
       input,
@@ -910,14 +993,18 @@ export class BehaviorSignalRepository extends BaseRepository {
     };
   }
 
-  private hasDistinctEvidenceSources(persona: string, evidenceIds: readonly string[]): boolean {
-    if (evidenceIds.length === 0) return true;
-    if (evidenceIds.length < 2) return false;
+  private hasDistinctEvidenceSources(
+    persona: string,
+    evidenceIds: readonly string[],
+    minimumDistinctSources: number,
+  ): boolean {
+    if (evidenceIds.length === 0) return minimumDistinctSources === 0;
+    if (evidenceIds.length < minimumDistinctSources) return false;
     const rows = this.candidateEvidenceSourcesStmt.all({
       persona,
       evidence_ids: JSON.stringify(evidenceIds),
     }) as Array<{ source_kind: string; source_id: string }>;
-    return rows.length === evidenceIds.length && rows.length >= 2;
+    return rows.length === evidenceIds.length && rows.length >= minimumDistinctSources;
   }
 
   private hasPersistedDistinctEvidenceSources(candidateId: string): boolean {
