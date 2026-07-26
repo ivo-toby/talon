@@ -636,6 +636,12 @@ Activation rule:
   0C/0H/0M/0L and the reviewed checkpoint was committed/pushed at
   `104dfa4c00501c85663adc6c6db6e7524f85ed60`. The activation-sync marker is the
   next gate before branch/worktree creation.
+- Activation-sync review `019f9caf-0a93-7411-94ab-416736a58509` passed
+  0C/0H/0M/0L and the reviewed sync checkpoint was committed/pushed at
+  `723b07444b53adc4dc310d036f30e998ff1b0f99`. TASK-016/TASK-017 branches and
+  clean worktrees were created and pushed from that exact commit. Worktree
+  readiness review/commit/push and fast-forward into both task branches/worktrees
+  is required before worker dispatch.
 
 Stop condition:
 

@@ -16,10 +16,10 @@ assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-017-behavior-review-reducers
 worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers
-worktree_status: allocated_pending_creation
+worktree_status: created_clean_pending_readiness_review
 pr: null
-current_gate: activation_sync_review_pending
-branch_freshness: pending_activation_sync_checkpoint
+current_gate: worktree_readiness_review_pending
+branch_freshness: at_activation_sync_commit_pending_readiness
 verification:
   - "npx vitest run tests/unit/lifecycle/behavior-review-service.test.ts tests/unit/subagents"
   - "npm run build"
@@ -105,10 +105,11 @@ task/TASK-017-behavior-review-reducers
 
 /Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers
 
-Allocated by the controller during WAVE-008 activation. The activation
-checkpoint was reviewed by GPT-5.5/xhigh and pushed at
-`104dfa4c00501c85663adc6c6db6e7524f85ed60`. Do not create or use this worktree
-until the activation-sync checkpoint and readiness gates have passed.
+Created clean by the controller from reviewed activation-sync commit
+`723b07444b53adc4dc310d036f30e998ff1b0f99` on branch
+`task/TASK-017-behavior-review-reducers`, which is pushed to origin. Do not
+begin implementation until the readiness checkpoint is reviewed by GPT-5.5/xhigh,
+committed, pushed, fast-forwarded into this branch/worktree, and verified clean.
 
 ## PR / Patch Reference
 
