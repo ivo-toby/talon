@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 import {
@@ -427,6 +427,98 @@ describe('BehaviorSignalRepository', () => {
     expect(
       db.prepare(`SELECT rollback_id, reason FROM behavior_promotion_rollbacks`).all(),
     ).toEqual([{ rollback_id: 'rollback-1', reason: 'operator-rejected' }]);
+  });
+
+  it('emits bounded audit and metric evidence for behavior promotion mutations', () => {
+    const auditLogger = { logLifecyclePromotion: vi.fn() };
+    const metrics = { increment: vi.fn() };
+    repository = new BehaviorSignalRepository(db, { auditLogger, metrics });
+    const [firstEvidence, secondEvidence] = recordDistinctEvidence();
+    const candidateId = uuid();
+    expect(
+      repository
+        .createCandidate(
+          candidate({
+            candidateId,
+            status: 'ready',
+            createdFromEvidenceIds: [firstEvidence.evidenceId, secondEvidence.evidenceId],
+          }),
+        )
+        .isOk(),
+    ).toBe(true);
+
+    const promotionId = uuid();
+    expect(
+      repository
+        .createPromotion(
+          promotion(candidateId, {
+            promotionId,
+            policy: { approval: 'operator' },
+            evaluation: { dryRun: 'passed' },
+          }),
+        )
+        .isOk(),
+    ).toBe(true);
+    expect(repository.transitionPromotion('support', promotionId, 'evaluating').isOk()).toBe(true);
+    expect(repository.transitionPromotion('support', promotionId, 'approved').isOk()).toBe(true);
+    expect(repository.transitionPromotion('support', promotionId, 'activating').isOk()).toBe(true);
+    expect(
+      repository
+        .activatePromotion({
+          persona: 'support',
+          promotionId,
+          activationId: 'activation-audit',
+          promptArtifactId: 'prompt-artifact-audit',
+          reloadId: 'reload-audit',
+        })
+        .isOk(),
+    ).toBe(true);
+    expect(
+      repository
+        .rollbackActivation({
+          persona: 'support',
+          activationId: 'activation-audit',
+          rollbackId: 'rollback-audit',
+          reason: 'operator-rejected',
+        })
+        .isOk(),
+    ).toBe(true);
+
+    const metricOperations = metrics.increment.mock.calls.map(([, labels]) => labels?.operation);
+    expect(metricOperations).toEqual(
+      expect.arrayContaining(['create', 'transition', 'activate', 'rollback']),
+    );
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'lifecycle.behavior.promotion.count',
+      expect.objectContaining({
+        operation: 'rollback',
+        outcome: 'success',
+        status: 'rolled_back',
+        persona: 'support',
+      }),
+    );
+
+    const auditDetails = auditLogger.logLifecyclePromotion.mock.calls.map(([entry]) => entry.details);
+    expect(auditDetails).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ operation: 'create', promotionId, candidateId }),
+        expect.objectContaining({
+          operation: 'activate',
+          promotionId,
+          activationId: 'activation-audit',
+          promptArtifactId: 'prompt-artifact-audit',
+          reloadId: 'reload-audit',
+        }),
+        expect.objectContaining({
+          operation: 'rollback',
+          promotionId,
+          rollbackId: 'rollback-audit',
+          reason: 'operator-rejected',
+        }),
+      ]),
+    );
+    expect(JSON.stringify(auditDetails)).not.toContain('dryRun');
+    expect(JSON.stringify(auditDetails)).not.toContain('approval');
   });
 
   it('rejects direct SQL changes to activation and rollback provenance rows', () => {

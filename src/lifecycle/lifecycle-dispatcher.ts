@@ -22,6 +22,11 @@ import {
   materializeLifecycleHandlerExecution,
   type LifecycleHandlerExecutor,
 } from './handler-executor.js';
+import {
+  noopLifecycleTelemetry,
+  type LifecycleDeliveryObservation,
+  type LifecycleTelemetry,
+} from './telemetry/index.js';
 
 export interface LifecycleDispatcherClock {
   now(): number;
@@ -62,6 +67,7 @@ export interface LifecycleDispatcherOptions {
   readonly signalRouter: LifecycleSignalRouter;
   readonly policy?: LifecycleDispatcherPolicyInput;
   readonly clock?: LifecycleDispatcherClock;
+  readonly telemetry?: LifecycleTelemetry;
 }
 
 interface LifecycleDispatcherAuthority {
@@ -71,6 +77,15 @@ interface LifecycleDispatcherAuthority {
   readonly execute: LifecycleHandlerExecutor['execute'];
   readonly handoff: LifecycleSignalRouter['handoff'];
   readonly now: LifecycleDispatcherClock['now'];
+  readonly telemetry: LifecycleDispatcherTelemetry;
+}
+
+interface LifecycleDispatcherTelemetry {
+  readonly startDelivery: LifecycleTelemetry['startDelivery'];
+  readonly recordDeliverySuccess: LifecycleTelemetry['recordDeliverySuccess'];
+  readonly recordDeliveryFailure: LifecycleTelemetry['recordDeliveryFailure'];
+  readonly recordCircuitOpened: LifecycleTelemetry['recordCircuitOpened'];
+  readonly recordSignalHandoff: LifecycleTelemetry['recordSignalHandoff'];
 }
 
 interface HandlerState {
@@ -107,6 +122,7 @@ const FAILURE_INVALID = 'invalid-persisted-execution';
 const FAILURE_RESULT = 'handler-reported-error';
 const FAILURE_TIMEOUT = 'handler-timeout';
 const FAILURE_SIGNAL_HANDOFF = 'signal-handoff-failed';
+const FAILURE_SIGNAL_COMPLETION_LOST = 'signal-handoff-completion-lost';
 const MAX_EXCLUDED_HANDLERS = 4_096;
 
 function resultSignals(result: LifecycleHandlerResult): readonly unknown[] {
@@ -129,7 +145,7 @@ function failureMode(delivery: LifecycleDeliveryRow): 'dead_letter' | 'preserve_
   }
 }
 
-const MAX_DISPATCHER_OPTION_KEYS = 5;
+const MAX_DISPATCHER_OPTION_KEYS = 6;
 const MAX_AUTHORITY_PROTOTYPE_DEPTH = 16;
 
 function boundMethod<T extends (...args: never[]) => unknown>(
@@ -164,6 +180,39 @@ function boundMethod<T extends (...args: never[]) => unknown>(
   }
 }
 
+function captureDispatcherTelemetry(value: unknown): LifecycleDispatcherTelemetry | undefined {
+  const startDelivery = boundMethod<LifecycleTelemetry['startDelivery']>(value, 'startDelivery');
+  const recordDeliverySuccess = boundMethod<LifecycleTelemetry['recordDeliverySuccess']>(
+    value,
+    'recordDeliverySuccess',
+  );
+  const recordDeliveryFailure = boundMethod<LifecycleTelemetry['recordDeliveryFailure']>(
+    value,
+    'recordDeliveryFailure',
+  );
+  const recordCircuitOpened = boundMethod<LifecycleTelemetry['recordCircuitOpened']>(
+    value,
+    'recordCircuitOpened',
+  );
+  const recordSignalHandoff = boundMethod<LifecycleTelemetry['recordSignalHandoff']>(
+    value,
+    'recordSignalHandoff',
+  );
+  return startDelivery &&
+    recordDeliverySuccess &&
+    recordDeliveryFailure &&
+    recordCircuitOpened &&
+    recordSignalHandoff
+    ? Object.freeze({
+        startDelivery,
+        recordDeliverySuccess,
+        recordDeliveryFailure,
+        recordCircuitOpened,
+        recordSignalHandoff,
+      })
+    : undefined;
+}
+
 function materializeDispatcherOptions(
   input: unknown,
 ): Readonly<{ authority: LifecycleDispatcherAuthority; policy: unknown }> | undefined {
@@ -179,7 +228,14 @@ function materializeDispatcherOptions(
     }
     // Bound keys before descriptors: this is the public hostile-input fence.
     const keys = Reflect.ownKeys(input);
-    const allowed = new Set(['deliveries', 'executor', 'signalRouter', 'policy', 'clock']);
+    const allowed = new Set([
+      'deliveries',
+      'executor',
+      'signalRouter',
+      'policy',
+      'clock',
+      'telemetry',
+    ]);
     if (
       keys.length > MAX_DISPATCHER_OPTION_KEYS ||
       keys.some((key) => typeof key !== 'string' || !allowed.has(key))
@@ -192,6 +248,7 @@ function materializeDispatcherOptions(
     const signalRouter = descriptors.signalRouter;
     const policy = descriptors.policy;
     const clock = descriptors.clock;
+    const telemetry = descriptors.telemetry;
     if (
       !deliveries ||
       !('value' in deliveries) ||
@@ -203,7 +260,8 @@ function materializeDispatcherOptions(
       !('value' in signalRouter) ||
       !signalRouter.enumerable ||
       (policy && (!('value' in policy) || !policy.enumerable)) ||
-      (clock && (!('value' in clock) || !clock.enumerable))
+      (clock && (!('value' in clock) || !clock.enumerable)) ||
+      (telemetry && (!('value' in telemetry) || !telemetry.enumerable))
     ) {
       return undefined;
     }
@@ -212,6 +270,8 @@ function materializeDispatcherOptions(
     const signalRouterValue: unknown = signalRouter.value;
     const policyValue: unknown = policy && 'value' in policy ? policy.value : undefined;
     const clockValue: unknown = clock && 'value' in clock ? clock.value : undefined;
+    const telemetryValue: unknown =
+      telemetry && 'value' in telemetry ? telemetry.value : noopLifecycleTelemetry;
     const claimNext = boundMethod<LifecycleDeliveryRepository['claimNext']>(
       deliveriesValue,
       'claimNext',
@@ -224,9 +284,20 @@ function materializeDispatcherOptions(
     const execute = boundMethod<LifecycleHandlerExecutor['execute']>(executorValue, 'execute');
     const handoff = boundMethod<LifecycleSignalRouter['handoff']>(signalRouterValue, 'handoff');
     const now = clock ? boundMethod<LifecycleDispatcherClock['now']>(clockValue, 'now') : Date.now;
-    if (!claimNext || !complete || !fail || !execute || !handoff || !now) return undefined;
+    const lifecycleTelemetry = captureDispatcherTelemetry(telemetryValue);
+    if (!claimNext || !complete || !fail || !execute || !handoff || !now || !lifecycleTelemetry) {
+      return undefined;
+    }
     return Object.freeze({
-      authority: Object.freeze({ claimNext, complete, fail, execute, handoff, now }),
+      authority: Object.freeze({
+        claimNext,
+        complete,
+        fail,
+        execute,
+        handoff,
+        now,
+        telemetry: lifecycleTelemetry,
+      }),
       policy: policyValue,
     });
   } catch {
@@ -461,49 +532,126 @@ export class LifecycleDispatcher {
     slot: InFlightSlot,
   ): Promise<void> {
     let lease: Lease | undefined;
+    let lifecycle: LifecycleDeliveryObservation | undefined;
     try {
       lease = this.lease(claim.delivery);
       if (!lease) return;
+      lifecycle = this.authority.telemetry.startDelivery(claim, handlerId);
       const execution = materializeLifecycleHandlerExecution(claim, controller.signal);
       if (execution.isErr()) {
-        this.transitionFailure(claim.delivery, lease, FAILURE_INVALID, true);
+        const status = this.transitionFailure(claim.delivery, lease, FAILURE_INVALID, true);
+        this.authority.telemetry.recordDeliveryFailure({
+          lifecycle,
+          claim,
+          code: FAILURE_INVALID,
+          retryable: true,
+          status,
+        });
         this.recordFailure(handlerId);
         return;
       }
-      const result = await this.executeBounded(execution.value, controller, slot);
+      const executable =
+        lifecycle.traceparent === undefined
+          ? execution.value
+          : Object.freeze({ ...execution.value, traceparent: lifecycle.traceparent });
+      const result = await this.executeBounded(executable, controller, slot);
       if (result.isErr()) {
-        this.transitionFailure(
+        const code = controller.signal.aborted ? FAILURE_TIMEOUT : FAILURE_EXECUTION;
+        const status = this.transitionFailure(
           claim.delivery,
           lease,
-          controller.signal.aborted ? FAILURE_TIMEOUT : FAILURE_EXECUTION,
+          code,
           true,
         );
+        this.authority.telemetry.recordDeliveryFailure({
+          lifecycle,
+          claim,
+          code,
+          retryable: true,
+          status,
+        });
         this.recordFailure(handlerId);
         return;
       }
       if (result.value.outcome === 'error') {
-        this.transitionFailure(claim.delivery, lease, FAILURE_RESULT, result.value.retryable);
+        const status = this.transitionFailure(
+          claim.delivery,
+          lease,
+          FAILURE_RESULT,
+          result.value.retryable,
+        );
+        this.authority.telemetry.recordDeliveryFailure({
+          lifecycle,
+          claim,
+          code: FAILURE_RESULT,
+          retryable: result.value.retryable,
+          status,
+        });
         this.recordFailure(handlerId);
         return;
       }
+      const signals = resultSignals(result.value);
+      const signalCount = signals.length;
       const handoff = await this.authority.handoff({
         eventId: lease.eventId,
         handlerId: lease.handlerId,
         persona: claim.delivery.persona,
         idempotencyKey: execution.value.idempotencyKey,
-        signals: resultSignals(result.value),
+        signals,
       });
       if (handoff.isErr()) {
-        this.transitionFailure(claim.delivery, lease, FAILURE_SIGNAL_HANDOFF, true);
+        this.authority.telemetry.recordSignalHandoff({
+          lifecycle,
+          claim,
+          outcome: 'failure',
+          signalCount,
+          code: FAILURE_SIGNAL_HANDOFF,
+        });
+        const status = this.transitionFailure(claim.delivery, lease, FAILURE_SIGNAL_HANDOFF, true);
+        this.authority.telemetry.recordDeliveryFailure({
+          lifecycle,
+          claim,
+          code: FAILURE_SIGNAL_HANDOFF,
+          retryable: true,
+          status,
+        });
         this.recordFailure(handlerId);
         return;
       }
+      this.authority.telemetry.recordSignalHandoff({
+        lifecycle,
+        claim,
+        outcome: 'success',
+        signalCount,
+      });
       // Handoff precedes completion. If we crash here, the next lease retries
       // the same stable handoff key and the trusted boundary de-duplicates it.
       const completed = this.authority.complete(lease.eventId, lease.handlerId, lease.claimToken);
-      if (completed.isOk()) this.recordSuccess(handlerId);
+      if (completed.isOk()) {
+        this.authority.telemetry.recordDeliverySuccess(lifecycle, claim, signalCount);
+        this.recordSuccess(handlerId);
+      } else {
+        this.authority.telemetry.recordDeliveryFailure({
+          lifecycle,
+          claim,
+          code: FAILURE_SIGNAL_COMPLETION_LOST,
+          retryable: true,
+          status: 'lost',
+        });
+      }
     } catch {
-      if (lease) this.transitionFailure(claim.delivery, lease, FAILURE_EXECUTION, true);
+      if (lease && lifecycle) {
+        const status = this.transitionFailure(claim.delivery, lease, FAILURE_EXECUTION, true);
+        this.authority.telemetry.recordDeliveryFailure({
+          lifecycle,
+          claim,
+          code: FAILURE_EXECUTION,
+          retryable: true,
+          status,
+        });
+      } else if (lease) {
+        this.transitionFailure(claim.delivery, lease, FAILURE_EXECUTION, true);
+      }
       this.recordFailure(handlerId);
     } finally {
       slot.release();
@@ -557,15 +705,15 @@ export class LifecycleDispatcher {
     lease: Lease,
     code: string,
     retryable: boolean,
-  ): void {
+  ): 'failed' | 'dead_letter' | 'completed' | 'lost' {
     const preserveSession = failureMode(delivery) === 'preserve_session';
     const terminal = !retryable || delivery.attempts + 1 >= delivery.max_attempts;
     if (preserveSession && terminal) {
-      this.authority.complete(lease.eventId, lease.handlerId, lease.claimToken);
-      return;
+      const completed = this.authority.complete(lease.eventId, lease.handlerId, lease.claimToken);
+      return completed.isOk() ? 'completed' : 'lost';
     }
     const nextRetryAt = this.clock.now() + lifecycleRetryDelay(delivery.attempts, this.policy);
-    this.authority.fail(
+    const failed = this.authority.fail(
       lease.eventId,
       lease.handlerId,
       lease.claimToken,
@@ -573,6 +721,11 @@ export class LifecycleDispatcher {
       nextRetryAt,
       retryable,
     );
+    return failed.isOk()
+      ? failed.value.status === 'dead_letter'
+        ? 'dead_letter'
+        : 'failed'
+      : 'lost';
   }
 
   private lease(delivery: LifecycleDeliveryRow): Lease | undefined {
@@ -623,9 +776,13 @@ export class LifecycleDispatcher {
 
   private recordFailure(handlerId: string): void {
     const state = this.handlerState(handlerId);
+    const wasOpen = state.openUntil > this.clock.now();
     state.consecutiveFailures += 1;
     if (state.consecutiveFailures >= this.policy.circuitFailureThreshold) {
       state.openUntil = this.clock.now() + this.policy.circuitCooldownMs;
+      if (!wasOpen) {
+        this.authority.telemetry.recordCircuitOpened(handlerId, state.openUntil);
+      }
     }
   }
 

@@ -17,7 +17,10 @@ export function parseTraceparent(value: string | null | undefined): SpanContext 
     return null;
   }
 
-  const [, _version, traceId, spanId, flags] = match;
+  const [, version, traceId, spanId, flags] = match;
+  if (version === 'ff') {
+    return null;
+  }
   if (isAllZero(traceId) || isAllZero(spanId)) {
     return null;
   }

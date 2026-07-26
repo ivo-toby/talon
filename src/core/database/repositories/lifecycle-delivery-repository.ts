@@ -5,6 +5,8 @@ import type Database from 'better-sqlite3';
 import { err, ok, type Result } from 'neverthrow';
 import { types } from 'node:util';
 import { z } from 'zod';
+import type { AuditLogger } from '../../logging/audit-logger.js';
+import type { LifecycleMetricsRecorder } from '../../../lifecycle/telemetry/index.js';
 import {
   LifecycleEventEnvelopeSchema,
   LifecycleFailurePolicyContractSchema,
@@ -90,6 +92,12 @@ export interface ClaimLifecycleDeliveryOptions {
 /** Trusted clock supplied by repository composition; production defaults to Date.now. */
 export type LifecycleDeliveryClock = () => number;
 
+export interface LifecycleDeliveryRepositoryOptions {
+  readonly leaseClock?: LifecycleDeliveryClock;
+  readonly auditLogger?: Pick<AuditLogger, 'logLifecycleReplay'>;
+  readonly metrics?: Pick<LifecycleMetricsRecorder, 'increment'>;
+}
+
 /** Persisted failure diagnostics intentionally carry only a stable, non-secret code. */
 export interface LifecycleFailureDiagnostic {
   code: string;
@@ -127,12 +135,22 @@ export class LifecycleDeliveryRepository extends BaseRepository {
   private readonly canReopenStmt: Database.Statement;
   private readonly reopenStmt: Database.Statement;
   private readonly findEventStmt: Database.Statement;
+  private readonly leaseClock: LifecycleDeliveryClock;
+  private readonly auditLogger?: Pick<AuditLogger, 'logLifecycleReplay'>;
+  private readonly metrics?: Pick<LifecycleMetricsRecorder, 'increment'>;
 
   constructor(
     db: Database.Database,
-    private readonly leaseClock: LifecycleDeliveryClock = Date.now,
+    leaseClockOrOptions: LifecycleDeliveryClock | LifecycleDeliveryRepositoryOptions = Date.now,
   ) {
     super(db);
+    if (typeof leaseClockOrOptions === 'function') {
+      this.leaseClock = leaseClockOrOptions;
+    } else {
+      this.leaseClock = leaseClockOrOptions.leaseClock ?? Date.now;
+      this.auditLogger = leaseClockOrOptions.auditLogger;
+      this.metrics = leaseClockOrOptions.metrics;
+    }
     this.claimNextStmt = db.prepare(`
       WITH candidate AS (
         SELECT d.event_id, d.handler_id
@@ -433,11 +451,44 @@ export class LifecycleDeliveryRepository extends BaseRepository {
         return this.validateDeliveryRow(row);
       });
       const row = reopen();
-      return row
-        ? ok(row)
-        : err(new DbError('Failed to reopen lifecycle delivery: delivery is not terminal'));
+      if (!row) {
+        return err(new DbError('Failed to reopen lifecycle delivery: delivery is not terminal'));
+      }
+      this.recordReplayTelemetry(row);
+      return ok(row);
     } catch (cause) {
       return err(toDbError('reopen lifecycle delivery', cause));
+    }
+  }
+
+  private recordReplayTelemetry(row: LifecycleDeliveryRow): void {
+    try {
+      this.metrics?.increment('lifecycle.delivery.replay.count', {
+        handler_id: row.handler_id,
+        persona: row.persona,
+        outcome: 'success',
+        status: row.status,
+      });
+    } catch {
+      // Metrics are advisory and must not affect replay durability.
+    }
+    try {
+      this.auditLogger?.logLifecycleReplay({
+        action: 'lifecycle.replay',
+        details: {
+          operation: 'delivery_reopen',
+          outcome: 'success',
+          eventId: row.event_id,
+          handlerId: row.handler_id,
+          persona: row.persona,
+          status: row.status,
+          attempts: row.attempts,
+          maxAttempts: row.max_attempts,
+          updatedAt: row.updated_at,
+        },
+      });
+    } catch {
+      // Audit outages must not roll back an already-authorized replay.
     }
   }
 

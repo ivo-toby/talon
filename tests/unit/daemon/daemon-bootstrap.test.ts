@@ -59,6 +59,7 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   LifecycleSignalRepository: vi
     .fn()
     .mockImplementation(() => ({ handoff: vi.fn().mockReturnValue(ok(undefined)) })),
+  BehaviorSignalRepository: vi.fn().mockImplementation(() => ({})),
 }));
 
 vi.mock('../../../src/core/database/repositories/audit-repository.js', () => ({

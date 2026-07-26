@@ -27,6 +27,8 @@ export interface LifecycleHandlerExecution {
   readonly persona: string;
   readonly idempotencyKey: string;
   readonly signal: AbortSignal;
+  /** Optional child observation context for sub-agent or native handler spans. */
+  readonly traceparent?: string;
   /** Loader-owned scope is available only to a matching sub-agent capability. */
   readonly subagentScope?: LifecycleSubagentCapabilityScope;
 }

@@ -2509,7 +2509,9 @@ Running autonomous agents across multiple channels means you lose visibility fas
 
 ### How it works
 
-Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
+Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. Durable lifecycle publication and handler-delivery observations are emitted as lifecycle observations; they are parent-linked to an existing trace only when a valid trace context is available, otherwise they remain separately correlated by event, aggregate, and correlation identifiers. Interceptors, retry/dead-letter outcomes, and signal handoff are recorded as bounded audit and metric evidence even when they do not create separate Langfuse observations. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
+
+Lifecycle telemetry also records bounded audit events and structured local metric samples. Optional trace-evidence providers can attach an existing W3C `traceparent` to lifecycle deliveries; malformed evidence is ignored rather than trusted.
 
 ### Setup
 

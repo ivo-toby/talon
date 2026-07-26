@@ -36,6 +36,7 @@ import {
   LifecycleEventRepository,
   LifecycleDeliveryRepository,
   LifecycleSignalRepository,
+  BehaviorSignalRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
@@ -86,6 +87,10 @@ import { nativeAllowInterceptor } from '../lifecycle/interceptors/native-example
 import { SubAgentLifecycleAdapter } from '../lifecycle/adapters/subagent-lifecycle-adapter.js';
 import { createLifecycleHandlerRegistry } from '../lifecycle/handler-registry.js';
 import { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
+import {
+  LifecycleTelemetry,
+  LoggerLifecycleMetricsRecorder,
+} from '../lifecycle/telemetry/index.js';
 import {
   LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
   LIFECYCLE_EVENT_INPUT_CONTRACT,
@@ -182,6 +187,10 @@ export async function bootstrap(
   BaseRepository.seedMonotonicClockFromDb(db);
 
   // 4. Create repositories
+  const audit = new AuditRepository(db);
+  const auditStore = new RepositoryAuditStore(audit);
+  const auditLogger = new AuditLogger(logger, auditStore);
+  const lifecycleMetrics = new LoggerLifecycleMetricsRecorder(logger);
   const repos = {
     queue: new QueueRepository(db),
     thread: new ThreadRepository(db),
@@ -191,22 +200,25 @@ export async function bootstrap(
     executionEnv: new ExecutionEnvRepository(db),
     executionEnvCheckpoint: new ExecutionEnvCheckpointRepository(db),
     schedule: new ScheduleRepository(db),
-    audit: new AuditRepository(db),
+    audit,
     message: new MessageRepository(db),
     run: new RunRepository(db),
     binding: new BindingRepository(db),
     memory: new MemoryRepository(db),
     a2aTask: new A2ATaskRepository(db),
     lifecycleEvent: new LifecycleEventRepository(db),
-    lifecycleDelivery: new LifecycleDeliveryRepository(db),
+    lifecycleDelivery: new LifecycleDeliveryRepository(db, {
+      auditLogger,
+      metrics: lifecycleMetrics,
+    }),
     lifecycleSignal: new LifecycleSignalRepository(db),
+    behaviorSignal: new BehaviorSignalRepository(db, {
+      auditLogger,
+      metrics: lifecycleMetrics,
+    }),
   };
 
-  // 5. Audit logger
-  const auditStore = new RepositoryAuditStore(repos.audit);
-  const auditLogger = new AuditLogger(logger, auditStore);
-
-  // 6. Thread workspace
+  // 5. Thread workspace
   const threadWorkspace = new ThreadWorkspace(dataDir);
 
   // Resolve package version for LangFuse release tagging (F9).
@@ -823,6 +835,7 @@ export async function bootstrap(
               },
             },
             input: execution.event,
+            ...(execution.traceparent === undefined ? {} : { traceparent: execution.traceparent }),
           }),
       });
     }
@@ -836,6 +849,11 @@ export async function bootstrap(
         new DaemonError(`Failed to construct lifecycle executor: ${executorResult.error.message}`),
       );
     }
+    const lifecycleTelemetry = new LifecycleTelemetry({
+      observability,
+      auditLogger,
+      metrics: lifecycleMetrics,
+    });
     const interceptorEngine = new LifecycleInterceptorEngine({
       resolveHandlers: (
         query,
@@ -843,6 +861,7 @@ export async function bootstrap(
         registryResult.value.resolveInterceptorHandlers(query),
       implementations: { 'native-allow-interceptor': nativeAllowInterceptor },
       auditLogger,
+      telemetry: lifecycleTelemetry,
     });
     const dispatcherResult = LifecycleDispatcher.create({
       deliveries: repos.lifecycleDelivery,
@@ -862,6 +881,7 @@ export async function bootstrap(
           );
         },
       },
+      telemetry: lifecycleTelemetry,
     });
     if (dispatcherResult.isErr()) {
       await cleanupBootstrapFailure(db, observability, logger);
@@ -872,9 +892,14 @@ export async function bootstrap(
       );
     }
     const dispatcher = dispatcherResult.value;
-    const eventBus = new LifecycleEventBus(repos.lifecycleEvent, registryResult.value, () => {
-      dispatcher.wake();
-    });
+    const eventBus = new LifecycleEventBus(
+      repos.lifecycleEvent,
+      registryResult.value,
+      () => {
+        dispatcher.wake();
+      },
+      lifecycleTelemetry,
+    );
     lifecycleRuntime = new LifecycleRuntime(eventBus, interceptorEngine, dispatcher);
   }
   const queueManager = new QueueManager(

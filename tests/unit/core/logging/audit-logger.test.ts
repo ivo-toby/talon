@@ -68,6 +68,11 @@ describe.each([
   ['logScheduleTrigger', 'schedule.trigger'],
   ['logConfigReload', 'config.reload'],
   ['logLifecycleInterceptor', 'lifecycle.interceptor'],
+  ['logLifecycleDecision', 'lifecycle.decision'],
+  ['logLifecycleReplay', 'lifecycle.replay'],
+  ['logLifecycleDisablement', 'lifecycle.disablement'],
+  ['logLifecycleProjection', 'lifecycle.projection'],
+  ['logLifecyclePromotion', 'lifecycle.promotion'],
 ] as const)('%s()', (method, expectedMsg) => {
   it(`writes a pino record with msg "${expectedMsg}"`, () => {
     const { logger, records } = createCapturingLogger();
@@ -177,8 +182,13 @@ describe('AuditStore callback', () => {
     audit.logChannelSend(makeEntry());
     audit.logScheduleTrigger(makeEntry());
     audit.logConfigReload(makeEntry());
+    audit.logLifecycleDecision(makeEntry());
+    audit.logLifecycleReplay(makeEntry());
+    audit.logLifecycleDisablement(makeEntry());
+    audit.logLifecycleProjection(makeEntry());
+    audit.logLifecyclePromotion(makeEntry());
 
-    expect(store.append).toHaveBeenCalledTimes(5);
+    expect(store.append).toHaveBeenCalledTimes(10);
   });
 
   it('works correctly without a store (pino-only mode)', () => {
@@ -201,6 +211,65 @@ describe('AuditStore callback', () => {
     audit.logToolExecution(makeEntry({ details: { n: 3 } }));
 
     expect(records()).toHaveLength(3);
+  });
+});
+
+describe('lifecycle audit redaction', () => {
+  it('redacts secret-shaped detail keys before pino and store writes', () => {
+    const { logger, records } = createCapturingLogger();
+    const appended: AuditEntry[] = [];
+    const audit = new AuditLogger(logger, { append: (entry) => appended.push(entry) });
+
+    audit.logLifecycleDecision(
+      makeEntry({
+        details: {
+          handlerId: 'handler-1',
+          apiKey: 'sk-secret',
+          nested: { authorization: 'Bearer token', safe: 'ok' },
+        },
+      }),
+    );
+
+    expect(records()[0].details).toEqual({
+      handlerId: 'handler-1',
+      apiKey: '[redacted]',
+      nested: { authorization: '[redacted]', safe: 'ok' },
+    });
+    expect(appended[0]?.details).toEqual(records()[0].details);
+  });
+
+  it('bounds lifecycle audit strings and nested structures', () => {
+    const { logger, records } = createCapturingLogger();
+    const audit = new AuditLogger(logger);
+
+    audit.logLifecycleProjection(
+      makeEntry({
+        details: {
+          value: 'x'.repeat(600),
+          nested: { a: { b: { c: { d: { e: { f: 'too deep' } } } } } },
+        },
+      }),
+    );
+
+    const details = records()[0].details as Record<string, unknown>;
+    expect((details.value as string).length).toBeLessThan(520);
+    expect(details.nested).toEqual({ a: { b: { c: { d: '[truncated]' } } } });
+  });
+
+  it('does not evaluate accessors while redacting lifecycle audit details', () => {
+    const { logger, records } = createCapturingLogger();
+    const audit = new AuditLogger(logger);
+    const details = { safe: 'ok' } as Record<string, unknown>;
+    Object.defineProperty(details, 'computed', {
+      enumerable: true,
+      get: () => {
+        throw new Error('audit redaction must not invoke accessors');
+      },
+    });
+
+    audit.logLifecycleDecision(makeEntry({ details }));
+
+    expect(records()[0].details).toEqual({ safe: 'ok', computed: '[redacted]' });
   });
 });
 

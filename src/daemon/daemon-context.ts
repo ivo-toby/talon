@@ -30,6 +30,7 @@ import type {
   LifecycleEventRepository,
   LifecycleDeliveryRepository,
   LifecycleSignalRepository,
+  BehaviorSignalRepository,
 } from '../core/database/repositories/index.js';
 import type { ChannelRegistry } from '../channels/channel-registry.js';
 import type { QueueManager } from '../queue/queue-manager.js';
@@ -77,6 +78,7 @@ export interface DaemonRepos {
   readonly lifecycleEvent: LifecycleEventRepository;
   readonly lifecycleDelivery: LifecycleDeliveryRepository;
   readonly lifecycleSignal: LifecycleSignalRepository;
+  readonly behaviorSignal: BehaviorSignalRepository;
 }
 
 // ---------------------------------------------------------------------------
