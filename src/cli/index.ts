@@ -49,6 +49,7 @@ import { resetProviderAffinityCommand } from './commands/reset-provider-affinity
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 import { setCapabilitiesCommand } from './commands/set-capabilities.js';
 import { a2aListCommand, a2aSendCommand } from './commands/a2a.js';
+import { lifecycleCommand } from './commands/lifecycle.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -254,6 +255,88 @@ program
       timeoutMs: parseInt(opts.timeout, 10),
       statuses: opts.statuses?.split(',').map((s) => s.trim()),
       all: opts.all,
+    });
+  });
+
+const lifecycle = program
+  .command('lifecycle')
+  .description('Inspect and control durable lifecycle handlers and deliveries');
+
+lifecycle
+  .command('handlers')
+  .description('List effective lifecycle handlers, backlog, and dispatcher health')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
+  .option('--limit <n>', 'Maximum handlers to show', '50')
+  .action(async (opts: { ipcDir?: string; timeout: string; limit: string }) => {
+    await lifecycleCommand({
+      action: 'handlers',
+      ipcDir: opts.ipcDir,
+      timeoutMs: parseInt(opts.timeout, 10),
+      limit: parseInt(opts.limit, 10),
+    });
+  });
+
+lifecycle
+  .command('inspect <event-id>')
+  .description('Inspect one lifecycle event and its handler deliveries')
+  .option('--handler <handler-id>', 'Limit output to one handler delivery')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
+  .action(async (eventId: string, opts: { handler?: string; ipcDir?: string; timeout: string }) => {
+    await lifecycleCommand({
+      action: 'inspect',
+      eventId,
+      handlerId: opts.handler,
+      ipcDir: opts.ipcDir,
+      timeoutMs: parseInt(opts.timeout, 10),
+    });
+  });
+
+lifecycle
+  .command('replay <event-id> <handler-id>')
+  .description('Reopen one terminal lifecycle delivery for exact replay')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
+  .action(
+    async (eventId: string, handlerId: string, opts: { ipcDir?: string; timeout: string }) => {
+      await lifecycleCommand({
+        action: 'replay',
+        eventId,
+        handlerId,
+        ipcDir: opts.ipcDir,
+        timeoutMs: parseInt(opts.timeout, 10),
+      });
+    },
+  );
+
+lifecycle
+  .command('disable <handler-id>')
+  .description('Disable pending, failed, or claimed deliveries for one handler')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
+  .action(async (handlerId: string, opts: { ipcDir?: string; timeout: string }) => {
+    await lifecycleCommand({
+      action: 'disable',
+      handlerId,
+      ipcDir: opts.ipcDir,
+      timeoutMs: parseInt(opts.timeout, 10),
+    });
+  });
+
+lifecycle
+  .command('candidates <persona>')
+  .description('List behavior candidate provenance for a persona')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Response timeout in milliseconds', '5000')
+  .option('--limit <n>', 'Maximum candidates to show', '50')
+  .action(async (persona: string, opts: { ipcDir?: string; timeout: string; limit: string }) => {
+    await lifecycleCommand({
+      action: 'candidates',
+      persona,
+      ipcDir: opts.ipcDir,
+      timeoutMs: parseInt(opts.timeout, 10),
+      limit: parseInt(opts.limit, 10),
     });
   });
 
@@ -640,14 +723,8 @@ program
   .option('--base-url <url>', 'Set options.baseUrl for OpenAI-compatible providers')
   .option('--provider-id <id>', 'Set options.providerId for OpenAI-compatible credential lookup')
   .option('--tool-output-cap <chars>', 'Set options.toolOutputCap for OpenAI-compatible providers')
-  .option(
-    '--api-mode <mode>',
-    'OpenAI-compatible API mode: chat-completions or responses',
-  )
-  .option(
-    '--session-mode <mode>',
-    'OpenAI-compatible session mode: none or previous_response_id',
-  )
+  .option('--api-mode <mode>', 'OpenAI-compatible API mode: chat-completions or responses')
+  .option('--session-mode <mode>', 'OpenAI-compatible session mode: none or previous_response_id')
   .option(
     '--omlx-responses',
     'Deprecated alias for --api-mode responses --session-mode previous_response_id',

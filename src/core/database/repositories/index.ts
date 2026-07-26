@@ -86,6 +86,8 @@ export type {
   LifecycleDeliveryClock,
   LifecycleFailureDiagnostic,
   LifecycleDeliveryRetentionResult,
+  LifecycleDeliveryStatusCount,
+  LifecycleHandlerBacklogSummary,
 } from './lifecycle-delivery-repository.js';
 export {
   LifecycleDeliveryRepository,
@@ -101,6 +103,7 @@ export { LifecycleSignalRepository } from './lifecycle-signal-repository.js';
 export type {
   BehaviorCandidateInput,
   BehaviorCandidateRow,
+  BehaviorCandidateSummaryRow,
   BehaviorEvidenceInput,
   BehaviorEvidenceRow,
   BehaviorMetadata,

@@ -31,6 +31,21 @@ import { DaemonIpcServer } from '../ipc/daemon-ipc-server.js';
 import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
+import { LifecycleAdminService } from '../lifecycle/lifecycle-admin-service.js';
+
+type LifecycleHandlersCommand = Extract<DaemonCommand, { command: 'lifecycle-handlers' }>;
+type LifecycleInspectCommand = Extract<DaemonCommand, { command: 'lifecycle-inspect' }>;
+type LifecycleReplayCommand = Extract<DaemonCommand, { command: 'lifecycle-replay' }>;
+type LifecycleDisableCommand = Extract<DaemonCommand, { command: 'lifecycle-disable' }>;
+type LifecycleCandidatesCommand = Extract<DaemonCommand, { command: 'lifecycle-candidates' }>;
+type LifecycleBacklog = ReturnType<typeof emptyLifecycleBacklog>;
+type LifecycleBacklogTiming = ReturnType<typeof emptyLifecycleBacklogTiming>;
+
+interface LifecycleHandlerBacklogData {
+  readonly backlog: LifecycleBacklog;
+  readonly timing: LifecycleBacklogTiming;
+  readonly statusTiming: Partial<Record<keyof LifecycleBacklog, LifecycleBacklogTiming>>;
+}
 
 // ---------------------------------------------------------------------------
 // TalondDaemon
@@ -678,16 +693,262 @@ export class TalondDaemon {
         };
       }
 
-      default: {
-        const unknownCommand = command.command;
-        return {
-          id: responseId,
-          commandId: command.id,
-          success: false,
-          error: `Unknown command: ${String(unknownCommand)}`,
+      case 'lifecycle-handlers':
+        return this.handleLifecycleHandlersCommand(command, responseId);
+
+      case 'lifecycle-inspect':
+        return this.handleLifecycleInspectCommand(command, responseId);
+
+      case 'lifecycle-replay':
+        return this.handleLifecycleReplayCommand(command, responseId);
+
+      case 'lifecycle-disable':
+        return this.handleLifecycleDisableCommand(command, responseId);
+
+      case 'lifecycle-candidates':
+        return this.handleLifecycleCandidatesCommand(command, responseId);
+    }
+  }
+
+  private handleLifecycleHandlersCommand(
+    command: LifecycleHandlersCommand,
+    responseId: string,
+  ): DaemonResponse {
+    if (!this.ctx) return this.ipcError(responseId, command.id, 'Daemon not running');
+    const limit = this.payloadLimit(command.payload?.limit);
+    const statusCounts = this.ctx.repos.lifecycleDelivery.countByStatus();
+    if (statusCounts.isErr())
+      return this.ipcError(responseId, command.id, statusCounts.error.message);
+
+    const backlog = emptyLifecycleBacklog();
+    for (const row of statusCounts.value) backlog[row.status] = row.count;
+    const dispatcher = this.ctx.lifecycleRuntime?.dispatcher.snapshot();
+    const dispatcherHandlers = new Map(
+      (dispatcher?.handlers ?? []).map((handler) => [handler.handlerId, handler]),
+    );
+
+    const subscriptionsByHandler = new Map<string, { personas: Set<string>; count: number }>();
+    for (const persona of this.ctx.config.personas) {
+      for (const subscription of persona.lifecycle?.subscriptions ?? []) {
+        const current = subscriptionsByHandler.get(subscription.handler) ?? {
+          personas: new Set<string>(),
+          count: 0,
         };
+        current.personas.add(persona.name);
+        current.count += 1;
+        subscriptionsByHandler.set(subscription.handler, current);
       }
     }
+
+    const configuredHandlers = this.ctx.config.lifecycle?.handlers ?? [];
+    const displayedHandlers = configuredHandlers.slice(0, limit);
+    const handlerBacklog = this.ctx.repos.lifecycleDelivery.summarizeHandlersByIds(
+      displayedHandlers.map((handler) => handler.id),
+    );
+    if (handlerBacklog.isErr()) {
+      return this.ipcError(responseId, command.id, handlerBacklog.error.message);
+    }
+    const handlerRows = new Map<string, LifecycleHandlerBacklogData>();
+    const readAt = Date.now();
+    for (const row of handlerBacklog.value) {
+      const summary = handlerRows.get(row.handler_id) ?? emptyLifecycleHandlerBacklogData();
+      summary.backlog[row.status] += row.count;
+      const statusTiming = rowTiming(row.oldest_created_at, row.next_retry_at, readAt);
+      summary.statusTiming[row.status] = statusTiming;
+      if (isActiveLifecycleBacklogStatus(row.status)) {
+        mergeLifecycleBacklogTiming(summary.timing, statusTiming);
+      }
+      handlerRows.set(row.handler_id, summary);
+    }
+
+    const handlers = displayedHandlers.map((handler) => {
+      const subscriptions = subscriptionsByHandler.get(handler.id);
+      const circuit = dispatcherHandlers.get(handler.id)?.circuit ?? 'closed';
+      const handlerBacklogData = handlerRows.get(handler.id) ?? emptyLifecycleHandlerBacklogData();
+      return {
+        handlerId: handler.id,
+        ...(handler.displayName ? { displayName: handler.displayName } : {}),
+        mode: handler.mode,
+        runtimeKind: handler.runtime.kind,
+        personas: [...(subscriptions?.personas ?? new Set<string>())].sort(),
+        subscriptions: subscriptions?.count ?? 0,
+        backlog: handlerBacklogData.backlog,
+        timing: handlerBacklogData.timing,
+        statusTiming: handlerBacklogData.statusTiming,
+        circuit,
+      };
+    });
+
+    return {
+      id: responseId,
+      commandId: command.id,
+      success: true,
+      data: {
+        lifecycleEnabled: this.ctx.config.lifecycle?.enabled ?? false,
+        dispatcher: dispatcher
+          ? {
+              running: dispatcher.running,
+              stopping: dispatcher.stopping,
+              inFlight: dispatcher.inFlight,
+              handlers: dispatcher.handlers,
+            }
+          : null,
+        backlog,
+        handlers,
+      },
+    };
+  }
+
+  private handleLifecycleInspectCommand(
+    command: LifecycleInspectCommand,
+    responseId: string,
+  ): DaemonResponse {
+    if (!this.ctx) return this.ipcError(responseId, command.id, 'Daemon not running');
+    const eventId = command.payload.eventId;
+    const handlerId = command.payload.handlerId;
+    const event = this.ctx.repos.lifecycleEvent.findById(eventId);
+    if (event.isErr()) return this.ipcError(responseId, command.id, event.error.message);
+    const deliveries = this.ctx.repos.lifecycleDelivery.findByEventId(eventId);
+    if (deliveries.isErr()) return this.ipcError(responseId, command.id, deliveries.error.message);
+    return {
+      id: responseId,
+      commandId: command.id,
+      success: true,
+      data: {
+        event: event.value
+          ? {
+              eventId: event.value.event_id,
+              type: event.value.type,
+              aggregateType: event.value.aggregate_type,
+              aggregateId: event.value.aggregate_id,
+              retentionTombstoneReason: event.value.retention_tombstone_reason,
+              createdAt: event.value.created_at,
+            }
+          : null,
+        deliveries: deliveries.value
+          .filter((delivery) => handlerId === undefined || delivery.handler_id === handlerId)
+          .map((delivery) => this.lifecycleDeliveryData(delivery)),
+      },
+    };
+  }
+
+  private handleLifecycleReplayCommand(
+    command: LifecycleReplayCommand,
+    responseId: string,
+  ): DaemonResponse {
+    if (!this.ctx) return this.ipcError(responseId, command.id, 'Daemon not running');
+    const eventId = command.payload.eventId;
+    const handlerId = command.payload.handlerId;
+    const service = new LifecycleAdminService({
+      deliveries: this.ctx.repos.lifecycleDelivery,
+      auditLogger: this.ctx.auditLogger,
+    });
+    const replay = service.replayDelivery(eventId, handlerId);
+    if (replay.isErr()) return this.ipcError(responseId, command.id, replay.error.message);
+    return {
+      id: responseId,
+      commandId: command.id,
+      success: true,
+      data: this.lifecycleDeliveryData(replay.value),
+    };
+  }
+
+  private handleLifecycleDisableCommand(
+    command: LifecycleDisableCommand,
+    responseId: string,
+  ): DaemonResponse {
+    if (!this.ctx) return this.ipcError(responseId, command.id, 'Daemon not running');
+    const handlerId = command.payload.handlerId;
+    const service = new LifecycleAdminService({
+      deliveries: this.ctx.repos.lifecycleDelivery,
+      auditLogger: this.ctx.auditLogger,
+    });
+    const disabled = service.disableHandler(handlerId);
+    if (disabled.isErr()) return this.ipcError(responseId, command.id, disabled.error.message);
+    return {
+      id: responseId,
+      commandId: command.id,
+      success: true,
+      data: {
+        handlerId: disabled.value.handlerId,
+        disabledDeliveries: disabled.value.disabledDeliveries,
+      },
+    };
+  }
+
+  private handleLifecycleCandidatesCommand(
+    command: LifecycleCandidatesCommand,
+    responseId: string,
+  ): DaemonResponse {
+    if (!this.ctx) return this.ipcError(responseId, command.id, 'Daemon not running');
+    const persona = command.payload.persona;
+    const limit = this.payloadLimit(command.payload?.limit);
+    const candidates = this.ctx.repos.behaviorSignal.findCandidateSummariesByPersona(
+      persona,
+      limit,
+    );
+    if (candidates.isErr()) return this.ipcError(responseId, command.id, candidates.error.message);
+    const data = [];
+    for (const candidate of candidates.value) {
+      data.push({
+        candidateId: candidate.candidate_id,
+        persona: candidate.persona,
+        kind: candidate.kind,
+        status: candidate.status,
+        summary: candidate.summary,
+        proposedBehavior: candidate.proposed_behavior,
+        confidence: candidate.confidence,
+        evidenceSources: candidate.evidence_sources,
+        createdAt: candidate.created_at,
+        updatedAt: candidate.updated_at,
+      });
+    }
+    return {
+      id: responseId,
+      commandId: command.id,
+      success: true,
+      data: { persona, candidates: data },
+    };
+  }
+
+  private lifecycleDeliveryData(delivery: {
+    event_id: string;
+    handler_id: string;
+    persona: string;
+    status: string;
+    attempts: number;
+    max_attempts: number;
+    next_retry_at: number | null;
+    last_error: string | null;
+    terminal_tombstone_reason: string | null;
+    completed_at: number | null;
+    created_at: number;
+    updated_at: number;
+  }): Record<string, unknown> {
+    return {
+      eventId: delivery.event_id,
+      handlerId: delivery.handler_id,
+      persona: delivery.persona,
+      status: delivery.status,
+      attempts: delivery.attempts,
+      maxAttempts: delivery.max_attempts,
+      nextRetryAt: delivery.next_retry_at,
+      lastErrorCode: parseLifecycleErrorCode(delivery.last_error),
+      tombstoneReason: delivery.terminal_tombstone_reason,
+      completedAt: delivery.completed_at,
+      createdAt: delivery.created_at,
+      updatedAt: delivery.updated_at,
+    };
+  }
+
+  private payloadLimit(value: unknown): number {
+    return typeof value === 'number' && Number.isFinite(value)
+      ? Math.min(Math.max(Math.trunc(value), 1), 100)
+      : 50;
+  }
+
+  private ipcError(responseId: string, commandId: string, error: string): DaemonResponse {
+    return { id: responseId, commandId, success: false, error };
   }
 
   // ---------------------------------------------------------------------------
@@ -746,4 +1007,90 @@ function lifecycleConfigurationChanged(oldConfig: TalondConfig, newConfig: Talon
     );
 
   return personaLifecycleConfiguration(oldConfig) !== personaLifecycleConfiguration(newConfig);
+}
+
+function emptyLifecycleBacklog(): {
+  pending: number;
+  claimed: number;
+  failed: number;
+  completed: number;
+  dead_letter: number;
+} {
+  return {
+    pending: 0,
+    claimed: 0,
+    failed: 0,
+    completed: 0,
+    dead_letter: 0,
+  };
+}
+
+function emptyLifecycleBacklogTiming(): {
+  oldestCreatedAt: number | null;
+  oldestAgeMs: number | null;
+  nextRetryAt: number | null;
+} {
+  return {
+    oldestCreatedAt: null,
+    oldestAgeMs: null,
+    nextRetryAt: null,
+  };
+}
+
+function emptyLifecycleHandlerBacklogData(): LifecycleHandlerBacklogData {
+  return {
+    backlog: emptyLifecycleBacklog(),
+    timing: emptyLifecycleBacklogTiming(),
+    statusTiming: {},
+  };
+}
+
+function rowTiming(
+  oldestCreatedAt: number | null,
+  nextRetryAt: number | null,
+  readAt: number,
+): LifecycleBacklogTiming {
+  return {
+    oldestCreatedAt,
+    oldestAgeMs: oldestCreatedAt === null ? null : Math.max(0, readAt - oldestCreatedAt),
+    nextRetryAt,
+  };
+}
+
+function mergeLifecycleBacklogTiming(
+  target: LifecycleBacklogTiming,
+  source: LifecycleBacklogTiming,
+): void {
+  if (
+    source.oldestCreatedAt !== null &&
+    (target.oldestCreatedAt === null || source.oldestCreatedAt < target.oldestCreatedAt)
+  ) {
+    target.oldestCreatedAt = source.oldestCreatedAt;
+    target.oldestAgeMs = source.oldestAgeMs;
+  }
+  if (
+    source.nextRetryAt !== null &&
+    (target.nextRetryAt === null || source.nextRetryAt < target.nextRetryAt)
+  ) {
+    target.nextRetryAt = source.nextRetryAt;
+  }
+}
+
+function isActiveLifecycleBacklogStatus(status: keyof LifecycleBacklog): boolean {
+  return status === 'pending' || status === 'claimed' || status === 'failed';
+}
+
+function parseLifecycleErrorCode(value: string | null): string | null {
+  if (value === null) return null;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed &&
+      typeof parsed === 'object' &&
+      'code' in parsed &&
+      typeof parsed.code === 'string'
+      ? parsed.code
+      : null;
+  } catch {
+    return null;
+  }
 }

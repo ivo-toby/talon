@@ -10,21 +10,35 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import writeFileAtomic from 'write-file-atomic';
 
-import type { DaemonCommand, DaemonResponse } from '../../ipc/daemon-ipc.js';
-import { DaemonResponseSchema } from '../../ipc/daemon-ipc.js';
+import type { DaemonResponse } from '../../ipc/daemon-ipc.js';
+import { DaemonCommandSchema, DaemonResponseSchema } from '../../ipc/daemon-ipc.js';
 
 const DEFAULT_IPC_DIR = 'data/ipc/daemon';
 const DEFAULT_TIMEOUT_MS = 5_000;
 const POLL_INTERVAL_MS = 100;
 
-const VALID_STATUSES = ['pending', 'claimed', 'processing', 'completed', 'failed', 'dead_letter'] as const;
+const VALID_STATUSES = [
+  'pending',
+  'claimed',
+  'processing',
+  'completed',
+  'failed',
+  'dead_letter',
+] as const;
+type QueuePurgeStatus = (typeof VALID_STATUSES)[number];
 
-export async function queuePurgeCommand(options: {
-  ipcDir?: string;
-  timeoutMs?: number;
-  statuses?: string[];
-  all?: boolean;
-} = {}): Promise<void> {
+function isQueuePurgeStatus(value: string): value is QueuePurgeStatus {
+  return VALID_STATUSES.includes(value as QueuePurgeStatus);
+}
+
+export async function queuePurgeCommand(
+  options: {
+    ipcDir?: string;
+    timeoutMs?: number;
+    statuses?: string[];
+    all?: boolean;
+  } = {},
+): Promise<void> {
   const ipcDir = options.ipcDir ?? DEFAULT_IPC_DIR;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const inputDir = path.join(ipcDir, 'input');
@@ -32,22 +46,23 @@ export async function queuePurgeCommand(options: {
 
   const statuses = options.all
     ? [...VALID_STATUSES]
-    : options.statuses ?? ['pending', 'failed', 'completed'];
+    : (options.statuses ?? ['pending', 'failed', 'completed']);
 
   // Validate provided status values.
-  const invalidStatuses = statuses.filter((s) => !VALID_STATUSES.includes(s as (typeof VALID_STATUSES)[number]));
+  const invalidStatuses = statuses.filter((status) => !isQueuePurgeStatus(status));
   if (invalidStatuses.length > 0) {
     console.error(`Error: Invalid status value(s): ${invalidStatuses.join(', ')}`);
     console.error(`Valid statuses: ${VALID_STATUSES.join(', ')}`);
     process.exit(1);
     return;
   }
+  const requestedStatuses = statuses.filter(isQueuePurgeStatus);
 
-  const command: DaemonCommand = {
+  const command = DaemonCommandSchema.parse({
     id: randomUUID(),
     command: 'queue-purge',
-    payload: { statuses },
-  };
+    payload: { statuses: requestedStatuses },
+  });
 
   // Write command to daemon input directory.
   try {
@@ -62,7 +77,7 @@ export async function queuePurgeCommand(options: {
     return;
   }
 
-  console.log(`Purging queue items with statuses: ${statuses.join(', ')}...`);
+  console.log(`Purging queue items with statuses: ${requestedStatuses.join(', ')}...`);
 
   // Poll output directory for matching response.
   const deadline = Date.now() + timeoutMs;

@@ -1577,11 +1577,12 @@ Custom sub-agents override built-in ones if they share the same name (dataDir ta
 
 ### Daemon Management
 
-| Command  | Description                                                   |
-| -------- | ------------------------------------------------------------- |
-| `status` | Show daemon health, active channels, queue depth, token usage |
-| `reload` | Hot-reload config without restarting the daemon               |
-| `chat`   | Connect to a persona via the terminal channel                 |
+| Command     | Description                                                             |
+| ----------- | ----------------------------------------------------------------------- |
+| `status`    | Show daemon health, active channels, queue depth, token usage           |
+| `reload`    | Hot-reload config without restarting the daemon                         |
+| `lifecycle` | Inspect lifecycle handlers, deliveries, replay, disable, and candidates |
+| `chat`      | Connect to a persona via the terminal channel                           |
 
 **`status`** / **`reload`** options:
 
@@ -1604,8 +1605,27 @@ Custom sub-agents override built-in ones if they share the same name (dataDir ta
 ```bash
 npx talonctl status --timeout 5000
 npx talonctl reload
+npx talonctl lifecycle handlers
+npx talonctl lifecycle inspect <event-id> --handler <handler-id>
+npx talonctl lifecycle replay <event-id> <handler-id>
+npx talonctl lifecycle disable <handler-id>
+npx talonctl lifecycle candidates <persona> --limit 25
 npx talonctl chat --token mytoken --persona assistant
 ```
+
+**`lifecycle`** subcommands:
+
+| Subcommand                       | Description                                                                     |
+| -------------------------------- | ------------------------------------------------------------------------------- |
+| `handlers`                       | List configured lifecycle handlers with dispatcher health and bounded backlog   |
+| `inspect <event-id>`             | Show one lifecycle event and its handler deliveries                             |
+| `replay <event-id> <handler-id>` | Reopen one ordinary terminal delivery for exact replay                          |
+| `disable <handler-id>`           | Dead-letter pending, failed, or claimed deliveries for one handler and audit it |
+| `candidates <persona>`           | List bounded behavior-candidate summaries and distinct evidence-source counts   |
+
+All lifecycle subcommands accept `--ipc-dir <path>` and `--timeout <ms>`.
+`handlers` and `candidates` also accept `--limit <n>` capped at 100. `inspect`
+accepts `--handler <handler-id>` to narrow delivery output.
 
 ### Setup and Configuration
 
@@ -2536,8 +2556,9 @@ lifecycle:
 
 Thread/persona privacy deletion uses the same retention service to tombstone
 matching lifecycle event detail and dead-letter outstanding matching deliveries.
-Operator CLI commands for invoking these primitives are owned by the lifecycle
-operator CLI workstream.
+Use `talonctl lifecycle handlers`, `inspect`, `replay`, `disable`, and
+`candidates` for operator visibility and exact delivery controls through the
+daemon IPC boundary.
 
 ---
 
