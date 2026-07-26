@@ -8,6 +8,7 @@ import {
 } from './repositories/lifecycle-persistence-validation.js';
 
 const identifier = /^[a-z][a-z0-9]*(?:[-_.][a-z0-9]+)*$/;
+const retentionMutationAuthorizationDepth = new WeakMap<Database.Database, number>();
 
 function text(value: unknown, units: number, bytes: number): value is string {
   return (
@@ -311,6 +312,23 @@ function validPersona(value: unknown): boolean {
   );
 }
 
+export function withLifecycleRetentionMutationAuthorization<T>(
+  db: Database.Database,
+  operation: () => T,
+): T {
+  const previous = retentionMutationAuthorizationDepth.get(db) ?? 0;
+  retentionMutationAuthorizationDepth.set(db, previous + 1);
+  try {
+    return operation();
+  } finally {
+    if (previous === 0) {
+      retentionMutationAuthorizationDepth.delete(db);
+    } else {
+      retentionMutationAuthorizationDepth.set(db, previous);
+    }
+  }
+}
+
 /** Registers validators before migrations and on normal application connections. */
 export function registerLifecycleSqlFunctions(db: Database.Database): void {
   db.function(
@@ -350,5 +368,8 @@ export function registerLifecycleSqlFunctions(db: Database.Database): void {
   );
   db.function('lifecycle_persona_valid', { deterministic: true }, (value: unknown): number =>
     validPersona(value) ? 1 : 0,
+  );
+  db.function('lifecycle_retention_mutation_authorized', (): number =>
+    (retentionMutationAuthorizationDepth.get(db) ?? 0) > 0 ? 1 : 0,
   );
 }

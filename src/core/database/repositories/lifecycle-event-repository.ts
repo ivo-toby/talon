@@ -17,6 +17,7 @@ import {
   validIdentity,
   validPayload,
   validProvenance,
+  withLifecycleRetentionMutationAuthorization,
 } from '../lifecycle-sql-functions.js';
 import { BaseRepository } from './base-repository.js';
 import {
@@ -46,6 +47,7 @@ export interface LifecycleEventRow {
   recursion_max_depth: number;
   provenance: string;
   payload: string;
+  retention_tombstone_reason: 'retention-compacted' | 'privacy-deleted' | null;
   occurred_at: string;
   created_at: number;
 }
@@ -54,6 +56,11 @@ export interface LifecycleEventRow {
 export interface LifecycleEventFanoutResult {
   event: LifecycleEventRow;
   deliveries: LifecycleDeliveryRow[];
+}
+
+/** Counts for lifecycle event payload/provenance tombstoning operations. */
+export interface LifecycleEventRetentionResult {
+  compactedEvents: number;
 }
 
 function toDbError(operation: string, cause: unknown): DbError {
@@ -74,6 +81,9 @@ export class LifecycleEventRepository extends BaseRepository {
   private readonly countStmt: Database.Statement;
   private readonly insertDeliveryStmt: Database.Statement;
   private readonly findDeliveriesByEventStmt: Database.Statement;
+  private readonly compactCompletedStmt: Database.Statement;
+  private readonly tombstoneThreadStmt: Database.Statement;
+  private readonly tombstonePersonaStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -107,6 +117,73 @@ export class LifecycleEventRepository extends BaseRepository {
     `);
     this.findDeliveriesByEventStmt = db.prepare(`
       SELECT * FROM lifecycle_event_deliveries WHERE event_id = ? ORDER BY priority DESC, created_at ASC
+    `);
+    this.compactCompletedStmt = db.prepare(`
+      UPDATE lifecycle_events
+      SET payload = @payload,
+          provenance = @provenance,
+          retention_tombstone_reason = @retention_tombstone_reason
+      WHERE retention_tombstone_reason IS NULL
+        AND (
+          (
+            NOT EXISTS (
+              SELECT 1 FROM lifecycle_event_deliveries d
+              WHERE d.event_id = lifecycle_events.event_id
+            )
+            AND created_at <= @cutoff
+          )
+          OR (
+            EXISTS (
+              SELECT 1 FROM lifecycle_event_deliveries d
+              WHERE d.event_id = lifecycle_events.event_id
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM lifecycle_event_deliveries d
+              WHERE d.event_id = lifecycle_events.event_id
+                AND d.status <> 'completed'
+            )
+            AND (
+              SELECT MAX(d.completed_at)
+              FROM lifecycle_event_deliveries d
+              WHERE d.event_id = lifecycle_events.event_id
+            ) <= @cutoff
+          )
+        )
+    `);
+    this.tombstoneThreadStmt = db.prepare(`
+      UPDATE lifecycle_events
+      SET payload = @payload,
+          provenance = @provenance,
+          retention_tombstone_reason = @retention_tombstone_reason
+      WHERE retention_tombstone_reason IS NOT 'privacy-deleted'
+        AND (
+          (aggregate_type = 'thread' AND aggregate_id = @thread_id)
+          OR EXISTS (
+            SELECT 1
+            FROM json_each(lifecycle_events.payload, '$.references') reference
+            WHERE json_extract(reference.value, '$.type') = 'thread'
+              AND json_extract(reference.value, '$.id') = @thread_id
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM json_each(lifecycle_events.provenance, '$.sourceReferences') reference
+            WHERE json_extract(reference.value, '$.type') = 'thread'
+              AND json_extract(reference.value, '$.id') = @thread_id
+          )
+        )
+    `);
+    this.tombstonePersonaStmt = db.prepare(`
+      UPDATE lifecycle_events
+      SET payload = @payload,
+          provenance = @provenance,
+          retention_tombstone_reason = @retention_tombstone_reason
+      WHERE retention_tombstone_reason IS NOT 'privacy-deleted'
+        AND EXISTS (
+          SELECT 1
+          FROM lifecycle_event_deliveries d
+          WHERE d.event_id = lifecycle_events.event_id
+            AND d.persona = @persona
+        )
     `);
   }
 
@@ -215,6 +292,64 @@ export class LifecycleEventRepository extends BaseRepository {
       return ok((this.countStmt.get() as { count: number }).count);
     } catch (cause) {
       return err(toDbError('count lifecycle events', cause));
+    }
+  }
+
+  /**
+   * Replaces completed event payload/provenance detail after the configured
+   * audit window. Pending, failed, claimed, and dead-letter deliveries keep
+   * their original event detail for operational recovery.
+   */
+  compactCompletedBefore(cutoff: number): Result<LifecycleEventRetentionResult, DbError> {
+    try {
+      if (!Number.isSafeInteger(cutoff)) {
+        return err(new DbError('Failed to compact lifecycle events: invalid cutoff'));
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.compactCompletedStmt.run({
+          cutoff,
+          ...this.tombstone('retention-compacted'),
+        }),
+      );
+      return ok({ compactedEvents: info.changes });
+    } catch (cause) {
+      return err(toDbError('compact lifecycle events', cause));
+    }
+  }
+
+  /** Tombstones lifecycle event detail associated with a privacy-deleted thread. */
+  tombstoneThread(threadId: string): Result<LifecycleEventRetentionResult, DbError> {
+    try {
+      if (!this.isRuntimeId(threadId)) {
+        return err(new DbError('Failed to tombstone lifecycle thread events: invalid thread id'));
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.tombstoneThreadStmt.run({
+          thread_id: threadId,
+          ...this.tombstone('privacy-deleted'),
+        }),
+      );
+      return ok({ compactedEvents: info.changes });
+    } catch (cause) {
+      return err(toDbError('tombstone lifecycle thread events', cause));
+    }
+  }
+
+  /** Tombstones lifecycle event detail associated with a privacy-deleted persona. */
+  tombstonePersona(persona: string): Result<LifecycleEventRetentionResult, DbError> {
+    try {
+      if (!this.isBoundedPersona(persona)) {
+        return err(new DbError('Failed to tombstone lifecycle persona events: invalid persona'));
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.tombstonePersonaStmt.run({
+          persona,
+          ...this.tombstone('privacy-deleted'),
+        }),
+      );
+      return ok({ compactedEvents: info.changes });
+    } catch (cause) {
+      return err(toDbError('tombstone lifecycle persona events', cause));
     }
   }
 
@@ -355,7 +490,8 @@ export class LifecycleEventRepository extends BaseRepository {
       !snapshot ||
       !Number.isSafeInteger(row.event_sequence) ||
       row.event_sequence < 1 ||
-      !Number.isSafeInteger(row.created_at)
+      !Number.isSafeInteger(row.created_at) ||
+      !this.hasValidRetentionTombstone(row)
     ) {
       throw new Error('invalid persisted lifecycle event row');
     }
@@ -480,5 +616,49 @@ export class LifecycleEventRepository extends BaseRepository {
       ) &&
       this.parses(LifecycleFilterOwnerNameSchema, value)
     );
+  }
+
+  private hasValidRetentionTombstone(row: LifecycleEventRow): boolean {
+    if (row.retention_tombstone_reason === null) return true;
+    if (
+      row.retention_tombstone_reason !== 'retention-compacted' &&
+      row.retention_tombstone_reason !== 'privacy-deleted'
+    ) {
+      return false;
+    }
+    return (
+      row.payload ===
+        JSON.stringify({
+          references: [],
+          metadata: { lifecycleRetention: row.retention_tombstone_reason },
+        }) &&
+      row.provenance ===
+        JSON.stringify({
+          source: 'retention-service',
+          sourceEventIds: [],
+          sourceReferences: [],
+        })
+    );
+  }
+
+  private tombstone(reason: 'privacy-deleted' | 'retention-compacted'): {
+    payload: string;
+    provenance: string;
+    retention_tombstone_reason: string;
+  } {
+    return {
+      payload: JSON.stringify({
+        references: [],
+        metadata: {
+          lifecycleRetention: reason,
+        },
+      }),
+      provenance: JSON.stringify({
+        source: 'retention-service',
+        sourceEventIds: [],
+        sourceReferences: [],
+      }),
+      retention_tombstone_reason: reason,
+    };
   }
 }

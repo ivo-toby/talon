@@ -145,6 +145,16 @@ queue:
   backoffMaxMs: 60000
   concurrencyLimit: 5
 
+# Durable lifecycle event handling. Retention compaction rewrites completed
+# lifecycle event payload/provenance detail after the audit window; pending,
+# failed, claimed, dead-letter, and privacy-deleted rows keep their safety
+# semantics.
+# lifecycle:
+#   enabled: false
+#   handlers: []
+#   retention:
+#     completedAuditWindowMs: 2592000000 # 30 days
+
 agentRunner:
   defaultProvider: claude-code
   providers:

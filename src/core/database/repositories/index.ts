@@ -73,6 +73,7 @@ export { ExecutionEnvCheckpointRepository } from './execution-env-checkpoint-rep
 export type {
   LifecycleEventRow,
   LifecycleEventFanoutResult,
+  LifecycleEventRetentionResult,
 } from './lifecycle-event-repository.js';
 export { LifecycleEventRepository } from './lifecycle-event-repository.js';
 
@@ -84,6 +85,7 @@ export type {
   ClaimLifecycleDeliveryOptions,
   LifecycleDeliveryClock,
   LifecycleFailureDiagnostic,
+  LifecycleDeliveryRetentionResult,
 } from './lifecycle-delivery-repository.js';
 export {
   LifecycleDeliveryRepository,

@@ -213,6 +213,22 @@ behavior provenance, and after-commit telemetry boundaries.
   invalid W3C `ff` versions. Langfuse observations are parent-linked only when
   valid trace context exists; interceptor/retry/signal-handoff paths may remain
   audit/metric evidence instead of trace-nested spans.
+- Source: TASK-014 / worker proposal, pending PR. Migration 019 keeps lifecycle
+  event and delivery identities immutable while adding two guarded mutation
+  paths only: canonical event payload/provenance tombstones for retention or
+  privacy deletion, and terminal delivery invalidation for handler disablement
+  or privacy deletion. Completed/no-subscriber events compact after the audit
+  window; pending, failed, claimed, and dead-letter events retain operational
+  detail unless privacy deletion explicitly tombstones them. Exact replay
+  continues to reuse the existing `(event_id, handler_id)` delivery row.
+  GPT-5.5/xhigh remediation tightened thread tombstoning to
+  `aggregate_type = 'thread'` plus explicit thread references, rejects replay
+  of canonical retention/privacy tombstones and handler-disabled/privacy-deleted
+  terminal deliveries while preserving ordinary terminal-failure replay, and
+  requires repository-controlled SQLite authorization for direct retention,
+  privacy, and disablement tombstone updates. TASK-014 exposes validated
+  `lifecycle.retention.completedAuditWindowMs`; operator CLI invocation remains
+  downstream TASK-016 scope.
 - WAVE-006 evidence passed three GitHub PR gates (#269/#270/#271), task-level
   GPT-5.5/xhigh reviews with no remaining Critical/High/Medium findings, and
   integrated epic verification: 19 targeted files / 647 tests, `npm run build`,
