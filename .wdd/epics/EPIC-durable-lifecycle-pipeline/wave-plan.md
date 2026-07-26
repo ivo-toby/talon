@@ -56,7 +56,7 @@ gate throughput rather than speculative conflict-heavy parallelism.
 | TASK-015-behavior-signal-projector | TICKET-005-behavior-learning | TASK-007-daemon-message-queue-schedule-events, TASK-010-behavior-ledger-persistence, TASK-012-feedback-detector-subagent | lifecycle behavior, config schema, behavior integration tests | done |
 | TASK-016-lifecycle-operator-cli | TICKET-006-operations-adoption | TASK-014-lifecycle-retention-reload-replay, TASK-015-behavior-signal-projector | CLI registration, IPC, daemon admin handlers | done |
 | TASK-017-behavior-review-reducers | TICKET-005-behavior-learning | TASK-013-handler-telemetry-correlation, TASK-015-behavior-signal-projector | behavior review, default reviewer subagents, scheduler | done |
-| TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | todo |
+| TASK-018-governed-prompt-promotion | TICKET-005-behavior-learning | TASK-016-lifecycle-operator-cli, TASK-017-behavior-review-reducers | lifecycle behavior, personas, daemon reload, lifecycle CLI | in-progress |
 | TASK-019-lifecycle-end-to-end-verification | TICKET-006-operations-adoption | TASK-018-governed-prompt-promotion | integration tests, fixtures, defect-fix hotspots | todo |
 | TASK-020-lifecycle-documentation-adoption | TICKET-006-operations-adoption | TASK-019-lifecycle-end-to-end-verification | README, selfdoc, AGENTS, example config, starter assets, agent skills | todo |
 
@@ -662,7 +662,9 @@ Stop condition:
 
 ### WAVE-009
 
-Status: planned
+Status: in_progress
+
+Activated: 2026-07-26
 
 Tasks:
 
@@ -687,6 +689,15 @@ Activation rule:
 
 - Activate the eligible tasks as one batch after syncing activation artifacts.
 - Create one isolated worktree per writing task from the synced epic branch.
+- Activation started from exact pushed WAVE-008 reconciliation checkpoint
+  `dd2ca290d89157b674d1cbc67d440c9d295f3cbd`.
+- TASK-018 is allocated to branch `task/TASK-018-governed-prompt-promotion` and
+  worktree
+  `/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion`.
+- Branch/worktree creation remains blocked until the activation checkpoint
+  passes GPT-5.5/xhigh review, is committed and pushed, activation sync passes
+  GPT-5.5/xhigh review and commit/push, and worktree readiness passes
+  GPT-5.5/xhigh review and commit/push.
 
 Stop condition:
 
@@ -772,9 +783,9 @@ Stop condition:
 - WAVE-001 through WAVE-008 are done and reconciled. WAVE-008 TASK-017 merged
   through PR #274 at `a7ac0cd`, TASK-016 merged through PR #275 at `3854e86`,
   and both clean task worktrees were removed and pruned.
-- WAVE-009 is the next activation target. WAVE-010 owns the user-required e2e
-  tests and Sprites event-pipeline validation after governed prompt promotion
-  lands; WAVE-011 documents adoption after verification.
+- WAVE-009 is active as a bundled TASK-018 work packet. WAVE-010 owns the
+  user-required e2e tests and Sprites event-pipeline validation after governed
+  prompt promotion lands; WAVE-011 documents adoption after verification.
 - The explicit implementation request confirms the full-profile strategy recommendations; reconciliation may narrow later parallelism when evidence changes.
 - Commit/sync planning and activation artifacts to epic/durable-lifecycle-pipeline before task worktrees.
 - Waves never overlap across reconciliation boundaries.

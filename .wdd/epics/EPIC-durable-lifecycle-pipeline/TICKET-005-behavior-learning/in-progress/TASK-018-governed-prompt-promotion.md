@@ -6,7 +6,7 @@ ticket: TICKET-005-behavior-learning
 wave: WAVE-009
 slug: governed-prompt-promotion
 title: Implement governed prompt promotion, evaluation, reload, and rollback
-status: todo
+status: in-progress
 depends_on: ["TASK-016-lifecycle-operator-cli", "TASK-017-behavior-review-reducers"]
 conflict_domains:
   - "src/lifecycle/behavior/**"
@@ -16,11 +16,11 @@ conflict_domains:
 assigned_model_class: codexHigh
 review_model_class: reviewGate
 branch: task/TASK-018-governed-prompt-promotion
-worker_worktree: null
-worktree_status: unassigned
+worker_worktree: /Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
+worktree_status: allocated_pending_creation
 pr: null
-current_gate: not_started
-branch_freshness: unknown
+current_gate: activation_checkpoint_review_pending
+branch_freshness: pending_activation_checkpoint
 verification:
   - "npx vitest run tests/unit/lifecycle/prompt-improvement-projector.test.ts tests/integration/lifecycle-prompt-promotion.test.ts tests/unit/daemon/reload.test.ts"
   - "npm run build"
@@ -32,7 +32,7 @@ verification:
 
 ## Status
 
-todo
+in-progress
 
 ## Parent Ticket
 
@@ -108,7 +108,13 @@ task/TASK-018-governed-prompt-promotion
 
 ## Worker Worktree
 
-None assigned. The controller must create or verify an isolated worktree before dispatch and provide its path.
+/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion
+
+Allocated by the controller for WAVE-009 bundled execution. Branch/worktree
+creation remains blocked until the activation checkpoint passes GPT-5.5/xhigh
+review, is committed/pushed to the epic branch, the activation-sync checkpoint
+passes GPT-5.5/xhigh review and is committed/pushed, and the worktree-readiness
+checkpoint passes GPT-5.5/xhigh review and is committed/pushed.
 
 ## PR / Patch Reference
 
@@ -132,6 +138,9 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 - Start in the assigned task worktree and confirm this task plus current orchestration state exist.
 - Do not switch branches in the controller checkout or start dependent work.
+- Implementation may not start until the controller confirms the reviewed
+  readiness commit is pushed on the epic branch, fast-forwarded into this
+  branch/worktree, and verified clean with current WDD state.
 - Preserve unrelated user changes and use typed neverthrow results across module boundaries.
 - Audit side effects and keep durable payloads bounded and secret-free.
 - Request reviewGate/`gpt-5.5` review with xhigh reasoning before commit; resolve all P1/P2 or Critical/High/Medium findings. Never use GPT-5.6.
@@ -163,7 +172,7 @@ Refactor only the new/touched boundary after green; do not broaden scope or chan
 
 ## Verification Evidence
 
-- Not run yet.
+- Not run yet; activation checkpoint review is pending.
 
 ## Review Feedback
 
