@@ -165,6 +165,42 @@ describe('ModelResolver', () => {
     expect(claude._unsafeUnwrap().modelId).toBe('sonnet');
   });
 
+  it('resolves an enabled contained Codex subscription model without API credentials', async () => {
+    const resolver = new ModelResolver(
+      {},
+      { claudeCode: { enabled: false, command: 'claude' } },
+      {
+        codex: {
+          enabled: true,
+          endpoint: 'http://codex-runner:9700',
+          token: 't'.repeat(32),
+        },
+      },
+    );
+
+    const codex = await resolver.resolve({
+      provider: 'codex-sandbox',
+      name: 'gpt-5.6-terra',
+      maxTokens: 2048,
+    });
+
+    expect(codex.isOk()).toBe(true);
+    expect(codex._unsafeUnwrap().provider).toBe('codex-sandbox');
+    expect(codex._unsafeUnwrap().modelId).toBe('gpt-5.6-terra');
+  });
+
+  it('returns a clear error when a Codex sandbox runner is disabled', async () => {
+    const resolver = new ModelResolver({});
+    const result = await resolver.resolve({
+      provider: 'codex-sandbox',
+      name: 'gpt-5.6-terra',
+      maxTokens: 2048,
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('subagentSandbox.codex');
+  });
+
   it('returns error when apiKey is missing for a provider that requires it', async () => {
     const resolver = new ModelResolver({ anthropic: { baseURL: 'https://example.com' } });
     const result = await resolver.resolve({

@@ -349,23 +349,27 @@ Once boot is verified, anything else uses `talonctl`:
 #### Subscription-backed sub-agents
 
 Only offer this when the user explicitly wants a small, bounded sub-agent task
-to use a Claude Code subscription instead of an API credential. It is not a
-foreground/background provider and does not use `talonctl add-provider`. Do not
-offer Codex CLI as a sub-agent model: its agentic mode cannot yet enforce
-Talon's filesystem-read boundary.
+to use a Claude Code or Codex subscription instead of an API credential. It is
+not a foreground/background provider and does not use `talonctl add-provider`.
+Do not offer direct Codex CLI as a sub-agent model: its agentic mode cannot yet
+enforce Talon's filesystem-read boundary.
 
 The CLI executable and its authenticated subscription state must exist inside
 the running `talond` container for this to work; a host-machine login is not
-automatically visible in Docker. For a headless subscription setup, inject the
-official `CLAUDE_CODE_OAUTH_TOKEN` into the container's environment instead.
-Before enabling it, explain that each attempt
-is a single isolated generation with no Talon tools, MCP servers, persona tools,
-or persistent session. Claude Code has tools disabled. Subscription quota is
+automatically visible in Docker. For a headless Claude subscription setup,
+inject the official `CLAUDE_CODE_OAUTH_TOKEN` into the container's environment
+instead. For Codex, enable the `codex-sandbox` Compose profile, authenticate
+with `CODEX_HOME=/auth` inside its own `codex-runner` volume, and use a dedicated
+Codex account; never mount the host's `~/.codex`, Talon data/config, or a Docker
+socket into that runner. Before enabling it, explain that each attempt is a
+single isolated generation with no Talon tools, MCP servers, persona tools, or
+persistent session. Claude Code has tools disabled. The Codex runner requires
+ChatGPT auth and fails closed on built-in tool activity. Subscription quota is
 external to Talon and no API-dollar estimate is produced.
 
-There is no `talonctl` command for `subagentCli` yet. With user approval, make
-the narrow manual `config/talond.yaml` change shown in the README's
-**Subscription-backed CLI sub-agents** section, then run `talonctl doctor` and
+There is no `talonctl` command for `subagentCli` or `subagentSandbox` yet. With
+user approval, make the narrow manual `config/talond.yaml` change shown in the
+README's **Subscription-backed sub-agents** section, then run `talonctl doctor` and
 restart the daemon with `docker compose restart talond`; `talonctl reload` does
 not rebuild the sub-agent resolver. Do not make a live sub-agent invocation
 solely as a test, because it would consume subscription quota.

@@ -79,4 +79,14 @@ auth:
     anthropic:
       apiKey: ${ANTHROPIC_API_KEY}
 
+# Optional contained Codex subscription runner. Start it with
+# `docker compose --profile codex-sandbox up -d`, then log into its dedicated
+# /auth volume. See the main README's Subscription-backed sub-agents section.
+#
+# subagentSandbox:
+#   codex:
+#     enabled: true
+#     endpoint: http://codex-runner:9700
+#     token: ${TALON_CODEX_RUNNER_TOKEN}
+
 logLevel: info

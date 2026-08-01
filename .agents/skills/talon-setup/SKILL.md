@@ -260,23 +260,29 @@ If a test fails, troubleshoot:
 #### Optional: subscription-backed sub-agents
 
 Only discuss this when the user specifically wants small, bounded sub-agent
-tasks to use an existing Claude Code subscription instead of API credentials.
-It is not a foreground or background provider configuration and does not use
-`add-provider`. Do not offer Codex CLI as a sub-agent model: its agentic mode
-cannot yet enforce Talon's filesystem-read boundary.
+tasks to use an existing Claude Code or Codex subscription instead of API
+credentials. It is not a foreground or background provider configuration and
+does not use `add-provider`. Do not offer direct Codex CLI as a sub-agent model:
+its agentic mode cannot yet enforce Talon's filesystem-read boundary.
 
 First confirm that the selected CLI is installed and already authenticated as
 the same OS user that runs `talond`, or that the official
-`CLAUDE_CODE_OAUTH_TOKEN` is supplied for a headless subscription setup. Then show the user the `subagentCli` and
-`subagents` example from the README's **Subscription-backed CLI sub-agents**
-section. Explain the limits before they enable it: one isolated generation per
-task, no Talon tools/MCP/persona-tool access, no persistent session, and no
-estimated API-dollar cost. Claude Code has tools disabled. The configured
-sub-agent timeout terminates the CLI process group before failover; `maxTokens`
-is advisory.
+`CLAUDE_CODE_OAUTH_TOKEN` is supplied for a headless subscription setup. For
+Codex, first ensure Docker or rootless Podman is available on Linux/macOS, then
+follow the README's runner login and container commands using a dedicated Codex
+account; never add the user's host `~/.codex` directory as a Talon mount. Show
+the user the `subagentCli`, `subagentSandbox`, and `subagents` example from the
+README's **Subscription-backed sub-agents** section. Explain the limits before
+they enable it: one isolated generation per task, no Talon tools/MCP/persona
+tool access, no persistent session, and no estimated API-dollar cost. Claude
+Code has tools disabled. Codex runs only in the `codex-runner` container with
+no Talon data/config mounts or Docker socket, uses ChatGPT auth only, and fails
+closed on built-in tool activity. The configured sub-agent timeout aborts the
+runner request before failover; `maxTokens` is advisory.
 
-There is no `talonctl` configuration command for `subagentCli` yet, so make
-this narrowly-scoped manual YAML exception only after user confirmation. Run
+There is no `talonctl` configuration command for `subagentCli` or
+`subagentSandbox` yet, so make this narrowly-scoped manual YAML exception only
+after user confirmation. Run
 `npx talonctl doctor --config talond.yaml` after the edit, then restart the
 daemon because hot reload does not rebuild the sub-agent resolver. Do not run a
 live sub-agent merely to test it: that would consume the user's subscription quota.

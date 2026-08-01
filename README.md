@@ -1196,28 +1196,31 @@ subagents:
 
 | Field             | Purpose                                                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `provider`        | Provider slot: `anthropic`, `openai`, `google`, `ollama`, or `claude-code` (required)                                       |
+| `provider`        | Provider slot: `anthropic`, `openai`, `google`, `ollama`, `claude-code`, or `codex-sandbox` (required)                    |
 | `name`            | Model name as the provider expects it (required)                                                                         |
-| `maxTokens`       | Max output tokens; falls back to the manifest value. Advisory for Claude Code                                           |
+| `maxTokens`       | Max output tokens; falls back to the manifest value. Advisory for subscription-backed adapters                          |
 | `timeoutMs`       | Per-model wall-clock timeout. On expiry the runner aborts the in-flight AI SDK call and fails over to the next model     |
 | `providerOptions` | Free-form record forwarded to the AI SDK call. Use this for vendor-specific knobs (see `providerOptions` below)         |
 
 `anthropic`, `openai`, `google`, and `ollama` are AI SDK provider slots.
 `claude-code` is a direct, subscription-authenticated adapter available only to
-sub-agents after explicit opt-in under `subagentCli`; it does not use the
-foreground/background `AgentProvider` registry. `codex-cli`, `gemini-cli`, and
-`openai-compatible` are not sub-agent model providers; use `ollama` for
-OpenAI-compatible sub-agent endpoints. Codex CLI is deliberately excluded here
-because its agentic execution mode cannot yet enforce Talon's tool and
-filesystem-read boundaries.
+sub-agents after explicit opt-in under `subagentCli`. `codex-sandbox` is a
+subscription-authenticated adapter that calls a separately deployed Codex
+runner under `subagentSandbox`; neither uses the foreground/background
+`AgentProvider` registry. `codex-cli`, `gemini-cli`, and `openai-compatible`
+are not sub-agent model providers; use `ollama` for OpenAI-compatible
+sub-agent endpoints. Direct Codex CLI remains deliberately excluded because its
+agentic execution mode cannot enforce Talon's filesystem-read boundary.
 
-#### Subscription-backed CLI sub-agents
+#### Subscription-backed sub-agents
 
 Use this for small, bounded sub-agent tasks when the daemon's OS user is already
-logged into Claude Code. This path does not use `auth.providers` or an API key:
-the child receives an explicit environment allowlist containing its normal
-Claude login paths and, for headless setups, `CLAUDE_CODE_OAUTH_TOKEN`. API-key
-and alternate API-routing environment variables are excluded before it starts.
+logged into Claude Code, or when a separately contained runner is logged into a
+dedicated Codex/ChatGPT account. Neither path uses `auth.providers` or an API
+key. The Claude child receives an explicit environment allowlist containing its
+normal Claude login paths and, for headless setups, `CLAUDE_CODE_OAUTH_TOKEN`.
+API-key and alternate API-routing environment variables are excluded before it
+starts.
 
 ```yaml
 subagentCli:
@@ -1225,11 +1228,20 @@ subagentCli:
     enabled: true
     command: claude # optional path or command name
 
+subagentSandbox:
+  codex:
+    enabled: true
+    endpoint: http://codex-runner:9700 # use http://127.0.0.1:9700 for a native daemon
+    token: ${TALON_CODEX_RUNNER_TOKEN}
+
 subagents:
   session-summarizer:
     model:
       - provider: claude-code
         name: claude-sonnet-4-6
+        timeoutMs: 60000
+      - provider: codex-sandbox
+        name: gpt-5.6-terra
         timeoutMs: 60000
       - provider: anthropic # ordinary API fallback, if configured
         name: claude-haiku-4-5-20251001
@@ -1240,15 +1252,56 @@ tools, MCP servers, provider sessions, or persona tool access are exposed.
 Claude Code runs in safe mode with tools disabled and no session persistence.
 The configured `timeoutMs` aborts the whole CLI process group, waits briefly
 for cleanup, and then fails over. Claude Code does not provide a hard
-`maxTokens` limit.
+`maxTokens` limit. Codex uses a fresh App Server process, ephemeral thread, and
+empty temporary home/workspace per attempt. System instructions are passed in
+the App Server's trusted developer-instruction field, while the task remains a
+user message. It starts only with ChatGPT authentication; API-key and gateway
+authentication fail closed. The runner has no Talon host-tools bridge, MCP
+configuration, persona data, host mounts, or Docker socket. Any built-in Codex
+tool activity is interrupted and returned as a failed attempt, so the next
+model can take over.
+
+##### Codex runner deployment
+
+The runner is an optional sidecar, not a process inside `talond`. It is the
+required containment boundary on Linux and macOS (via Docker Desktop's Linux
+VM). Use a dedicated Codex/ChatGPT account: its runner login remains sensitive
+subscription state even though it is never exposed to Talon.
+
+For the Docker starter, add a random `TALON_CODEX_RUNNER_TOKEN` (at least 32
+characters) to `.env`, then start the optional profile and authenticate inside
+the isolated runner volume:
+
+```bash
+docker compose --profile codex-sandbox up -d
+docker compose exec -e CODEX_HOME=/auth -it codex-runner codex login
+docker compose exec -e CODEX_HOME=/auth codex-runner codex login status
+```
+
+The Compose service has no host port, no Talon volume, and no Docker socket.
+For a native Linux or macOS daemon, build and run the same image with Docker or
+rootless Podman, publish it only on loopback, and configure the endpoint above:
+
+```bash
+docker build -f deploy/Dockerfile.codex-runner -t talon-codex-runner .
+docker volume create talon-codex-runner-auth
+docker run --rm -it -v talon-codex-runner-auth:/auth -e CODEX_HOME=/auth \
+  --entrypoint codex talon-codex-runner login
+docker run -d --name talon-codex-runner --restart unless-stopped \
+  --read-only --tmpfs /tmp:rw,noexec,nosuid,size=256m \
+  --cap-drop ALL --cap-add SETUID --cap-add SETGID --security-opt no-new-privileges:true \
+  -p 127.0.0.1:9700:9700 -v talon-codex-runner-auth:/auth \
+  -e TALON_CODEX_RUNNER_TOKEN="$TALON_CODEX_RUNNER_TOKEN" talon-codex-runner
+```
 
 Authenticate Claude Code interactively as the same OS user that runs `talond`
-before enabling it. Restart the daemon after changing `subagentCli` or a
-sub-agent model chain; hot reload does not rebuild the resolver and bound
-sub-agent runners. Plan/quota consumption and any subscription price are
-external to Talon, so sub-agent results may include token counts where the CLI
-supplies them but never invent a `costUsd` value. Authentication, quota, or CLI
-failures are normal failover failures and try the next entry in the chain.
+before enabling it. Restart the daemon after changing `subagentCli`,
+`subagentSandbox`, or a sub-agent model chain; hot reload does not rebuild the
+resolver and bound sub-agent runners. Plan/quota consumption and any
+subscription price are external to Talon, so sub-agent results may include token
+counts where the CLI supplies them but never invent a `costUsd` value.
+Authentication, quota, runner, or CLI failures are normal failover failures and
+try the next entry in the chain.
 
 **How failover works:**
 
@@ -1258,7 +1311,7 @@ failures are normal failover failures and try the next entry in the chain.
 4. After exhausting the override list, the manifest's `model` is tried as a final fallback
 5. If all models fail, the error includes a summary of each attempt and why it failed
 
-Overrides apply everywhere a sub-agent runs, including the context roller's summarizer path. Each attempt gets its own `timeoutMs` and `providerOptions` — settings do not leak across chain entries. `providerOptions` is ignored for subscription CLI entries.
+Overrides apply everywhere a sub-agent runs, including the context roller's summarizer path. Each attempt gets its own `timeoutMs` and `providerOptions` — settings do not leak across chain entries. `providerOptions` is ignored for subscription-backed entries.
 
 Sub-agents with no entry in `subagents:` use their manifest model unchanged. All per-model fields except `provider` and `name` are optional.
 

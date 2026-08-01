@@ -287,7 +287,11 @@ export async function bootstrap(
   let modelResolver: ModelResolver | null = null;
   if (mergedAgentMap.size > 0) {
     const agentMap = mergedAgentMap;
-    modelResolver = new ModelResolver(config.auth.providers ?? {}, config.subagentCli);
+    modelResolver = new ModelResolver(
+      config.auth.providers ?? {},
+      config.subagentCli,
+      config.subagentSandbox,
+    );
     subAgentRunner = new SubAgentRunner(
       agentMap,
       modelResolver,

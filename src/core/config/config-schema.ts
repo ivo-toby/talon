@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { isUnsafeCodexSandboxToken } from '../../subagents/codex-sandbox-protocol.js';
 
 import {
   MAX_HOPS,
@@ -418,6 +419,7 @@ const SubAgentModelProviderSchema = z.enum([
   'google',
   'ollama',
   'claude-code',
+  'codex-sandbox',
 ]);
 
 const ClaudeCodeSubAgentCliSchema = z.object({
@@ -432,6 +434,38 @@ const ClaudeCodeSubAgentCliSchema = z.object({
  */
 export const SubAgentCliConfigSchema = z.object({
   claudeCode: ClaudeCodeSubAgentCliSchema.default(() => ClaudeCodeSubAgentCliSchema.parse({})),
+});
+
+const CodexSandboxSubAgentConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    endpoint: z.string().url().default('http://codex-runner:9700'),
+    /** Shared bearer token for Talon → runner traffic. Keep it out of the runner child. */
+    token: z
+      .string()
+      .min(32)
+      .refine((token) => !isUnsafeCodexSandboxToken(token), {
+        message: 'token must be a unique random value, not the documented placeholder',
+      })
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled && value.token === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['token'],
+        message: 'token is required when subagentSandbox.codex is enabled',
+      });
+    }
+  });
+
+/**
+ * Externally contained subscription adapters for bounded subagent runs.
+ * The Codex process lives in a separately deployed runner container, not in
+ * the daemon or the AgentProvider registry.
+ */
+export const SubAgentSandboxConfigSchema = z.object({
+  codex: CodexSandboxSubAgentConfigSchema.default(() => CodexSandboxSubAgentConfigSchema.parse({})),
 });
 
 export const SubAgentModelOverrideSchema = z.object({
@@ -470,6 +504,7 @@ export const TalondConfigSchema = z
     sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
     langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
     subagentCli: SubAgentCliConfigSchema.default(() => SubAgentCliConfigSchema.parse({})),
+    subagentSandbox: SubAgentSandboxConfigSchema.default(() => SubAgentSandboxConfigSchema.parse({})),
     subagents: SubAgentsConfigSchema.default({}),
     a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),

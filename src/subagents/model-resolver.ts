@@ -1,7 +1,8 @@
 import type { LanguageModel } from 'ai';
 import { ok, err, type Result } from 'neverthrow';
 import { ConfigError } from '../core/errors/index.js';
-import type { SubAgentCliConfig } from '../core/config/config-types.js';
+import type { SubAgentCliConfig, SubAgentSandboxConfig } from '../core/config/config-types.js';
+import { CodexSandboxLanguageModel } from './codex-sandbox-language-model.js';
 import {
   SubscriptionCliLanguageModel,
   type SubscriptionCliProvider,
@@ -20,6 +21,7 @@ interface ModelConfig {
 
 const INFERENCE_PROVIDERS = ['anthropic', 'openai', 'google', 'ollama'] as const;
 const SUBSCRIPTION_CLI_PROVIDERS = ['claude-code'] as const;
+const SANDBOXED_SUBSCRIPTION_PROVIDERS = ['codex-sandbox'] as const;
 
 function isInferenceProvider(provider: string): provider is (typeof INFERENCE_PROVIDERS)[number] {
   return (INFERENCE_PROVIDERS as readonly string[]).includes(provider);
@@ -31,11 +33,20 @@ function isSubscriptionCliProvider(
   return (SUBSCRIPTION_CLI_PROVIDERS as readonly string[]).includes(provider);
 }
 
+function isSandboxedSubscriptionProvider(
+  provider: string,
+): provider is (typeof SANDBOXED_SUBSCRIPTION_PROVIDERS)[number] {
+  return (SANDBOXED_SUBSCRIPTION_PROVIDERS as readonly string[]).includes(provider);
+}
+
 export class ModelResolver {
   constructor(
     private readonly providers: Record<string, ProviderCredentials>,
     private readonly subscriptionCli: SubAgentCliConfig = {
       claudeCode: { enabled: false, command: 'claude' },
+    },
+    private readonly sandbox: SubAgentSandboxConfig = {
+      codex: { enabled: false, endpoint: 'http://codex-runner:9700' },
     },
   ) {}
 
@@ -44,11 +55,19 @@ export class ModelResolver {
       return this.resolveSubscriptionCli(config.provider, config.name);
     }
 
+    if (isSandboxedSubscriptionProvider(config.provider)) {
+      return this.resolveCodexSandbox(config.name);
+    }
+
     if (!isInferenceProvider(config.provider)) {
       return err(
         new ConfigError(
           `Unsupported sub-agent model provider "${config.provider}". ` +
-            `Supported providers: ${[...INFERENCE_PROVIDERS, ...SUBSCRIPTION_CLI_PROVIDERS].join(', ')}. ` +
+            `Supported providers: ${[
+              ...INFERENCE_PROVIDERS,
+              ...SUBSCRIPTION_CLI_PROVIDERS,
+              ...SANDBOXED_SUBSCRIPTION_PROVIDERS,
+            ].join(', ')}. ` +
             'Use "ollama" for OpenAI-compatible sub-agent endpoints.',
         ),
       );
@@ -102,6 +121,25 @@ export class ModelResolver {
         provider,
         modelName,
         command: cli.command,
+      }),
+    );
+  }
+
+  private resolveCodexSandbox(modelName: string): Result<LanguageModel, ConfigError> {
+    const codex = this.sandbox.codex;
+    if (!codex.enabled || codex.token === undefined) {
+      return err(
+        new ConfigError(
+          'Sandboxed subscription provider "codex-sandbox" is disabled. Enable subagentSandbox.codex with a runner token in talond.yaml.',
+        ),
+      );
+    }
+
+    return ok(
+      new CodexSandboxLanguageModel({
+        modelName,
+        endpoint: codex.endpoint,
+        token: codex.token,
       }),
     );
   }

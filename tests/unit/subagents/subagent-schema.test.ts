@@ -79,6 +79,15 @@ describe('SubAgentManifestSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('accepts the externally contained Codex subscription provider as a model provider', () => {
+    const result = SubAgentManifestSchema.safeParse({
+      ...minimal,
+      model: { provider: 'codex-sandbox', name: 'gpt-5.6-terra' },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
   it('rejects empty model name', () => {
     const result = SubAgentManifestSchema.safeParse({
       ...minimal,

@@ -14,7 +14,11 @@ import { SubAgentLoader } from '../../subagents/subagent-loader.js';
 import { ModelResolver } from '../../subagents/model-resolver.js';
 import type { SubAgentContext, SubAgentResult } from '../../subagents/subagent-types.js';
 import { runSubAgentModelChain } from '../../subagents/subagent-model-chain.js';
-import type { SubAgentCliConfig, SubAgentsConfig } from '../../core/config/config-types.js';
+import type {
+  SubAgentCliConfig,
+  SubAgentSandboxConfig,
+  SubAgentsConfig,
+} from '../../core/config/config-types.js';
 import type pino from 'pino';
 
 // ---------------------------------------------------------------------------
@@ -27,6 +31,7 @@ export interface RunSubAgentOptions {
   subagentsDir: string;
   providers: Record<string, { apiKey?: string; baseURL?: string }>;
   subagentCli?: SubAgentCliConfig;
+  subagentSandbox?: SubAgentSandboxConfig;
   subagentOverrides?: SubAgentsConfig;
 }
 
@@ -103,7 +108,7 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
 
   // Resolve and run the ordered model chain with the same semantics the
   // daemon uses, including timeout cancellation and fallbacks.
-  const resolver = new ModelResolver(providers, options.subagentCli);
+  const resolver = new ModelResolver(providers, options.subagentCli, options.subagentSandbox);
   const systemPrompt = agent.promptContents.join('\n\n');
   const chainResult = await runSubAgentModelChain({
     name,
@@ -175,6 +180,7 @@ export async function runSubAgentCommand(options: {
           subagentsDir: dir,
           providers: config.auth.providers ?? {},
           subagentCli: config.subagentCli,
+          subagentSandbox: config.subagentSandbox,
           subagentOverrides: config.subagents ?? {},
         });
         console.log(JSON.stringify(result, null, 2));

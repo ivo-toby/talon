@@ -27,6 +27,7 @@ import type {
   LangfuseConfigSchema,
   ProviderConfigSchema,
   SubAgentCliConfigSchema,
+  SubAgentSandboxConfigSchema,
   SubAgentsConfigSchema,
   SubAgentModelOverrideSchema,
   A2AConfigSchema,
@@ -101,6 +102,9 @@ export type LangfuseConfig = z.infer<typeof LangfuseConfigSchema>;
 
 /** Subscription-authenticated CLI settings for bounded subagent generations. */
 export type SubAgentCliConfig = z.infer<typeof SubAgentCliConfigSchema>;
+
+/** Settings for externally contained subscription subagent adapters. */
+export type SubAgentSandboxConfig = z.infer<typeof SubAgentSandboxConfigSchema>;
 
 /** Per-subagent model override configuration. */
 export type SubAgentsConfig = z.infer<typeof SubAgentsConfigSchema>;

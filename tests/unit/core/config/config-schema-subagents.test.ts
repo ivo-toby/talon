@@ -78,6 +78,52 @@ describe('TalondConfigSchema — subagents override', () => {
     }
   });
 
+  it('accepts an enabled externally contained Codex subscription runner', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagentSandbox: {
+        codex: {
+          enabled: true,
+          endpoint: 'http://codex-runner:9700',
+          token: 't'.repeat(32),
+        },
+      },
+      subagents: {
+        'memory-groomer': {
+          model: [{ provider: 'codex-sandbox', name: 'gpt-5.6-terra' }],
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentSandbox.codex).toMatchObject({
+        enabled: true,
+        endpoint: 'http://codex-runner:9700',
+      });
+    }
+  });
+
+  it('rejects an enabled Codex sandbox runner without a token', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagentSandbox: { codex: { enabled: true } },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects the documented Codex runner token placeholder', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagentSandbox: {
+        codex: {
+          enabled: true,
+          token: 'replace_with_a_random_32_character_minimum_value',
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
   it('rejects model entry with empty name', () => {
     const result = TalondConfigSchema.safeParse({
       subagents: {
