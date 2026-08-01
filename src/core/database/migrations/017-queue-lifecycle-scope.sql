@@ -2,7 +2,14 @@
 -- never part of a caller-supplied work payload.
 
 ALTER TABLE queue_items ADD COLUMN lifecycle_persona TEXT
-  CHECK (lifecycle_persona IS NULL OR (typeof(lifecycle_persona) = 'text' AND lifecycle_persona_valid(lifecycle_persona)));
+  CHECK (
+    lifecycle_persona IS NULL
+    OR (
+      typeof(lifecycle_persona) = 'text'
+      AND length(lifecycle_persona) BETWEEN 1 AND 1024
+      AND instr(lifecycle_persona, char(0)) = 0
+    )
+  );
 ALTER TABLE queue_items ADD COLUMN lifecycle_item_type TEXT
   CHECK (
     (lifecycle_persona IS NULL AND lifecycle_item_type IS NULL)

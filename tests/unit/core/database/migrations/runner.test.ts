@@ -154,6 +154,68 @@ describe('runMigrations', () => {
     expect(tbl).toBeDefined();
   });
 
+  it('keeps ordinary queue inserts writable without lifecycle SQL functions after upgrade', () => {
+    const realMigrationsDir = join(
+      import.meta.dirname,
+      '../../../../../src/core/database/migrations',
+    );
+    const dbPath = join(tmpDir, 'main-compatible-queue.sqlite');
+
+    const migratedDb = new Database(dbPath);
+    try {
+      const result = runMigrations(migratedDb, realMigrationsDir);
+      expect(result.isOk()).toBe(true);
+      expect(migratedDb.pragma('user_version', { simple: true })).toBe(20);
+    } finally {
+      migratedDb.close();
+    }
+
+    // Simulates current main opening a migrated DB. Main does not register the
+    // lifecycle SQL validators, but it should still be able to perform normal
+    // writes against pre-existing tables it owns.
+    const mainCompatibleDb = new Database(dbPath);
+    try {
+      mainCompatibleDb.pragma('foreign_keys = ON');
+      mainCompatibleDb
+        .prepare(
+          `INSERT INTO channels (id, type, name, config, enabled, created_at, updated_at)
+           VALUES ('channel-main-compatible', 'terminal', 'main-compatible', '{}', 1, 1, 1)`,
+        )
+        .run();
+      mainCompatibleDb
+        .prepare(
+          `INSERT INTO threads (id, channel_id, external_id, metadata, created_at, updated_at)
+           VALUES ('thread-main-compatible', 'channel-main-compatible', 'external', '{}', 1, 1)`,
+        )
+        .run();
+
+      expect(() =>
+        mainCompatibleDb
+          .prepare(
+            `INSERT INTO queue_items (
+              id, thread_id, type, status, payload, created_at, updated_at
+            ) VALUES (
+              'queue-main-compatible', 'thread-main-compatible', 'message', 'pending',
+              '{}', 1, 1
+            )`,
+          )
+          .run(),
+      ).not.toThrow();
+
+      expect(
+        mainCompatibleDb
+          .prepare(
+            `SELECT lifecycle_persona, lifecycle_item_type
+             FROM queue_items
+             WHERE id = 'queue-main-compatible'`,
+          )
+          .get(),
+      ).toEqual({ lifecycle_persona: null, lifecycle_item_type: null });
+    } finally {
+      mainCompatibleDb.close();
+    }
+  });
+
   it('enforces behavior ledger evidence and lineage invariants at the migration boundary', () => {
     const realMigrationsDir = join(
       import.meta.dirname,
