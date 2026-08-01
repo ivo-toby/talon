@@ -12,8 +12,10 @@
 import { join } from 'node:path';
 import { SubAgentLoader } from '../../subagents/subagent-loader.js';
 import { ModelResolver } from '../../subagents/model-resolver.js';
-import type { SubAgentResult } from '../../subagents/subagent-types.js';
-import { wrapProviderOptions } from '../../subagents/provider-options.js';
+import type { SubAgentContext, SubAgentResult } from '../../subagents/subagent-types.js';
+import { runSubAgentModelChain } from '../../subagents/subagent-model-chain.js';
+import type { SubAgentCliConfig, SubAgentsConfig } from '../../core/config/config-types.js';
+import type pino from 'pino';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -21,39 +23,69 @@ import { wrapProviderOptions } from '../../subagents/provider-options.js';
 
 export interface RunSubAgentOptions {
   name: string;
-  input: string;          // JSON string
+  input: string; // JSON string
   subagentsDir: string;
   providers: Record<string, { apiKey?: string; baseURL?: string }>;
-  subagentOverrides?: Record<string, { model: Array<{ provider: string; name: string; maxTokens?: number; timeoutMs?: number; providerOptions?: Record<string, unknown> }> }>;
+  subagentCli?: SubAgentCliConfig;
+  subagentOverrides?: SubAgentsConfig;
 }
 
 // ---------------------------------------------------------------------------
 // Core logic (importable, no console / process.exit)
 // ---------------------------------------------------------------------------
 
-const makeStderrLogger = () =>
-  ({
-    info: (...args: unknown[]) => { process.stderr.write(`[info] ${args.map(String).join(' ')}\n`); },
-    warn: (...args: unknown[]) => { process.stderr.write(`[warn] ${args.map(String).join(' ')}\n`); },
-    error: (...args: unknown[]) => { process.stderr.write(`[error] ${args.map(String).join(' ')}\n`); },
+function makeStderrLogger(): pino.Logger {
+  const formatArgs = (args: unknown[]): string => args.map(formatLogArgument).join(' ');
+  const logger = {
+    info: (...args: unknown[]) => {
+      process.stderr.write(`[info] ${formatArgs(args)}\n`);
+    },
+    warn: (...args: unknown[]) => {
+      process.stderr.write(`[warn] ${formatArgs(args)}\n`);
+    },
+    error: (...args: unknown[]) => {
+      process.stderr.write(`[error] ${formatArgs(args)}\n`);
+    },
     debug: () => {},
-    child() { return this; },
-  }) as any;
+    child: () => logger,
+  };
+
+  return logger as unknown as pino.Logger;
+}
+
+function formatLogArgument(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value instanceof Error) return value.stack ?? value.message;
+
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function unavailableServices(logger: pino.Logger): SubAgentContext['services'] {
+  return { logger } as unknown as SubAgentContext['services'];
+}
 
 export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgentResult> {
   const { name, input: inputStr, subagentsDir, providers } = options;
 
   // Parse input JSON.
-  let input: Record<string, unknown>;
+  let parsed: unknown;
   try {
-    input = JSON.parse(inputStr);
+    parsed = JSON.parse(inputStr);
   } catch {
     throw new Error(`Invalid JSON input: ${inputStr}`);
   }
-
-  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+  if (!isRecord(parsed)) {
     throw new Error('Invalid JSON input: must be a JSON object');
   }
+  const input = parsed;
 
   // Load sub-agents.
   const logger = makeStderrLogger();
@@ -69,110 +101,36 @@ export async function runSubAgent(options: RunSubAgentOptions): Promise<SubAgent
     throw new Error(`Sub-agent "${name}" not found. Available: ${available}`);
   }
 
-  // Resolve model — try overrides first, then manifest fallback.
-  const resolver = new ModelResolver(providers);
-  const overrideConfig = options.subagentOverrides?.[name];
-  let resolvedModel;
-  let resolvedMaxTokens = agent.manifest.model.maxTokens;
-  let resolvedTimeoutMs = agent.manifest.timeoutMs;
-  let resolvedProviderOptions: Record<string, unknown> | undefined;
-  let resolvedProviderName = agent.manifest.model.provider;
-
-  if (overrideConfig) {
-    for (const entry of overrideConfig.model) {
-      const entryMaxTokens = entry.maxTokens ?? agent.manifest.model.maxTokens;
-      const result = await resolver.resolve({
-        provider: entry.provider,
-        name: entry.name,
-        maxTokens: entryMaxTokens,
-      });
-      if (result.isOk()) {
-        resolvedModel = result.value;
-        resolvedMaxTokens = entryMaxTokens;
-        resolvedTimeoutMs = entry.timeoutMs ?? agent.manifest.timeoutMs;
-        resolvedProviderOptions = entry.providerOptions;
-        resolvedProviderName = entry.provider;
-        logger.info(`Resolved model: ${entry.provider}/${entry.name}`);
-        break;
-      }
-      logger.warn(`Model ${entry.provider}/${entry.name} failed, trying next`);
-    }
-  }
-
-  if (!resolvedModel) {
-    const modelResult = await resolver.resolve(agent.manifest.model);
-    if (modelResult.isErr()) {
-      throw new Error(`Model resolution failed: ${modelResult.error.message}`);
-    }
-    resolvedModel = modelResult.value;
-  }
-
-  // Execute with resolved timeout (from override or manifest).
-  //
-  // NOTE: This function contains its own failover + timeout loop that mirrors
-  // SubAgentRunner.executeInternal (src/subagents/subagent-runner.ts). The two
-  // implementations share wrapProviderOptions for provider-allowlist safety,
-  // but the outer loop structure is still duplicated. Fixes to failover
-  // semantics must be applied in both places until this is deduplicated.
-  // TODO(#159): extract a shared runSubAgentChain helper used by runner + CLI + bootstrap.
+  // Resolve and run the ordered model chain with the same semantics the
+  // daemon uses, including timeout cancellation and fallbacks.
+  const resolver = new ModelResolver(providers, options.subagentCli);
   const systemPrompt = agent.promptContents.join('\n\n');
-  const abortController = new AbortController();
-  const wrappedProviderOptions = wrapProviderOptions(
-    resolvedProviderName,
-    resolvedProviderOptions,
+  const chainResult = await runSubAgentModelChain({
+    name,
+    agent,
+    input,
+    override: options.subagentOverrides?.[name],
+    modelResolver: resolver,
     logger,
-    { subagent: name, source: 'cli' },
-  );
-  const runPromise = agent.run(
-    {
+    createContext: ({ model, entry, abortSignal, providerOptions }) => ({
       threadId: 'cli-test',
       personaId: 'cli-test',
       systemPrompt,
-      model: resolvedModel,
-      maxOutputTokens: resolvedMaxTokens,
+      model,
+      maxOutputTokens: entry.maxTokens,
       rootPaths: agent.manifest.rootPaths,
-      services: {
-        memory: {} as any,
-        schedules: {} as any,
-        personas: {} as any,
-        channels: {} as any,
-        threads: {} as any,
-        messages: {} as any,
-        runs: {} as any,
-        queue: {} as any,
-        logger,
-      },
+      services: unavailableServices(logger),
       telemetry: { isEnabled: false },
-      abortSignal: abortController.signal,
-      providerOptions: wrappedProviderOptions,
-    },
-    input,
-  );
-
-  const timeoutMs = resolvedTimeoutMs;
-  let timeoutId: ReturnType<typeof setTimeout>;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeoutId = setTimeout(
-      () => {
-        abortController.abort();
-        reject(new Error(`Sub-agent "${name}" timed out after ${timeoutMs}ms`));
-      },
-      timeoutMs,
-    );
+      abortSignal,
+      providerOptions,
+    }),
   });
 
-  let result: Awaited<ReturnType<typeof agent.run>>;
-  try {
-    result = await Promise.race([runPromise, timeoutPromise]);
-  } finally {
-    clearTimeout(timeoutId!);
+  if (chainResult.isErr()) {
+    throw new Error(`Sub-agent execution failed: ${chainResult.error.message}`);
   }
 
-  if (result.isErr()) {
-    throw new Error(`Sub-agent execution failed: ${result.error.message}`);
-  }
-
-  return result.value;
+  return chainResult.value.result;
 }
 
 // ---------------------------------------------------------------------------
@@ -216,6 +174,7 @@ export async function runSubAgentCommand(options: {
           input: options.input,
           subagentsDir: dir,
           providers: config.auth.providers ?? {},
+          subagentCli: config.subagentCli,
           subagentOverrides: config.subagents ?? {},
         });
         console.log(JSON.stringify(result, null, 2));
@@ -234,4 +193,3 @@ export async function runSubAgentCommand(options: {
     process.exit(1);
   }
 }
-

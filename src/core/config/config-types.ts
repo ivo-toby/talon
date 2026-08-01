@@ -26,6 +26,7 @@ import type {
   BackgroundAgentConfigSchema,
   LangfuseConfigSchema,
   ProviderConfigSchema,
+  SubAgentCliConfigSchema,
   SubAgentsConfigSchema,
   SubAgentModelOverrideSchema,
   A2AConfigSchema,
@@ -97,6 +98,9 @@ export type SpritesConfig = z.infer<typeof SpritesConfigSchema>;
 
 /** Langfuse Cloud observability settings. */
 export type LangfuseConfig = z.infer<typeof LangfuseConfigSchema>;
+
+/** Subscription-authenticated CLI settings for bounded subagent generations. */
+export type SubAgentCliConfig = z.infer<typeof SubAgentCliConfigSchema>;
 
 /** Per-subagent model override configuration. */
 export type SubAgentsConfig = z.infer<typeof SubAgentsConfigSchema>;

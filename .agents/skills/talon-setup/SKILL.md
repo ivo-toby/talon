@@ -257,6 +257,30 @@ If a test fails, troubleshoot:
 - Auth failure → Codex: `Codex auth login`. Gemini: run `gemini` interactively once for OAuth.
 - JSON parse failure → Gemini CLI version too old, see https://github.com/google-gemini/gemini-cli for upgrade instructions
 
+#### Optional: subscription-backed sub-agents
+
+Only discuss this when the user specifically wants small, bounded sub-agent
+tasks to use an existing Claude Code subscription instead of API credentials.
+It is not a foreground or background provider configuration and does not use
+`add-provider`. Do not offer Codex CLI as a sub-agent model: its agentic mode
+cannot yet enforce Talon's filesystem-read boundary.
+
+First confirm that the selected CLI is installed and already authenticated as
+the same OS user that runs `talond`, or that the official
+`CLAUDE_CODE_OAUTH_TOKEN` is supplied for a headless subscription setup. Then show the user the `subagentCli` and
+`subagents` example from the README's **Subscription-backed CLI sub-agents**
+section. Explain the limits before they enable it: one isolated generation per
+task, no Talon tools/MCP/persona-tool access, no persistent session, and no
+estimated API-dollar cost. Claude Code has tools disabled. The configured
+sub-agent timeout terminates the CLI process group before failover; `maxTokens`
+is advisory.
+
+There is no `talonctl` configuration command for `subagentCli` yet, so make
+this narrowly-scoped manual YAML exception only after user confirmation. Run
+`npx talonctl doctor --config talond.yaml` after the edit, then restart the
+daemon because hot reload does not rebuild the sub-agent resolver. Do not run a
+live sub-agent merely to test it: that would consume the user's subscription quota.
+
 ### Step 4: Channel configuration
 
 Ask: **"Which channel do you want to connect first?"**

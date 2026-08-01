@@ -140,12 +140,12 @@ export async function run(
       : (typeof parsed.suggestedContinuation === 'string' ? parsed.suggestedContinuation : '');
 
     const normalized: ObserverOutput = {
-      observations: parsed.observations as ObserverOutput['observations'],
+      observations: parsed.observations,
       taskComplete,
       currentTask,
       suggestedContinuation,
       memoryUpdates: Array.isArray(parsed.memoryUpdates)
-        ? (parsed.memoryUpdates as ObserverOutput['memoryUpdates'])
+        ? parsed.memoryUpdates
         : [],
     };
 
@@ -155,7 +155,6 @@ export async function run(
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
-        costUsd: 0,
       },
     });
   } catch (error) {

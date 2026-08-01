@@ -412,7 +412,27 @@ export const A2AConfigSchema = z.object({
 // Sub-agent overrides
 // ---------------------------------------------------------------------------
 
-const SubAgentModelProviderSchema = z.enum(['anthropic', 'openai', 'google', 'ollama']);
+const SubAgentModelProviderSchema = z.enum([
+  'anthropic',
+  'openai',
+  'google',
+  'ollama',
+  'claude-code',
+]);
+
+const ClaudeCodeSubAgentCliSchema = z.object({
+  enabled: z.boolean().default(false),
+  command: z.string().trim().min(1).default('claude'),
+});
+
+/**
+ * Subscription-authenticated CLI configuration for bounded subagent runs.
+ * This is intentionally separate from agentRunner/backgroundAgent providers:
+ * it supplies a single generation only and never receives MCP or host tools.
+ */
+export const SubAgentCliConfigSchema = z.object({
+  claudeCode: ClaudeCodeSubAgentCliSchema.default(() => ClaudeCodeSubAgentCliSchema.parse({})),
+});
 
 export const SubAgentModelOverrideSchema = z.object({
   provider: SubAgentModelProviderSchema,
@@ -449,6 +469,7 @@ export const TalondConfigSchema = z
     ),
     sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
     langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
+    subagentCli: SubAgentCliConfigSchema.default(() => SubAgentCliConfigSchema.parse({})),
     subagents: SubAgentsConfigSchema.default({}),
     a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),

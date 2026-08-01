@@ -51,15 +51,31 @@ describe('TalondConfigSchema — subagents override', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects agent runtime providers in subagent model overrides', () => {
+  it('accepts the Claude Code subscription provider in subagent model overrides', () => {
     const result = TalondConfigSchema.safeParse({
+      subagentCli: {
+        claudeCode: { enabled: true },
+      },
       subagents: {
         'memory-groomer': {
-          model: [{ provider: 'codex-cli', name: 'claude-sonnet-4-6' }],
+          model: [{ provider: 'claude-code', name: 'claude-sonnet-4-6' }],
         },
       },
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentCli.claudeCode).toEqual({ enabled: true, command: 'claude' });
+    }
+  });
+
+  it('defaults subscription CLI providers to disabled', () => {
+    const result = TalondConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentCli).toEqual({
+        claudeCode: { enabled: false, command: 'claude' },
+      });
+    }
   });
 
   it('rejects model entry with empty name', () => {

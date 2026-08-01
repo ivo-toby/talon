@@ -21,6 +21,7 @@ export const SUPPORTED_SUBAGENT_MODEL_PROVIDERS = [
   'openai',
   'google',
   'ollama',
+  'claude-code',
 ] as const;
 
 export const SubAgentModelProviderSchema = z.enum(SUPPORTED_SUBAGENT_MODEL_PROVIDERS);

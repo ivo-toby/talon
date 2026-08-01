@@ -1,6 +1,11 @@
 import type { LanguageModel } from 'ai';
 import { ok, err, type Result } from 'neverthrow';
 import { ConfigError } from '../core/errors/index.js';
+import type { SubAgentCliConfig } from '../core/config/config-types.js';
+import {
+  SubscriptionCliLanguageModel,
+  type SubscriptionCliProvider,
+} from './subscription-cli-language-model.js';
 
 interface ProviderCredentials {
   apiKey?: string;
@@ -13,23 +18,38 @@ interface ModelConfig {
   maxTokens: number;
 }
 
-const SUPPORTED_PROVIDERS = ['anthropic', 'openai', 'google', 'ollama'] as const;
+const INFERENCE_PROVIDERS = ['anthropic', 'openai', 'google', 'ollama'] as const;
+const SUBSCRIPTION_CLI_PROVIDERS = ['claude-code'] as const;
 
-function isSupportedProvider(provider: string): provider is (typeof SUPPORTED_PROVIDERS)[number] {
-  return (SUPPORTED_PROVIDERS as readonly string[]).includes(provider);
+function isInferenceProvider(provider: string): provider is (typeof INFERENCE_PROVIDERS)[number] {
+  return (INFERENCE_PROVIDERS as readonly string[]).includes(provider);
+}
+
+function isSubscriptionCliProvider(
+  provider: string,
+): provider is (typeof SUBSCRIPTION_CLI_PROVIDERS)[number] {
+  return (SUBSCRIPTION_CLI_PROVIDERS as readonly string[]).includes(provider);
 }
 
 export class ModelResolver {
-  constructor(private readonly providers: Record<string, ProviderCredentials>) {}
+  constructor(
+    private readonly providers: Record<string, ProviderCredentials>,
+    private readonly subscriptionCli: SubAgentCliConfig = {
+      claudeCode: { enabled: false, command: 'claude' },
+    },
+  ) {}
 
   async resolve(config: ModelConfig): Promise<Result<LanguageModel, ConfigError>> {
-    if (!isSupportedProvider(config.provider)) {
+    if (isSubscriptionCliProvider(config.provider)) {
+      return this.resolveSubscriptionCli(config.provider, config.name);
+    }
+
+    if (!isInferenceProvider(config.provider)) {
       return err(
         new ConfigError(
           `Unsupported sub-agent model provider "${config.provider}". ` +
-            `Sub-agents use AI SDK model providers: ${SUPPORTED_PROVIDERS.join(', ')}. ` +
-            `Agent runtime providers such as codex-cli, claude-code, gemini-cli, and openai-compatible cannot be used here; ` +
-            `use "ollama" for OpenAI-compatible sub-agent endpoints.`,
+            `Supported providers: ${[...INFERENCE_PROVIDERS, ...SUBSCRIPTION_CLI_PROVIDERS].join(', ')}. ` +
+            'Use "ollama" for OpenAI-compatible sub-agent endpoints.',
         ),
       );
     }
@@ -63,8 +83,31 @@ export class ModelResolver {
     }
   }
 
+  private resolveSubscriptionCli(
+    provider: SubscriptionCliProvider,
+    modelName: string,
+  ): Result<LanguageModel, ConfigError> {
+    const cli = this.subscriptionCli.claudeCode;
+
+    if (!cli.enabled) {
+      return err(
+        new ConfigError(
+          `Subscription CLI provider "${provider}" is disabled. Enable subagentCli.claudeCode in talond.yaml.`,
+        ),
+      );
+    }
+
+    return ok(
+      new SubscriptionCliLanguageModel({
+        provider,
+        modelName,
+        command: cli.command,
+      }),
+    );
+  }
+
   private async createModel(
-    provider: (typeof SUPPORTED_PROVIDERS)[number],
+    provider: (typeof INFERENCE_PROVIDERS)[number],
     creds: ProviderCredentials,
     modelName: string,
   ): Promise<LanguageModel> {

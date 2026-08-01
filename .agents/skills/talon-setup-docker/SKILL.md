@@ -346,6 +346,30 @@ Once boot is verified, anything else uses `talonctl`:
   GitHub, Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
 
+#### Subscription-backed sub-agents
+
+Only offer this when the user explicitly wants a small, bounded sub-agent task
+to use a Claude Code subscription instead of an API credential. It is not a
+foreground/background provider and does not use `talonctl add-provider`. Do not
+offer Codex CLI as a sub-agent model: its agentic mode cannot yet enforce
+Talon's filesystem-read boundary.
+
+The CLI executable and its authenticated subscription state must exist inside
+the running `talond` container for this to work; a host-machine login is not
+automatically visible in Docker. For a headless subscription setup, inject the
+official `CLAUDE_CODE_OAUTH_TOKEN` into the container's environment instead.
+Before enabling it, explain that each attempt
+is a single isolated generation with no Talon tools, MCP servers, persona tools,
+or persistent session. Claude Code has tools disabled. Subscription quota is
+external to Talon and no API-dollar estimate is produced.
+
+There is no `talonctl` command for `subagentCli` yet. With user approval, make
+the narrow manual `config/talond.yaml` change shown in the README's
+**Subscription-backed CLI sub-agents** section, then run `talonctl doctor` and
+restart the daemon with `docker compose restart talond`; `talonctl reload` does
+not rebuild the sub-agent resolver. Do not make a live sub-agent invocation
+solely as a test, because it would consume subscription quota.
+
 Each mutation modifies `config/talond.yaml`. The daemon **does not
 auto-reload** — after a mutation, tell the user to apply it:
 

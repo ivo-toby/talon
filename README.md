@@ -208,7 +208,7 @@ backgroundAgent:
 - **Durable queue** — SQLite-backed message queue with crash recovery, retry, and dead-letter
 - **Scheduler** — Agent-managed cron, interval, and one-shot scheduled tasks
 - **Host-tools MCP bridge** — Built-in host tools (schedule, channel, memory, http, db, execution env, subagent, background agent) exposed via Unix socket
-- **Sub-agent system** — Route mechanical LLM tasks (summarization, memory grooming, search) to cheap models via pluggable sub-agents
+- **Sub-agent system** — Route mechanical LLM tasks (summarization, memory grooming, search) to API models or an existing Claude Code subscription via pluggable sub-agents
 - **Background agents** — Launch long-running provider workers for deep tasks without blocking the foreground conversation
 - **Sandboxed execution environments** — Isolate background agent work in persistent Firecracker VMs via [Sprites.dev](https://sprites.dev), with file transfer, checkpointing, and automatic cleanup
 - **Hot reload** — Change config, personas, and skills without restarting the daemon
@@ -481,6 +481,7 @@ dataDir: data
 | `schedules`            | Agent-managed schedule entries (cron, interval, one-shot)                     |
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
+| `subagentCli`          | Opt-in direct Claude Code adapter for bounded sub-agent generations             |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
 | `logLevel` / `dataDir` | Runtime logging level and data root                                           |
@@ -1167,7 +1168,7 @@ Sub-agents solve this by offloading specific, well-scoped tasks to cheap models.
 
 1. The main agent calls `subagent_invoke` via MCP, specifying a sub-agent name and input
 2. The daemon validates that the persona is assigned this sub-agent and has the required capabilities
-3. The **ModelResolver** creates a Vercel AI SDK model instance for the sub-agent's configured provider
+3. The **ModelResolver** creates an AI SDK model instance for the configured API provider or an isolated direct CLI adapter for an enabled subscription provider
 4. The sub-agent's `run()` function executes with a system prompt, model, and injected services
 5. Results flow back to the main agent as structured data
 
@@ -1195,16 +1196,59 @@ subagents:
 
 | Field             | Purpose                                                                                                                  |
 | ----------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `provider`        | Provider slot: `anthropic`, `openai`, `google`, or `ollama` (required)                                                   |
+| `provider`        | Provider slot: `anthropic`, `openai`, `google`, `ollama`, or `claude-code` (required)                                       |
 | `name`            | Model name as the provider expects it (required)                                                                         |
-| `maxTokens`       | Max output tokens; falls back to the manifest value                                                                      |
+| `maxTokens`       | Max output tokens; falls back to the manifest value. Advisory for Claude Code                                           |
 | `timeoutMs`       | Per-model wall-clock timeout. On expiry the runner aborts the in-flight AI SDK call and fails over to the next model     |
-| `providerOptions` | Free-form record forwarded verbatim to the AI SDK call. Use this for vendor-specific knobs (see `providerOptions` below) |
+| `providerOptions` | Free-form record forwarded to the AI SDK call. Use this for vendor-specific knobs (see `providerOptions` below)         |
 
-Sub-agent model providers are AI SDK provider slots, not foreground/background
-agent runtime providers. Do not use `codex-cli`, `claude-code`, `gemini-cli`,
-or `openai-compatible` under `subagents.*.model`; use `ollama` for
-OpenAI-compatible sub-agent endpoints.
+`anthropic`, `openai`, `google`, and `ollama` are AI SDK provider slots.
+`claude-code` is a direct, subscription-authenticated adapter available only to
+sub-agents after explicit opt-in under `subagentCli`; it does not use the
+foreground/background `AgentProvider` registry. `codex-cli`, `gemini-cli`, and
+`openai-compatible` are not sub-agent model providers; use `ollama` for
+OpenAI-compatible sub-agent endpoints. Codex CLI is deliberately excluded here
+because its agentic execution mode cannot yet enforce Talon's tool and
+filesystem-read boundaries.
+
+#### Subscription-backed CLI sub-agents
+
+Use this for small, bounded sub-agent tasks when the daemon's OS user is already
+logged into Claude Code. This path does not use `auth.providers` or an API key:
+the child receives an explicit environment allowlist containing its normal
+Claude login paths and, for headless setups, `CLAUDE_CODE_OAUTH_TOKEN`. API-key
+and alternate API-routing environment variables are excluded before it starts.
+
+```yaml
+subagentCli:
+  claudeCode:
+    enabled: true
+    command: claude # optional path or command name
+
+subagents:
+  session-summarizer:
+    model:
+      - provider: claude-code
+        name: claude-sonnet-4-6
+        timeoutMs: 60000
+      - provider: anthropic # ordinary API fallback, if configured
+        name: claude-haiku-4-5-20251001
+```
+
+Each attempt is a single isolated generation, not an agent run: no Talon host
+tools, MCP servers, provider sessions, or persona tool access are exposed.
+Claude Code runs in safe mode with tools disabled and no session persistence.
+The configured `timeoutMs` aborts the whole CLI process group, waits briefly
+for cleanup, and then fails over. Claude Code does not provide a hard
+`maxTokens` limit.
+
+Authenticate Claude Code interactively as the same OS user that runs `talond`
+before enabling it. Restart the daemon after changing `subagentCli` or a
+sub-agent model chain; hot reload does not rebuild the resolver and bound
+sub-agent runners. Plan/quota consumption and any subscription price are
+external to Talon, so sub-agent results may include token counts where the CLI
+supplies them but never invent a `costUsd` value. Authentication, quota, or CLI
+failures are normal failover failures and try the next entry in the chain.
 
 **How failover works:**
 
@@ -1214,7 +1258,7 @@ OpenAI-compatible sub-agent endpoints.
 4. After exhausting the override list, the manifest's `model` is tried as a final fallback
 5. If all models fail, the error includes a summary of each attempt and why it failed
 
-Overrides apply everywhere a sub-agent runs, including the context roller's summarizer path. Each attempt gets its own `timeoutMs` and `providerOptions` — settings do not leak across chain entries.
+Overrides apply everywhere a sub-agent runs, including the context roller's summarizer path. Each attempt gets its own `timeoutMs` and `providerOptions` — settings do not leak across chain entries. `providerOptions` is ignored for subscription CLI entries.
 
 Sub-agents with no entry in `subagents:` use their manifest model unchanged. All per-model fields except `provider` and `name` are optional.
 
@@ -1222,7 +1266,7 @@ Sub-agents with no entry in `subagents:` use their manifest model unchanged. All
 
 `providerOptions` is a free-form record of fields forwarded verbatim to the AI SDK call (`generateText` / `generateObject`). Use it to pass vendor-specific knobs like sampling parameters or custom chat template arguments.
 
-**Effective only on the `ollama` slot.** The `ollama` provider is Talon's OpenAI-compatible passthrough entry point — point it at any OpenAI-compatible endpoint (real Ollama, llama.cpp, vLLM, a Cloudflare-tunneled node) via `auth.providers.ollama.baseURL`. Typed providers (`anthropic`, `openai`, `google`) silently drop unknown fields, so keep `providerOptions` on the `ollama` entry of your chain.
+**Effective only on the `ollama` slot.** The `ollama` provider is Talon's OpenAI-compatible passthrough entry point — point it at any OpenAI-compatible endpoint (real Ollama, llama.cpp, vLLM, a Cloudflare-tunneled node) via `auth.providers.ollama.baseURL`. Typed providers (`anthropic`, `openai`, `google`) and subscription CLI providers silently drop unknown fields, so keep `providerOptions` on the `ollama` entry of your chain.
 
 **Example — route `session-summarizer` to Qwen3 on llama.cpp with thinking mode disabled, fall back to Claude:**
 
@@ -2730,7 +2774,9 @@ talon/
       subagent-types.ts          # Core type definitions
       subagent-schema.ts         # Zod manifest validation
       subagent-loader.ts         # Load sub-agents from directories
-      model-resolver.ts          # Vercel AI SDK provider factory
+      model-resolver.ts          # API-model factory + direct subscription CLI adapters
+      subagent-model-chain.ts    # Shared resolution, timeout, and failover logic
+      subscription-cli-language-model.ts # Isolated Claude Code AI SDK adapter
       subagent-runner.ts         # Execution engine with timeout
       index.ts                   # Barrel export
       default/                   # Built-in sub-agents

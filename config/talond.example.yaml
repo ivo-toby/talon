@@ -385,23 +385,39 @@ langfuse:
   # flushAt: 20                   # spans buffered before flush
   # flushIntervalSeconds: 5       # max seconds between flushes
 
+# Optional direct CLI adapters for bounded sub-agent generations. These use the
+# daemon user's existing Claude Code subscription login, not
+# auth.providers API keys. They expose no Talon host tools, MCP servers, or
+# provider sessions. The child receives an explicit environment allowlist;
+# CLAUDE_CODE_OAUTH_TOKEN is retained for official headless subscription auth.
+#
+# subagentCli:
+#   claudeCode:
+#     enabled: true
+#     command: claude # optional path or command name
+
 # Sub-agent model overrides — override which model a sub-agent uses without
 # editing its subagent.yaml manifest. Each entry is an ordered failover chain:
 # if the first model is unavailable, the next is tried, then the manifest
 # default as final fallback.
 #
 # Per-model fields:
-#   provider        — required; one of anthropic, openai, google, ollama.
-#                     These are AI SDK model providers, not agent runtime
-#                     providers. Do not use codex-cli, claude-code,
-#                     gemini-cli, or openai-compatible here.
-#   maxTokens       — optional; defaults to the subagent.yaml value
+#   provider        — required; one of anthropic, openai, google, ollama, or
+#                     claude-code. The first four use AI SDK API providers.
+#                     claude-code requires the enabled subagentCli entry and
+#                     uses the local subscription CLI. Do not use codex-cli,
+#                     gemini-cli, or openai-compatible here. Codex CLI is not
+#                     supported because its agentic tools cannot enforce Talon's
+#                     sub-agent filesystem-read boundary.
+#   maxTokens       — optional; defaults to the subagent.yaml value. Advisory
+#                     only for claude-code.
 #   timeoutMs       — optional per-model wall-clock timeout (min 1000).
 #                     On timeout the runner aborts the in-flight call and
 #                     fails over to the next model in the chain.
 #   providerOptions — optional free-form record of request body fields
 #                     forwarded verbatim to the AI SDK call. Use this to
-#                     pass vendor-specific knobs. Only effective on the
+#                     pass vendor-specific knobs. Ignored by subscription CLI
+#                     providers and only effective on the
 #                     `ollama` provider slot (which is Talon's
 #                     OpenAI-compatible passthrough — point it at any
 #                     compatible endpoint via auth.providers.ollama.baseURL).
@@ -419,6 +435,9 @@ langfuse:
 #         name: claude-haiku-4-5-20251001
 #   session-summarizer:
 #     model:
+#       - provider: claude-code
+#         name: claude-sonnet-4-6
+#         timeoutMs: 60000
 #       - provider: openai
 #         name: gpt-5.4-spark
 #
