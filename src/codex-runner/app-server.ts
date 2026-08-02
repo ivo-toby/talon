@@ -9,6 +9,10 @@ export interface CodexAppServerInvocation {
   gid?: number;
 }
 
+export interface CodexAppServerAuthProbeInput extends CodexAppServerInvocation {
+  abortSignal?: AbortSignal;
+}
+
 export interface CodexAppServerProcess {
   readonly stdin: NodeJS.WritableStream;
   readonly stdout: NodeJS.ReadableStream;
@@ -119,6 +123,55 @@ export function spawnCodexAppServer(input: CodexAppServerInvocation): CodexAppSe
     ...(input.gid === undefined ? {} : { gid: input.gid }),
   };
   return spawn(input.command, ['app-server'], options);
+}
+
+/**
+ * Performs a bounded App Server authentication probe for runner readiness.
+ * Refreshing here proves the persisted subscription is currently usable before
+ * Talon starts accepting queued work; the caller owns the sterile auth home.
+ */
+export async function verifyCodexAppServerChatGptAuth(
+  input: CodexAppServerAuthProbeInput,
+  spawner: CodexAppServerSpawner = spawnCodexAppServer,
+): Promise<void> {
+  const rpc = new AppServerRpc(
+    spawner({
+      command: input.command,
+      cwd: input.cwd,
+      env: input.env,
+      ...(input.uid === undefined ? {} : { uid: input.uid }),
+      ...(input.gid === undefined ? {} : { gid: input.gid }),
+    }),
+  );
+
+  const abort = (): void => rpc.dispose('Codex sandbox runner readiness check was cancelled');
+  if (input.abortSignal?.aborted) abort();
+  input.abortSignal?.addEventListener('abort', abort, { once: true });
+
+  try {
+    await rpc.request('initialize', {
+      clientInfo: {
+        name: 'talon-codex-sandbox-runner',
+        title: 'Talon Codex sandbox runner',
+        version: '1.0.0',
+      },
+      capabilities: null,
+    });
+    rpc.notify('initialized', {});
+
+    const auth = (await rpc.request('getAuthStatus', {
+      includeToken: false,
+      refreshToken: true,
+    })) as { authMethod?: unknown };
+    if (auth.authMethod !== 'chatgpt') {
+      throw new Error(
+        'Codex sandbox runner requires an active ChatGPT subscription login; API-key and gateway authentication are rejected.',
+      );
+    }
+  } finally {
+    input.abortSignal?.removeEventListener('abort', abort);
+    rpc.dispose();
+  }
 }
 
 /**

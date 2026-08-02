@@ -407,6 +407,7 @@ langfuse:
 #     enabled: true
 #     endpoint: http://codex-runner:9700 # native daemon: http://127.0.0.1:9700
 #     token: ${TALON_CODEX_RUNNER_TOKEN}
+#     startupTimeoutMs: 30000 # wait for supervised runner before daemon starts work
 
 # Sub-agent model overrides — override which model a sub-agent uses without
 # editing its subagent.yaml manifest. Each entry is an ordered failover chain:

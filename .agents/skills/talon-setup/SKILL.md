@@ -269,16 +269,22 @@ First confirm that the selected CLI is installed and already authenticated as
 the same OS user that runs `talond`, or that the official
 `CLAUDE_CODE_OAUTH_TOKEN` is supplied for a headless subscription setup. For
 Codex, first ensure Docker or rootless Podman is available on Linux/macOS, then
-follow the README's runner login and container commands using a dedicated Codex
-account; never add the user's host `~/.codex` directory as a Talon mount. Show
-the user the `subagentCli`, `subagentSandbox`, and `subagents` example from the
-README's **Subscription-backed sub-agents** section. Explain the limits before
+follow the README's managed runner login and container commands using a dedicated
+Codex account; never add the user's host `~/.codex` directory as a Talon mount
+or start `node dist/codex-runner/index.js` on the Talon host. For a Linux
+systemd deployment, use `deploy/install-service.sh --codex-runner`; it starts
+the contained runner before Talon automatically on future boots. On macOS, use
+the documented `--restart unless-stopped` container and a container runtime that
+starts at login. Show the user the `subagentCli`, `subagentSandbox`, and
+`subagents` example from the README's **Subscription-backed sub-agents** section. Explain the limits before
 they enable it: one isolated generation per task, no Talon tools/MCP/persona
 tool access, no persistent session, and no estimated API-dollar cost. Claude
 Code has tools disabled. Codex runs only in the `codex-runner` container with
 no Talon data/config mounts or Docker socket, uses ChatGPT auth only, and fails
 closed on built-in tool activity. The configured sub-agent timeout aborts the
-runner request before failover; `maxTokens` is advisory.
+runner request before failover; `maxTokens` is advisory. When the Codex runner
+is enabled, Talon waits for its authenticated readiness endpoint at startup and
+does not start channels or dequeue work until it is ready.
 
 There is no `talonctl` configuration command for `subagentCli` or
 `subagentSandbox` yet, so make this narrowly-scoped manual YAML exception only

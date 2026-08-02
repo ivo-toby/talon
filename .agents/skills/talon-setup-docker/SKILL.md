@@ -365,7 +365,11 @@ socket into that runner. Before enabling it, explain that each attempt is a
 single isolated generation with no Talon tools, MCP servers, persona tools, or
 persistent session. Claude Code has tools disabled. The Codex runner requires
 ChatGPT auth and fails closed on built-in tool activity. Subscription quota is
-external to Talon and no API-dollar estimate is produced.
+external to Talon and no API-dollar estimate is produced. `docker compose
+--profile codex-sandbox up -d` starts the runner with `restart: unless-stopped`,
+so it returns after reboots; never start a runner Node process in the Talon
+container or on the host. Talon waits for the authenticated runner before it
+starts channels or queue processing when `codex-sandbox` is enabled.
 
 There is no `talonctl` command for `subagentCli` or `subagentSandbox` yet. With
 user approval, make the narrow manual `config/talond.yaml` change shown in the

@@ -1233,6 +1233,7 @@ subagentSandbox:
     enabled: true
     endpoint: http://codex-runner:9700 # use http://127.0.0.1:9700 for a native daemon
     token: ${TALON_CODEX_RUNNER_TOKEN}
+    startupTimeoutMs: 30000 # wait for the supervised runner before accepting work
 
 subagents:
   session-summarizer:
@@ -1263,10 +1264,14 @@ model can take over.
 
 ##### Codex runner deployment
 
-The runner is an optional sidecar, not a process inside `talond`. It is the
-required containment boundary on Linux and macOS (via Docker Desktop's Linux
-VM). Use a dedicated Codex/ChatGPT account: its runner login remains sensitive
-subscription state even though it is never exposed to Talon.
+The runner is an optional, externally supervised sidecar, not a process inside
+`talond`. It is the required containment boundary on Linux and macOS (via
+Docker Desktop's Linux VM). Use a dedicated Codex/ChatGPT account: its runner
+login remains sensitive subscription state even though it is never exposed to
+Talon. When enabled, `talond` waits for the runner's authenticated `/readyz`
+endpoint before it starts channels, scheduling, or queue processing. It never
+starts Docker or Podman itself: granting the daemon container-runtime authority
+would defeat this containment boundary.
 
 For the Docker starter, add a random `TALON_CODEX_RUNNER_TOKEN` (at least 32
 characters) to `.env`, then start the optional profile and authenticate inside
@@ -1278,9 +1283,29 @@ docker compose exec -e CODEX_HOME=/auth -it codex-runner codex login
 docker compose exec -e CODEX_HOME=/auth codex-runner codex login status
 ```
 
+This is a one-time deployment and login step. The Compose service uses
+`restart: unless-stopped`, so Docker restarts it automatically after host
+reboots; do **not** run `node dist/codex-runner/index.js` on the Talon host.
 The Compose service has no host port, no Talon volume, and no Docker socket.
-For a native Linux or macOS daemon, build and run the same image with Docker or
-rootless Podman, publish it only on loopback, and configure the endpoint above:
+
+For a native Linux daemon managed by systemd, install the runner dependency
+alongside Talon. The runner remains a separate Docker container and systemd
+starts it before `talond` on every boot:
+
+```bash
+sudo ./deploy/install-service.sh --user talon --dir /home/talon/talon --codex-runner
+sudo systemctl start talon-codex-runner
+sudo docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.native-runner.yaml \
+  --profile codex-sandbox exec -e CODEX_HOME=/auth codex-runner codex login
+sudo systemctl start talond
+```
+
+Use `endpoint: http://127.0.0.1:9700` for that native setup. The interactive
+login is the only manual runner action; its Docker service and `talond` then
+start together after reboots. On macOS, create the same runner once with Docker
+or rootless Podman and `--restart unless-stopped`; configure Docker Desktop (or
+your container runtime) to start at login. The runner is published only on
+loopback for a native daemon:
 
 ```bash
 docker build -f deploy/Dockerfile.codex-runner -t talon-codex-runner .
@@ -2149,6 +2174,13 @@ journalctl -u talond -f
 
 The install script generates a systemd unit from `deploy/talond.service` with your paths substituted. It reads environment variables from `.env` in the project root via `EnvironmentFile`.
 
+If Codex subscription sub-agents are enabled, add `--codex-runner` to the
+install command. It installs a root-owned systemd dependency that launches the
+contained runner through Docker Compose before `talond`; the daemon itself is
+never given Docker-socket access. Complete the runner's one-time dedicated
+Codex login when the installer prints the command, then start `talond` as
+normal. See [Codex runner deployment](#codex-runner-deployment).
+
 The service includes security hardening: `NoNewPrivileges`, `PrivateTmp`, `ProtectKernelTunables`, `SystemCallFilter=@system-service`, `RestrictAddressFamilies`, and more.
 
 ### 2. Containerized Daemon (Docker)
@@ -2201,6 +2233,8 @@ Default: wakes every 5 minutes. Adjust `OnUnitActiveSec` in `talond.timer`.
 | ---------------------------------------------------------- | ------------------------------------------------- |
 | [`deploy/talond.service`](deploy/talond.service)           | systemd service unit template                     |
 | [`deploy/install-service.sh`](deploy/install-service.sh)   | Install script (generates unit, enables service)  |
+| [`deploy/talon-codex-runner.service`](deploy/talon-codex-runner.service) | Contained Codex runner systemd dependency |
+| [`deploy/docker-compose.native-runner.yaml`](deploy/docker-compose.native-runner.yaml) | Loopback-only native daemon runner overlay |
 | [`deploy/Dockerfile`](deploy/Dockerfile)                   | Multi-stage talond container image (node:24-slim) |
 | [`deploy/Dockerfile.sandbox`](deploy/Dockerfile.sandbox)   | Agent sandbox image with SDK runtime              |
 | [`deploy/docker-compose.yaml`](deploy/docker-compose.yaml) | Example Compose setup                             |
@@ -2754,7 +2788,9 @@ talon/
     Dockerfile                   # talond container image
     Dockerfile.sandbox           # Agent sandbox image
     docker-compose.yaml          # Example Compose setup
+    docker-compose.native-runner.yaml # Native Codex runner loopback overlay
     talond.service               # systemd service unit
+    talon-codex-runner.service   # systemd Codex runner dependency
     talond.timer                 # systemd timer (wake-only)
     talond-wake.service          # Oneshot service for timer wake
   src/

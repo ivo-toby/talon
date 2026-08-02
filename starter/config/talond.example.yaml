@@ -88,5 +88,6 @@ auth:
 #     enabled: true
 #     endpoint: http://codex-runner:9700
 #     token: ${TALON_CODEX_RUNNER_TOKEN}
+#     startupTimeoutMs: 30000 # wait for supervised runner before daemon starts work
 
 logLevel: info

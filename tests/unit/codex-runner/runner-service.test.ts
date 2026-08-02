@@ -40,6 +40,33 @@ describe('CodexRunnerService', () => {
       expect(invocation.env.CODEX_API_KEY).toBeUndefined();
       expect(invocation.env.TALON_CHANNEL_SECRET).toBeUndefined();
       expect(invocation.env.CODEX_HOME).not.toBe(authDir);
+      expect(invocation.cwd).not.toBe(authDir);
+    } finally {
+      await rm(authDir, { recursive: true, force: true });
+    }
+  });
+
+  it('is ready only after the App Server refreshes a persisted ChatGPT subscription', async () => {
+    const authDir = await mkdtemp(join(tmpdir(), 'talon-codex-auth-test-'));
+    const verifyAuth = vi.fn();
+    const service = new CodexRunnerService({ authDir }, { verifyAuth });
+
+    try {
+      await expect(service.isReady()).resolves.toBe(false);
+      expect(verifyAuth).not.toHaveBeenCalled();
+
+      await writeFile(join(authDir, 'auth.json'), '{}');
+      verifyAuth.mockRejectedValueOnce(new Error('API-key authentication is not permitted'));
+      await expect(service.isReady()).resolves.toBe(false);
+      verifyAuth.mockResolvedValueOnce(undefined);
+      await expect(service.isReady()).resolves.toBe(true);
+      expect(verifyAuth).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          command: 'codex',
+          cwd: expect.any(String),
+          env: expect.objectContaining({ CODEX_HOME: expect.any(String) }),
+        }),
+      );
     } finally {
       await rm(authDir, { recursive: true, force: true });
     }

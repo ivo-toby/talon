@@ -284,6 +284,26 @@ export async function bootstrap(
     );
   }
 
+  if (!config.subagentSandbox.codex.enabled) {
+    const subAgentOverrides = config.subagents ?? {};
+    const codexSandboxAgents = [...mergedAgentMap.values()]
+      .flatMap((agent) =>
+        buildSubAgentModelChain(agent, subAgentOverrides[agent.manifest.name])
+          .filter((model) => model.provider === 'codex-sandbox')
+          .map((model) => `${agent.manifest.name} (${model.source}: ${model.name})`),
+      );
+
+    if (codexSandboxAgents.length > 0) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Sub-agent models require the contained Codex runner, but subagentSandbox.codex is disabled: ` +
+            `${codexSandboxAgents.join(', ')}. Enable subagentSandbox.codex before starting talond.`,
+        ),
+      );
+    }
+  }
+
   let modelResolver: ModelResolver | null = null;
   if (mergedAgentMap.size > 0) {
     const agentMap = mergedAgentMap;

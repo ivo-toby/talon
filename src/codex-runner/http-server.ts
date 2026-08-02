@@ -7,6 +7,7 @@ const MAX_REQUEST_BYTES = 1_000_000;
 
 export interface CodexRunnerHttpServerDeps {
   generate?: (request: unknown, abortSignal?: AbortSignal) => Promise<CodexSandboxGenerateResponse>;
+  isReady?: (abortSignal?: AbortSignal) => Promise<boolean>;
 }
 
 /**
@@ -20,12 +21,21 @@ export function createCodexRunnerHttpServer(
   deps: CodexRunnerHttpServerDeps = {},
 ): Server {
   const generate = deps.generate ?? service.generate.bind(service);
+  const isReady = deps.isReady ?? service.isReady.bind(service);
   let activeRequest = false;
 
   return createServer((request, response) => {
-    void handleRequest(request, response, token, generate, () => activeRequest, (value) => {
-      activeRequest = value;
-    });
+    void handleRequest(
+      request,
+      response,
+      token,
+      generate,
+      isReady,
+      () => activeRequest,
+      (value) => {
+        activeRequest = value;
+      },
+    );
   });
 }
 
@@ -34,11 +44,32 @@ async function handleRequest(
   response: ServerResponse,
   token: string,
   generate: (request: unknown, abortSignal?: AbortSignal) => Promise<CodexSandboxGenerateResponse>,
+  isReady: (abortSignal?: AbortSignal) => Promise<boolean>,
   isActive: () => boolean,
   setActive: (value: boolean) => void,
 ): Promise<void> {
   if (request.method === 'GET' && request.url === '/healthz') {
     writeJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === 'GET' && request.url === '/readyz') {
+    if (!isAuthorized(request.headers.authorization, token)) {
+      writeJson(response, 401, { ok: false, code: 'UNAUTHORIZED', error: 'Unauthorized' });
+      return;
+    }
+
+    try {
+      const abortController = new AbortController();
+      request.once('aborted', () => abortController.abort());
+      response.once('close', () => {
+        if (!response.writableEnded) abortController.abort();
+      });
+      const ready = await isReady(abortController.signal);
+      writeJson(response, ready ? 200 : 503, { ok: ready });
+    } catch {
+      writeJson(response, 503, { ok: false });
+    }
     return;
   }
 

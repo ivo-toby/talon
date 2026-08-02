@@ -4,6 +4,7 @@ import { PassThrough, Writable } from 'node:stream';
 import {
   CodexSandboxPolicyViolationError,
   runCodexAppServerTurn,
+  verifyCodexAppServerChatGptAuth,
   type CodexAppServerProcess,
 } from '../../../src/codex-runner/app-server.js';
 
@@ -357,5 +358,49 @@ describe('runCodexAppServerTurn', () => {
 
     await expect(turn).rejects.toThrow('request was cancelled');
     expect(process.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+});
+
+describe('verifyCodexAppServerChatGptAuth', () => {
+  it('refreshes and accepts only a ChatGPT subscription login', async () => {
+    const process = new FakeAppServerProcess(() => undefined);
+    installHappyPath(process);
+
+    await expect(
+      verifyCodexAppServerChatGptAuth(
+        {
+          command: 'codex',
+          cwd: '/tmp/contained-workspace',
+          env: { PATH: '/usr/bin' },
+        },
+        () => process,
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(process.received).toContainEqual(
+      expect.objectContaining({
+        method: 'getAuthStatus',
+        params: { includeToken: false, refreshToken: true },
+      }),
+    );
+    expect(process.kill).toHaveBeenCalledWith('SIGTERM');
+  });
+
+  it('rejects API-key authentication after the refresh probe', async () => {
+    const process = new FakeAppServerProcess((message) => {
+      if (message.method === 'initialize') process.reply(message.id, {});
+      if (message.method === 'getAuthStatus') process.reply(message.id, { authMethod: 'apiKey' });
+    });
+
+    await expect(
+      verifyCodexAppServerChatGptAuth(
+        {
+          command: 'codex',
+          cwd: '/tmp/contained-workspace',
+          env: { PATH: '/usr/bin' },
+        },
+        () => process,
+      ),
+    ).rejects.toThrow('requires an active ChatGPT subscription login');
   });
 });

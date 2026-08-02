@@ -78,6 +78,19 @@ describe('TalondConfigSchema — subagents override', () => {
     }
   });
 
+  it('defaults Codex runner startup readiness to 30 seconds', () => {
+    const result = TalondConfigSchema.safeParse({});
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentSandbox.codex).toEqual({
+        enabled: false,
+        endpoint: 'http://codex-runner:9700',
+        startupTimeoutMs: 30_000,
+      });
+    }
+  });
+
   it('accepts an enabled externally contained Codex subscription runner', () => {
     const result = TalondConfigSchema.safeParse({
       subagentSandbox: {
@@ -100,6 +113,26 @@ describe('TalondConfigSchema — subagents override', () => {
         enabled: true,
         endpoint: 'http://codex-runner:9700',
       });
+    }
+  });
+
+  it('rejects a Codex runner override when the contained runner is disabled', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'memory-groomer': {
+          model: [{ provider: 'codex-sandbox', name: 'gpt-5.6-terra' }],
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['subagentSandbox', 'codex', 'enabled'],
+          message: expect.stringContaining('memory-groomer selects codex-sandbox'),
+        }),
+      );
     }
   });
 

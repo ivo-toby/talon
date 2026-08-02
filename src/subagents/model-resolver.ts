@@ -46,7 +46,7 @@ export class ModelResolver {
       claudeCode: { enabled: false, command: 'claude' },
     },
     private readonly sandbox: SubAgentSandboxConfig = {
-      codex: { enabled: false, endpoint: 'http://codex-runner:9700' },
+      codex: { enabled: false, endpoint: 'http://codex-runner:9700', startupTimeoutMs: 30_000 },
     },
   ) {}
 

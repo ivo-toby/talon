@@ -440,6 +440,8 @@ const CodexSandboxSubAgentConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     endpoint: z.string().url().default('http://codex-runner:9700'),
+    /** Time the daemon waits for the supervised runner at boot. */
+    startupTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
     /** Shared bearer token for Talon → runner traffic. Keep it out of the runner child. */
     token: z
       .string()
@@ -511,6 +513,21 @@ export const TalondConfigSchema = z
     dataDir: z.string().default('data'),
   })
   .superRefine((value, ctx) => {
+    for (const [subAgentName, override] of Object.entries(value.subagents)) {
+      if (
+        !value.subagentSandbox.codex.enabled &&
+        override.model.some((model) => model.provider === 'codex-sandbox')
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['subagentSandbox', 'codex', 'enabled'],
+          message:
+            `subagents.${subAgentName} selects codex-sandbox, but ` +
+            'subagentSandbox.codex is disabled. Enable the contained runner first.',
+        });
+      }
+    }
+
     const enabledBackgroundProviders = new Set(
       Object.entries(value.backgroundAgent.providers)
         .filter(([, p]) => p.enabled)

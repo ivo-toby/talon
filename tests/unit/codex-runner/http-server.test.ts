@@ -16,10 +16,11 @@ describe('Codex runner HTTP server', () => {
 
   beforeEach(async () => {
     authDir = await mkdtemp(join(tmpdir(), 'talon-codex-runner-test-'));
-    await writeFile(join(authDir, 'auth.json'), '{}');
+    await writeFile(join(authDir, 'auth.json'), '{"tokens":{"access_token":"subscription-state"}}');
     const service = new CodexRunnerService({ authDir });
     server = createCodexRunnerHttpServer(TOKEN, service, {
       generate: vi.fn().mockResolvedValue({ ok: true, text: 'runner result' }),
+      isReady: vi.fn().mockResolvedValue(true),
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -35,6 +36,37 @@ describe('Codex runner HTTP server', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ ok: true });
+  });
+
+  it('keeps readiness authenticated and reports refreshed subscription state', async () => {
+    const unauthorized = await fetch(`${baseUrl}/readyz`);
+    expect(unauthorized.status).toBe(401);
+
+    const ready = await fetch(`${baseUrl}/readyz`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(ready.status).toBe(200);
+    await expect(ready.json()).resolves.toEqual({ ok: true });
+  });
+
+  it('reports unavailable when the subscription readiness probe fails', async () => {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+    const service = new CodexRunnerService({ authDir });
+    server = createCodexRunnerHttpServer(TOKEN, service, {
+      generate: vi.fn().mockResolvedValue({ ok: true, text: 'runner result' }),
+      isReady: vi.fn().mockResolvedValue(false),
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+    const response = await fetch(`${baseUrl}/readyz`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ ok: false });
   });
 
   it('rejects generation requests without the Talon runner token', async () => {

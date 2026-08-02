@@ -25,7 +25,9 @@ services:
     # interpolation file, so the runner receives only its dedicated token.
     # Never commit .env to version control — add it to .gitignore.
     env_file:
-      - .env
+      # Native systemd runner supervision overrides this with the Talon root
+      # .env; Docker starter deployments retain the local default.
+      - ${TALON_ENV_FILE:-.env}
 
     environment:
       # Force production mode regardless of what the .env file says

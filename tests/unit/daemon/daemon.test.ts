@@ -33,6 +33,14 @@ vi.mock('../../../src/channels/channel-setup.js', () => ({
   injectSiblingBotIds: vi.fn(),
 }));
 
+vi.mock('../../../src/subagents/codex-sandbox-runner-readiness.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import('../../../src/subagents/codex-sandbox-runner-readiness.js')
+    >();
+  return { ...actual, waitForCodexSandboxRunner: vi.fn() };
+});
+
 vi.mock('../../../src/skills/skill-loader.js', () => ({
   SkillLoader: vi.fn().mockImplementation(() => ({
     loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
@@ -49,6 +57,10 @@ import { loadConfig } from '../../../src/core/config/config-loader.js';
 import { writePidFile, removePidFile } from '../../../src/daemon/lifecycle.js';
 import { injectSiblingBotIds } from '../../../src/channels/channel-setup.js';
 import { DaemonError } from '../../../src/core/errors/index.js';
+import {
+  CodexSandboxRunnerReadinessError,
+  waitForCodexSandboxRunner,
+} from '../../../src/subagents/codex-sandbox-runner-readiness.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { createDiscardLogger } from './helpers.js';
 
@@ -94,6 +106,13 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
         resourceLimits: { memoryMb: 1024, cpus: 1, pidsLimit: 256 },
       },
       auth: { mode: 'subscription' },
+      subagentSandbox: {
+        codex: {
+          enabled: false,
+          endpoint: 'http://codex-runner:9700',
+          startupTimeoutMs: 30000,
+        },
+      },
     } as any,
     configPath: '/etc/talond/config.yaml',
     dataDir: '/tmp/test-data',
@@ -301,6 +320,34 @@ describe('TalondDaemon', () => {
       await localDaemon.stop();
     });
 
+    it('waits for an enabled Codex runner before starting channels or queue work', async () => {
+      const ctx = setupSuccessfulBootstrap({
+        config: {
+          ...makeMockContext().config,
+          subagentSandbox: {
+            codex: {
+              enabled: true,
+              endpoint: 'http://codex-runner:9700',
+              token: 't'.repeat(32),
+              startupTimeoutMs: 30000,
+            },
+          },
+        } as any,
+      });
+      vi.mocked(waitForCodexSandboxRunner).mockResolvedValue(ok(undefined));
+
+      const result = await daemon.start('/config.yaml');
+
+      expect(result.isOk()).toBe(true);
+      expect(waitForCodexSandboxRunner).toHaveBeenCalledWith({
+        endpoint: 'http://codex-runner:9700',
+        token: 't'.repeat(32),
+        startupTimeoutMs: 30000,
+      });
+      expect(ctx.channelRegistry.startAll).toHaveBeenCalledOnce();
+      expect(ctx.queueManager.startProcessing).toHaveBeenCalledOnce();
+    });
+
     it('can keep the startup logger from writing to stdout when log level changes', async () => {
       setupSuccessfulBootstrap({
         config: {
@@ -345,6 +392,34 @@ describe('TalondDaemon', () => {
       await daemon.start('/bad.yaml');
 
       expect(daemon.state).toBe('error');
+    });
+
+    it('stops startup before channels or queue work when the enabled Codex runner is unavailable', async () => {
+      const ctx = setupSuccessfulBootstrap({
+        config: {
+          ...makeMockContext().config,
+          subagentSandbox: {
+            codex: {
+              enabled: true,
+              endpoint: 'http://codex-runner:9700',
+              token: 't'.repeat(32),
+              startupTimeoutMs: 30000,
+            },
+          },
+        } as any,
+      });
+      vi.mocked(waitForCodexSandboxRunner).mockResolvedValue(
+        err(new CodexSandboxRunnerReadinessError('runner unavailable')),
+      );
+
+      const result = await daemon.start('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('runner unavailable');
+      expect(daemon.state).toBe('error');
+      expect(ctx.channelRegistry.startAll).not.toHaveBeenCalled();
+      expect(ctx.queueManager.startProcessing).not.toHaveBeenCalled();
+      expect(ctx.db.close).toHaveBeenCalledOnce();
     });
   });
 
