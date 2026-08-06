@@ -32,6 +32,8 @@ import { runResponsesLoop } from './responses-api.js';
 const DEFAULT_MAX_STEPS = 1000;
 type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
 type OpenAiCompatibleSessionMode = 'none' | 'previous_response_id';
+// Keep in sync with ReasoningEffortSchema in src/core/config/config-schema.ts — this
+// file is a standalone subprocess entrypoint and cannot import from src/core.
 type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 interface WrapperInput {
