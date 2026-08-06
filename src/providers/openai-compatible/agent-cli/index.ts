@@ -32,7 +32,7 @@ import { runResponsesLoop } from './responses-api.js';
 const DEFAULT_MAX_STEPS = 1000;
 type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
 type OpenAiCompatibleSessionMode = 'none' | 'previous_response_id';
-type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
 
 interface WrapperInput {
   prompt: string;
@@ -585,7 +585,9 @@ function isReasoningEffort(value: unknown): value is ReasoningEffort {
     value === 'low' ||
     value === 'medium' ||
     value === 'high' ||
-    value === 'xhigh'
+    value === 'xhigh' ||
+    value === 'max' ||
+    value === 'ultra'
   );
 }
 
