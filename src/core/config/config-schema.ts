@@ -84,7 +84,16 @@ export const MountConfigSchema = z.object({
 // Persona
 // ---------------------------------------------------------------------------
 
-export const ReasoningEffortSchema = z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+export const ReasoningEffortSchema = z.enum([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra',
+]);
 
 const PersonaExecutionEnvSchema = z.object({
   sandboxDefault: z.boolean().default(false),

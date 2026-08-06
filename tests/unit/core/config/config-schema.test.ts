@@ -253,7 +253,7 @@ describe('PersonaConfigSchema', () => {
   });
 
   it('accepts all supported persona reasoningEffort values', () => {
-    const values = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+    const values = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 
     for (const reasoningEffort of values) {
       const result = PersonaConfigSchema.safeParse({ name: 'assistant', reasoningEffort });
