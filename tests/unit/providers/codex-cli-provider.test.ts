@@ -85,6 +85,18 @@ describe('CodexCliProvider', () => {
     expect(rendered.toml).not.toContain('model_reasoning_effort');
   });
 
+  it('renders max and ultra reasoning effort into Codex config', () => {
+    const provider = makeProvider();
+    for (const reasoningEffort of ['max', 'ultra'] as const) {
+      const rendered = (provider as any).renderConfigToml({
+        cwd: '/workspace/repo',
+        reasoningEffort,
+        mcpServers: {},
+      });
+      expect(rendered.toml).toContain(`model_reasoning_effort = "${reasoningEffort}"`);
+    }
+  });
+
   it('streams foreground text chunks, tool events, and final result with stable HOME and codex exec args', async () => {
     const provider = makeProvider();
     const executeInvocation = vi
