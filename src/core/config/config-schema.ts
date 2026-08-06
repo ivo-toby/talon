@@ -95,6 +95,14 @@ export const ReasoningEffortSchema = z.enum([
   'ultra',
 ]);
 
+const REASONING_EFFORT_BY_PROVIDER_TYPE: Record<
+  string,
+  ReadonlyArray<z.infer<typeof ReasoningEffortSchema>>
+> = {
+  'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  'openai-compatible': ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+};
+
 const PersonaExecutionEnvSchema = z.object({
   sandboxDefault: z.boolean().default(false),
   baseSnapshot: z.string().optional(),
@@ -551,8 +559,9 @@ export const TalondConfigSchema = z
           usage: string,
         ): void => {
           const providerType = provider?.type ?? providerName;
+          const allowedValues = REASONING_EFFORT_BY_PROVIDER_TYPE[providerType];
 
-          if (providerType !== 'codex-cli' && providerType !== 'openai-compatible') {
+          if (!allowedValues) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: ['personas', index, 'reasoningEffort'],
@@ -560,18 +569,22 @@ export const TalondConfigSchema = z
                 `persona "${persona.name}": reasoningEffort is not supported by ${usage} ` +
                 `"${providerName}" (type "${providerType}").`,
             });
-          } else if (providerType === 'codex-cli' && persona.reasoningEffort === 'none') {
+            return;
+          }
+
+          if (!allowedValues.includes(persona.reasoningEffort!)) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: ['personas', index, 'reasoningEffort'],
               message:
-                `persona "${persona.name}": reasoningEffort "none" is not supported by ` +
-                'codex-cli; omit reasoningEffort to use the provider default.',
+                `persona "${persona.name}": reasoningEffort "${persona.reasoningEffort}" is not ` +
+                `supported by ${usage} "${providerName}" (type "${providerType}"); allowed: ` +
+                `${allowedValues.join(', ')}.`,
             });
-          } else if (
-            providerType === 'openai-compatible' &&
-            provider?.options?.apiMode !== 'responses'
-          ) {
+            return;
+          }
+
+          if (providerType === 'openai-compatible' && provider?.options?.apiMode !== 'responses') {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
               path: ['personas', index, 'reasoningEffort'],
