@@ -532,6 +532,40 @@ describe('TalondDaemon.reload()', () => {
       warnSpy.mockRestore();
       await localDaemon.stop();
     });
+
+    it('logs a warning when subscription sub-agent configuration changes', async () => {
+      setupSuccessfulStart();
+      const logger = createDiscardLogger('silent');
+      const localDaemon = new TalondDaemon(logger);
+      await localDaemon.start('/config.yaml');
+      const warnSpy = vi.spyOn(logger, 'warn');
+
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            subagentSandbox: {
+              codex: {
+                enabled: true,
+                endpoint: 'http://codex-runner:9700',
+                token: 't'.repeat(32),
+                startupTimeoutMs: 30_000,
+              },
+            },
+          }) as any,
+        ),
+      );
+
+      await localDaemon.reload('/config.yaml');
+
+      expect(
+        warnSpy.mock.calls.some(
+          (args) => typeof args[0] === 'string' && args[0].includes('subscription sub-agent'),
+        ),
+      ).toBe(true);
+
+      warnSpy.mockRestore();
+      await localDaemon.stop();
+    });
   });
 
   // -------------------------------------------------------------------------

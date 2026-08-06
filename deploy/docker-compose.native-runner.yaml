@@ -1,0 +1,10 @@
+# Native-daemon overlay for the contained Codex subscription runner.
+#
+# The base Compose file keeps the runner private to the Compose network. This
+# overlay publishes it only on loopback so a native `talond` systemd service can
+# reach it without exposing the authenticated API to the LAN.
+
+services:
+  codex-runner:
+    ports:
+      - "127.0.0.1:${TALON_CODEX_RUNNER_PORT:-9700}:9700"

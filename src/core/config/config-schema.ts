@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { isUnsafeCodexSandboxToken } from '../../subagents/codex-sandbox-protocol.js';
 
 import {
   MAX_HOPS,
@@ -412,7 +413,62 @@ export const A2AConfigSchema = z.object({
 // Sub-agent overrides
 // ---------------------------------------------------------------------------
 
-const SubAgentModelProviderSchema = z.enum(['anthropic', 'openai', 'google', 'ollama']);
+const SubAgentModelProviderSchema = z.enum([
+  'anthropic',
+  'openai',
+  'google',
+  'ollama',
+  'claude-code',
+  'codex-sandbox',
+]);
+
+const ClaudeCodeSubAgentCliSchema = z.object({
+  enabled: z.boolean().default(false),
+  command: z.string().trim().min(1).default('claude'),
+});
+
+/**
+ * Subscription-authenticated CLI configuration for bounded subagent runs.
+ * This is intentionally separate from agentRunner/backgroundAgent providers:
+ * it supplies a single generation only and never receives MCP or host tools.
+ */
+export const SubAgentCliConfigSchema = z.object({
+  claudeCode: ClaudeCodeSubAgentCliSchema.default(() => ClaudeCodeSubAgentCliSchema.parse({})),
+});
+
+const CodexSandboxSubAgentConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    endpoint: z.string().url().default('http://codex-runner:9700'),
+    /** Time the daemon waits for the supervised runner at boot. */
+    startupTimeoutMs: z.number().int().min(1_000).max(120_000).default(30_000),
+    /** Shared bearer token for Talon → runner traffic. Keep it out of the runner child. */
+    token: z
+      .string()
+      .min(32)
+      .refine((token) => !isUnsafeCodexSandboxToken(token), {
+        message: 'token must be a unique random value, not the documented placeholder',
+      })
+      .optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled && value.token === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['token'],
+        message: 'token is required when subagentSandbox.codex is enabled',
+      });
+    }
+  });
+
+/**
+ * Externally contained subscription adapters for bounded subagent runs.
+ * The Codex process lives in a separately deployed runner container, not in
+ * the daemon or the AgentProvider registry.
+ */
+export const SubAgentSandboxConfigSchema = z.object({
+  codex: CodexSandboxSubAgentConfigSchema.default(() => CodexSandboxSubAgentConfigSchema.parse({})),
+});
 
 export const SubAgentModelOverrideSchema = z.object({
   provider: SubAgentModelProviderSchema,
@@ -449,12 +505,29 @@ export const TalondConfigSchema = z
     ),
     sprites: SpritesConfigSchema.default(() => SpritesConfigSchema.parse({})),
     langfuse: LangfuseConfigSchema.default(() => LangfuseConfigSchema.parse({})),
+    subagentCli: SubAgentCliConfigSchema.default(() => SubAgentCliConfigSchema.parse({})),
+    subagentSandbox: SubAgentSandboxConfigSchema.default(() => SubAgentSandboxConfigSchema.parse({})),
     subagents: SubAgentsConfigSchema.default({}),
     a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
     dataDir: z.string().default('data'),
   })
   .superRefine((value, ctx) => {
+    for (const [subAgentName, override] of Object.entries(value.subagents)) {
+      if (
+        !value.subagentSandbox.codex.enabled &&
+        override.model.some((model) => model.provider === 'codex-sandbox')
+      ) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['subagentSandbox', 'codex', 'enabled'],
+          message:
+            `subagents.${subAgentName} selects codex-sandbox, but ` +
+            'subagentSandbox.codex is disabled. Enable the contained runner first.',
+        });
+      }
+    }
+
     const enabledBackgroundProviders = new Set(
       Object.entries(value.backgroundAgent.providers)
         .filter(([, p]) => p.enabled)

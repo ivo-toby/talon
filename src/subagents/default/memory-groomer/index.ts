@@ -98,7 +98,6 @@ export async function run(
         usage: {
           inputTokens: usage?.inputTokens ?? 0,
           outputTokens: usage?.outputTokens ?? 0,
-          costUsd: 0,
         },
       });
     }
@@ -188,7 +187,6 @@ export async function run(
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,
-        costUsd: 0,
       },
     });
   } catch (error) {

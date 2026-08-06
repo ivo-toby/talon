@@ -269,6 +269,14 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
       flushAt: 20,
       flushIntervalSeconds: 5,
     },
+    subagentSandbox: {
+      codex: {
+        enabled: false,
+        endpoint: 'http://codex-runner:9700',
+        startupTimeoutMs: 30000,
+      },
+    },
+    subagents: {},
     ...overrides,
   };
 }
@@ -432,6 +440,69 @@ describe('bootstrap', () => {
       expect(result._unsafeUnwrapErr().message).toContain('Failed to load skills');
       expect(db.close).toHaveBeenCalledOnce();
       expect(observability.shutdown).toHaveBeenCalledOnce();
+    });
+
+    it('fails bootstrap when a loaded manifest needs Codex but the contained runner is disabled', async () => {
+      vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
+        SubAgentLoader: vi.fn().mockImplementation(() => ({
+          loadAll: vi.fn().mockImplementation(async (dir: string) => {
+            if (!dir.includes('subagents/default')) return ok([]);
+            return ok([
+              {
+                manifest: {
+                  name: 'contained-codex-agent',
+                  version: '0.1.0',
+                  description: 'Requires the contained Codex runner',
+                  model: { provider: 'codex-sandbox', name: 'gpt-5.6-terra', maxTokens: 2048 },
+                  requiredCapabilities: [],
+                  rootPaths: [],
+                  timeoutMs: 30000,
+                  requiresEnv: [],
+                },
+                promptContents: ['Complete the bounded task.'],
+                run: vi.fn(),
+                rootDir: '/tmp/contained-codex-agent',
+              },
+            ]);
+          }),
+        })),
+      }));
+      vi.resetModules();
+
+      try {
+        const { loadConfig: isolatedLoadConfig } = await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } = await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } = await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } = await import('../../../src/observability/langfuse/index.js');
+        const { SkillLoader: isolatedSkillLoader } = await import('../../../src/skills/skill-loader.js');
+        const { bootstrap: isolatedBootstrap } = await import('../../../src/daemon/daemon-bootstrap.js');
+        const config = makeConfig();
+        const db = makeMockDb();
+        const observability = {
+          observe: vi.fn(),
+          observeWithTraceparent: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+
+        vi.mocked(isolatedLoadConfig).mockReturnValue(ok(config as any));
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(db as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+        vi.mocked(isolatedSkillLoader).mockImplementation(() => ({
+          loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
+        }) as any);
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toContain('contained-codex-agent');
+        expect(result._unsafeUnwrapErr().message).toContain('subagentSandbox.codex is disabled');
+        expect(db.close).toHaveBeenCalledOnce();
+        expect(observability.shutdown).toHaveBeenCalledOnce();
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-loader.js');
+        vi.resetModules();
+      }
     });
 
     it('returns error when a persona backgroundProvider passes schema validation but has no registered factory', async () => {

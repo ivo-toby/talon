@@ -71,12 +71,21 @@ describe('SubAgentManifestSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects agent runtime providers as model providers', () => {
+  it('accepts the Claude Code subscription provider as a model provider', () => {
     const result = SubAgentManifestSchema.safeParse({
       ...minimal,
-      model: { provider: 'codex-cli', name: 'claude-sonnet-4-6' },
+      model: { provider: 'claude-code', name: 'claude-sonnet-4-6' },
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
+  });
+
+  it('accepts the externally contained Codex subscription provider as a model provider', () => {
+    const result = SubAgentManifestSchema.safeParse({
+      ...minimal,
+      model: { provider: 'codex-sandbox', name: 'gpt-5.6-terra' },
+    });
+
+    expect(result.success).toBe(true);
   });
 
   it('rejects empty model name', () => {

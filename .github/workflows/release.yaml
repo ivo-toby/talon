@@ -53,6 +53,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Codex runner image metadata
+        id: codex_runner_meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/talon-codex-runner
+          tags: |
+            type=ref,event=tag
+            type=raw,value=latest
+
+      - name: Build & push Codex runner
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile.codex-runner
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.codex_runner_meta.outputs.tags }}
+          labels: ${{ steps.codex_runner_meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   build-and-attach-bundle:
     name: Build & attach starter bundle
     runs-on: ubuntu-latest
@@ -96,7 +117,7 @@ jobs:
           body: |
             ## Talon ${{ github.ref_name }}
 
-            **Container image:** `ghcr.io/ivo-toby/talond:${{ github.ref_name }}` (also tagged `:latest`)
+            **Container images:** `ghcr.io/ivo-toby/talond:${{ github.ref_name }}` and `ghcr.io/ivo-toby/talon-codex-runner:${{ github.ref_name }}` (also tagged `:latest`)
 
             **Bundles attached below:**
             - `talon-starter.tar.gz` — single Talon daemon

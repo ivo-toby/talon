@@ -4,9 +4,9 @@
 # Quick start:
 #   1. cp config/talond.example.yaml config/talond.yaml
 #   2. Edit config/talond.yaml with your API keys and channel settings
-#   3. cp deploy/.env.example .env  (and fill in secrets)
+#   3. cp deploy/.env.example deploy/.env  (and fill in secrets)
 #   4. mkdir -p personas data
-#   5. docker compose up -d
+#   5. docker compose -f deploy/docker-compose.yaml up -d
 # =============================================================================
 
 services:
@@ -21,10 +21,13 @@ services:
     # Restart the container automatically unless it was explicitly stopped
     restart: unless-stopped
 
-    # Load secrets and overrides from a .env file in the project root.
+    # Load secrets and overrides from deploy/.env. This is also Compose's
+    # interpolation file, so the runner receives only its dedicated token.
     # Never commit .env to version control — add it to .gitignore.
     env_file:
-      - ../.env
+      # Native systemd runner supervision overrides this with the Talon root
+      # .env; Docker starter deployments retain the local default.
+      - ${TALON_ENV_FILE:-.env}
 
     environment:
       # Force production mode regardless of what the .env file says
@@ -32,6 +35,10 @@ services:
       # Point the daemon to the correct in-container paths
       TALOND_DATA_DIR: /data
       TALOND_CONFIG_PATH: /config/talond.yaml
+
+    networks:
+      - default
+      - codex-runner
 
     volumes:
       # Persistent data: SQLite database, PID file, IPC sockets
@@ -106,7 +113,58 @@ services:
         reservations:
           memory: 128M
 
+  # Optional externally contained Codex subscription runner. Start it with:
+  #   docker compose --profile codex-sandbox up -d
+  # It intentionally has no Talon data/config/persona mounts and no Docker
+  # socket. The persistent /auth volume must belong to a dedicated Codex account.
+  codex-runner:
+    profiles: ["codex-sandbox"]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.codex-runner
+    restart: unless-stopped
+    environment:
+      TALON_CODEX_RUNNER_TOKEN: ${TALON_CODEX_RUNNER_TOKEN:-}
+    volumes:
+      - codex-runner-auth:/auth
+    expose:
+      - "9700"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    cap_add:
+      # The root control process drops each Codex child to uid/gid 10001.
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    networks:
+      - default
+      - codex-runner
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9700/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          pids: 128
+        reservations:
+          memory: 256M
+
 # Named volume for persistent daemon data (survives container restarts)
 volumes:
   talond-data:
     driver: local
+  codex-runner-auth:
+    driver: local
+
+networks:
+  codex-runner:
+    internal: true

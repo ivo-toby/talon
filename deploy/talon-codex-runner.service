@@ -1,0 +1,27 @@
+[Unit]
+Description=Talon contained Codex subscription runner
+Documentation=https://github.com/ivo-toby/talon#codex-runner-deployment
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/home/talon/talon
+EnvironmentFile=-/home/talon/talon/.env
+Environment=TALON_ENV_FILE=/home/talon/talon/.env
+
+# The runner stays owned by Docker, not talond. This prevents the daemon from
+# receiving Docker-socket authority while still making the runner a boot-time
+# dependency when the codex-sandbox adapter is enabled.
+ExecStart=/usr/bin/docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.native-runner.yaml --profile codex-sandbox up -d codex-runner
+ExecStop=/usr/bin/docker compose -f deploy/docker-compose.yaml -f deploy/docker-compose.native-runner.yaml --profile codex-sandbox stop codex-runner
+TimeoutStartSec=120
+TimeoutStopSec=30
+
+# The Docker client needs its Unix socket but no new privileges or writable
+# temporary directory from systemd itself.
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0027
