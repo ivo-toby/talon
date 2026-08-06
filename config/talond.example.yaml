@@ -122,8 +122,9 @@ personas:
     maxConcurrent: 2
 
   # Example OpenAI/Codex reasoning persona. Use the base model name; do not
-  # encode effort as a model-name suffix. Valid values are:
-  # none, minimal, low, medium, high, xhigh.
+  # encode effort as a model-name suffix. Valid values by provider:
+  #   codex-cli: minimal, low, medium, high, xhigh, max, ultra
+  #   openai-compatible (Responses mode): none, minimal, low, medium, high, xhigh, max, ultra
   # - name: deep-researcher
   #   model: gpt-5.4
   #   provider: codex-cli
