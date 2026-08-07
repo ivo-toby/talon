@@ -209,6 +209,37 @@ describe('OpenAiCompatibleProvider', () => {
     });
   });
 
+  it('forwards max and ultra reasoningEffort to Responses wrapper payload', () => {
+    const provider = new OpenAiCompatibleProvider({
+      enabled: true,
+      type: 'openai-compatible',
+      command: 'node',
+      contextWindowTokens: 128_000,
+      options: {
+        defaultModel: 'gpt-5.4',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        providerId: 'openai',
+        apiMode: 'responses',
+      },
+    });
+
+    for (const reasoningEffort of ['max', 'ultra'] as const) {
+      const result = provider.prepareBackgroundInvocation({
+        prompt: 'hi',
+        systemPrompt: 's',
+        mcpServers: {},
+        cwd: '/tmp',
+        timeoutMs: 10_000,
+        model: 'gpt-5.4',
+        reasoningEffort,
+      });
+
+      expect(result.isOk()).toBe(true);
+      const payload = JSON.parse(result._unsafeUnwrap().stdin) as Record<string, unknown>;
+      expect(payload.reasoningEffort).toBe(reasoningEffort);
+    }
+  });
+
   it('returns a deterministic error for reasoningEffort with chat-completions mode', () => {
     const provider = makeProvider();
 
