@@ -945,6 +945,7 @@ export async function bootstrap(
         registry: registryResult.value,
       }),
       telemetry: lifecycleTelemetry,
+      logger,
     });
     if (dispatcherResult.isErr()) {
       await cleanupBootstrapFailure(db, observability, logger);

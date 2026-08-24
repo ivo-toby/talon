@@ -2,6 +2,7 @@
 
 import { err, ok, type Result } from 'neverthrow';
 import { types } from 'node:util';
+import type pino from 'pino';
 import { LifecycleError } from '../core/errors/index.js';
 import type {
   ClaimedLifecycleDelivery,
@@ -68,6 +69,8 @@ export interface LifecycleDispatcherOptions {
   readonly policy?: LifecycleDispatcherPolicyInput;
   readonly clock?: LifecycleDispatcherClock;
   readonly telemetry?: LifecycleTelemetry;
+  /** Optional diagnostic sink; absent when the caller has no logger to offer. */
+  readonly logger?: Pick<pino.Logger, 'warn'>;
 }
 
 interface LifecycleDispatcherAuthority {
@@ -78,6 +81,7 @@ interface LifecycleDispatcherAuthority {
   readonly handoff: LifecycleSignalRouter['handoff'];
   readonly now: LifecycleDispatcherClock['now'];
   readonly telemetry: LifecycleDispatcherTelemetry;
+  readonly logger: Pick<pino.Logger, 'warn'> | undefined;
 }
 
 interface LifecycleDispatcherTelemetry {
@@ -132,6 +136,14 @@ function resultSignals(result: LifecycleHandlerResult): readonly unknown[] {
     : result.result.signals;
 }
 
+/** Bounded so a hostile or oversized error message cannot inflate log storage. */
+function boundedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.length > MAX_LOGGED_ERROR_MESSAGE_LENGTH
+    ? message.slice(0, MAX_LOGGED_ERROR_MESSAGE_LENGTH)
+    : message;
+}
+
 function failureMode(delivery: LifecycleDeliveryRow): 'dead_letter' | 'preserve_session' {
   try {
     const parsed = LifecycleFailurePolicyContractSchema.safeParse(
@@ -145,7 +157,8 @@ function failureMode(delivery: LifecycleDeliveryRow): 'dead_letter' | 'preserve_
   }
 }
 
-const MAX_DISPATCHER_OPTION_KEYS = 6;
+const MAX_DISPATCHER_OPTION_KEYS = 7;
+const MAX_LOGGED_ERROR_MESSAGE_LENGTH = 500;
 const MAX_AUTHORITY_PROTOTYPE_DEPTH = 16;
 
 function boundMethod<T extends (...args: never[]) => unknown>(
@@ -235,6 +248,7 @@ function materializeDispatcherOptions(
       'policy',
       'clock',
       'telemetry',
+      'logger',
     ]);
     if (
       keys.length > MAX_DISPATCHER_OPTION_KEYS ||
@@ -249,6 +263,7 @@ function materializeDispatcherOptions(
     const policy = descriptors.policy;
     const clock = descriptors.clock;
     const telemetry = descriptors.telemetry;
+    const logger = descriptors.logger;
     if (
       !deliveries ||
       !('value' in deliveries) ||
@@ -261,7 +276,8 @@ function materializeDispatcherOptions(
       !signalRouter.enumerable ||
       (policy && (!('value' in policy) || !policy.enumerable)) ||
       (clock && (!('value' in clock) || !clock.enumerable)) ||
-      (telemetry && (!('value' in telemetry) || !telemetry.enumerable))
+      (telemetry && (!('value' in telemetry) || !telemetry.enumerable)) ||
+      (logger && (!('value' in logger) || !logger.enumerable))
     ) {
       return undefined;
     }
@@ -272,6 +288,7 @@ function materializeDispatcherOptions(
     const clockValue: unknown = clock && 'value' in clock ? clock.value : undefined;
     const telemetryValue: unknown =
       telemetry && 'value' in telemetry ? telemetry.value : noopLifecycleTelemetry;
+    const loggerValue: unknown = logger && 'value' in logger ? logger.value : undefined;
     const claimNext = boundMethod<LifecycleDeliveryRepository['claimNext']>(
       deliveriesValue,
       'claimNext',
@@ -285,7 +302,20 @@ function materializeDispatcherOptions(
     const handoff = boundMethod<LifecycleSignalRouter['handoff']>(signalRouterValue, 'handoff');
     const now = clock ? boundMethod<LifecycleDispatcherClock['now']>(clockValue, 'now') : Date.now;
     const lifecycleTelemetry = captureDispatcherTelemetry(telemetryValue);
-    if (!claimNext || !complete || !fail || !execute || !handoff || !now || !lifecycleTelemetry) {
+    const warn =
+      loggerValue === undefined
+        ? undefined
+        : boundMethod<Pick<pino.Logger, 'warn'>['warn']>(loggerValue, 'warn');
+    if (
+      !claimNext ||
+      !complete ||
+      !fail ||
+      !execute ||
+      !handoff ||
+      !now ||
+      !lifecycleTelemetry ||
+      (loggerValue !== undefined && !warn)
+    ) {
       return undefined;
     }
     return Object.freeze({
@@ -297,6 +327,7 @@ function materializeDispatcherOptions(
         handoff,
         now,
         telemetry: lifecycleTelemetry,
+        logger: warn ? Object.freeze({ warn }) : undefined,
       }),
       policy: policyValue,
     });
@@ -563,6 +594,14 @@ export class LifecycleDispatcher {
           code,
           true,
         );
+        this.authority.logger?.warn(
+          {
+            handlerId: claim.delivery.handler_id,
+            eventId: claim.delivery.event_id,
+            error: boundedErrorMessage(result.error),
+          },
+          'lifecycle: handler execution failed',
+        );
         this.authority.telemetry.recordDeliveryFailure({
           lifecycle,
           claim,
@@ -639,7 +678,15 @@ export class LifecycleDispatcher {
           status: 'lost',
         });
       }
-    } catch {
+    } catch (error) {
+      this.authority.logger?.warn(
+        {
+          handlerId: claim.delivery.handler_id,
+          eventId: claim.delivery.event_id,
+          error: boundedErrorMessage(error),
+        },
+        'lifecycle: unexpected error while processing delivery',
+      );
       if (lease && lifecycle) {
         const status = this.transitionFailure(claim.delivery, lease, FAILURE_EXECUTION, true);
         this.authority.telemetry.recordDeliveryFailure({

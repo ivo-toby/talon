@@ -538,6 +538,7 @@ export class SubAgentLifecycleAdapter {
             if (copied === undefined) return undefined;
             result.push(copied);
           }
+          seen.delete(candidate);
           return Object.freeze(result);
         }
         if (
@@ -563,6 +564,7 @@ export class SubAgentLifecycleAdapter {
             writable: false,
           });
         }
+        seen.delete(candidate);
         return Object.freeze(result);
       };
       return clone(value, 0);

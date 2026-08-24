@@ -345,6 +345,40 @@ describe('SubAgentLifecycleAdapter', () => {
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
+  it('does not confuse a shared aggregate object reference with a cycle', async () => {
+    // Mirrors daemon-bootstrap: scope.aggregate and input.context.aggregate are
+    // literally the same object, reachable twice in the invocation but not a cycle.
+    const sharedAggregate = { type: 'message', id: 'message-1' };
+    const input = event();
+    input.context.aggregate = sharedAggregate;
+    const execute = vi
+      .fn()
+      .mockResolvedValue(
+        ok({ summary: 'proposal', data: { lifecycleResult: successOutput(input) } }),
+      );
+    const adapter = new SubAgentLifecycleAdapter({ execute });
+
+    const result = await adapter.invoke(
+      invocation({ input, scope: { ...invocation().scope, aggregate: sharedAggregate } }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('still rejects a genuinely self-referential invocation as malformed', async () => {
+    const execute = vi.fn();
+    const adapter = new SubAgentLifecycleAdapter({ execute });
+    const cyclicInput = event() as unknown as Record<string, unknown>;
+    cyclicInput.self = cyclicInput;
+
+    const result = await adapter.invoke(invocation({ input: cyclicInput }));
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('malformed');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   it('requires an explicit dispatch aggregate for persona aggregates', async () => {
     const personaAggregate = event();
     personaAggregate.context.aggregate = { type: 'persona', id: 'assistant' };

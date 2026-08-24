@@ -286,6 +286,74 @@ describe('LifecycleDispatcher', () => {
     ]);
   });
 
+  it('logs the bounded failure reason when handler execution reports an error', async () => {
+    const deliveries = new FakeDeliveries();
+    deliveries.claimNext.mockReturnValueOnce(ok(claim()));
+    const logger = { warn: vi.fn() };
+    const subject = LifecycleDispatcher.create({
+      deliveries,
+      executor: { execute: async () => err(new LifecycleError('handler exploded')) },
+      signalRouter: new FakeSignals(),
+      clock: { now: () => 1_000 },
+      policy: { pollIntervalMs: 86_400_000 },
+      logger,
+    })._unsafeUnwrap();
+
+    await subject.dispatchOnce();
+    await subject.stop();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handlerId: 'projector',
+        eventId: 'event-projector',
+        error: 'handler exploded',
+      }),
+      expect.stringContaining('handler execution failed'),
+    );
+  });
+
+  it('logs a bounded message when delivery processing throws unexpectedly', async () => {
+    const deliveries = new FakeDeliveries();
+    deliveries.claimNext.mockReturnValueOnce(ok(claim()));
+    const logger = { warn: vi.fn() };
+    const longMessage = 'x'.repeat(1_000);
+    const subject = LifecycleDispatcher.create({
+      deliveries,
+      executor: {
+        execute: async () => {
+          throw new Error(longMessage);
+        },
+      },
+      signalRouter: new FakeSignals(),
+      clock: { now: () => 1_000 },
+      policy: { pollIntervalMs: 86_400_000 },
+      logger,
+    })._unsafeUnwrap();
+
+    await subject.dispatchOnce();
+    await subject.stop();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        handlerId: 'projector',
+        eventId: 'event-projector',
+        error: 'x'.repeat(500),
+      }),
+      expect.stringContaining('unexpected error'),
+    );
+  });
+
+  it('rejects dispatcher construction when a supplied logger has no callable warn', () => {
+    expect(
+      LifecycleDispatcher.create({
+        deliveries: new FakeDeliveries(),
+        executor: { execute: async () => success() },
+        signalRouter: new FakeSignals(),
+        logger: {},
+      } as never).isErr(),
+    ).toBe(true);
+  });
+
   it('does not overwrite a delivery when its lease completion was lost', async () => {
     const deliveries = new FakeDeliveries();
     const telemetry = fakeTelemetry();
