@@ -4,13 +4,16 @@ A self-hosted AI agent ([Talon](https://github.com/ivo-toby/talon)) wired
 to a persistent knowledge store ([Postgram](https://github.com/ivo-toby/postgram))
 so the agent **remembers across conversations** out of the box.
 
-Four containers, all from published images — nothing to build:
+Three containers by default, all from published images — nothing to build. An
+optional fourth `codex-runner` sidecar is available for contained subscription
+sub-agents:
 
 | Service | Image | Role |
 | --- | --- | --- |
 | `postgres` | `pgvector/pgvector:pg17` | Postgram's database |
 | `postgram` | `ghcr.io/ivo-toby/postgram` | Knowledge store (REST + MCP) |
 | `talond` | `ghcr.io/ivo-toby/talond` | The Talon agent daemon |
+| `codex-runner` (optional) | `ghcr.io/ivo-toby/talon-codex-runner` | Contained Codex subscription sub-agent runner |
 
 The bundled `postgram-memory` skill connects Talon's agent to Postgram
 over MCP — the agent gets `search` / `store` / `recall` / task tools and
@@ -58,6 +61,22 @@ can't pre-set one in `.env`. `bootstrap.sh` handles the ordering:
 4. Starts `talond`.
 
 It's safe to re-run — if `PGM_API_KEY` is already set it skips step 2.
+
+## Codex subscription sub-agents
+
+For a small, bounded sub-agent task, the optional `codex-sandbox` profile runs
+Codex in its own container with no Talon data/config mount or Docker socket.
+Set a unique 32+ character `TALON_CODEX_RUNNER_TOKEN` in `.env`, enable the
+commented `subagentSandbox.codex` block in `config/talond.yaml`, then, after
+`./bootstrap.sh`, start and authenticate the runner with a dedicated
+Codex/ChatGPT account:
+
+```bash
+docker compose --profile codex-sandbox up -d codex-runner
+docker compose exec -e CODEX_HOME=/auth -it codex-runner codex login
+```
+
+See the main [Subscription-backed sub-agents guide](https://github.com/ivo-toby/talon/blob/main/README.md#subscription-backed-sub-agents) for model overrides and limits.
 
 ## How the agent uses Postgram
 

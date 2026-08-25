@@ -192,14 +192,14 @@ export interface SubAgentResult {
   summary: string;
   /** Optional structured data produced by the sub-agent. */
   data?: Record<string, unknown>;
-  /** Optional token usage and cost for this run. */
+  /** Optional token usage and, when an API provider reports it, cost for this run. */
   usage?: {
     /** Number of input tokens consumed. */
     inputTokens: number;
     /** Number of output tokens generated. */
     outputTokens: number;
-    /** Estimated cost in USD. */
-    costUsd: number;
+    /** Estimated API cost in USD, if the provider exposes one. */
+    costUsd?: number;
   };
 }
 

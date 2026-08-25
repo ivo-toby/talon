@@ -47,7 +47,7 @@ import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
-import { DaemonError, LifecycleError, SubAgentError } from '../core/errors/error-types.js';
+import { DaemonError, LifecycleError } from '../core/errors/error-types.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
 import { PersonaLoader } from '../personas/persona-loader.js';
@@ -63,6 +63,10 @@ import { SpritesClient } from '../execution-env/sprites-client.js';
 import { SubAgentLoader } from '../subagents/subagent-loader.js';
 import { SubAgentRunner } from '../subagents/subagent-runner.js';
 import { ModelResolver } from '../subagents/model-resolver.js';
+import {
+  buildSubAgentModelChain,
+  runSubAgentModelChain,
+} from '../subagents/subagent-model-chain.js';
 import { ClaudeCodeProvider } from '../providers/claude-code-provider.js';
 import { GeminiCliProvider } from '../providers/gemini-cli-provider.js';
 import { CodexCliProvider } from '../providers/codex-cli-provider.js';
@@ -76,7 +80,6 @@ import { loadToolInstructions } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
-import { wrapProviderOptions } from '../subagents/provider-options.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
 import { LifecycleEventBus } from '../lifecycle/lifecycle-event-bus.js';
 import { LifecycleDispatcher } from '../lifecycle/lifecycle-dispatcher.js';
@@ -358,10 +361,34 @@ export async function bootstrap(
     );
   }
 
+  if (!config.subagentSandbox.codex.enabled) {
+    const subAgentOverrides = config.subagents ?? {};
+    const codexSandboxAgents = [...mergedAgentMap.values()]
+      .flatMap((agent) =>
+        buildSubAgentModelChain(agent, subAgentOverrides[agent.manifest.name])
+          .filter((model) => model.provider === 'codex-sandbox')
+          .map((model) => `${agent.manifest.name} (${model.source}: ${model.name})`),
+      );
+
+    if (codexSandboxAgents.length > 0) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Sub-agent models require the contained Codex runner, but subagentSandbox.codex is disabled: ` +
+            `${codexSandboxAgents.join(', ')}. Enable subagentSandbox.codex before starting talond.`,
+        ),
+      );
+    }
+  }
+
   let modelResolver: ModelResolver | null = null;
   if (mergedAgentMap.size > 0) {
     const agentMap = mergedAgentMap;
-    modelResolver = new ModelResolver(config.auth.providers ?? {});
+    modelResolver = new ModelResolver(
+      config.auth.providers ?? {},
+      config.subagentCli,
+      config.subagentSandbox,
+    );
     subAgentRunner = new SubAgentRunner(
       agentMap,
       modelResolver,
@@ -504,20 +531,7 @@ export async function bootstrap(
 
       // Verify at least one model in the chain can resolve at boot time.
       const overrideConfig = subagentOverrides[summarizerName];
-      const bootModelChain = [
-        ...(overrideConfig?.model ?? []).map((e) => ({
-          provider: e.provider,
-          name: e.name,
-          maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
-          timeoutMs: e.timeoutMs ?? summarizerAgent.manifest.timeoutMs,
-          source: 'override' as const,
-        })),
-        {
-          ...summarizerAgent.manifest.model,
-          timeoutMs: summarizerAgent.manifest.timeoutMs,
-          source: 'manifest' as const,
-        },
-      ];
+      const bootModelChain = buildSubAgentModelChain(summarizerAgent, overrideConfig);
 
       const anyResolvable = await Promise.any(
         bootModelChain.map(async (m) => {
@@ -538,130 +552,43 @@ export async function bootstrap(
 
       const summarizerPrompt = summarizerAgent.promptContents.join('\n\n');
 
-      // Resolve model at call time so config overrides and failover apply.
-      //
-      // NOTE: This closure contains its own failover + timeout + abort loop
-      // that mirrors SubAgentRunner.executeInternal (src/subagents/subagent-runner.ts).
-      // Bootstrap runs outside a persona context (no capability checks, no
-      // observability wrapping), so it cannot go through SubAgentRunner.execute
-      // directly. The two implementations share wrapProviderOptions for
-      // provider-allowlist safety, but the outer loop structure is still
-      // duplicated. Any fix to failover semantics must be applied in both
-      // places until this is deduplicated.
-      // TODO(#159): extract a shared runSubAgentChain helper used by runner + CLI + bootstrap.
       const boundSummarizer: import('./context-roller.js').SummarizerRunFn = async (
         threadId,
         personaId,
         input,
       ) => {
-        const modelChain = [
-          ...(overrideConfig?.model ?? []).map((e) => ({
-            provider: e.provider,
-            name: e.name,
-            maxTokens: e.maxTokens ?? summarizerAgent.manifest.model.maxTokens,
-            timeoutMs: e.timeoutMs ?? summarizerAgent.manifest.timeoutMs,
-            providerOptions: e.providerOptions,
-            source: 'override' as const,
-          })),
-          {
-            ...summarizerAgent.manifest.model,
-            timeoutMs: summarizerAgent.manifest.timeoutMs,
-            providerOptions: undefined as Record<string, unknown> | undefined,
-            source: 'manifest' as const,
-          },
-        ];
+        const result = await runSubAgentModelChain({
+          name: summarizerName,
+          agent: summarizerAgent,
+          input,
+          override: overrideConfig,
+          modelResolver,
+          logger,
+          createContext: ({ model, entry, abortSignal, providerOptions }) => ({
+            threadId,
+            personaId,
+            model,
+            systemPrompt: summarizerPrompt,
+            maxOutputTokens: entry.maxTokens,
+            rootPaths: [],
+            services: {
+              memory: repos.memory,
+              schedules: repos.schedule,
+              personas: repos.persona,
+              channels: repos.channel,
+              threads: repos.thread,
+              messages: repos.message,
+              runs: repos.run,
+              queue: repos.queue,
+              logger,
+            },
+            telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
+            abortSignal,
+            providerOptions,
+          }),
+        });
 
-        for (const entry of modelChain) {
-          const modelResult = await modelResolver.resolve(entry);
-          if (modelResult.isErr()) {
-            logger.warn(
-              {
-                summarizer: summarizerName,
-                model: `${entry.provider}/${entry.name}`,
-                source: entry.source,
-              },
-              `bootstrap: summarizer model resolution failed, trying next: ${modelResult.error.message}`,
-            );
-            continue;
-          }
-
-          const abortController = new AbortController();
-          let timeoutId: ReturnType<typeof setTimeout> | undefined;
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(() => {
-              abortController.abort();
-              reject(
-                new Error(`summarizer "${summarizerName}" timed out after ${entry.timeoutMs}ms`),
-              );
-            }, entry.timeoutMs);
-          });
-
-          const wrappedProviderOptions = wrapProviderOptions(
-            entry.provider,
-            entry.providerOptions,
-            logger,
-            { subagent: summarizerName, source: entry.source },
-          );
-
-          try {
-            const runPromise = summarizerAgent.run(
-              {
-                threadId,
-                personaId,
-                model: modelResult.value,
-                systemPrompt: summarizerPrompt,
-                maxOutputTokens: entry.maxTokens,
-                rootPaths: [],
-                services: {
-                  memory: repos.memory,
-                  schedules: repos.schedule,
-                  personas: repos.persona,
-                  channels: repos.channel,
-                  threads: repos.thread,
-                  messages: repos.message,
-                  runs: repos.run,
-                  queue: repos.queue,
-                  logger,
-                },
-                telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
-                abortSignal: abortController.signal,
-                providerOptions: wrappedProviderOptions,
-              },
-              input,
-            );
-
-            const result = await Promise.race([runPromise, timeoutPromise]);
-
-            if (result.isOk()) {
-              return result;
-            }
-
-            logger.warn(
-              {
-                summarizer: summarizerName,
-                model: `${entry.provider}/${entry.name}`,
-                source: entry.source,
-              },
-              `bootstrap: summarizer run failed, trying next: ${result.error.message}`,
-            );
-          } catch (runError) {
-            const msg = runError instanceof Error ? runError.message : String(runError);
-            logger.warn(
-              {
-                summarizer: summarizerName,
-                model: `${entry.provider}/${entry.name}`,
-                source: entry.source,
-                timeoutMs: entry.timeoutMs,
-              },
-              `bootstrap: summarizer threw, trying next: ${msg}`,
-            );
-          } finally {
-            if (timeoutId !== undefined) clearTimeout(timeoutId);
-          }
-        }
-
-        // All models exhausted
-        return err(new SubAgentError(`All models failed for summarizer "${summarizerName}"`));
+        return result.map((value) => value.result);
       };
 
       boundSummarizers.set(summarizerName, boundSummarizer);

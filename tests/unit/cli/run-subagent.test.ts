@@ -11,12 +11,14 @@ interface MockResolveInput {
   name: string;
   maxTokens: number;
 }
-const resolveMock = vi.fn<(config: MockResolveInput) => Promise<{
-  isErr: () => boolean;
-  isOk: () => boolean;
-  value?: unknown;
-  error?: { message: string };
-}>>();
+const resolveMock = vi.fn<
+  (config: MockResolveInput) => Promise<{
+    isErr: () => boolean;
+    isOk: () => boolean;
+    value?: unknown;
+    error?: { message: string };
+  }>
+>();
 
 // Mock the model resolver to avoid needing real API keys.
 vi.mock('../../../src/subagents/model-resolver.js', () => ({
@@ -53,10 +55,7 @@ function writeSubAgent(root: string, name: string, runBody: string): void {
       'timeoutMs: 10000',
     ].join('\n'),
   );
-  writeFileSync(
-    join(agentDir, 'index.js'),
-    runBody,
-  );
+  writeFileSync(join(agentDir, 'index.js'), runBody);
 }
 
 describe('runSubAgent()', () => {
@@ -78,12 +77,16 @@ describe('runSubAgent()', () => {
   });
 
   it('loads and executes a sub-agent by name', async () => {
-    writeSubAgent(root, 'echo-agent', `
+    writeSubAgent(
+      root,
+      'echo-agent',
+      `
       export async function run(ctx, input) {
         const { ok } = await import('neverthrow');
         return ok({ summary: 'Echo: ' + (input.prompt || ''), data: { prompt: input.prompt } });
       }
-    `);
+    `,
+    );
 
     const result = await runSubAgent({
       name: 'echo-agent',
@@ -96,12 +99,16 @@ describe('runSubAgent()', () => {
   });
 
   it('throws for unknown sub-agent', async () => {
-    writeSubAgent(root, 'other-agent', `
+    writeSubAgent(
+      root,
+      'other-agent',
+      `
       export async function run() {
         const { ok } = await import('neverthrow');
         return ok({ summary: 'ok' });
       }
-    `);
+    `,
+    );
 
     await expect(
       runSubAgent({
@@ -114,12 +121,16 @@ describe('runSubAgent()', () => {
   });
 
   it('throws for invalid JSON input', async () => {
-    writeSubAgent(root, 'test-agent', `
+    writeSubAgent(
+      root,
+      'test-agent',
+      `
       export async function run() {
         const { ok } = await import('neverthrow');
         return ok({ summary: 'ok' });
       }
-    `);
+    `,
+    );
 
     await expect(
       runSubAgent({
@@ -132,12 +143,16 @@ describe('runSubAgent()', () => {
   });
 
   it('throws when sub-agent run returns an error', async () => {
-    writeSubAgent(root, 'fail-agent', `
+    writeSubAgent(
+      root,
+      'fail-agent',
+      `
       export async function run() {
         const { err } = await import('neverthrow');
         return err(new Error('Something went wrong'));
       }
-    `);
+    `,
+    );
 
     await expect(
       runSubAgent({
@@ -150,12 +165,16 @@ describe('runSubAgent()', () => {
   });
 
   it('throws for non-object JSON input (array)', async () => {
-    writeSubAgent(root, 'test-agent', `
+    writeSubAgent(
+      root,
+      'test-agent',
+      `
       export async function run() {
         const { ok } = await import('neverthrow');
         return ok({ summary: 'ok' });
       }
-    `);
+    `,
+    );
 
     await expect(
       runSubAgent({
@@ -168,12 +187,16 @@ describe('runSubAgent()', () => {
   });
 
   it('throws for non-object JSON input (string)', async () => {
-    writeSubAgent(root, 'test-agent', `
+    writeSubAgent(
+      root,
+      'test-agent',
+      `
       export async function run() {
         const { ok } = await import('neverthrow');
         return ok({ summary: 'ok' });
       }
-    `);
+    `,
+    );
 
     await expect(
       runSubAgent({
@@ -211,7 +234,10 @@ describe('runSubAgent()', () => {
     function writeCapturingAgent(root: string, name: string): void {
       // Captures the ctx it receives so tests can assert on
       // maxOutputTokens, abortSignal, providerOptions, etc.
-      writeSubAgent(root, name, `
+      writeSubAgent(
+        root,
+        name,
+        `
         export async function run(ctx, input) {
           const { ok } = await import('neverthrow');
           globalThis.__lastCtx = {
@@ -221,11 +247,13 @@ describe('runSubAgent()', () => {
           };
           return ok({ summary: 'captured' });
         }
-      `);
+      `,
+      );
     }
 
     it('picks the first override that resolves', async () => {
       writeCapturingAgent(root, 'capture-agent');
+      const stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
 
       // First override (ollama) fails; second (anthropic) succeeds.
       resolveMock.mockImplementationOnce(async () => ({
@@ -264,6 +292,10 @@ describe('runSubAgent()', () => {
       expect(resolveMock.mock.calls[1]![0].provider).toBe('anthropic');
       // Context carries the second entry's maxTokens.
       expect((globalThis as any).__lastCtx.maxOutputTokens).toBe(2048);
+      expect(stderrWrite).toHaveBeenCalledWith(
+        expect.stringContaining('"model":"ollama/qwen3-30b"'),
+      );
+      stderrWrite.mockRestore();
     });
 
     it('falls back to the manifest model when all overrides fail', async () => {
@@ -323,7 +355,7 @@ describe('runSubAgent()', () => {
             },
           },
         }),
-      ).rejects.toThrow(/Model resolution failed/);
+      ).rejects.toThrow(/All models failed/);
     });
 
     it('provides an AbortSignal on the context so sub-agents can cancel on timeout', async () => {
@@ -349,13 +381,15 @@ describe('runSubAgent()', () => {
         providers: { ollama: { baseURL: 'http://localhost:8080/v1' } },
         subagentOverrides: {
           'capture-agent': {
-            model: [{
-              provider: 'ollama',
-              name: 'qwen3',
-              providerOptions: {
-                chat_template_kwargs: { enable_thinking: false },
+            model: [
+              {
+                provider: 'ollama',
+                name: 'qwen3',
+                providerOptions: {
+                  chat_template_kwargs: { enable_thinking: false },
+                },
               },
-            }],
+            ],
           },
         },
       });
@@ -377,11 +411,13 @@ describe('runSubAgent()', () => {
         providers: { anthropic: { apiKey: 'test' } },
         subagentOverrides: {
           'capture-agent': {
-            model: [{
-              provider: 'anthropic',
-              name: 'claude-haiku-4-5-20251001',
-              providerOptions: { temperature: 0.99, max_tokens: 999999 },
-            }],
+            model: [
+              {
+                provider: 'anthropic',
+                name: 'claude-haiku-4-5-20251001',
+                providerOptions: { temperature: 0.99, max_tokens: 999999 },
+              },
+            ],
           },
         },
       });

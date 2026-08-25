@@ -1774,6 +1774,36 @@ describe('SubAgentRunner', () => {
       expect(agent.run).toHaveBeenCalledTimes(2);
     });
 
+    it('rejects a result that arrives after its timeout during abort cleanup', async () => {
+      const agent = makeAgent({
+        manifest: { ...makeAgent().manifest, timeoutMs: 30 },
+        run: vi
+          .fn()
+          .mockImplementationOnce(
+            () => new Promise((resolve) => setTimeout(() => resolve(ok({ summary: 'late' })), 80)),
+          )
+          .mockResolvedValueOnce(ok({ summary: 'Done via fallback' })),
+      });
+      const agents = new Map([['test-agent', agent]]);
+      const resolver = {
+        resolve: vi.fn().mockResolvedValue(ok({} as any)),
+      } as unknown as ModelResolver;
+      const runner = makeRunner(agents, resolver, undefined, {
+        'test-agent': {
+          model: [
+            { provider: 'ollama', name: 'qwen3-30b', timeoutMs: 30 },
+            { provider: 'anthropic', name: 'claude-haiku-4-5-20251001' },
+          ],
+        },
+      });
+
+      const result = await runner.execute('test-agent', {}, makeContext());
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().summary).toBe('Done via fallback');
+      expect(agent.run).toHaveBeenCalledTimes(2);
+    });
+
     it('aborts the signal when a model times out', async () => {
       let capturedSignal: AbortSignal | undefined;
       const agent = makeAgent({

@@ -34,6 +34,7 @@ import type {
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { SubAgentsConfig } from '../core/config/config-types.js';
 import { wrapProviderOptions } from './provider-options.js';
+import { buildSubAgentModelChain } from './subagent-model-chain.js';
 import {
   LifecycleHandlerIdentityContractSchema,
   resolveLifecycleHandlerContract,
@@ -354,38 +355,19 @@ export class SubAgentRunner {
       );
     }
 
-    // 4. Build model chain: config overrides (if any) + manifest fallback
-    const overrideConfig = this.subagentOverrides[name];
-    const modelChain: Array<{
-      provider: string;
-      name: string;
-      maxTokens: number;
-      timeoutMs: number;
-      providerOptions?: Record<string, unknown>;
-      source: string;
-    }> = [];
-
-    if (overrideConfig) {
-      for (const entry of overrideConfig.model) {
-        modelChain.push({
-          provider: entry.provider,
-          name: entry.name,
-          maxTokens: entry.maxTokens ?? execution.manifest.model.maxTokens,
-          timeoutMs: entry.timeoutMs ?? execution.manifest.timeoutMs,
-          providerOptions: entry.providerOptions,
-          source: 'override',
-        });
-      }
-    }
-
-    // Always append manifest model as final fallback
-    modelChain.push({
-      provider: execution.manifest.model.provider,
-      name: execution.manifest.model.name,
-      maxTokens: execution.manifest.model.maxTokens,
-      timeoutMs: execution.manifest.timeoutMs,
-      source: 'manifest',
-    });
+    // 4. Build model chain: config overrides (if any) + manifest fallback.
+    // Reuses subagent-model-chain.ts's buildSubAgentModelChain (main's
+    // extraction) since chain construction is pure data and identical for
+    // both paths — `execution` (a LoadedSubAgent or a materialized
+    // LifecycleExecutionSnapshot['agent']) structurally satisfies its
+    // narrower SubAgentModelChainSourceAgent parameter either way. The rest
+    // of this method (resolve/run/timeout/failover) stays local: the
+    // ordinary path must match this file's own executionLimits-aware
+    // deadline slicing and exact log wording, which predate and diverge
+    // from the module's, and the lifecycle path needs sanitized
+    // diagnostics, a hard attempt cap, and non-overlapping failover on
+    // timeout — none of which runSubAgentModelChain implements.
+    const modelChain = buildSubAgentModelChain(execution, this.subagentOverrides[name]);
 
     // Build once — these don't depend on which model is being tried.
     const systemPrompt = execution.promptContents.join('\n\n');

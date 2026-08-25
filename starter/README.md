@@ -101,6 +101,31 @@ in-process. See [`docs/providers.md`](docs/providers.md) for full config
 snippets, and the [reference config](https://github.com/ivo-toby/talon/blob/main/config/talond.example.yaml)
 for context-management and sub-agent tuning.
 
+## Codex subscription sub-agents
+
+For small, bounded sub-agent tasks, `codex-sandbox` uses a separate runner
+container instead of the daemon's foreground `codex-cli` provider. Give it a
+dedicated Codex/ChatGPT login. It has no Talon data/config mounts or Docker
+socket; its login volume remains sensitive.
+
+Set a unique 32+ character `TALON_CODEX_RUNNER_TOKEN` in `.env`, enable the
+commented `subagentSandbox.codex` block in `config/talond.yaml`, then start and
+authenticate the optional profile:
+
+```bash
+docker compose --profile codex-sandbox up -d
+docker compose exec -e CODEX_HOME=/auth -it codex-runner codex login
+docker compose exec -e CODEX_HOME=/auth codex-runner codex login status
+```
+
+The profile starts the contained runner with `restart: unless-stopped`, so it
+comes back automatically after Docker and the host restart. The Talon daemon
+waits for its authenticated readiness endpoint whenever `codex-sandbox` is
+enabled; do not run a `codex-runner` Node process on the host.
+
+Add a `codex-sandbox` sub-agent model override as shown in the main
+[Subscription-backed sub-agents guide](https://github.com/ivo-toby/talon/blob/main/README.md#subscription-backed-sub-agents), then restart `talond`.
+
 ## Sharing files with the agent
 
 Anything you place in `userdata/` is visible to the running agent at

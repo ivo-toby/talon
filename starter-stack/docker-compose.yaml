@@ -76,6 +76,10 @@ services:
       TALOND_DATA_DIR: /data
       TALOND_CONFIG_PATH: /config/talond.yaml
 
+    networks:
+      - default
+      - codex-runner
+
     volumes:
       - ./data:/data
       - type: bind
@@ -111,5 +115,50 @@ services:
         reservations:
           memory: 128M
 
+  # Optional contained subscription runner for codex-sandbox sub-agents.
+  codex-runner:
+    profiles: ["codex-sandbox"]
+    image: ghcr.io/ivo-toby/talon-codex-runner:latest
+    restart: unless-stopped
+    environment:
+      TALON_CODEX_RUNNER_TOKEN: ${TALON_CODEX_RUNNER_TOKEN:-}
+    volumes:
+      - codex-runner-auth:/auth
+    expose:
+      - "9700"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+    cap_drop:
+      - ALL
+    cap_add:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    networks:
+      - default
+      - codex-runner
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9700/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+          pids: 128
+        reservations:
+          memory: 256M
+
 volumes:
   pgdata:
+  codex-runner-auth:
+    driver: local
+
+networks:
+  codex-runner:
+    internal: true

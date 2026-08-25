@@ -134,17 +134,71 @@ describe('ModelResolver', () => {
     expect(result._unsafeUnwrapErr().message).toContain('Unsupported');
   });
 
-  it('explains that agent runtime providers cannot be used for sub-agent models', async () => {
+  it('returns a clear error when a subscription CLI provider is disabled', async () => {
     const resolver = new ModelResolver({});
     const result = await resolver.resolve({
-      provider: 'codex-cli',
-      name: 'claude-sonnet-4-6',
+      provider: 'claude-code',
+      name: 'sonnet',
       maxTokens: 2048,
     });
     expect(result.isErr()).toBe(true);
     const message = result._unsafeUnwrapErr().message;
-    expect(message).toContain('Unsupported sub-agent model provider "codex-cli"');
-    expect(message).toContain('Agent runtime providers');
+    expect(message).toContain('Subscription CLI provider "claude-code" is disabled');
+    expect(message).toContain('subagentCli.claudeCode');
+  });
+
+  it('resolves an enabled Claude Code subscription model without API credentials', async () => {
+    const resolver = new ModelResolver(
+      {},
+      {
+        claudeCode: { enabled: true, command: '/usr/local/bin/claude' },
+      },
+    );
+
+    const claude = await resolver.resolve({
+      provider: 'claude-code',
+      name: 'sonnet',
+      maxTokens: 2048,
+    });
+    expect(claude.isOk()).toBe(true);
+    expect(claude._unsafeUnwrap().provider).toBe('claude-code');
+    expect(claude._unsafeUnwrap().modelId).toBe('sonnet');
+  });
+
+  it('resolves an enabled contained Codex subscription model without API credentials', async () => {
+    const resolver = new ModelResolver(
+      {},
+      { claudeCode: { enabled: false, command: 'claude' } },
+      {
+        codex: {
+          enabled: true,
+          endpoint: 'http://codex-runner:9700',
+          token: 't'.repeat(32),
+        },
+      },
+    );
+
+    const codex = await resolver.resolve({
+      provider: 'codex-sandbox',
+      name: 'gpt-5.6-terra',
+      maxTokens: 2048,
+    });
+
+    expect(codex.isOk()).toBe(true);
+    expect(codex._unsafeUnwrap().provider).toBe('codex-sandbox');
+    expect(codex._unsafeUnwrap().modelId).toBe('gpt-5.6-terra');
+  });
+
+  it('returns a clear error when a Codex sandbox runner is disabled', async () => {
+    const resolver = new ModelResolver({});
+    const result = await resolver.resolve({
+      provider: 'codex-sandbox',
+      name: 'gpt-5.6-terra',
+      maxTokens: 2048,
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('subagentSandbox.codex');
   });
 
   it('returns error when apiKey is missing for a provider that requires it', async () => {

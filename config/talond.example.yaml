@@ -122,8 +122,9 @@ personas:
     maxConcurrent: 2
 
   # Example OpenAI/Codex reasoning persona. Use the base model name; do not
-  # encode effort as a model-name suffix. Valid values are:
-  # none, minimal, low, medium, high, xhigh.
+  # encode effort as a model-name suffix. Valid values by provider:
+  #   codex-cli: minimal, low, medium, high, xhigh, max, ultra
+  #   openai-compatible (Responses mode): none, minimal, low, medium, high, xhigh, max, ultra
   # - name: deep-researcher
   #   model: gpt-5.4
   #   provider: codex-cli
@@ -425,23 +426,52 @@ langfuse:
   # flushAt: 20                   # spans buffered before flush
   # flushIntervalSeconds: 5       # max seconds between flushes
 
+# Optional direct CLI adapters for bounded sub-agent generations. These use the
+# daemon user's existing Claude Code subscription login, not
+# auth.providers API keys. They expose no Talon host tools, MCP servers, or
+# provider sessions. The child receives an explicit environment allowlist;
+# CLAUDE_CODE_OAUTH_TOKEN is retained for official headless subscription auth.
+#
+# subagentCli:
+#   claudeCode:
+#     enabled: true
+#     command: claude # optional path or command name
+
+# Optional separately contained Codex subscription runner. The Codex process
+# never runs in talond: it runs in deploy/Dockerfile.codex-runner with no Talon
+# data/config mount, host-tool bridge, MCP configuration, or Docker socket.
+# It requires a dedicated ChatGPT login in its own /auth volume; API-key and
+# gateway authentication are rejected by the runner. Set the token in .env.
+#
+# subagentSandbox:
+#   codex:
+#     enabled: true
+#     endpoint: http://codex-runner:9700 # native daemon: http://127.0.0.1:9700
+#     token: ${TALON_CODEX_RUNNER_TOKEN}
+#     startupTimeoutMs: 30000 # wait for supervised runner before daemon starts work
+
 # Sub-agent model overrides — override which model a sub-agent uses without
 # editing its subagent.yaml manifest. Each entry is an ordered failover chain:
 # if the first model is unavailable, the next is tried, then the manifest
 # default as final fallback.
 #
 # Per-model fields:
-#   provider        — required; one of anthropic, openai, google, ollama.
-#                     These are AI SDK model providers, not agent runtime
-#                     providers. Do not use codex-cli, claude-code,
-#                     gemini-cli, or openai-compatible here.
-#   maxTokens       — optional; defaults to the subagent.yaml value
+#   provider        — required; one of anthropic, openai, google, ollama, or
+#                     claude-code, or codex-sandbox. The first four use AI SDK
+#                     API providers. claude-code requires subagentCli;
+#                     codex-sandbox requires the enabled contained runner above.
+#                     Do not use codex-cli, gemini-cli, or openai-compatible
+#                     here. Direct Codex CLI cannot enforce Talon's sub-agent
+#                     filesystem-read boundary.
+#   maxTokens       — optional; defaults to the subagent.yaml value. Advisory
+#                     only for subscription-backed providers.
 #   timeoutMs       — optional per-model wall-clock timeout (min 1000).
 #                     On timeout the runner aborts the in-flight call and
 #                     fails over to the next model in the chain.
 #   providerOptions — optional free-form record of request body fields
 #                     forwarded verbatim to the AI SDK call. Use this to
-#                     pass vendor-specific knobs. Only effective on the
+#                     pass vendor-specific knobs. Ignored by subscription
+#                     providers and only effective on the
 #                     `ollama` provider slot (which is Talon's
 #                     OpenAI-compatible passthrough — point it at any
 #                     compatible endpoint via auth.providers.ollama.baseURL).
@@ -459,6 +489,12 @@ langfuse:
 #         name: claude-haiku-4-5-20251001
 #   session-summarizer:
 #     model:
+#       - provider: claude-code
+#         name: claude-sonnet-4-6
+#         timeoutMs: 60000
+#       - provider: codex-sandbox
+#         name: gpt-5.6-terra
+#         timeoutMs: 60000
 #       - provider: openai
 #         name: gpt-5.4-spark
 #

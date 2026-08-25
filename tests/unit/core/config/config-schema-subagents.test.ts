@@ -51,14 +51,109 @@ describe('TalondConfigSchema — subagents override', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects agent runtime providers in subagent model overrides', () => {
+  it('accepts the Claude Code subscription provider in subagent model overrides', () => {
     const result = TalondConfigSchema.safeParse({
+      subagentCli: {
+        claudeCode: { enabled: true },
+      },
       subagents: {
         'memory-groomer': {
-          model: [{ provider: 'codex-cli', name: 'claude-sonnet-4-6' }],
+          model: [{ provider: 'claude-code', name: 'claude-sonnet-4-6' }],
         },
       },
     });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentCli.claudeCode).toEqual({ enabled: true, command: 'claude' });
+    }
+  });
+
+  it('defaults subscription CLI providers to disabled', () => {
+    const result = TalondConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentCli).toEqual({
+        claudeCode: { enabled: false, command: 'claude' },
+      });
+    }
+  });
+
+  it('defaults Codex runner startup readiness to 30 seconds', () => {
+    const result = TalondConfigSchema.safeParse({});
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentSandbox.codex).toEqual({
+        enabled: false,
+        endpoint: 'http://codex-runner:9700',
+        startupTimeoutMs: 30_000,
+      });
+    }
+  });
+
+  it('accepts an enabled externally contained Codex subscription runner', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagentSandbox: {
+        codex: {
+          enabled: true,
+          endpoint: 'http://codex-runner:9700',
+          token: 't'.repeat(32),
+        },
+      },
+      subagents: {
+        'memory-groomer': {
+          model: [{ provider: 'codex-sandbox', name: 'gpt-5.6-terra' }],
+        },
+      },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.subagentSandbox.codex).toMatchObject({
+        enabled: true,
+        endpoint: 'http://codex-runner:9700',
+      });
+    }
+  });
+
+  it('rejects a Codex runner override when the contained runner is disabled', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagents: {
+        'memory-groomer': {
+          model: [{ provider: 'codex-sandbox', name: 'gpt-5.6-terra' }],
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({
+          path: ['subagentSandbox', 'codex', 'enabled'],
+          message: expect.stringContaining('memory-groomer selects codex-sandbox'),
+        }),
+      );
+    }
+  });
+
+  it('rejects an enabled Codex sandbox runner without a token', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagentSandbox: { codex: { enabled: true } },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects the documented Codex runner token placeholder', () => {
+    const result = TalondConfigSchema.safeParse({
+      subagentSandbox: {
+        codex: {
+          enabled: true,
+          token: 'replace_with_a_random_32_character_minimum_value',
+        },
+      },
+    });
+
     expect(result.success).toBe(false);
   });
 

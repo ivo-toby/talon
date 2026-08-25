@@ -53,10 +53,15 @@ interface LifecycleHandlerBacklogData {
   readonly timing: LifecycleBacklogTiming;
   readonly statusTiming: Partial<Record<keyof LifecycleBacklog, LifecycleBacklogTiming>>;
 }
+import { waitForCodexSandboxRunner } from '../subagents/codex-sandbox-runner-readiness.js';
 
 // ---------------------------------------------------------------------------
 // TalondDaemon
 // ---------------------------------------------------------------------------
+
+export interface TalondDaemonDeps {
+  waitForCodexSandboxRunner?: typeof waitForCodexSandboxRunner;
+}
 
 export class TalondDaemon {
   private _state: DaemonState = 'stopped';
@@ -69,7 +74,14 @@ export class TalondDaemon {
   private mcpRegistry: McpRegistry | null = null;
   private deferredTeardown: Promise<void> | null = null;
 
-  constructor(private readonly logger: pino.Logger) {}
+  private readonly waitForCodexSandboxRunner: typeof waitForCodexSandboxRunner;
+
+  constructor(
+    private readonly logger: pino.Logger,
+    deps: TalondDaemonDeps = {},
+  ) {
+    this.waitForCodexSandboxRunner = deps.waitForCodexSandboxRunner ?? waitForCodexSandboxRunner;
+  }
 
   get state(): DaemonState {
     return this._state;
@@ -100,6 +112,22 @@ export class TalondDaemon {
     try {
       if (this.logger.level !== this.ctx.config.logLevel) {
         this.logger.level = this.ctx.config.logLevel;
+      }
+
+      const codexRunner = this.ctx.config.subagentSandbox?.codex;
+      if (codexRunner?.enabled) {
+        const runnerReady = await this.waitForCodexSandboxRunner({
+          endpoint: codexRunner.endpoint,
+          token: codexRunner.token!,
+          startupTimeoutMs: codexRunner.startupTimeoutMs,
+        });
+        if (runnerReady.isErr()) {
+          return this.failStartup(runnerReady.error);
+        }
+        this.logger.info(
+          { endpoint: new URL(codexRunner.endpoint).origin },
+          'daemon: Codex runner ready',
+        );
       }
 
       // 2. Register and start MCP servers from loaded skills.
@@ -397,6 +425,44 @@ export class TalondDaemon {
     this.logger.info('daemon: stopped');
   }
 
+  private async failStartup(cause: Error): Promise<Result<void, DaemonError>> {
+    const context = this.ctx;
+    this.ctx = null;
+    this.agentRunner = null;
+    this._state = 'error';
+
+    if (context !== null) {
+      try {
+        await context.backgroundAgentManager?.shutdown();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop background agents after startup failure',
+        );
+      }
+      try {
+        await context.observability.shutdown();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop observability after startup failure',
+        );
+      }
+      try {
+        context.db.close();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to close database after startup failure',
+        );
+      }
+    }
+
+    return err(
+      new DaemonError(`Failed to start Codex sandbox runner dependency: ${cause.message}`, cause),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // Health
   // ---------------------------------------------------------------------------
@@ -482,6 +548,15 @@ export class TalondDaemon {
     }
     if (JSON.stringify(oldConfig.scheduler) !== JSON.stringify(newConfig.scheduler)) {
       this.logger.warn('daemon: reload — scheduler config changed; restart required to apply');
+    }
+    if (
+      JSON.stringify(oldConfig.subagentCli) !== JSON.stringify(newConfig.subagentCli) ||
+      JSON.stringify(oldConfig.subagentSandbox) !== JSON.stringify(newConfig.subagentSandbox) ||
+      JSON.stringify(oldConfig.subagents) !== JSON.stringify(newConfig.subagents)
+    ) {
+      this.logger.warn(
+        'daemon: reload — subscription sub-agent configuration changed; restart required to rebuild runners and verify the Codex dependency',
+      );
     }
 
     // Container image change — warn.

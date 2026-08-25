@@ -1,0 +1,43 @@
+# =============================================================================
+# Dockerfile.codex-runner — externally contained Codex sub-agent runner
+# =============================================================================
+# This image intentionally contains no Talon configuration, database, channel
+# secrets, host-tool bridge, or Docker socket. It runs the HTTP control process
+# as container root only to drop each App Server child to the unprivileged codex
+# UID; the container's Compose profile drops every capability except SETUID/GID.
+
+FROM node:24-slim AS builder
+
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tsconfig.json tsconfig.build.json ./
+COPY src/ ./src/
+RUN npm run build
+
+FROM node:24-slim AS production
+
+ENV NODE_ENV=production
+WORKDIR /opt/talond
+
+RUN apt-get update -qq && \
+    apt-get install -y --no-install-recommends ca-certificates tini && \
+    rm -rf /var/lib/apt/lists/* && \
+    groupadd --gid 10001 codex && \
+    useradd --uid 10001 --gid codex --create-home --shell /usr/sbin/nologin codex
+
+COPY --from=builder /build/dist ./dist/
+COPY --from=builder /build/package.json /build/package-lock.json ./
+RUN npm ci --omit=dev && \
+    npm install -g @openai/codex && \
+    npm cache clean --force && \
+    mkdir -p /auth && \
+    chmod 700 /auth
+
+ENV TALON_CODEX_RUNNER_AUTH_DIR=/auth \
+    TALON_CODEX_APP_SERVER_UID=10001 \
+    TALON_CODEX_APP_SERVER_GID=10001
+
+VOLUME ["/auth"]
+
+ENTRYPOINT ["/usr/bin/tini", "--", "node", "/opt/talond/dist/codex-runner/index.js"]
