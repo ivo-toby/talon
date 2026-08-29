@@ -85,3 +85,62 @@ describe('.github/workflows/release.yaml', () => {
     expect(workflow).toMatch(/sync-starter-skills\.sh\s+starter-stack(?![-\w])/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Lifecycle documentation/adoption drift
+// ---------------------------------------------------------------------------
+
+describe('lifecycle documentation/adoption surfaces', () => {
+  it('documents lifecycle config and operator commands in the schema reference', () => {
+    const docs = readFileSync(resolve(ROOT, 'docs/reference/config-schema.mdx'), 'utf8');
+
+    expect(docs).toContain('## `lifecycle`');
+    expect(docs).toContain('### `personas[].lifecycle`');
+    expect(docs).toContain('talon.lifecycle.event.envelope.v1');
+    expect(docs).toContain('behavior.feedback.detected.v1');
+    expect(docs).toContain('current dispatcher concurrency is enforced by dispatcher policy');
+    expect(docs).toContain('subagents');
+    expect(docs).toMatch(/lifecycle subscription alone does\s+not load or authorize/);
+    expect(docs).toContain('talonctl lifecycle handlers');
+    expect(docs).toContain('talonctl lifecycle rollback-promotion');
+  });
+
+  it('keeps starter docs and example configs discoverable without enabling lifecycle', () => {
+    for (const bundle of ['starter', 'starter-stack'] as const) {
+      const readme = readFileSync(resolve(ROOT, bundle, 'README.md'), 'utf8');
+      const config = readFileSync(resolve(ROOT, bundle, 'config/talond.example.yaml'), 'utf8');
+
+      expect(readme).toContain('talonctl lifecycle handlers');
+      expect(readme).toContain('talonctl lifecycle candidates assistant --limit 25');
+      expect(config).toContain('Durable lifecycle (optional)');
+      expect(config).toContain('#   enabled: false');
+      expect(config).toContain('behavior prompt promotion');
+      expect(config).toContain("add that handler ref to the persona's subagents list");
+    }
+  });
+
+  it('keeps setup skills aligned with lifecycle inspection and governed promotion', () => {
+    const skillPaths = [
+      '.agents/skills/talon-setup/SKILL.md',
+      '.claude/skills/talon-setup/SKILL.md',
+      '.agents/skills/talon-setup-docker/SKILL.md',
+      '.claude/skills/talon-setup-docker/SKILL.md',
+      '.agents/skills/manage-schedules/SKILL.md',
+      '.claude/skills/manage-schedules/SKILL.md',
+      '.agents/skills/create-profile/SKILL.md',
+      '.claude/skills/create-profile/SKILL.md',
+      '.agents/skills/create-personality/SKILL.md',
+      '.claude/skills/create-personality/SKILL.md',
+    ];
+
+    for (const skillPath of skillPaths) {
+      const skill = readFileSync(resolve(ROOT, skillPath), 'utf8');
+      expect(skill, skillPath).toContain('talonctl lifecycle candidates');
+      expect(skill, skillPath).toContain('promote');
+      expect(skill, skillPath).toContain('rollback-promotion');
+    }
+
+    const smoke = readFileSync(resolve(ROOT, '.agents/skills/run-talon-smoke/SKILL.md'), 'utf8');
+    expect(smoke).toContain('talonctl lifecycle handlers');
+  });
+});

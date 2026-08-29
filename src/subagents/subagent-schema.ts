@@ -43,6 +43,15 @@ export const SubAgentModelSchema = z.object({
   maxTokens: z.number().int().min(1).default(2048),
 });
 
+const SubAgentLifecycleCapabilitySchema = z
+  .object({
+    mode: z.enum(['event', 'signal', 'interceptor']),
+    inputContract: z.string().min(1),
+    outputContract: z.string().min(1),
+    interceptorSafety: z.enum(['advisory', 'enforcing']).optional(),
+  })
+  .strict();
+
 // ---------------------------------------------------------------------------
 // Sub-agent manifest
 // ---------------------------------------------------------------------------
@@ -88,6 +97,12 @@ export const SubAgentManifestSchema = z.object({
    * with an info-level log. Defaults to [] — no env requirements.
    */
   requiresEnv: z.array(z.string().min(1)).default([]),
+
+  /**
+   * Loader-owned authority for lifecycle use. This lives with the executable
+   * sub-agent manifest, never with persona lifecycle configuration.
+   */
+  lifecycleCapabilities: z.array(SubAgentLifecycleCapabilitySchema).max(32).default([]),
 });
 
 // ---------------------------------------------------------------------------

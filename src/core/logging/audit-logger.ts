@@ -12,6 +12,7 @@
  */
 
 import type pino from 'pino';
+import { types } from 'node:util';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -60,6 +61,62 @@ export interface AuditStore {
    * auto-incrementing primary key rather than a caller-supplied ID).
    */
   append(entry: AuditEntry): void;
+}
+
+const MAX_LIFECYCLE_AUDIT_DEPTH = 5;
+const MAX_LIFECYCLE_AUDIT_KEYS = 32;
+const MAX_LIFECYCLE_AUDIT_ITEMS = 32;
+const MAX_LIFECYCLE_AUDIT_STRING = 512;
+const SECRET_DETAIL_KEY_PATTERN =
+  /(^|[_\-.])(api[_\-.]?key|authorization|bearer|credential|password|secret|token)([_\-.]|$)/i;
+
+function redactLifecycleAuditValue(value: unknown, depth = 0): unknown {
+  if (
+    value === null ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    value === undefined
+  ) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    return value.length > MAX_LIFECYCLE_AUDIT_STRING
+      ? `${value.slice(0, MAX_LIFECYCLE_AUDIT_STRING)}...`
+      : value;
+  }
+  if (depth >= MAX_LIFECYCLE_AUDIT_DEPTH) {
+    return '[truncated]';
+  }
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, MAX_LIFECYCLE_AUDIT_ITEMS)
+      .map((item) => redactLifecycleAuditValue(item, depth + 1));
+  }
+  if (typeof value !== 'object' || types.isProxy(value)) {
+    return '[redacted]';
+  }
+
+  const result: Record<string, unknown> = {};
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Object.keys(descriptors).slice(0, MAX_LIFECYCLE_AUDIT_KEYS)) {
+    if (SECRET_DETAIL_KEY_PATTERN.test(key)) {
+      result[key] = '[redacted]';
+      continue;
+    }
+    const descriptor = descriptors[key];
+    result[key] =
+      descriptor && 'value' in descriptor
+        ? redactLifecycleAuditValue(descriptor.value, depth + 1)
+        : '[redacted]';
+  }
+  return result;
+}
+
+function redactLifecycleAuditEntry(entry: AuditEntry): AuditEntry {
+  return {
+    ...entry,
+    details: redactLifecycleAuditValue(entry.details) as Record<string, unknown>,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +198,40 @@ export class AuditLogger {
    */
   logConfigReload(entry: AuditEntry): void {
     this.write('config.reload', entry);
+  }
+
+  /**
+   * Record a bounded lifecycle interceptor decision. Callers must provide
+   * metadata only: never include intercepted content, tool arguments, model
+   * prompts, or raw handler errors in this durable audit record.
+   */
+  logLifecycleInterceptor(entry: AuditEntry): void {
+    this.write('lifecycle.interceptor', redactLifecycleAuditEntry(entry));
+  }
+
+  /** Record bounded lifecycle runtime decisions across publish, dispatch, and interceptor paths. */
+  logLifecycleDecision(entry: AuditEntry): void {
+    this.write('lifecycle.decision', redactLifecycleAuditEntry(entry));
+  }
+
+  /** Record an operator- or runtime-initiated lifecycle replay request. */
+  logLifecycleReplay(entry: AuditEntry): void {
+    this.write('lifecycle.replay', redactLifecycleAuditEntry(entry));
+  }
+
+  /** Record lifecycle disablement, including circuit-open state. */
+  logLifecycleDisablement(entry: AuditEntry): void {
+    this.write('lifecycle.disablement', redactLifecycleAuditEntry(entry));
+  }
+
+  /** Record bounded lifecycle projection side effects. */
+  logLifecycleProjection(entry: AuditEntry): void {
+    this.write('lifecycle.projection', redactLifecycleAuditEntry(entry));
+  }
+
+  /** Record governed lifecycle promotion decisions. */
+  logLifecyclePromotion(entry: AuditEntry): void {
+    this.write('lifecycle.promotion', redactLifecycleAuditEntry(entry));
   }
 
   // ---------------------------------------------------------------------------

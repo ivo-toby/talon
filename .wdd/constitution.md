@@ -1,10 +1,10 @@
 ---
 id: WDD-CONSTITUTION
 kind: constitution
-version: 1.0.0
+version: 2.2.0
 status: active
 ratified: 2026-07-10
-last_amended: 2026-07-10
+last_amended: 2026-07-16
 ---
 
 # Talon WDD Constitution
@@ -31,7 +31,11 @@ last_amended: 2026-07-10
 - Review comments go to PRs when PRs exist; otherwise they go to local review notes or task files.
 - Feedback fixes use the original worker for narrow, low-risk corrections and a fresh worker for unclear, high-risk, security-sensitive, or repeated feedback.
 - P2 findings block merge.
-- P3 findings do not block merge, but unresolved P3 findings should become follow-up tasks when they are still relevant.
+- P3/Low findings do not block commit or merge. They MUST NOT be remediated in
+  the active task unless the user explicitly requests the change or the
+  controller documents why the finding was misclassified and actually affects
+  acceptance, security, or correctness. Relevant unresolved P3/Low findings
+  become follow-up work without invalidating a clean commit gate.
 
 ## Model Usage
 
@@ -40,22 +44,30 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 ```json
 {
   "availableAliases": {
-    "controllerCurrent": "active Codex session for controller, planning, and local edits",
-    "codexHigh": "GPT-5.3-codex-high for well-defined, tightly scoped offloaded coding tasks when available",
-    "reviewGate": "GPT-5.4 for required pre-commit review when available"
+    "controllerCurrent": "active Codex session for controller, planning, and local edits; it must not invoke or delegate to a GPT-5.6 model",
+    "codexHigh": "gpt-5.5 at high reasoning for well-defined, tightly scoped offloaded coding and blocking-remediation tasks",
+    "reviewGate": "gpt-5.5 at xhigh reasoning for every required pre-commit, task, refresh, PR, reconciliation, and epic-validation review"
   },
   "models": {
     "epicDefinition": "controllerCurrent",
     "planning": "controllerCurrent",
-    "implementationSimple": "controllerCurrent",
+    "implementationSimple": "codexHigh",
     "implementationComplex": "codexHigh",
     "review": "reviewGate",
-    "feedbackFix": "controllerCurrent",
+    "feedbackFix": "codexHigh",
     "epicValidation": "reviewGate",
     "prDescription": "controllerCurrent"
   }
 }
 ```
+
+- GPT-5.6 models are forbidden for all new controller, worker, feedback-fix,
+  reviewer, reconciliation, and validation activity.
+- Implementation and blocking-remediation agents may use models no newer than
+  GPT-5.5. `codexHigh` defaults to GPT-5.5 with high reasoning.
+- Every review uses `reviewGate`: GPT-5.5 with xhigh reasoning.
+- Historical GPT-5.6 model references remain immutable provenance only and do
+  not authorize reuse.
 
 ## WDD Profile Defaults
 
@@ -84,11 +96,25 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 
 ## Review Policy
 
-- Before every commit, the controller must request a GPT-5.4 review when that model is available.
+- Before every commit, the controller must request a `gpt-5.5` review with
+  xhigh reasoning.
 - Critical, high, and medium review issues block commit and merge until addressed or explicitly deemed invalid with written rationale.
 - P1 findings block merge.
 - P2 findings block merge.
-- P3 findings do not block merge by default.
+- P3/Low findings do not block commit or merge and MUST NOT trigger automatic
+  remediation or another review cycle. Record relevant items as follow-up work.
+- The initial task review and the final pre-commit review inspect the complete
+  task diff. After blocking feedback, intermediate reviewGate/xhigh reviews MAY focus
+  on the remediation delta and the previously open Critical/High/Medium
+  findings. One fresh complete-task-diff reviewGate/xhigh review is still mandatory
+  immediately before commit.
+- Any source or test edit after the final clean complete-task-diff review
+  invalidates that review and requires another final reviewGate/xhigh review.
+- Reviewers MAY use `workspace-write` in an isolated task worktree when test
+  runners require ephemeral config, cache, socket, or coverage files. The
+  reviewer prompt MUST forbid source/test/WDD edits and dependency installation;
+  the controller MUST compare Git status before and after review and treat any
+  unexpected persistent change as a failed review gate.
 - Review comments are written to PRs when available, otherwise to task files or local review notes.
 - PR review comments must be resolved when fixed or deemed invalid, and the resolution must state what changed, which commit fixed it, or why the comment was invalid.
 - Feedback fixes may use the original worker or a fresh worker, whichever is safer.
@@ -126,7 +152,7 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 - `orchestration.json` must include `schemaVersion: 1`.
 - Plans must identify conflict domains before parallel work begins.
 - Planning must call out persistence, auth, capability, provider-session, runtime-smoke, and documentation impacts when present.
-- Coding tasks may be offloaded to `codexHigh` only when the task is well-defined, tightly scoped, and safe to execute independently.
+- Coding tasks may be offloaded to `codexHigh` only when the task is well-defined, tightly scoped, and safe to execute independently. No implementation or remediation task may use a model newer than GPT-5.5.
 
 ## Task Rules
 
@@ -147,6 +173,12 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
 - Do not start the next wave before reconciliation.
 - Prefer safe parallelism over maximum parallelism when conflict risk is unclear.
 - Changes touching shared contracts, database schema, provider runtime behavior, or channel routing should run in smaller waves unless dependencies are proven independent.
+- Within an active wave, each task advances through review, commit, PR, merge,
+  and cleanup independently as soon as its own gates pass; the controller MUST
+  NOT wait to batch otherwise-ready task PRs or merges.
+- Adaptive monitoring uses a five-minute cadence during review, remediation,
+  freshness, and merge-ready gates, and a fifteen-to-thirty-minute cadence only
+  while implementation workers are making steady progress.
 
 ## Shared Context Rules
 
@@ -166,6 +198,17 @@ Use model aliases in WDD artifacts. If an alias is unavailable in the current en
   - PATCH: clarifications that do not change behavior.
 - Constitution amendments must update `last_amended`.
 - Ratification date remains the first adoption date.
+
+## Amendment History
+
+- 2.2.0 (2026-07-16): prohibited all new GPT-5.6 use, moved every review gate
+  to GPT-5.5 with xhigh reasoning, capped implementation/remediation agents at
+  GPT-5.5, and retained older model references as historical provenance only.
+- 2.1.0 (2026-07-16): prohibited automatic Low/P3 remediation, introduced
+  focused blocking-delta re-reviews plus one final full-diff Sol/high gate,
+  allowed tightly controlled writable review sandboxes for ephemeral test
+  artifacts, required post-review worktree cleanliness checks, and tightened
+  adaptive monitoring during review/fix gates.
 
 ## Open Setup Questions
 

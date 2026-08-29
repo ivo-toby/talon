@@ -3,6 +3,10 @@ import Database from 'better-sqlite3';
 import { ok, err } from 'neverthrow';
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
 import { DeadLetterHandler } from '../../../src/queue/dead-letter.js';
+import { LifecycleEventRepository } from '../../../src/core/database/repositories/lifecycle-event-repository.js';
+import { LifecycleEventBus } from '../../../src/lifecycle/lifecycle-event-bus.js';
+import { LifecycleRuntime } from '../../../src/lifecycle/lifecycle-runtime.js';
+import { LifecycleInterceptorEngine } from '../../../src/lifecycle/interceptors/interceptor-engine.js';
 import { QueueProcessor } from '../../../src/queue/queue-processor.js';
 import { calculateBackoff } from '../../../src/queue/retry-strategy.js';
 import { QueueItemStatus, type QueueItem } from '../../../src/queue/queue-types.js';
@@ -117,14 +121,14 @@ describe('QueueProcessor', () => {
       expect(result?.type).toBe('collaboration');
       expect(handledIds).toEqual([collaborationItemId]);
 
-      const inflightRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
-        inflightItemId,
-      ) as { status: string };
+      const inflightRow = db
+        .prepare('SELECT status FROM queue_items WHERE id = ?')
+        .get(inflightItemId) as { status: string };
       expect(inflightRow.status).toBe('claimed');
 
-      const collaborationRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
-        collaborationItemId,
-      ) as { status: string };
+      const collaborationRow = db
+        .prepare('SELECT status FROM queue_items WHERE id = ?')
+        .get(collaborationItemId) as { status: string };
       expect(collaborationRow.status).toBe('completed');
     });
 
@@ -156,19 +160,19 @@ describe('QueueProcessor', () => {
       expect(handledIds).toEqual([collaborationItemId]);
 
       // Inflight and regular items must remain untouched.
-      const inflightRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
-        inflightItemId,
-      ) as { status: string };
+      const inflightRow = db
+        .prepare('SELECT status FROM queue_items WHERE id = ?')
+        .get(inflightItemId) as { status: string };
       expect(inflightRow.status).toBe('claimed');
 
-      const regularRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
-        regularPendingId,
-      ) as { status: string };
+      const regularRow = db
+        .prepare('SELECT status FROM queue_items WHERE id = ?')
+        .get(regularPendingId) as { status: string };
       expect(regularRow.status).toBe('pending');
 
-      const collaborationRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(
-        collaborationItemId,
-      ) as { status: string };
+      const collaborationRow = db
+        .prepare('SELECT status FROM queue_items WHERE id = ?')
+        .get(collaborationItemId) as { status: string };
       expect(collaborationRow.status).toBe('completed');
     });
 
@@ -184,10 +188,14 @@ describe('QueueProcessor', () => {
       // FIFO must be preserved — regular item is claimed first.
       expect(result?.id).toBe(regularId);
 
-      const regularRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(regularId) as { status: string };
+      const regularRow = db
+        .prepare('SELECT status FROM queue_items WHERE id = ?')
+        .get(regularId) as { status: string };
       expect(regularRow.status).toBe('completed');
 
-      const collabRow = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(collaborationId) as { status: string };
+      const collabRow = db
+        .prepare('SELECT status FROM queue_items WHERE id = ?')
+        .get(collaborationId) as { status: string };
       expect(collabRow.status).toBe('pending');
     });
   });
@@ -225,6 +233,92 @@ describe('QueueProcessor', () => {
         status: string;
       };
       expect(row.status).toBe('completed');
+    });
+
+    it('publishes a completed transition only when lifecycle is enabled', () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn((callback) => callback({})),
+        publish: vi.fn(() => ok({})),
+      };
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        lifecycleRuntime as any,
+      );
+      const itemId = enqueueItem(repo, threadId, {
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.complete(itemId).isOk()).toBe(true);
+      expect(lifecycleRuntime.publish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'queue.item.completed.v1' }),
+          persona: 'assistant',
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('commits completion when lifecycle transition publication fails', () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn((callback) => callback({})),
+        publish: vi.fn(() => err(new Error('outbox unavailable'))),
+      };
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        lifecycleRuntime as any,
+      );
+      const itemId = enqueueItem(repo, threadId, {
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.complete(itemId).isOk()).toBe(true);
+      expect(repo.findById(itemId)._unsafeUnwrap()?.status).toBe('completed');
+    });
+
+    it('publishes one authoritative terminal event for repeated or stale completion calls', () => {
+      const runtime = new LifecycleRuntime(
+        new LifecycleEventBus(new LifecycleEventRepository(db), { resolveEventHandlers: () => [] }),
+        new LifecycleInterceptorEngine({ resolveHandlers: () => [], implementations: {} }),
+        {} as any,
+      );
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        runtime,
+      );
+      const itemId = enqueueItem(repo, threadId, {
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.complete(itemId).isOk()).toBe(true);
+      expect(lifecycleProcessor.complete(itemId).isOk()).toBe(true);
+      const events = db
+        .prepare('SELECT type FROM lifecycle_events WHERE aggregate_id = ?')
+        .all(itemId) as Array<{ type: string }>;
+      expect(events).toEqual([{ type: 'queue.item.completed.v1' }]);
     });
   });
 
@@ -293,9 +387,7 @@ describe('QueueProcessor', () => {
       const result = processor.fail(itemId, 'fatal error');
       expect(result.isOk()).toBe(true);
 
-      const row = db.prepare('SELECT status, error FROM queue_items WHERE id = ?').get(
-        itemId,
-      ) as {
+      const row = db.prepare('SELECT status, error FROM queue_items WHERE id = ?').get(itemId) as {
         status: string;
         error: string;
       };
@@ -327,6 +419,183 @@ describe('QueueProcessor', () => {
         status: string;
       };
       expect(row.status).toBe('dead_letter');
+    });
+
+    it('publishes retry and dead-letter transitions with the same scoped runtime', () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn((callback) => callback({})),
+        publish: vi.fn(() => ok({})),
+      };
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        lifecycleRuntime as any,
+      );
+      const retryId = enqueueItem(repo, threadId, {
+        max_attempts: 2,
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+      expect(lifecycleProcessor.fail(retryId, 'retry').isOk()).toBe(true);
+
+      const deadLetterId = enqueueItem(repo, threadId, {
+        max_attempts: 1,
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+      expect(lifecycleProcessor.fail(deadLetterId, 'terminal').isOk()).toBe(true);
+
+      expect(lifecycleRuntime.publish).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'queue.item.failed.v1' }),
+        }),
+        expect.anything(),
+      );
+      expect(lifecycleRuntime.publish).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          event: expect.objectContaining({ type: 'queue.item.dead_lettered.v1' }),
+        }),
+        expect.anything(),
+      );
+    });
+
+    it('commits retry and dead-letter transitions when lifecycle publication fails', () => {
+      const lifecycleRuntime = {
+        transaction: vi.fn((callback) => callback({})),
+        publish: vi.fn(() => err(new Error('outbox unavailable'))),
+      };
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        lifecycleRuntime as any,
+      );
+      const retryId = enqueueItem(repo, threadId, {
+        max_attempts: 2,
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.fail(retryId, 'retry').isOk()).toBe(true);
+      expect(repo.findById(retryId)._unsafeUnwrap()?.status).toBe('failed');
+
+      const deadLetterId = enqueueItem(repo, threadId, {
+        max_attempts: 1,
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.fail(deadLetterId, 'terminal').isOk()).toBe(true);
+      expect(repo.findById(deadLetterId)._unsafeUnwrap()?.status).toBe('dead_letter');
+    });
+
+    it('preserves queue retry semantics without publishing when a legacy item has no lifecycle scope', () => {
+      const lifecycleRuntime = { transaction: vi.fn(), publish: vi.fn() };
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        lifecycleRuntime as any,
+      );
+      const itemId = enqueueItem(repo, threadId, { max_attempts: 2 });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.fail(itemId, 'legacy retry').isOk()).toBe(true);
+      expect(lifecycleRuntime.publish).not.toHaveBeenCalled();
+      expect(repo.findById(itemId)._unsafeUnwrap()?.status).toBe('failed');
+    });
+
+    it('does not trust a forged lifecycle object in ordinary queue payloads', () => {
+      const lifecycleRuntime = { transaction: vi.fn(), publish: vi.fn() };
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        lifecycleRuntime as any,
+      );
+      const itemId = enqueueItem(repo, threadId, {
+        payload: JSON.stringify({ __lifecycle: { persona: 'forged', itemType: 'message' } }),
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.complete(itemId).isOk()).toBe(true);
+      expect(lifecycleRuntime.publish).not.toHaveBeenCalled();
+    });
+
+    it('does not publish a mismatched manager-owned scope', () => {
+      const lifecycleRuntime = { transaction: vi.fn(), publish: vi.fn() };
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        lifecycleRuntime as any,
+      );
+      const itemId = enqueueItem(repo, threadId, {
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'schedule',
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.complete(itemId).isOk()).toBe(true);
+      expect(lifecycleRuntime.publish).not.toHaveBeenCalled();
+    });
+
+    it('publishes no duplicate failure event for a stale or conflicting transition', () => {
+      const runtime = new LifecycleRuntime(
+        new LifecycleEventBus(new LifecycleEventRepository(db), { resolveEventHandlers: () => [] }),
+        new LifecycleInterceptorEngine({ resolveHandlers: () => [], implementations: {} }),
+        {} as any,
+      );
+      const logger = createTestLogger();
+      const lifecycleProcessor = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, logger),
+        logger,
+        1000,
+        60_000,
+        runtime,
+      );
+      const itemId = enqueueItem(repo, threadId, {
+        max_attempts: 2,
+        lifecycle_persona: 'assistant',
+        lifecycle_item_type: 'message',
+      });
+      repo.claimNext(threadId);
+
+      expect(lifecycleProcessor.fail(itemId, 'retry').isOk()).toBe(true);
+      expect(lifecycleProcessor.fail(itemId, 'stale retry').isOk()).toBe(true);
+      const events = db
+        .prepare('SELECT type FROM lifecycle_events WHERE aggregate_id = ?')
+        .all(itemId) as Array<{ type: string }>;
+      expect(events).toEqual([{ type: 'queue.item.failed.v1' }]);
     });
   });
 

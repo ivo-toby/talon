@@ -193,6 +193,9 @@ auth:
 # ---------------------------------------------------------------------------
 # Langfuse — cloud observability for foreground runs, tools, and sub-agents
 # ---------------------------------------------------------------------------
+# If lifecycle is enabled, ordinary lifecycle.publish spans remain disabled by
+# default to avoid high-volume trace noise. Enable
+# lifecycle.telemetry.langfuse.publications only for detailed lifecycle tracing.
 langfuse:
   enabled: false                     # set true to export traces to Langfuse Cloud
   publicKey: ${LANGFUSE_PUBLIC_KEY}  # Langfuse public API key

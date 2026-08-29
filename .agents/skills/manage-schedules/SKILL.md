@@ -5,12 +5,12 @@ description: |
   "add schedule", "create schedule", "list schedules", "remove schedule",
   "scheduled task", or "cron job".
 triggers:
-  - "add schedule"
-  - "create schedule"
-  - "list schedules"
-  - "remove schedule"
-  - "scheduled task"
-  - "cron job"
+  - 'add schedule'
+  - 'create schedule'
+  - 'list schedules'
+  - 'remove schedule'
+  - 'scheduled task'
+  - 'cron job'
 ---
 
 # Manage Schedules
@@ -21,9 +21,11 @@ Schedules live in the database (not the config file) and require a running daemo
 ## Phase 1: Determine Action
 
 Ask what they want to do:
+
 1. **Create** a new scheduled task
 2. **List** existing schedules
 3. **Remove** a schedule
+4. **Create a behavior-review reminder** for lifecycle candidates
 
 ## Phase 2a: Create Schedule
 
@@ -41,6 +43,26 @@ Ask what they want to do:
 7. Ask for the prompt (what the agent should do when triggered).
 8. Run: `npx talonctl add-schedule --persona <name> --channel <channel> --cron "<expr>" --label "<label>" --prompt "<prompt>" --config talond.yaml`
 9. Confirm with schedule ID and next run time.
+
+For behavior-review reminders, suggest a narrow operator-facing prompt such as:
+
+```text
+Review recent lifecycle behavior candidates for this persona. Summarize the
+candidate IDs, evidence-source counts, confidence, and whether any need
+operator approval. Do not edit prompt files directly; tell the operator to use
+talonctl lifecycle promote or rollback-promotion.
+```
+
+The actual promotion/rollback path is governed by lifecycle IPC commands:
+
+```bash
+npx talonctl lifecycle candidates <persona> --limit 25
+npx talonctl lifecycle promote <persona> <promotion-id> --approved-by <operator-id>
+npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
+```
+
+`promote` applies only prompt-patch-backed behavior promotions. Notes-only
+candidate rows are review evidence, not directly applicable prompt edits.
 
 ## Phase 2b: List Schedules
 
@@ -60,4 +82,6 @@ Optionally filter: `--persona <name>`
 - Scheduled runs are one-shot and short-context: they do not use thread provider affinity, resume provider sessions, replay schedule-thread history, run context rotation, or store skipped final wrap-up text as outbound messages. Explicit channel.send deliveries are stored on the live recipient thread so replies have context.
 - Scheduled runs created from the CLI (`talonctl add-schedule`) have no `originExternalId` in their schedule-thread metadata, so `channel_send` cannot infer a recipient chat. In that case the agent must either (a) pass `externalChatId` explicitly to `channel_send` after discovering it via `channel_list`, or (b) call `channel_broadcast` to fan out to every chat the persona is bound to. Broadcasts skip channel-default bindings (no `thread_id`) with a warning; the result includes `{ delivered, skipped, failed }` so the agent can tell the user which channels were unreachable.
 - The daemon must be running for schedules to fire (they live in the DB, not the config).
+- Behavior-review schedules may summarize candidates, but they must not directly
+  rewrite system prompts. Use lifecycle promotion commands for governed changes.
 - After creating schedules, remind the user: schedules require a running daemon to execute.

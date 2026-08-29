@@ -118,7 +118,7 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl unbind --persona <p> --channel <c>` | Remove a binding |
 | `talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add an MCP server to a skill |
 | `talonctl list-providers` | Configured AI providers |
-| `talonctl add-provider --name <n> --command <c> [--context both]` | Add a provider |
+| `talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]` | Add a provider |
 | `talonctl set-default-provider --name <n> --context <ctx>` | Set default provider |
 | `talonctl test-provider --name <n>` | Verify a provider connects |
 | `talonctl list-capabilities` | All available capability labels |
@@ -127,6 +127,13 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl list-schedules` | Configured scheduled tasks |
 | `talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add a scheduled task |
 | `talonctl remove-schedule <id>` | Remove a scheduled task |
+| `talonctl lifecycle handlers` | Show lifecycle handler health, backlog, and dispatcher status |
+| `talonctl lifecycle inspect <event-id> --handler <handler-id>` | Inspect a durable lifecycle event and delivery state |
+| `talonctl lifecycle replay <event-id> <handler-id>` | Reopen one terminal lifecycle delivery for exact replay |
+| `talonctl lifecycle disable <handler-id>` | Dead-letter pending/failed/claimed deliveries for one handler |
+| `talonctl lifecycle candidates <persona> --limit <n>` | List behavior-candidate provenance for a persona |
+| `talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>` | Apply a governed behavior prompt promotion |
+| `talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>` | Roll back an active behavior prompt promotion |
 
 Use these for all post-boot mutations. **Do not edit `config/talond.yaml`
 by hand** once the daemon is running — talonctl handles it correctly.
@@ -138,23 +145,30 @@ by hand** once the daemon is running — talonctl handles it correctly.
 Ask: **"Which AI provider do you want to use?"**
 
 ```
-a) Claude (Anthropic API)            — default, smartest, costs $
+a) Claude Code (Anthropic API)      — default, smartest, costs $
 b) OpenAI-compatible endpoint        — local Ollama, vLLM, Groq, Together, custom
 c) Gemini CLI                        — Google's CLI, preinstalled in the image
 d) Codex CLI                         — OpenAI's CLI, preinstalled in the image
 ```
 
-All four work out of the box. `claude` (bundled in the Agent SDK),
-`codex`, and `gemini` ship in the container image; `openai-compatible`
-runs in-process.
+All four work out of the box. `claude`, `codex`, and `gemini` ship in the
+container image; `openai-compatible` runs in-process.
 
 For (a) ask for nothing else here — defaults work.
 
-For (b) ask three things, **one at a time**:
+For (b) ask four things, **one at a time**:
+- "What should this provider be called? (default: `openai-compatible`; use a
+  distinct name like `ollama-mac` when keeping another OpenAI-compatible
+  endpoint too)"
 - "What's the base URL? (e.g. `https://api.groq.com/openai/v1`,
   `http://host.docker.internal:11434/v1` for local Ollama, etc.)"
 - "What model name does the endpoint serve?
   (e.g. `qwen3-coder:30b`, `llama-3.3-70b-versatile`)"
+- "Does this foreground provider expose `/v1/responses`, and does it support
+  stateful `previous_response_id` chaining?" → if yes to both, remember to add
+  `--api-mode responses --session-mode previous_response_id` or
+  `agentRunner.providers.*.options.apiMode: responses` plus
+  `agentRunner.providers.*.options.sessionMode: previous_response_id`
 - "Does the endpoint need an API key?" → if yes, ask the env var name
   to use (default: `OPENAI_COMPATIBLE_API_KEY`)
 
@@ -181,7 +195,7 @@ which env var the user needs to fill:
 | Email | IMAP/SMTP credentials (see add-email skill) |
 | Terminal | `TERMINAL_TOKEN` (just `talonctl chat`) |
 
-Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Claude).
+Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Claude Code).
 
 Tell the user **exactly** which lines to uncomment/fill in `.env`.
 Do not write the actual secrets to disk.
@@ -191,7 +205,7 @@ Do not write the actual secrets to disk.
 If `config/talond.yaml` doesn't exist:
 `cp config/talond.example.yaml config/talond.yaml`
 
-The default config uses Claude + Telegram. If the user picked something
+The default config uses Claude Code + Telegram. If the user picked something
 else in step 1, walk them through the edits:
 
 #### Edit the persona
@@ -218,29 +232,56 @@ If Gemini CLI:
 
 #### Replace the `agentRunner.providers` block
 
-For Claude (default), no change.
+For Claude Code (default), no change.
 
 For OpenAI-compatible — replace the `claude-code:` block under
 `agentRunner.providers:` with:
 
 ```yaml
-    openai-compatible:
-      enabled: true
-      command: node
-      contextWindowTokens: 32000
-      options:
-        baseUrl: <base URL from step 1>
-        defaultModel: <model from step 1>
-        providerId: <a short slot name, e.g. "groq" or "ollama">
-        toolOutputCap: 4000
+<provider name from step 1>:
+  enabled: true
+  type: openai-compatible # omit only when the provider name itself is openai-compatible
+  command: node
+  contextWindowTokens: 32000
+  options:
+    baseUrl: <base URL from step 1>
+    defaultModel: <model from step 1>
+    providerId: <a short slot name, e.g. "groq" or "ollama">
+    # OpenAI-compatible /v1/responses endpoints only.
+    # Add sessionMode only for stateful previous_response_id chaining.
+    # Stored response ids are scoped by provider + model, so model swaps start fresh.
+    # Omit sessionMode for Ollama, vLLM, Groq, Together, and chat-completions-only endpoints.
+    # apiMode: responses
+    # sessionMode: previous_response_id
+    toolOutputCap: 4000
 ```
 
 Apply the same change to `backgroundAgent.providers` (or set
 `backgroundAgent.enabled: false` if you don't need background work).
 
+For post-boot changes, prefer talonctl instead of editing YAML:
+
+```bash
+talonctl add-provider --name <provider name> \
+  --type openai-compatible \
+  --command node \
+  --context both \
+  --context-window 32000 \
+  --default-model <model from step 1> \
+  --base-url <base URL from step 1> \
+  --provider-id <slot name> \
+  --enabled
+```
+
+For foreground endpoints that expose `/v1/responses`, append
+`--api-mode responses`. Add `--session-mode previous_response_id` only when the
+endpoint supports stateful response-id chaining. Talon scopes stored response
+ids by provider and model, so changing the model on the same provider starts a
+fresh session and replays assembled prior-conversation state.
+
 #### Replace `auth.providers`
 
-For Claude, the default block is fine.
+For Claude Code, the default block is fine.
 
 For OpenAI-compatible:
 ```yaml
@@ -307,6 +348,11 @@ Once boot is verified, anything else uses `talonctl`:
 - **Adjust capabilities** — `talonctl set-capabilities --persona <p> --show`
   to see current, then `--add` or `--remove`.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
+- **Inspect lifecycle health/provenance** — `talonctl lifecycle handlers` and
+  `talonctl lifecycle candidates <persona> --limit 25`.
+- **Apply governed behavior changes** — use `talonctl lifecycle promote` only
+  for an existing candidate, and `rollback-promotion` if an activation needs to
+  be restored.
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   GitHub, Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.

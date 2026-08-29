@@ -17,17 +17,18 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 /** Union of all supported daemon control commands. */
-export type DaemonCommandType = 'status' | 'reload' | 'shutdown' | 'queue-purge';
-
-/** A command sent by `talonctl` to the running `talond` process. */
-export interface DaemonCommand {
-  /** UUID v4 uniquely identifying this command instance. */
-  id: string;
-  /** The command to execute. */
-  command: DaemonCommandType;
-  /** Optional command-specific parameters. */
-  payload?: Record<string, unknown>;
-}
+export type DaemonCommandType =
+  | 'status'
+  | 'reload'
+  | 'shutdown'
+  | 'queue-purge'
+  | 'lifecycle-handlers'
+  | 'lifecycle-inspect'
+  | 'lifecycle-replay'
+  | 'lifecycle-disable'
+  | 'lifecycle-candidates'
+  | 'lifecycle-promote'
+  | 'lifecycle-rollback-promotion';
 
 // ---------------------------------------------------------------------------
 // Response types
@@ -51,12 +52,131 @@ export interface DaemonResponse {
 // Zod schemas
 // ---------------------------------------------------------------------------
 
+const CommandIdSchema = z.uuid();
+const LifecycleLimitSchema = z.number().int().min(1).max(100).optional();
+const QueueStatusSchema = z.enum([
+  'pending',
+  'claimed',
+  'processing',
+  'completed',
+  'failed',
+  'dead_letter',
+]);
+
+const EmptyPayloadSchema = z.object({}).strict();
+const ReloadPayloadSchema = z.object({ configPath: z.string().min(1).optional() }).strict();
+const QueuePurgePayloadSchema = z
+  .object({ statuses: z.array(QueueStatusSchema).min(1).max(6).optional() })
+  .strict();
+const LifecycleHandlersPayloadSchema = z.object({ limit: LifecycleLimitSchema }).strict();
+const LifecycleInspectPayloadSchema = z
+  .object({ eventId: z.string().min(1), handlerId: z.string().min(1).optional() })
+  .strict();
+const LifecycleReplayPayloadSchema = z
+  .object({ eventId: z.string().min(1), handlerId: z.string().min(1) })
+  .strict();
+const LifecycleDisablePayloadSchema = z.object({ handlerId: z.string().min(1) }).strict();
+const LifecycleCandidatesPayloadSchema = z
+  .object({ persona: z.string().min(1), limit: LifecycleLimitSchema })
+  .strict();
+const LifecyclePromotePayloadSchema = z
+  .object({
+    persona: z.string().min(1),
+    promotionId: z.string().min(1),
+    approvedBy: z.string().min(1).optional(),
+  })
+  .strict();
+const LifecycleRollbackPromotionPayloadSchema = z
+  .object({
+    persona: z.string().min(1),
+    activationId: z.string().min(1),
+    reason: z.string().min(1),
+  })
+  .strict();
+
 /** Zod schema for validating serialised {@link DaemonCommand} objects. */
-export const DaemonCommandSchema = z.object({
-  id: z.uuid(),
-  command: z.enum(['status', 'reload', 'shutdown', 'queue-purge']),
-  payload: z.record(z.string(), z.unknown()).optional(),
-});
+export const DaemonCommandSchema = z.discriminatedUnion('command', [
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('status'),
+      payload: EmptyPayloadSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('reload'),
+      payload: ReloadPayloadSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('shutdown'),
+      payload: EmptyPayloadSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('queue-purge'),
+      payload: QueuePurgePayloadSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-handlers'),
+      payload: LifecycleHandlersPayloadSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-inspect'),
+      payload: LifecycleInspectPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-replay'),
+      payload: LifecycleReplayPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-disable'),
+      payload: LifecycleDisablePayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-candidates'),
+      payload: LifecycleCandidatesPayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-promote'),
+      payload: LifecyclePromotePayloadSchema,
+    })
+    .strict(),
+  z
+    .object({
+      id: CommandIdSchema,
+      command: z.literal('lifecycle-rollback-promotion'),
+      payload: LifecycleRollbackPromotionPayloadSchema,
+    })
+    .strict(),
+]);
+
+/** A command sent by `talonctl` to the running `talond` process. */
+export type DaemonCommand = z.infer<typeof DaemonCommandSchema>;
 
 /** Zod schema for validating serialised {@link DaemonResponse} objects. */
 export const DaemonResponseSchema = z.object({

@@ -211,6 +211,7 @@ backgroundAgent:
 - **Sub-agent system** — Route mechanical LLM tasks (summarization, memory grooming, search) to API models or an existing Claude Code subscription via pluggable sub-agents
 - **Background agents** — Launch long-running provider workers for deep tasks without blocking the foreground conversation
 - **Sandboxed execution environments** — Isolate background agent work in persistent Firecracker VMs via [Sprites.dev](https://sprites.dev), with file transfer, checkpointing, and automatic cleanup
+- **Durable lifecycle pipeline** — Publish bounded daemon events for context rotation, behavior learning, telemetry, replay, and governed prompt promotion without letting model-backed handlers mutate state directly
 - **Hot reload** — Change config, personas, and skills without restarting the daemon
 - **Systemd integration** — Watchdog heartbeat, graceful shutdown, timer-based wake-only mode
 - **Session persistence** — Resumable agent sessions resume across messages in the same thread, scoped by provider, model, and configured reasoning effort so model or effort swaps start fresh
@@ -234,7 +235,7 @@ backgroundAgent:
 
 ## Architecture
 
-Messages arrive from channels, pass through a durable queue, and get dispatched to the agent runner. The runner resolves a provider from the registry and executes via that provider's strategy (SDK streaming or CLI). Agents interact with the host through MCP host-tools on a Unix socket. Background agents run as separate provider-managed processes.
+Messages arrive from channels, pass through a durable queue, and get dispatched to the agent runner. The runner resolves a provider from the registry and executes via that provider's strategy (SDK streaming or CLI). Agents interact with the host through MCP host-tools on a Unix socket. Background agents run as separate provider-managed processes. For the compact maintainer map, see [`selfdoc.md`](selfdoc.md).
 
 ```mermaid
 graph TB
@@ -481,12 +482,74 @@ dataDir: data
 | `schedules`            | Agent-managed schedule entries (cron, interval, one-shot)                     |
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
+| `lifecycle`            | Optional durable lifecycle handlers, retention, and telemetry detail          |
 | `subagentCli`          | Opt-in direct Claude Code adapter for bounded sub-agent generations             |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
 | `logLevel` / `dataDir` | Runtime logging level and data root                                           |
 
 For the context-management strategies and migration details, see [docs/context-management.md](docs/context-management.md).
+
+### Upgrading existing installs
+
+When upgrading an existing Talon install to a release that includes the durable
+lifecycle pipeline:
+
+1. Pull the new code, install dependencies if needed, rebuild, and run database
+   migrations:
+
+   ```bash
+   git pull
+   npm install
+   npm run build
+   npx talonctl migrate --config talond.yaml
+   ```
+
+   Docker starter users should pull the updated bundle/image and restart through
+   Docker Compose; the daemon applies bundled SQLite migrations on boot.
+
+2. Validate the existing config before restarting production:
+
+   ```bash
+   npx talonctl doctor --config talond.yaml
+   npx talonctl env-check --config talond.yaml
+   ```
+
+3. Remove any old top-level `context:` block. Context management now lives under
+   each foreground provider at
+   `agentRunner.providers.<name>.contextManagement`; see
+   [docs/context-management.md](docs/context-management.md) for the migration
+   shape.
+
+4. Lifecycle configuration is opt-in. Existing installs do not need to enable
+   `lifecycle:` just to keep running. Add it only when you intentionally want
+   lifecycle handlers, durable behavior review, prompt promotion, replay, or
+   lifecycle operator telemetry. If Langfuse is enabled, ordinary
+   `lifecycle.publish` spans are disabled by default to avoid high-volume trace
+   noise; lifecycle database records, audit events, local metrics, publication
+   failure spans, and handler-delivery spans still run.
+
+5. If you enable model-backed lifecycle behavior handlers, configure both sides
+   explicitly: declare the handler under `lifecycle.handlers[]`, add the handler
+   ref to each participating persona's `subagents`, and add matching
+   `personas[].lifecycle.subscriptions`. Native handlers remain responsible for
+   governed state changes such as prompt promotion.
+
+6. For observational memory, prefer the explicit config:
+
+   ```yaml
+   contextManagement:
+     enabled: true
+     mode: observation
+     triggerMetric: input_tokens
+     thresholdRatio: 0.75
+     recentMessageCount: 10
+     observer: session-observer
+     reducer: session-reflector
+   ```
+
+   The older `summarizer: session-observer` shorthand is still translated at
+   load time for compatibility, but it is deprecated.
 
 ### Environment Variable Substitution
 
@@ -1374,15 +1437,16 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 
 **Built-in sub-agent names** (use these as keys under `subagents:` in `talond.yaml`):
 
-| Name                 | Default model               | Description                                                   |
-| -------------------- | --------------------------- | ------------------------------------------------------------- |
-| `file-searcher`      | `claude-haiku-4-5-20251001` | Search files by content, return ranked results with snippets  |
-| `memory-retriever`   | `claude-haiku-4-5-20251001` | Find relevant memories via keyword pre-filter + LLM rerank    |
-| `memory-groomer`     | `claude-haiku-4-5-20251001` | Prune stale, consolidate duplicate memory items               |
-| `session-summarizer` | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)      |
-| `session-observer`   | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory |
-| `session-reflector`  | `claude-sonnet-4-6`         | Consolidate observations when log grows too large             |
-| `spark-coder`        | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)  |
+| Name                         | Default model               | Description                                                    |
+| ---------------------------- | --------------------------- | -------------------------------------------------------------- |
+| `file-searcher`              | `claude-haiku-4-5-20251001` | Search files by content, return ranked results with snippets   |
+| `memory-retriever`           | `claude-haiku-4-5-20251001` | Find relevant memories via keyword pre-filter + LLM rerank     |
+| `memory-groomer`             | `claude-haiku-4-5-20251001` | Prune stale, consolidate duplicate memory items                |
+| `session-summarizer`         | `claude-sonnet-4-6`         | Compress transcripts for rolling context window (legacy)       |
+| `session-observer`           | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory  |
+| `session-reflector`          | `claude-sonnet-4-6`         | Consolidate observations when log grows too large              |
+| `behavior-feedback-detector` | `gpt-5.5`                   | Detect bounded behavior-learning signals from lifecycle events |
+| `spark-coder`                | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)   |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
@@ -1427,7 +1491,7 @@ export async function run(ctx, input) {
 2. Keep running in the background while failover already advances to the next model — producing overlapping, orphaned work
 3. Resolve later with a result that nothing is listening for, masking incidents
 
-All five built-in sub-agents forward both fields. Copy the pattern above when authoring new ones.
+All built-in sub-agents forward both fields. Copy the pattern above when authoring new ones.
 
 **`ctx.providerOptions`** is only non-undefined when the active model entry is on the `ollama` provider slot (Talon's OpenAI-compatible passthrough). The runner wraps the user's override record under the provider name, and typed providers (`anthropic`, `openai`, `google`) receive `undefined` so they never see foreign body fields.
 
@@ -1480,6 +1544,51 @@ If fewer than 10 keyword matches are found, they're returned directly without LL
 | **Output**                | `{ pruned, consolidated, kept }` counts                         |
 
 Uses `generateObject` with a Zod discriminated union schema to ensure the LLM returns valid, typed actions.
+
+#### `behavior-feedback-detector`
+
+**Problem:** Behavior-learning handlers need to inspect lifecycle events without letting model output directly mutate prompts, memory, or tools.
+
+**Solution:** Reads one fenced lifecycle event and emits bounded `behavior.feedback.detected.v1` lifecycle signals. The detector validates model output against the `talon.behavior.signal.v1` contract, ignores `noise`, derives provenance from the trusted lifecycle event, and only accepts source IDs that already appear in trusted lifecycle references.
+
+|                           |                                                                                  |
+| ------------------------- | -------------------------------------------------------------------------------- |
+| **Model**                 | GPT-5.5                                                                          |
+| **Required capabilities** | none                                                                             |
+| **Timeout**               | 30s                                                                              |
+| **Input**                 | Fenced `talon.lifecycle.event.envelope.v1` via lifecycle handler adapter         |
+| **Output**                | `talon.lifecycle.signal.envelopes.v1` with `behavior.feedback.detected.v1` items |
+
+Personas must list `behavior-feedback-detector` in `subagents`, explicitly
+subscribe its lifecycle event handler to the bounded events they want inspected,
+and explicitly subscribe the native `native-behavior-signal-projector` signal
+handler to `behavior.feedback.detected.v1`. The lifecycle subscription does not
+load or authorize the model-backed handler by itself. The native projector
+persists only persona-scoped ledger evidence and notes-only candidates: it
+fingerprints source evidence to collapse schedule/direct copies, suppresses
+duplicate or out-of-scope signals with bounded audit, creates collecting
+candidates for explicit feedback, and requires three distinct inferred sources
+before creating a ready inferred-pattern candidate.
+
+Accepted behavior promotions are applied only by the native governed prompt
+promotion path. Talon resolves the persona-owned `systemPromptFile`, validates a
+bounded `talon.behavior.prompt_patch.v1` patch emitted by the behavior review,
+defaults to operator approval, allows only explicit append-only auto-policy for
+narrow style/preference/context changes, runs a bounded evaluator, writes the
+prompt through a same-file atomic rename, verifies daemon reload, records
+activation provenance, and restores the previous prompt on failure. Candidates
+whose proposed behavior cannot be represented as a bounded prompt patch remain
+notes-only and cannot be applied with `lifecycle promote`. Safety, tooling,
+capability, integration, and notification increases require explicit operator
+approval.
+
+Lifecycle interceptors are native-only. Model-backed sub-agents may inspect
+fenced lifecycle events or signals, but they cannot be configured as
+`message.before_persist`, `run.before_execute`, `tool.before_execute`, or
+`message.before_send` interceptors. The `message.before_persist` hook runs only
+after an inbound message resolves to a persona binding; unbound inbound messages
+are dropped on the legacy no-persona path and Talon logs that lifecycle
+interception/publication was skipped.
 
 #### `session-summarizer`
 
@@ -1546,7 +1655,7 @@ Agent run completes → selected trigger metric exceeds threshold?
 - **80K threshold** — leaves headroom for current turn I/O (~10-20K) within Sonnet's 200K window. Fresh sessions start at ~10-15K, giving ~70K of organic conversation before the next rotation.
 - **Summaries are memory items** — stored as `memory_items` with type `summary`, so they're subject to `memory-groomer` consolidation. Old summaries get merged/pruned automatically.
 - **Daemon-side, not agent-side** — the agent never knows its session was rotated. Context injection happens in the system prompt before the agent sees its first message.
-- **Awaited, not fire-and-forget** — rotation completes before the next queue item is processed, preventing race conditions.
+- **Projected after the response, before queue completion** — rotation starts after the user-visible response is sent. The current queue item remains claimed until required projection settles, preserving durable per-thread ordering through queue lease/recovery; collaboration items can still bypass in-flight work to avoid await-reply deadlocks.
 - **Prompt injection mitigation** — injected historical content is framed as "prior-conversation state" and replayed turns use bracketed state tags (`[previous turn, user]: …`) rather than `User:` / `Assistant:` role markers, so the main agent doesn't mistake historical context for live instructions. Recent Messages is scoped to turns AFTER the most recent rotation via `metadata.rotatedThroughTs`; pre-rotation turns are already compressed in the summary/observation.
 - **Bounded observation replay** — for the observational-memory path, the ContextAssembler replays observations up to a character budget (~20K) rather than concatenating the full log. This keeps prompt size flat over the thread's lifetime while preserving the newest state snapshot plus recent consolidated history.
 - **Durable completion state** — each observation persists `taskComplete` in metadata. When the observer flags the prior turn as complete, the assembler suppresses "Current task:" / "Next step:" hints so stale task pointers don't survive rotation and cause the agent to re-enter old work.
@@ -1555,7 +1664,7 @@ Agent run completes → selected trigger metric exceeds threshold?
 
 #### Observational memory (long-term context)
 
-The default `session-summarizer` produces a single summary blob that gets overwritten on each rotation — history beyond the last rotation is lost. For long-running conversations (e.g. Telegram threads spanning days), switch to **observational memory** by setting `summarizer: session-observer`.
+The default `session-summarizer` produces a single summary blob that gets overwritten on each rotation — history beyond the last rotation is lost. For long-running conversations (e.g. Telegram threads spanning days), switch to **observational memory** by setting `mode: observation` with explicit observer and reducer handlers.
 
 Instead of overwriting, observations **append** over time as a dated, prioritized decision log:
 
@@ -1578,14 +1687,16 @@ Each observation also carries `taskComplete`, `currentTask`, and `suggestedConti
 **Priority levels:** 🔴 high (critical decisions, goals, deadlines) · 🟡 medium (questions, preferences, conditional info) · 🟢 low (ephemeral context, minor details)
 
 ```yaml
-# 1. Set the provider's summarizer to session-observer
+# 1. Set the provider to observation mode with explicit handlers
 contextManagement:
   enabled: true
+  mode: observation
   triggerMetric: input_tokens
   thresholdRatio: 0.75
   recentMessageCount: 10
-  summarizer: session-observer # enables observational memory
-  reflectionThresholdChars: 40000 # observation-log size that triggers session-reflector (default 40000)
+  observer: session-observer
+  reducer: session-reflector
+  reflectionThresholdChars: 40000 # observation-log size that triggers the reducer (default 40000)
 
 # 2. Add the observer and reflector to the persona's subagents list
 personas:
@@ -1599,6 +1710,8 @@ personas:
 ```
 
 **Important:** Personas only load sub-agents explicitly listed in their `subagents` config. Without `session-observer` and `session-reflector` in the list, the context-roller won't find them at runtime. You can remove `session-summarizer` from personas using OM since it won't be called.
+
+Legacy configs that use `summarizer: session-observer` are translated at load time to `mode: observation`, `observer: session-observer`, and `reducer: session-reflector`. That compatibility path is deprecated; new configs should use the explicit observation-mode fields.
 
 For multi-step agent providers that expose both cumulative and final-step usage, Talon keeps cumulative usage for accounting and Langfuse, but gates context rotation on the final model step. Codex CLI provides this through its `token_count.last_token_usage` events; this prevents tool-heavy turns from rotating simply because cumulative billed input crossed the threshold.
 
@@ -1677,11 +1790,12 @@ Custom sub-agents override built-in ones if they share the same name (dataDir ta
 
 ### Daemon Management
 
-| Command  | Description                                                   |
-| -------- | ------------------------------------------------------------- |
-| `status` | Show daemon health, active channels, queue depth, token usage |
-| `reload` | Hot-reload config without restarting the daemon               |
-| `chat`   | Connect to a persona via the terminal channel                 |
+| Command     | Description                                                             |
+| ----------- | ----------------------------------------------------------------------- |
+| `status`    | Show daemon health, active channels, queue depth, token usage           |
+| `reload`    | Hot-reload config without restarting the daemon                         |
+| `lifecycle` | Inspect lifecycle handlers, deliveries, replay, disable, and candidates |
+| `chat`      | Connect to a persona via the terminal channel                           |
 
 **`status`** / **`reload`** options:
 
@@ -1704,8 +1818,33 @@ Custom sub-agents override built-in ones if they share the same name (dataDir ta
 ```bash
 npx talonctl status --timeout 5000
 npx talonctl reload
+npx talonctl lifecycle handlers
+npx talonctl lifecycle inspect <event-id> --handler <handler-id>
+npx talonctl lifecycle replay <event-id> <handler-id>
+npx talonctl lifecycle disable <handler-id>
+npx talonctl lifecycle candidates <persona> --limit 25
+npx talonctl lifecycle promote <persona> <promotion-id> --approved-by operator-ivo
+npx talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
 npx talonctl chat --token mytoken --persona assistant
 ```
+
+**`lifecycle`** subcommands:
+
+| Subcommand                                     | Description                                                                       |
+| ---------------------------------------------- | --------------------------------------------------------------------------------- |
+| `handlers`                                     | List configured lifecycle handlers with dispatcher health and bounded backlog     |
+| `inspect <event-id>`                           | Show one lifecycle event and its handler deliveries                               |
+| `replay <event-id> <handler-id>`               | Reopen one ordinary terminal delivery for exact replay                            |
+| `disable <handler-id>`                         | Dead-letter pending, failed, or claimed deliveries for one handler and audit it   |
+| `candidates <persona>`                         | List bounded behavior-candidate summaries and distinct evidence-source counts     |
+| `promote <persona> <promotion-id>`             | Apply one governed behavior prompt promotion after policy/evaluation/reload gates |
+| `rollback-promotion <persona> <activation-id>` | Restore the saved pre-activation prompt and mark the activation rolled back       |
+
+All lifecycle subcommands accept `--ipc-dir <path>` and `--timeout <ms>`.
+`handlers` and `candidates` also accept `--limit <n>` capped at 100. `inspect`
+accepts `--handler <handler-id>` to narrow delivery output. `promote` accepts
+`--approved-by <id>` for proposals that are not covered by explicit narrow
+auto-policy. `rollback-promotion` accepts `--reason <id>`.
 
 ### Setup and Configuration
 
@@ -1734,18 +1873,18 @@ npx talonctl chat --token mytoken --persona assistant
 
 **`add-persona`** options:
 
-| Option                        | Description                                                              | Default       |
-| ----------------------------- | ------------------------------------------------------------------------ | ------------- |
-| `--name <name>`               | Persona name (required)                                                  | —             |
-| `--model <model>`             | Model name                                                               | —             |
-| `--provider <provider>`       | Provider name                                                            | —             |
-| `--capabilities <caps>`       | Comma-separated capabilities allow list                                  | —             |
-| `--require-approval <caps>`   | Set the `requireApproval` capability list (not currently bridge-enforced) | —           |
-| `--skills <skills>`           | Comma-separated skill names                                              | —             |
-| `--system-prompt-file <path>` | Path to a system prompt markdown file                                    | —             |
-| `--description <text>`        | Short description (written to system.md frontmatter)                     | —             |
-| `--templates-dir <path>`      | Path to templates directory                                              | `templates`   |
-| `--config <path>`             | Path to talond.yaml                                                      | `talond.yaml` |
+| Option                        | Description                                                               | Default       |
+| ----------------------------- | ------------------------------------------------------------------------- | ------------- |
+| `--name <name>`               | Persona name (required)                                                   | —             |
+| `--model <model>`             | Model name                                                                | —             |
+| `--provider <provider>`       | Provider name                                                             | —             |
+| `--capabilities <caps>`       | Comma-separated capabilities allow list                                   | —             |
+| `--require-approval <caps>`   | Set the `requireApproval` capability list (not currently bridge-enforced) | —             |
+| `--skills <skills>`           | Comma-separated skill names                                               | —             |
+| `--system-prompt-file <path>` | Path to a system prompt markdown file                                     | —             |
+| `--description <text>`        | Short description (written to system.md frontmatter)                      | —             |
+| `--templates-dir <path>`      | Path to templates directory                                               | `templates`   |
+| `--config <path>`             | Path to talond.yaml                                                       | `talond.yaml` |
 
 **`add-skill`** options:
 
@@ -1804,15 +1943,15 @@ npx talonctl add-mcp --skill web-search --name tavily \
 
 **`set-capabilities`** options:
 
-| Option                        | Description                                                          | Default       |
-| ----------------------------- | -------------------------------------------------------------------- | ------------- |
-| `--persona <name>`            | Persona name (required)                                              | —             |
-| `--allow <labels>`            | Replace allow list (comma-separated)                                 | —             |
-| `--add <labels>`              | Add to allow list (comma-separated)                                  | —             |
-| `--remove <labels>`           | Remove from allow list (comma-separated)                             | —             |
-| `--require-approval <labels>` | Replace `requireApproval` list (not currently bridge-enforced)      | —             |
-| `--show`                      | Show current capabilities without modifying                          | —             |
-| `--config <path>`             | Path to talond.yaml                                                  | `talond.yaml` |
+| Option                        | Description                                                    | Default       |
+| ----------------------------- | -------------------------------------------------------------- | ------------- |
+| `--persona <name>`            | Persona name (required)                                        | —             |
+| `--allow <labels>`            | Replace allow list (comma-separated)                           | —             |
+| `--add <labels>`              | Add to allow list (comma-separated)                            | —             |
+| `--remove <labels>`           | Remove from allow list (comma-separated)                       | —             |
+| `--require-approval <labels>` | Replace `requireApproval` list (not currently bridge-enforced) | —             |
+| `--show`                      | Show current capabilities without modifying                    | —             |
+| `--config <path>`             | Path to talond.yaml                                            | `talond.yaml` |
 
 **`config-show`** options:
 
@@ -2255,21 +2394,21 @@ planned as an additional layer.
 
 Agents interact with the host through a small set of MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
 
-| Tool                  | Purpose                                                                  |
-| --------------------- | ------------------------------------------------------------------------ |
-| `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
+| Tool                  | Purpose                                                                                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts)                                                                                               |
 | `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting; CLI-created schedules must pass it or use `channel_list` / `channel_broadcast`) |
-| `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`) |
-| `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
-| `persona_send`        | Submit a delegated A2A task to another persona                           |
-| `persona_task_status` | Fetch the status or result of a delegated A2A task                       |
-| `persona_list`        | List personas available for delegation                                   |
-| `memory_access`       | Read/write per-thread memory                                             |
-| `net_http`            | Fetch external URLs                                                      |
-| `db_query`            | Read-only database queries                                               |
-| `subagent_invoke`     | Invoke a sub-agent by name                                               |
-| `background_agent`    | Launch and manage long-running background workers                        |
-| `execution_env`       | Create, exec, upload, download, checkpoint, and restore Sprite VMs       |
+| `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`)                                                                            |
+| `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning                                                |
+| `persona_send`        | Submit a delegated A2A task to another persona                                                                                                                         |
+| `persona_task_status` | Fetch the status or result of a delegated A2A task                                                                                                                     |
+| `persona_list`        | List personas available for delegation                                                                                                                                 |
+| `memory_access`       | Read/write per-thread memory                                                                                                                                           |
+| `net_http`            | Fetch external URLs                                                                                                                                                    |
+| `db_query`            | Read-only database queries                                                                                                                                             |
+| `subagent_invoke`     | Invoke a sub-agent by name                                                                                                                                             |
+| `background_agent`    | Launch and manage long-running background workers                                                                                                                      |
+| `execution_env`       | Create, exec, upload, download, checkpoint, and restore Sprite VMs                                                                                                     |
 
 ### Capability System
 
@@ -2635,6 +2774,34 @@ When using Anthropic API keys, Talon records token usage from Claude runtime res
 
 Per-persona budget limits and a `talonctl usage` report command are planned (TASK-047).
 
+## Lifecycle Retention
+
+Lifecycle events are durable by default. When lifecycle retention is invoked by
+operator/admin wiring, completed events and events with no subscribers can have
+their payload/provenance detail compacted after the configured audit window.
+Pending, failed, claimed, dead-letter, privacy-deleted, and handler-disabled
+deliveries keep their operational safety semantics; exact replay remains
+limited to ordinary terminal handler failures.
+
+```yaml
+lifecycle:
+  enabled: true
+  telemetry:
+    langfuse:
+      publications: false # opt in only when every lifecycle.publish span is useful
+      publicationFailures: true
+      handlerDeliveries: true
+  handlers: []
+  retention:
+    completedAuditWindowMs: 2592000000 # 30 days
+```
+
+Thread/persona privacy deletion uses the same retention service to tombstone
+matching lifecycle event detail and dead-letter outstanding matching deliveries.
+Use `talonctl lifecycle handlers`, `inspect`, `replay`, `disable`, and
+`candidates` for operator visibility and exact delivery controls through the
+daemon IPC boundary.
+
 ---
 
 ## Observability with Langfuse
@@ -2652,7 +2819,9 @@ Running autonomous agents across multiple channels means you lose visibility fas
 
 ### How it works
 
-Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
+Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. Lifecycle handler-delivery observations and publication-failure observations are emitted by default when Langfuse is enabled; high-volume successful `lifecycle.publish` observations are disabled by default and can be restored with `lifecycle.telemetry.langfuse.publications: true`. Lifecycle observations are parent-linked to an existing trace only when a valid trace context is available, otherwise they remain separately correlated by event, aggregate, and correlation identifiers. Interceptors, retry/dead-letter outcomes, and signal handoff are recorded as bounded audit and metric evidence even when they do not create separate Langfuse observations. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
+
+Lifecycle telemetry also records bounded audit events and structured local metric samples. Optional trace-evidence providers can attach an existing W3C `traceparent` to lifecycle deliveries; malformed evidence is ignored rather than trusted.
 
 ### Setup
 
@@ -2697,6 +2866,11 @@ All fields except `enabled`, `publicKey`, and `secretKey` have sensible defaults
 | `exportMode`           | `batched`                    | `batched` buffers spans; `immediate` sends one by one |
 | `flushAt`              | `20`                         | Number of spans buffered before a flush               |
 | `flushIntervalSeconds` | `5`                          | Maximum seconds between flushes                       |
+
+Lifecycle-specific Langfuse detail is configured under `lifecycle.telemetry.langfuse`.
+Successful lifecycle publication spans default to off (`publications: false`) to
+avoid span floods during event-heavy runs. Publication failures and handler
+delivery attempts stay on by default.
 
 ---
 

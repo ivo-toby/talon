@@ -6,16 +6,16 @@ description: |
   or troubleshooting. Triggers on phrases like "set up talon", "configure
   talon", "add channel", "switch provider", "talonctl …".
 triggers:
-  - "set up talon"
-  - "setup talon"
-  - "configure talon"
-  - "talon setup"
-  - "add channel"
-  - "add persona"
-  - "switch provider"
-  - "change provider"
-  - "talon doctor"
-  - "talonctl"
+  - 'set up talon'
+  - 'setup talon'
+  - 'configure talon'
+  - 'talon setup'
+  - 'add channel'
+  - 'add persona'
+  - 'switch provider'
+  - 'change provider'
+  - 'talon doctor'
+  - 'talonctl'
 ---
 
 # Talon setup — docker bundle
@@ -53,9 +53,9 @@ docker ps --filter name=talond --format '{{.Names}} {{.Status}}'    # daemon run
 
 **Never print secret values.**
 
-- `.env` contains real secrets — only inspect variable *names*, never
+- `.env` contains real secrets — only inspect variable _names_, never
   `cat .env`.
-- `config/talond.yaml` *should* only contain `${ENV_VAR}` placeholders,
+- `config/talond.yaml` _should_ only contain `${ENV_VAR}` placeholders,
   but some users hand-paste literal keys. Don't `cat` it either. When
   the daemon is running, use `talonctl config-show` (auto-masked). Until
   then, inspect specific sections you need with `grep -A` for the keys
@@ -63,7 +63,7 @@ docker ps --filter name=talond --format '{{.Names}} {{.Status}}'    # daemon run
   `botToken:`, `password:`, `secret`, or `token:` patterns with a
   literal value.
 
-If you need to *show* a config snippet to the user, use:
+If you need to _show_ a config snippet to the user, use:
 
 ```bash
 talonctl config-show 2>/dev/null         # post-boot, masked
@@ -73,12 +73,12 @@ sed -E 's/^(  *(apiKey|botToken|.*[Tt]oken|.*[Ss]ecret|password): )(.+)$/\1***MA
 
 Use the state to skip steps:
 
-| State | Action |
-|-------|--------|
-| `.env` missing | Run `cp .env.example .env`, fill in step 2 |
-| `config/talond.yaml` missing | Run `cp config/talond.example.yaml config/talond.yaml`, edit in step 3 |
-| Daemon already running | Skip to talonctl-based additions (step 6) |
-| All configured + daemon running | Present the menu (see "Returning user menu") |
+| State                           | Action                                                                 |
+| ------------------------------- | ---------------------------------------------------------------------- |
+| `.env` missing                  | Run `cp .env.example .env`, fill in step 2                             |
+| `config/talond.yaml` missing    | Run `cp config/talond.example.yaml config/talond.yaml`, edit in step 3 |
+| Daemon already running          | Skip to talonctl-based additions (step 6)                              |
+| All configured + daemon running | Present the menu (see "Returning user menu")                           |
 
 ### Returning user menu
 
@@ -102,31 +102,38 @@ What would you like to do?
 All commands run via the bundle's `bin/talonctl` wrapper (or the
 installed `talonctl` if `./install.sh` has been run):
 
-| Command | Purpose |
-|---------|---------|
-| `talonctl status` | Daemon health, active runs, queue depth |
-| `talonctl doctor` | Validate config + environment |
-| `talonctl config-show` | Show current config (secrets masked) |
-| `talonctl env-check` | List env-var placeholders the config expects |
-| `talonctl list-channels` | Configured channels |
-| `talonctl add-channel --name <n> --type <t>` | Add a channel |
-| `talonctl remove-channel --name <n>` | Remove a channel |
-| `talonctl list-personas` | Configured personas |
-| `talonctl add-persona --name <n>` | Scaffold a persona dir + add to config |
-| `talonctl remove-persona --name <n>` | Remove a persona |
-| `talonctl bind --persona <p> --channel <c>` | Bind persona to channel |
-| `talonctl unbind --persona <p> --channel <c>` | Remove a binding |
-| `talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add an MCP server to a skill |
-| `talonctl list-providers` | Configured AI providers |
-| `talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]` | Add a provider |
-| `talonctl set-default-provider --name <n> --context <ctx>` | Set default provider |
-| `talonctl test-provider --name <n>` | Verify a provider connects |
-| `talonctl list-capabilities` | All available capability labels |
-| `talonctl set-capabilities --persona <p> --add <labels>` | Add capabilities |
-| `talonctl set-capabilities --persona <p> --remove <labels>` | Remove capabilities |
-| `talonctl list-schedules` | Configured scheduled tasks |
-| `talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add a scheduled task |
-| `talonctl remove-schedule <id>` | Remove a scheduled task |
+| Command                                                                                       | Purpose                                                       |
+| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| `talonctl status`                                                                             | Daemon health, active runs, queue depth                       |
+| `talonctl doctor`                                                                             | Validate config + environment                                 |
+| `talonctl config-show`                                                                        | Show current config (secrets masked)                          |
+| `talonctl env-check`                                                                          | List env-var placeholders the config expects                  |
+| `talonctl list-channels`                                                                      | Configured channels                                           |
+| `talonctl add-channel --name <n> --type <t>`                                                  | Add a channel                                                 |
+| `talonctl remove-channel --name <n>`                                                          | Remove a channel                                              |
+| `talonctl list-personas`                                                                      | Configured personas                                           |
+| `talonctl add-persona --name <n>`                                                             | Scaffold a persona dir + add to config                        |
+| `talonctl remove-persona --name <n>`                                                          | Remove a persona                                              |
+| `talonctl bind --persona <p> --channel <c>`                                                   | Bind persona to channel                                       |
+| `talonctl unbind --persona <p> --channel <c>`                                                 | Remove a binding                                              |
+| `talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>`                     | Add an MCP server to a skill                                  |
+| `talonctl list-providers`                                                                     | Configured AI providers                                       |
+| `talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]`                | Add a provider                                                |
+| `talonctl set-default-provider --name <n> --context <ctx>`                                    | Set default provider                                          |
+| `talonctl test-provider --name <n>`                                                           | Verify a provider connects                                    |
+| `talonctl list-capabilities`                                                                  | All available capability labels                               |
+| `talonctl set-capabilities --persona <p> --add <labels>`                                      | Add capabilities                                              |
+| `talonctl set-capabilities --persona <p> --remove <labels>`                                   | Remove capabilities                                           |
+| `talonctl list-schedules`                                                                     | Configured scheduled tasks                                    |
+| `talonctl add-schedule --persona <p> --channel <c> --cron <expr> --label <l> --prompt <text>` | Add a scheduled task                                          |
+| `talonctl remove-schedule <id>`                                                               | Remove a scheduled task                                       |
+| `talonctl lifecycle handlers`                                                                 | Show lifecycle handler health, backlog, and dispatcher status |
+| `talonctl lifecycle inspect <event-id> --handler <handler-id>`                                | Inspect a durable lifecycle event and delivery state          |
+| `talonctl lifecycle replay <event-id> <handler-id>`                                           | Reopen one terminal lifecycle delivery for exact replay       |
+| `talonctl lifecycle disable <handler-id>`                                                     | Dead-letter pending/failed/claimed deliveries for one handler |
+| `talonctl lifecycle candidates <persona> --limit <n>`                                         | List behavior-candidate provenance for a persona              |
+| `talonctl lifecycle promote <persona> <promotion-id> --approved-by <id>`                      | Apply a governed prompt-patch-backed behavior promotion       |
+| `talonctl lifecycle rollback-promotion <persona> <activation-id> --reason <id>`               | Roll back an active behavior prompt promotion                 |
 
 Use these for all post-boot mutations. **Do not edit `config/talond.yaml`
 by hand** once the daemon is running — talonctl handles it correctly.
@@ -138,19 +145,19 @@ by hand** once the daemon is running — talonctl handles it correctly.
 Ask: **"Which AI provider do you want to use?"**
 
 ```
-a) Codex (Anthropic API)            — default, smartest, costs $
+a) Claude Code (Anthropic API)      — default, smartest, costs $
 b) OpenAI-compatible endpoint        — local Ollama, vLLM, Groq, Together, custom
 c) Gemini CLI                        — Google's CLI, preinstalled in the image
 d) Codex CLI                         — OpenAI's CLI, preinstalled in the image
 ```
 
-All four work out of the box. `Codex` (bundled in the Agent SDK),
-`codex`, and `gemini` ship in the container image; `openai-compatible`
-runs in-process.
+All four work out of the box. `claude`, `codex`, and `gemini` ship in the
+container image; `openai-compatible` runs in-process.
 
 For (a) ask for nothing else here — defaults work.
 
 For (b) ask four things, **one at a time**:
+
 - "What should this provider be called? (default: `openai-compatible`; use a
   distinct name like `ollama-mac` when keeping another OpenAI-compatible
   endpoint too)"
@@ -179,17 +186,17 @@ If `.env` doesn't exist: `cp .env.example .env`
 Ask: **"Which channel do you want to connect first?"** Answer determines
 which env var the user needs to fill:
 
-| Channel | Env var(s) |
-|---------|-----------|
-| Telegram | `TELEGRAM_BOT_TOKEN` (from @BotFather) |
-| Slack | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET` |
-| Discord | `DISCORD_BOT_TOKEN` |
-| WhatsApp Business | `WHATSAPP_API_KEY` |
-| WhatsApp Baileys | (no env, uses QR-code auth at first boot) |
-| Email | IMAP/SMTP credentials (see add-email skill) |
-| Terminal | `TERMINAL_TOKEN` (just `talonctl chat`) |
+| Channel           | Env var(s)                                                   |
+| ----------------- | ------------------------------------------------------------ |
+| Telegram          | `TELEGRAM_BOT_TOKEN` (from @BotFather)                       |
+| Slack             | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `SLACK_SIGNING_SECRET` |
+| Discord           | `DISCORD_BOT_TOKEN`                                          |
+| WhatsApp Business | `WHATSAPP_API_KEY`                                           |
+| WhatsApp Baileys  | (no env, uses QR-code auth at first boot)                    |
+| Email             | IMAP/SMTP credentials (see add-email skill)                  |
+| Terminal          | `TERMINAL_TOKEN` (just `talonctl chat`)                      |
 
-Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Codex).
+Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Claude Code).
 
 Tell the user **exactly** which lines to uncomment/fill in `.env`.
 Do not write the actual secrets to disk.
@@ -199,55 +206,58 @@ Do not write the actual secrets to disk.
 If `config/talond.yaml` doesn't exist:
 `cp config/talond.example.yaml config/talond.yaml`
 
-The default config uses Codex + Telegram. If the user picked something
+The default config uses Claude Code + Telegram. If the user picked something
 else in step 1, walk them through the edits:
 
 #### Edit the persona
 
 Find:
+
 ```yaml
 personas:
   - name: assistant
-    model: Codex-sonnet-4-6
-    provider: Codex
+    model: claude-sonnet-4-6
+    provider: claude-code
 ```
 
 If provider is OpenAI-compatible:
+
 ```yaml
-    model: <model from step 1>
-    provider: <provider name from step 1>
+model: <model from step 1>
+provider: <provider name from step 1>
 ```
 
 If Gemini CLI:
+
 ```yaml
-    model: gemini-2.5-pro
-    provider: gemini-cli
+model: gemini-2.5-pro
+provider: gemini-cli
 ```
 
 #### Replace the `agentRunner.providers` block
 
-For Codex (default), no change.
+For Claude Code (default), no change.
 
-For OpenAI-compatible — replace the `Codex:` block under
+For OpenAI-compatible — replace the `claude-code:` block under
 `agentRunner.providers:` with:
 
 ```yaml
-    <provider name from step 1>:
-      enabled: true
-      type: openai-compatible       # omit only when the provider name itself is openai-compatible
-      command: node
-      contextWindowTokens: 32000
-      options:
-        baseUrl: <base URL from step 1>
-        defaultModel: <model from step 1>
-        providerId: <a short slot name, e.g. "groq" or "ollama">
-        # OpenAI-compatible /v1/responses endpoints only.
-        # Add sessionMode only for stateful previous_response_id chaining.
-        # Stored response ids are scoped by provider + model, so model swaps start fresh.
-        # Omit sessionMode for Ollama, vLLM, Groq, Together, and chat-completions-only endpoints.
-        # apiMode: responses
-        # sessionMode: previous_response_id
-        toolOutputCap: 4000
+<provider name from step 1>:
+  enabled: true
+  type: openai-compatible # omit only when the provider name itself is openai-compatible
+  command: node
+  contextWindowTokens: 32000
+  options:
+    baseUrl: <base URL from step 1>
+    defaultModel: <model from step 1>
+    providerId: <a short slot name, e.g. "groq" or "ollama">
+    # OpenAI-compatible /v1/responses endpoints only.
+    # Add sessionMode only for stateful previous_response_id chaining.
+    # Stored response ids are scoped by provider + model, so model swaps start fresh.
+    # Omit sessionMode for Ollama, vLLM, Groq, Together, and chat-completions-only endpoints.
+    # apiMode: responses
+    # sessionMode: previous_response_id
+    toolOutputCap: 4000
 ```
 
 Apply the same change to `backgroundAgent.providers` (or set
@@ -275,9 +285,10 @@ fresh session and replays assembled prior-conversation state.
 
 #### Replace `auth.providers`
 
-For Codex, the default block is fine.
+For Claude Code, the default block is fine.
 
 For OpenAI-compatible:
+
 ```yaml
 auth:
   mode: api_key
@@ -299,7 +310,7 @@ channels:
     config:
       botToken: ${TELEGRAM_BOT_TOKEN}
       allowedChatIds:
-        - "<your-numeric-chat-id>"        # must be a string, not a number
+        - '<your-numeric-chat-id>' # must be a string, not a number
       pollingTimeoutSec: 30
 ```
 
@@ -342,6 +353,15 @@ Once boot is verified, anything else uses `talonctl`:
 - **Adjust capabilities** — `talonctl set-capabilities --persona <p> --show`
   to see current, then `--add` or `--remove`.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
+- **Inspect lifecycle health/provenance** — `talonctl lifecycle handlers` and
+  `talonctl lifecycle candidates <persona> --limit 25`.
+- **Apply governed behavior changes** — use `talonctl lifecycle promote` only
+  for an existing prompt-patch-backed candidate, and `rollback-promotion` if an
+  activation needs to be restored. Notes-only candidates are review evidence,
+  not directly applicable prompt edits.
+- **Tune lifecycle telemetry** — successful `lifecycle.publish` Langfuse spans
+  are off by default to avoid noisy dashboards. Keep this default unless the
+  operator explicitly wants every durable lifecycle event in Langfuse.
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   GitHub, Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
@@ -388,6 +408,7 @@ docker compose restart talond
 ```
 
 After `add-channel` or `add-provider`, also run:
+
 ```bash
 talonctl env-check       # confirm any new ${ENV_VAR} placeholders are set in .env
 talonctl test-provider --name <n>   # if a provider was added
@@ -397,9 +418,9 @@ talonctl test-provider --name <n>   # if a provider was added
 
 1. **Never write actual secrets.** Only `${ENV_VAR}` placeholders in
    `config/talond.yaml`. Real values are in `.env`, edited by the user.
-2. **Use `talonctl` for all post-boot mutations.** Exceptions: persona
-   `system.md` files (these are agent-facing prompts and benefit from
-   hand-editing) and `.env`.
+2. **Use `talonctl` for all post-boot mutations.** Exceptions: initial persona
+   `system.md` drafts (these are agent-facing prompts and benefit from
+   hand-editing), governed prompt-promotion rollback backups, and `.env`.
 3. **One question per message.** Do not batch.
 4. **Show command output.** Let the user see what happened.
 5. **Don't start or stop the daemon** without telling the user. Boot
@@ -411,7 +432,7 @@ talonctl test-provider --name <n>   # if a provider was added
 7. **Tell users when something is broken or unsupported.** Some channel
    skills (add-telegram, add-slack, …) were lifted from the native-install
    workflow and still reference `npx talonctl`; treat their guidance as
-   *informational* and execute the equivalent via the docker wrapper.
+   _informational_ and execute the equivalent via the docker wrapper.
 
 ## Differences from `talon-setup` (native)
 
@@ -424,5 +445,5 @@ the docker starter bundle. Key differences:
   bootstraps + migrates on first boot.
 - Provider menu lists OpenAI-compatible as a first-class option.
 - Service install via systemd is skipped — `docker compose up -d`
-  + `restart: unless-stopped` is the equivalent.
+  - `restart: unless-stopped` is the equivalent.
 - Daemon start is `docker compose up -d`, never `node dist/index.js`.

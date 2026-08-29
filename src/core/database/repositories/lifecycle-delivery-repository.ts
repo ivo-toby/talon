@@ -1,0 +1,1102 @@
+/** Durable claims, retries, terminal state, and replay primitives for lifecycle deliveries. */
+
+import { v4 as uuidv4 } from 'uuid';
+import type Database from 'better-sqlite3';
+import { err, ok, type Result } from 'neverthrow';
+import { types } from 'node:util';
+import { z } from 'zod';
+import type { AuditLogger } from '../../logging/audit-logger.js';
+import type { LifecycleMetricsRecorder } from '../../../lifecycle/telemetry/index.js';
+import {
+  LifecycleEventEnvelopeSchema,
+  LifecycleFailurePolicyContractSchema,
+  LifecycleFilterOwnerNameSchema,
+  LifecycleHandlerIdentityContractSchema,
+  LifecycleIdentifierSchema,
+  LifecycleRuntimeIdSchema,
+} from '../../../lifecycle/contracts/index.js';
+import type {
+  LifecycleFailurePolicyContract,
+  LifecycleHandlerIdentityContract,
+} from '../../../lifecycle/contracts/index.js';
+import { DbError } from '../../errors/index.js';
+import {
+  validDiagnostic,
+  validFailurePolicy,
+  validIdentity,
+  validPayload,
+  validProvenance,
+  withLifecycleRetentionMutationAuthorization,
+} from '../lifecycle-sql-functions.js';
+import { BaseRepository } from './base-repository.js';
+import {
+  hasDurableHandlerIdentityAuthority,
+  hasCompatibleLifecycleFailurePolicy,
+  isBoundedWellFormedUtf8,
+  isBoundedUnicodeScalarsUtf8,
+  snapshotBoundedPlainDataRecord,
+  snapshotLifecycleDeliveries,
+  snapshotLifecycleEvent,
+  snapshotLifecycleFailureDiagnostic,
+} from './lifecycle-persistence-validation.js';
+import type { LifecycleEventRow } from './lifecycle-event-repository.js';
+
+export type LifecycleDeliveryStatus =
+  | 'pending'
+  | 'claimed'
+  | 'failed'
+  | 'completed'
+  | 'dead_letter';
+
+/** Immutable handler snapshot used when fanning out one persisted event. */
+export interface LifecycleDeliveryFanoutInput {
+  handlerId: string;
+  persona: string;
+  priority: number;
+  identity: LifecycleHandlerIdentityContract;
+  failurePolicy: LifecycleFailurePolicyContract;
+  maxAttempts?: number;
+}
+
+/** Database row for a single stable (event_id, handler_id) delivery identity. */
+export interface LifecycleDeliveryRow {
+  event_id: string;
+  handler_id: string;
+  persona: string;
+  priority: number;
+  handler_identity: string;
+  failure_policy: string;
+  status: LifecycleDeliveryStatus;
+  attempts: number;
+  max_attempts: number;
+  next_retry_at: number | null;
+  claim_token: string | null;
+  claim_expires_at: number | null;
+  last_error: string | null;
+  terminal_tombstone_reason: 'handler-disabled' | 'privacy-deleted' | null;
+  completed_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+/** A successful claim carries the immutable event envelope row for execution. */
+export interface ClaimedLifecycleDelivery {
+  delivery: LifecycleDeliveryRow;
+  event: LifecycleEventRow;
+}
+
+export interface ClaimLifecycleDeliveryOptions {
+  leaseMs: number;
+  /** Handler IDs temporarily unavailable to this dispatcher instance. */
+  excludedHandlerIds?: readonly string[];
+}
+
+/** Trusted clock supplied by repository composition; production defaults to Date.now. */
+export type LifecycleDeliveryClock = () => number;
+
+export interface LifecycleDeliveryRepositoryOptions {
+  readonly leaseClock?: LifecycleDeliveryClock;
+  readonly auditLogger?: Pick<AuditLogger, 'logLifecycleReplay'>;
+  readonly metrics?: Pick<LifecycleMetricsRecorder, 'increment'>;
+}
+
+export interface LifecycleDeliveryRetentionResult {
+  disabledDeliveries: number;
+}
+
+export interface LifecycleDeliveryStatusCount {
+  readonly status: LifecycleDeliveryStatus;
+  readonly count: number;
+}
+
+export interface LifecycleHandlerBacklogSummary {
+  readonly handler_id: string;
+  readonly persona: string;
+  readonly status: LifecycleDeliveryStatus;
+  readonly count: number;
+  readonly oldest_created_at: number | null;
+  readonly next_retry_at: number | null;
+}
+
+/** Persisted failure diagnostics intentionally carry only a stable, non-secret code. */
+export interface LifecycleFailureDiagnostic {
+  code: string;
+}
+
+const LifecycleFailureDiagnosticSchema = z.object({ code: LifecycleIdentifierSchema }).strict();
+
+const LifecycleDeliveryStatusSchema = z.enum([
+  'pending',
+  'claimed',
+  'failed',
+  'completed',
+  'dead_letter',
+]);
+
+const MAX_LIFECYCLE_DELIVERY_PERSONA_LENGTH = 256;
+const MAX_LIFECYCLE_DELIVERY_PERSONA_UTF8_BYTES = 1_024;
+
+function toDbError(operation: string, cause: unknown): DbError {
+  // Public boundaries must not retain caller-controlled Error instances: they
+  // can contain credentials and can expose hostile values through a later
+  // inspection of Error.cause.
+  void cause;
+  return new DbError(`Failed to ${operation}`);
+}
+
+/** Repository for independently retryable lifecycle handler deliveries. */
+export class LifecycleDeliveryRepository extends BaseRepository {
+  private readonly claimNextStmt: Database.Statement;
+  private readonly findByKeyStmt: Database.Statement;
+  private readonly findByEventIdStmt: Database.Statement;
+  private readonly countByStatusStmt: Database.Statement;
+  private readonly summarizeHandlersStmt: Database.Statement;
+  private readonly summarizeHandlersByIdsStmt: Database.Statement;
+  private readonly completeStmt: Database.Statement;
+  private readonly failStmt: Database.Statement;
+  private readonly expireClaimsStmt: Database.Statement;
+  private readonly canReopenStmt: Database.Statement;
+  private readonly reopenStmt: Database.Statement;
+  private readonly findEventStmt: Database.Statement;
+  private readonly disableHandlerStmt: Database.Statement;
+  private readonly tombstoneThreadDeliveriesStmt: Database.Statement;
+  private readonly tombstonePersonaDeliveriesStmt: Database.Statement;
+  private readonly leaseClock: LifecycleDeliveryClock;
+  private readonly auditLogger?: Pick<AuditLogger, 'logLifecycleReplay'>;
+  private readonly metrics?: Pick<LifecycleMetricsRecorder, 'increment'>;
+
+  constructor(
+    db: Database.Database,
+    leaseClockOrOptions: LifecycleDeliveryClock | LifecycleDeliveryRepositoryOptions = Date.now,
+  ) {
+    super(db);
+    if (typeof leaseClockOrOptions === 'function') {
+      this.leaseClock = leaseClockOrOptions;
+    } else {
+      this.leaseClock = leaseClockOrOptions.leaseClock ?? Date.now;
+      this.auditLogger = leaseClockOrOptions.auditLogger;
+      this.metrics = leaseClockOrOptions.metrics;
+    }
+    this.claimNextStmt = db.prepare(`
+      WITH candidate AS (
+        SELECT d.event_id, d.handler_id
+        FROM lifecycle_event_deliveries d
+        JOIN lifecycle_events e ON e.event_id = d.event_id
+        WHERE d.status IN ('pending', 'failed')
+          AND (d.next_retry_at IS NULL OR d.next_retry_at <= @lease_now)
+          AND NOT EXISTS (
+            SELECT 1
+            FROM json_each(@excluded_handler_ids) excluded_handler
+            WHERE excluded_handler.value = d.handler_id
+          )
+          AND NOT EXISTS (
+          SELECT 1
+          FROM lifecycle_event_deliveries previous_delivery
+          JOIN lifecycle_events previous_event ON previous_event.event_id = previous_delivery.event_id
+          WHERE previous_delivery.handler_id = d.handler_id
+            AND previous_event.aggregate_type = e.aggregate_type
+            AND previous_event.aggregate_id = e.aggregate_id
+            AND previous_event.event_sequence < e.event_sequence
+            AND previous_delivery.status NOT IN ('completed', 'dead_letter')
+        )
+        ORDER BY d.priority DESC, e.event_sequence ASC, d.created_at ASC
+        LIMIT 1
+      )
+      UPDATE lifecycle_event_deliveries
+      SET status = 'claimed',
+          claim_token = @claim_token,
+          claim_expires_at = @claim_expires_at,
+          next_retry_at = NULL,
+          last_error = NULL,
+          updated_at = @write_now
+      WHERE (event_id, handler_id) IN (SELECT event_id, handler_id FROM candidate)
+      RETURNING *
+    `);
+    this.findByKeyStmt = db.prepare(`
+      SELECT * FROM lifecycle_event_deliveries WHERE event_id = ? AND handler_id = ?
+    `);
+    this.findByEventIdStmt = db.prepare(`
+      SELECT * FROM lifecycle_event_deliveries WHERE event_id = ? ORDER BY priority DESC, created_at ASC
+    `);
+    this.countByStatusStmt = db.prepare(`
+      SELECT status, COUNT(*) AS count
+      FROM lifecycle_event_deliveries
+      GROUP BY status
+      ORDER BY status ASC
+    `);
+    this.summarizeHandlersStmt = db.prepare(`
+      SELECT
+        handler_id,
+        persona,
+        status,
+        COUNT(*) AS count,
+        MIN(created_at) AS oldest_created_at,
+        MIN(next_retry_at) AS next_retry_at
+      FROM lifecycle_event_deliveries
+      GROUP BY handler_id, persona, status
+      ORDER BY handler_id ASC, persona ASC, status ASC
+      LIMIT ?
+    `);
+    this.summarizeHandlersByIdsStmt = db.prepare(`
+      SELECT
+        handler_id,
+        persona,
+        status,
+        COUNT(*) AS count,
+        MIN(created_at) AS oldest_created_at,
+        MIN(next_retry_at) AS next_retry_at
+      FROM lifecycle_event_deliveries
+      WHERE handler_id IN (
+        SELECT value FROM json_each(@handler_ids)
+      )
+      GROUP BY handler_id, persona, status
+      ORDER BY handler_id ASC, persona ASC, status ASC
+    `);
+    this.completeStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'completed', claim_token = NULL, claim_expires_at = NULL,
+          next_retry_at = NULL, last_error = NULL, completed_at = @write_now, updated_at = @write_now
+      WHERE event_id = @event_id AND handler_id = @handler_id
+        AND status = 'claimed' AND claim_token = @claim_token
+        AND claim_expires_at > @lease_now
+      RETURNING *
+    `);
+    this.failStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = CASE WHEN @retryable = 0 OR attempts + 1 >= max_attempts THEN 'dead_letter' ELSE 'failed' END,
+          -- Every claimed execution consumes exactly one attempt. Non-retryable
+          -- outcomes terminally dead-letter that attempted lease immediately.
+          attempts = attempts + 1,
+          next_retry_at = CASE WHEN @retryable = 0 OR attempts + 1 >= max_attempts THEN NULL ELSE @next_retry_at END,
+          claim_token = NULL, claim_expires_at = NULL, last_error = @last_error,
+          updated_at = @write_now
+      WHERE event_id = @event_id AND handler_id = @handler_id
+        AND status = 'claimed' AND claim_token = @claim_token
+        AND claim_expires_at > @lease_now
+      RETURNING *
+    `);
+    this.expireClaimsStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = CASE WHEN attempts + 1 >= max_attempts THEN 'dead_letter' ELSE 'failed' END,
+          attempts = attempts + 1,
+          next_retry_at = CASE WHEN attempts + 1 >= max_attempts THEN NULL ELSE @lease_now END,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          last_error = '{"code":"lease-expired"}',
+          updated_at = @write_now
+      WHERE status = 'claimed' AND claim_expires_at <= @lease_now
+    `);
+    this.canReopenStmt = db.prepare(`
+      SELECT 1
+      FROM lifecycle_event_deliveries target_delivery
+      JOIN lifecycle_events target_event ON target_event.event_id = target_delivery.event_id
+      WHERE target_delivery.event_id = @event_id AND target_delivery.handler_id = @handler_id
+        AND target_delivery.status IN ('completed', 'dead_letter')
+        AND target_delivery.terminal_tombstone_reason IS NULL
+        AND target_event.retention_tombstone_reason IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM lifecycle_event_deliveries later_delivery
+          JOIN lifecycle_events later_event ON later_event.event_id = later_delivery.event_id
+          WHERE later_delivery.handler_id = target_delivery.handler_id
+            AND later_event.aggregate_type = target_event.aggregate_type
+            AND later_event.aggregate_id = target_event.aggregate_id
+            AND later_event.event_sequence > target_event.event_sequence
+            AND later_delivery.status = 'claimed'
+            AND later_delivery.claim_expires_at > @lease_now
+        )
+    `);
+    this.reopenStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'pending', attempts = 0, next_retry_at = NULL,
+          claim_token = NULL, claim_expires_at = NULL, last_error = NULL,
+          terminal_tombstone_reason = NULL, completed_at = NULL, updated_at = @write_now
+      WHERE event_id = @event_id AND handler_id = @handler_id
+        AND status IN ('completed', 'dead_letter')
+        AND terminal_tombstone_reason IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM lifecycle_events target_event
+          WHERE target_event.event_id = lifecycle_event_deliveries.event_id
+            AND target_event.retention_tombstone_reason IS NOT NULL
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM lifecycle_event_deliveries later_delivery
+          JOIN lifecycle_events target_event ON target_event.event_id = lifecycle_event_deliveries.event_id
+          JOIN lifecycle_events later_event ON later_event.event_id = later_delivery.event_id
+          WHERE later_delivery.handler_id = lifecycle_event_deliveries.handler_id
+            AND later_event.aggregate_type = target_event.aggregate_type
+            AND later_event.aggregate_id = target_event.aggregate_id
+            AND later_event.event_sequence > target_event.event_sequence
+            AND later_delivery.status = 'claimed'
+            AND later_delivery.claim_expires_at > @lease_now
+        )
+      RETURNING *
+    `);
+    this.findEventStmt = db.prepare(`SELECT * FROM lifecycle_events WHERE event_id = ?`);
+    this.disableHandlerStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'dead_letter',
+          attempts = CASE WHEN attempts < 1 THEN 1 ELSE attempts END,
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          last_error = '{"code":"handler-disabled"}',
+          terminal_tombstone_reason = 'handler-disabled',
+          completed_at = NULL,
+          updated_at = @write_now
+      WHERE handler_id = @handler_id
+        AND status IN ('pending', 'failed', 'claimed')
+    `);
+    this.tombstoneThreadDeliveriesStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'dead_letter',
+          attempts = CASE WHEN attempts < 1 THEN 1 ELSE attempts END,
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          last_error = '{"code":"privacy-deleted"}',
+          terminal_tombstone_reason = 'privacy-deleted',
+          completed_at = NULL,
+          updated_at = @write_now
+      WHERE status IN ('pending', 'failed', 'claimed')
+        AND event_id IN (
+          SELECT e.event_id
+          FROM lifecycle_events e
+          WHERE (e.aggregate_type = 'thread' AND e.aggregate_id = @thread_id)
+            OR EXISTS (
+              SELECT 1
+              FROM json_each(e.payload, '$.references') reference
+              WHERE json_extract(reference.value, '$.type') = 'thread'
+                AND json_extract(reference.value, '$.id') = @thread_id
+            )
+            OR EXISTS (
+              SELECT 1
+              FROM json_each(e.provenance, '$.sourceReferences') reference
+              WHERE json_extract(reference.value, '$.type') = 'thread'
+                AND json_extract(reference.value, '$.id') = @thread_id
+            )
+        )
+    `);
+    this.tombstonePersonaDeliveriesStmt = db.prepare(`
+      UPDATE lifecycle_event_deliveries
+      SET status = 'dead_letter',
+          attempts = CASE WHEN attempts < 1 THEN 1 ELSE attempts END,
+          next_retry_at = NULL,
+          claim_token = NULL,
+          claim_expires_at = NULL,
+          last_error = '{"code":"privacy-deleted"}',
+          terminal_tombstone_reason = 'privacy-deleted',
+          completed_at = NULL,
+          updated_at = @write_now
+      WHERE persona = @persona
+        AND status IN ('pending', 'failed', 'claimed')
+    `);
+  }
+
+  /**
+   * Atomically claims the highest-priority eligible delivery. Earlier
+   * unfinished work for the same aggregate and handler blocks later events.
+   * Expired leases are eligible again, making a process restart recoverable.
+   */
+  claimNext(
+    options: ClaimLifecycleDeliveryOptions,
+  ): Result<ClaimedLifecycleDelivery | null, DbError> {
+    try {
+      const normalizedOptions = this.normalizeClaimOptions(options);
+      if (!normalizedOptions) {
+        return err(
+          new DbError(
+            'Failed to claim lifecycle delivery: leaseMs must be an integer between 1 and 86400000',
+          ),
+        );
+      }
+      const leaseNow = this.leaseNow();
+      const claimExpiresAt = leaseNow + normalizedOptions.leaseMs;
+      if (!Number.isSafeInteger(leaseNow) || !Number.isSafeInteger(claimExpiresAt)) {
+        return err(new DbError('Failed to claim lifecycle delivery: lease timestamp overflow'));
+      }
+      // A lease token is always repository-owned. A caller must never be able
+      // to resurrect a stale worker's token during expiry reclamation.
+      const claimToken = uuidv4();
+      const claim = this.db.transaction((): ClaimedLifecycleDelivery | null => {
+        const writeNow = this.now();
+        // A vanished worker consumed an execution attempt. Reclaim every
+        // expired lease before selecting work so an exhausted earlier event
+        // dead-letters and can no longer block its aggregate.
+        this.expireClaimsStmt.run({ lease_now: leaseNow, write_now: writeNow });
+        const row = this.claimNextStmt.get({
+          lease_now: leaseNow,
+          write_now: writeNow,
+          claim_token: claimToken,
+          claim_expires_at: claimExpiresAt,
+          excluded_handler_ids: JSON.stringify(normalizedOptions.excludedHandlerIds),
+        }) as LifecycleDeliveryRow | undefined;
+        if (!row) {
+          return null;
+        }
+        const delivery = this.validateDeliveryRow(row);
+        const storedEvent = this.findEventStmt.get(delivery.event_id) as
+          | LifecycleEventRow
+          | undefined;
+        if (!storedEvent) {
+          throw new Error('claimed lifecycle delivery has no event');
+        }
+        return { delivery, event: this.validateEventRow(storedEvent) };
+      });
+      return ok(claim());
+    } catch (cause) {
+      return err(toDbError('claim lifecycle delivery', cause));
+    }
+  }
+
+  /** Completes only the current lease holder; stale workers cannot complete reclaimed work. */
+  complete(
+    eventId: string,
+    handlerId: string,
+    claimToken: string,
+  ): Result<LifecycleDeliveryRow, DbError> {
+    try {
+      if (
+        !this.isRuntimeId(eventId) ||
+        !this.isIdentifier(handlerId) ||
+        !this.isRuntimeId(claimToken)
+      ) {
+        return err(new DbError('Failed to complete lifecycle delivery: invalid delivery identity'));
+      }
+      const complete = this.db.transaction((): LifecycleDeliveryRow | null => {
+        const leaseNow = this.leaseNow();
+        const row = this.completeStmt.get({
+          event_id: eventId,
+          handler_id: handlerId,
+          claim_token: claimToken,
+          lease_now: leaseNow,
+          write_now: this.now(),
+        }) as LifecycleDeliveryRow | undefined;
+        return row ? this.validateDeliveryRow(row) : null;
+      });
+      const row = complete();
+      return row
+        ? ok(row)
+        : err(new DbError('Failed to complete lifecycle delivery: no active matching lease'));
+    } catch (cause) {
+      return err(toDbError('complete lifecycle delivery', cause));
+    }
+  }
+
+  /**
+   * Records a retryable failure or atomically moves the delivery to its
+   * terminal dead-letter state once its bounded attempt budget is exhausted.
+   */
+  fail(
+    eventId: string,
+    handlerId: string,
+    claimToken: string,
+    failureDiagnostic: LifecycleFailureDiagnostic,
+    nextRetryAt: number,
+    retryable = true,
+  ): Result<LifecycleDeliveryRow, DbError> {
+    try {
+      const diagnosticSnapshot = snapshotLifecycleFailureDiagnostic(failureDiagnostic);
+      const diagnostic = diagnosticSnapshot
+        ? this.parse(LifecycleFailureDiagnosticSchema, diagnosticSnapshot)
+        : null;
+      if (
+        !diagnostic ||
+        !this.isRuntimeId(eventId) ||
+        !this.isIdentifier(handlerId) ||
+        !this.isRuntimeId(claimToken) ||
+        !Number.isSafeInteger(nextRetryAt) ||
+        typeof retryable !== 'boolean'
+      ) {
+        return err(
+          new DbError(
+            'Failed to fail lifecycle delivery: invalid failure diagnostic or retry timestamp',
+          ),
+        );
+      }
+      const fail = this.db.transaction((): LifecycleDeliveryRow | null => {
+        const leaseNow = this.leaseNow();
+        const row = this.failStmt.get({
+          event_id: eventId,
+          handler_id: handlerId,
+          claim_token: claimToken,
+          next_retry_at: nextRetryAt,
+          retryable: retryable ? 1 : 0,
+          // Never persist arbitrary handler error text; it may contain prompts,
+          // tokens, headers, or other secrets. A parsed contract-owned code is
+          // sufficient for retry policy and operator aggregation.
+          last_error: JSON.stringify(diagnostic),
+          lease_now: leaseNow,
+          write_now: this.now(),
+        }) as LifecycleDeliveryRow | undefined;
+        return row ? this.validateDeliveryRow(row) : null;
+      });
+      const row = fail();
+      return row ? ok(row) : err(new DbError('Failed to fail lifecycle delivery: lease was lost'));
+    } catch (cause) {
+      return err(toDbError('fail lifecycle delivery', cause));
+    }
+  }
+
+  /** Reopens one terminal delivery for an explicit replay without creating a second identity. */
+  reopen(eventId: string, handlerId: string): Result<LifecycleDeliveryRow, DbError> {
+    try {
+      if (!this.isRuntimeId(eventId) || !this.isIdentifier(handlerId)) {
+        return err(new DbError('Failed to reopen lifecycle delivery: invalid delivery identity'));
+      }
+      const reopen = this.db.transaction((): LifecycleDeliveryRow | null => {
+        const leaseNow = this.leaseNow();
+        // Prove this specific replay is eligible before recovering any stale
+        // leases. A rejected replay must be observationally read-only for
+        // unrelated deliveries in the same transaction.
+        if (
+          !this.canReopenStmt.get({ event_id: eventId, handler_id: handlerId, lease_now: leaseNow })
+        ) {
+          return null;
+        }
+        const writeNow = this.now();
+        // Expiry is handled before replay, rather than merely changing an
+        // opaque token: the stale worker is invalidated and its lost execution
+        // consumes exactly one attempt in the same transaction.
+        this.expireClaimsStmt.run({
+          lease_now: leaseNow,
+          write_now: writeNow,
+        });
+        const row = withLifecycleRetentionMutationAuthorization(this.db, () =>
+          this.reopenStmt.get({
+            event_id: eventId,
+            handler_id: handlerId,
+            lease_now: leaseNow,
+            write_now: writeNow,
+          }),
+        ) as LifecycleDeliveryRow | undefined;
+        if (!row) {
+          // The eligibility check and state transition share one SQLite
+          // transaction. If they diverge, roll back expiry recovery too.
+          throw new Error('lifecycle delivery replay eligibility changed inside transaction');
+        }
+        return this.validateDeliveryRow(row);
+      });
+      const row = reopen();
+      if (!row) {
+        return err(new DbError('Failed to reopen lifecycle delivery: delivery is not terminal'));
+      }
+      this.recordReplayTelemetry(row);
+      return ok(row);
+    } catch (cause) {
+      return err(toDbError('reopen lifecycle delivery', cause));
+    }
+  }
+
+  private recordReplayTelemetry(row: LifecycleDeliveryRow): void {
+    try {
+      this.metrics?.increment('lifecycle.delivery.replay.count', {
+        handler_id: row.handler_id,
+        persona: row.persona,
+        outcome: 'success',
+        status: row.status,
+      });
+    } catch {
+      // Metrics are advisory and must not affect replay durability.
+    }
+    try {
+      this.auditLogger?.logLifecycleReplay({
+        action: 'lifecycle.replay',
+        details: {
+          operation: 'delivery_reopen',
+          outcome: 'success',
+          eventId: row.event_id,
+          handlerId: row.handler_id,
+          persona: row.persona,
+          status: row.status,
+          attempts: row.attempts,
+          maxAttempts: row.max_attempts,
+          updatedAt: row.updated_at,
+        },
+      });
+    } catch {
+      // Audit outages must not roll back an already-authorized replay.
+    }
+  }
+
+  findByEventId(eventId: string): Result<LifecycleDeliveryRow[], DbError> {
+    try {
+      if (!this.isRuntimeId(eventId)) {
+        return err(
+          new DbError('Failed to find lifecycle deliveries by event id: invalid event id'),
+        );
+      }
+      return ok(
+        (this.findByEventIdStmt.all(eventId) as LifecycleDeliveryRow[]).map((row) =>
+          this.validateDeliveryRow(row),
+        ),
+      );
+    } catch (cause) {
+      return err(toDbError('find lifecycle deliveries by event id', cause));
+    }
+  }
+
+  findByKey(eventId: string, handlerId: string): Result<LifecycleDeliveryRow | null, DbError> {
+    try {
+      if (!this.isRuntimeId(eventId) || !this.isIdentifier(handlerId)) {
+        return err(
+          new DbError('Failed to find lifecycle delivery by key: invalid delivery identity'),
+        );
+      }
+      const row = this.findByKeyStmt.get(eventId, handlerId) as LifecycleDeliveryRow | undefined;
+      return ok(row ? this.validateDeliveryRow(row) : null);
+    } catch (cause) {
+      return err(toDbError('find lifecycle delivery by key', cause));
+    }
+  }
+
+  countByStatus(): Result<LifecycleDeliveryStatusCount[], DbError> {
+    try {
+      const rows = this.countByStatusStmt.all() as LifecycleDeliveryStatusCount[];
+      return ok(
+        rows.map((row) => ({
+          status: this.parseStatus(row.status),
+          count: Number(row.count),
+        })),
+      );
+    } catch (cause) {
+      return err(toDbError('count lifecycle deliveries by status', cause));
+    }
+  }
+
+  summarizeHandlers(limit = 50): Result<LifecycleHandlerBacklogSummary[], DbError> {
+    try {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+        return err(new DbError('Failed to summarize lifecycle handlers: invalid limit'));
+      }
+      const rows = this.summarizeHandlersStmt.all(limit) as LifecycleHandlerBacklogSummary[];
+      return ok(rows.map((row) => this.validateHandlerBacklogSummary(row)));
+    } catch (cause) {
+      return err(toDbError('summarize lifecycle handlers', cause));
+    }
+  }
+
+  summarizeHandlersByIds(
+    handlerIds: readonly string[],
+  ): Result<LifecycleHandlerBacklogSummary[], DbError> {
+    try {
+      const ids = [...new Set(handlerIds)];
+      if (ids.length > 100 || ids.some((handlerId) => !this.isIdentifier(handlerId))) {
+        return err(new DbError('Failed to summarize lifecycle handlers: invalid handler ids'));
+      }
+      if (ids.length === 0) return ok([]);
+      const rows = this.summarizeHandlersByIdsStmt.all({
+        handler_ids: JSON.stringify(ids),
+      }) as LifecycleHandlerBacklogSummary[];
+      return ok(rows.map((row) => this.validateHandlerBacklogSummary(row)));
+    } catch (cause) {
+      return err(toDbError('summarize lifecycle handlers', cause));
+    }
+  }
+
+  /** Terminally disables outstanding work for one stable handler identity. */
+  disableHandler(handlerId: string): Result<LifecycleDeliveryRetentionResult, DbError> {
+    try {
+      if (!this.isIdentifier(handlerId)) {
+        return err(new DbError('Failed to disable lifecycle handler: invalid handler id'));
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.disableHandlerStmt.run({
+          handler_id: handlerId,
+          write_now: this.now(),
+        }),
+      );
+      return ok({ disabledDeliveries: info.changes });
+    } catch (cause) {
+      return err(toDbError('disable lifecycle handler', cause));
+    }
+  }
+
+  /** Dead-letters outstanding delivery detail for a privacy-deleted thread. */
+  tombstoneThread(threadId: string): Result<LifecycleDeliveryRetentionResult, DbError> {
+    try {
+      if (!this.isRuntimeId(threadId)) {
+        return err(
+          new DbError('Failed to tombstone lifecycle thread deliveries: invalid thread id'),
+        );
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.tombstoneThreadDeliveriesStmt.run({
+          thread_id: threadId,
+          write_now: this.now(),
+        }),
+      );
+      return ok({ disabledDeliveries: info.changes });
+    } catch (cause) {
+      return err(toDbError('tombstone lifecycle thread deliveries', cause));
+    }
+  }
+
+  /** Dead-letters outstanding delivery detail for a privacy-deleted persona. */
+  tombstonePersona(persona: string): Result<LifecycleDeliveryRetentionResult, DbError> {
+    try {
+      if (!this.isBoundedPersona(persona)) {
+        return err(
+          new DbError('Failed to tombstone lifecycle persona deliveries: invalid persona'),
+        );
+      }
+      const info = withLifecycleRetentionMutationAuthorization(this.db, () =>
+        this.tombstonePersonaDeliveriesStmt.run({
+          persona,
+          write_now: this.now(),
+        }),
+      );
+      return ok({ disabledDeliveries: info.changes });
+    } catch (cause) {
+      return err(toDbError('tombstone lifecycle persona deliveries', cause));
+    }
+  }
+
+  private normalizeClaimOptions(options: unknown): ClaimLifecycleDeliveryOptions | null {
+    // Unknown data fields remain backward-compatible, but their inspection is
+    // capped before any descriptor values are materialized.
+    const snapshot = snapshotBoundedPlainDataRecord(options, 8);
+    if (!snapshot || !Object.hasOwn(snapshot, 'leaseMs')) return null;
+    const leaseMs: unknown = snapshot.leaseMs;
+    if (
+      typeof leaseMs !== 'number' ||
+      !Number.isSafeInteger(leaseMs) ||
+      leaseMs < 1 ||
+      leaseMs > 86_400_000
+    ) {
+      return null;
+    }
+    const excludedHandlerIds = this.normalizeExcludedHandlerIds(snapshot.excludedHandlerIds);
+    if (!excludedHandlerIds) return null;
+    return { leaseMs, excludedHandlerIds };
+  }
+
+  private validateHandlerBacklogSummary(
+    row: LifecycleHandlerBacklogSummary,
+  ): LifecycleHandlerBacklogSummary {
+    return {
+      handler_id: this.asIdentifier(row.handler_id),
+      persona: this.asPersona(row.persona),
+      status: this.parseStatus(row.status),
+      count: Number(row.count),
+      oldest_created_at:
+        row.oldest_created_at === null ? null : this.asSafeInteger(row.oldest_created_at),
+      next_retry_at: row.next_retry_at === null ? null : this.asSafeInteger(row.next_retry_at),
+    };
+  }
+
+  private normalizeExcludedHandlerIds(value: unknown): string[] | null {
+    if (value === undefined) return [];
+    try {
+      if (
+        !Array.isArray(value) ||
+        types.isProxy(value) ||
+        Reflect.getPrototypeOf(value) !== Array.prototype ||
+        value.length > 4_096
+      ) {
+        return null;
+      }
+      const ids: string[] = [];
+      const seen = new Set<string>();
+      for (let index = 0; index < value.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+        if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) return null;
+        const handlerId: unknown = descriptor.value;
+        if (typeof handlerId !== 'string' || !this.isIdentifier(handlerId) || seen.has(handlerId)) {
+          return null;
+        }
+        seen.add(handlerId);
+        ids.push(handlerId);
+      }
+      return ids;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Lease mutation time is repository-owned, never supplied by a claim caller. */
+  protected override leaseNow(): number {
+    const now = this.leaseClock();
+    if (!Number.isSafeInteger(now)) {
+      throw new Error('invalid lifecycle lease clock');
+    }
+    return now;
+  }
+
+  private validateDeliveryRow(row: LifecycleDeliveryRow): LifecycleDeliveryRow {
+    if (!row || typeof row !== 'object') {
+      throw new Error('invalid persisted lifecycle delivery row');
+    }
+    if (
+      !validIdentity(row.handler_identity, row.handler_id) ||
+      !validFailurePolicy(row.failure_policy) ||
+      (row.last_error !== null && !validDiagnostic(row.last_error))
+    )
+      throw new Error('invalid persisted lifecycle delivery JSON');
+    const rawIdentity = this.parseJson(row.handler_identity, 'handler identity');
+    const rawFailurePolicy = this.parseJson(row.failure_policy, 'failure policy');
+    const snapshot = snapshotLifecycleDeliveries([
+      {
+        handlerId: row.handler_id,
+        persona: row.persona,
+        priority: row.priority,
+        identity: rawIdentity,
+        failurePolicy: rawFailurePolicy,
+        maxAttempts: row.max_attempts,
+      },
+    ]);
+    if (!snapshot) {
+      throw new Error('invalid persisted lifecycle delivery row');
+    }
+    const deliverySnapshot = snapshot[0];
+    if (!deliverySnapshot) {
+      throw new Error('invalid persisted lifecycle delivery row');
+    }
+    const identity = this.parse(LifecycleHandlerIdentityContractSchema, deliverySnapshot.identity);
+    const failurePolicy = this.parse(
+      LifecycleFailurePolicyContractSchema,
+      deliverySnapshot.failurePolicy,
+    );
+    const diagnostic =
+      row.last_error === null
+        ? null
+        : this.parse(
+            LifecycleFailureDiagnosticSchema,
+            this.parseJson(row.last_error, 'failure diagnostic'),
+          );
+    if (
+      !identity ||
+      !hasDurableHandlerIdentityAuthority(identity) ||
+      !failurePolicy ||
+      !hasCompatibleLifecycleFailurePolicy(identity, failurePolicy) ||
+      (row.last_error !== null && !diagnostic) ||
+      !this.isRuntimeId(row.event_id) ||
+      !this.isIdentifier(row.handler_id) ||
+      identity.handlerId !== row.handler_id ||
+      !this.isBoundedPersona(row.persona) ||
+      !this.parses(LifecycleDeliveryStatusSchema, row.status) ||
+      !Number.isSafeInteger(row.priority) ||
+      row.priority < -1000 ||
+      row.priority > 1000 ||
+      !Number.isSafeInteger(row.attempts) ||
+      !Number.isSafeInteger(row.max_attempts) ||
+      row.attempts < 0 ||
+      row.max_attempts < 1 ||
+      row.max_attempts > 100 ||
+      row.attempts > row.max_attempts ||
+      !this.isNullableTimestamp(row.next_retry_at) ||
+      !this.isNullableTimestamp(row.claim_expires_at) ||
+      !this.isNullableTimestamp(row.completed_at) ||
+      !Number.isSafeInteger(row.created_at) ||
+      !Number.isSafeInteger(row.updated_at) ||
+      !this.hasValidTerminalTombstone(row, diagnostic) ||
+      !this.hasValidStatusFields(row, diagnostic)
+    ) {
+      throw new Error('invalid persisted lifecycle delivery row');
+    }
+    return {
+      ...row,
+      handler_identity: JSON.stringify(identity),
+      failure_policy: JSON.stringify(failurePolicy),
+      last_error: diagnostic ? JSON.stringify(diagnostic) : null,
+    };
+  }
+
+  private validateEventRow(row: LifecycleEventRow): LifecycleEventRow {
+    if (!validProvenance(row.provenance) || !validPayload(row.payload))
+      throw new Error('invalid persisted lifecycle event JSON');
+    const provenance = this.parseJson(row.provenance, 'event provenance');
+    const payload = this.parseJson(row.payload, 'event payload');
+    const snapshot = snapshotLifecycleEvent({
+      version: row.version,
+      eventId: row.event_id,
+      type: row.type,
+      occurredAt: row.occurred_at,
+      context: {
+        aggregate: { type: row.aggregate_type, id: row.aggregate_id },
+        correlationId: row.correlation_id,
+        ...(row.causation_id === null ? {} : { causationId: row.causation_id }),
+        recursion: { depth: row.recursion_depth, maxDepth: row.recursion_max_depth },
+        provenance,
+      },
+      payload,
+    });
+    const event = snapshot ? this.parse(LifecycleEventEnvelopeSchema, snapshot) : null;
+    if (
+      !event ||
+      !snapshot ||
+      !Number.isSafeInteger(row.event_sequence) ||
+      row.event_sequence < 1 ||
+      !Number.isSafeInteger(row.created_at)
+    ) {
+      throw new Error('invalid persisted lifecycle event row');
+    }
+    return {
+      ...row,
+      version: event.version,
+      provenance: JSON.stringify((snapshot.context as { provenance: unknown }).provenance),
+      payload: JSON.stringify(snapshot.payload),
+    };
+  }
+
+  private parseJson(value: unknown, field: string): unknown {
+    if (typeof value !== 'string') {
+      throw new Error(`invalid persisted lifecycle ${field}`);
+    }
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      throw new Error(`invalid persisted lifecycle ${field}`);
+    }
+  }
+
+  private parse<T>(
+    schema: { safeParse(input: unknown): { success: true; data: T } | { success: false } },
+    input: unknown,
+  ): T | null {
+    try {
+      const parsed = schema.safeParse(input);
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private parses(
+    schema: { safeParse(input: unknown): { success: boolean } },
+    input: unknown,
+  ): boolean {
+    try {
+      return schema.safeParse(input).success;
+    } catch {
+      return false;
+    }
+  }
+
+  private isRuntimeId(value: unknown): boolean {
+    return (
+      typeof value === 'string' &&
+      isBoundedWellFormedUtf8(value, 256, 1024) &&
+      value.indexOf('\0') === -1 &&
+      this.parses(LifecycleRuntimeIdSchema, value)
+    );
+  }
+
+  private isIdentifier(value: unknown): boolean {
+    return (
+      typeof value === 'string' &&
+      isBoundedWellFormedUtf8(value, 128, 512) &&
+      value.indexOf('\0') === -1 &&
+      this.parses(LifecycleIdentifierSchema, value)
+    );
+  }
+
+  private isBoundedPersona(value: unknown): boolean {
+    return (
+      typeof value === 'string' &&
+      value.indexOf('\0') === -1 &&
+      isBoundedUnicodeScalarsUtf8(
+        value,
+        MAX_LIFECYCLE_DELIVERY_PERSONA_LENGTH,
+        MAX_LIFECYCLE_DELIVERY_PERSONA_UTF8_BYTES,
+      ) &&
+      this.parses(LifecycleFilterOwnerNameSchema, value)
+    );
+  }
+
+  private parseStatus(value: unknown): LifecycleDeliveryStatus {
+    const parsed = LifecycleDeliveryStatusSchema.safeParse(value);
+    if (!parsed.success) throw new Error('invalid persisted lifecycle delivery status');
+    return parsed.data;
+  }
+
+  private asIdentifier(value: unknown): string {
+    if (!this.isIdentifier(value)) throw new Error('invalid persisted lifecycle handler id');
+    return value as string;
+  }
+
+  private asPersona(value: unknown): string {
+    if (!this.isBoundedPersona(value)) throw new Error('invalid persisted lifecycle persona');
+    return value as string;
+  }
+
+  private asSafeInteger(value: unknown): number {
+    if (!Number.isSafeInteger(value)) throw new Error('invalid persisted lifecycle timestamp');
+    return value as number;
+  }
+
+  private isNullableTimestamp(value: unknown): boolean {
+    return value === null || Number.isSafeInteger(value);
+  }
+
+  private hasValidTerminalTombstone(
+    row: LifecycleDeliveryRow,
+    diagnostic: LifecycleFailureDiagnostic | null,
+  ): boolean {
+    if (row.terminal_tombstone_reason === null) return true;
+    if (
+      row.terminal_tombstone_reason !== 'handler-disabled' &&
+      row.terminal_tombstone_reason !== 'privacy-deleted'
+    ) {
+      return false;
+    }
+    return row.status === 'dead_letter' && diagnostic?.code === row.terminal_tombstone_reason;
+  }
+
+  private hasValidStatusFields(
+    row: LifecycleDeliveryRow,
+    diagnostic: LifecycleFailureDiagnostic | null,
+  ): boolean {
+    switch (row.status) {
+      case 'pending':
+        return (
+          row.attempts === 0 &&
+          row.next_retry_at === null &&
+          row.claim_token === null &&
+          row.claim_expires_at === null &&
+          diagnostic === null &&
+          row.completed_at === null
+        );
+      case 'claimed':
+        return (
+          row.attempts < row.max_attempts &&
+          row.next_retry_at === null &&
+          this.isRuntimeId(row.claim_token) &&
+          Number.isSafeInteger(row.claim_expires_at) &&
+          diagnostic === null &&
+          row.completed_at === null
+        );
+      case 'failed':
+        return (
+          row.attempts >= 1 &&
+          row.attempts < row.max_attempts &&
+          Number.isSafeInteger(row.next_retry_at) &&
+          row.claim_token === null &&
+          row.claim_expires_at === null &&
+          diagnostic !== null &&
+          row.completed_at === null
+        );
+      case 'completed':
+        return (
+          row.attempts < row.max_attempts &&
+          row.next_retry_at === null &&
+          row.claim_token === null &&
+          row.claim_expires_at === null &&
+          diagnostic === null &&
+          Number.isSafeInteger(row.completed_at)
+        );
+      case 'dead_letter':
+        return (
+          row.attempts >= 1 &&
+          row.attempts <= row.max_attempts &&
+          row.next_retry_at === null &&
+          row.claim_token === null &&
+          row.claim_expires_at === null &&
+          diagnostic !== null &&
+          row.completed_at === null
+        );
+    }
+  }
+}

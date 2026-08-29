@@ -11,7 +11,7 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import writeFileAtomic from 'write-file-atomic';
 
-import { DaemonResponseSchema } from './daemon-ipc.js';
+import { DaemonCommandSchema, DaemonResponseSchema } from './daemon-ipc.js';
 import type { DaemonCommand, DaemonCommandType, DaemonResponse } from './daemon-ipc.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 
@@ -78,11 +78,11 @@ export class DaemonIpcClient {
     type: DaemonCommandType,
     payload?: Record<string, unknown>,
   ): Promise<DaemonResponse | null> {
-    const command: DaemonCommand = {
+    const command = DaemonCommandSchema.parse({
       id: randomUUID(),
       command: type,
       ...(payload !== undefined ? { payload } : {}),
-    };
+    });
     return this.send(command);
   }
 

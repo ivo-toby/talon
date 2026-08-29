@@ -16,6 +16,7 @@ export type {
   SubAgentInput,
   SubAgentResult,
   SubAgentRunFn,
+  LifecycleSubAgentRunFn,
   SubAgentServices,
   LoadedSubAgent,
 } from './subagent-types.js';

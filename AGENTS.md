@@ -41,6 +41,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal                                 |
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                                                                         |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter                                                          |
+| Lifecycle | `src/lifecycle/`           | Durable event contracts, publication, dispatcher execution, interceptors, telemetry, retention, and behavior governance    |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                                                                                      |
 | Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly                                                                    |
 | Tools     | `src/tools/`               | 11 host-tools + capability-based filtering via `tool-filter.ts`                                                            |
@@ -67,10 +68,12 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 - **Internal MCP server prefix** — `__talond_` prefix is reserved for internal MCP servers (`__talond_host_tools`, `__talond_skill_loader`). User-defined servers with this prefix are rejected.
 - **Multi-connector** — Multiple connector instances of the same channel type are supported. Channels are keyed by `name` (unique), not `type`. Slack and Discord filter all bot messages at the platform level; Telegram filters sibling Talon bot IDs injected at startup; WhatsApp Baileys uses JID-based self-filtering. WhatsApp Business has no bot-self filtering.
 - **Per-persona background-agent override** — personas may set `backgroundProvider` and `backgroundModel` to route their background runs through a different runtime than the foreground `provider`. Validated at config load: `backgroundProvider` must be enabled under `backgroundAgent.providers`. When unset, the persona's foreground `provider` is used iff it is enabled in the background registry; otherwise the daemon falls back to `backgroundAgent.defaultProvider`.
+- **Lifecycle telemetry is correlated and best-effort at primary boundaries** — the lifecycle runtime emits bounded audit/metric evidence across publication, interceptor decisions, handler delivery, retry/dead-letter, and signal handoff; message/run/queue/tool state transitions log and continue if an observational lifecycle publish fails. Langfuse handler-delivery and publication-failure observations are on by default when Langfuse is enabled, while high-volume successful publication observations are off by default unless `lifecycle.telemetry.langfuse.publications` is enabled. Handler traceparents must be propagated through native and sub-agent lifecycle execution; optional trace-evidence providers are advisory and validate W3C `traceparent` values before use.
+- **Behavior projection and prompt promotion are native and governed** — model-backed behavior detectors may emit validated lifecycle signals, but only the native behavior projector writes persona-scoped ledger evidence/candidates. Prompt promotion resolves persona-owned system prompt files, validates prompt-patch-backed structured patches, defaults to operator approval, allows only explicit narrow auto-policy, evaluates, writes atomically, verifies reload, records provenance, and rolls back on failure. Projection is gated by explicit persona signal subscriptions, deterministic evidence fingerprints, distinct-source thresholds, scope checks, and bounded audit.
 
 ### Database
 
-Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`.
+Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`, lifecycle event/delivery tables, and behavior ledger/candidate/promotion tables.
 
 Table names to know: `memory_items` (not `memory`), `schedules` (column `expression` not `cron_expression`).
 
@@ -169,7 +172,7 @@ Always make sure you are in a feature or fix branch before getting to work
 
 ### Reviews
 
-Before every commit you need to use the codex skill to ask Gpt-5.4 for a review, address the issues, only if there a no critical, high or medium issues are found the work can be committed.
+Before every commit you need to use the codex skill to ask `gpt-5.5` with xhigh reasoning for a review, address the issues, only if there are no critical, high, or medium issues can the work be committed. Do not use any GPT-5.6 model.
 When dealing with PR reviews, always resolve a comment when it's fixed or deemed invalid, always add a comment what you fixed, which commit, or why the comment was invalid
 
 ### Documentation
@@ -184,4 +187,4 @@ Do not consider a feature complete until the docs match the code. PR reviewers s
 
 ### Offload work
 
-If you can, offload coding tasks to GPT-5.3-codex-high using the codex skill, only do this for well defined, tightly scoped tasks.
+If you can, offload coding tasks to `gpt-5.5` with high reasoning using the codex skill; only do this for well-defined, tightly scoped tasks. Implementation and remediation agents must never use a model newer than GPT-5.5.

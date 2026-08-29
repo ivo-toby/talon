@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { ok, err, type Result } from 'neverthrow';
 import { MigrationError } from '../../errors/index.js';
+import { registerLifecycleSqlFunctions } from '../lifecycle-sql-functions.js';
 
 /**
  * Applies all pending migrations from `migrationsDir` to `db`.
@@ -28,6 +29,19 @@ export function runMigrations(
   db: Database.Database,
   migrationsDir: string,
 ): Result<number, MigrationError> {
+  // Tests and upgrade callers commonly construct better-sqlite3 directly.
+  // Register before parsing migration SQL so the CHECK constraints are usable
+  // immediately and unknown functions cannot accidentally weaken validation.
+  try {
+    registerLifecycleSqlFunctions(db);
+  } catch (cause) {
+    return err(
+      new MigrationError(
+        `Cannot register lifecycle SQLite validators: ${String(cause)}`,
+        cause instanceof Error ? cause : undefined,
+      ),
+    );
+  }
   // Read current schema version from the database.
   const currentVersion = db.pragma('user_version', { simple: true }) as number;
 

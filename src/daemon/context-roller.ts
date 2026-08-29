@@ -22,6 +22,14 @@ import type { SessionTracker } from '../sandbox/session-tracker.js';
 import type { SubAgentResult } from '../subagents/subagent-types.js';
 import type { SubAgentError } from '../core/errors/index.js';
 import type { ResolvedContextUsage } from '../providers/provider-types.js';
+import {
+  ContextObserverInputSchema,
+  ContextObserverOutputSchema,
+  ContextReducerInputSchema,
+  ContextReducerOutputSchema,
+  projectContextObservation,
+  projectContextReduction,
+} from '../lifecycle/context/index.js';
 import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 
 // ---------------------------------------------------------------------------
@@ -59,6 +67,35 @@ function extractPreviousRotationBoundary(
 }
 const DIRECT_CONTEXT_BUDGET_RATIO = 0.25;
 
+function parseExistingObservationReplay(
+  metadata: string,
+  rotatedThroughTs: number,
+): { hasOpenThreads: boolean } | null {
+  try {
+    const parsed = JSON.parse(metadata) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const record = parsed as Record<string, unknown>;
+    const source = record.source;
+    if (
+      source !== 'context-roller-om' &&
+      source !== 'context-projector-reduced-observation-tombstone'
+    ) {
+      return null;
+    }
+    if (Number(record.rotatedThroughTs) !== rotatedThroughTs) {
+      return null;
+    }
+    return {
+      hasOpenThreads:
+        record.taskComplete === false &&
+        typeof record.suggestedContinuation === 'string' &&
+        record.suggestedContinuation.trim().length > 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Number of messages to preserve as a pre-roll tail so the agent retains
  * conversational continuity after a context rotation. Stored as a separate
@@ -90,6 +127,17 @@ export interface ContextRotationResult {
   rotated: boolean;
   /** Whether the summarizer found unfinished work (open threads). */
   hasOpenThreads: boolean;
+  /** Observation-log reduction lifecycle details, when reducer threshold was evaluated. */
+  reduction?: ContextReductionLifecycleResult;
+}
+
+export interface ContextReductionLifecycleResult {
+  thresholdExceeded: boolean;
+  reduced: boolean;
+  observationChars: number;
+  thresholdChars: number;
+  projectionId?: string;
+  memoryItemId?: string;
 }
 
 /**
@@ -275,6 +323,7 @@ export class ContextRoller {
 
     summaryParts.push('Open threads:', ...(data?.openThreads ?? []).map((t) => `- ${t}`));
     const summaryContent = summaryParts.join('\n');
+    const hasOpenThreads = (data?.openThreads ?? []).length > 0;
 
     // 5. Persist summary + all memory updates in a single transaction.
     // If any write fails, the entire batch is rolled back atomically.
@@ -290,7 +339,12 @@ export class ContextRoller {
           source: 'context-roller',
           messageCount: messages.length,
           rotatedThroughTs,
+          hasOpenThreads,
+          openThreadCount: data?.openThreads?.length ?? 0,
           contextUsage,
+          ...(contextUsage.rotationCauseQueueItemId
+            ? { rotationCauseQueueItemId: contextUsage.rotationCauseQueueItemId }
+            : {}),
           ...(contextUsage.rawMetricName === 'cache_read_input_tokens'
             ? { cacheReadTokens: contextUsage.rawMetric }
             : {}),
@@ -343,7 +397,6 @@ export class ContextRoller {
       'context-roller: session rotated successfully',
     );
 
-    const hasOpenThreads = (data?.openThreads ?? []).length > 0;
     return { rotated: true, hasOpenThreads };
   }
 
@@ -404,6 +457,12 @@ export class ContextRoller {
 
     const messages = messagesResult.value;
     if (messages.length === 0) {
+      const replayed = prevBoundary === null
+        ? null
+        : this.replayExistingObservationProjection(threadId, prevBoundary);
+      if (replayed) {
+        return replayed;
+      }
       this.deps.logger.warn({ threadId }, 'context-roller-om: no messages found, skipping rotation');
       return noRotation;
     }
@@ -411,7 +470,7 @@ export class ContextRoller {
     // Snapshot boundary — see comment in checkAndRotate above.
     const rotatedThroughTs = messages[messages.length - 1].created_at;
 
-    const transcript = await this.buildObservationTranscript(
+    const transcript = this.buildObservationTranscript(
       threadId,
       messages,
       threadMetadata,
@@ -430,7 +489,16 @@ export class ContextRoller {
       return noRotation;
     }
 
-    const observerResult = await observerRun(threadId, personaId, { transcript });
+    const observerInput = ContextObserverInputSchema.safeParse({ transcript });
+    if (!observerInput.success) {
+      this.deps.logger.error(
+        { threadId, error: observerInput.error.message },
+        'context-roller-om: observer input failed context contract validation, skipping rotation',
+      );
+      return noRotation;
+    }
+
+    const observerResult = await observerRun(threadId, personaId, observerInput.data);
     if (observerResult.isErr()) {
       this.deps.logger.error(
         { threadId, error: observerResult.error.message },
@@ -439,15 +507,17 @@ export class ContextRoller {
       return noRotation;
     }
 
-    const observerData = observerResult.value.data as {
-      observations?: Array<{ date: string; time: string; priority: string; text: string }>;
-      taskComplete?: boolean;
-      currentTask?: string;
-      suggestedContinuation?: string;
-      memoryUpdates?: Array<{ key: string; value: string; mode: 'append' | 'replace' }>;
-    } | undefined;
+    const observerOutput = ContextObserverOutputSchema.safeParse(observerResult.value.data);
+    if (!observerOutput.success) {
+      this.deps.logger.error(
+        { threadId, error: observerOutput.error.message },
+        'context-roller-om: observer output failed context contract validation, skipping rotation',
+      );
+      return noRotation;
+    }
+    const observerData = observerOutput.data;
 
-    const observations = observerData?.observations ?? [];
+    const observations = observerData.observations;
     if (observations.length === 0) {
       this.deps.logger.warn({ threadId }, 'context-roller-om: observer produced no observations');
       return noRotation;
@@ -456,9 +526,7 @@ export class ContextRoller {
     // Log compression metrics and priority breakdown.
     const priorityCounts = { high: 0, medium: 0, low: 0 };
     for (const obs of observations) {
-      if (obs.priority in priorityCounts) {
-        priorityCounts[obs.priority as keyof typeof priorityCounts]++;
-      }
+      priorityCounts[obs.priority]++;
     }
     const observerUsage = observerResult.value.usage;
     this.deps.logger.info(
@@ -468,9 +536,9 @@ export class ContextRoller {
         messageCount: messages.length,
         observationCount: observations.length,
         priorities: priorityCounts,
-        currentTask: observerData?.currentTask ?? null,
-        suggestedContinuation: observerData?.suggestedContinuation ?? null,
-        memoryUpdateCount: observerData?.memoryUpdates?.length ?? 0,
+        currentTask: observerData.currentTask ?? null,
+        suggestedContinuation: observerData.suggestedContinuation ?? null,
+        memoryUpdateCount: observerData.memoryUpdates.length,
         observerTokens: observerUsage
           ? { input: observerUsage.inputTokens, output: observerUsage.outputTokens }
           : null,
@@ -486,139 +554,106 @@ export class ContextRoller {
       );
     }
 
-    // 3. Format observations into the observation log format.
-    const priorityEmoji: Record<string, string> = { high: '🔴', medium: '🟡', low: '🟢' };
-    const grouped = new Map<string, string[]>();
-    for (const obs of observations) {
-      const lines = grouped.get(obs.date) ?? [];
-      const emoji = priorityEmoji[obs.priority] ?? '🟢';
-      lines.push(`- ${emoji} ${obs.time} ${obs.text}`);
-      grouped.set(obs.date, lines);
-    }
-    const newObservationBlock = [...grouped.entries()]
-      .map(([date, lines]) => `Date: ${date}\n${lines.join('\n')}`)
-      .join('\n\n');
-
-    // 4. Build metadata.
-    // `taskComplete` is ALWAYS persisted so downstream consumers can reason
-    // about completion state without re-running the observer. Hints
-    // (currentTask / suggestedContinuation) are persisted only when the
-    // observer flagged the task as incomplete — otherwise a downstream
-    // ContextAssembler would surface "Current task:" / "Next step:" lines
-    // in the fresh-session prompt even though the prior turn completed
-    // (issue #197).
-    const taskComplete = observerData?.taskComplete !== false;
-    const metadata: Record<string, unknown> = {
-      source: 'context-roller-om',
-      messageCount: messages.length,
+    // 3. Persist observations, named memory, and pre-roll through the native projector.
+    const projectionResult = projectContextObservation({
+      repo: this.deps.memoryRepo,
+      threadId,
+      projectionId: `context-roller-om:${threadId}`,
+      messages,
       rotatedThroughTs,
-      taskComplete,
       contextUsage,
-      createdAt: new Date().toISOString(),
-    };
-    if (!taskComplete && observerData?.currentTask) {
-      metadata.currentTask = observerData.currentTask;
-    }
-    if (!taskComplete && observerData?.suggestedContinuation) {
-      metadata.suggestedContinuation = observerData.suggestedContinuation;
-    }
-
-    // 5. Persist: append new observations + process memory updates in a transaction.
-    // Use an in-batch accumulator to handle duplicate keys correctly — multiple
-    // append entries for the same key in one run should accumulate, not overwrite.
-    const pendingUpdates: Array<{ key: string; content: string; type: 'note' }> = [];
-    const accumulatedContent = new Map<string, string>();
-    if (observerData?.memoryUpdates) {
-      for (const update of observerData.memoryUpdates) {
-        if (!update.key || !update.value) continue;
-        if (update.mode === 'append') {
-          // Check in-batch accumulator first, then fall back to DB.
-          let existingContent = accumulatedContent.get(update.key);
-          if (existingContent === undefined) {
-            const existingResult = this.deps.memoryRepo.findById(threadId, update.key);
-            existingContent = existingResult.isOk() ? (existingResult.value?.content ?? '') : '';
-          }
-          const newContent = existingContent ? `${existingContent}\n${update.value}` : update.value;
-          accumulatedContent.set(update.key, newContent);
-          const existingIdx = pendingUpdates.findIndex((p) => p.key === update.key);
-          if (existingIdx !== -1) pendingUpdates.splice(existingIdx, 1);
-          pendingUpdates.push({ key: update.key, content: newContent, type: 'note' });
-        } else {
-          accumulatedContent.set(update.key, update.value);
-          const existingIdx = pendingUpdates.findIndex((p) => p.key === update.key);
-          if (existingIdx !== -1) pendingUpdates.splice(existingIdx, 1);
-          pendingUpdates.push({ key: update.key, content: update.value, type: 'note' });
-        }
-      }
-    }
-
-    const observationId = randomUUID();
-    const txResult = this.deps.memoryRepo.runInTransaction(() => {
-      const insertResult = this.deps.memoryRepo.insert({
-        id: observationId,
-        thread_id: threadId,
-        type: 'observation',
-        content: newObservationBlock,
-        embedding_ref: null,
-        metadata: JSON.stringify(metadata),
-      });
-      if (insertResult.isErr()) {
-        throw new Error(`observation insert: ${insertResult.error.message}`);
-      }
-
-      for (const update of pendingUpdates) {
-        const upsertResult = this.deps.memoryRepo.upsertByKey(threadId, update.key, {
-          type: update.type,
-          content: update.content,
-        });
-        if (upsertResult.isErr()) {
-          throw new Error(`upsert ${update.key}: ${upsertResult.error.message}`);
-        }
-      }
-
-      return pendingUpdates.length;
+      observerOutput: {
+        observations,
+        taskComplete: observerData.taskComplete,
+        ...(observerData.currentTask ? { currentTask: observerData.currentTask } : {}),
+        ...(observerData.suggestedContinuation
+          ? { suggestedContinuation: observerData.suggestedContinuation }
+          : {}),
+        memoryUpdates: observerData.memoryUpdates.map((update) => ({
+          key: update.key,
+          value: update.value,
+          mode: update.mode,
+          type: 'note',
+        })),
+      },
     });
 
-    if (txResult.isErr()) {
+    if (projectionResult.isErr()) {
       this.deps.logger.error(
-        { threadId, error: txResult.error.message },
+        { threadId, error: projectionResult.error.message },
         'context-roller-om: observation transaction failed',
       );
       return noRotation;
     }
 
-    // 6. Persist pre-roll tail — same as legacy path above.
-    this.savePreRollTail(threadId, messages, rotatedThroughTs);
-
-    // 7. Rotate session.
+    // 4. Rotate session.
     this.deps.sessionTracker.rotateSession(threadId);
 
-    const compressionRatio = transcript.length > 0
-      ? (transcript.length / newObservationBlock.length).toFixed(1)
+    const observationChars = observations.reduce((sum, observation) => sum + observation.text.length, 0);
+    const compressionRatio = observationChars > 0
+      ? (transcript.length / observationChars).toFixed(1)
       : '0';
     this.deps.logger.info(
       {
         threadId,
         observationCount: observations.length,
         transcriptChars: transcript.length,
-        observationChars: newObservationBlock.length,
+        observationChars,
         compressionRatio: `${compressionRatio}x`,
-        memoryUpdatesApplied: pendingUpdates.length,
+        memoryUpdatesApplied: projectionResult.value.memoryUpdatesApplied,
+        projectionId: projectionResult.value.projectionId,
       },
       'context-roller-om: observations appended, session rotated',
     );
 
-    // 7. Check if accumulated observations need reflection (consolidation).
-    await this.maybeReflect(threadId, personaId, reflectorName, reflectionThresholdChars);
+    // 5. Check if accumulated observations need reflection (consolidation).
+    const reduction = await this.maybeReflect(
+      threadId,
+      personaId,
+      reflectorName,
+      reflectionThresholdChars,
+    );
 
     // hasOpenThreads gates the stateless-provider auto-"continue" in agent-runner.
     // Fire it only when the observer explicitly flags unfinished work — i.e.
     // taskComplete === false AND a non-empty suggestedContinuation. The
     // `taskComplete` local declared earlier (persisted to metadata) carries
     // the same semantics — reuse it here.
-    const suggestedContinuation = (observerData?.suggestedContinuation ?? '').trim();
-    const hasOpenThreads = !taskComplete && suggestedContinuation.length > 0;
-    return { rotated: true, hasOpenThreads };
+    return {
+      rotated: true,
+      hasOpenThreads: projectionResult.value.hasOpenThreads,
+      ...(reduction ? { reduction } : {}),
+    };
+  }
+
+  private replayExistingObservationProjection(
+    threadId: string,
+    rotatedThroughTs: number,
+  ): ContextRotationResult | null {
+    const projectionId = `context-roller-om:${threadId}`;
+    const memoryItemId = `context-observation:${projectionId}:${rotatedThroughTs}`;
+    const existing = this.deps.memoryRepo.findById(threadId, memoryItemId);
+    if (existing.isErr() || !existing.value) {
+      return null;
+    }
+    const replay = parseExistingObservationReplay(existing.value.metadata, rotatedThroughTs);
+    if (!replay) {
+      return null;
+    }
+    this.deps.sessionTracker.rotateSession(threadId);
+    this.deps.logger.info(
+      {
+        threadId,
+        projectionId,
+        rotatedThroughTs,
+        hasOpenThreads: replay.hasOpenThreads,
+      },
+      'context-roller-om: replayed existing observation projection',
+    );
+    return {
+      rotated: true,
+      hasOpenThreads: replay.hasOpenThreads,
+    };
   }
 
   /**
@@ -629,23 +664,39 @@ export class ContextRoller {
     personaId: string,
     reflectorName: string,
     reflectionThresholdChars: number,
-  ): Promise<void> {
+  ): Promise<ContextReductionLifecycleResult | null> {
     const observationsResult = this.deps.memoryRepo.findByThread(threadId, 'observation');
     if (observationsResult.isErr() || observationsResult.value.length === 0) {
-      return;
+      return null;
     }
 
     const allObservations = observationsResult.value;
     const fullLog = allObservations.map((o) => o.content).join('\n\n');
 
     if (fullLog.length < reflectionThresholdChars) {
-      return;
+      return null;
     }
+
+    const thresholdResult: ContextReductionLifecycleResult = {
+      thresholdExceeded: true,
+      reduced: false,
+      observationChars: fullLog.length,
+      thresholdChars: reflectionThresholdChars,
+    };
 
     this.deps.logger.info(
       { threadId, observationChars: fullLog.length, threshold: reflectionThresholdChars },
       'context-roller-om: observation log exceeds threshold, triggering reflector',
     );
+
+    const reducerInput = ContextReducerInputSchema.safeParse({ observationLog: fullLog });
+    if (!reducerInput.success) {
+      this.deps.logger.warn(
+        { threadId, observationChars: fullLog.length, error: reducerInput.error.message },
+        'context-roller-om: observation log failed reducer input contract validation, skipping consolidation',
+      );
+      return thresholdResult;
+    }
 
     // Resolve the reflector sub-agent. Try the dedicated reflector resolver
     // first, then fall back to the shared summarizer resolver (all sub-agents
@@ -663,137 +714,68 @@ export class ContextRoller {
         { threadId, reflector: reflectorName },
         'context-roller-om: reflector not available, skipping consolidation',
       );
-      return;
+      return thresholdResult;
     }
 
-    const reflectorResult = await reflectorRun(threadId, personaId, { observationLog: fullLog });
+    const reflectorResult = await reflectorRun(threadId, personaId, reducerInput.data);
     if (reflectorResult.isErr()) {
       this.deps.logger.error(
         { threadId, error: reflectorResult.error.message },
         'context-roller-om: reflection failed, keeping current observations',
       );
-      return;
+      return thresholdResult;
     }
 
-    const consolidated = (reflectorResult.value.data as { consolidatedLog?: string })?.consolidatedLog;
-    if (!consolidated || consolidated.trim().length === 0) {
+    const reducerOutput = ContextReducerOutputSchema.safeParse(reflectorResult.value.data);
+    if (!reducerOutput.success) {
       this.deps.logger.warn({ threadId }, 'context-roller-om: reflector returned empty output');
-      return;
+      return thresholdResult;
     }
 
-    // Carry forward the rotation boundary and continuation hints from the
-    // pre-consolidation observations. Without this, the ContextAssembler
-    // would fall back to the consolidated observation's own created_at —
-    // which is the reflector's write time, not the actual transcript cutoff
-    // — and would drop any messages that arrived during reflector latency.
-    // Hints come from the newest observation's metadata because that one
-    // reflects the most recent rotation state.
-    const maxRotatedThroughTs = allObservations.reduce<number | null>((acc, obs) => {
-      try {
-        const meta = JSON.parse(obs.metadata);
-        const ts = Number(meta.rotatedThroughTs);
-        if (Number.isFinite(ts)) return acc === null ? ts : Math.max(acc, ts);
-      } catch { /* ignore */ }
-      return acc;
-    }, null);
-
-    // allObservations is DESC by created_at → [0] is newest. Carry forward
-    // the newest observation's `taskComplete` flag too so the consolidated
-    // observation inherits the current completion state; without it the
-    // ContextAssembler would lose the signal after consolidation and
-    // could re-surface stale hints.
-    let carriedCurrentTask: string | undefined;
-    let carriedSuggestedContinuation: string | undefined;
-    let carriedTaskComplete: boolean | undefined;
-    try {
-      const newestMeta = JSON.parse(allObservations[0].metadata);
-      if (typeof newestMeta.taskComplete === 'boolean') {
-        carriedTaskComplete = newestMeta.taskComplete;
-      }
-      if (typeof newestMeta.currentTask === 'string' && newestMeta.currentTask.length > 0) {
-        carriedCurrentTask = newestMeta.currentTask;
-      }
-      if (typeof newestMeta.suggestedContinuation === 'string' && newestMeta.suggestedContinuation.length > 0) {
-        carriedSuggestedContinuation = newestMeta.suggestedContinuation;
-      }
-    } catch { /* ignore */ }
-
-    // Replace all existing observations with a single consolidated entry.
-    const consolidatedId = randomUUID();
-    const txResult = this.deps.memoryRepo.runInTransaction(() => {
-      // Delete all existing observations.
-      for (const obs of allObservations) {
-        const delResult = this.deps.memoryRepo.delete(threadId, obs.id);
-        if (delResult.isErr()) {
-          throw new Error(`delete observation ${obs.id}: ${delResult.error.message}`);
-        }
-      }
-
-      const consolidatedMetadata: Record<string, unknown> = {
-        source: 'context-roller-om-reflector',
-        consolidatedFrom: allObservations.length,
-        originalChars: fullLog.length,
-        consolidatedChars: consolidated.length,
-        createdAt: new Date().toISOString(),
-      };
-      if (maxRotatedThroughTs !== null) {
-        consolidatedMetadata.rotatedThroughTs = maxRotatedThroughTs;
-      }
-      if (carriedTaskComplete !== undefined) {
-        consolidatedMetadata.taskComplete = carriedTaskComplete;
-      }
-      if (carriedCurrentTask !== undefined) {
-        consolidatedMetadata.currentTask = carriedCurrentTask;
-      }
-      if (carriedSuggestedContinuation !== undefined) {
-        consolidatedMetadata.suggestedContinuation = carriedSuggestedContinuation;
-      }
-
-      // Insert consolidated observation.
-      const insertResult = this.deps.memoryRepo.insert({
-        id: consolidatedId,
-        thread_id: threadId,
-        type: 'observation',
-        content: consolidated,
-        embedding_ref: null,
-        metadata: JSON.stringify(consolidatedMetadata),
-      });
-      if (insertResult.isErr()) {
-        throw new Error(`consolidated insert: ${insertResult.error.message}`);
-      }
-
-      return allObservations.length;
+    const projectionResult = projectContextReduction({
+      repo: this.deps.memoryRepo,
+      threadId,
+      projectionId: `context-roller-reducer:${threadId}`,
+      observations: allObservations,
+      reducerOutput: reducerOutput.data,
     });
 
-    if (txResult.isErr()) {
+    if (projectionResult.isErr()) {
       this.deps.logger.error(
-        { threadId, error: txResult.error.message },
+        { threadId, error: projectionResult.error.message },
         'context-roller-om: reflection transaction failed',
       );
-      return;
+      return thresholdResult;
     }
 
     const reflectorReduction = fullLog.length > 0
-      ? `${((1 - consolidated.length / fullLog.length) * 100).toFixed(0)}%`
+      ? `${((1 - reducerOutput.data.consolidatedLog.length / fullLog.length) * 100).toFixed(0)}%`
       : '0%';
     this.deps.logger.info(
       {
         threadId,
         consolidatedFrom: allObservations.length,
         originalChars: fullLog.length,
-        consolidatedChars: consolidated.length,
+        consolidatedChars: reducerOutput.data.consolidatedLog.length,
         reduction: reflectorReduction,
+        projectionId: projectionResult.value.projectionId,
       },
       'context-roller-om: observations consolidated by reflector',
     );
+    return {
+      ...thresholdResult,
+      reduced: true,
+      projectionId: projectionResult.value.projectionId,
+      memoryItemId: projectionResult.value.memoryItemId,
+    };
   }
 
-  private async buildObservationTranscript(
+  private buildObservationTranscript(
     threadId: string,
     scheduleMessages: MessageRow[],
     threadMetadata?: string | null,
     channelId?: string,
-  ): Promise<string> {
+  ): string {
     const scheduleTranscript = this.buildTranscript(scheduleMessages, MAX_TRANSCRIPT_CHARS);
     const originExternalId = readScheduleOriginExternalId(threadMetadata);
     if (!originExternalId || !channelId || !this.deps.threadRepo) {
@@ -949,8 +931,14 @@ export class ContextRoller {
       const role = msg.direction === 'inbound' ? 'user' : 'assistant';
       let body: string;
       try {
-        const parsed = JSON.parse(msg.content);
-        body = typeof parsed.body === 'string' ? parsed.body : msg.content;
+        const parsed = JSON.parse(msg.content) as unknown;
+        body =
+          parsed !== null &&
+          typeof parsed === 'object' &&
+          'body' in parsed &&
+          typeof parsed.body === 'string'
+            ? parsed.body
+            : msg.content;
       } catch {
         body = msg.content;
       }

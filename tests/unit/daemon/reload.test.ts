@@ -100,7 +100,13 @@ function makeMockContext(configOverrides: Record<string, unknown> = {}): DaemonC
       schedule: {} as any,
       audit: {} as any,
       message: {} as any,
-      run: { aggregateByPeriod: vi.fn().mockReturnValue(ok({ total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0 })) } as any,
+      run: {
+        aggregateByPeriod: vi
+          .fn()
+          .mockReturnValue(
+            ok({ total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0 }),
+          ),
+      } as any,
       binding: {} as any,
       memory: {} as any,
     },
@@ -130,7 +136,13 @@ function makeMockContext(configOverrides: Record<string, unknown> = {}): DaemonC
     backgroundAgentManager: { shutdown: vi.fn() } as any,
     contextAssembler: {} as any,
     hostToolsBridge: { path: '/tmp/host-tools.sock', start: vi.fn(), stop: vi.fn() } as any,
-    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), child: vi.fn().mockReturnThis() } as any,
+    logger: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn().mockReturnThis(),
+    } as any,
   };
 }
 
@@ -256,6 +268,243 @@ describe('TalondDaemon.reload()', () => {
       await daemon.reload('/bad.yaml');
 
       expect(daemon.state).toBe('running');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Lifecycle config changes
+  // -------------------------------------------------------------------------
+
+  describe('lifecycle config changes', () => {
+    it('rejects top-level lifecycle changes before applying any reload mutations', async () => {
+      const ctx = setupSuccessfulStart({
+        lifecycle: { enabled: true, handlers: [] },
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        logLevel: 'debug',
+        lifecycle: { enabled: false, handlers: [] },
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('restart required');
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(ctx.channelRegistry.stopAll).not.toHaveBeenCalled();
+      expect(ctx.config.logLevel).toBe('info');
+    });
+
+    it('rejects lifecycle handler identity/version changes before applying mutable reload work', async () => {
+      const handler = {
+        version: 'v1',
+        id: 'retention-projector',
+        displayName: 'Retention Projector',
+        mode: 'event',
+        inputContract: 'talon.lifecycle.event.envelope.v1',
+        outputContract: 'talon.lifecycle.signal.envelopes.v1',
+        runtime: {
+          kind: 'native',
+          ref: 'retention-projector',
+          implementationVersion: '1.0.0',
+        },
+      };
+      const ctx = setupSuccessfulStart({
+        lifecycle: { enabled: true, handlers: [handler] },
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        logLevel: 'debug',
+        lifecycle: {
+          enabled: true,
+          handlers: [
+            {
+              ...handler,
+              displayName: 'Retention Projector v2',
+              runtime: { ...handler.runtime, implementationVersion: '2.0.0' },
+            },
+          ],
+        },
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('restart required');
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(ctx.channelRegistry.stopAll).not.toHaveBeenCalled();
+      expect(ctx.config.logLevel).toBe('info');
+    });
+
+    it('rejects lifecycle retention policy changes before applying mutable reload work', async () => {
+      const ctx = setupSuccessfulStart({
+        lifecycle: {
+          enabled: true,
+          handlers: [],
+          retention: { completedAuditWindowMs: 86_400_000 },
+        },
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        logLevel: 'debug',
+        lifecycle: {
+          enabled: true,
+          handlers: [],
+          retention: { completedAuditWindowMs: 172_800_000 },
+        },
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('restart required');
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(ctx.channelRegistry.stopAll).not.toHaveBeenCalled();
+      expect(ctx.config.lifecycle).toEqual({
+        enabled: true,
+        handlers: [],
+        retention: { completedAuditWindowMs: 86_400_000 },
+      });
+    });
+
+    it('rejects persona lifecycle subscription changes before reloading personas', async () => {
+      const oldSubscription = {
+        handler: 'audit-handler',
+        subscription: { eventTypes: ['message.received'] },
+      };
+      const newSubscription = {
+        handler: 'audit-handler',
+        subscription: { eventTypes: ['message.completed'] },
+      };
+      const persona = {
+        name: 'observer',
+        model: 'claude-sonnet-4-6',
+        skills: [],
+        capabilities: { allow: [], requireApproval: [] },
+        mounts: [],
+        lifecycle: { subscriptions: [oldSubscription] },
+      };
+      const ctx = setupSuccessfulStart({
+        lifecycle: { enabled: true, handlers: [] },
+        personas: [persona],
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        lifecycle: { enabled: true, handlers: [] },
+        personas: [
+          {
+            ...persona,
+            lifecycle: { subscriptions: [newSubscription] },
+          },
+        ],
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('lifecycle-attached persona');
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(ctx.config.personas).toEqual([persona]);
+    });
+
+    it.each([
+      {
+        description: 'sub-agent assignment',
+        change: { subagents: [] },
+      },
+      {
+        description: 'capability policy',
+        change: { capabilities: { allow: [], requireApproval: ['tools.read:*'] } },
+      },
+    ])(
+      'rejects lifecycle-attached persona $description changes before reloading personas',
+      async ({ change }) => {
+        const persona = {
+          name: 'observer',
+          model: 'claude-sonnet-4-6',
+          skills: [],
+          subagents: ['lifecycle-auditor'],
+          capabilities: { allow: ['tools.read:*'], requireApproval: [] },
+          mounts: [],
+          lifecycle: {
+            subscriptions: [
+              {
+                handler: 'audit-handler',
+                subscription: { eventTypes: ['message.received'] },
+              },
+            ],
+          },
+        };
+        const ctx = setupSuccessfulStart({ personas: [persona] });
+        await daemon.start('/config.yaml');
+
+        const newConfig = makeConfig({
+          personas: [{ ...persona, ...change }],
+        });
+        vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+        const result = await daemon.reload('/config.yaml');
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toContain('restart required');
+        expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+        expect(ctx.config.personas).toEqual([persona]);
+      },
+    );
+
+    it('allows ordinary persona changes when lifecycle attachments are unchanged', async () => {
+      const lifecycle = { subscriptions: [] };
+      const persona = {
+        name: 'assistant',
+        model: 'claude-sonnet-4-6',
+        skills: [],
+        capabilities: { allow: [], requireApproval: [] },
+        mounts: [],
+        lifecycle,
+      };
+      const ctx = setupSuccessfulStart({ personas: [persona] });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({
+        personas: [{ ...persona, model: 'claude-opus-4-6' }],
+      });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.personaLoader.loadFromConfig).toHaveBeenCalledWith(newConfig.personas);
+    });
+
+    it('allows system prompt file content changes when persona authority is unchanged', async () => {
+      const persona = {
+        name: 'assistant',
+        model: 'claude-sonnet-4-6',
+        systemPromptFile: 'personas/assistant/system.md',
+        skills: [],
+        capabilities: { allow: [], requireApproval: [] },
+        mounts: [],
+        lifecycle: { subscriptions: [] },
+      };
+      const ctx = setupSuccessfulStart({ personas: [persona] });
+      await daemon.start('/config.yaml');
+
+      const newConfig = makeConfig({ personas: [persona] });
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.personaLoader.loadFromConfig).toHaveBeenCalledWith(newConfig.personas);
+      expect(ctx.config.personas).toEqual([persona]);
     });
   });
 
@@ -403,7 +652,15 @@ describe('TalondDaemon.reload()', () => {
       const logSpy = vi.spyOn(logger, 'info');
 
       const newConfig = makeConfig({
-        personas: [{ name: 'new-bot', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] }, mounts: [] }],
+        personas: [
+          {
+            name: 'new-bot',
+            model: 'claude-sonnet-4-6',
+            skills: [],
+            capabilities: { allow: [], requireApproval: [] },
+            mounts: [],
+          },
+        ],
       });
       vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
 
@@ -426,7 +683,15 @@ describe('TalondDaemon.reload()', () => {
 
     it('logs removed personas', async () => {
       setupSuccessfulStart({
-        personas: [{ name: 'old-bot', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] }, mounts: [] }],
+        personas: [
+          {
+            name: 'old-bot',
+            model: 'claude-sonnet-4-6',
+            skills: [],
+            capabilities: { allow: [], requireApproval: [] },
+            mounts: [],
+          },
+        ],
       });
       const logger = createDiscardLogger('silent');
       const localDaemon = new TalondDaemon(logger);
@@ -454,7 +719,13 @@ describe('TalondDaemon.reload()', () => {
     });
 
     it('logs changed personas', async () => {
-      const persona = { name: 'agent', model: 'claude-sonnet-4-6', skills: [], capabilities: { allow: [], requireApproval: [] }, mounts: [] };
+      const persona = {
+        name: 'agent',
+        model: 'claude-sonnet-4-6',
+        skills: [],
+        capabilities: { allow: [], requireApproval: [] },
+        mounts: [],
+      };
       setupSuccessfulStart({ personas: [persona] });
       const logger = createDiscardLogger('silent');
       const localDaemon = new TalondDaemon(logger);
@@ -490,13 +761,17 @@ describe('TalondDaemon.reload()', () => {
 
   describe('queue / scheduler config changes', () => {
     it('logs a warning when queue config changes', async () => {
-      setupSuccessfulStart({ queue: { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 } });
+      setupSuccessfulStart({
+        queue: { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 },
+      });
       const logger = createDiscardLogger('silent');
       const localDaemon = new TalondDaemon(logger);
       await localDaemon.start('/config.yaml');
       const warnSpy = vi.spyOn(logger, 'warn');
 
-      const newConfig = makeConfig({ queue: { maxAttempts: 5, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 } });
+      const newConfig = makeConfig({
+        queue: { maxAttempts: 5, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 2 },
+      });
       vi.mocked(loadConfig).mockReturnValue(ok(newConfig as any));
 
       await localDaemon.reload('/config.yaml');

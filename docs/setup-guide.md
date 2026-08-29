@@ -407,6 +407,23 @@ sudo systemctl restart talond
 
 Don't rsync or scp the dist/ folder. Always build on the target machine.
 
+For releases that include the durable lifecycle pipeline, run `npx talonctl
+doctor --config talond.yaml` before the restart and check for config drift:
+
+- Old top-level `context:` config must be migrated to
+  `agentRunner.providers.<name>.contextManagement`.
+- `lifecycle:` is optional and disabled by default; existing installs do not
+  need to add lifecycle handlers unless they want durable behavior review,
+  replay, retention, prompt promotion, or lifecycle telemetry.
+- If Langfuse is enabled, successful `lifecycle.publish` spans are disabled by
+  default to avoid high-volume trace noise. Durable lifecycle rows, audit
+  records, local metrics, publication failure spans, and handler-delivery spans
+  still run. Set `lifecycle.telemetry.langfuse.publications: true` only when
+  every lifecycle event should appear in Langfuse.
+- If enabling a model-backed lifecycle handler, add both the global
+  `lifecycle.handlers[]` entry and the persona-side `subagents` /
+  `personas[].lifecycle.subscriptions` entries.
+
 ## Quick setup with Claude Code
 
 If you have Claude Code installed locally, the fastest path is the interactive setup skill:

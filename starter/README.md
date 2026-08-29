@@ -68,6 +68,12 @@ The skills walk you through editing `.env` and `config/talond.yaml`
 manually for first-time setup, then drive `talonctl` for follow-on
 changes (add another channel, swap providers, etc.).
 
+After the daemon is running, durable lifecycle operations also go through
+`talonctl`. Use `talonctl lifecycle handlers` to see configured handler health
+and backlog, `inspect` / `replay` / `disable` for delivery troubleshooting,
+`candidates` for behavior-learning provenance, and
+`promote` / `rollback-promotion` for governed behavior prompt updates.
+
 ## Configuration
 
 | File or dir | Purpose |
@@ -157,6 +163,8 @@ docker compose down             # stop
 
 talonctl status                 # daemon health
 talonctl list-channels          # configured channels
+talonctl lifecycle handlers     # lifecycle handler health/backlog
+talonctl lifecycle candidates assistant --limit 25
 talonctl --help                 # all commands
 ```
 

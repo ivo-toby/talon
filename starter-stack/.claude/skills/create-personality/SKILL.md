@@ -19,6 +19,11 @@ Guide the user through creating personality files for a Talon persona.
 Personality files are markdown files in `personas/<name>/personality/` that
 get appended to the system prompt (after `system.md`, before skills).
 
+This skill is for explicit operator-authored personality files. Do not use it
+to apply lifecycle behavior-learning candidates automatically; those changes
+must go through `talonctl lifecycle candidates`, `promote`, and
+`rollback-promotion`.
+
 ## Phase 1: Select Persona
 
 1. Run `npx talonctl list-personas` to show available personas.

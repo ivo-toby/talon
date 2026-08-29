@@ -1,4 +1,5 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import { execFile } from 'node:child_process';
 
@@ -27,6 +28,10 @@ interface SearchOptions {
 type SearchBackend = 'rg' | 'grep' | 'node';
 
 let detectedBackend: SearchBackend | null = null;
+
+function asError(cause: unknown): Error {
+  return cause instanceof Error ? cause : new Error(String(cause));
+}
 
 function detectBinary(name: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -102,10 +107,16 @@ export async function searchFiles(
   for (const be of cascade) {
     try {
       switch (be) {
-        case 'rg':
-          return await searchWithRg(rootPaths, query, opts);
-        case 'grep':
-          return await searchWithGrep(rootPaths, query, opts);
+        case 'rg': {
+          const results = await searchWithRg(rootPaths, query, opts);
+          if (shouldTryNextBackendAfterEmptyResult(results, rootPaths)) continue;
+          return results;
+        }
+        case 'grep': {
+          const results = await searchWithGrep(rootPaths, query, opts);
+          if (shouldTryNextBackendAfterEmptyResult(results, rootPaths)) continue;
+          return results;
+        }
         case 'node':
           return await searchWithNode(rootPaths, query, opts);
       }
@@ -116,6 +127,10 @@ export async function searchFiles(
   }
 
   return [];
+}
+
+function shouldTryNextBackendAfterEmptyResult(results: SearchMatch[], rootPaths: string[]): boolean {
+  return results.length === 0 && rootPaths.some((rootPath) => !existsSync(rootPath));
 }
 
 // ---------------------------------------------------------------------------
@@ -149,7 +164,7 @@ function searchWithRg(
           resolve([]);
           return;
         }
-        reject(error);
+        reject(asError(error));
         return;
       }
 
@@ -262,7 +277,7 @@ function searchWithGrep(
           resolve([]);
           return;
         }
-        reject(error);
+        reject(asError(error));
         return;
       }
 
@@ -405,8 +420,9 @@ async function listFiles(dir: string, extensions: string[]): Promise<string[]> {
     if (!entry.isFile()) continue;
     const ext = extname(entry.name).toLowerCase();
     if (!extensions.includes(ext)) continue;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const parent: string = (entry as any).parentPath ?? (entry as any).path;
+    const parentEntry = entry as typeof entry & { parentPath?: string; path?: string };
+    const parent = parentEntry.parentPath ?? parentEntry.path;
+    if (parent === undefined) continue;
     const fullPath = join(parent, entry.name);
     results.push(fullPath);
   }

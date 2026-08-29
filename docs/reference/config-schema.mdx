@@ -15,10 +15,10 @@ logLevel: info
 dataDir: data
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `logLevel` | `trace \| debug \| info \| warn \| error \| fatal` | `info` | Pino log level |
-| `dataDir` | string | `data` | Root runtime data directory |
+| Field      | Type                                               | Default | Description                 |
+| ---------- | -------------------------------------------------- | ------- | --------------------------- |
+| `logLevel` | `trace \| debug \| info \| warn \| error \| fatal` | `info`  | Pino log level              |
+| `dataDir`  | string                                             | `data`  | Root runtime data directory |
 
 ---
 
@@ -30,10 +30,10 @@ storage:
   path: data/talond.sqlite
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `type` | `sqlite` | `sqlite` | Database backend |
-| `path` | string | `data/talond.sqlite` | SQLite file path |
+| Field  | Type     | Default              | Description      |
+| ------ | -------- | -------------------- | ---------------- |
+| `type` | `sqlite` | `sqlite`             | Database backend |
+| `path` | string   | `data/talond.sqlite` | SQLite file path |
 
 ---
 
@@ -53,17 +53,17 @@ sandbox:
     pidsLimit: 256
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `runtime` | `docker \| apple-container` | `docker` | Sandbox runtime |
-| `image` | string | `talon-sandbox:latest` | Sandbox image |
-| `maxConcurrent` | integer ≥ 1 | `3` | Max concurrent sandboxed runs |
-| `networkDefault` | `off \| on` | `off` | Default network access |
-| `idleTimeoutMs` | integer ≥ 0 | `1800000` | Idle timeout in ms |
-| `hardTimeoutMs` | integer ≥ 0 | `3600000` | Hard timeout in ms |
-| `resourceLimits.memoryMb` | integer | `1024` | Memory limit per sandbox |
-| `resourceLimits.cpus` | number | `1` | CPU limit per sandbox |
-| `resourceLimits.pidsLimit` | integer | `256` | PID limit per sandbox |
+| Field                      | Type                        | Default                | Description                   |
+| -------------------------- | --------------------------- | ---------------------- | ----------------------------- |
+| `runtime`                  | `docker \| apple-container` | `docker`               | Sandbox runtime               |
+| `image`                    | string                      | `talon-sandbox:latest` | Sandbox image                 |
+| `maxConcurrent`            | integer ≥ 1                 | `3`                    | Max concurrent sandboxed runs |
+| `networkDefault`           | `off \| on`                 | `off`                  | Default network access        |
+| `idleTimeoutMs`            | integer ≥ 0                 | `1800000`              | Idle timeout in ms            |
+| `hardTimeoutMs`            | integer ≥ 0                 | `3600000`              | Hard timeout in ms            |
+| `resourceLimits.memoryMb`  | integer                     | `1024`                 | Memory limit per sandbox      |
+| `resourceLimits.cpus`      | number                      | `1`                    | CPU limit per sandbox         |
+| `resourceLimits.pidsLimit` | integer                     | `256`                  | PID limit per sandbox         |
 
 ---
 
@@ -93,18 +93,18 @@ personas:
     maxConcurrent: 2
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `name` | string | required | Persona name |
-| `model` | string | `claude-sonnet-4-6` | Model identifier |
-| `provider` | string | — | Optional provider override |
-| `systemPromptFile` | string | — | Path to `system.md` |
-| `skills` | string[] | `[]` | Attached skill names |
-| `subagents` | string[] | `[]` | Allowed sub-agent names |
-| `capabilities.allow` | string[] | `[]` | Allowed capability labels |
-| `capabilities.requireApproval` | string[] | `[]` | Approval-gated capability labels |
-| `mounts` | array | `[]` | Sandbox mounts |
-| `maxConcurrent` | integer ≥ 1 | — | Optional per-persona concurrency cap |
+| Field                          | Type        | Default             | Description                          |
+| ------------------------------ | ----------- | ------------------- | ------------------------------------ |
+| `name`                         | string      | required            | Persona name                         |
+| `model`                        | string      | `claude-sonnet-4-6` | Model identifier                     |
+| `provider`                     | string      | —                   | Optional provider override           |
+| `systemPromptFile`             | string      | —                   | Path to `system.md`                  |
+| `skills`                       | string[]    | `[]`                | Attached skill names                 |
+| `subagents`                    | string[]    | `[]`                | Allowed sub-agent names              |
+| `capabilities.allow`           | string[]    | `[]`                | Allowed capability labels            |
+| `capabilities.requireApproval` | string[]    | `[]`                | Approval-gated capability labels     |
+| `mounts`                       | array       | `[]`                | Sandbox mounts                       |
+| `maxConcurrent`                | integer ≥ 1 | —                   | Optional per-persona concurrency cap |
 
 ### `personas[].mounts[]`
 
@@ -115,11 +115,11 @@ mounts:
     mode: ro
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `source` | string | required | Host path |
-| `target` | string | required | Mount target in the sandbox |
-| `mode` | `ro \| rw` | `ro` | Mount mode |
+| Field    | Type       | Default  | Description                 |
+| -------- | ---------- | -------- | --------------------------- |
+| `source` | string     | required | Host path                   |
+| `target` | string     | required | Mount target in the sandbox |
+| `mode`   | `ro \| rw` | `ro`     | Mount mode                  |
 
 ---
 
@@ -135,17 +135,17 @@ channels:
       botToken: ${TELEGRAM_BOT_TOKEN}
       pollingTimeoutSec: 30
       allowedChatIds:
-        - "123456789"
+        - '123456789'
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `type` | `telegram \| whatsappBusiness \| whatsappBaileys \| slack \| email \| discord \| terminal` | required | Channel connector type |
-| `name` | string | required | Channel name |
-| `config` | object | `{}` | Connector-specific config |
-| `tokenRef` | string | — | Optional token reference |
-| `enabled` | boolean | `true` | Enable channel at startup |
-| `showToolCalls` | boolean | — | Optional per-channel tool-call messages |
+| Field           | Type                                                                                       | Default  | Description                             |
+| --------------- | ------------------------------------------------------------------------------------------ | -------- | --------------------------------------- |
+| `type`          | `telegram \| whatsappBusiness \| whatsappBaileys \| slack \| email \| discord \| terminal` | required | Channel connector type                  |
+| `name`          | string                                                                                     | required | Channel name                            |
+| `config`        | object                                                                                     | `{}`     | Connector-specific config               |
+| `tokenRef`      | string                                                                                     | —        | Optional token reference                |
+| `enabled`       | boolean                                                                                    | `true`   | Enable channel at startup               |
+| `showToolCalls` | boolean                                                                                    | —        | Optional per-channel tool-call messages |
 
 Notes:
 
@@ -163,11 +163,11 @@ bindings:
     isDefault: true
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `persona` | string | required | Persona name |
-| `channel` | string | required | Channel name |
-| `isDefault` | boolean | `false` | Marks the default binding for the channel |
+| Field       | Type    | Default  | Description                               |
+| ----------- | ------- | -------- | ----------------------------------------- |
+| `persona`   | string  | required | Persona name                              |
+| `channel`   | string  | required | Channel name                              |
+| `isDefault` | boolean | `false`  | Marks the default binding for the channel |
 
 ---
 
@@ -179,10 +179,10 @@ ipc:
   daemonSocketDir: data/ipc/daemon
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `pollIntervalMs` | integer ≥ 100 | `500` | IPC polling interval |
-| `daemonSocketDir` | string | `data/ipc/daemon` | IPC socket directory |
+| Field             | Type          | Default           | Description          |
+| ----------------- | ------------- | ----------------- | -------------------- |
+| `pollIntervalMs`  | integer ≥ 100 | `500`             | IPC polling interval |
+| `daemonSocketDir` | string        | `data/ipc/daemon` | IPC socket directory |
 
 ---
 
@@ -196,12 +196,176 @@ queue:
   concurrencyLimit: 5
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `maxAttempts` | integer ≥ 1 | `3` | Retry attempts before dead-letter |
-| `backoffBaseMs` | integer | `1000` | Initial retry delay |
-| `backoffMaxMs` | integer | `60000` | Maximum retry delay |
-| `concurrencyLimit` | integer ≥ 1 | `5` | Max concurrent queue processing |
+| Field              | Type        | Default | Description                       |
+| ------------------ | ----------- | ------- | --------------------------------- |
+| `maxAttempts`      | integer ≥ 1 | `3`     | Retry attempts before dead-letter |
+| `backoffBaseMs`    | integer     | `1000`  | Initial retry delay               |
+| `backoffMaxMs`     | integer     | `60000` | Maximum retry delay               |
+| `concurrencyLimit` | integer ≥ 1 | `5`     | Max concurrent queue processing   |
+
+---
+
+## `lifecycle`
+
+Durable lifecycle processing is opt-in. When enabled, Talon validates handler
+declarations and persona subscriptions, persists bounded event envelopes, and
+delivers them through the lifecycle dispatcher. Handlers are a two-lane
+extension surface:
+
+- `native` handlers are trusted implementation catalog entries shipped by
+  Talon. They are the only handlers allowed to enforce interceptor decisions or
+  mutate governed state such as behavior prompt promotions.
+- `subagent` handlers run through Talon's model-backed sub-agent adapter. They
+  receive fenced lifecycle input and may emit bounded lifecycle signals, but
+  they do not get direct write authority over prompts, memory, tools, or
+  config. Sub-agent handlers cannot be lifecycle interceptors; interceptor hooks
+  are native-only.
+
+```yaml
+lifecycle:
+  enabled: true
+  telemetry:
+    langfuse:
+      publications: false
+      publicationFailures: true
+      handlerDeliveries: true
+  handlers:
+    - version: v1
+      id: behavior-feedback-detector
+      displayName: Behavior feedback detector
+      mode: event
+      inputContract: talon.lifecycle.event.envelope.v1
+      outputContract: talon.lifecycle.signal.envelopes.v1
+      runtime:
+        kind: subagent
+        ref: behavior-feedback-detector
+        implementationVersion: 1.0.0
+      failurePolicy:
+        version: v1
+        mode: preserve_session
+  retention:
+    completedAuditWindowMs: 2592000000
+```
+
+| Field                                    | Type          | Default      | Description                                                               |
+| ---------------------------------------- | ------------- | ------------ | ------------------------------------------------------------------------- |
+| `enabled`                                | boolean       | `false`      | Enable lifecycle registry validation, publication, and delivery           |
+| `handlers`                               | array, max 32 | `[]`         | Global handler declarations that personas can subscribe to                |
+| `telemetry.langfuse.publications`        | boolean       | `false`      | Emit a Langfuse observation for every successful lifecycle publication    |
+| `telemetry.langfuse.publicationFailures` | boolean       | `true`       | Emit Langfuse observations when lifecycle publication fails               |
+| `telemetry.langfuse.handlerDeliveries`   | boolean       | `true`       | Emit Langfuse observations for lifecycle handler delivery attempts        |
+| `retention.completedAuditWindowMs`       | integer ≥ 0   | `2592000000` | Audit window before completed/no-subscriber event detail may be compacted |
+
+### `lifecycle.handlers[]`
+
+| Field                           | Type                                                          | Default                 | Description                                                                                                                                             |
+| ------------------------------- | ------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`                       | `v1`                                                          | required                | Contract version                                                                                                                                        |
+| `id`                            | lifecycle identifier                                          | required                | Stable handler id used by persona subscriptions and `talonctl lifecycle`                                                                                |
+| `displayName`                   | string                                                        | —                       | Optional operator-facing name                                                                                                                           |
+| `mode`                          | `event \| signal \| interceptor`                              | required                | Handler lane                                                                                                                                            |
+| `inputContract`                 | versioned contract name                                       | required                | Input contract the handler accepts                                                                                                                      |
+| `outputContract`                | versioned contract name                                       | required                | Output contract the handler returns                                                                                                                     |
+| `runtime.kind`                  | `native \| subagent`                                          | required                | Trusted native catalog entry or model-backed sub-agent                                                                                                  |
+| `runtime.ref`                   | string                                                        | required                | Native implementation ref or loaded sub-agent name                                                                                                      |
+| `runtime.implementationVersion` | string                                                        | required                | Implementation version captured on durable deliveries                                                                                                   |
+| `budget.timeoutMs`              | integer 1..3600000                                            | —                       | Optional per-delivery timeout                                                                                                                           |
+| `budget.maxConcurrency`         | integer 1..256                                                | —                       | Accepted by the budget contract for compatibility; current dispatcher concurrency is enforced by dispatcher policy, not per handler/subscription budget |
+| `failurePolicy.mode`            | `fail_closed \| fail_open \| dead_letter \| preserve_session` | handler/runtime default | Failure behavior                                                                                                                                        |
+| `interceptorSafety`             | `advisory \| enforcing`                                       | —                       | Valid only for interceptor handlers; `enforcing` requires `native` runtime and `fail_closed` policy                                                     |
+
+Supported lifecycle event types are currently:
+`message.persisted.v1`, `message.routed.v1`, `queue.item.enqueued.v1`,
+`queue.item.completed.v1`, `queue.item.failed.v1`,
+`queue.item.dead_lettered.v1`, `run.started.v1`,
+`provider.tool.started.v1`, `provider.tool.completed.v1`,
+`run.completed.v1`, `run.failed.v1`, `message.sent.v1`,
+`message.send_failed.v1`, `context.threshold_exceeded.v1`,
+`context.rotated.v1`, `context.observation_log_threshold_exceeded.v1`, and
+`schedule.fired.v1`.
+
+Supported lifecycle signal types are currently:
+`context.rotate.requested.v1`, `context.observation.proposed.v1`,
+`context.reduction.proposed.v1`, `behavior.feedback.detected.v1`, and
+`behavior.candidate.proposed.v1`.
+
+Supported interceptor hooks are currently:
+`message.before_persist`, `run.before_execute`, `tool.before_execute`, and
+`message.before_send`. `message.before_persist` applies only after an inbound
+message resolves to a persona binding; unbound messages are dropped on the
+legacy no-persona path and lifecycle interception/publication is skipped with a
+log entry.
+
+### `personas[].lifecycle`
+
+Personas opt in to lifecycle handlers explicitly. A handler declared globally
+does nothing until a persona subscribes to its event, signal, or interceptor
+contract. For `subagent` handlers, the persona must also list the handler's
+`runtime.ref` in `personas[].subagents`; a lifecycle subscription alone does
+not load or authorize model-backed handler execution.
+
+```yaml
+personas:
+  - name: assistant
+    subagents:
+      - behavior-feedback-detector
+    lifecycle:
+      subscriptions:
+        - version: v1
+          handler: behavior-feedback-detector
+          priority: 100
+          subscription:
+            version: v1
+            kind: event
+            events:
+              - version: v1
+                type: run.completed.v1
+            filter:
+              version: v1
+              personas:
+                - assistant
+              itemOrigins:
+                - run
+          failurePolicy:
+            version: v1
+            mode: preserve_session
+```
+
+| Field                                              | Type                             | Default                    | Description                                                                                                              |
+| -------------------------------------------------- | -------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `subscriptions`                                    | array, max 32                    | `[]`                       | Persona-scoped lifecycle attachments                                                                                     |
+| `subscriptions[].version`                          | `v1`                             | required                   | Contract version                                                                                                         |
+| `subscriptions[].handler`                          | lifecycle identifier             | required                   | Handler id from `lifecycle.handlers[]`                                                                                   |
+| `subscriptions[].priority`                         | integer -1000..1000              | `0`                        | Delivery order within the matching lane                                                                                  |
+| `subscriptions[].subscription.kind`                | `event \| signal \| interceptor` | required                   | Must match the handler mode                                                                                              |
+| `subscriptions[].subscription.events[].type`       | lifecycle event type             | required for `event`       | Event names to match                                                                                                     |
+| `subscriptions[].subscription.signals[].type`      | lifecycle signal type            | required for `signal`      | Signal names to match                                                                                                    |
+| `subscriptions[].subscription.interceptors[].hook` | interceptor hook                 | required for `interceptor` | Hook names to match                                                                                                      |
+| `subscriptions[].subscription.filter`              | object                           | —                          | Strict filters by item origin/type, channel, persona, message source, or schedule source                                 |
+| `subscriptions[].budget`                           | object                           | —                          | Optional subscription-local timeout budget; `maxConcurrency` is parsed but not currently used for dispatcher concurrency |
+| `subscriptions[].failurePolicy`                    | object                           | —                          | Optional subscription-local failure behavior                                                                             |
+
+Lifecycle payloads are intentionally bounded: durable events and signals carry
+references plus scalar metadata, not raw transcripts or arbitrary JSON blobs.
+Retention compaction may remove completed/no-subscriber event detail after the
+audit window; pending, failed, claimed, dead-letter, privacy-deleted, and
+handler-disabled rows keep their operational safety semantics.
+
+Operator controls are exposed through daemon IPC:
+
+```bash
+talonctl lifecycle handlers
+talonctl lifecycle inspect <event-id> --handler <handler-id>
+talonctl lifecycle replay <event-id> <handler-id>
+talonctl lifecycle disable <handler-id>
+talonctl lifecycle candidates <persona> --limit 25
+talonctl lifecycle promote <persona> <promotion-id> --approved-by operator
+talonctl lifecycle rollback-promotion <persona> <activation-id> --reason operator-rejected
+```
+
+`lifecycle promote` applies only prompt-patch-backed promotions. Behavior review
+creates those for bounded append-only suggestions; candidates that are too large
+or otherwise cannot be represented safely stay notes-only for operator review.
 
 ---
 
@@ -212,9 +376,9 @@ scheduler:
   tickIntervalMs: 5000
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `tickIntervalMs` | integer ≥ 1000 | `5000` | Scheduler tick interval |
+| Field            | Type           | Default | Description             |
+| ---------------- | -------------- | ------- | ----------------------- |
+| `tickIntervalMs` | integer ≥ 1000 | `5000`  | Scheduler tick interval |
 
 ---
 
@@ -231,12 +395,12 @@ auth:
       baseURL: http://localhost:11434/v1
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `mode` | `subscription \| api_key` | `subscription` | Auth mode |
-| `apiKey` | string | — | Global API key for `api_key` mode |
-| `providers.<name>.apiKey` | string | — | Provider-specific API key |
-| `providers.<name>.baseURL` | string | — | Provider-specific base URL |
+| Field                      | Type                      | Default        | Description                       |
+| -------------------------- | ------------------------- | -------------- | --------------------------------- |
+| `mode`                     | `subscription \| api_key` | `subscription` | Auth mode                         |
+| `apiKey`                   | string                    | —              | Global API key for `api_key` mode |
+| `providers.<name>.apiKey`  | string                    | —              | Provider-specific API key         |
+| `providers.<name>.baseURL` | string                    | —              | Provider-specific base URL        |
 
 ---
 
@@ -270,10 +434,10 @@ agentRunner:
         defaultModel: gpt-5.4
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `defaultProvider` | string | `claude-code` | Default foreground provider |
-| `providers` | record | built-in `claude-code` entry | Provider configs |
+| Field             | Type   | Default                      | Description                 |
+| ----------------- | ------ | ---------------------------- | --------------------------- |
+| `defaultProvider` | string | `claude-code`                | Default foreground provider |
+| `providers`       | record | built-in `claude-code` entry | Provider configs            |
 
 ### `agentRunner.providers.<name>`
 
@@ -287,23 +451,28 @@ providers:
       defaultModel: gpt-5.4
     contextManagement:
       enabled: true
+      mode: summarizer
       triggerMetric: cache_read_input_tokens
       thresholdRatio: 0.8
       recentMessageCount: 10
       summarizer: session-summarizer
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | boolean | `false` | Enable the provider |
-| `command` | string | required | CLI command |
-| `contextWindowTokens` | integer ≥ 1000 | `200000` | Context window size |
-| `options` | object | — | Provider-specific options |
-| `contextManagement.enabled` | boolean | `false` | Enable rotation |
-| `contextManagement.triggerMetric` | enum | — | Required when enabled |
-| `contextManagement.thresholdRatio` | number 0-1 | — | Required when enabled |
-| `contextManagement.recentMessageCount` | integer ≥ 0 | `10` | Messages retained after rotation |
-| `contextManagement.summarizer` | string | — | Required when enabled |
+| Field                                  | Type           | Default  | Description                      |
+| -------------------------------------- | -------------- | -------- | -------------------------------- |
+| `enabled`                              | boolean        | `false`  | Enable the provider              |
+| `command`                              | string         | required | CLI command                      |
+| `contextWindowTokens`                  | integer ≥ 1000 | `200000` | Context window size              |
+| `options`                              | object         | —        | Provider-specific options        |
+| `contextManagement.enabled`            | boolean        | `false`  | Enable rotation                  |
+| `contextManagement.mode`               | `summarizer \| observation` | `summarizer` | Select single-summary rotation or observational-memory handlers |
+| `contextManagement.triggerMetric`      | enum           | —        | Required when enabled            |
+| `contextManagement.thresholdRatio`     | number 0-1     | —        | Required when enabled            |
+| `contextManagement.recentMessageCount` | integer ≥ 0    | `10`     | Messages retained after rotation |
+| `contextManagement.summarizer`         | string         | —        | Required when `mode: summarizer` |
+| `contextManagement.observer`           | string         | —        | Required when `mode: observation` |
+| `contextManagement.reducer`            | string         | —        | Required when `mode: observation` |
+| `contextManagement.reflectionThresholdChars` | integer ≥ 1000 | `40000` | Observation log size that triggers the reducer |
 
 Built-in schema default:
 
@@ -346,14 +515,14 @@ backgroundAgent:
         defaultModel: gpt-5.4
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | boolean | `true` | Enable background agents globally |
-| `maxConcurrent` | integer 1-10 | `3` | Max concurrent background tasks |
-| `defaultTimeoutMinutes` | integer 15-480 | `30` | Default timeout |
-| `defaultProvider` | string | `claude-code` | Default background provider |
-| `providers` | record | built-in `claude-code` entry | Provider configs |
-| `claudePath` | string | — | Legacy shortcut for creating a `claude-code` provider when no explicit providers are set |
+| Field                   | Type           | Default                      | Description                                                                              |
+| ----------------------- | -------------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
+| `enabled`               | boolean        | `true`                       | Enable background agents globally                                                        |
+| `maxConcurrent`         | integer 1-10   | `3`                          | Max concurrent background tasks                                                          |
+| `defaultTimeoutMinutes` | integer 15-480 | `30`                         | Default timeout                                                                          |
+| `defaultProvider`       | string         | `claude-code`                | Default background provider                                                              |
+| `providers`             | record         | built-in `claude-code` entry | Provider configs                                                                         |
+| `claudePath`            | string         | —                            | Legacy shortcut for creating a `claude-code` provider when no explicit providers are set |
 
 `backgroundAgent.providers.<name>` uses the same provider shape as `ProviderConfigSchema`: `enabled`, `command`, `contextWindowTokens`, and optional `options`.
 
@@ -375,18 +544,18 @@ langfuse:
   flushIntervalSeconds: 5
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `enabled` | boolean | `false` | Enable Langfuse tracing |
-| `publicKey` | string | `""` | Required when enabled |
-| `secretKey` | string | `""` | Required when enabled |
-| `baseUrl` | URL string | `https://cloud.langfuse.com` | Langfuse base URL |
-| `environment` | string | `production` | Environment tag |
-| `release` | string | — | Optional release tag |
-| `owner` | string | — | Optional owner tag |
-| `exportMode` | `batched \| immediate` | `batched` | Export strategy |
-| `flushAt` | integer ≥ 1 | `20` | Batch size |
-| `flushIntervalSeconds` | integer ≥ 1 | `5` | Flush interval |
+| Field                  | Type                   | Default                      | Description             |
+| ---------------------- | ---------------------- | ---------------------------- | ----------------------- |
+| `enabled`              | boolean                | `false`                      | Enable Langfuse tracing |
+| `publicKey`            | string                 | `""`                         | Required when enabled   |
+| `secretKey`            | string                 | `""`                         | Required when enabled   |
+| `baseUrl`              | URL string             | `https://cloud.langfuse.com` | Langfuse base URL       |
+| `environment`          | string                 | `production`                 | Environment tag         |
+| `release`              | string                 | —                            | Optional release tag    |
+| `owner`                | string                 | —                            | Optional owner tag      |
+| `exportMode`           | `batched \| immediate` | `batched`                    | Export strategy         |
+| `flushAt`              | integer ≥ 1            | `20`                         | Batch size              |
+| `flushIntervalSeconds` | integer ≥ 1            | `5`                          | Flush interval          |
 
 ---
 
@@ -402,14 +571,14 @@ subagents:
         name: claude-haiku-4-5-20251001
 ```
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `subagents.<name>.model` | array | — | Ordered model failover chain for a sub-agent |
-| `model[].provider` | `anthropic \| openai \| google \| ollama` | required | AI SDK model provider slot |
-| `model[].name` | string | required | Model name for that provider |
-| `model[].maxTokens` | integer > 0 | manifest value | Optional max output tokens |
-| `model[].timeoutMs` | integer ≥ 1000 | manifest value | Optional per-model timeout |
-| `model[].providerOptions` | object | — | Vendor-specific options, effective only for `ollama` passthrough |
+| Field                     | Type                                      | Default        | Description                                                      |
+| ------------------------- | ----------------------------------------- | -------------- | ---------------------------------------------------------------- |
+| `subagents.<name>.model`  | array                                     | —              | Ordered model failover chain for a sub-agent                     |
+| `model[].provider`        | `anthropic \| openai \| google \| ollama` | required       | AI SDK model provider slot                                       |
+| `model[].name`            | string                                    | required       | Model name for that provider                                     |
+| `model[].maxTokens`       | integer > 0                               | manifest value | Optional max output tokens                                       |
+| `model[].timeoutMs`       | integer ≥ 1000                            | manifest value | Optional per-model timeout                                       |
+| `model[].providerOptions` | object                                    | —              | Vendor-specific options, effective only for `ollama` passthrough |
 
 `subagents.*.model[].provider` is not an agent runtime provider. `codex-cli`,
 `claude-code`, `gemini-cli`, and `openai-compatible` are invalid here; use

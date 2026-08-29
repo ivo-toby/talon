@@ -17,6 +17,17 @@ import {
   MAX_CONCURRENT_PER_TARGET,
   DEFAULT_A2A_MAX_ATTEMPTS,
 } from '../../a2a/a2a-types.js';
+import {
+  LifecycleConfigSchema,
+  PersonaLifecycleConfigSchema,
+} from '../../lifecycle/contracts/index.js';
+import {
+  CONTEXT_OBSERVER_INPUT_CONTRACT,
+  CONTEXT_OBSERVER_OUTPUT_CONTRACT,
+  CONTEXT_REDUCER_INPUT_CONTRACT,
+  CONTEXT_REDUCER_OUTPUT_CONTRACT,
+} from '../../lifecycle/context/index.js';
+import { collectLifecycleValidationIssues } from '../../lifecycle/handler-registry.js';
 
 // ---------------------------------------------------------------------------
 // Storage
@@ -140,6 +151,7 @@ export const PersonaConfigSchema = z.object({
   mounts: z.array(MountConfigSchema).default([]),
   maxConcurrent: z.number().int().min(1).optional(),
   executionEnv: PersonaExecutionEnvSchema.optional(),
+  lifecycle: PersonaLifecycleConfigSchema.optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -229,9 +241,9 @@ export const ProviderConfigSchema = z.object({
   options: z.record(z.string(), z.unknown()).optional(),
 });
 
-export const ContextManagementConfigSchema = z
-  .object({
+export const ContextManagementConfigSchema = z.object({
     enabled: z.boolean().default(false),
+    mode: z.enum(['summarizer', 'observation']).default('summarizer'),
     triggerMetric: z
       .enum([
         'input_tokens',
@@ -242,49 +254,88 @@ export const ContextManagementConfigSchema = z
       .optional(),
     thresholdRatio: z.number().min(0).max(1).optional(),
     recentMessageCount: z.number().int().min(0).default(10),
+    /**
+     * Legacy summary handler name. Still supported for `mode: summarizer`;
+     * `summarizer: session-observer` is translated by the config loader into
+     * explicit observation-mode observer/reducer handlers.
+     */
     summarizer: z.string().trim().min(1).optional(),
+    observer: z.string().trim().min(1).optional(),
+    reducer: z.string().trim().min(1).optional(),
+    observerInputContract: z.literal(CONTEXT_OBSERVER_INPUT_CONTRACT).default(CONTEXT_OBSERVER_INPUT_CONTRACT),
+    observerOutputContract: z.literal(CONTEXT_OBSERVER_OUTPUT_CONTRACT).default(CONTEXT_OBSERVER_OUTPUT_CONTRACT),
+    reducerInputContract: z.literal(CONTEXT_REDUCER_INPUT_CONTRACT).default(CONTEXT_REDUCER_INPUT_CONTRACT),
+    reducerOutputContract: z.literal(CONTEXT_REDUCER_OUTPUT_CONTRACT).default(CONTEXT_REDUCER_OUTPUT_CONTRACT),
+    deprecatedLegacySummarizer: z.boolean().default(false),
     // Max combined size, in characters, of the per-thread observation log
     // before the reflector sub-agent is invoked to consolidate it. Only
     // applies when `summarizer` is `session-observer` (observational memory
     // path). Defaults to 40_000 (~10K tokens).
     reflectionThresholdChars: z.number().int().min(1000).default(40_000),
-  })
-  .superRefine((value, ctx) => {
-    if (!value.enabled) {
-      return;
-    }
-
-    if (!value.triggerMetric) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['triggerMetric'],
-        message: 'triggerMetric is required when contextManagement.enabled is true',
-      });
-    }
-
-    if (value.thresholdRatio === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['thresholdRatio'],
-        message: 'thresholdRatio is required when contextManagement.enabled is true',
-      });
-    }
-
-    // recentMessageCount has a schema default(10), so it's always defined.
-
-    if (!value.summarizer) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['summarizer'],
-        message: 'summarizer is required when contextManagement.enabled is true',
-      });
-    }
   });
+
+function validateEnabledContextManagement(
+  value: z.infer<typeof ContextManagementConfigSchema>,
+  ctx: z.RefinementCtx,
+): void {
+  if (!value.enabled) {
+    return;
+  }
+
+  if (!value.triggerMetric) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['contextManagement', 'triggerMetric'],
+      message: 'triggerMetric is required when contextManagement.enabled is true',
+    });
+  }
+
+  if (value.thresholdRatio === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['contextManagement', 'thresholdRatio'],
+      message: 'thresholdRatio is required when contextManagement.enabled is true',
+    });
+  }
+
+  // recentMessageCount has a schema default(10), so it's always defined.
+
+  if (value.mode === 'observation') {
+    if (!value.observer) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['contextManagement', 'observer'],
+        message: 'observer is required when contextManagement.mode is observation',
+      });
+    }
+    if (!value.reducer) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['contextManagement', 'reducer'],
+        message: 'reducer is required when contextManagement.mode is observation',
+      });
+    }
+    return;
+  }
+
+  if (!value.summarizer) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['contextManagement', 'summarizer'],
+      message: 'summarizer is required when contextManagement.mode is summarizer',
+    });
+  }
+}
 
 export const AgentRunnerProviderConfigSchema = ProviderConfigSchema.extend({
   contextManagement: ContextManagementConfigSchema.default(() =>
     ContextManagementConfigSchema.parse({}),
   ),
+}).superRefine((value, ctx) => {
+  if (!value.enabled) {
+    return;
+  }
+  validateEnabledContextManagement(value.contextManagement, ctx);
 });
 
 function defaultClaudeProviderConfig(): z.infer<typeof ProviderConfigSchema> {
@@ -509,6 +560,7 @@ export const TalondConfigSchema = z
   .object({
     storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
     sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
+    lifecycle: LifecycleConfigSchema.optional(),
     channels: z.array(ChannelConfigSchema).default([]),
     personas: z.array(PersonaConfigSchema).default([]),
     bindings: z.array(BindingConfigSchema).default([]),
@@ -630,4 +682,18 @@ export const TalondConfigSchema = z
         });
       }
     });
+
+    const lifecycleIssues = collectLifecycleValidationIssues({
+      lifecycle: value.lifecycle,
+      channels: value.channels,
+      personas: value.personas,
+    });
+
+    for (const issue of lifecycleIssues) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: issue.path,
+        message: issue.message,
+      });
+    }
   });

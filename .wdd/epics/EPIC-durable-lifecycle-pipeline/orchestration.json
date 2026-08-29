@@ -1,0 +1,2428 @@
+{
+  "schemaVersion": 1,
+  "epic": {
+    "id": "EPIC-durable-lifecycle-pipeline",
+    "name": "Durable Lifecycle Pipeline and Pluggable Handlers",
+    "targetBranch": "main",
+    "baseBranch": "epic/durable-lifecycle-pipeline"
+  },
+  "configuration": {
+    "storageMode": "local-markdown",
+    "profile": "full",
+    "reviewMode": "risk_based",
+    "monitoringMode": "adaptive",
+    "modelPolicy": {
+      "maximumImplementationModel": "gpt-5.5",
+      "implementationReasoningEffort": "high",
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "gpt56Allowed": false,
+      "historicalGpt56ReferencesAreProvenanceOnly": true
+    },
+    "models": {
+      "planning": "controllerCurrent",
+      "implementationSimple": "codexHigh",
+      "implementationComplex": "codexHigh",
+      "review": "reviewGate",
+      "feedbackFix": "codexHigh",
+      "epicValidation": "reviewGate",
+      "prDescription": "controllerCurrent"
+    },
+    "reviewPolicy": {
+      "preCommitReviewRequired": true,
+      "p1BlocksMerge": true,
+      "p2BlocksMerge": true,
+      "p3CreatesFollowUp": true,
+      "p3AutoRemediation": false,
+      "intermediateRemediationReview": "blocking_delta",
+      "finalFullDiffReviewRequired": true,
+      "codeEditsInvalidateFinalReview": true,
+      "writableReviewSandboxAllowed": true,
+      "writableReviewPromptRestrictions": [
+        "no source edits",
+        "no test edits",
+        "no WDD edits",
+        "no dependency installation"
+      ],
+      "postReviewWorktreeCleanlinessRequired": true
+    },
+    "branching": {
+      "epicBranchConvention": "epic/[epic-slug]",
+      "taskBranchConvention": "task/[task-id]-[task-slug]",
+      "taskPrTarget": "epic branch",
+      "finalPrTarget": "main",
+      "epicBranchRequiredBeforeWorkerDispatch": true,
+      "activationArtifactsSyncedBeforeTaskWorktrees": true,
+      "isolatedWorktreePerRepositoryTask": true,
+      "workersMaySwitchControllerCheckout": false
+    }
+  },
+  "taskOrder": [
+    "TASK-001-lifecycle-contracts-registry",
+    "TASK-002-lifecycle-event-persistence",
+    "TASK-003-interceptor-engine",
+    "TASK-004-subagent-lifecycle-adapter",
+    "TASK-005-transactional-event-bus",
+    "TASK-006-durable-event-dispatcher",
+    "TASK-007-daemon-message-queue-schedule-events",
+    "TASK-008-run-tool-outbound-events",
+    "TASK-009-context-contracts-projector",
+    "TASK-010-behavior-ledger-persistence",
+    "TASK-011-context-lifecycle-migration",
+    "TASK-012-feedback-detector-subagent",
+    "TASK-013-handler-telemetry-correlation",
+    "TASK-014-lifecycle-retention-reload-replay",
+    "TASK-015-behavior-signal-projector",
+    "TASK-016-lifecycle-operator-cli",
+    "TASK-017-behavior-review-reducers",
+    "TASK-018-governed-prompt-promotion",
+    "TASK-019-lifecycle-end-to-end-verification",
+    "TASK-020-lifecycle-documentation-adoption"
+  ],
+  "waves": [
+    {
+      "id": "WAVE-001",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "The shared contracts and configuration identity must freeze before all consumers.",
+          "One worker keeps the public extension surface coherent."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-001-lifecycle-contracts-registry"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-001-lifecycle-contracts-registry",
+          "ticket": "TICKET-001-extension-contracts",
+          "path": "TICKET-001-extension-contracts/done/TASK-001-lifecycle-contracts-registry.md",
+          "status": "done",
+          "dependsOn": [],
+          "conflictDomains": [
+            "lifecycle contracts",
+            "config schema"
+          ],
+          "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.4",
+          "modelSubstitutionReason": "gpt-5.3-codex-high is unsupported for the authenticated ChatGPT account; controllerCurrent gpt-5.4 xhigh substituted",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f670d-1288-7130-b85a-dac3bb6d7a87",
+          "reviewThreadId": "019f681a-1b1b-7491-8a06-cebdf067e245",
+          "feedbackFixModel": "gpt-5.6-terra",
+          "feedbackFixReasoningEffort": "high",
+          "feedbackFixThreadId": "019f67fb-cc15-74b1-a730-486a4499b7c7",
+          "branch": "task/TASK-001-lifecycle-contracts-registry",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T01:34:25+02:00",
+            "worktreeRemoved": true,
+            "stashDropped": "c4c7a83ac4cd89813d990da3d9cde066a99d9227"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/257",
+          "latestCommit": "ff3e561717a5880417fc3e28c840428a37c8e567",
+          "branchFreshness": "merged_current_at_e5fda2a",
+          "blockingFeedback": [],
+          "verification": {
+            "focusedTests": "104 passed before controller review",
+            "build": "passed",
+            "initialGithubVerifyPr": "passed",
+            "diffCheck": "passed",
+            "firstFeedbackFixFocusedTests": "108 passed",
+            "firstFeedbackFixBuild": "passed",
+            "firstFeedbackFixScopedLint": "passed for changed source files",
+            "firstFeedbackFixDiffCheck": "passed",
+            "firstFeedbackFixSolHighRereview": "failed: 3 High, 3 Medium, 1 Low",
+            "hardenedFeedbackFixFocusedTests": "115 passed",
+            "hardenedFeedbackFixBuild": "passed",
+            "hardenedFeedbackFixScopedLint": "passed for changed source files",
+            "hardenedFeedbackFixDiffCheck": "passed",
+            "hardenedFeedbackFixSolHighRereview": "failed: 4 High, 3 Medium, 1 Low",
+            "preLatestSolReviewFocusedTests": "120 passed",
+            "preLatestSolReviewBuild": "passed",
+            "preLatestSolReviewTypeScript": "passed",
+            "preLatestSolReviewScopedLint": "passed for cumulative task source files",
+            "preLatestSolReviewPrettier": "passed for uncommitted changed TypeScript files; cumulative review found two additional style failures",
+            "preLatestSolReviewDiffCheck": "passed",
+            "latestSolHighRereview": "failed: 0 Critical, 0 High, 3 Medium, 2 Low",
+            "currentFeedbackFixFocusedTests": "121 passed",
+            "currentFeedbackFixBuild": "passed",
+            "currentFeedbackFixTypeScript": "passed",
+            "currentFeedbackFixScopedLint": "passed for cumulative task source files",
+            "currentFeedbackFixPrettier": "passed for cumulative task TypeScript files",
+            "currentFeedbackFixDiffCheck": "passed",
+            "currentFeedbackFixExploitProbes": "passed independently by controller",
+            "independentSolHighRereview": "failed: 0 Critical, 0 High, 1 Medium, 1 Low; session 019f678f-2a77-7121-a206-c2a5de59bbea",
+            "latestFeedbackFixFocusedTests": "121 passed",
+            "latestFeedbackFixBuild": "passed",
+            "latestFeedbackFixTypeScript": "passed",
+            "latestFeedbackFixScopedLint": "passed for cumulative task source files",
+            "latestFeedbackFixPrettier": "passed for cumulative task TypeScript files",
+            "latestFeedbackFixDiffCheck": "passed",
+            "latestFeedbackFixExploitProbes": "proxy mismatch rejected, matching hook accepted, empty patches rejected, empty full replacement accepted",
+            "exhaustiveSolHighRereview": "failed: 0 Critical, 0 High, 1 Medium, 4 Low; session 019f679f-2288-7662-a5c2-9a52c332e859",
+            "currentFiveFindingFixFocusedTests": "125 passed",
+            "currentFiveFindingFixBuild": "passed",
+            "currentFiveFindingFixTypeScript": "passed",
+            "currentFiveFindingFixScopedLint": "passed for cumulative task source files",
+            "currentFiveFindingFixPrettier": "passed for cumulative task TypeScript files",
+            "currentFiveFindingFixDiffCheck": "passed with no .wdd changes",
+            "currentFiveFindingFixProbes": "duplicate owners reject; hostile roots fail without throw; long exact owners resolve; filter caps reject; normalized data deeply frozen and detached",
+            "freshSolHighPreCommitReview": "passed commit gate: 0 Critical, 0 High, 0 Medium, 2 Low; session 019f67b6-1c61-76c1-9b0f-e574b1a735ed",
+            "finalLowFixFocusedTests": "126 passed",
+            "finalLowFixBuild": "passed",
+            "finalLowFixTypeScript": "passed",
+            "finalLowFixScopedLint": "passed for cumulative task source files",
+            "finalLowFixPrettier": "passed for cumulative task TypeScript files",
+            "finalLowFixDiffCheck": "passed with no .wdd changes",
+            "finalLowFixProbes": "long exact owners accepted; strict provider names reject; unsupported v2 direct factory input returns LifecycleError",
+            "finalSolHighPreCommitReview": "failed: 0 Critical, 1 High, 2 Medium, 2 Low; session 019f67c2-c1ae-7b33-8363-b6e71bc66e99",
+            "finalSolHighFindings": "authority catalog TOCTOU; forged causal signal context; unbounded catalog iterables; unbounded config collections; documentation deferred to TASK-020",
+            "authorityCausalityFixFocusedTests": "128 passed",
+            "authorityCausalityFixBuild": "passed",
+            "authorityCausalityFixTypeScript": "passed",
+            "authorityCausalityFixScopedLint": "passed for cumulative task source files",
+            "authorityCausalityFixPrettier": "passed for cumulative task TypeScript files",
+            "authorityCausalityFixDiffCheck": "passed with no .wdd changes",
+            "authorityCausalityFixProbes": "accessor authority rejected without reads; infinite iterator rejected and closed; valid causal signal accepted; forged aggregate and missing causation rejected",
+            "freshAuthorityCausalitySolReview": "failed: 0 Critical, 0 High, 1 Medium, 1 Low; session 019f67d4-7470-75d0-8190-528b95926974",
+            "freshAuthorityCausalitySolFindings": "authority-catalog container accessors/proxies execute before rejection; runtime names accept Unicode C1 controls",
+            "authorityContainerFixFocusedTests": "128 passed",
+            "authorityContainerFixBuild": "passed",
+            "authorityContainerFixTypeScript": "passed",
+            "authorityContainerFixScopedLint": "passed for cumulative task source files",
+            "authorityContainerFixPrettier": "passed for cumulative task TypeScript files",
+            "authorityContainerFixDiffCheck": "passed with no .wdd changes",
+            "authorityContainerFixProbes": "top-level, catalog, and iterator-step accessors plus proxy traps rejected with zero reads; rejected iterator closed once; ordinary generator accepted; C1 controls rejected",
+            "freshAuthorityContainerSolReview": "failed: 0 Critical, 0 High, 2 Medium, 0 Low; session 019f67e5-e3be-7dc1-bbb3-32e75efe636f",
+            "freshAuthorityContainerSolFindings": "callable proxies execute through iterator factory, next, and cleanup return; non-boolean truthy done values can be accepted as authority records",
+            "callableProxyFixFocusedTests": "128 passed",
+            "callableProxyFixBuild": "passed",
+            "callableProxyFixTypeScript": "passed",
+            "callableProxyFixScopedLint": "passed for cumulative task source files",
+            "callableProxyFixPrettier": "passed for cumulative task TypeScript files",
+            "callableProxyFixDiffCheck": "passed with no .wdd changes",
+            "callableProxyFixProbes": "iterator factory, next, and cleanup return callable proxies rejected with zero apply traps; malformed done rejected after one step; ordinary arrays and generators accepted",
+            "freshCallableProxySolReview": "failed: 0 Critical, 0 High, 2 Medium, 0 Low; session 019f67f2-3e83-7253-afd9-8a51e8b5c9f1",
+            "freshCallableProxySolFindings": "inherited iterator completion can register terminal authority; lifecycle-omitted legacy configs receive lifecycle-specific duplicate-name validation",
+            "inheritedCompletionLegacyCompatibilityFix": "completed; Terra/high session 019f67fb-cc15-74b1-a730-486a4499b7c7",
+            "inheritedCompletionLegacyCompatibilityFocusedTests": "130 passed",
+            "inheritedCompletionLegacyCompatibilityBuild": "passed",
+            "inheritedCompletionLegacyCompatibilityTypeScript": "passed",
+            "inheritedCompletionLegacyCompatibilityScopedLint": "passed for cumulative task source files",
+            "inheritedCompletionLegacyCompatibilityPrettier": "passed for cumulative task TypeScript files",
+            "inheritedCompletionLegacyCompatibilityDiffCheck": "passed with no .wdd changes",
+            "freshInheritedCompletionLegacyCompatibilitySolReview": "passed commit gate: 0 Critical, 0 High, 0 Medium, 1 Low; session 019f6800-bd99-7523-b542-55e884c482b8",
+            "freshInheritedCompletionLegacyCompatibilitySolFinding": "Low: reject proxy-valued bounded interceptor JSON before reflection, including nested arrays and objects",
+            "finalFocusedTests": "130 passed",
+            "finalBuild": "passed",
+            "finalTypeScript": "passed",
+            "finalScopedLint": "passed for cumulative task source files",
+            "finalPrettier": "passed for cumulative task TypeScript files",
+            "finalDiffCheck": "passed",
+            "cumulativeSolHighReview": "passed: 0 Critical, 0 High, 0 Medium, 1 Low; session 019f6813-c22e-7681-9d6b-625427b63232",
+            "refreshVerification": "passed by Terra/high; session 019f6818-8b12-75c0-bcbc-1530518ca2f7",
+            "refreshSolHighReview": "passed: 0 Critical, 0 High, 0 Medium, 1 Low; session 019f681a-1b1b-7491-8a06-cebdf067e245",
+            "githubVerifyPr": "passed; run 29458737878",
+            "taskHead": "ff3e561717a5880417fc3e28c840428a37c8e567",
+            "epicMerge": "e5fda2af1d25b19f42b1f61ac14092dd08de37b4",
+            "carriedLow": "routed to TASK-003-interceptor-engine for root and nested proxy rejection before reflection with zero-trap assertions"
+          },
+          "currentGate": "merged"
+        }
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-001",
+        "taskIds": [
+          "TASK-001-lifecycle-contracts-registry"
+        ],
+        "branch": "task/TASK-001-lifecycle-contracts-registry",
+        "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-001-lifecycle-contracts-registry",
+        "worktreeStatus": "cleaned_up",
+        "workerThreadId": "019f670d-1288-7130-b85a-dac3bb6d7a87",
+        "reviewThreadId": "019f681a-1b1b-7491-8a06-cebdf067e245",
+        "currentGate": "merged",
+        "cleanup": {
+          "status": "cleaned_up",
+          "at": "2026-07-16T01:34:25+02:00",
+          "worktreeRemoved": true,
+          "stashDropped": "c4c7a83ac4cd89813d990da3d9cde066a99d9227"
+        }
+      }
+    },
+    {
+      "id": "WAVE-002",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Persistence, interceptor execution, and sub-agent adaptation consume frozen contracts but have separate primary conflicts.",
+          "Three isolated workers provide real speedup."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-002-lifecycle-event-persistence"
+          ],
+          [
+            "TASK-003-interceptor-engine"
+          ],
+          [
+            "TASK-004-subagent-lifecycle-adapter"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-002-lifecycle-event-persistence",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/done/TASK-002-lifecycle-event-persistence.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry"
+          ],
+          "conflictDomains": [
+            "database migrations",
+            "lifecycle repositories"
+          ],
+          "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f694a-8c17-7a20-a7b7-113e5349f5b8",
+          "reviewThreadId": "019f6972-3de4-7f11-bb04-e6a186497f67",
+          "branch": "task/TASK-002-lifecycle-event-persistence",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-lifecycle-event-persistence",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T08:12:49+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/260",
+          "sourceCommit": "25d0f914354ee9bf8bd45877808ac7a1da31ea6b",
+          "latestCommit": "f53071ef09dcb37669492a4ebd7ca7be1fe4333c",
+          "mergeCommit": "49e47bfaf68e26adffc80f536b9aca6c843daec4",
+          "branchFreshness": "merged_current_at_49e47bf",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "Insert-time terminal delivery state and INSERT OR REPLACE can bypass update-only immutability and transition guards.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "The replacement guard compared SQLite's provisional NEW.event_sequence value of -1 and could wedge generated-sequence inserts after a stored negative sequence.",
+              "status": "resolved"
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "37 real-SQLite tests passed",
+            "build": "passed",
+            "typeScript": "passed",
+            "lint": "passed on changed source files",
+            "prettier": "passed on changed source and test files; SQL excluded because no parser is configured",
+            "diffCheck": "passed",
+            "finalSolHighReview": "passed 0C/0H/0M/0L; session 019f696b-e150-7af1-a64a-535a1b08aa68",
+            "refreshSolHighReview": "passed 0C/0H/0M/0L; session 019f6972-3de4-7f11-bb04-e6a186497f67",
+            "githubVerifyPr": "passed; run 29474916004",
+            "githubPrAgent": "passed; run 29474916015",
+            "unresolvedReviewThreads": 0
+          },
+          "currentGate": "merged"
+        },
+        {
+          "id": "TASK-003-interceptor-engine",
+          "ticket": "TICKET-001-extension-contracts",
+          "path": "TICKET-001-extension-contracts/done/TASK-003-interceptor-engine.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry"
+          ],
+          "conflictDomains": [
+            "lifecycle interceptors",
+            "interceptor contract",
+            "audit logger"
+          ],
+          "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f693a-4897-7d70-a2e4-90f3eaa98cd5",
+          "reviewThreadId": "019f696a-3860-75b0-880c-5565730b8922",
+          "branch": "task/TASK-003-interceptor-engine",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-interceptor-engine",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T08:12:49+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/258",
+          "sourceCommit": "3529693ced39ba0e3cd822b5820eb5e12db14988",
+          "latestCommit": "7d4eb474fb14d46e7713d0bff9b9415bf911f5e0",
+          "mergeCommit": "fcde60a7d5515c5c9aeec5a17120086d6677c137",
+          "branchFreshness": "merged_current_at_fcde60a",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "A fail-open pre-invocation per-handler timeout can return allow and skip later enforcing handlers.",
+              "status": "resolved"
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "141 passed in final full review; 108 passed in focused delta review",
+            "build": "passed",
+            "typeScript": "passed",
+            "lint": "passed on changed source files",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+            "reviewSandbox": "prompt forbade source/test/WDD edits and dependency installation; exact pre/post status and hashes matched",
+            "finalSolHighReview": "passed 0C/0H/0M/0L; session 019f6962-32a0-7af1-9165-c43e6342c4b4",
+            "refreshSolHighReview": "passed 0C/0H/0M/0L; session 019f696a-3860-75b0-880c-5565730b8922",
+            "githubVerifyPr": "passed; run 29474326477",
+            "githubPrAgent": "passed; run 29474326478",
+            "unresolvedReviewThreads": 0
+          },
+          "currentGate": "merged"
+        },
+        {
+          "id": "TASK-004-subagent-lifecycle-adapter",
+          "ticket": "TICKET-001-extension-contracts",
+          "path": "TICKET-001-extension-contracts/done/TASK-004-subagent-lifecycle-adapter.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry"
+          ],
+          "conflictDomains": [
+            "lifecycle adapters",
+            "subagent runner",
+            "personas"
+          ],
+          "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f6980-1903-7a92-a6e2-f05da2b97570",
+          "reviewThreadId": "019f6985-1b98-7912-bab6-5f96c60fca3c",
+          "branch": "task/TASK-004-subagent-lifecycle-adapter",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-002-subagent-lifecycle-adapter",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T08:12:49+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/259",
+          "sourceCommit": "40b2b1093f4e735ec46d1b582173d0c3d67061aa",
+          "refreshCommit": "0f4ea829999a16effe524e263f650333552d6487",
+          "latestCommit": "02a0968dd7e917048d9f362d28d05c30ac5f0e31",
+          "mergeCommit": "54dc8725cada8e6c2d10ee4fe7782e676ee0a389",
+          "branchFreshness": "merged_current_at_54dc872",
+          "blockingFeedback": [
+            {
+              "severity": "Medium",
+              "summary": "Boundary cloning permits __proto__ prototype mutation and inherited-field validation.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Adapter invocation does not enforce exact configured subscription membership.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Persona aggregates bypass required explicit non-thread aggregate scope.",
+              "status": "resolved"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Lifecycle contract-valid NUL or malformed-Unicode event data and oversized enabled persona owners could be rejected only after reaching durable persistence.",
+              "status": "resolved"
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "163 passed in task review; 339 passed in final combined review",
+            "build": "passed",
+            "typeScript": "passed",
+            "lint": "passed on changed source files",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+            "reviewSandbox": "prompt forbade source/test/WDD edits and dependency installation; exact pre/post status and hashes matched",
+            "taskSolHighReview": "passed 0C/0H/0M/1L; session 019f696b-318e-7950-ac94-f9962029f856",
+            "firstRefreshSolHighReview": "passed 0C/0H/0M/1L; session 019f6973-8253-7e10-8a30-31c78f1e662f",
+            "integrationSolHighReview": "failed 0C/0H/1M/1L; session 019f697a-ab6b-70f0-b10d-222a9dea4324",
+            "integrationRemediation": "completed by Terra/high session 019f6980-1903-7a92-a6e2-f05da2b97570",
+            "finalCombinedSolHighReview": "passed 0C/0H/0M/0 new Low; known Low retained; session 019f6985-1b98-7912-bab6-5f96c60fca3c",
+            "githubVerifyPr": "passed; run 29475897009",
+            "unresolvedReviewThreads": 0,
+            "knownLow": "Final-attempt failover logging can imply another attempt after the deadline; recorded and intentionally untouched"
+          },
+          "currentGate": "merged"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-003",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Publication consumes the frozen event-persistence API while dispatch owns a bounded, real-SQLite-tested delivery-claim eligibility extension; the task patches remain file-disjoint.",
+          "Daemon wiring is deliberately deferred."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-005-transactional-event-bus"
+          ],
+          [
+            "TASK-006-durable-event-dispatcher"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-005-transactional-event-bus",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/done/TASK-005-transactional-event-bus.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry",
+            "TASK-002-lifecycle-event-persistence"
+          ],
+          "conflictDomains": [
+            "event bus",
+            "database transaction helpers"
+          ],
+          "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f69eb-a64d-7612-9084-7918ade4525f",
+          "reviewThreadId": "019f6a04-bb9c-7aa0-89f2-c3413c2f30c2",
+          "branch": "task/TASK-005-transactional-event-bus",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-transactional-event-bus",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T10:38:20+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/261",
+          "latestCommit": "65bd0a7bc4037ab4e634e25e8ee34886f5c9c338",
+          "mergeCommit": "d3357fb674ab3549769fa6e0a3a306c19925c31b",
+          "branchFreshness": "merged_current_at_d3357fb",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "Transaction atomicity and wake timing rely on caller discipline rather than an owned SQLite transaction coordinator.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Caller-owned publication can throw across the neverthrow boundary on hostile input or resolver snapshots.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Rejected asynchronous dispatcher wakes can escape as unhandled rejections.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Derived-event causation and recursion invariants are not enforced.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "High",
+              "summary": "Public overridable context methods permit forged cross-bus and cross-connection transaction authority.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Nested SQLite transactions can trigger dispatcher wakes before the actual outer commit.",
+              "status": "resolved_reviewed"
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "43 passed with the repository-pinned Node 24 runtime, including 26 real-SQLite repository tests",
+            "build": "passed",
+            "lint": "passed on changed source and test files",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+            "dependencyMutation": "none; no install or rebuild",
+            "finalSolHighReview": "passed 0C/0H/0M/1L; session 019f6a04-bb9c-7aa0-89f2-c3413c2f30c2",
+            "githubVerifyPr": "passed; run 29483917536",
+            "githubPrAgent": "passed; run 29483917558",
+            "unresolvedReviewThreads": 0
+          },
+          "nonBlockingFeedback": [
+            {
+              "severity": "Low",
+              "summary": "Standalone strict TypeScript checking reports four test-fixture shape errors.",
+              "status": "follow_up_unmodified"
+            }
+          ],
+          "currentGate": "merged"
+        },
+        {
+          "id": "TASK-006-durable-event-dispatcher",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/done/TASK-006-durable-event-dispatcher.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-001-lifecycle-contracts-registry",
+            "TASK-002-lifecycle-event-persistence",
+            "TASK-003-interceptor-engine",
+            "TASK-004-subagent-lifecycle-adapter"
+          ],
+          "conflictDomains": [
+            "dispatcher",
+            "handler executor",
+            "lifecycle delivery repository",
+            "lifecycle delivery migration",
+            "migration runner tests"
+          ],
+          "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f69ee-81ce-7762-b3bb-7bd63de54a60",
+          "reviewThreadId": "019f6a38-b01a-77e1-bcb5-9b6639de95b4",
+          "branch": "task/TASK-006-durable-event-dispatcher",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-003-durable-event-dispatcher",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-16T11:31:41+02:00",
+            "worktreeRemoved": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/262",
+          "latestCommit": "d4fde6f0082fa0a79825734c0d9a5d249e39f981",
+          "mergeCommit": "8f74740fe2d7591cf41995cf77e1887012e5b2b0",
+          "branchFreshness": "merged_current_at_8f74740",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "Handlers receive mutable lease authority and can corrupt or redirect completion.",
+              "status": "resolved_reviewed",
+              "detail": "Caller mutation of retained dispatcher options can redirect a claimed lease token to a replacement repository."
+            },
+            {
+              "severity": "High",
+              "summary": "Runtime executor selection does not enforce the complete immutable captured identity and loader authority.",
+              "status": "resolved_reviewed",
+              "detail": "Sub-agent authority must permit the same complete global handler identity for distinct explicitly attached personas while remaining persona-scoped."
+            },
+            {
+              "severity": "High",
+              "summary": "Validated successful handler signals are discarded before durable routing or projection.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "High",
+              "summary": "Hung handlers defeat leases, backpressure, circuits, and bounded graceful shutdown.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Handler retryable and captured failure-policy semantics are ignored.",
+              "status": "resolved_reviewed",
+              "detail": "Repository semantics are correct for fresh schema, but an additive migration is required for databases already at user_version 14."
+            },
+            {
+              "severity": "Medium",
+              "summary": "Public dispatchOnce bypasses the global concurrency cap.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Wake notifications can be lost while a drain is already active.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "More than 256 excluded open or busy handlers can globally stall healthy delivery claims.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Policy construction executes hostile input and throws instead of using a typed Result factory.",
+              "status": "resolved_reviewed",
+              "detail": "Dispatcher construction must descriptor-safely snapshot and validate all callable dependencies and return typed errors for hostile input."
+            },
+            {
+              "severity": "Medium",
+              "summary": "Required dispatcher, authority, timeout, retry, wake, circuit, restart, and hostile-input coverage is incomplete.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "High",
+              "summary": "Abort-ignoring timed-out handlers continue outside global and per-handler concurrency accounting.",
+              "status": "resolved_reviewed",
+              "detail": "Track underlying executions after timeout so retries cannot release local slots until the real execution settles."
+            },
+            {
+              "severity": "Medium",
+              "summary": "Executor construction materializes all property descriptors before enforcing key-count limits.",
+              "status": "resolved_reviewed",
+              "detail": "Bound own keys first and read only individual allowed data descriptors with oversized hostile-input tests."
+            },
+            {
+              "severity": "Medium",
+              "summary": "Migration 015 leaves the existing migration-runner version and count assertions stale.",
+              "status": "resolved_reviewed",
+              "detail": "Controller reproduced tests/unit/core/database/migrations/runner.test.ts at 10 passed and 1 failed because two migrations now apply."
+            },
+            {
+              "severity": "Medium",
+              "summary": "dispatchOnce can throw across its Result boundary when claimNext throws or returns a malformed value.",
+              "status": "resolved_reviewed",
+              "detail": "Sanitize claim invocation and Result-shape inspection without evaluating hostile accessors or proxies."
+            },
+            {
+              "severity": "Medium",
+              "summary": "stop leaves a referenced shutdown timer alive after active settlement wins the race.",
+              "status": "resolved_reviewed",
+              "detail": "Sol/high reproduced an otherwise immediate stop holding Node for the full configured shutdown window; retain and clear the losing timer."
+            }
+          ],
+          "verification": {
+            "status": "passed",
+            "focusedTests": "80 passed after latest remediation: 22 dispatcher, 30 real-SQLite repository/migration, 17 transactional event-bus integration, and 11 migration-runner tests",
+            "build": "passed",
+            "lint": "passed on changed source and test files; unrelated repository-wide lint failures remain outside task scope",
+            "prettier": "passed on changed source and test files",
+            "diffCheck": "passed",
+            "dependencyMutation": "none; no install or rebuild",
+            "finalSolHighReview": "passed commit gate 0C/0H/0M/1L; session 019f6a38-b01a-77e1-bcb5-9b6639de95b4",
+            "migrationRunnerRegression": "resolved pending review: 11 passed with v13-to-v15, v14-to-v15 row preservation, trigger/index recreation, and FK coverage",
+            "latestRemediationIntegrity": "passed: exact eight-file scope, SHA-256 inventory, migration 014 byte-identical, no dependency mutation",
+            "activeSolHighReview": "completed: passed 0C/0H/0M/1L; session 019f6a38-b01a-77e1-bcb5-9b6639de95b4; prior session 019f6a2d-6e14-7de0-aa47-65b6f4da01bb failed 0C/0H/1M/1L",
+            "shutdownTimerProbe": "resolved reviewed: pinned Node 24 reports no active Timeout resource and exits in 0.04-0.05 seconds with a 5-second shutdown policy",
+            "githubVerifyPr": "passed; run 29487277395",
+            "githubPrAgent": "passed; run 29487277478; non-actionable failed-suggestion system comment only",
+            "unresolvedReviewThreads": 0
+          },
+          "nonBlockingFeedback": [
+            {
+              "severity": "Low",
+              "summary": "The v14 upgrade test depends on historical git object fbe4f08 and may fail in shallow clones or source archives.",
+              "status": "follow_up_unmodified"
+            }
+          ],
+          "currentGate": "merged"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-004",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Daemon composition and message/queue/schedule transitions share bootstrap and transaction ownership.",
+          "A single loop reduces shutdown and state/event coupling risk."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-007-daemon-message-queue-schedule-events"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-007-daemon-message-queue-schedule-events",
+          "ticket": "TICKET-003-core-boundary-integration",
+          "path": "TICKET-003-core-boundary-integration/done/TASK-007-daemon-message-queue-schedule-events.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-005-transactional-event-bus",
+            "TASK-006-durable-event-dispatcher"
+          ],
+          "conflictDomains": [
+            "daemon bootstrap",
+            "message pipeline",
+            "queue",
+            "scheduler"
+          ],
+          "assignedModel": "codexHigh",
+          "actualModel": "gpt-5.6-terra",
+          "reasoningEffort": "high",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f6a80-eb6a-7051-9e84-f448be2c2a17",
+          "reviewThreadId": "019f6b8a-afe5-7d02-ac39-c4f07fab5173",
+          "branch": "task/TASK-007-daemon-message-queue-schedule-events",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-004-daemon-message-queue-schedule-events",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "cleanVerified": true,
+            "worktreeRemoved": true,
+            "worktreePruned": true,
+            "completedAt": "2026-07-16"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/263",
+          "latestCommit": "fab94953a41e34520ce216f4bec7acc92c449fa8",
+          "branchFreshness": "fresh_at_merge_commit_67e93accfc8b62dc1e43102ef173fc20cc2bb0e5",
+          "blockingFeedback": [
+            {
+              "severity": "High",
+              "summary": "Bootstrap supplies empty lifecycle capability catalogs, executor registrations, and interceptor implementations, so configured handlers cannot boot or execute.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Inbound persistence commits before routing publication and enqueue, so a later failure is retried as a duplicate and can permanently lose the message.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Joined-transaction queue enqueue mutates before exact transaction authority is validated.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Queue lifecycle publication depends on an optional personaName payload and misclassifies authoritative queue types as messages.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Repeated or conflicting queue terminal transitions can emit multiple distinct lifecycle events for one authoritative state change.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "message.routed.v1 omits the resolved persona reference required for route provenance.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Post-bootstrap startup failures escape the Result boundary and can leak the lifecycle dispatcher and other started services.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Successful subagent signals are rejected by the bootstrap signal router, so valid deliveries retry and dead-letter instead of reaching later signal handlers or projectors.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Bootstrap accepts lifecycle subagent subscriptions that are not also explicitly assigned to the owning persona, deferring the authority failure to delivery retries.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "QueueProcessor trusts caller- or legacy-controlled top-level __lifecycle payload data as persona and item-type authority.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Message queue enqueue and terminal transition events derive different correlation identifiers for the same queue lifecycle.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Failed daemon startup can close resources before already-started scheduler or queue workloads have drained, allowing overlap with restart.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Bootstrap accepts subagent interceptor subscriptions even though the synchronous interceptor engine can execute only native implementations, silently losing configured transforms and signals.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "High",
+              "summary": "Queue and scheduler shutdown drains wait forever when handler or prompt work never settles, so normal shutdown and failed-start cleanup can hang indefinitely.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "The event-id plus handler-id signal handoff key can exceed the runtime-id persistence bound for contract-valid identities.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Lifecycle-enabled queue publication remains optional, so scope-less AgentRunner continuation and background-completion enqueues can bypass enqueue and terminal lifecycle events.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "A timed-out scheduler tick can resume after a direct stop/start because processSchedule checks running state but not its originating generation after asynchronous prompt lookup.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Drain exceptions are treated as successful failed-start cleanup, deferred cleanup ignores its boolean result, and normal stop can remain wedged in stopping after a drain rejection.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Enabled-mode message and schedule enqueues can still bypass lifecycle publication when manager-owned scope or persona resolution is absent.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "A native lifecycle handler attached to multiple personas is added to the runtime catalog more than once and makes valid daemon bootstrap fail.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "IPC shutdown discards the newly fallible stop promise, so a rejected or timed-out drain can become an unhandled rejection and interrupt deferred teardown gating.",
+              "status": "resolved_by_review"
+            },
+            {
+              "severity": "Medium",
+              "summary": "GitHub Verify PR run 29507211058 failed one selected committed-v14 migration test because it expected 1 applied migration and user_version 15, while migrations 016 and 017 make the correct current totals 3 and 17.",
+              "status": "resolved_by_full_review_019f6b67_c08a_7e13_a1e4_579fbac1e114"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Successful daemon hot reload can leave the bootstrap-owned lifecycle runtime, subscriptions, sub-agent assignments, and capability authority stale when lifecycle configuration or lifecycle-attached persona authority changes.",
+              "status": "resolved_by_amended_full_gpt55_xhigh_review"
+            }
+          ],
+          "verification": {
+            "status": "passed_and_merged",
+            "boundedTerraHighRemediationPasses": 6,
+            "focusedTests": "12 focused files / 385 tests passed under exact Node v24.15.0 ABI 137",
+            "finalControllerVerification": "passed 12 focused files / 385 tests under exact Node v24.15.0 ABI 137, plus build, latest-source lint, targeted formatting, and diff checks",
+            "build": "passed",
+            "lint": "latest changed source passes with zero issues; prior full changed-source check had zero errors and seven explicit-return-type warnings",
+            "prettier": "latest daemon source/test pass; repository-baseline full-file drift remains in earlier task files",
+            "diffCheck": "passed",
+            "dependencyMutation": "none; no install or rebuild",
+            "freshSolHighPreCommitReview": "passed commit gate 0C/0H/0M/0L on immutable fingerprint 0333fdfbe0fd25403b59a5acbd9e7cb3028cefddfd7af1ec6fc61fe73d2ed3a0; session 019f6b0f-f3c8-7160-bb2a-81329c61d473",
+            "reviewedCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
+            "remotePushVerified": true,
+            "remoteTrackingRefAlignment": "clean, pushed, and aligned with the local remote-tracking ref",
+            "finalMarkerReview": "passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint 0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131; session 019f6b4b-dc25-7331-9d26-b5f5595ff21b",
+            "markerCommit": "fdf0e775a411959739a577071788eabe4133e3f2",
+            "exactRefreshReview": "passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1; session 019f6b54-ded2-7201-8ef8-cbfdf63c35cd",
+            "reviewedRefreshMergeCommit": "f695bf4717ae024283479763d77684de9730f6b5",
+            "pr": "https://github.com/ivo-toby/talon/pull/263",
+            "githubVerifyPr": "failed selected migration test; run 29507211058; committed-v14 migration test expected 1 applied migration and user_version 15, but migrations 016 and 017 make the correct current totals 3 and 17",
+            "blockingRemediation": "migration-test remediation completed by GPT-5.5/high implementation session 019f6b5c-57e9-74e2-9cf4-d59582276884; changed only tests/unit/core/database/repositories/lifecycle-event-repository.test.ts lines 866-867, updating expected applied migration count 1 to 3 and user_version 15 to 17",
+            "blockingRemediationVerification": "Node 24.15.0 focused verification passed 30/30 in tests/unit/core/database/repositories/lifecycle-event-repository.test.ts; no install, rebuild, or full suite",
+            "fullReviewAfterMigrationRemediation": "GPT-5.5/xhigh session 019f6b67-c08a-7e13-a1e4-579fbac1e114 reviewed the complete snapshot and found 0C/0H/1M/0L; the migration-test fix was accepted and the sole Medium was stale lifecycle runtime/authority after successful hot reload",
+            "lifecycleReloadRemediation": "GPT-5.5/high remediation changed src/daemon/daemon.ts and tests/unit/daemon/reload.test.ts only, adding a pre-mutation restart-required guard for lifecycle configuration and lifecycle-attached persona subscription, sub-agent assignment, and capability-authority changes while preserving the migration-test fix",
+            "lifecycleReloadRemediationVerification": "focused reload tests passed 26/26 under Node 24; build, source lint, source formatting, and git diff --check passed; no install, rebuild, or full suite",
+            "focusedHighSanityReview": "passed GPT-5.5/high 0C/0H/0M in session 019f6b75-52f0-73a1-9016-41922cb35236",
+            "freshFullXhighReview": "complete GPT-5.5/xhigh session 019f6b7d-fd1b-78c3-ba7f-7cade5ca636b reviewed the unchanged 37-path union with 0C/0H/0M/0L substantive findings; its only initial block was the controller's non-canonical newline-stripped fingerprint",
+            "canonicalReviewFingerprint": "0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9 using newline-preserving path plus sha256 records",
+            "integrityAdjudication": "independent GPT-5.5/xhigh session 019f6b85-a9ac-74f3-9fcd-b10c566acdb8 reproduced the unchanged 37 paths, exactly six modified files, canonical fingerprint 0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9, git diff --check, and JSON parse; Amended PASS carries forward 0C/0H/0M/0L",
+            "wddMarkerReview": "passed GPT-5.5/xhigh 0C/0H/0M/0L on fingerprint f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4; session 019f6b8a-afe5-7d02-ac39-c4f07fab5173",
+            "prAgent": "passed; run 29507211075; failed-suggestions issue comment non-actionable; no review threads",
+            "githubVerifyPrCurrent": "passed; run 29511783210 on task commit fab94953a41e34520ce216f4bec7acc92c449fa8",
+            "finalTaskCommit": "fab94953a41e34520ce216f4bec7acc92c449fa8",
+            "mergeCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5",
+            "mergedAt": "2026-07-16T15:37:10Z",
+            "currentStateSummary": "TASK-007 task commit fab94953a41e34520ce216f4bec7acc92c449fa8 passed Verify PR run 29511783210 and PR Agent run 29507211075, with no review threads and only one non-actionable failed-suggestions issue comment. Complete GPT-5.5/xhigh review 019f6b7d-fd1b-78c3-ba7f-7cade5ca636b plus integrity adjudication 019f6b85-a9ac-74f3-9fcd-b10c566acdb8 issued Amended PASS with 0C/0H/0M/0L. The state marker review 019f6b8a-afe5-7d02-ac39-c4f07fab5173 passed 0C/0H/0M/0L on fingerprint f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4. PR #263 merged fresh into epic/durable-lifecycle-pipeline at 67e93accfc8b62dc1e43102ef173fc20cc2bb0e5 on 2026-07-16T15:37:10Z. The clean task worktree was removed and pruned. WAVE-005 was later resumed on 2026-07-25 from epic base b6ff72c."
+          },
+          "currentGate": "merged"
+        }
+      ],
+      "completedAt": "2026-07-16T15:37:10Z",
+      "reconciledAt": "2026-07-16",
+      "mergeCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5"
+    },
+    {
+      "id": "WAVE-005",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-25 resume WAVE-005 after WAVE-004 pause",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Run/tool/outbound integration, context projection, and behavior persistence have separate primary domains.",
+          "All three are prerequisites for later migrations."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-008-run-tool-outbound-events"
+          ],
+          [
+            "TASK-009-context-contracts-projector"
+          ],
+          [
+            "TASK-010-behavior-ledger-persistence"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-008-run-tool-outbound-events",
+          "ticket": "TICKET-003-core-boundary-integration",
+          "path": "TICKET-003-core-boundary-integration/done/TASK-008-run-tool-outbound-events.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-007-daemon-message-queue-schedule-events"
+          ],
+          "conflictDomains": [
+            "AgentRunner",
+            "host tools",
+            "outbound delivery"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": "019f9e0a-eb3d-72e0-85b9-928f21d833a6",
+          "branch": "task/TASK-008-run-tool-outbound-events",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-run-tool-outbound-events",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-25T22:20:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/268",
+          "latestCommit": "9551cf0fe16bb82e3fe24ac3ecd7c1d0c84e7265",
+          "branchFreshness": "merged_current_at_6921a9e",
+          "blockingFeedback": [],
+          "verification": {
+            "worktreeReadiness": "passed",
+            "checkedAt": "2026-07-25T22:01:44+02:00",
+            "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
+            "focusedTests": "passed after remediation and after rebase: 4 files, 164 tests",
+            "scopedLint": "passed with repo ignored-test warnings only",
+            "build": "passed",
+            "diffCheck": "passed",
+            "review": "GPT-5.5/xhigh full review found one Medium; remediation delta review passed 0C/0H/0M",
+            "githubVerifyPr": "passed; PR #268 Verify PR",
+            "mergeCommit": "6921a9ec7a8c053ae7af616abfb832a7bf548c19",
+            "evidence": "PR #268 merged fresh into epic after rebase to TASK-010 merge commit"
+          },
+          "currentGate": "merged"
+        },
+        {
+          "id": "TASK-009-context-contracts-projector",
+          "ticket": "TICKET-004-context-migration",
+          "path": "TICKET-004-context-migration/done/TASK-009-context-contracts-projector.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-004-subagent-lifecycle-adapter",
+            "TASK-005-transactional-event-bus"
+          ],
+          "conflictDomains": [
+            "lifecycle context",
+            "ContextRoller",
+            "memory repository"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-009-context-contracts-projector",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-context-contracts-projector",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-25T22:20:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/266",
+          "latestCommit": "29d5c9dd1a57bfb117cb4585e73c1fec23b60d49",
+          "branchFreshness": "merged_current_at_3c1b5f4",
+          "blockingFeedback": [],
+          "verification": {
+            "worktreeReadiness": "passed",
+            "checkedAt": "2026-07-25T22:01:44+02:00",
+            "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
+            "focusedTests": "passed: lifecycle context and context-roller coverage, 65 tests",
+            "scopedLint": "passed",
+            "build": "passed",
+            "diffCheck": "passed",
+            "review": "GPT-5.5/xhigh passed 0C/0H/0M with one non-blocking P3 tombstone-visibility follow-up",
+            "githubVerifyPr": "passed; PR #266 Verify PR and PR Agent",
+            "mergeCommit": "3c1b5f4b0bea23ff08b6b591e6c5871ab6ec3377",
+            "evidence": "PR #266 merged into epic"
+          },
+          "currentGate": "merged"
+        },
+        {
+          "id": "TASK-010-behavior-ledger-persistence",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/done/TASK-010-behavior-ledger-persistence.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-002-lifecycle-event-persistence"
+          ],
+          "conflictDomains": [
+            "database migrations",
+            "behavior repositories"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-010-behavior-ledger-persistence",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-005-behavior-ledger-persistence",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-25T22:20:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/267",
+          "latestCommit": "9e2bc50e20c756dcec48c59bde4d1eea9be650c6",
+          "branchFreshness": "merged_current_at_08c564a",
+          "blockingFeedback": [],
+          "verification": {
+            "worktreeReadiness": "passed",
+            "checkedAt": "2026-07-25T22:01:44+02:00",
+            "baseCommit": "8ebb6dbc53f1fcce7025d555a52ded680be96706",
+            "focusedTests": "repository/migration tests passed; CI-selected rerun passed 37 files and 837 tests after expectation fix",
+            "scopedLint": "passed with repo ignored-test warnings only",
+            "build": "passed",
+            "diffCheck": "passed",
+            "review": "GPT-5.5/xhigh passed 0C/0H/0M",
+            "githubVerifyPr": "passed; PR #267 Verify PR after CI expectation fix",
+            "mergeCommit": "08c564a75faa86025c8995822a13e78ad1178861",
+            "evidence": "PR #267 merged into epic before TASK-008 rebase"
+          },
+          "currentGate": "merged"
+        }
+      ],
+      "completedAt": "2026-07-25T22:19:47Z",
+      "reconciledAt": "2026-07-25",
+      "mergeCommit": "6921a9ec7a8c053ae7af616abfb832a7bf548c19"
+    },
+    {
+      "id": "WAVE-006",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Context migration, detector implementation, and telemetry are isolated after prerequisites merge.",
+          "Each has a focused high-risk review boundary."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-011-context-lifecycle-migration"
+          ],
+          [
+            "TASK-012-feedback-detector-subagent"
+          ],
+          [
+            "TASK-013-handler-telemetry-correlation"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-011-context-lifecycle-migration",
+          "ticket": "TICKET-004-context-migration",
+          "path": "TICKET-004-context-migration/done/TASK-011-context-lifecycle-migration.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-008-run-tool-outbound-events",
+            "TASK-009-context-contracts-projector"
+          ],
+          "conflictDomains": [
+            "AgentRunner",
+            "ContextRoller",
+            "daemon bootstrap",
+            "config schema",
+            "queue"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-011-context-lifecycle-migration",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-context-lifecycle-migration",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": "clean_verified_removed_and_pruned_2026-07-26",
+          "pr": "https://github.com/ivo-toby/talon/pull/271",
+          "latestCommit": "3324d2441f44a810b524815cfd57b40af779edfc",
+          "mergeCommit": "3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d",
+          "branchFreshness": "merged_clean_after_green_github_checks",
+          "blockingFeedback": [],
+          "verification": "task focused tests/build/scoped lint/diff passed; GitHub PR Agent and Verify PR passed; integrated Wave 6 suite passed 19 files / 647 tests plus build/scoped lint/diff",
+          "currentGate": "merged"
+        },
+        {
+          "id": "TASK-012-feedback-detector-subagent",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/done/TASK-012-feedback-detector-subagent.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-004-subagent-lifecycle-adapter",
+            "TASK-010-behavior-ledger-persistence"
+          ],
+          "conflictDomains": [
+            "behavior contracts",
+            "default detector subagent"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-012-feedback-detector-subagent",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": "clean_verified_removed_and_pruned_2026-07-26",
+          "pr": "https://github.com/ivo-toby/talon/pull/269",
+          "latestCommit": "463e534576f42a88307e4bae67a975ecc95659a6",
+          "mergeCommit": "af75d4be155a528b576f9518edd8e93af6ba5016",
+          "branchFreshness": "merged_clean_after_green_github_checks",
+          "blockingFeedback": [],
+          "verification": "task focused tests/build/scoped lint/diff passed; GitHub PR Agent and Verify PR passed; integrated Wave 6 suite passed 19 files / 647 tests plus build/scoped lint/diff",
+          "currentGate": "merged"
+        },
+        {
+          "id": "TASK-013-handler-telemetry-correlation",
+          "ticket": "TICKET-003-core-boundary-integration",
+          "path": "TICKET-003-core-boundary-integration/done/TASK-013-handler-telemetry-correlation.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-006-durable-event-dispatcher",
+            "TASK-008-run-tool-outbound-events"
+          ],
+          "conflictDomains": [
+            "observability",
+            "audit logger",
+            "lifecycle telemetry"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-013-handler-telemetry-correlation",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": "clean_verified_removed_and_pruned_2026-07-26",
+          "pr": "https://github.com/ivo-toby/talon/pull/270",
+          "latestCommit": "806e1c33c63c66f3d3b594650a41562918ce1244",
+          "mergeCommit": "3e09c376f21fdc5697c673def4ec99eb10dd0291",
+          "branchFreshness": "merged_clean_after_green_github_checks",
+          "blockingFeedback": [],
+          "verification": "task focused tests/build/scoped lint/diff passed; GitHub PR Agent and Verify PR passed; integrated Wave 6 suite passed 19 files / 647 tests plus build/scoped lint/diff",
+          "currentGate": "merged"
+        }
+      ]
+    },
+    {
+      "id": "WAVE-007",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Lifecycle retention/reload reliability and behavior projection use separate services.",
+          "Both must land before operator and reducer workflows."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-014-lifecycle-retention-reload-replay"
+          ],
+          [
+            "TASK-015-behavior-signal-projector"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-014-lifecycle-retention-reload-replay",
+          "ticket": "TICKET-002-durable-event-runtime",
+          "path": "TICKET-002-durable-event-runtime/done/TASK-014-lifecycle-retention-reload-replay.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-006-durable-event-dispatcher",
+            "TASK-013-handler-telemetry-correlation"
+          ],
+          "conflictDomains": [
+            "lifecycle admin/retention",
+            "lifecycle repositories",
+            "daemon reload"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-014-lifecycle-retention-reload-replay",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T03:48:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/273",
+          "latestCommit": "9efed95",
+          "branchFreshness": "merged_clean_after_green_github_checks",
+          "blockingFeedback": [],
+          "verification": "TASK-014 focused tests/build/scoped lint/diff passed; GPT-5.5/xhigh review 019f9c80-79e8-7770-bcf4-8ef4f8d2a5fb passed 0C/0H/0M/0L; GitHub PR Agent and Build/lint/test passed",
+          "currentGate": "merged",
+          "mergeCommit": "dde6bacef91462fadb4fa1fb34ed181ba648dcd2"
+        },
+        {
+          "id": "TASK-015-behavior-signal-projector",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/done/TASK-015-behavior-signal-projector.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-007-daemon-message-queue-schedule-events",
+            "TASK-010-behavior-ledger-persistence",
+            "TASK-012-feedback-detector-subagent"
+          ],
+          "conflictDomains": [
+            "lifecycle behavior",
+            "config schema",
+            "behavior integration tests"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": null,
+          "reviewThreadId": null,
+          "branch": "task/TASK-015-behavior-signal-projector",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T03:48:00Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/272",
+          "latestCommit": "a50b490",
+          "branchFreshness": "merged_clean_after_green_github_checks",
+          "blockingFeedback": [],
+          "verification": "TASK-015 focused behavior tests/build/scoped lint/diff passed; GPT-5.5/xhigh review 019f9c6e-b676-7190-9059-eb08ff4360a4 passed 0C/0H/0M/0L; GitHub PR Agent and Build/lint/test passed",
+          "currentGate": "merged",
+          "mergeCommit": "61b552a209db197c65b7ea48f18dff05c68d84d2"
+        }
+      ],
+      "completedAt": "2026-07-26T03:46:56Z",
+      "reconciledAt": "2026-07-26",
+      "mergeCommit": "dde6bacef91462fadb4fa1fb34ed181ba648dcd2"
+    },
+    {
+      "id": "WAVE-008",
+      "status": "done",
+      "activatedAt": "2026-07-26T04:15:00Z",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "parallel",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Operator IPC/CLI and behavior review reducers touch distinct CLI versus sub-agent/scheduler domains.",
+          "Stable replay and projection semantics make this parallelism safe."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-016-lifecycle-operator-cli"
+          ],
+          [
+            "TASK-017-behavior-review-reducers"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-016-lifecycle-operator-cli",
+          "ticket": "TICKET-006-operations-adoption",
+          "path": "TICKET-006-operations-adoption/done/TASK-016-lifecycle-operator-cli.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-014-lifecycle-retention-reload-replay",
+            "TASK-015-behavior-signal-projector"
+          ],
+          "conflictDomains": [
+            "CLI registration",
+            "IPC",
+            "daemon admin handlers"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f9cbd-8878-7f91-8243-b5a56236233f",
+          "reviewThreadId": "019f9cf0-fdb6-7d62-b306-953b03bdb399",
+          "branch": "task/TASK-016-lifecycle-operator-cli",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T05:52:38Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/275",
+          "latestCommit": "e26385d",
+          "branchFreshness": "merged_clean_after_green_github_checks",
+          "blockingFeedback": [],
+          "verification": "TASK-016 post-PR274 integration tests passed 144/144 under Node 24.15.0; npm run build passed; scoped ESLint and Prettier passed; git diff checks passed; GPT-5.5/xhigh review 019f9cf0-fdb6-7d62-b306-953b03bdb399 passed 0C/0H/0M/0L; GitHub Verify PR passed",
+          "currentGate": "merged",
+          "mergeCommit": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
+        },
+        {
+          "id": "TASK-017-behavior-review-reducers",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/done/TASK-017-behavior-review-reducers.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-013-handler-telemetry-correlation",
+            "TASK-015-behavior-signal-projector"
+          ],
+          "conflictDomains": [
+            "behavior review",
+            "default reviewer subagents",
+            "scheduler"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f9cbd-8878-7221-9357-c941677f850b",
+          "reviewThreadId": "019f9cdf-5e75-7fc3-9205-e669b9fab14b",
+          "branch": "task/TASK-017-behavior-review-reducers",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T05:52:38Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/274",
+          "latestCommit": "16d2fef",
+          "branchFreshness": "merged_clean_after_green_github_checks",
+          "blockingFeedback": [],
+          "verification": "TASK-017 focused behavior review/repository/scheduler/subagent tests passed 67/67; npm run build passed; scoped ESLint and Prettier passed; git diff --check passed; GPT-5.5/xhigh review 019f9cdf-5e75-7fc3-9205-e669b9fab14b passed 0C/0H/0M/1L; GitHub PR Agent and Verify PR passed",
+          "currentGate": "merged",
+          "mergeCommit": "a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d"
+        }
+      ],
+      "activationPrerequisites": {
+        "wave007Reconciliation": "satisfied_by_pushed_checkpoint_5b20a15f15458d9368fed11423ba246c0534e780"
+      },
+      "completedAt": "2026-07-26T05:48:48Z",
+      "reconciledAt": "2026-07-26",
+      "mergeCommit": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
+    },
+    {
+      "id": "WAVE-009",
+      "status": "done",
+      "activatedAt": "2026-07-26T06:12:25Z",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Prompt mutation, evaluation, reload, and rollback form one sensitive transaction boundary.",
+          "Bundled execution keeps governance evidence and failure recovery coherent."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-018-governed-prompt-promotion"
+          ]
+        ],
+        "overrideHistory": []
+      },
+      "tasks": [
+        {
+          "id": "TASK-018-governed-prompt-promotion",
+          "ticket": "TICKET-005-behavior-learning",
+          "path": "TICKET-005-behavior-learning/done/TASK-018-governed-prompt-promotion.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-016-lifecycle-operator-cli",
+            "TASK-017-behavior-review-reducers"
+          ],
+          "conflictDomains": [
+            "lifecycle behavior",
+            "personas",
+            "daemon reload",
+            "lifecycle CLI"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f9d2d-c40c-7e11-995b-59b63183cb4a",
+          "reviewThreadId": "019f9d59-a303-7590-9179-077f65d8a1a3",
+          "branch": "task/TASK-018-governed-prompt-promotion",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T07:58:29Z",
+            "worktreeRemoved": true,
+            "evidence": "git status clean before git worktree remove; git worktree prune completed"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/276",
+          "latestCommit": "0ae7416ab939e536cfcb5e141d35785b83100b12",
+          "branchFreshness": "merged_current_at_b5a4fc7",
+          "blockingFeedback": [],
+          "verification": "Readiness review 019f9d29-2367-74e3-943f-a795f6de8245 passed 0C/0H/0M/0L; task pre-commit review 019f9d59-a303-7590-9179-077f65d8a1a3 passed 0C/0H/0M/0L after blocking rollback, runtime path, auto-policy, approved_by, and prompt-mutation concurrency fixes; focused CI remediation review 019f9d67-ac6e-76e2-92a7-c203626ac098 passed 0C/0H/0M/0L; Node 24.15.0 focused suites passed 42 prompt/reload tests, 33 behavior/migration tests, and 33 lifecycle-event repository tests; npm run build, scoped ESLint, scoped Prettier, git diff --check, PR Agent, and GitHub Verify PR passed",
+          "currentGate": "merged",
+          "mergeCommit": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
+        }
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-009",
+        "taskIds": [
+          "TASK-018-governed-prompt-promotion"
+        ],
+        "branch": "task/TASK-018-governed-prompt-promotion",
+        "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion",
+        "worktreeStatus": "cleaned_up",
+        "workerThreadId": "019f9d2d-c40c-7e11-995b-59b63183cb4a",
+        "reviewThreadId": "019f9d59-a303-7590-9179-077f65d8a1a3",
+        "currentGate": "merged",
+        "cleanup": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T07:58:29Z",
+          "worktreeRemoved": true,
+          "evidence": "git status clean before git worktree remove; git worktree prune completed"
+        }
+      },
+      "activationPrerequisites": {
+        "wave008Reconciliation": "satisfied_by_pushed_checkpoint_dd2ca290d89157b674d1cbc67d440c9d295f3cbd"
+      },
+      "completedAt": "2026-07-26T07:56:21Z",
+      "reconciledAt": "2026-07-26T07:58:29Z",
+      "mergeCommit": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
+    },
+    {
+      "id": "WAVE-010",
+      "status": "done",
+      "activatedAt": "2026-07-26T08:20:58Z",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Final black-box verification must settle behavior before adoption documentation begins.",
+          "One focused verification worker owns the full-suite approval and runtime-smoke evidence."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-019-lifecycle-end-to-end-verification"
+          ]
+        ],
+        "overrideHistory": [
+          {
+            "at": "2026-07-26",
+            "source": "user",
+            "reason": "TASK-019 must add e2e tests for all completed waves and validate the event pipeline using Sprites before completion"
+          }
+        ]
+      },
+      "tasks": [
+        {
+          "id": "TASK-019-lifecycle-end-to-end-verification",
+          "ticket": "TICKET-006-operations-adoption",
+          "path": "TICKET-006-operations-adoption/done/TASK-019-lifecycle-end-to-end-verification.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-018-governed-prompt-promotion"
+          ],
+          "conflictDomains": [
+            "integration tests",
+            "fixtures",
+            "defect-fix hotspots"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f9d9a-3507-7fc1-bdd6-eb23dc4a65db",
+          "reviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
+          "branch": "task/TASK-019-lifecycle-end-to-end-verification",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T09:11:52Z",
+            "worktreeRemoved": true,
+            "evidence": "task worktree was clean at fc03009 before git worktree remove; git worktree prune completed; unrelated .minispec/ left untouched"
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/277",
+          "latestCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+          "branchFreshness": "merged_current_at_0c30dcc",
+          "blockingFeedback": [],
+          "verification": "TASK-019 local focused Node 24.15.0 validation passed lifecycle-end-to-end 3/3, lifecycle integration bundle 4 files / 17 tests, npm run build, scoped Prettier, and git diff --check. npm run lint remains blocked by pre-existing src lint debt and tests are outside project-service lint scope. GPT-5.5/xhigh review 019f9da3-e9a8-7dc0-912c-fb694c19f46e passed 0C/0H/0M/1L; Low restart wording follow-up left untouched. PR #277 passed GitHub Build/lint/test and PR Agent. Sprites validation on mcp-codex-pr-talon-277-0c30dcc at 0c30dcc passed explicit lifecycle integration bundle 4 files / 17 tests, npm run build, and git diff --check after no-secret npm ci --allow-git=all and isolated better-sqlite3 install-script rebuild; Sprite destroyed.",
+          "currentGate": "merged",
+          "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677"
+        }
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-010",
+        "taskIds": [
+          "TASK-019-lifecycle-end-to-end-verification"
+        ],
+        "branch": "task/TASK-019-lifecycle-end-to-end-verification",
+        "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
+        "worktreeStatus": "cleaned_up",
+        "workerThreadId": "019f9d9a-3507-7fc1-bdd6-eb23dc4a65db",
+        "reviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
+        "currentGate": "merged",
+        "pr": "https://github.com/ivo-toby/talon/pull/277",
+        "latestCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+        "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677"
+      },
+      "activationPrerequisites": {
+        "wave009Reconciliation": "satisfied_by_pushed_checkpoint_2618059965f0a379948d79b8f6bb415419025397"
+      },
+      "completedAt": "2026-07-26T09:11:52Z",
+      "reconciledAt": "2026-07-26T09:32:42Z",
+      "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677"
+    },
+    {
+      "id": "WAVE-011",
+      "status": "done",
+      "strategy": {
+        "profile": "full",
+        "executionMode": "bundled",
+        "reviewMode": "risk_based",
+        "monitoringMode": "adaptive",
+        "recommendedBy": "wdd-plan-epic",
+        "confirmedBy": "user:2026-07-15 issue-256 WDD implementation request",
+        "requiresUserConfirmation": true,
+        "confidence": "high",
+        "rationale": [
+          "Documentation, example configuration, starter assets, and setup skills must reflect the verified final implementation.",
+          "Sequencing after TASK-019 prevents documentation from becoming stale during verification fixes."
+        ],
+        "bundleGroups": [
+          [
+            "TASK-020-lifecycle-documentation-adoption"
+          ]
+        ],
+        "overrideHistory": [
+          {
+            "at": "2026-07-15",
+            "source": "reviewGate",
+            "reason": "GPT-5.4 pre-commit review required documentation to follow final verification."
+          }
+        ]
+      },
+      "tasks": [
+        {
+          "id": "TASK-020-lifecycle-documentation-adoption",
+          "ticket": "TICKET-006-operations-adoption",
+          "path": "TICKET-006-operations-adoption/done/TASK-020-lifecycle-documentation-adoption.md",
+          "status": "done",
+          "dependsOn": [
+            "TASK-019-lifecycle-end-to-end-verification"
+          ],
+          "conflictDomains": [
+            "README",
+            "selfdoc",
+            "AGENTS",
+            "example config",
+            "starter assets",
+            "agent skills"
+          ],
+          "assignedModel": "codexHigh",
+          "reviewModel": "reviewGate",
+          "workerThreadId": "019f9deb-502c-7171-a6b7-a1966bde589a-interrupted-no-edits-controller-finished",
+          "reviewThreadId": "019f9e0a-eb3d-72e0-85b9-928f21d833a6",
+          "branch": "task/TASK-020-lifecycle-documentation-adoption",
+          "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
+          "worktreeStatus": "cleaned_up",
+          "cleanup": {
+            "status": "cleaned_up",
+            "at": "2026-07-26T10:59:00Z",
+            "worktreeRemoved": true,
+            "worktreePruned": true,
+            "remoteBranchRetained": true
+          },
+          "pr": "https://github.com/ivo-toby/talon/pull/278",
+          "latestCommit": "4421f9defc4386cbfe6adc5ab275fc62abccc405",
+          "mergeCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf",
+          "branchFreshness": "merged_current_at_ee08193",
+          "blockingFeedback": [
+            {
+              "severity": "Medium",
+              "summary": "Lifecycle sub-agent handler docs omitted the required persona subagents authority.",
+              "status": "resolved_reviewed"
+            },
+            {
+              "severity": "Medium",
+              "summary": "Lifecycle budget.maxConcurrency was documented as runtime-enforced per handler/subscription, but current enforcement uses dispatcher policy plus timeoutMs.",
+              "status": "resolved_reviewed"
+            }
+          ],
+          "verification": {
+            "targetedVitest": "passed 3 files / 121 tests at 2026-07-26T10:45:54Z after Medium remediation",
+            "build": "npm run build passed at 2026-07-26T10:45:40Z after Medium remediation",
+            "diffCheck": "git diff --check passed at 2026-07-26T10:45:54Z",
+            "wddJson": "jq empty orchestration.json passed at 2026-07-26T10:45:54Z",
+            "initialTaskReview": "gpt-5.5/xhigh review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L; Medium findings remediated; Low/P3 left as non-blocking follow-ups",
+            "finalTaskReview": "gpt-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L",
+            "githubVerifyPr": "passed for PR #278",
+            "githubPrAgent": "passed for PR #278",
+            "nonActionablePrComment": "PR Agent comment reported failed generated code suggestions; no review threads or actionable findings"
+          },
+          "currentGate": "merged"
+        }
+      ],
+      "activatedAt": "2026-07-26T09:32:42Z",
+      "activationPrerequisites": {
+        "wave010Reconciliation": "satisfied_by_pushed_checkpoint_ee1b057166fdd02e6b31b1799b512c5e27f24be4"
+      },
+      "bundleState": {
+        "id": "BUNDLE-WAVE-011",
+        "taskIds": [
+          "TASK-020-lifecycle-documentation-adoption"
+        ],
+        "branch": "task/TASK-020-lifecycle-documentation-adoption",
+        "workerWorktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
+        "worktreeStatus": "cleaned_up",
+        "workerThreadId": "019f9deb-502c-7171-a6b7-a1966bde589a-interrupted-no-edits-controller-finished",
+        "reviewThreadId": "019f9e0a-eb3d-72e0-85b9-928f21d833a6",
+        "currentGate": "merged"
+      }
+      ,
+      "completedAt": "2026-07-26T10:58:12Z",
+      "reconciledAt": "2026-07-26T10:59:00Z",
+      "mergeCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf"
+    }
+  ],
+  "sharedContext": {
+    "index": "shared-context/index.md",
+    "resources": [
+      "shared-context/resources/architecture.md",
+      "shared-context/resources/design-decisions.md",
+      "shared-context/resources/testing-strategy.md",
+      "shared-context/resources/task-findings.md"
+    ],
+    "pendingReconciliation": [],
+    "lastReconciledWave": "WAVE-011",
+    "lastReconciledTask": "TASK-020-lifecycle-documentation-adoption",
+    "reconciledAtEpicCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf"
+  },
+  "controller": {
+    "activeWave": null,
+    "nextWave": "final-pr",
+    "epicBranchVerified": true,
+    "activationArtifactsSynced": true,
+    "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
+    "activationCheckpoint": "4c72c9de10cd0b2439929d0a7d20a4616579da9f",
+    "activationSyncCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
+    "readinessCommit": "8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438",
+    "modelPolicyCheckpointCommit": "d104ba468dbe3241691f8940e90238953b82ebeb",
+    "pauseAfterWave": null,
+    "nextWaveActivationAllowed": false,
+    "pauseReason": null,
+    "modelPolicyCheckpointReview": {
+      "reviewThreadId": "019f6b32-0008-7560-a6a2-8400237b7ca6",
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "counts": "0C/1H/1M/1L",
+      "status": "passed_committed_and_pushed",
+      "remediationThreadId": "019f6b35-8ba1-7f83-8a85-d6fa9b48c28f",
+      "remediationModel": "gpt-5.5",
+      "remediationReasoningEffort": "high",
+      "finalReviewThreadId": "019f6b38-ae7a-7e72-913b-4b53c5fdd3e6",
+      "finalReviewCounts": "0C/0H/0M/2L",
+      "finalReviewFingerprint": "9242e2c0b7bfcd138aae37abe4402a6e8020b3b4290d4e24c372beedb63dfdfd",
+      "lowFindingDisposition": "two_lows_untouched_non_blocking"
+    },
+    "controllerStateMarkerReview": {
+      "reviewThreadId": "019f6b41-737e-7ae0-91e8-921556b0b5b6",
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "counts": "0C/0H/1M/0L",
+      "status": "passed_committed_and_pushed",
+      "remediationThreadId": "019f6b44-377f-7cd0-bf29-05c6fec6c834",
+      "remediationModel": "gpt-5.5",
+      "remediationReasoningEffort": "high",
+      "secondReviewThreadId": "019f6b46-a404-7c53-af2c-4daa29015e90",
+      "secondReviewCounts": "0C/0H/1M/0L",
+      "secondReviewFinding": "two controller-state TASK-007 summaries still described the already-pushed model-policy WDD checkpoint as pending",
+      "secondRemediationThreadId": "019f6b49-d6da-71b2-a1f1-717cabd1dc25",
+      "secondRemediationModel": "gpt-5.5",
+      "secondRemediationReasoningEffort": "high",
+      "finalReviewThreadId": "019f6b4b-dc25-7331-9d26-b5f5595ff21b",
+      "finalReviewCounts": "0C/0H/0M/0L",
+      "finalReviewFingerprint": "0b1cb83c04c8987483ecbed102aace37f8681ddc4397c35681c93b7a07b4c131",
+      "markerCommit": "fdf0e775a411959739a577071788eabe4133e3f2",
+      "markerCommitStatus": "pushed",
+      "lowFindingDisposition": "none"
+    },
+    "exactTaskRefresh": {
+      "status": "reviewed_committed_pushed_and_merged",
+      "sourceCommit": "8a994eac930b18ce5ec1e3fe78999c2a021e4308",
+      "headAndUpstreamCommit": "f695bf4717ae024283479763d77684de9730f6b5",
+      "mergeHead": "fdf0e775a411959739a577071788eabe4133e3f2",
+      "mergeHeadSource": "final_controller_state_marker",
+      "freshFullReviewRequiredBeforeMergeCommit": false,
+      "reviewModel": "gpt-5.5",
+      "reviewReasoningEffort": "xhigh",
+      "reviewThreadId": "019f6b54-ded2-7201-8ef8-cbfdf63c35cd",
+      "reviewCounts": "0C/0H/0M/0L",
+      "reviewFingerprint": "e1f9ccba66738480acc9d143d454e122413878b8d8edd5885c89f6ec500748d1",
+      "reviewedMergeCommit": "f695bf4717ae024283479763d77684de9730f6b5",
+      "reviewedMergeCommitStatus": "pushed",
+      "pr": "https://github.com/ivo-toby/talon/pull/263"
+    },
+    "pullRequest": {
+      "number": 263,
+      "url": "https://github.com/ivo-toby/talon/pull/263",
+      "targetBranch": "epic/durable-lifecycle-pipeline",
+      "status": "merged",
+      "taskCommit": "fab94953a41e34520ce216f4bec7acc92c449fa8",
+      "mergeCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5",
+      "mergedAt": "2026-07-16T15:37:10Z",
+      "githubVerifyPr": {
+        "runId": "29511783210",
+        "status": "passed",
+        "commit": "fab94953a41e34520ce216f4bec7acc92c449fa8"
+      },
+      "prAgent": {
+        "status": "passed",
+        "runId": "29507211075",
+        "failedSuggestionsIssueComment": "non_actionable",
+        "reviewThreads": "none"
+      },
+      "blockingRemediation": {
+        "status": "reviewed_committed_pushed_verified_and_merged",
+        "sessionId": "019f6b5c-57e9-74e2-9cf4-d59582276884",
+        "model": "gpt-5.5",
+        "reasoningEffort": "high",
+        "changedOnly": "tests/unit/core/database/repositories/lifecycle-event-repository.test.ts lines 866-867; expected applied migration count 1 to 3 and user_version 15 to 17",
+        "verification": "Node 24.15.0 focused verification passed 30/30 in tests/unit/core/database/repositories/lifecycle-event-repository.test.ts; no install, rebuild, or full suite",
+        "fullReviewThreadId": "019f6b67-c08a-7e13-a1e4-579fbac1e114",
+        "fullReviewCounts": "0C/0H/1M/0L",
+        "fullReviewFinding": "successful hot reload could retain stale bootstrap-owned lifecycle runtime, subscriptions, sub-agent assignment, and capability authority",
+        "lifecycleRemediationChangedOnly": "src/daemon/daemon.ts and tests/unit/daemon/reload.test.ts; prior migration-test remediation preserved",
+        "lifecycleRemediationVerification": "focused reload tests 26/26, build, source lint, source formatting, and git diff --check passed",
+        "focusedSanityReviewThreadId": "019f6b75-52f0-73a1-9016-41922cb35236",
+        "focusedSanityReviewCounts": "0C/0H/0M",
+        "freshFullReviewThreadId": "019f6b7d-fd1b-78c3-ba7f-7cade5ca636b",
+        "freshFullReviewCounts": "0C/0H/0M/0L substantive findings",
+        "freshFullReviewInitialDisposition": "blocked only on controller non-canonical newline-stripped fingerprint",
+        "canonicalFingerprint": "0ac9b08bf02d5591109710f74b5ec95b0fbb040fbb0daf1e75f6cc2a3be3e0d9",
+        "integrityAdjudicationThreadId": "019f6b85-a9ac-74f3-9fcd-b10c566acdb8",
+        "integrityAdjudication": "Amended PASS; reproduced unchanged 37-path union, exactly six modified files, canonical fingerprint, git diff --check, and JSON parse; carries forward 0C/0H/0M/0L",
+        "freshFullReviewRequiredBeforeCommit": false,
+        "freshWddMarkerReviewRequiredBeforeCommit": false,
+        "wddMarkerReviewThreadId": "019f6b8a-afe5-7d02-ac39-c4f07fab5173",
+        "wddMarkerReviewCounts": "0C/0H/0M/0L",
+        "wddMarkerReviewFingerprint": "f2ecd9ce8aaf09830003c1def7578085ac4bf4e2867e861e87637533c01c3fa4",
+        "finalTaskCommit": "fab94953a41e34520ce216f4bec7acc92c449fa8",
+        "verifyPrRunId": "29511783210",
+        "mergeCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5",
+        "reviewModel": "gpt-5.5",
+        "reviewReasoningEffort": "xhigh"
+      }
+    },
+    "wave004Reconciliation": {
+      "status": "reviewed_committed_pushed_and_paused",
+      "task": "TASK-007-daemon-message-queue-schedule-events",
+      "taskCommit": "fab94953a41e34520ce216f4bec7acc92c449fa8",
+      "mergeCommit": "67e93accfc8b62dc1e43102ef173fc20cc2bb0e5",
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "clean_verified_removed_and_pruned",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewThreadId": "019f6ba5-814a-72f0-8aee-f54d6446c64a",
+      "checkpointReviewCounts": "0C/0H/0M/0L",
+      "checkpointReviewFingerprint": "b522f7fa0e213d7bb2f51c0e5f23defa62db274f16a359b56c926c79cdc9bd82",
+      "priorReviewThreadId": "019f6ba0-3a31-7172-a54d-34602d8aebeb",
+      "priorReviewCounts": "0C/0H/2M/0L",
+      "priorReviewDisposition": "two_medium_findings_remediated_before_final_review",
+      "checkpointCommit": "06778d9a15db3d4cb623ef81b2bd94e7136d5b7e",
+      "checkpointCommitStatus": "pushed_local_remote_match",
+      "monitoringDeactivation": "completed_automation_deleted",
+      "nextWave": "WAVE-005",
+      "nextWaveStatus": "resumed_activation_pending"
+    },
+    "wave005Reconciliation": {
+      "status": "reviewed_committed_and_pushed",
+      "tasks": [
+        "TASK-008-run-tool-outbound-events",
+        "TASK-009-context-contracts-projector",
+        "TASK-010-behavior-ledger-persistence"
+      ],
+      "prs": [
+        "https://github.com/ivo-toby/talon/pull/268",
+        "https://github.com/ivo-toby/talon/pull/266",
+        "https://github.com/ivo-toby/talon/pull/267"
+      ],
+      "mergeCommits": {
+        "TASK-008-run-tool-outbound-events": "6921a9ec7a8c053ae7af616abfb832a7bf548c19",
+        "TASK-009-context-contracts-projector": "3c1b5f4b0bea23ff08b6b591e6c5871ab6ec3377",
+        "TASK-010-behavior-ledger-persistence": "08c564a75faa86025c8995822a13e78ad1178861"
+      },
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "all_three_clean_verified_removed_and_pruned",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewThreadId": "019f9b67-2d36-7d53-a36c-3fb53c1c2601",
+      "checkpointReviewCounts": "0C/0H/0M/2L",
+      "checkpointCommit": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
+      "checkpointCommitStatus": "pushed_local_remote_match",
+      "lowFindingDisposition": "TASK-009 P3 tombstone-visibility follow-up left untouched",
+      "nextWave": "WAVE-006",
+      "nextWaveStatus": "activation_started"
+    },
+    "wave006Activation": {
+      "status": "completed_and_reconciled_pending_checkpoint_review",
+      "activationBase": "3231c5be5c736f04d55d8ff94a28a1b1c24de372",
+      "tasks": [
+        "TASK-011-context-lifecycle-migration",
+        "TASK-012-feedback-detector-subagent",
+        "TASK-013-handler-telemetry-correlation"
+      ],
+      "branches": {
+        "TASK-011-context-lifecycle-migration": "task/TASK-011-context-lifecycle-migration",
+        "TASK-012-feedback-detector-subagent": "task/TASK-012-feedback-detector-subagent",
+        "TASK-013-handler-telemetry-correlation": "task/TASK-013-handler-telemetry-correlation"
+      },
+      "worktrees": {
+        "TASK-011-context-lifecycle-migration": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-context-lifecycle-migration",
+        "TASK-012-feedback-detector-subagent": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-feedback-detector-subagent",
+        "TASK-013-handler-telemetry-correlation": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-006-handler-telemetry-correlation"
+      },
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "566a9a91d1f57bfcd9938011027d87f668fea13e",
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewThreadId": "019f9b72-d7f4-7ee2-b3eb-e3a0f4d19c03",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "eec0846676f37db0e9cc5a580c5a3457cbf18689",
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewThreadId": "019f9b76-c6a7-7a60-8cd9-2322cfdaf8f7",
+      "activationSyncReviewCounts": "0C/0H/0M/0L",
+      "activationSyncCommit": "e70d27ef04e550546975c4abb4e90929b5f82180",
+      "readinessCommit": "566a9a91d1f57bfcd9938011027d87f668fea13e"
+    },
+    "wave006Reconciliation": {
+      "status": "reviewed_committed_and_pushed",
+      "tasks": [
+        "TASK-011-context-lifecycle-migration",
+        "TASK-012-feedback-detector-subagent",
+        "TASK-013-handler-telemetry-correlation"
+      ],
+      "prs": [
+        "https://github.com/ivo-toby/talon/pull/271",
+        "https://github.com/ivo-toby/talon/pull/269",
+        "https://github.com/ivo-toby/talon/pull/270"
+      ],
+      "mergeCommits": {
+        "TASK-011-context-lifecycle-migration": "3bba6a0a8d2537b6d6aea39d2a916e08b8fb9a2d",
+        "TASK-012-feedback-detector-subagent": "af75d4be155a528b576f9518edd8e93af6ba5016",
+        "TASK-013-handler-telemetry-correlation": "3e09c376f21fdc5697c673def4ec99eb10dd0291"
+      },
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "all_three_clean_verified_removed_and_pruned",
+      "integratedVerification": "Node 24.15.0 targeted Wave 6 suite passed 19 files / 647 tests; npm run build passed; scoped ESLint passed with 0 errors and known warnings only; git diff --check passed",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewThreadId": "019f9c30-44ae-7581-9776-6a2dc5211281",
+      "checkpointReviewCounts": "0C/0H/0M/1L",
+      "checkpointReviewStatus": "passed",
+      "lowFindingDisposition": "controller-state historical readiness wording left untouched as non-blocking Low/P3",
+      "checkpointCommit": "898197df00c065923dec5f372943628a695c62a1",
+      "checkpointCommitStatus": "pushed_local_remote_match",
+      "nextWave": "WAVE-007",
+      "nextWaveStatus": "activation_started"
+    },
+    "wave007Activation": {
+      "status": "completed_reconciled_checkpoint_pushed",
+      "activationBase": "898197df00c065923dec5f372943628a695c62a1",
+      "tasks": [
+        "TASK-014-lifecycle-retention-reload-replay",
+        "TASK-015-behavior-signal-projector"
+      ],
+      "branches": {
+        "TASK-014-lifecycle-retention-reload-replay": "task/TASK-014-lifecycle-retention-reload-replay",
+        "TASK-015-behavior-signal-projector": "task/TASK-015-behavior-signal-projector"
+      },
+      "worktrees": {
+        "TASK-014-lifecycle-retention-reload-replay": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-lifecycle-retention-reload-replay",
+        "TASK-015-behavior-signal-projector": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-007-behavior-signal-projector"
+      },
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "c7bedf7fb14775d35a09266a8ae36fac8c438905",
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9c37-3c18-7713-a8a4-4d6767ada6b3",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "e6e09fa620e59c08d65ada9345941421abef6d54",
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewThreadId": "019f9c3b-ae91-7c53-835a-71e0f7633c59",
+      "activationSyncReviewCounts": "0C/0H/0M/1L",
+      "activationSyncLowFindingDisposition": "stale per-task activation_checkpoint_pending wording left untouched as non-blocking Low/P3",
+      "activationSyncCommit": "c7bedf7fb14775d35a09266a8ae36fac8c438905",
+      "readinessCommit": "330fdd9c0e4b2e35b6f9793e27fbb06a151c0ebd",
+      "readinessReviewModel": "gpt-5.5",
+      "readinessReviewReasoningEffort": "xhigh",
+      "readinessReviewThreadId": "019f9c41-b1e0-7341-8c3b-7ca6e78a4d05",
+      "readinessReviewCounts": "0C/0H/0M/0L",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true
+    },
+    "wave007Reconciliation": {
+      "status": "reviewed_committed_and_pushed",
+      "tasks": [
+        "TASK-014-lifecycle-retention-reload-replay",
+        "TASK-015-behavior-signal-projector"
+      ],
+      "prs": [
+        "https://github.com/ivo-toby/talon/pull/273",
+        "https://github.com/ivo-toby/talon/pull/272"
+      ],
+      "mergeCommits": {
+        "TASK-014-lifecycle-retention-reload-replay": "dde6bacef91462fadb4fa1fb34ed181ba648dcd2",
+        "TASK-015-behavior-signal-projector": "61b552a209db197c65b7ea48f18dff05c68d84d2"
+      },
+      "taskCommits": {
+        "TASK-014-lifecycle-retention-reload-replay": "9efed95",
+        "TASK-015-behavior-signal-projector": "a50b490"
+      },
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "both_clean_verified_removed_and_pruned",
+      "integratedVerification": "Node 24.15.0 targeted Wave 7 suite passed 11 files / 227 tests; npm run build passed; scoped ESLint passed with 0 errors; git diff --check passed",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewStatus": "passed",
+      "checkpointReviewThreadId": "019f9c98-e5d9-7e00-af27-13cd8aff96c9",
+      "checkpointReviewCounts": "0C/0H/0M/1L",
+      "checkpointReviewLowDisposition": "non-blocking stale shared-context TASK-014 pending-PR wording left untouched per policy",
+      "checkpointCommit": "5b20a15f15458d9368fed11423ba246c0534e780",
+      "checkpointCommitStatus": "pushed_local_remote_match",
+      "nextWave": "WAVE-008",
+      "nextWaveStatus": "activation_started",
+      "e2eSpritesRequirement": "TASK-019 must add end-to-end tests for the completed lifecycle waves and validate the event pipeline with Sprites before the epic is considered complete"
+    },
+    "wave008Activation": {
+      "status": "reconciled",
+      "activationBase": "5b20a15f15458d9368fed11423ba246c0534e780",
+      "tasks": [
+        "TASK-016-lifecycle-operator-cli",
+        "TASK-017-behavior-review-reducers"
+      ],
+      "branches": {
+        "TASK-016-lifecycle-operator-cli": "task/TASK-016-lifecycle-operator-cli",
+        "TASK-017-behavior-review-reducers": "task/TASK-017-behavior-review-reducers"
+      },
+      "worktrees": {
+        "TASK-016-lifecycle-operator-cli": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-lifecycle-operator-cli",
+        "TASK-017-behavior-review-reducers": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-008-behavior-review-reducers"
+      },
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "723b07444b53adc4dc310d036f30e998ff1b0f99",
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9ca8-adb5-7822-b8ac-ddc66ad76f64",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "104dfa4c00501c85663adc6c6db6e7524f85ed60",
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewStatus": "passed",
+      "activationSyncReviewThreadId": "019f9caf-0a93-7411-94ab-416736a58509",
+      "activationSyncReviewCounts": "0C/0H/0M/0L",
+      "activationSyncCommit": "723b07444b53adc4dc310d036f30e998ff1b0f99",
+      "readinessReviewModel": "gpt-5.5",
+      "readinessReviewReasoningEffort": "xhigh",
+      "readinessReviewStatus": "passed",
+      "readinessReviewThreadId": "019f9cb4-b944-78e0-bc9a-2fc3a43c5973",
+      "readinessReviewCounts": "0C/0H/0M/0L",
+      "readinessCommit": "c8057fa9ebba53c5b1ddcafe280389519510b04b",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true,
+      "workersDispatchedAt": "2026-07-26T04:45:10Z",
+      "mergedPrs": [
+        "https://github.com/ivo-toby/talon/pull/274",
+        "https://github.com/ivo-toby/talon/pull/275"
+      ],
+      "mergeCommits": {
+        "TASK-017-behavior-review-reducers": "a7ac0cd822bbd01957a5cdb1278fddc5c6e9589d",
+        "TASK-016-lifecycle-operator-cli": "3854e86e922b784d574b98bbe054b7b357b6a0b5"
+      },
+      "cleanup": {
+        "TASK-016-lifecycle-operator-cli": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T05:52:38Z",
+          "worktreeRemoved": true
+        },
+        "TASK-017-behavior-review-reducers": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T05:52:38Z",
+          "worktreeRemoved": true
+        }
+      },
+      "reconciledAt": "2026-07-26T05:52:38Z"
+    },
+    "wave009Activation": {
+      "status": "completed_and_reconciled",
+      "activationBase": "dd2ca290d89157b674d1cbc67d440c9d295f3cbd",
+      "tasks": [
+        "TASK-018-governed-prompt-promotion"
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-009",
+        "taskIds": [
+          "TASK-018-governed-prompt-promotion"
+        ],
+        "branch": "task/TASK-018-governed-prompt-promotion",
+        "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion",
+        "worktreeStatus": "cleaned_up"
+      },
+      "branches": {
+        "TASK-018-governed-prompt-promotion": "task/TASK-018-governed-prompt-promotion"
+      },
+      "worktrees": {
+        "TASK-018-governed-prompt-promotion": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-009-governed-prompt-promotion"
+      },
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d",
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9d13-d0be-7d90-84ef-b4a9e96e23d3",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "25fb028bfec71dd1ca86db38e9726822932a96bf",
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewStatus": "passed",
+      "activationSyncReviewThreadId": "019f9d19-d543-7a52-ab93-09d31ff743f4",
+      "activationSyncReviewCounts": "0C/0H/0M/0L",
+      "activationSyncCommit": "d1a5152fb9e4f4c1ef8449e9c1a622d3b48a6f4d",
+      "readinessReviewModel": "gpt-5.5",
+      "readinessReviewReasoningEffort": "xhigh",
+      "readinessReviewStatus": "passed",
+      "readinessReviewThreadId": "019f9d29-2367-74e3-943f-a795f6de8245",
+      "readinessReviewCounts": "0C/0H/0M/0L",
+      "readinessReviewPriorAttempt": "019f9d20-b7c0-7d53-8526-1ba021c57451 exited before verdict with codex exec gpt-5.5/xhigh usage limit",
+      "readinessCommit": "9c6e82e84a14a2d95056e7d414e8c067fcc9f20c",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true,
+      "workerDispatchedAt": "2026-07-26T07:04:00Z",
+      "workerThreadId": "019f9d2d-c40c-7e11-995b-59b63183cb4a",
+      "preCommitReviewThreadId": "019f9d59-a303-7590-9179-077f65d8a1a3",
+      "preCommitReviewCounts": "0C/0H/0M/0L",
+      "ciRemediationReviewThreadId": "019f9d67-ac6e-76e2-92a7-c203626ac098",
+      "ciRemediationReviewCounts": "0C/0H/0M/0L",
+      "mergedPrs": [
+        "https://github.com/ivo-toby/talon/pull/276"
+      ],
+      "mergeCommits": {
+        "TASK-018-governed-prompt-promotion": "b5a4fc785534300b37cd4dc4f6eb3c971e6262a0"
+      },
+      "cleanup": {
+        "TASK-018-governed-prompt-promotion": {
+          "status": "cleaned_up",
+          "at": "2026-07-26T07:58:29Z",
+          "worktreeRemoved": true
+        }
+      },
+      "reconciledAt": "2026-07-26T07:58:29Z"
+    },
+    "wave010Activation": {
+      "status": "completed_and_reconciled",
+      "activationBase": "2618059965f0a379948d79b8f6bb415419025397",
+      "tasks": [
+        "TASK-019-lifecycle-end-to-end-verification"
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-010",
+        "taskIds": [
+          "TASK-019-lifecycle-end-to-end-verification"
+        ],
+        "branch": "task/TASK-019-lifecycle-end-to-end-verification",
+        "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification",
+        "worktreeStatus": "created_clean_at_activation_sync"
+      },
+      "branches": {
+        "TASK-019-lifecycle-end-to-end-verification": "task/TASK-019-lifecycle-end-to-end-verification"
+      },
+      "worktrees": {
+        "TASK-019-lifecycle-end-to-end-verification": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-010-lifecycle-end-to-end-verification"
+      },
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "953f9c356520294ebc8b924e5a975ed62f8e1873",
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9d87-e141-7180-846b-9cb0e2eef260",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "119da93374ed0eaf2ffe9f477c120f33543b1bba",
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewStatus": "passed",
+      "activationSyncReviewThreadId": "019f9d8d-0bb8-7b82-8797-c8b5559a2c2a",
+      "activationSyncReviewCounts": "0C/0H/0M/0L",
+      "activationSyncCommit": "953f9c356520294ebc8b924e5a975ed62f8e1873",
+      "readinessReviewModel": "gpt-5.5",
+      "readinessReviewReasoningEffort": "xhigh",
+      "readinessReviewStatus": "passed",
+      "readinessReviewThreadId": "019f9d94-aa22-7630-8e38-1ff04c881158",
+      "readinessReviewCounts": "0C/0H/0M/0L",
+      "readinessCommit": "8507ecdc39a231be1c52200846636880e30d2042",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true,
+      "workerThreadId": "019f9d9a-3507-7fc1-bdd6-eb23dc4a65db",
+      "reviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
+      "taskCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+      "pr": "https://github.com/ivo-toby/talon/pull/277",
+      "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677",
+      "cleanup": {
+        "status": "cleaned_up",
+        "at": "2026-07-26T09:11:52Z",
+        "worktreeRemoved": true
+      },
+      "spritesValidation": {
+        "status": "passed",
+        "sprite": "mcp-codex-pr-talon-277-0c30dcc",
+        "targetCommit": "0c30dcca56d94553871412266cf5e492d9302677",
+        "checkoutMode": "branch_exact_head_after_pr_merge",
+        "dependencyCheckpoint": "v1",
+        "commands": [
+          "npm ci --allow-git=all",
+          "npm install-scripts approve better-sqlite3",
+          "npm rebuild better-sqlite3",
+          "npx vitest run tests/integration/lifecycle-end-to-end.test.ts",
+          "npx vitest run tests/integration/lifecycle-prompt-promotion.test.ts tests/integration/lifecycle-end-to-end.test.ts tests/integration/lifecycle-behavior-feedback.test.ts tests/integration/rolling-context-window.test.ts",
+          "npm run build",
+          "git diff --check"
+        ],
+        "result": "passed 4 integration files / 17 tests, build, and diff-check; sprite destroyed",
+        "destroyed": true
+      }
+    },
+    "wave010Reconciliation": {
+      "status": "reviewed_committed_and_pushed",
+      "task": "TASK-019-lifecycle-end-to-end-verification",
+      "pr": "https://github.com/ivo-toby/talon/pull/277",
+      "taskCommit": "fc03009c43465807c6ca9c179a0fcc7b92672d7b",
+      "mergeCommit": "0c30dcca56d94553871412266cf5e492d9302677",
+      "mergedAt": "2026-07-26T09:03:21Z",
+      "sharedContextReconciled": true,
+      "taskWorktreeCleanup": "clean_verified_removed_and_pruned",
+      "integratedVerification": "Node 24.15.0 local targeted lifecycle suite passed 4 files / 17 tests, lifecycle-end-to-end passed 3/3, npm run build passed, scoped Prettier passed, git diff --check passed; npm run lint failure is pre-existing src lint debt and tests are outside project-service lint scope; GitHub checks passed; Sprites validation passed 4 files / 17 tests plus build and diff-check at 0c30dcc",
+      "checkpointReviewModel": "gpt-5.5",
+      "checkpointReviewReasoningEffort": "xhigh",
+      "checkpointReviewStatus": "passed",
+      "checkpointReviewThreadId": "019f9dbd-a0a6-7d53-9a0d-4729c26ac35a",
+      "checkpointReviewCounts": "0C/0H/0M/0L",
+      "taskReviewThreadId": "019f9da3-e9a8-7dc0-912c-fb694c19f46e",
+      "taskReviewCounts": "0C/0H/0M/1L",
+      "lowFindingDisposition": "restart scenario models retryable post-handoff failure rather than literal process-restart lease claim; left untouched as non-blocking Low/P3",
+      "checkpointCommit": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
+      "checkpointCommitStatus": "pushed_local_remote_match",
+      "nextWave": "epic-validation",
+      "nextWaveStatus": "all_waves_done_ready_for_epic_validation",
+      "localRemoteVerifiedAt": "2026-07-26T10:59:00Z"
+    },
+    "wave011Activation": {
+      "status": "reconciled",
+      "activatedAt": "2026-07-26T09:32:42Z",
+      "activationBase": "ee1b057166fdd02e6b31b1799b512c5e27f24be4",
+      "tasks": [
+        "TASK-020-lifecycle-documentation-adoption"
+      ],
+      "bundleState": {
+        "id": "BUNDLE-WAVE-011",
+        "taskIds": [
+          "TASK-020-lifecycle-documentation-adoption"
+        ],
+        "branch": "task/TASK-020-lifecycle-documentation-adoption",
+        "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption",
+        "worktreeStatus": "cleaned_up"
+      },
+      "branches": {
+        "TASK-020-lifecycle-documentation-adoption": "task/TASK-020-lifecycle-documentation-adoption"
+      },
+      "worktrees": {
+        "TASK-020-lifecycle-documentation-adoption": "/Users/ivo.toby/workspace/talon/.worktrees/WAVE-011-lifecycle-documentation-adoption"
+      },
+      "taskBranchesCreated": true,
+      "taskWorktreesCreated": true,
+      "taskBranchesPushed": true,
+      "worktreesVerifiedClean": true,
+      "worktreeBaseCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
+      "activationCheckpointReviewModel": "gpt-5.5",
+      "activationCheckpointReviewReasoningEffort": "xhigh",
+      "activationCheckpointReviewStatus": "passed",
+      "activationCheckpointReviewThreadId": "019f9dc8-87c5-76f3-8724-e178beced852",
+      "activationCheckpointReviewCounts": "0C/0H/0M/0L",
+      "activationCheckpoint": "4c72c9de10cd0b2439929d0a7d20a4616579da9f",
+      "activationSyncReviewStatus": "passed",
+      "activationSyncCommit": "0053209080b96c02c2d4fb7af02a24a1af0a477d",
+      "readinessReviewStatus": "passed_committed_pushed_fast_forwarded",
+      "readinessCommit": "8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438",
+      "dispatchStatus": "merged_cleanup_complete_reconciled",
+      "notes": "TASK-020 branch/worktree were created and pushed from exact activation-sync commit 0053209080b96c02c2d4fb7af02a24a1af0a477d and verified clean/current. Fresh readiness review 019f9de5-d632-7d30-9dec-69e552084d2d passed 0C/0H/0M/0L; reviewed readiness commit 8ee0b3f819dbbe29354ee1cd046e80ae0ca6b438 was pushed and fast-forwarded into the task branch/worktree. Documentation/adoption implementation completed; initial GPT-5.5/xhigh task review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L, the two Medium findings were remediated, targeted verification was green again, and fresh GPT-5.5/xhigh task review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L. Task commit 4421f9defc4386cbfe6adc5ab275fc62abccc405 was pushed; PR #278 passed GitHub Verify PR and PR Agent, merged at ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf, and the task worktree was cleaned up.",
+      "activationCheckpointReviewEvidence": "read-only gpt-5.5/xhigh review verified WDD-only activation metadata, local/remote epic head ee1b057, no TASK-020 branch/worktree, no stale current WAVE-010 pending wording, and .minispec outside scope",
+      "activationCheckpointCommitStatus": "pushed_local_remote_match",
+      "activationCheckpointRecordedAt": "2026-07-26T09:41:46Z",
+      "activationArtifactsSynced": true,
+      "activationSyncReviewModel": "gpt-5.5",
+      "activationSyncReviewReasoningEffort": "xhigh",
+      "activationSyncReviewThreadId": "019f9dce-bcdb-76a3-a894-48d757596dbe",
+      "activationSyncReviewCounts": "0C/0H/1M/0L",
+      "activationSyncReviewFinding": "stale activation-checkpoint gate and branch-freshness markers remained after activation checkpoint was pushed and activationArtifactsSynced became true",
+      "activationSyncReviewRemediation": "updated current WAVE-011 table and branch freshness markers to activation_sync_review_pending",
+      "activationSyncReviewSecondThreadId": "019f9dd3-e852-7e51-970e-4e344b138069",
+      "activationSyncReviewSecondCounts": "0C/0H/1M/0L",
+      "activationSyncReviewSecondFinding": "remaining current TASK-020 gate summary still named the prior activation checkpoint gate",
+      "activationSyncReviewSecondRemediation": "updated the TASK-020 current gate summary to activation_sync_review_pending",
+      "activationSyncReviewFinalThreadId": "019f9dd8-ead7-77f1-ab13-7fa6eae8132c",
+      "activationSyncReviewFinalCounts": "0C/0H/0M/0L",
+      "activationSyncReviewFinalModel": "gpt-5.5",
+      "activationSyncReviewFinalReasoningEffort": "xhigh",
+      "taskBranchesCreatedAt": "2026-07-26T09:59:48Z",
+      "taskWorktreesCreatedAt": "2026-07-26T09:59:48Z",
+      "taskWorktreesVerifiedCleanAt": "2026-07-26T09:59:48Z",
+      "taskWorktreesVerifiedCurrentArtifacts": true,
+      "readinessReviewAttemptThreadId": "019f9de0-4467-7e52-931e-19df30d02e7b",
+      "readinessReviewAttemptCounts": "0C/0H/1M/0L",
+      "readinessReviewAttemptFinding": "stale current branch/worktree note and branch freshness summary contradicted created clean readiness state",
+      "readinessReviewAttemptRemediation": "updated WAVE-011 notes and branch freshness summary to the created-clean activation-sync state",
+      "readinessReviewFinalThreadId": "019f9de5-d632-7d30-9dec-69e552084d2d",
+      "readinessReviewFinalCounts": "0C/0H/0M/0L",
+      "readinessReviewFinalModel": "gpt-5.5",
+      "readinessReviewFinalReasoningEffort": "xhigh",
+      "taskBranchesFastForwardedToReadiness": true,
+      "taskWorktreesVerifiedBeforeDispatch": true,
+      "implementationStatus": "merged_cleaned_up_reconciled",
+      "implementationVerification": {
+        "targetedVitest": "passed 3 files / 121 tests at 2026-07-26T10:45:54Z after Medium remediation",
+        "build": "npm run build passed at 2026-07-26T10:45:40Z after Medium remediation",
+        "diffCheck": "git diff --check passed at 2026-07-26T10:45:54Z",
+        "wddJson": "jq empty orchestration.json passed at 2026-07-26T10:45:54Z",
+        "initialTaskReview": "gpt-5.5/xhigh review 019f9e01-d202-7150-a5c5-c8b921a1dcf1 failed 0C/0H/2M/2L; Medium findings remediated; Low/P3 left as non-blocking follow-ups",
+        "finalTaskReview": "gpt-5.5/xhigh review 019f9e0a-eb3d-72e0-85b9-928f21d833a6 passed 0C/0H/0M/3L",
+        "githubVerifyPr": "passed for PR #278",
+        "githubPrAgent": "passed for PR #278"
+      },
+      "taskCommit": "4421f9defc4386cbfe6adc5ab275fc62abccc405",
+      "taskPr": "https://github.com/ivo-toby/talon/pull/278",
+      "mergeCommit": "ee08193e28a9ab8d5f3cc463698c4fe0e89ebcaf",
+      "cleanupStatus": "worktree_removed_and_pruned"
+    },
+    "epicValidation": {
+      "status": "passed",
+      "validatedAt": "2026-07-26T11:20:00Z",
+      "report": ".wdd/epics/EPIC-durable-lifecycle-pipeline/epic-validation.md",
+      "allWavesDone": true,
+      "allTasksDone": true,
+      "taskPrRange": "#257-#278",
+      "wave011ReconciliationCheckpoint": "45b5ee52d0937a3e8427cb8b5cf928bf0b4e6ef2",
+      "criticalHighMediumOpen": 0,
+      "spritesValidation": "passed on mcp-codex-pr-talon-277-0c30dcc at 0c30dcca56d94553871412266cf5e492d9302677",
+      "fullNpmTest": "not_run_without_explicit_user_approval",
+      "runtimeSmoke": "not_run_without_explicit_user_approval",
+      "nextAction": "create_final_pr"
+    },
+    "finalPr": {
+      "status": "ready",
+      "draft": ".wdd/epics/EPIC-durable-lifecycle-pipeline/final-pr.md",
+      "sourceBranch": "epic/durable-lifecycle-pipeline",
+      "targetBranch": "main",
+      "title": "feat(lifecycle): complete durable lifecycle pipeline"
+    }
+  },
+  "monitoring": {
+    "mode": "final_handoff",
+    "formerMode": "codex_thread_heartbeat",
+    "cadence": "stopped",
+    "status": "all_waves_reconciled_epic_validation_passed_final_pr_ready",
+    "lastCheckedAt": "2026-07-26T11:20:00Z",
+    "nextCheckDueAt": null,
+    "schedulerRef": "talon-issue-256-wdd-remaining-waves-monitor",
+    "schedulerStatus": "stop_requested_after_final_pr_handoff",
+    "fallbackPrompt": null,
+    "stopCondition": "All remaining waves are merged/reconciled and epic validation plus final PR handoff are ready, or a real blocker is recorded.",
+    "stopReason": "all_waves_reconciled_and_epic_validation_passed"
+  }
+}

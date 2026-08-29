@@ -8,6 +8,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type pino from 'pino';
+import { v4 as uuidv4 } from 'uuid';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import type { ChannelRegistry } from '../../channels/channel-registry.js';
 import type { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
@@ -18,7 +19,14 @@ import type {
   ThreadRow,
 } from '../../core/database/repositories/thread-repository.js';
 import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
+import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
+import type { LifecycleRuntime } from '../../lifecycle/lifecycle-runtime.js';
+import type { LifecycleEventEnvelope } from '../../lifecycle/contracts/index.js';
+import {
+  buildLifecycleContentPreview,
+  resolveLifecycleOutboundContent,
+} from '../../lifecycle/outbound-content-preview.js';
 
 /**
  * Returns the origin chat's external_id recorded in a dedicated schedule
@@ -99,6 +107,8 @@ export class ChannelSendHandler {
     private readonly deps: {
       channelRegistry: ChannelRegistry;
       threadRepository: ThreadRepository;
+      personaRepository?: PersonaRepository;
+      lifecycleRuntime?: LifecycleRuntime;
       channelRepository?: Pick<ChannelRepository, 'findByName'>;
       messageRepository?: Pick<MessageRepository, 'insert'>;
       /**
@@ -218,13 +228,37 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
-    const result = await connector.send(externalThreadId, output);
+    const lifecycle = this.prepareLifecycleSend({
+      context,
+      channelId,
+      content,
+      externalThreadId,
+    });
+    if (lifecycle.status === 'error') {
+      return { requestId, tool: 'channel.send', status: 'error', error: lifecycle.error };
+    }
+
+    const sendContent = lifecycle.content;
+    const sendOutput = {
+      ...output,
+      body: sendContent,
+    };
+
+    const result = await connector.send(externalThreadId, sendOutput);
 
     if (result.isErr()) {
       const msg = `channel.send: failed to send message — ${result.error.message}`;
       this.deps.logger.error({ requestId, channelId, err: result.error }, msg);
+      this.publishLifecycleSendEvent('message.send_failed.v1', lifecycle, sendContent, {
+        status: 'failed',
+        errorLength: result.error.message.length,
+      });
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
+
+    this.publishLifecycleSendEvent('message.sent.v1', lifecycle, sendContent, {
+      status: 'sent',
+    });
 
     this.deps.logger.info(
       { requestId, channelId, threadId: context.threadId },
@@ -235,7 +269,7 @@ export class ChannelSendHandler {
       runId: context.runId,
       channelName: channelId,
       externalThreadId,
-      content,
+      content: sendContent,
       personaId: context.personaId,
       runThreadId: context.threadId,
     });
@@ -245,6 +279,181 @@ export class ChannelSendHandler {
       tool: 'channel.send',
       status: 'success',
       result: { channelId, sent: true },
+    };
+  }
+
+  private prepareLifecycleSend(input: {
+    context: ToolExecutionContext;
+    channelId: string;
+    content: string;
+    externalThreadId: string;
+  }):
+    | {
+        status: 'ready';
+        content: string;
+        messageId: string;
+        personaName: string;
+        channelId: string;
+        context: ToolExecutionContext;
+      }
+    | { status: 'error'; error: string } {
+    if (!this.deps.lifecycleRuntime) {
+      return {
+        status: 'ready',
+        content: input.content,
+        messageId: uuidv4(),
+        personaName: input.context.personaId,
+        channelId: input.channelId,
+        context: input.context,
+      };
+    }
+    const persona = this.deps.personaRepository?.findById(input.context.personaId);
+    if (!persona || persona.isErr() || persona.value === null) {
+      return {
+        status: 'error',
+        error: `channel.send: failed to resolve lifecycle persona for ${input.context.personaId}`,
+      };
+    }
+    const messageId = uuidv4();
+    const lifecycleContent = buildLifecycleContentPreview(input.content);
+    const interception = this.deps.lifecycleRuntime.intercept(
+      {
+        persona: persona.value.name,
+        hook: 'message.before_send',
+        itemOrigin: 'tool',
+        itemType: 'message',
+        channel: input.channelId,
+        messageSource: 'outbound',
+      },
+      {
+        version: 'v1',
+        interceptionId: uuidv4(),
+        hook: 'message.before_send',
+        context: this.lifecycleContext('message', messageId, input.context.runId, 'tool'),
+        input: {
+          messageId,
+          content: lifecycleContent.content,
+          source: 'outbound',
+          recipientId: input.externalThreadId,
+          channel: input.channelId,
+          persona: persona.value.name,
+        },
+      },
+    );
+    if (interception.isErr()) {
+      return {
+        status: 'error',
+        error: `channel.send: lifecycle before_send failed — ${interception.error.message}`,
+      };
+    }
+    if (interception.value.outcome !== 'allow') {
+      return {
+        status: 'error',
+        error: `channel.send: lifecycle before_send blocked delivery — ${interception.value.reason}`,
+      };
+    }
+    const content = resolveLifecycleOutboundContent({
+      originalContent: input.content,
+      preview: lifecycleContent,
+      interceptedContent: (interception.value.input.input as { content: string }).content,
+    });
+    if (content.isErr()) {
+      return {
+        status: 'error',
+        error: `channel.send: ${content.error.message}`,
+      };
+    }
+    return {
+      status: 'ready',
+      content: content.value,
+      messageId,
+      personaName: persona.value.name,
+      channelId: input.channelId,
+      context: input.context,
+    };
+  }
+
+  private publishLifecycleSendEvent(
+    type: 'message.sent.v1' | 'message.send_failed.v1',
+    lifecycle: {
+      status: 'ready';
+      content: string;
+      messageId: string;
+      personaName: string;
+      channelId: string;
+      context: ToolExecutionContext;
+    },
+    content: string,
+    metadata: Record<string, string | number | boolean | null>,
+  ): void {
+    if (!this.deps.lifecycleRuntime) return;
+    const publication = this.deps.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'message',
+        lifecycle.messageId,
+        lifecycle.context.runId,
+        'tool',
+        [
+          { type: 'message', id: lifecycle.messageId },
+          { type: 'thread', id: lifecycle.context.threadId },
+          { type: 'run', id: lifecycle.context.runId },
+        ],
+        {
+          direction: 'outbound',
+          source: 'tool',
+          contentLength: content.length,
+          ...metadata,
+        },
+      ),
+      persona: lifecycle.personaName,
+      itemOrigin: 'tool',
+      itemType: 'message',
+      channel: lifecycle.channelId,
+      messageSource: 'outbound',
+    });
+    if (publication.isErr()) {
+      this.deps.logger.error(
+        {
+          requestId: lifecycle.context.requestId ?? 'unknown',
+          err: publication.error.message,
+          type,
+        },
+        'channel.send: failed to publish lifecycle send event',
+      );
+    }
+  }
+
+  private lifecycleContext(
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+  ): LifecycleEventEnvelope['context'] {
+    return {
+      aggregate: { type: aggregateType, id: aggregateId },
+      correlationId,
+      recursion: { depth: 0, maxDepth: 8 },
+      provenance: { source, sourceEventIds: [], sourceReferences: [] },
+    };
+  }
+
+  private lifecycleEvent(
+    type: LifecycleEventEnvelope['type'],
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+    references: LifecycleEventEnvelope['payload']['references'],
+    metadata: LifecycleEventEnvelope['payload']['metadata'],
+  ): LifecycleEventEnvelope {
+    return {
+      version: 'v1',
+      type,
+      eventId: uuidv4(),
+      occurredAt: new Date().toISOString(),
+      context: this.lifecycleContext(aggregateType, aggregateId, correlationId, source),
+      payload: { references, metadata },
     };
   }
 

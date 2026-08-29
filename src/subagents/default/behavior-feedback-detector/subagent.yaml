@@ -1,0 +1,19 @@
+name: behavior-feedback-detector
+version: "0.1.0"
+description: "Detects explicit behavior feedback and proposes bounded behavior-learning signals"
+
+model:
+  provider: openai
+  name: gpt-5.5
+  maxTokens: 4096
+
+requiredCapabilities: []
+
+rootPaths: []
+
+timeoutMs: 30000
+
+lifecycleCapabilities:
+  - mode: event
+    inputContract: talon.lifecycle.event.envelope.v1
+    outputContract: talon.lifecycle.signal.envelopes.v1

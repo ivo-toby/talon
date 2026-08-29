@@ -70,6 +70,8 @@ export interface SpawnBackgroundAgentInput {
 interface BackgroundAgentManagerDeps {
   repository: BackgroundTaskRepository;
   queueManager: QueueManager;
+  /** Present only when lifecycle publication requires trusted persona scope. */
+  resolveLifecyclePersonaName?: (personaId: string) => string | undefined;
   maxConcurrent: number;
   defaultTimeoutMinutes: number;
   defaultProvider: string;
@@ -711,11 +713,34 @@ export class BackgroundAgentManager {
       );
     }
 
-    const messageResult = this.deps.queueManager.enqueue(task.threadId, 'message', {
-      personaId: task.personaId,
-      content,
-      providerName: task.providerName,
-    });
+    let personaName: string | undefined;
+    try {
+      personaName = this.deps.resolveLifecyclePersonaName?.(task.personaId);
+    } catch (cause) {
+      this.deps.logger.error(
+        { taskId: task.id, personaId: task.personaId, err: cause },
+        'background-agent: failed to resolve lifecycle persona for completion message',
+      );
+      return;
+    }
+    if (this.deps.resolveLifecyclePersonaName && !personaName) {
+      this.deps.logger.error(
+        { taskId: task.id, personaId: task.personaId },
+        'background-agent: lifecycle persona unavailable for completion message',
+      );
+      return;
+    }
+    const messageResult = this.deps.queueManager.enqueue(
+      task.threadId,
+      'message',
+      {
+        personaId: task.personaId,
+        content,
+        providerName: task.providerName,
+      },
+      undefined,
+      personaName ? { persona: personaName, itemType: 'message' } : undefined,
+    );
     if (messageResult.isErr()) {
       this.deps.logger.error(
         { taskId: task.id, err: messageResult.error },

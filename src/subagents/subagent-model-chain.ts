@@ -45,8 +45,21 @@ export interface RunSubAgentModelChainOptions {
   }) => SubAgentContext;
 }
 
+/**
+ * Structural subset of `LoadedSubAgent` that chain building actually reads.
+ * Kept narrower than `LoadedSubAgent` so callers with a differently-shaped
+ * agent record (e.g. a materialized lifecycle execution snapshot) can reuse
+ * chain construction without satisfying the full loader contract.
+ */
+export interface SubAgentModelChainSourceAgent {
+  manifest: {
+    model: { provider: string; name: string; maxTokens: number };
+    timeoutMs: number;
+  };
+}
+
 export function buildSubAgentModelChain(
-  agent: LoadedSubAgent,
+  agent: SubAgentModelChainSourceAgent,
   override?: SubAgentsConfig[string],
 ): SubAgentModelChainEntry[] {
   return [

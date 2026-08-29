@@ -96,7 +96,7 @@ personas:
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
-      - session-summarizer # legacy single-summary context compression
+      - session-summarizer # single-summary context compression
       # For observational memory (long-term context), replace session-summarizer with:
       # - session-observer           # generates dated, prioritized observations
       # - session-reflector          # consolidates observations when log grows large
@@ -146,6 +146,41 @@ queue:
   backoffMaxMs: 60000
   concurrencyLimit: 5
 
+# Durable lifecycle event handling. Retention compaction rewrites completed
+# lifecycle event payload/provenance detail after the audit window; pending,
+# failed, claimed, dead-letter, and privacy-deleted rows keep their safety
+# semantics. Behavior prompt promotions default to operator approval; only
+# prompt-patch-backed, explicit narrow append-only style/preference/context
+# policies may auto-apply after validation, evaluation, atomic prompt write,
+# reload, and rollback gates. Notes-only candidates are reviewable but not
+# applicable through lifecycle promote.
+# lifecycle:
+#   enabled: false
+#   telemetry:
+#     langfuse:
+#       # High-volume lifecycle.publish Langfuse spans are off by default.
+#       # Durable lifecycle DB rows, audit records, and local metrics still run.
+#       publications: false
+#       publicationFailures: true
+#       handlerDeliveries: true
+#   handlers:
+#     # Model-backed handlers may inspect fenced event data and emit bounded
+#     # signals, but native handlers own durable state mutation and governed
+#     # prompt promotion. Personas must also list a sub-agent handler's ref
+#     # under their own subagents list before it can execute for that persona.
+#     # Lifecycle interceptors are native-only.
+#     # - version: v1
+#     #   id: behavior-feedback-detector
+#     #   mode: event
+#     #   inputContract: talon.lifecycle.event.envelope.v1
+#     #   outputContract: talon.lifecycle.signal.envelopes.v1
+#     #   runtime:
+#     #     kind: subagent
+#     #     ref: behavior-feedback-detector
+#     #     implementationVersion: 1.0.0
+#   retention:
+#     completedAuditWindowMs: 2592000000 # 30 days
+
 agentRunner:
   defaultProvider: claude-code
   providers:
@@ -155,11 +190,16 @@ agentRunner:
       contextWindowTokens: 200000
       contextManagement:
         enabled: true
+        mode: summarizer
         triggerMetric: cache_read_input_tokens
         thresholdRatio: 0.5
         recentMessageCount: 10
-        summarizer: session-summarizer # or session-observer for observational memory
-        # reflectionThresholdChars: 40000   # OM only: observation log size that triggers session-reflector. Default 40000.
+        summarizer: session-summarizer
+        # For observational memory, use:
+        # mode: observation
+        # observer: session-observer
+        # reducer: session-reflector
+        # reflectionThresholdChars: 40000   # observation-log size that triggers the reducer. Default 40000.
     gemini-cli:
       enabled: false
       command: gemini

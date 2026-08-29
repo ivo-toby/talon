@@ -62,6 +62,12 @@ export interface SubAgentManifest {
   timeoutMs: number;
   /** Environment variables that must be set for this sub-agent to load. */
   requiresEnv: string[];
+  /**
+   * Declared lifecycle contracts. The loader always materializes this to an
+   * immutable empty list when omitted, but it remains optional for existing
+   * programmatic manifest consumers.
+   */
+  lifecycleCapabilities?: LoadedLifecycleSubAgentCapability[];
 }
 
 // ---------------------------------------------------------------------------
@@ -95,6 +101,11 @@ export interface SubAgentServices {
   queue: QueueRepository;
   /** Structured logger scoped to the sub-agent. */
   logger: pino.Logger;
+}
+
+/** The only service exposed to lifecycle sub-agents. */
+export interface LifecycleSubAgentServices {
+  readonly logger: pino.Logger;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +158,20 @@ export interface SubAgentContext {
   providerOptions?: Record<string, JSONObject>;
 }
 
+/**
+ * A lifecycle invocation has no repositories or filesystem roots. Keeping
+ * this separate from SubAgentContext prevents lifecycle callers from gaining
+ * authority through an assertion to the ordinary service bag.
+ */
+export interface LifecycleSubAgentContext extends Omit<
+  SubAgentContext,
+  'rootPaths' | 'services' | 'telemetry'
+> {
+  rootPaths: readonly [];
+  services: LifecycleSubAgentServices;
+  telemetry: { isEnabled: false };
+}
+
 // ---------------------------------------------------------------------------
 // Input / Output
 // ---------------------------------------------------------------------------
@@ -194,6 +219,28 @@ export type SubAgentRunFn = (
   input: SubAgentInput,
 ) => Promise<Result<SubAgentResult, SubAgentError>>;
 
+/**
+ * Entry point contract for an implementation explicitly loaded for lifecycle
+ * dispatch. This remains distinct from {@link SubAgentRunFn} so legacy
+ * sub-agents that need ordinary services remain compatible with
+ * `strictFunctionTypes`.
+ */
+export type LifecycleSubAgentRunFn = (
+  ctx: LifecycleSubAgentContext,
+  input: SubAgentInput,
+) => Promise<Result<SubAgentResult, SubAgentError>>;
+
+/** Compile-time guard: legacy implementations remain assignable under strict function types. */
+type Assert<T extends true> = T;
+export type LegacyRunFnRemainsAssignable = Assert<
+  ((
+    ctx: SubAgentContext,
+    input: SubAgentInput,
+  ) => Promise<Result<SubAgentResult, SubAgentError>>) extends SubAgentRunFn
+    ? true
+    : false
+>;
+
 // ---------------------------------------------------------------------------
 // Loaded sub-agent
 // ---------------------------------------------------------------------------
@@ -209,8 +256,26 @@ export interface LoadedSubAgent {
   manifest: SubAgentManifest;
   /** Contents of each prompt fragment file, in concatenation order. */
   promptContents: string[];
-  /** The sub-agent's entry-point run function. */
-  run: SubAgentRunFn;
   /** Absolute path to the sub-agent's root directory on disk. */
   rootDir: string;
+  /** The legacy entry-point contract, retained for existing callers. */
+  run: SubAgentRunFn;
+  /**
+   * Lifecycle-specific entry point. The runner refuses lifecycle dispatch
+   * unless this is present, keeping the legacy `run` contract unchanged.
+   */
+  lifecycleRun?: LifecycleSubAgentRunFn;
+  /**
+   * Loader-owned lifecycle capabilities. An empty list means that this
+   * ordinary sub-agent is not eligible for lifecycle execution.
+   */
+  lifecycleCapabilities?: readonly LoadedLifecycleSubAgentCapability[];
+}
+
+/** Canonical lifecycle contract tuples that a loaded implementation may serve. */
+export interface LoadedLifecycleSubAgentCapability {
+  mode: 'event' | 'signal' | 'interceptor';
+  inputContract: string;
+  outputContract: string;
+  interceptorSafety?: 'advisory' | 'enforcing';
 }

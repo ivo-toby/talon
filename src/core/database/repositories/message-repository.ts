@@ -26,6 +26,12 @@ export interface MessageRow {
 /** Fields accepted when inserting a new message. `created_at` is set automatically. */
 export type InsertMessageInput = Omit<MessageRow, 'created_at'>;
 
+/** The authoritative outcome of INSERT OR IGNORE. */
+export interface InsertMessageOutcome {
+  readonly message: MessageRow;
+  readonly inserted: boolean;
+}
+
 /** Repository for reading and writing message records. */
 export class MessageRepository extends BaseRepository {
   private readonly insertStmt: Database.Statement;
@@ -34,6 +40,7 @@ export class MessageRepository extends BaseRepository {
   private readonly findLatestByThreadStmt: Database.Statement;
   private readonly findLatestByThreadSinceStmt: Database.Statement;
   private readonly findByIdempotencyKeyStmt: Database.Statement;
+  private readonly deleteByIdempotencyKeyStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -77,6 +84,10 @@ export class MessageRepository extends BaseRepository {
     this.findByIdempotencyKeyStmt = db.prepare(`
       SELECT * FROM messages WHERE idempotency_key = ?
     `);
+
+    this.deleteByIdempotencyKeyStmt = db.prepare(`
+      DELETE FROM messages WHERE idempotency_key = ?
+    `);
   }
 
   /**
@@ -86,12 +97,21 @@ export class MessageRepository extends BaseRepository {
    * succeeds but returns the existing row unchanged.
    */
   insert(input: InsertMessageInput): Result<MessageRow, DbError> {
+    return this.insertIfAbsent(input).map(({ message }) => message);
+  }
+
+  /**
+   * Inserts a message or returns the existing idempotent row while preserving
+   * whether this invocation actually created durable state. Callers that
+   * attach follow-up work must use this instead of inferring from the row.
+   */
+  insertIfAbsent(input: InsertMessageInput): Result<InsertMessageOutcome, DbError> {
     try {
       const row: MessageRow = { ...input, created_at: this.now() };
-      this.insertStmt.run(row);
+      const result = this.insertStmt.run(row);
       // Re-fetch so we always return the authoritative persisted row.
       const persisted = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as MessageRow;
-      return ok(persisted);
+      return ok({ message: persisted, inserted: result.changes === 1 });
     } catch (cause) {
       return err(
         new DbError(
@@ -191,5 +211,27 @@ export class MessageRepository extends BaseRepository {
    */
   existsByIdempotencyKey(key: string): boolean {
     return this.findByIdempotencyKeyStmt.get(key) !== undefined;
+  }
+
+  /**
+   * Deletes a message reservation by idempotency key.
+   *
+   * This is intentionally narrow: outbound final delivery reserves an
+   * idempotency key before external send so post-send finalization retries do
+   * not duplicate delivery, but a known send failure must make that key
+   * retryable again.
+   */
+  deleteByIdempotencyKey(key: string): Result<number, DbError> {
+    try {
+      const result = this.deleteByIdempotencyKeyStmt.run(key);
+      return ok(result.changes);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to delete message by idempotency key: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
   }
 }

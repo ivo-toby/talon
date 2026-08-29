@@ -29,17 +29,24 @@ export abstract class BaseRepository {
   /** Returns the current time as Unix epoch milliseconds, strictly monotonic. */
   protected now(): number {
     const wall = Date.now();
-    const next = wall > BaseRepository.lastMonotonicTs
-      ? wall
-      : BaseRepository.lastMonotonicTs + 1;
+    const next = wall > BaseRepository.lastMonotonicTs ? wall : BaseRepository.lastMonotonicTs + 1;
     BaseRepository.lastMonotonicTs = next;
     return next;
   }
 
   /**
+   * Returns wall-clock time for lease durations. This intentionally does not
+   * participate in write ordering: a burst of unrelated writes must not make
+   * a valid 100ms lease appear expired.
+   */
+  protected leaseNow(): number {
+    return Date.now();
+  }
+
+  /**
    * Seed the in-memory monotonic counter from the max `created_at` across
    * the tables whose timestamps gate durable correctness checks (messages,
-   * memory_items). Call once at bootstrap.
+   * memory_items, and lifecycle event/delivery state). Call once at bootstrap.
    *
    * Why: monotonic issuance is otherwise only safe within a single process
    * lifetime. If process A persisted drift-inflated timestamps (or the
@@ -56,7 +63,20 @@ export abstract class BaseRepository {
         .prepare(
           `SELECT MAX(
              COALESCE((SELECT MAX(created_at) FROM messages), 0),
-             COALESCE((SELECT MAX(created_at) FROM memory_items), 0)
+             COALESCE((SELECT MAX(created_at) FROM memory_items), 0),
+             COALESCE((SELECT MAX(created_at) FROM lifecycle_events), 0),
+             COALESCE((SELECT MAX(created_at) FROM lifecycle_event_deliveries), 0),
+             COALESCE((SELECT MAX(updated_at) FROM lifecycle_event_deliveries), 0),
+             COALESCE((SELECT MAX(completed_at) FROM lifecycle_event_deliveries), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_evidence), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_candidates), 0),
+             COALESCE((SELECT MAX(updated_at) FROM behavior_candidates), 0),
+             COALESCE((SELECT MAX(expired_at) FROM behavior_candidates), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_candidate_evidence), 0),
+             COALESCE((SELECT MAX(created_at) FROM behavior_promotions), 0),
+             COALESCE((SELECT MAX(updated_at) FROM behavior_promotions), 0),
+             COALESCE((SELECT MAX(activated_at) FROM behavior_promotion_activations), 0),
+             COALESCE((SELECT MAX(rolled_back_at) FROM behavior_promotion_rollbacks), 0)
            ) AS max_ts`,
         )
         .get() as { max_ts: number | null } | undefined;

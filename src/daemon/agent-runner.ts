@@ -18,19 +18,45 @@ import {
 import { getProviderAffinityResetAt } from '../threads/thread-metadata.js';
 import { readScheduleOriginExternalId } from './schedule-thread-utils.js';
 import { buildTimeContext } from '../core/time-context.js';
+import type { ReasoningEffort } from '../core/config/config-types.js';
 import { formatToolCall } from './tool-name-formatter.js';
+import {
+  buildLifecycleContentPreview,
+  resolveLifecycleOutboundContent,
+} from '../lifecycle/outbound-content-preview.js';
+import type { ChannelConnector } from '../channels/channel-types.js';
 import type {
   AgentUsage,
   ContextUsage,
   ContextMetricName,
+  ResolvedContextUsage,
   CanonicalMcpSdkServer,
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
+import type { LifecycleEventEnvelope } from '../lifecycle/contracts/index.js';
+import type { TransactionContext } from '../lifecycle/transaction-context.js';
+import type { ContextRotationResult } from './context-roller.js';
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
 import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-tools-bridge-auth.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+interface OutboundDeliveryIdentity {
+  readonly messageId: string;
+  readonly idempotencyKey: string;
+}
+
+interface DurableContextRotationState {
+  readonly boundary: number;
+  readonly hasOpenThreads: boolean;
+  readonly rotationCauseQueueItemId?: string;
+}
+
+interface PendingNoIdProviderToolObservation {
+  readonly observation: StartedObservationHandle;
+  readonly toolCallId: string;
+}
 
 class AgentQueryAttemptError extends Error {
   constructor(
@@ -113,7 +139,7 @@ export class AgentRunner {
       loadedPersona.config.queryTimeoutMinutes !== undefined
         ? loadedPersona.config.queryTimeoutMinutes * 60 * 1000
         : this.queryTimeoutMs;
-    const model = loadedPersona.config.model;
+    let model = loadedPersona.config.model;
     const reasoningEffort = loadedPersona.config.reasoningEffort;
 
     const threadResult = this.ctx.repos.thread.findById(item.threadId);
@@ -152,11 +178,77 @@ export class AgentRunner {
         : [affinityProviderName, personaProviderName, configuredDefaultProvider]
     ).filter((name): name is string => typeof name === 'string' && name.length > 0);
 
-    const providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
+    let providerEntry = this.ctx.providerRegistry.getDefault(preferredProviderOrder);
     if (!providerEntry) {
       this.failA2ATask(a2aTaskId, 'NO_PROVIDER', 'No enabled agent runner provider is configured');
       return err(new Error('No enabled agent runner provider is configured'));
     }
+
+    const runId = uuidv4();
+    const runInterception = this.interceptRunBeforeExecute({
+      runId,
+      threadId: item.threadId,
+      personaName,
+      provider: providerEntry.provider.name,
+      model,
+      queueItemId: item.id,
+      itemType: item.type,
+    });
+    if (runInterception.isErr()) {
+      const finalized = this.insertAndFinalizePreExecutionFailedRun(
+        runId,
+        {
+          threadId: item.threadId,
+          personaId,
+          queueItemId: item.id,
+          provider: providerEntry.provider.name,
+          model,
+          reasoningEffort,
+          error: runInterception.error.message,
+        },
+        personaName,
+      );
+      if (finalized.isErr()) {
+        this.ctx.logger.error(
+          { runId, err: finalized.error.message },
+          'agent-runner: failed to finalize blocked run',
+        );
+      }
+      this.failA2ATask(a2aTaskId, 'RUN_BLOCKED', runInterception.error.message);
+      return err(runInterception.error);
+    }
+    const lifecycleRunContextAdditions = runInterception.value.contextAdditions;
+    if (runInterception.value.provider !== providerEntry.provider.name) {
+      const transformedProvider = this.ctx.providerRegistry.get(runInterception.value.provider);
+      if (!transformedProvider) {
+        const error = new Error(
+          `Lifecycle run interceptor selected unavailable provider "${runInterception.value.provider}"`,
+        );
+        const finalized = this.insertAndFinalizePreExecutionFailedRun(
+          runId,
+          {
+            threadId: item.threadId,
+            personaId,
+            queueItemId: item.id,
+            provider: runInterception.value.provider,
+            model: runInterception.value.model,
+            reasoningEffort,
+            error: error.message,
+          },
+          personaName,
+        );
+        if (finalized.isErr()) {
+          this.ctx.logger.error(
+            { runId, err: finalized.error.message },
+            'agent-runner: failed to finalize unavailable transformed provider run',
+          );
+        }
+        this.failA2ATask(a2aTaskId, 'NO_PROVIDER', error.message);
+        return err(error);
+      }
+      providerEntry = transformedProvider;
+    }
+    model = runInterception.value.model;
 
     const strategy = providerEntry.provider.createExecutionStrategy();
     const sessionProviderName = providerEntry.provider.name;
@@ -171,12 +263,20 @@ export class AgentRunner {
     // so each delegation starts a fresh context.
     let resolvedSessionId: string | undefined;
     if (strategy.supportsSessionResumption && !isA2ATask && !isScheduleTask) {
+      const durableContextRotation = this.latestDurableContextRotationState(item.threadId);
+      const durableContextRotationAt = durableContextRotation?.boundary;
+      const sessionLookupSinceCreatedAt =
+        providerAffinityResetAt === undefined
+          ? durableContextRotationAt
+          : durableContextRotationAt === undefined
+            ? providerAffinityResetAt
+            : Math.max(providerAffinityResetAt, durableContextRotationAt);
       const sessionLookupOptions = {
         excludeCollaboration: true,
         modelName: model,
         reasoningEffort: reasoningEffort ?? null,
-        ...(providerAffinityResetAt !== undefined
-          ? { sinceCreatedAt: providerAffinityResetAt }
+        ...(sessionLookupSinceCreatedAt !== undefined
+          ? { sinceCreatedAt: sessionLookupSinceCreatedAt }
           : {}),
       };
 
@@ -229,10 +329,9 @@ export class AgentRunner {
       }
     }
 
-    const runId = uuidv4();
     const now = Date.now();
 
-    const runInsert = this.ctx.repos.run.insert({
+    const runInput = {
       id: runId,
       thread_id: item.threadId,
       persona_id: personaId,
@@ -252,7 +351,35 @@ export class AgentRunner {
       error: null,
       started_at: now,
       ended_at: null,
-    });
+    } as const;
+
+    const runInsert = this.ctx.lifecycleRuntime
+      ? this.ctx.lifecycleRuntime.transaction((transaction) => {
+          const inserted = this.ctx.repos.run.insert(runInput);
+          if (inserted.isErr()) return err(inserted.error);
+          const published = this.publishRunEvent(
+            'run.started.v1',
+            {
+              runId,
+              threadId: item.threadId,
+              personaId,
+              queueItemId: item.id,
+              provider: providerEntry.provider.name,
+              model,
+              status: 'running',
+            },
+            personaName,
+            transaction,
+          );
+          if (published.isErr()) {
+            this.ctx.logger.warn(
+              { err: published.error.message, runId, type: 'run.started.v1' },
+              'agent-runner: continuing after lifecycle run publication failure',
+            );
+          }
+          return ok(inserted.value);
+        })
+      : this.ctx.repos.run.insert(runInput);
 
     if (runInsert.isErr()) {
       // Mark A2A task as failed — run record creation failed, so the task cannot proceed.
@@ -289,7 +416,7 @@ export class AgentRunner {
       bridgeSecret,
     });
 
-    const runInput = {
+    const observedRunInput = {
       content,
       itemType: item.type,
       persona: personaName,
@@ -309,7 +436,7 @@ export class AgentRunner {
         {
           type: 'agent',
           name: 'foreground-run',
-          input: runInput,
+          input: observedRunInput,
           metadata: runMetadata,
           trace: {
             sessionId: item.threadId,
@@ -319,7 +446,7 @@ export class AgentRunner {
               `itemType:${item.type}`,
               `provider:${providerEntry.provider.name}`,
             ],
-            input: runInput,
+            input: observedRunInput,
             metadata: runMetadata,
           },
         },
@@ -443,7 +570,10 @@ export class AgentRunner {
               (contextManagement.triggerMetric === undefined ||
                 contextManagement.thresholdRatio === undefined ||
                 contextManagement.recentMessageCount === undefined ||
-                contextManagement.summarizer === undefined)
+                ((contextManagement.mode ?? 'summarizer') === 'observation'
+                  ? contextManagement.observer === undefined ||
+                    contextManagement.reducer === undefined
+                  : contextManagement.summarizer === undefined))
             ) {
               throw new Error(
                 `Provider "${providerEntry.provider.name}" has incomplete contextManagement configuration. Check agentRunner.providers.${providerEntry.provider.name}.contextManagement.`,
@@ -451,10 +581,13 @@ export class AgentRunner {
             }
             const enabledContextManagement = contextManagement?.enabled
               ? {
-                  triggerMetric: contextManagement.triggerMetric,
-                  thresholdRatio: contextManagement.thresholdRatio,
+                  triggerMetric: contextManagement.triggerMetric!,
+                  thresholdRatio: contextManagement.thresholdRatio!,
                   recentMessageCount: contextManagement.recentMessageCount,
+                  mode: contextManagement.mode ?? 'summarizer',
                   summarizer: contextManagement.summarizer,
+                  observer: contextManagement.observer,
+                  reducer: contextManagement.reducer,
                   reflectionThresholdChars: contextManagement.reflectionThresholdChars,
                 }
               : null;
@@ -519,8 +652,17 @@ export class AgentRunner {
               externalId &&
               !isScheduleTask
             ) {
-              const waitingResult = await connector.send(externalId, {
-                body: 'Thinking...',
+              const waitingResult = await this.sendLifecycleOutboundMessage({
+                content: 'Thinking...',
+                connector,
+                externalId,
+                runId,
+                threadId: item.threadId,
+                personaName,
+                channelName,
+                itemOrigin: 'run',
+                itemType: 'message',
+                messageId: `outbound:${item.id}:waiting`,
               });
               if (waitingResult.isErr()) {
                 this.ctx.logger.debug(
@@ -549,6 +691,11 @@ export class AgentRunner {
                 channelContext,
                 timeContext,
               ];
+              if (lifecycleRunContextAdditions) {
+                systemPromptParts.push(
+                  `Lifecycle Context Additions:\n${JSON.stringify(lifecycleRunContextAdditions)}`,
+                );
+              }
               if (!resumeSessionId && !isScheduleTask) {
                 const previous = await getPreviousContext();
                 if (previous.text) {
@@ -706,7 +853,7 @@ export class AgentRunner {
                   const pendingProviderToolTasks: Array<Promise<void>> = [];
                   // FIFO queue for tool events that lack a toolUseId (e.g. claude-code tool_use/tool_result
                   // streaming events). Events are sequential so FIFO order correctly pairs starts with ends.
-                  const pendingNoIdToolObservations: StartedObservationHandle[] = [];
+                  const pendingNoIdToolObservations: PendingNoIdProviderToolObservation[] = [];
 
                   // Materialize dynamic auth (OAuth bearers) on HTTP MCP
                   // entries before handing them to the provider. Providers
@@ -787,14 +934,33 @@ export class AgentRunner {
                           ) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
                             if (outputText) {
-                              const flushResult = await connector.send(externalId, {
-                                body: outputText,
+                              const originalOutputText = outputText;
+                              const flushIdentity = this.runOutboundDeliveryIdentity(
+                                item.id,
+                                `stream:${streamOutboundMessageIndex++}`,
+                              );
+                              const flushResult = await this.sendLifecycleOutboundMessage({
+                                content: outputText,
+                                connector,
+                                externalId,
+                                runId,
+                                threadId: item.threadId,
+                                personaName,
+                                channelName,
+                                itemOrigin: 'run',
+                                itemType: 'message',
+                                messageId: flushIdentity.messageId,
+                                idempotencyKey: flushIdentity.idempotencyKey,
                               });
                               if (flushResult.isErr()) {
                                 throw new Error(
                                   `channel send failed: ${flushResult.error.message}`,
                                 );
                               }
+                              fullOutputText = fullOutputText.endsWith(originalOutputText)
+                                ? `${fullOutputText.slice(0, -originalOutputText.length)}${flushResult.value.content}`
+                                : fullOutputText;
+                              hasReservedIntermediateTextOutbound = true;
                               outputText = '';
                               fullOutputText += '\n\n';
                             }
@@ -807,8 +973,22 @@ export class AgentRunner {
                                 event.messageType === 'mcp_tool_use' && event.serverName
                                   ? `mcp__${event.serverName}__${event.tool ?? ''}`
                                   : (event.tool ?? '');
-                              const toolCallResult = await connector.send(externalId, {
-                                body: formatToolCall(toolCallId),
+                              const toolNoticeIdentity = this.runOutboundDeliveryIdentity(
+                                item.id,
+                                `tool:${streamOutboundMessageIndex++}`,
+                              );
+                              const toolCallResult = await this.sendLifecycleOutboundMessage({
+                                content: formatToolCall(toolCallId),
+                                connector,
+                                externalId,
+                                runId,
+                                threadId: item.threadId,
+                                personaName,
+                                channelName,
+                                itemOrigin: 'run',
+                                itemType: 'message',
+                                messageId: toolNoticeIdentity.messageId,
+                                idempotencyKey: toolNoticeIdentity.idempotencyKey,
                               });
                               if (toolCallResult.isErr()) {
                                 this.ctx.logger.warn(
@@ -824,6 +1004,7 @@ export class AgentRunner {
                               runId,
                               threadId: item.threadId,
                               provider: providerEntry.provider.name,
+                              persona: personaName,
                             },
                             activeProviderToolObservations,
                             ignoredProviderToolUseIds,
@@ -935,6 +1116,10 @@ export class AgentRunner {
 
             let outputText = '';
             let fullOutputText = '';
+            const finalOutboundIdentity = this.runOutboundDeliveryIdentity(item.id);
+            let finalOutboundReservationHandled = false;
+            let streamOutboundMessageIndex = 0;
+            let hasReservedIntermediateTextOutbound = false;
             let resultSessionId: string | undefined;
             let usage: AgentUsage = {
               inputTokens: 0,
@@ -1058,36 +1243,61 @@ export class AgentRunner {
             } else if (connector !== undefined && externalId && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
               // during the stream when tool_use events were encountered (issue #102).
-              const sendResult = await connector.send(externalId, {
-                body: outputText,
+              const sendResult = await this.sendLifecycleOutboundMessage({
+                content: outputText,
+                persistedContent: fullOutputText,
+                connector,
+                externalId,
+                runId,
+                threadId: item.threadId,
+                personaName,
+                channelName,
+                itemOrigin: 'run',
+                itemType: 'message',
+                messageId: finalOutboundIdentity.messageId,
+                idempotencyKey: finalOutboundIdentity.idempotencyKey,
+                ...(hasReservedIntermediateTextOutbound ? { reservationContent: outputText } : {}),
               });
               if (sendResult.isErr()) {
                 throw new Error(`channel send failed: ${sendResult.error.message}`);
               }
+              outputText = sendResult.value.content;
+              fullOutputText = sendResult.value.fullContent;
+              finalOutboundReservationHandled = true;
             }
 
-            // Persist the outbound message BEFORE context rotation so that a fast
-            // user reply cannot be inserted ahead of the assistant turn in the DB.
-            // The message is stored immediately after delivery (issue #164).
-            if (!isA2ATask && !isScheduleTask) {
-              this.ctx.repos.message.insert({
-                id: uuidv4(),
+            // When streamed text was already flushed as physical outbound rows
+            // and the provider emits no final text segment, do not synthesize a
+            // final transcript row containing the previously flushed content.
+            if (
+              !isA2ATask &&
+              !isScheduleTask &&
+              !finalOutboundReservationHandled &&
+              !hasReservedIntermediateTextOutbound
+            ) {
+              const persistedOutbound = this.ctx.repos.message.insert({
+                id: finalOutboundIdentity.messageId,
                 thread_id: item.threadId,
                 direction: 'outbound',
                 content: JSON.stringify({ body: fullOutputText }),
-                idempotency_key: `outbound:${runId}`,
+                idempotency_key: finalOutboundIdentity.idempotencyKey,
                 provider_id: null,
                 run_id: runId,
               });
+              if (persistedOutbound.isErr()) {
+                throw new Error(
+                  `failed to persist outbound message: ${persistedOutbound.error.message}`,
+                );
+              }
             }
 
             // Check if context needs rotation (rolling window).
-            // Runs AFTER connector.send() and message.insert() so the user receives
-            // their response immediately — context rotation may invoke a summarizer
-            // LLM call that takes 5-15 s. The queue item stays in-flight (claimed)
-            // until run() returns, so the next item for this thread cannot be
-            // picked up until rotation completes, preserving per-thread ordering.
-            // (issue #164)
+            // Runs AFTER connector.send() and the final outbound reservation so
+            // the user receives their response before projection starts. The
+            // current queue item remains claimed until projection settles, which
+            // keeps ordering durable through the queue lease/recovery path while
+            // still allowing collaboration items to use the queue's existing
+            // in-flight bypass.
             if (this.ctx.contextRoller && enabledContextManagement && !isScheduleTask) {
               // Gate rotation on per-step usage when the provider reports
               // it; cumulative `usage` across a multi-tool agent loop can
@@ -1108,13 +1318,18 @@ export class AgentRunner {
               // the 524K threshold. Use cumulative `usage` for codex-cli
               // resumed runs so the roller fires when the session log
               // itself crosses the threshold.
-              const usageForRotation = ranOnResumedCodexSession
-                ? usage
-                : lastStepUsage ?? usage;
+              const usageForRotation = ranOnResumedCodexSession ? usage : (lastStepUsage ?? usage);
               const contextUsage: ContextUsage =
                 providerEntry.provider.estimateContextUsage(usageForRotation);
               const triggerMetric = enabledContextManagement.triggerMetric as ContextMetricName;
               const selectedMetricValue: number | undefined = contextUsage.metrics[triggerMetric];
+              let requiredContinuationError: Error | null = null;
+              let continuationEnsured = false;
+              const needsContinuationAfterRotation =
+                !strategy.supportsSessionResumption ||
+                strategy.requiresContinuationAfterContextRotation === true;
+              const canAutoContinueAfterRotation =
+                needsContinuationAfterRotation && !isA2ATask && item.type !== 'schedule';
               if (selectedMetricValue === undefined) {
                 this.ctx.logger.error(
                   {
@@ -1133,77 +1348,71 @@ export class AgentRunner {
                       inputTokens: contextUsage.inputTokens,
                       rawMetric: selectedMetricValue,
                       rawMetricName: triggerMetric,
+                      rotationCauseQueueItemId: item.id,
                     };
-                    // Route to observational memory path when configured with
-                    // session-observer; otherwise use the legacy summarizer.
-                    const useOM = enabledContextManagement.summarizer === 'session-observer';
-                    const rotation = useOM
-                      ? await this.ctx.contextRoller.checkAndRotateOM(
-                          item.threadId,
-                          personaId,
-                          contextUsagePayload,
-                          enabledContextManagement.thresholdRatio,
-                          enabledContextManagement.summarizer,
-                          'session-reflector',
-                          enabledContextManagement.reflectionThresholdChars,
-                          threadResult.isOk() && threadResult.value
-                            ? threadResult.value.metadata
-                            : null,
-                          threadResult.isOk() && threadResult.value
-                            ? threadResult.value.channel_id
-                            : undefined,
-                        )
-                      : await this.ctx.contextRoller.checkAndRotate(
-                          item.threadId,
-                          personaId,
-                          contextUsagePayload,
-                          enabledContextManagement.thresholdRatio,
-                          enabledContextManagement.summarizer,
-                        );
-
-                    // Some providers need a fresh turn after context rotation
-                    // to continue open work. Stateless providers need it
-                    // because rotation clears model history; stateful
-                    // Responses API providers also opt in because rotation
-                    // intentionally drops the previous_response_id chain.
-                    // Only auto-enqueue when the summarizer found open
-                    // threads — otherwise the task was complete and a
-                    // "continue" would cause the agent to invent work.
-                    const needsContinuationAfterRotation =
-                      !strategy.supportsSessionResumption ||
-                      strategy.requiresContinuationAfterContextRotation === true;
-                    if (
-                      rotation.rotated &&
-                      rotation.hasOpenThreads &&
-                      needsContinuationAfterRotation &&
-                      !isA2ATask &&
-                      item.type !== 'schedule'
-                    ) {
-                      const continueMessageId = uuidv4();
-                      this.ctx.repos.message.insert({
-                        id: continueMessageId,
-                        thread_id: item.threadId,
-                        direction: 'inbound',
-                        content: JSON.stringify({ body: 'continue' }),
-                        idempotency_key: `context-rotation-continue:${runId}`,
-                        provider_id: null,
-                        run_id: null,
+                    if (contextUsagePayload.ratio >= enabledContextManagement.thresholdRatio) {
+                      this.publishContextEvent('context.threshold_exceeded.v1', {
+                        runId,
+                        queueItemId: item.id,
+                        threadId: item.threadId,
+                        personaName,
+                        provider: providerEntry.provider.name,
+                        model,
+                        contextUsage: contextUsagePayload,
                       });
-                      const enqueueResult = this.ctx.queueManager.enqueue(
-                        item.threadId,
-                        'message',
-                        { personaId, content: 'continue' },
-                        continueMessageId,
-                      );
-                      if (enqueueResult.isOk()) {
-                        this.ctx.logger.info(
-                          { threadId: item.threadId, provider: providerEntry.provider.name },
-                          'agent-runner: auto-enqueued continuation after context rotation for stateless provider',
-                        );
-                      } else {
-                        this.ctx.logger.warn(
-                          { threadId: item.threadId, err: enqueueResult.error.message },
-                          'agent-runner: failed to auto-enqueue continuation after context rotation',
+
+                      try {
+                        const rotation = await this.runContextProjection({
+                          item,
+                          personaId,
+                          personaName,
+                          runId,
+                          model,
+                          provider: providerEntry.provider.name,
+                          contextUsage: contextUsagePayload,
+                          contextManagement: enabledContextManagement,
+                          threadMetadata:
+                            threadResult.isOk() && threadResult.value
+                              ? threadResult.value.metadata
+                              : null,
+                          channelId:
+                            threadResult.isOk() && threadResult.value
+                              ? threadResult.value.channel_id
+                              : undefined,
+                        });
+
+                        this.publishPostProjectionEvents({
+                          runId,
+                          queueItemId: item.id,
+                          threadId: item.threadId,
+                          personaName,
+                          provider: providerEntry.provider.name,
+                          model,
+                          contextUsage: contextUsagePayload,
+                          rotation,
+                        });
+
+                        if (
+                          rotation.rotated &&
+                          rotation.hasOpenThreads &&
+                          canAutoContinueAfterRotation
+                        ) {
+                          const continuation = this.enqueueContextContinuation(
+                            item.threadId,
+                            personaId,
+                            personaName,
+                            item.id,
+                          );
+                          if (continuation.isErr()) {
+                            requiredContinuationError = continuation.error;
+                          } else {
+                            continuationEnsured = true;
+                          }
+                        }
+                      } catch (e: unknown) {
+                        this.ctx.logger.error(
+                          { threadId: item.threadId, err: e },
+                          'agent-runner: context rotation failed',
                         );
                       }
                     }
@@ -1214,6 +1423,25 @@ export class AgentRunner {
                     'agent-runner: context rotation failed',
                   );
                 }
+              }
+
+              if (
+                !requiredContinuationError &&
+                !continuationEnsured &&
+                canAutoContinueAfterRotation
+              ) {
+                const repair = this.repairContextContinuationAfterDurableRotation({
+                  threadId: item.threadId,
+                  personaId,
+                  personaName,
+                  queueItemId: item.id,
+                });
+                if (repair.isErr()) {
+                  requiredContinuationError = repair.error;
+                }
+              }
+              if (requiredContinuationError) {
+                throw requiredContinuationError;
               }
             }
 
@@ -1229,17 +1457,40 @@ export class AgentRunner {
               },
             });
 
-            this.ctx.repos.run.updateStatus(runId, 'completed', {
-              ended_at: Date.now(),
-            });
+            const finalized = this.finalizeRunWithLifecycle(
+              runId,
+              'completed',
+              {
+                threadId: item.threadId,
+                personaId,
+                queueItemId: item.id,
+                provider: providerEntry.provider.name,
+                model,
+              },
+              personaName,
+              { ended_at: Date.now() },
+            );
+            if (finalized.isErr()) {
+              throw new Error(`failed to finalize completed run: ${finalized.error.message}`);
+            }
             runFinalized = true;
           } catch (cause) {
             if (typingInterval) clearInterval(typingInterval);
             const error = this.toError(cause);
-            this.ctx.repos.run.updateStatus(runId, 'failed', {
-              ended_at: Date.now(),
-              error: error.message,
-            });
+            const finalized = this.finalizeRunWithLifecycle(
+              runId,
+              'failed',
+              {
+                threadId: item.threadId,
+                personaId,
+                queueItemId: item.id,
+                provider: providerEntry.provider.name,
+                model,
+                error: error.message,
+              },
+              personaName,
+              { ended_at: Date.now(), error: error.message },
+            );
             // Mark A2A task as failed on agent execution error.
             if (isA2ATask && a2aTaskId) {
               this.ctx.repos.a2aTask
@@ -1251,6 +1502,11 @@ export class AgentRunner {
                   );
                 });
             }
+            if (finalized.isErr()) {
+              throw new Error(
+                `${error.message}; additionally failed to finalize failed run: ${finalized.error.message}`,
+              );
+            }
             runFinalized = true;
             throw error;
           }
@@ -1261,15 +1517,861 @@ export class AgentRunner {
     } catch (cause) {
       const error = this.toError(cause);
       if (!runFinalized) {
-        this.ctx.repos.run.updateStatus(runId, 'failed', {
-          ended_at: Date.now(),
-          error: error.message,
-        });
+        const finalized = this.finalizeRunWithLifecycle(
+          runId,
+          'failed',
+          {
+            threadId: item.threadId,
+            personaId,
+            queueItemId: item.id,
+            provider: providerEntry.provider.name,
+            model,
+            error: error.message,
+          },
+          personaName,
+          { ended_at: Date.now(), error: error.message },
+        );
+        if (finalized.isErr()) {
+          return err(
+            new Error(
+              `${error.message}; additionally failed to finalize failed run: ${finalized.error.message}`,
+            ),
+          );
+        }
       }
       return err(error);
     } finally {
       this.ctx.hostToolsBridge.unregisterRunAuthentication?.(runId);
     }
+  }
+
+  private interceptRunBeforeExecute(input: {
+    runId: string;
+    threadId: string;
+    personaName: string;
+    provider: string;
+    model: string;
+    queueItemId: string;
+    itemType: string;
+  }): Result<
+    { provider: string; model: string; contextAdditions?: Record<string, unknown> },
+    Error
+  > {
+    if (!this.ctx.lifecycleRuntime) {
+      return ok({ provider: input.provider, model: input.model });
+    }
+
+    const interception = this.ctx.lifecycleRuntime.intercept(
+      {
+        persona: input.personaName,
+        hook: 'run.before_execute',
+        itemOrigin: 'run',
+        itemType: 'run',
+      },
+      {
+        version: 'v1',
+        interceptionId: uuidv4(),
+        hook: 'run.before_execute',
+        context: this.lifecycleContext('run', input.runId, input.queueItemId, 'run'),
+        input: {
+          runId: input.runId,
+          provider: input.provider,
+          model: input.model,
+          persona: input.personaName,
+        },
+      },
+    );
+    if (interception.isErr()) {
+      return err(new Error(`Lifecycle run interception failed: ${interception.error.message}`));
+    }
+    if (interception.value.outcome !== 'allow') {
+      return err(new Error(`Lifecycle run policy blocked execution: ${interception.value.reason}`));
+    }
+
+    const runInput = interception.value.input.input as {
+      provider: string;
+      model: string;
+      contextAdditions?: Record<string, unknown>;
+    };
+    return ok({
+      provider: runInput.provider,
+      model: runInput.model,
+      ...(runInput.contextAdditions ? { contextAdditions: runInput.contextAdditions } : {}),
+    });
+  }
+
+  private runOutboundDeliveryIdentity(
+    queueItemId: string,
+    segment: string = 'final',
+  ): OutboundDeliveryIdentity {
+    const key =
+      segment === 'final' ? `outbound:${queueItemId}` : `outbound:${queueItemId}:${segment}`;
+    return {
+      messageId: key,
+      idempotencyKey: key,
+    };
+  }
+
+  private latestDurableContextRotationState(
+    threadId: string,
+  ): DurableContextRotationState | undefined {
+    const memoryItems = this.ctx.repos.memory.findByThread(threadId);
+    if (memoryItems.isErr()) {
+      this.ctx.logger.warn(
+        { threadId, err: memoryItems.error.message },
+        'agent-runner: failed to inspect durable context rotation boundary',
+      );
+      return undefined;
+    }
+    let latest: DurableContextRotationState | undefined;
+    for (const item of memoryItems.value) {
+      try {
+        const metadata = JSON.parse(item.metadata) as unknown;
+        if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) continue;
+        const record = metadata as Record<string, unknown>;
+        const source = typeof record.source === 'string' ? record.source : undefined;
+        const isObservationRotation =
+          item.type === 'observation' &&
+          (source === 'context-roller-om' ||
+            source === 'context-projector-reduced-observation-tombstone');
+        const isSummaryRotation = item.type === 'summary' && source === 'context-roller';
+        if (!isObservationRotation && !isSummaryRotation) {
+          continue;
+        }
+        const rotatedThroughTs = Number(record.rotatedThroughTs);
+        if (!Number.isFinite(rotatedThroughTs) || rotatedThroughTs <= 0) continue;
+        const rotationPersistedAt = Number(item.created_at);
+        const durableBoundary =
+          Number.isFinite(rotationPersistedAt) && rotationPersistedAt > 0
+            ? Math.max(rotatedThroughTs, rotationPersistedAt)
+            : rotatedThroughTs;
+        if (latest !== undefined && latest.boundary >= durableBoundary) continue;
+        latest = {
+          boundary: durableBoundary,
+          hasOpenThreads: isObservationRotation
+            ? this.observationRotationHasOpenThreads(record)
+            : this.summaryRotationHasOpenThreads(record),
+          ...(this.readRotationCauseQueueItemId(record)
+            ? { rotationCauseQueueItemId: this.readRotationCauseQueueItemId(record) }
+            : {}),
+        };
+      } catch {
+        continue;
+      }
+    }
+    return latest;
+  }
+
+  private observationRotationHasOpenThreads(record: Record<string, unknown>): boolean {
+    return (
+      record.taskComplete === false &&
+      typeof record.suggestedContinuation === 'string' &&
+      record.suggestedContinuation.trim().length > 0
+    );
+  }
+
+  private summaryRotationHasOpenThreads(record: Record<string, unknown>): boolean {
+    if (record.hasOpenThreads === true) return true;
+    const openThreadCount = Number(record.openThreadCount);
+    return Number.isFinite(openThreadCount) && openThreadCount > 0;
+  }
+
+  private readRotationCauseQueueItemId(record: Record<string, unknown>): string | undefined {
+    if (
+      typeof record.rotationCauseQueueItemId === 'string' &&
+      record.rotationCauseQueueItemId.length > 0
+    ) {
+      return record.rotationCauseQueueItemId;
+    }
+    const contextUsage = record.contextUsage;
+    if (!contextUsage || typeof contextUsage !== 'object' || Array.isArray(contextUsage)) {
+      return undefined;
+    }
+    const usageRecord = contextUsage as Record<string, unknown>;
+    return typeof usageRecord.rotationCauseQueueItemId === 'string' &&
+      usageRecord.rotationCauseQueueItemId.length > 0
+      ? usageRecord.rotationCauseQueueItemId
+      : undefined;
+  }
+
+  private async sendLifecycleOutboundMessage(input: {
+    content: string;
+    persistedContent?: string;
+    connector: ChannelConnector;
+    externalId: string;
+    runId: string;
+    threadId: string;
+    personaName: string;
+    channelName?: string;
+    itemOrigin: 'run' | 'tool';
+    itemType: 'message';
+    messageId: string;
+    idempotencyKey?: string;
+    reservationContent?: string;
+  }): Promise<Result<{ content: string; fullContent: string; skipped: boolean }, Error>> {
+    const originalContent = input.content;
+    let content = input.content;
+    let fullContent = input.persistedContent ?? input.content;
+    let idempotentReservationInserted = false;
+
+    if (this.ctx.lifecycleRuntime) {
+      const lifecycleContent = buildLifecycleContentPreview(content);
+      const interception = this.ctx.lifecycleRuntime.intercept(
+        {
+          persona: input.personaName,
+          hook: 'message.before_send',
+          itemOrigin: input.itemOrigin,
+          itemType: input.itemType,
+          ...(input.channelName ? { channel: input.channelName } : {}),
+          messageSource: 'outbound',
+        },
+        {
+          version: 'v1',
+          interceptionId: uuidv4(),
+          hook: 'message.before_send',
+          context: this.lifecycleContext('message', input.messageId, input.runId, input.itemOrigin),
+          input: {
+            messageId: input.messageId,
+            content: lifecycleContent.content,
+            source: 'outbound',
+            recipientId: input.externalId,
+            ...(input.channelName ? { channel: input.channelName } : {}),
+            persona: input.personaName,
+          },
+        },
+      );
+      if (interception.isErr()) {
+        return err(
+          new Error(`Lifecycle outbound interception failed: ${interception.error.message}`),
+        );
+      }
+      if (interception.value.outcome !== 'allow') {
+        return err(
+          new Error(`Lifecycle outbound policy blocked delivery: ${interception.value.reason}`),
+        );
+      }
+      const resolvedContent = resolveLifecycleOutboundContent({
+        originalContent: content,
+        preview: lifecycleContent,
+        interceptedContent: (interception.value.input.input as { content: string }).content,
+      });
+      if (resolvedContent.isErr()) {
+        return err(resolvedContent.error);
+      }
+      content = resolvedContent.value;
+    }
+
+    fullContent = input.persistedContent
+      ? input.persistedContent.endsWith(originalContent)
+        ? `${input.persistedContent.slice(0, -originalContent.length)}${content}`
+        : content
+      : content;
+
+    if (input.idempotencyKey) {
+      const reservationContent = input.reservationContent ?? fullContent;
+      const reserved = this.ctx.repos.message.insertIfAbsent({
+        id: input.messageId,
+        thread_id: input.threadId,
+        direction: 'outbound',
+        content: JSON.stringify({ body: reservationContent }),
+        idempotency_key: input.idempotencyKey,
+        provider_id: null,
+        run_id: input.runId,
+      });
+      if (reserved.isErr()) {
+        return err(new Error(`failed to reserve outbound delivery: ${reserved.error.message}`));
+      }
+      if (!reserved.value.inserted) {
+        this.ctx.logger.info(
+          { runId: input.runId, messageId: input.messageId },
+          'agent-runner: skipping already reserved outbound delivery',
+        );
+        return ok({ content, fullContent, skipped: true });
+      }
+      idempotentReservationInserted = true;
+    }
+
+    const sendResult = await input.connector.send(input.externalId, { body: content });
+    if (sendResult.isErr()) {
+      if (input.idempotencyKey && idempotentReservationInserted) {
+        const cleared = this.ctx.repos.message.deleteByIdempotencyKey(input.idempotencyKey);
+        if (cleared.isErr()) {
+          return err(
+            new Error(
+              `channel send failed: ${sendResult.error.message}; failed to clear outbound delivery reservation: ${cleared.error.message}`,
+            ),
+          );
+        }
+      }
+      this.publishMessageSendEvent('message.send_failed.v1', input, content, {
+        status: 'failed',
+        errorLength: sendResult.error.message.length,
+      });
+      return err(new Error(sendResult.error.message));
+    }
+
+    this.publishMessageSendEvent('message.sent.v1', input, content, { status: 'sent' });
+    return ok({ content, fullContent, skipped: false });
+  }
+
+  private publishMessageSendEvent(
+    type: 'message.sent.v1' | 'message.send_failed.v1',
+    input: {
+      runId: string;
+      threadId: string;
+      personaName: string;
+      channelName?: string;
+      itemOrigin: 'run' | 'tool';
+      itemType: 'message';
+      messageId: string;
+      externalId: string;
+    },
+    content: string,
+    metadata: Record<string, string | number | boolean | null>,
+  ): void {
+    if (!this.ctx.lifecycleRuntime) return;
+    const publication = this.ctx.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'message',
+        input.messageId,
+        input.runId,
+        input.itemOrigin,
+        [
+          { type: 'message', id: input.messageId },
+          { type: 'thread', id: input.threadId },
+          { type: 'run', id: input.runId },
+        ],
+        {
+          direction: 'outbound',
+          source: input.itemOrigin,
+          contentLength: content.length,
+          ...metadata,
+        },
+      ),
+      persona: input.personaName,
+      itemOrigin: input.itemOrigin,
+      itemType: input.itemType,
+      ...(input.channelName ? { channel: input.channelName } : {}),
+      messageSource: 'outbound',
+    });
+    if (publication.isErr()) {
+      this.ctx.logger.error(
+        { err: publication.error.message, runId: input.runId, messageId: input.messageId, type },
+        'agent-runner: failed to publish outbound lifecycle event',
+      );
+    }
+  }
+
+  private async runContextProjection(input: {
+    item: QueueItem;
+    personaId: string;
+    personaName: string;
+    runId: string;
+    provider: string;
+    model: string;
+    contextUsage: ResolvedContextUsage;
+    contextManagement: {
+      mode: unknown;
+      thresholdRatio: number;
+      summarizer?: string;
+      observer?: string;
+      reducer?: string;
+      reflectionThresholdChars: number;
+    };
+    threadMetadata: string | null;
+    channelId?: string;
+  }): Promise<ContextRotationResult> {
+    const noRotation: ContextRotationResult = { rotated: false, hasOpenThreads: false };
+    if (!this.ctx.contextRoller) return noRotation;
+
+    if (input.contextManagement.mode === 'observation') {
+      if (!input.contextManagement.observer || !input.contextManagement.reducer) {
+        this.ctx.logger.error(
+          {
+            threadId: input.item.threadId,
+            provider: input.provider,
+            mode: input.contextManagement.mode,
+          },
+          'agent-runner: context observation mode missing observer or reducer handler',
+        );
+        return noRotation;
+      }
+
+      return await this.ctx.contextRoller.checkAndRotateOM(
+        input.item.threadId,
+        input.personaId,
+        input.contextUsage,
+        input.contextManagement.thresholdRatio,
+        input.contextManagement.observer,
+        input.contextManagement.reducer,
+        input.contextManagement.reflectionThresholdChars,
+        input.threadMetadata,
+        input.channelId,
+      );
+    }
+
+    if (!input.contextManagement.summarizer) {
+      this.ctx.logger.error(
+        {
+          threadId: input.item.threadId,
+          provider: input.provider,
+          mode: input.contextManagement.mode,
+        },
+        'agent-runner: context summarizer mode missing summarizer handler',
+      );
+      return noRotation;
+    }
+
+    return await this.ctx.contextRoller.checkAndRotate(
+      input.item.threadId,
+      input.personaId,
+      input.contextUsage,
+      input.contextManagement.thresholdRatio,
+      input.contextManagement.summarizer,
+    );
+  }
+
+  private publishPostProjectionEvents(input: {
+    runId: string;
+    queueItemId: string;
+    threadId: string;
+    personaName: string;
+    provider: string;
+    model: string;
+    contextUsage: ResolvedContextUsage;
+    rotation: ContextRotationResult;
+  }): void {
+    if (input.rotation.reduction?.thresholdExceeded) {
+      this.publishContextEvent('context.observation_log_threshold_exceeded.v1', {
+        ...input,
+        observationChars: input.rotation.reduction.observationChars,
+        thresholdChars: input.rotation.reduction.thresholdChars,
+        reduced: input.rotation.reduction.reduced,
+        projectionId: input.rotation.reduction.projectionId,
+        memoryItemId: input.rotation.reduction.memoryItemId,
+      });
+    }
+
+    if (!input.rotation.rotated) {
+      return;
+    }
+
+    this.publishContextEvent('context.rotated.v1', {
+      ...input,
+      hasOpenThreads: input.rotation.hasOpenThreads,
+    });
+  }
+
+  private enqueueContextContinuation(
+    threadId: string,
+    personaId: string,
+    personaName: string,
+    queueItemId: string,
+  ): Result<void, Error> {
+    const continuationKey = this.contextContinuationKey(queueItemId);
+    const inserted = this.ctx.repos.message.insertIfAbsent({
+      id: continuationKey,
+      thread_id: threadId,
+      direction: 'inbound',
+      content: JSON.stringify({ body: 'continue' }),
+      idempotency_key: continuationKey,
+      provider_id: null,
+      run_id: null,
+    });
+    if (inserted.isErr()) {
+      const error = new Error(
+        `failed to persist continuation after context rotation: ${inserted.error.message}`,
+      );
+      this.ctx.logger.warn(
+        { threadId, err: inserted.error.message },
+        'agent-runner: failed to persist continuation after context rotation',
+      );
+      return err(error);
+    }
+    if (!inserted.value.inserted) {
+      this.ctx.logger.info(
+        { threadId, messageId: inserted.value.message.id },
+        'agent-runner: continuation after context rotation already persisted, ensuring queue item',
+      );
+    }
+
+    const enqueueResult = this.ctx.queueManager.enqueueWithId(
+      continuationKey,
+      threadId,
+      'message',
+      { personaId, content: 'continue' },
+      inserted.value.message.id,
+      { persona: personaName, itemType: 'message' },
+    );
+    if (enqueueResult.isOk()) {
+      this.ctx.logger.info(
+        { threadId },
+        'agent-runner: auto-enqueued continuation after context rotation for stateless provider',
+      );
+      return ok(undefined);
+    } else {
+      const error = new Error(
+        `failed to enqueue continuation after context rotation: ${enqueueResult.error.message}`,
+      );
+      this.ctx.logger.warn(
+        { threadId, err: enqueueResult.error.message },
+        'agent-runner: failed to auto-enqueue continuation after context rotation',
+      );
+      return err(error);
+    }
+  }
+
+  private repairContextContinuationAfterDurableRotation(input: {
+    threadId: string;
+    personaId: string;
+    personaName: string;
+    queueItemId: string;
+  }): Result<boolean, Error> {
+    const continuationKey = this.contextContinuationKey(input.queueItemId);
+    let shouldEnsureContinuation = false;
+    try {
+      shouldEnsureContinuation =
+        this.ctx.repos.message.existsByIdempotencyKey(continuationKey) === true;
+    } catch (cause) {
+      return err(
+        new Error(
+          `failed to inspect continuation after context rotation: ${
+            cause instanceof Error ? cause.message : String(cause)
+          }`,
+        ),
+      );
+    }
+
+    if (!shouldEnsureContinuation) {
+      const rotation = this.latestDurableContextRotationState(input.threadId);
+      shouldEnsureContinuation =
+        rotation?.hasOpenThreads === true &&
+        rotation.rotationCauseQueueItemId === input.queueItemId;
+    }
+
+    if (!shouldEnsureContinuation) {
+      return ok(false);
+    }
+
+    const ensured = this.enqueueContextContinuation(
+      input.threadId,
+      input.personaId,
+      input.personaName,
+      input.queueItemId,
+    );
+    if (ensured.isErr()) return err(ensured.error);
+    return ok(true);
+  }
+
+  private contextContinuationKey(queueItemId: string): string {
+    return `context-rotation-continue:${queueItemId}`;
+  }
+
+  private publishContextEvent(
+    type:
+      | 'context.threshold_exceeded.v1'
+      | 'context.rotated.v1'
+      | 'context.observation_log_threshold_exceeded.v1',
+    input: {
+      runId: string;
+      queueItemId: string;
+      threadId: string;
+      personaName: string;
+      provider: string;
+      model: string;
+      contextUsage: ResolvedContextUsage;
+      hasOpenThreads?: boolean;
+      observationChars?: number;
+      thresholdChars?: number;
+      reduced?: boolean;
+      projectionId?: string;
+      memoryItemId?: string;
+    },
+  ): void {
+    if (!this.ctx.lifecycleRuntime) return;
+    const projectionId = input.projectionId ?? `context-projection:${input.runId}`;
+    const publication = this.ctx.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'context_projection',
+        projectionId,
+        input.runId,
+        'context',
+        [
+          { type: 'context_projection', id: projectionId },
+          { type: 'thread', id: input.threadId },
+          { type: 'run', id: input.runId },
+          { type: 'queue_item', id: input.queueItemId },
+          ...(input.memoryItemId ? [{ type: 'memory_item', id: input.memoryItemId }] : []),
+        ],
+        {
+          provider: input.provider,
+          model: input.model,
+          ratio: input.contextUsage.ratio,
+          inputTokens: input.contextUsage.inputTokens,
+          rawMetric: input.contextUsage.rawMetric,
+          rawMetricName: input.contextUsage.rawMetricName,
+          ...(input.hasOpenThreads !== undefined ? { hasOpenThreads: input.hasOpenThreads } : {}),
+          ...(input.observationChars !== undefined
+            ? { observationChars: input.observationChars }
+            : {}),
+          ...(input.thresholdChars !== undefined ? { thresholdChars: input.thresholdChars } : {}),
+          ...(input.reduced !== undefined ? { reduced: input.reduced } : {}),
+        },
+      ),
+      persona: input.personaName,
+      itemOrigin: 'context',
+      itemType: 'context_projection',
+    });
+    if (publication.isErr()) {
+      this.ctx.logger.error(
+        { err: publication.error.message, runId: input.runId, type },
+        'agent-runner: failed to publish context lifecycle event',
+      );
+    }
+  }
+
+  private finalizeRunWithLifecycle(
+    runId: string,
+    status: 'completed' | 'failed',
+    eventInput: {
+      threadId: string;
+      personaId: string;
+      queueItemId: string;
+      provider: string;
+      model: string;
+      error?: string;
+    },
+    personaName: string,
+    timestamps: { ended_at: number; error?: string },
+  ): Result<void, Error> {
+    if (!this.ctx.lifecycleRuntime) {
+      const updated = this.ctx.repos.run.updateStatus(runId, status, timestamps);
+      return updated.isErr() ? err(new Error(updated.error.message)) : ok(undefined);
+    }
+    const result = this.ctx.lifecycleRuntime.transaction((transaction) => {
+      const updated = this.ctx.repos.run.updateStatus(runId, status, timestamps);
+      if (updated.isErr()) return err(updated.error);
+      const published = this.publishRunEvent(
+        status === 'completed' ? 'run.completed.v1' : 'run.failed.v1',
+        {
+          runId,
+          threadId: eventInput.threadId,
+          personaId: eventInput.personaId,
+          queueItemId: eventInput.queueItemId,
+          provider: eventInput.provider,
+          model: eventInput.model,
+          status,
+          ...(eventInput.error ? { errorLength: eventInput.error.length } : {}),
+        },
+        personaName,
+        transaction,
+      );
+      if (published.isErr()) {
+        this.ctx.logger.warn(
+          {
+            err: published.error.message,
+            runId,
+            status,
+            type: status === 'completed' ? 'run.completed.v1' : 'run.failed.v1',
+          },
+          'agent-runner: continuing after lifecycle run publication failure',
+        );
+      }
+      return ok(undefined);
+    });
+    if (result.isErr()) {
+      this.ctx.logger.error(
+        { err: result.error.message, runId, status },
+        'agent-runner: failed to finalize run lifecycle event',
+      );
+    }
+    return result.isErr() ? err(new Error(result.error.message)) : ok(undefined);
+  }
+
+  private insertAndFinalizePreExecutionFailedRun(
+    runId: string,
+    input: {
+      threadId: string;
+      personaId: string;
+      queueItemId: string;
+      provider: string;
+      model: string;
+      reasoningEffort?: ReasoningEffort | null;
+      error: string;
+    },
+    personaName: string,
+  ): Result<void, Error> {
+    const inserted = this.ctx.repos.run.insert({
+      id: runId,
+      thread_id: input.threadId,
+      persona_id: input.personaId,
+      provider_name: input.provider,
+      model_name: input.model,
+      reasoning_effort: input.reasoningEffort ?? null,
+      sandbox_id: null,
+      session_id: null,
+      status: 'running',
+      parent_run_id: null,
+      queue_item_id: input.queueItemId,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      error: null,
+      started_at: Date.now(),
+      ended_at: null,
+    });
+    if (inserted.isErr()) {
+      return err(new Error(inserted.error.message));
+    }
+    return this.finalizeRunWithLifecycle(
+      runId,
+      'failed',
+      {
+        threadId: input.threadId,
+        personaId: input.personaId,
+        queueItemId: input.queueItemId,
+        provider: input.provider,
+        model: input.model,
+        error: input.error,
+      },
+      personaName,
+      { ended_at: Date.now(), error: input.error },
+    );
+  }
+
+  private publishRunEvent(
+    type: 'run.started.v1' | 'run.completed.v1' | 'run.failed.v1',
+    input: {
+      runId: string;
+      threadId: string;
+      personaId: string;
+      queueItemId: string;
+      provider: string;
+      model: string;
+      status: string;
+      errorLength?: number;
+    },
+    personaName: string,
+    transaction: TransactionContext,
+  ): Result<void, Error> {
+    if (!this.ctx.lifecycleRuntime) return ok(undefined);
+    const publication = this.ctx.lifecycleRuntime.publish(
+      {
+        event: this.lifecycleEvent(
+          type,
+          'run',
+          input.runId,
+          input.queueItemId,
+          'run',
+          [
+            { type: 'run', id: input.runId },
+            { type: 'thread', id: input.threadId },
+            { type: 'persona', id: input.personaId },
+            { type: 'queue_item', id: input.queueItemId },
+          ],
+          {
+            provider: input.provider,
+            model: input.model,
+            status: input.status,
+            ...(input.errorLength !== undefined ? { errorLength: input.errorLength } : {}),
+          },
+        ),
+        persona: personaName,
+        itemOrigin: 'run',
+        itemType: 'run',
+      },
+      transaction,
+    );
+    return publication.isErr() ? err(new Error(publication.error.message)) : ok(undefined);
+  }
+
+  private publishProviderToolLifecycleEvent(
+    type: 'provider.tool.started.v1' | 'provider.tool.completed.v1',
+    metadata: {
+      runId: string;
+      threadId: string;
+      provider: string;
+      persona: string;
+    },
+    event: {
+      messageType: string;
+      tool?: string;
+      toolUseId?: string;
+      isError?: boolean;
+      serverName?: string;
+    },
+    toolCallIdOverride?: string,
+  ): void {
+    if (!this.ctx.lifecycleRuntime) return;
+    const toolCallId = toolCallIdOverride ?? event.toolUseId ?? uuidv4();
+    const publication = this.ctx.lifecycleRuntime.publish({
+      event: this.lifecycleEvent(
+        type,
+        'tool_call',
+        toolCallId,
+        metadata.runId,
+        'run',
+        [
+          { type: 'tool_call', id: toolCallId },
+          { type: 'run', id: metadata.runId },
+          { type: 'thread', id: metadata.threadId },
+        ],
+        {
+          provider: metadata.provider,
+          toolName: event.tool ?? event.messageType,
+          messageType: event.messageType,
+          ...(event.serverName ? { serverName: event.serverName } : {}),
+          status:
+            type === 'provider.tool.started.v1' ? 'started' : event.isError ? 'error' : 'completed',
+        },
+      ),
+      persona: metadata.persona,
+      itemOrigin: 'run',
+      itemType: 'tool_call',
+    });
+    if (publication.isErr()) {
+      this.ctx.logger.error(
+        { err: publication.error.message, runId: metadata.runId, type },
+        'agent-runner: failed to publish provider tool lifecycle event',
+      );
+    }
+  }
+
+  private lifecycleContext(
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+  ): LifecycleEventEnvelope['context'] {
+    return {
+      aggregate: { type: aggregateType, id: aggregateId },
+      correlationId,
+      recursion: { depth: 0, maxDepth: 8 },
+      provenance: { source, sourceEventIds: [], sourceReferences: [] },
+    };
+  }
+
+  private lifecycleEvent(
+    type: LifecycleEventEnvelope['type'],
+    aggregateType: string,
+    aggregateId: string,
+    correlationId: string,
+    source: string,
+    references: LifecycleEventEnvelope['payload']['references'],
+    metadata: LifecycleEventEnvelope['payload']['metadata'],
+  ): LifecycleEventEnvelope {
+    return {
+      version: 'v1',
+      type,
+      eventId: uuidv4(),
+      occurredAt: new Date().toISOString(),
+      context: this.lifecycleContext(aggregateType, aggregateId, correlationId, source),
+      payload: { references, metadata },
+    };
   }
 
   private toError(cause: unknown): Error {
@@ -1282,11 +2384,12 @@ export class AgentRunner {
       runId: string;
       threadId: string;
       provider: string;
+      persona: string;
     },
     activeProviderToolObservations: Map<string, StartedObservationHandle>,
     ignoredProviderToolUseIds: Set<string>,
     pendingProviderToolTasks: Array<Promise<void>>,
-    pendingNoIdToolObservations: StartedObservationHandle[],
+    pendingNoIdToolObservations: PendingNoIdProviderToolObservation[],
     event: {
       messageType: string;
       tool?: string;
@@ -1313,6 +2416,7 @@ export class AgentRunner {
     }
 
     if (this.isProviderToolStartEvent(event.messageType) && event.toolUseId) {
+      this.publishProviderToolLifecycleEvent('provider.tool.started.v1', metadata, event);
       const observation = this.ctx.observability.startWithTraceparent(traceparent, {
         type: 'tool',
         name: this.getProviderToolObservationName(event),
@@ -1330,6 +2434,7 @@ export class AgentRunner {
     }
 
     if (this.isProviderToolResultEvent(event.messageType) && event.toolUseId) {
+      this.publishProviderToolLifecycleEvent('provider.tool.completed.v1', metadata, event);
       const observation = activeProviderToolObservations.get(event.toolUseId);
       if (!observation) {
         return;
@@ -1347,14 +2452,20 @@ export class AgentRunner {
 
     // Handle result events for tools that had no toolUseId — match by FIFO order.
     if (this.isProviderToolResultEvent(event.messageType) && !event.toolUseId) {
-      const observation = pendingNoIdToolObservations.shift();
-      if (observation) {
-        observation.update({
+      const pending = pendingNoIdToolObservations.shift();
+      this.publishProviderToolLifecycleEvent(
+        'provider.tool.completed.v1',
+        metadata,
+        event,
+        pending?.toolCallId,
+      );
+      if (pending) {
+        pending.observation.update({
           output: event.output,
           level: event.isError ? 'ERROR' : undefined,
           statusMessage: event.isError ? 'Tool call returned an error' : undefined,
         });
-        observation.end();
+        pending.observation.end();
       }
       return;
     }
@@ -1365,6 +2476,13 @@ export class AgentRunner {
 
     // Start events without toolUseId: track with FIFO queue so we can end them when the
     // matching result event arrives. This avoids the zero-latency observation problem.
+    const noIdToolCallId = uuidv4();
+    this.publishProviderToolLifecycleEvent(
+      'provider.tool.started.v1',
+      metadata,
+      event,
+      noIdToolCallId,
+    );
     const noIdObservation = this.ctx.observability.startWithTraceparent(traceparent, {
       type: 'tool',
       name: this.getProviderToolObservationName(event),
@@ -1376,12 +2494,15 @@ export class AgentRunner {
         serverName: event.serverName ?? null,
       },
     });
-    pendingNoIdToolObservations.push(noIdObservation);
+    pendingNoIdToolObservations.push({
+      observation: noIdObservation,
+      toolCallId: noIdToolCallId,
+    });
   }
 
   private finishProviderToolObservations(
     activeProviderToolObservations: Map<string, StartedObservationHandle>,
-    pendingNoIdToolObservations: StartedObservationHandle[],
+    pendingNoIdToolObservations: PendingNoIdProviderToolObservation[],
     update?: {
       level?: 'ERROR';
       statusMessage?: string;
@@ -1396,11 +2517,11 @@ export class AgentRunner {
     activeProviderToolObservations.clear();
 
     // End any unmatched no-id observations (e.g. on error path where result never arrived)
-    for (const observation of pendingNoIdToolObservations) {
+    for (const pending of pendingNoIdToolObservations) {
       if (update) {
-        observation.update(update);
+        pending.observation.update(update);
       }
-      observation.end();
+      pending.observation.end();
     }
     pendingNoIdToolObservations.splice(0);
   }

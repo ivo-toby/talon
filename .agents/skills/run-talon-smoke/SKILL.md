@@ -131,6 +131,8 @@ Report these facts:
 - mode used: `fake`, `live`, or `both`
 - whether `npm run rebuild:sqlite` was needed
 - `talonctl doctor` result
+- lifecycle handler status from `talonctl lifecycle handlers` when the smoke
+  config enables lifecycle handlers
 - terminal client auth result
 - exact prompt and response
 - DB evidence: thread/message/queue/run counts and last outbound body

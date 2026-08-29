@@ -33,6 +33,10 @@ import {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  LifecycleEventRepository,
+  LifecycleDeliveryRepository,
+  LifecycleSignalRepository,
+  BehaviorSignalRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
@@ -43,7 +47,7 @@ import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
-import { DaemonError } from '../core/errors/error-types.js';
+import { DaemonError, LifecycleError } from '../core/errors/error-types.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
 import { PersonaLoader } from '../personas/persona-loader.js';
@@ -69,7 +73,7 @@ import { CodexCliProvider } from '../providers/codex-cli-provider.js';
 import { OpenAiCompatibleProvider } from '../providers/openai-compatible-provider.js';
 import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider-registry.js';
 import { recoverFromCrash } from './lifecycle.js';
-import { ContextRoller } from './context-roller.js';
+import { ContextRoller, type SummarizerRunFn } from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
 import { loadToolInstructions } from '../tools/tool-instructions.js';
@@ -77,6 +81,68 @@ import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import { LifecycleEventBus } from '../lifecycle/lifecycle-event-bus.js';
+import { LifecycleDispatcher } from '../lifecycle/lifecycle-dispatcher.js';
+import { CapturedLifecycleHandlerExecutor } from '../lifecycle/handler-executor.js';
+import type {
+  LifecycleRuntimeCapability,
+  LifecycleRuntimeHandler,
+} from '../lifecycle/handler-executor.js';
+import { LifecycleInterceptorEngine } from '../lifecycle/interceptors/interceptor-engine.js';
+import { nativeAllowInterceptor } from '../lifecycle/interceptors/native-example-handlers.js';
+import { SubAgentLifecycleAdapter } from '../lifecycle/adapters/subagent-lifecycle-adapter.js';
+import { createLifecycleHandlerRegistry } from '../lifecycle/handler-registry.js';
+import { LifecycleRuntime } from '../lifecycle/lifecycle-runtime.js';
+import {
+  BehaviorSignalProjector,
+  BehaviorReviewService,
+  NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_REF,
+  NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_VERSION,
+  createBehaviorSignalRouter,
+} from '../lifecycle/behavior/index.js';
+import {
+  LifecycleTelemetry,
+  LoggerLifecycleMetricsRecorder,
+} from '../lifecycle/telemetry/index.js';
+import {
+  LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
+  LIFECYCLE_EVENT_INPUT_CONTRACT,
+  LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
+  LIFECYCLE_SIGNAL_INPUT_CONTRACT,
+  LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+  type LifecycleHandlerResult,
+} from '../lifecycle/contracts/index.js';
+
+/** Lifecycle attachment requires both a loaded capability and persona opt-in. */
+export function hasExplicitLifecycleSubagentAuthority(
+  subagents: readonly string[] | undefined,
+  implementationRef: string,
+): boolean {
+  return subagents?.includes(implementationRef) ?? false;
+}
+
+export function supportsLifecycleBootstrapHandler(
+  runtimeKind: 'native' | 'subagent',
+  mode: 'event' | 'signal' | 'interceptor',
+): boolean {
+  return runtimeKind === 'native' || mode !== 'interceptor';
+}
+
+function nativeNoSignalSuccess(): Promise<Result<LifecycleHandlerResult, LifecycleError>> {
+  return Promise.resolve(
+    ok({
+      outcome: 'success',
+      outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+      signals: [],
+    }),
+  );
+}
+
+function nativeInterceptorDispatcherRejection(): Promise<
+  Result<LifecycleHandlerResult, LifecycleError>
+> {
+  return Promise.resolve(err(new LifecycleError('Lifecycle interceptors are not dispatcher jobs')));
+}
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -152,6 +218,10 @@ export async function bootstrap(
   BaseRepository.seedMonotonicClockFromDb(db);
 
   // 4. Create repositories
+  const audit = new AuditRepository(db);
+  const auditStore = new RepositoryAuditStore(audit);
+  const auditLogger = new AuditLogger(logger, auditStore);
+  const lifecycleMetrics = new LoggerLifecycleMetricsRecorder(logger);
   const repos = {
     queue: new QueueRepository(db),
     thread: new ThreadRepository(db),
@@ -161,19 +231,25 @@ export async function bootstrap(
     executionEnv: new ExecutionEnvRepository(db),
     executionEnvCheckpoint: new ExecutionEnvCheckpointRepository(db),
     schedule: new ScheduleRepository(db),
-    audit: new AuditRepository(db),
+    audit,
     message: new MessageRepository(db),
     run: new RunRepository(db),
     binding: new BindingRepository(db),
     memory: new MemoryRepository(db),
     a2aTask: new A2ATaskRepository(db),
+    lifecycleEvent: new LifecycleEventRepository(db),
+    lifecycleDelivery: new LifecycleDeliveryRepository(db, {
+      auditLogger,
+      metrics: lifecycleMetrics,
+    }),
+    lifecycleSignal: new LifecycleSignalRepository(db),
+    behaviorSignal: new BehaviorSignalRepository(db, {
+      auditLogger,
+      metrics: lifecycleMetrics,
+    }),
   };
 
-  // 5. Audit logger
-  const auditStore = new RepositoryAuditStore(repos.audit);
-  const auditLogger = new AuditLogger(logger, auditStore);
-
-  // 6. Thread workspace
+  // 5. Thread workspace
   const threadWorkspace = new ThreadWorkspace(dataDir);
 
   // Resolve package version for LangFuse release tagging (F9).
@@ -207,6 +283,7 @@ export async function bootstrap(
       ),
     );
   }
+  const loadedPersonaList = personaLoadResult.value;
 
   // 8. Load skills
   const skillLoader = new SkillLoader(logger);
@@ -408,43 +485,49 @@ export async function bootstrap(
   // 9b. Context roller (needs configured summarizer sub-agents)
   let contextRoller: ContextRoller | null = null;
   const enabledContextProviders = Object.entries(config.agentRunner.providers).filter(
-    ([, providerConfig]) => providerConfig.contextManagement.enabled,
+    ([, providerConfig]) => providerConfig.enabled && providerConfig.contextManagement.enabled,
   );
-  const configuredSummarizers = enabledContextProviders
-    .map(([, providerConfig]) => providerConfig.contextManagement.summarizer)
-    .filter((name): name is string => typeof name === 'string' && name.length > 0);
-  const usesObservationalMemory = configuredSummarizers.includes('session-observer');
-  // The observer/reflector path is a pair: once the observation log crosses
-  // MAX_OBSERVATION_CHARS the context-roller calls the reflector to
-  // consolidate. If the reflector isn't bound alongside the observer, the
-  // lookup misses at runtime and the log grows unbounded — the warning
-  // "context-roller-om: reflector not available, skipping consolidation"
-  // indicates this miswiring. Auto-include the reflector whenever any
-  // provider opts into observational memory so a single config key keeps
-  // both halves working.
+  for (const [providerName, providerConfig] of enabledContextProviders) {
+    if (providerConfig.contextManagement.deprecatedLegacySummarizer) {
+      logger.warn(
+        { provider: providerName },
+        'bootstrap: contextManagement.summarizer=session-observer is deprecated; use mode=observation with observer and reducer',
+      );
+    }
+  }
   const requestedSummarizers = [
     ...new Set([
-      ...configuredSummarizers,
-      ...(usesObservationalMemory ? ['session-reflector'] : []),
+      ...enabledContextProviders.flatMap(([, providerConfig]) => {
+        const contextManagement = providerConfig.contextManagement;
+        return contextManagement.mode === 'observation'
+          ? [contextManagement.observer, contextManagement.reducer]
+          : [contextManagement.summarizer];
+      }),
     ]),
-  ];
+  ].filter((name): name is string => typeof name === 'string' && name.length > 0);
 
   if (enabledContextProviders.length === 0) {
     logger.info('bootstrap: context rotation disabled for all agent runner providers');
-  } else if (modelResolver) {
+  } else {
+    for (const summarizerName of requestedSummarizers) {
+      if (!mergedAgentMap.has(summarizerName)) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Configured context management handler "${summarizerName}" was not found in loaded sub-agents`,
+          ),
+        );
+      }
+    }
+  }
+
+  if (enabledContextProviders.length > 0 && modelResolver) {
     const boundSummarizers = new Map<string, import('./context-roller.js').SummarizerRunFn>();
 
     const subagentOverrides = config.subagents ?? {};
 
     for (const summarizerName of requestedSummarizers) {
-      const summarizerAgent = mergedAgentMap.get(summarizerName);
-      if (!summarizerAgent) {
-        logger.warn(
-          { summarizer: summarizerName },
-          'bootstrap: configured summarizer sub-agent not found, skipping',
-        );
-        continue;
-      }
+      const summarizerAgent = mergedAgentMap.get(summarizerName)!;
 
       // Verify at least one model in the chain can resolve at boot time.
       const overrideConfig = subagentOverrides[summarizerName];
@@ -459,11 +542,12 @@ export async function bootstrap(
       ).catch(() => false);
 
       if (!anyResolvable) {
-        logger.warn(
-          { summarizer: summarizerName },
-          'bootstrap: no model in override chain could resolve for summarizer, skipping',
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `No model in override chain could resolve for configured context management handler "${summarizerName}"`,
+          ),
         );
-        continue;
       }
 
       const summarizerPrompt = summarizerAgent.promptContents.join('\n\n');
@@ -520,10 +604,7 @@ export async function bootstrap(
         memoryRepo: repos.memory,
         sessionTracker,
         summarizerRun: defaultSummarizer,
-        resolveSummarizerRun: (
-          name: string,
-        ): import('./context-roller.js').SummarizerRunFn | null =>
-          boundSummarizers.get(name) ?? null,
+        resolveSummarizerRun: (name): SummarizerRunFn | null => boundSummarizers.get(name) ?? null,
         logger,
       });
 
@@ -532,11 +613,18 @@ export async function bootstrap(
         'bootstrap: context roller initialized',
       );
     } else {
-      logger.warn(
-        { requestedSummarizers },
-        'bootstrap: no configured summarizer sub-agents were available, session rotation disabled',
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Context management is enabled, but no configured context management handlers were bound: ${requestedSummarizers.join(', ')}`,
+        ),
       );
     }
+  } else if (enabledContextProviders.length > 0) {
+    await cleanupBootstrapFailure(db, observability, logger);
+    return err(
+      new DaemonError('Context management is enabled, but no model resolver is available'),
+    );
   }
 
   // 10. Crash recovery
@@ -546,7 +634,275 @@ export async function bootstrap(
   const channelRegistry = new ChannelRegistry(logger);
 
   // 12. Queue manager
-  const queueManager = new QueueManager(repos.queue, repos.thread, config.queue, logger);
+  // Lifecycle services are intentionally constructed only when enabled. This
+  // keeps an omitted/disabled lifecycle configuration on the exact legacy
+  // execution path, while the durable dispatcher remains an independent
+  // workload when enabled.
+  let lifecycleRuntime: LifecycleRuntime | null = null;
+  if (config.lifecycle?.enabled) {
+    const nativeImplementations: Record<string, LifecycleRuntimeHandler> = {
+      'native-noop-event': nativeNoSignalSuccess,
+      // Interceptors execute synchronously through LifecycleInterceptorEngine;
+      // retaining this identity in the captured executor prevents a divergent
+      // authority catalog from ever selecting a different implementation.
+      'native-allow-interceptor': nativeInterceptorDispatcherRejection,
+      [NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_REF]: nativeNoSignalSuccess,
+    };
+    const nativeImplementationCatalog = [
+      {
+        ref: 'native-noop-event',
+        implementationVersion: '1.0.0',
+        mode: 'event' as const,
+        inputContract: LIFECYCLE_EVENT_INPUT_CONTRACT,
+        outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+      },
+      {
+        ref: 'native-allow-interceptor',
+        implementationVersion: '1.0.0',
+        mode: 'interceptor' as const,
+        inputContract: LIFECYCLE_INTERCEPTOR_INPUT_CONTRACT,
+        outputContract: LIFECYCLE_ENFORCING_INTERCEPTOR_OUTPUT_CONTRACT,
+        interceptorSafety: 'enforcing' as const,
+      },
+      {
+        ref: NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_REF,
+        implementationVersion: NATIVE_BEHAVIOR_SIGNAL_PROJECTOR_VERSION,
+        mode: 'signal' as const,
+        inputContract: LIFECYCLE_SIGNAL_INPUT_CONTRACT,
+        outputContract: LIFECYCLE_SIGNAL_ENVELOPES_OUTPUT_CONTRACT,
+      },
+    ];
+    const loadedSubagentCatalog = [...mergedAgentMap.values()].flatMap((agent) =>
+      (agent.lifecycleCapabilities ?? []).map((capability) => ({
+        ref: agent.manifest.name,
+        implementationVersion: agent.manifest.version,
+        mode: capability.mode,
+        inputContract: capability.inputContract,
+        outputContract: capability.outputContract,
+        ...(capability.interceptorSafety
+          ? { interceptorSafety: capability.interceptorSafety }
+          : {}),
+      })),
+    );
+    const registryResult = createLifecycleHandlerRegistry({
+      lifecycle: config.lifecycle,
+      channels: config.channels.map(({ name }) => ({ name })),
+      personas: config.personas.map(({ name, lifecycle }) => ({ name, lifecycle })),
+      nativeImplementationCatalog,
+      loadedSubagentCatalog,
+    });
+    if (registryResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to construct lifecycle registry: ${registryResult.error.message}`),
+      );
+    }
+    const resolvedHandlers = config.personas.flatMap((persona) =>
+      registryResult.value.listPersonaHandlers(persona.name),
+    );
+    const nativeCatalogByIdentity = new Map<string, LifecycleRuntimeCapability>();
+    const subagentCatalog: LifecycleRuntimeCapability[] = [];
+    const subagentAdapter = subAgentRunner ? new SubAgentLifecycleAdapter(subAgentRunner) : null;
+    for (const handler of resolvedHandlers) {
+      if (handler.identity.runtimeKind === 'native') {
+        const implementation = nativeImplementations[handler.identity.implementationRef];
+        if (implementation) {
+          // Native handlers have no persona authority. Capture each immutable
+          // identity once even when configuration attaches it to many personas.
+          const identityKey = JSON.stringify([
+            handler.identity.version,
+            handler.identity.handlerId,
+            handler.identity.runtimeKind,
+            handler.identity.implementationRef,
+            handler.identity.implementationVersion,
+            handler.identity.mode,
+            handler.identity.inputContract,
+            handler.identity.outputContract,
+            handler.identity.interceptorSafety ?? null,
+          ]);
+          if (!nativeCatalogByIdentity.has(identityKey)) {
+            nativeCatalogByIdentity.set(identityKey, {
+              identity: handler.identity,
+              handler: implementation,
+            });
+          }
+        }
+        continue;
+      }
+      if (!supportsLifecycleBootstrapHandler(handler.identity.runtimeKind, handler.identity.mode)) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent interceptors are unsupported: ${handler.identity.handlerId}`,
+          ),
+        );
+      }
+      const loadedPersona = loadedPersonaList.find(
+        (persona) => persona.config.name === handler.persona,
+      );
+      const personaRow = repos.persona.findByName(handler.persona);
+      const agent = mergedAgentMap.get(handler.identity.implementationRef);
+      if (!subagentAdapter) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" requires the background sub-agent adapter`,
+          ),
+        );
+      }
+      if (!loadedPersona) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" references unloaded persona "${handler.persona}"`,
+          ),
+        );
+      }
+      if (personaRow.isErr()) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" failed to load persona row "${handler.persona}": ${personaRow.error.message}`,
+          ),
+        );
+      }
+      if (!personaRow.value) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" references missing persona row "${handler.persona}"`,
+          ),
+        );
+      }
+      if (!agent) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" references unloaded sub-agent "${handler.identity.implementationRef}"`,
+          ),
+        );
+      }
+      if (!agent.lifecycleRun) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" requires sub-agent "${handler.identity.implementationRef}" to declare a lifecycleRun contract`,
+          ),
+        );
+      }
+      if (
+        !hasExplicitLifecycleSubagentAuthority(
+          loadedPersona.config.subagents,
+          handler.identity.implementationRef,
+        )
+      ) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(
+          new DaemonError(
+            `Lifecycle sub-agent handler "${handler.identity.handlerId}" for persona "${handler.persona}" requires "${handler.identity.implementationRef}" in personas[].subagents`,
+          ),
+        );
+      }
+      const capturedHandler = handler;
+      const capturedPersona = loadedPersona;
+      const capturedPersonaId = personaRow.value.id;
+      subagentCatalog.push({
+        identity: handler.identity,
+        subagentScope: {
+          persona: handler.persona,
+          capabilities: {
+            allow: [...capturedPersona.resolvedCapabilities.allow],
+            requireApproval: [...capturedPersona.resolvedCapabilities.requireApproval],
+          },
+        },
+        handler: (execution) =>
+          subagentAdapter.invoke({
+            handler: capturedHandler,
+            scope: {
+              threadId:
+                execution.event.payload.references.find((reference) => reference.type === 'thread')
+                  ?.id ?? execution.event.context.aggregate.id,
+              aggregate: execution.event.context.aggregate,
+              persona: {
+                id: capturedPersonaId,
+                name: capturedHandler.persona,
+                subagents: capturedPersona.config.subagents,
+                capabilities: capturedPersona.resolvedCapabilities,
+              },
+            },
+            input: execution.event,
+            ...(execution.traceparent === undefined ? {} : { traceparent: execution.traceparent }),
+          }),
+      });
+    }
+    const executorResult = CapturedLifecycleHandlerExecutor.create({
+      nativeCatalog: [...nativeCatalogByIdentity.values()],
+      subagentCatalog,
+    });
+    if (executorResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to construct lifecycle executor: ${executorResult.error.message}`),
+      );
+    }
+    const lifecycleTelemetry = new LifecycleTelemetry({
+      observability,
+      auditLogger,
+      metrics: lifecycleMetrics,
+      langfuse: config.lifecycle?.telemetry?.langfuse,
+    });
+    const behaviorSignalProjector = new BehaviorSignalProjector(repos.behaviorSignal, {
+      auditLogger,
+    });
+    const interceptorEngine = new LifecycleInterceptorEngine({
+      resolveHandlers: (
+        query,
+      ): ReturnType<typeof registryResult.value.resolveInterceptorHandlers> =>
+        registryResult.value.resolveInterceptorHandlers(query),
+      implementations: { 'native-allow-interceptor': nativeAllowInterceptor },
+      auditLogger,
+      telemetry: lifecycleTelemetry,
+    });
+    const dispatcherResult = LifecycleDispatcher.create({
+      deliveries: repos.lifecycleDelivery,
+      executor: executorResult.value,
+      signalRouter: createBehaviorSignalRouter({
+        signalRepository: repos.lifecycleSignal,
+        projector: behaviorSignalProjector,
+        registry: registryResult.value,
+      }),
+      telemetry: lifecycleTelemetry,
+      logger,
+    });
+    if (dispatcherResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Failed to construct lifecycle dispatcher: ${dispatcherResult.error.message}`,
+        ),
+      );
+    }
+    const dispatcher = dispatcherResult.value;
+    const eventBus = new LifecycleEventBus(
+      repos.lifecycleEvent,
+      registryResult.value,
+      () => {
+        dispatcher.wake();
+      },
+      lifecycleTelemetry,
+    );
+    lifecycleRuntime = new LifecycleRuntime(eventBus, interceptorEngine, dispatcher);
+  }
+  const queueManager = new QueueManager(
+    repos.queue,
+    repos.thread,
+    config.queue,
+    logger,
+    lifecycleRuntime ?? undefined,
+  );
+  const behaviorReviewService = new BehaviorReviewService(repos.behaviorSignal, {
+    auditLogger,
+  });
 
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
@@ -576,6 +932,13 @@ export async function bootstrap(
       providerRegistry: backgroundProviderRegistry,
       executionEnvManager,
       hostToolsSocketPath: resolve(join(dataDir, 'host-tools.sock')),
+      resolveLifecyclePersonaName: lifecycleRuntime
+        ? (personaId: string): string | undefined =>
+            personaLoader
+              .getById(personaId)
+              .map((persona) => persona?.config.name)
+              .unwrapOr(undefined)
+        : undefined,
       // Share the same token store the foreground path uses so an
       // `talonctl auth-mcp` run unlocks Glean (etc.) for both run
       // types — without this, background runs receive raw
@@ -604,6 +967,8 @@ export async function bootstrap(
     personaLoader,
     config.scheduler,
     logger,
+    lifecycleRuntime ?? undefined,
+    behaviorReviewService,
   );
 
   // 15. Message pipeline and channel registration
@@ -616,6 +981,8 @@ export async function bootstrap(
     router,
     auditLogger,
     logger,
+    lifecycleRuntime ?? undefined,
+    (personaId) => personaLoader.getById(personaId).map((persona) => persona?.config.name),
   );
 
   registerChannels(config, channelRegistry, {
@@ -627,7 +994,6 @@ export async function bootstrap(
   });
 
   // 16. A2A server (internal-only, no port binding in M1)
-  const loadedPersonaList = personaLoadResult.value;
   const a2aCardRegistry = buildAgentCardRegistry(loadedPersonaList);
   const a2aTaskMapper = new A2ATaskMapper(
     repos.a2aTask,
@@ -672,6 +1038,7 @@ export async function bootstrap(
     contextAssembler,
     oauthTokenStore,
     logger,
+    lifecycleRuntime,
     a2aServer,
     a2aTaskMapper,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };

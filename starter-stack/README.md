@@ -130,6 +130,12 @@ operator's local Claude Code session. They know the bundle layout, use the
 bundled `talonctl` wrapper, and never ask you to run `npm install` or
 `npx talonctl`.
 
+Durable lifecycle operations are also exposed through the same wrapper once the
+daemon is running. Use `talonctl lifecycle handlers` for handler health/backlog,
+`inspect` / `replay` / `disable` for delivery troubleshooting, `candidates` for
+behavior-learning provenance, and `promote` / `rollback-promotion` for governed
+behavior prompt changes.
+
 ## Common operations
 
 ```bash
@@ -137,6 +143,8 @@ docker compose ps                       # all four services
 docker compose logs -f talond           # Talon logs
 docker compose logs -f postgram         # Postgram logs
 talonctl status                         # daemon health
+talonctl lifecycle handlers             # lifecycle handler health/backlog
+talonctl lifecycle candidates assistant --limit 25
 docker compose down                     # stop (data persists in volumes)
 docker compose pull && ./bootstrap.sh   # update images, re-run bootstrap
 ```
