@@ -212,11 +212,29 @@ talonctl add-mcp --skill <skill-name> --name filesystem \
   --transport stdio --command npx \
   --args -y @modelcontextprotocol/server-filesystem /userdata
 
-# PostgreSQL — use environment variable for the connection string
-talonctl add-mcp --skill <skill-name> --name postgres \
-  --transport stdio --command npx \
-  --args -y @modelcontextprotocol/server-postgres '${POSTGRES_DSN}'
+# For an MCP server that reads API_TOKEN from its environment
+talonctl add-mcp --skill <skill-name> --name private-tools \
+  --transport stdio --command npx --args <your-mcp-package> \
+  --env 'API_TOKEN=${PRIVATE_MCP_TOKEN}'
 ```
+
+Keep actual tokens and connection strings in `.env`; use quoted
+`${ENV_VAR}` placeholders in `--headers` or `--env` arguments. `talonctl
+env-check` scans those references as well as `talond.yaml` and reports only
+variable names and status.
+
+### OAuth authorization callback times out
+
+For the Docker starter, use `talonctl auth-mcp <skill>:<server> --docker` and
+open the printed URL in the host browser. The callback is published only on
+`127.0.0.1:8788`; confirm the browser is on the same machine and that the
+port is available. If you use a different port, make the `--port` value and
+the host/container ports in `docker-compose.yaml` match.
+
+For a pre-registered OAuth client, configure `--client-id-env` and (if
+required) `--client-secret-env` when adding the MCP server. Dynamic client
+registration is otherwise used and must be advertised by the authorization
+server.
 
 Then grant the persona access:
 ```bash
@@ -232,7 +250,7 @@ Most popular MCP servers are listed at
 
 - `docker compose logs -f talond` — live daemon logs
 - `talonctl doctor` — config + environment validation
-- `talonctl env-check` — list env-var placeholders the config expects
+- `talonctl env-check` — list config and MCP environment references (names/status only)
 - `talonctl config-show` — effective config (secrets masked)
 - SQLite shell inside the container — for queue, runs, messages
   inspection: `docker exec -it talond sh -c "sqlite3 /data/talond.sqlite"`

@@ -1,13 +1,19 @@
 /**
  * `talonctl env-check` command.
  *
- * Scans the config file for ${ENV_VAR} placeholders and reports
- * which ones are set and which are missing from the environment.
+ * Scans Talon YAML and MCP server definitions for environment references and
+ * reports which ones are set or missing without printing their values.
  */
 
 import fs from 'node:fs/promises';
+import type { Dirent } from 'node:fs';
+import { join } from 'node:path';
 
 import { DEFAULT_CONFIG_PATH } from '../config-utils.js';
+import {
+  findEnvironmentVariableReferences,
+  isEnvironmentVariableName,
+} from '../../core/config/environment.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -15,6 +21,7 @@ import { DEFAULT_CONFIG_PATH } from '../config-utils.js';
 
 export interface EnvCheckOptions {
   configPath?: string;
+  skillsDir?: string;
 }
 
 export interface EnvVar {
@@ -26,18 +33,16 @@ export interface EnvVar {
 // Core logic (importable)
 // ---------------------------------------------------------------------------
 
-/** Pattern to match ${VAR_NAME} placeholders — aligned with config-loader's \w+ pattern. */
-const ENV_VAR_PATTERN = /\$\{(\w+)\}/g;
-
 /**
- * Scans the config file for ${ENV_VAR} placeholders and checks
- * which are set in the current environment.
+ * Scans Talon YAML and MCP server definitions and checks whether the
+ * referenced variables are set in the current environment.
  *
  * @returns List of env vars found with their set/unset status.
  * @throws Error if the config file can't be read.
  */
 export async function envCheck(options: EnvCheckOptions = {}): Promise<EnvVar[]> {
   const configPath = options.configPath ?? DEFAULT_CONFIG_PATH;
+  const skillsDir = options.skillsDir ?? 'skills';
 
   let rawContent: string;
   try {
@@ -48,17 +53,75 @@ export async function envCheck(options: EnvCheckOptions = {}): Promise<EnvVar[]>
 
   // Find all unique ${VAR} references.
   const varNames = new Set<string>();
-  let match: RegExpExecArray | null;
-  while ((match = ENV_VAR_PATTERN.exec(rawContent)) !== null) {
-    varNames.add(match[1]!);
+  for (const name of findEnvironmentVariableReferences(rawContent)) {
+    varNames.add(name);
+  }
+  for (const name of await collectMcpEnvironmentVariableNames(skillsDir)) {
+    varNames.add(name);
   }
 
   return Array.from(varNames)
     .sort()
     .map((name) => ({
       name,
-      isSet: process.env[name] !== undefined,
+      isSet: process.env[name] !== undefined && process.env[name].length > 0,
     }));
+}
+
+async function collectMcpEnvironmentVariableNames(skillsDir: string): Promise<Set<string>> {
+  const names = new Set<string>();
+  let skillEntries: Dirent[];
+  try {
+    skillEntries = await fs.readdir(skillsDir, { withFileTypes: true });
+  } catch {
+    return names;
+  }
+
+  for (const skillEntry of skillEntries) {
+    if (!skillEntry.isDirectory()) continue;
+    const mcpDir = join(skillsDir, skillEntry.name, 'mcp');
+    let mcpFiles: string[];
+    try {
+      mcpFiles = await fs.readdir(mcpDir);
+    } catch {
+      continue;
+    }
+
+    for (const file of mcpFiles.filter((entry) => entry.endsWith('.json'))) {
+      const filePath = join(mcpDir, file);
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(await fs.readFile(filePath, 'utf-8'));
+      } catch (cause) {
+        throw new Error(`Failed to read MCP server definition "${filePath}": ${(cause as Error).message}`);
+      }
+
+      const root = asRecord(parsed);
+      const config = asRecord(root?.config);
+      if (!config) continue;
+      for (const key of ['headers', 'env']) {
+        const values = asRecord(config[key]);
+        for (const value of Object.values(values ?? {})) {
+          if (typeof value !== 'string') continue;
+          for (const name of findEnvironmentVariableReferences(value)) names.add(name);
+        }
+      }
+
+      const auth = asRecord(config.auth);
+      for (const key of ['clientIdEnv', 'clientSecretEnv']) {
+        const name = auth?.[key];
+        if (typeof name === 'string' && isEnvironmentVariableName(name)) names.add(name);
+      }
+    }
+  }
+
+  return names;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -70,7 +133,7 @@ export async function envCheckCommand(options: EnvCheckOptions = {}): Promise<vo
     const vars = await envCheck(options);
 
     if (vars.length === 0) {
-      console.log('No ${ENV_VAR} placeholders found in config.');
+      console.log('No environment variable references found in config or MCP server definitions.');
       return;
     }
 

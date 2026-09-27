@@ -19,6 +19,18 @@
  */
 import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import {
+  hasProviderEnvironmentVariableReference,
+  requireEnvironmentVariable,
+} from '../../core/config/environment.js';
+import {
+  isHttpsUrlWithoutUserInfoOrFragment,
+  isOAuthIssuerIdentifier,
+} from '../../auth/oauth-issuer.js';
+import {
+  isOAuthTokenEndpointAuthMethod,
+  type OAuthClientCredentials,
+} from '../../auth/oauth-client-auth.js';
 import { runOAuthFlow } from '../../auth/oauth-flow.js';
 import { writeTokens, type CachedTokens } from '../../auth/oauth-token-store.js';
 
@@ -33,6 +45,10 @@ export interface AuthMcpOptions {
   callbackPort?: number;
   /** Headless mode (no browser open). */
   headless?: boolean;
+  /** Docker Desktop mode: listen on the container interface and use its localhost-published callback. */
+  dockerMode?: boolean;
+  /** Environment source, injectable for tests. */
+  environment?: NodeJS.ProcessEnv;
   /** Where to print human-readable progress. */
   printLine?: (line: string) => void;
 }
@@ -73,10 +89,20 @@ export async function authMcp(options: AuthMcpOptions): Promise<AuthMcpResult> {
   }
 
   const serverDef = parsed as {
+    name?: string;
     config?: {
+      name?: string;
       transport?: string;
       url?: string;
-      auth?: { kind?: string; tokenStore?: string };
+      auth?: {
+        kind?: string;
+        tokenStore?: string;
+        clientIdEnv?: string;
+        clientSecretEnv?: string;
+        authorizationServerIssuer?: string;
+        scopes?: string[];
+        tokenEndpointAuthMethod?: unknown;
+      };
     };
   };
   const cfg = serverDef.config ?? {};
@@ -88,29 +114,78 @@ export async function authMcp(options: AuthMcpOptions): Promise<AuthMcpResult> {
   if (typeof cfg.url !== 'string' || cfg.url.length === 0) {
     throw new AuthMcpError(`${mcpFile}: HTTP MCP entry is missing a "url" field.`);
   }
+  if (!isHttpsUrlWithoutUserInfoOrFragment(cfg.url)) {
+    throw new AuthMcpError(`${mcpFile}: OAuth MCP resource URLs must use HTTPS and contain no user-info or fragment.`);
+  }
   if (cfg.auth?.kind !== 'oauth2') {
     throw new AuthMcpError(
       `${mcpFile}: entry has no "auth.kind: oauth2" — add it to enable OAuth-managed credentials.`,
     );
   }
+  if (cfg.auth.clientIdEnv && !cfg.auth.authorizationServerIssuer) {
+    throw new AuthMcpError(
+      `${mcpFile}: authorizationServerIssuer is required for a pre-registered OAuth client to prevent sending its credentials to an untrusted issuer.`,
+    );
+  }
+  if (
+    cfg.auth.authorizationServerIssuer
+    && !isOAuthIssuerIdentifier(cfg.auth.authorizationServerIssuer)
+  ) {
+    throw new AuthMcpError(
+      `${mcpFile}: authorizationServerIssuer must be an HTTPS URL without user-info, query, or fragment.`,
+    );
+  }
   const tokenStoreId =
     typeof cfg.auth.tokenStore === 'string' && cfg.auth.tokenStore.length > 0
       ? cfg.auth.tokenStore
-      : `${skill}/${server}`;
+      : `${skill}/${resolveMcpServerName(serverDef.name, cfg.name, server)}`;
+
+  const registeredClient = resolveRegisteredClient(cfg.auth, options.environment ?? process.env);
 
   const print = options.printLine ?? ((line) => process.stdout.write(`${line}\n`));
   print(`auth-mcp: ${skill}:${server}`);
   print(`  resource: ${cfg.url}`);
   print(`  tokenStore: ${tokenStoreId}`);
 
-  const { tokens } = await runOAuthFlow({
+  const { tokens, authorizationServer } = await runOAuthFlow({
     resourceUrl: cfg.url,
     callbackPort: options.callbackPort,
-    headless: options.headless,
+    callbackListenAddress: options.dockerMode ? '0.0.0.0' : '127.0.0.1',
+    dockerMode: options.dockerMode,
+    headless: options.headless || options.dockerMode,
+    registeredClient,
+    ...(cfg.auth.authorizationServerIssuer
+      ? { expectedAuthorizationServerIssuer: cfg.auth.authorizationServerIssuer }
+      : {}),
+    ...(cfg.auth.scopes ? { scopes: cfg.auth.scopes } : {}),
     printLine: print,
   });
+  if (hasProviderEnvironmentVariableReference(tokens.accessToken)) {
+    throw new AuthMcpError(
+      'OAuth access token contains environment-variable syntax that a provider may expand; refusing to persist it.',
+    );
+  }
 
-  const bundle: CachedTokens = tokens;
+  const {
+    clientId,
+    clientSecret,
+    tokenEndpointAuthMethod,
+    ...tokenPayload
+  } = tokens;
+  const bundle: CachedTokens = {
+    ...tokenPayload,
+    authorizationServerIssuer: authorizationServer.issuer,
+    ...(cfg.auth.clientIdEnv
+      ? {
+          clientIdEnv: cfg.auth.clientIdEnv,
+          ...(cfg.auth.clientSecretEnv ? { clientSecretEnv: cfg.auth.clientSecretEnv } : {}),
+        }
+      : {
+          ...(clientId ? { clientId } : {}),
+          ...(clientSecret ? { clientSecret } : {}),
+        }),
+    ...(tokenEndpointAuthMethod ? { tokenEndpointAuthMethod } : {}),
+  };
   await writeTokens(options.dataDir, tokenStoreId, bundle);
 
   const filePath = resolve(options.dataDir, 'mcp-auth', `${tokenStoreId}.json`);
@@ -119,6 +194,61 @@ export async function authMcp(options: AuthMcpOptions): Promise<AuthMcpResult> {
   print(`  wrote ${filePath}`);
   print(`  expires_at: ${new Date(bundle.expiresAt).toISOString()}`);
   return { tokenStoreId, tokenFilePath: filePath, expiresAt: bundle.expiresAt };
+}
+
+function resolveRegisteredClient(
+  auth: {
+    clientIdEnv?: string;
+    clientSecretEnv?: string;
+    tokenEndpointAuthMethod?: unknown;
+  },
+  environment: NodeJS.ProcessEnv,
+): OAuthClientCredentials | undefined {
+  const { clientIdEnv, clientSecretEnv, tokenEndpointAuthMethod } = auth;
+  if (!clientIdEnv) {
+    if (clientSecretEnv || tokenEndpointAuthMethod !== undefined) {
+      throw new AuthMcpError('clientSecretEnv and tokenEndpointAuthMethod require clientIdEnv.');
+    }
+    return undefined;
+  }
+
+  if (tokenEndpointAuthMethod !== undefined && !isOAuthTokenEndpointAuthMethod(tokenEndpointAuthMethod)) {
+    throw new AuthMcpError('tokenEndpointAuthMethod must be none, client_secret_post, or client_secret_basic.');
+  }
+
+  let clientId: string;
+  let clientSecret: string | undefined;
+  try {
+    clientId = requireEnvironmentVariable(clientIdEnv, 'MCP OAuth client', environment);
+    clientSecret = clientSecretEnv
+      ? requireEnvironmentVariable(clientSecretEnv, 'MCP OAuth client', environment)
+      : undefined;
+  } catch (cause) {
+    throw new AuthMcpError((cause as Error).message, cause);
+  }
+
+  const method = tokenEndpointAuthMethod;
+  const resolvedMethod = method ?? (clientSecret ? 'client_secret_basic' : 'none');
+  if (resolvedMethod !== 'none' && !clientSecret) {
+    throw new AuthMcpError(`tokenEndpointAuthMethod "${resolvedMethod}" requires clientSecretEnv.`);
+  }
+  if (resolvedMethod === 'none' && clientSecret) {
+    throw new AuthMcpError('tokenEndpointAuthMethod "none" cannot be used with clientSecretEnv.');
+  }
+
+  return {
+    clientId,
+    ...(clientSecret ? { clientSecret } : {}),
+    tokenEndpointAuthMethod: resolvedMethod,
+  };
+}
+
+function resolveMcpServerName(
+  definitionName: string | undefined,
+  configName: string | undefined,
+  fileName: string,
+): string {
+  return configName || definitionName || fileName;
 }
 
 export class AuthMcpError extends Error {

@@ -86,6 +86,20 @@ function parseCommaSeparatedOption(value: string): string[] {
     .filter((item) => item.length > 0);
 }
 
+function parseKeyValuePairs(value: string): Record<string, string> {
+  const pairs: Array<[string, string]> = [];
+  for (const entry of value.split(',')) {
+    const separator = entry.indexOf('=');
+    if (separator <= 0) {
+      throw new Error('Invalid key/value pair. Expected KEY=VALUE.');
+    }
+    const key = entry.slice(0, separator).trim();
+    if (!key) throw new Error('Environment variable and header names must not be empty.');
+    pairs.push([key, entry.slice(separator + 1)]);
+  }
+  return Object.fromEntries(pairs);
+}
+
 program.name('talonctl').description('CLI for managing the talond daemon').version('0.1.0');
 
 program
@@ -388,7 +402,14 @@ program
   .option('--command <cmd>', 'Command to run (required for stdio)')
   .option('--args <args...>', 'Command arguments (space-separated)')
   .option('--url <url>', 'Server URL (required for sse/http)')
-  .option('--env <pairs>', 'Environment variables (KEY=VAL,KEY2=VAL2)')
+  .option('--headers <pairs>', 'HTTP headers (KEY=VALUE,KEY2=VALUE2; use ${ENV_VAR} for secrets)')
+  .option('--auth <kind>', 'HTTP auth mode (oauth2)')
+  .option('--client-id-env <name>', 'Environment variable containing a pre-registered OAuth client id')
+  .option('--client-secret-env <name>', 'Environment variable containing a pre-registered OAuth client secret')
+  .option('--authorization-server-issuer <url>', 'Pinned OAuth authorization-server issuer for a pre-registered client')
+  .option('--scopes <scopes...>', 'Explicit OAuth scopes to request during authorization')
+  .option('--token-endpoint-auth-method <method>', 'OAuth token auth method (client_secret_post or client_secret_basic)')
+  .option('--env <pairs>', 'Stdio environment (KEY=VALUE; use ${ENV_VAR} for secrets)')
   .option('--skills-dir <path>', 'Skills directory', 'skills')
   .action(
     async (opts: {
@@ -398,15 +419,47 @@ program
       command?: string;
       args?: string[];
       url?: string;
+      headers?: string;
+      auth?: string;
+      clientIdEnv?: string;
+      clientSecretEnv?: string;
+      authorizationServerIssuer?: string;
+      scopes?: string[];
+      tokenEndpointAuthMethod?: string;
       env?: string;
       skillsDir: string;
     }) => {
-      const envPairs: Record<string, string> = {};
-      if (opts.env) {
-        for (const pair of opts.env.split(',')) {
-          const [k, ...vParts] = pair.split('=');
-          if (k) envPairs[k] = vParts.join('=');
-        }
+      const auth = opts.auth === 'oauth2'
+        ? {
+            kind: 'oauth2' as const,
+            ...(opts.clientIdEnv ? { clientIdEnv: opts.clientIdEnv } : {}),
+            ...(opts.clientSecretEnv ? { clientSecretEnv: opts.clientSecretEnv } : {}),
+            ...(opts.authorizationServerIssuer
+              ? { authorizationServerIssuer: opts.authorizationServerIssuer }
+              : {}),
+            ...(opts.scopes ? { scopes: opts.scopes } : {}),
+            ...(opts.tokenEndpointAuthMethod
+              ? { tokenEndpointAuthMethod: opts.tokenEndpointAuthMethod as 'none' | 'client_secret_post' | 'client_secret_basic' }
+              : {}),
+          }
+        : undefined;
+      const envPairs = opts.env ? parseKeyValuePairs(opts.env) : undefined;
+      const headerPairs = opts.headers ? parseKeyValuePairs(opts.headers) : undefined;
+      if (opts.auth && !auth) {
+        console.error(`Error: unsupported MCP auth mode "${opts.auth}". Use "oauth2".`);
+        process.exit(1);
+        return;
+      }
+      if (!opts.auth && (
+        opts.clientIdEnv
+        || opts.clientSecretEnv
+        || opts.authorizationServerIssuer
+        || opts.scopes
+        || opts.tokenEndpointAuthMethod
+      )) {
+        console.error('Error: OAuth client options require --auth oauth2.');
+        process.exit(1);
+        return;
       }
       await addMcpCommand({
         skillName: opts.skill,
@@ -415,7 +468,9 @@ program
         command: opts.command,
         args: opts.args,
         url: opts.url,
-        env: Object.keys(envPairs).length > 0 ? envPairs : undefined,
+        headers: headerPairs,
+        auth,
+        env: envPairs,
         skillsDir: opts.skillsDir,
       });
     },
@@ -423,10 +478,11 @@ program
 
 program
   .command('env-check')
-  .description('Check environment variables referenced in config')
+  .description('Check environment variables referenced in config and MCP server definitions')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { config: string }) => {
-    await envCheckCommand({ configPath: opts.config });
+  .option('--skills-dir <path>', 'Skills directory', 'skills')
+  .action(async (opts: { config: string; skillsDir: string }) => {
+    await envCheckCommand({ configPath: opts.config, skillsDir: opts.skillsDir });
   });
 
 program
@@ -527,13 +583,18 @@ program
     'Headless mode: print the auth URL + SSH forward command; do not open a browser',
     false,
   )
+  .option(
+    '--docker',
+    'Docker Desktop mode: use the localhost-published callback and print the auth URL for the host browser',
+    false,
+  )
   .option('--port <port>', 'Localhost callback port (default 8788)', (v) => Number.parseInt(v, 10))
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
   .option('--skills-dir <path>', 'Path to the skills/ directory', 'skills')
   .action(
     async (
       selector: string,
-      opts: { headless: boolean; port?: number; config: string; skillsDir: string },
+      opts: { headless: boolean; docker: boolean; port?: number; config: string; skillsDir: string },
     ) => {
       const { loadConfig } = await import('../core/config/config-loader.js');
       const configResult = loadConfig(opts.config);
@@ -555,6 +616,7 @@ program
           dataDir,
           skillsDir: opts.skillsDir,
           headless: opts.headless,
+          dockerMode: opts.docker,
           ...(opts.port !== undefined ? { callbackPort: opts.port } : {}),
         });
       } catch (cause) {

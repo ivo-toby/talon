@@ -156,6 +156,7 @@ describe('SkillLoader', () => {
     for (const fn of cleanup.splice(0)) {
       await fn();
     }
+    vi.unstubAllEnvs();
   });
 
   // -------------------------------------------------------------------------
@@ -448,6 +449,10 @@ describe('SkillLoader', () => {
     });
 
     it('loads MCP server definition with headers', async () => {
+      vi.stubEnv('GITHUB_TOKEN', '${NESTED_GITHUB_SECRET}');
+      vi.stubEnv('MCP_CHILD_TOKEN', '${NESTED_CHILD_SECRET}');
+      vi.stubEnv('NESTED_GITHUB_SECRET', 'must-not-be-expanded-again');
+      vi.stubEnv('NESTED_CHILD_SECRET', 'must-not-be-expanded-again');
       const skillDir = await makeTmpDir(cleanup);
       await writeMinimalManifest(skillDir);
       const mcpDir = join(skillDir, 'mcp');
@@ -464,6 +469,13 @@ describe('SkillLoader', () => {
               Authorization: 'Bearer ${GITHUB_TOKEN}',
               'X-Custom': 'static-value',
             },
+            env: { MCP_TOKEN: '${MCP_CHILD_TOKEN}' },
+            auth: {
+              kind: 'oauth2',
+              clientIdEnv: 'GITHUB_OAUTH_CLIENT_ID',
+              authorizationServerIssuer: 'https://identity.example.com',
+              scopes: ['repo:read'],
+            },
           },
         }),
         'utf-8',
@@ -473,9 +485,41 @@ describe('SkillLoader', () => {
       const skill = result._unsafeUnwrap();
       expect(skill.resolvedMcpServers).toHaveLength(1);
       expect(skill.resolvedMcpServers[0].config.headers).toEqual({
-        Authorization: 'Bearer ${GITHUB_TOKEN}',
+        Authorization: 'Bearer ${NESTED_GITHUB_SECRET}',
         'X-Custom': 'static-value',
       });
+      expect(skill.resolvedMcpServers[0].config.env).toEqual({ MCP_TOKEN: '${NESTED_CHILD_SECRET}' });
+      expect(skill.resolvedMcpServers[0].config.auth).toEqual({
+        kind: 'oauth2',
+        clientIdEnv: 'GITHUB_OAUTH_CLIENT_ID',
+        authorizationServerIssuer: 'https://identity.example.com',
+        scopes: ['repo:read'],
+        tokenStore: 'test-skill/github',
+      });
+    });
+
+    it('reports a missing MCP secret by variable name without exposing its value', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeMinimalManifest(skillDir);
+      const mcpDir = join(skillDir, 'mcp');
+      await mkdir(mcpDir);
+      await writeFile(
+        join(mcpDir, 'github.json'),
+        JSON.stringify({
+          name: 'github',
+          config: {
+            transport: 'http',
+            url: 'https://api.githubcopilot.com/mcp',
+            headers: { Authorization: 'Bearer ${MISSING_MCP_TOKEN_12345}' },
+          },
+        }),
+        'utf-8',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('MISSING_MCP_TOKEN_12345');
+      expect(result._unsafeUnwrapErr().message).not.toContain('test-github-token');
     });
 
     it('returns Err for invalid MCP definition JSON structure', async () => {
@@ -494,6 +538,25 @@ describe('SkillLoader', () => {
       expect(result.isErr()).toBe(true);
       expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
       expect(result._unsafeUnwrapErr().message).toMatch(/mcp server definition validation failed/i);
+    });
+
+    it('rejects OAuth MCP definitions that use a non-HTTPS resource URL', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeMinimalManifest(skillDir);
+      const mcpDir = join(skillDir, 'mcp');
+      await mkdir(mcpDir);
+      await writeFile(join(mcpDir, 'insecure.json'), JSON.stringify({
+        name: 'insecure',
+        config: {
+          transport: 'http',
+          url: 'http://search.example.com/mcp',
+          auth: { kind: 'oauth2' },
+        },
+      }), 'utf-8');
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toMatch(/OAuth MCP resource URLs must use HTTPS/i);
     });
 
     it('returns Err for malformed JSON in mcp/', async () => {

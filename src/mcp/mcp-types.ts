@@ -56,7 +56,8 @@ export interface McpServerConfig {
 
   /**
    * Extra environment variables injected into the stdio child process.
-   * Used to pass API keys; values are never written to disk in containers.
+   * Use `${ENV_VAR}` references for secrets so their values stay out of the
+   * skill's MCP JSON file.
    */
   env?: Record<string, string>;
 
@@ -104,7 +105,23 @@ export interface McpOAuth2AuthConfig {
    * (`talonctl auth-mcp <skill>:<server>`).
    */
   tokenStore: string;
+  /** Environment variable containing an existing OAuth client's public id. */
+  clientIdEnv?: string;
+  /** Environment variable containing an existing OAuth client's secret. */
+  clientSecretEnv?: string;
+  /** Pinned RFC 8414 issuer for a pre-registered OAuth client. */
+  authorizationServerIssuer?: string;
+  /** Explicit OAuth scopes to request; omitted scopes are left to the provider default. */
+  scopes?: string[];
+  /** Token-endpoint method for a pre-registered confidential client. */
+  tokenEndpointAuthMethod?: OAuthTokenEndpointAuthMethod;
 }
+
+/** OAuth client authentication methods supported for MCP token requests. */
+export type OAuthTokenEndpointAuthMethod =
+  | 'none'
+  | 'client_secret_post'
+  | 'client_secret_basic';
 
 // ---------------------------------------------------------------------------
 // Rate limit configuration

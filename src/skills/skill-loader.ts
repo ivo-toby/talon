@@ -28,6 +28,11 @@ import yaml from 'js-yaml';
 import { ok, err, type Result } from 'neverthrow';
 import type pino from 'pino';
 import { z } from 'zod';
+import {
+  isHttpsUrlWithoutUserInfoOrFragment,
+  isOAuthIssuerIdentifier,
+} from '../auth/oauth-issuer.js';
+import { expandEnvironmentVariables } from '../core/config/environment.js';
 import { SkillError } from '../core/errors/index.js';
 import { SkillManifestSchema, SkillMdFrontmatterSchema } from './skill-schema.js';
 import type { LoadedSkill, McpServerDef } from './skill-types.js';
@@ -102,6 +107,58 @@ const McpRateLimitSchema = z.object({
 const McpOAuth2AuthSchema = z.object({
   kind: z.literal('oauth2'),
   tokenStore: z.string().trim().min(1).optional(),
+  clientIdEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u).optional(),
+  clientSecretEnv: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/u).optional(),
+  authorizationServerIssuer: z.string().optional(),
+  scopes: z.array(z.string().trim().min(1)).optional(),
+  tokenEndpointAuthMethod: z.enum(['none', 'client_secret_post', 'client_secret_basic']).optional(),
+}).superRefine((auth, context) => {
+  if (!auth.clientIdEnv && (auth.clientSecretEnv || auth.tokenEndpointAuthMethod)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['clientIdEnv'],
+      message: 'clientSecretEnv and tokenEndpointAuthMethod require clientIdEnv',
+    });
+  }
+  if (
+    auth.tokenEndpointAuthMethod
+    && auth.tokenEndpointAuthMethod !== 'none'
+    && !auth.clientSecretEnv
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['clientSecretEnv'],
+      message: 'client_secret_post and client_secret_basic require clientSecretEnv',
+    });
+  }
+  if (auth.tokenEndpointAuthMethod === 'none' && auth.clientSecretEnv) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['tokenEndpointAuthMethod'],
+      message: 'tokenEndpointAuthMethod "none" cannot be used with clientSecretEnv',
+    });
+  }
+  if (auth.clientIdEnv && !auth.authorizationServerIssuer) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['authorizationServerIssuer'],
+      message: 'authorizationServerIssuer is required with a pre-registered OAuth client',
+    });
+  }
+  if (auth.authorizationServerIssuer && !auth.clientIdEnv) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['authorizationServerIssuer'],
+      message: 'authorizationServerIssuer requires clientIdEnv',
+    });
+  }
+  if (auth.authorizationServerIssuer && !isOAuthIssuerIdentifier(auth.authorizationServerIssuer)) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['authorizationServerIssuer'],
+      message: 'authorizationServerIssuer must be an HTTPS URL without user-info, query, or fragment',
+    });
+  }
 });
 
 const McpAuthSchema = z.discriminatedUnion('kind', [McpOAuth2AuthSchema]);
@@ -118,6 +175,24 @@ const McpServerConfigSchema = z.object({
   allowedTools: z.array(z.string()).optional(),
   credentialScope: z.string().optional(),
   rateLimit: McpRateLimitSchema.optional(),
+}).superRefine((server, context) => {
+  if (server.auth && server.transport !== 'http' && server.transport !== 'sse') {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['auth'],
+      message: 'OAuth auth is supported only for HTTP/SSE MCP servers',
+    });
+  }
+  if (
+    server.auth
+    && (!server.url || !isHttpsUrlWithoutUserInfoOrFragment(server.url))
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['url'],
+      message: 'OAuth MCP resource URLs must use HTTPS and contain no user-info or fragment',
+    });
+  }
 });
 
 const McpServerDefFileSchema = z.object({
@@ -592,7 +667,43 @@ export class SkillLoader {
         );
       }
 
-      const def = parseResult.data as McpServerDef;
+      const parsedDef = parseResult.data as McpServerDef;
+      let def: McpServerDef;
+      try {
+        def = {
+          ...parsedDef,
+          config: {
+            ...parsedDef.config,
+            ...(parsedDef.config.headers
+              ? {
+                  headers: Object.fromEntries(
+                    Object.entries(parsedDef.config.headers).map(([key, value]) => [
+                      key,
+                      expandEnvironmentVariables(value, `MCP server "${parsedDef.name}" header "${key}"`),
+                    ]),
+                  ),
+                }
+              : {}),
+            ...(parsedDef.config.env
+              ? {
+                  env: Object.fromEntries(
+                    Object.entries(parsedDef.config.env).map(([key, value]) => [
+                      key,
+                      expandEnvironmentVariables(value, `MCP server "${parsedDef.name}" environment "${key}"`),
+                    ]),
+                  ),
+                }
+              : {}),
+          },
+        };
+      } catch (cause) {
+        return err(
+          new SkillError(
+            `MCP server environment configuration is invalid in "${filePath}" for skill "${skillName}": ${(cause as Error).message}`,
+            cause instanceof Error ? cause : undefined,
+          ),
+        );
+      }
       // Stamp the default OAuth tokenStore identifier so skill authors
       // can declare `auth: { kind: 'oauth2' }` without repeating the
       // skill/server name. The on-disk cache for this server then

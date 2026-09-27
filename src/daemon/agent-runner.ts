@@ -9,7 +9,7 @@ import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
-import { resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
+import { hasOAuthMcpAuth, resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import {
   TALON_SKILL_LOAD_TOOL_DESCRIPTION,
@@ -622,12 +622,11 @@ export class AgentRunner {
                     ...sdkSkillServer,
                     __talond_host_tools: {
                       transport: 'stdio',
-                      command: 'node',
+                      command: process.execPath,
                       args: [
                         join(import.meta.dirname, '../../dist/tools/host-tools-mcp-server.js'),
                       ],
                       env: {
-                        ...process.env,
                         [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
                         TALOND_SOCKET: this.ctx.hostToolsBridge.path,
                         TALOND_RUN_ID: runId,
@@ -656,12 +655,11 @@ export class AgentRunner {
                   ) {
                     mcpServers.__talond_skill_loader = {
                       transport: 'stdio',
-                      command: 'node',
+                      command: process.execPath,
                       args: [
                         join(import.meta.dirname, '../../dist/tools/skill-loader-mcp-server.js'),
                       ],
                       env: {
-                        ...process.env,
                         [TALOND_BRIDGE_SECRET_ENV]: bridgeSecret,
                         TALOND_SOCKET: this.ctx.hostToolsBridge.path,
                         TALOND_RUN_ID: runId,
@@ -714,6 +712,7 @@ export class AgentRunner {
                   // strips the field and merges Authorization into headers.
                   // Failure here surfaces with a "run talonctl auth-mcp …"
                   // message so the operator can fix it without restarting.
+                  const disableNativeShellAndFilesystemTools = hasOAuthMcpAuth(mcpServers);
                   const resolvedMcpServers = await resolveMcpServers(mcpServers, {
                     tokenStore: this.ctx.oauthTokenStore,
                   });
@@ -723,6 +722,9 @@ export class AgentRunner {
                     prompt: content,
                     systemPrompt,
                     mcpServers: resolvedMcpServers,
+                    ...(disableNativeShellAndFilesystemTools
+                      ? { disableNativeShellAndFilesystemTools: true }
+                      : {}),
                     cwd: workspaceResult.value,
                     model,
                     maxTurns: 25,

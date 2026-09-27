@@ -65,6 +65,10 @@ export interface McpOAuth2AuthSpec {
    * token store helper when the access token nears expiry.
    */
   tokenStore: string;
+  /** Pinned issuer used by a pre-registered OAuth client, when configured. */
+  authorizationServerIssuer?: string;
+  /** Explicit OAuth scopes requested during one-time authorization. */
+  scopes?: string[];
 }
 
 export interface CanonicalMcpSdkServer {
@@ -109,6 +113,8 @@ export interface ProviderSpawnInput {
   model?: string;
   /** Optional persona-level OpenAI/Codex reasoning effort. Provider-specific. */
   reasoningEffort?: ReasoningEffort;
+  /** Disable provider-native shell and filesystem tools for OAuth-authenticated MCP runs. */
+  disableNativeShellAndFilesystemTools?: boolean;
 }
 
 export interface PreparedProviderInvocation {

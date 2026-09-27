@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, beforeEach, vi } from 'vitest';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,6 +17,8 @@ function mkTokens(overrides: Partial<CachedTokens> = {}): CachedTokens {
     refreshToken: 'refresh-original',
     expiresAt: Date.now() + 60 * 60 * 1000,
     tokenEndpoint: 'https://idp.example.com/token',
+    resource: 'https://idp.example.com/resource',
+    requestedScopes: [],
     clientId: 'client-abc',
     ...overrides,
   };
@@ -95,6 +97,10 @@ describe('OAuthTokenStore.materializeBearer', () => {
     dataDir = mkdtempSync(join(tmpdir(), 'talon-token-store-'));
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('returns the cached access token when it is well within expiry', async () => {
     const tokens = mkTokens({ expiresAt: 2_000_000_000_000 }); // far future
     await writeTokens(dataDir, 'glean/glean', tokens);
@@ -105,10 +111,13 @@ describe('OAuthTokenStore.materializeBearer', () => {
 
   it('refreshes when the access token is within the refresh buffer', async () => {
     const now = 1_000_000;
-    const tokens = mkTokens({ expiresAt: now + 1000 }); // 1s left — under default 60s buffer
+    const resource = 'https://search.example.com/mcp';
+    const tokens = mkTokens({ resource, expiresAt: now + 1000 }); // 1s left — under default 60s buffer
     await writeTokens(dataDir, 'glean/glean', tokens);
 
-    const fetchImpl = (async (_url: string, _init?: RequestInit) => {
+    let requestBody = '';
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      requestBody = String(init?.body ?? '');
       return new Response(
         JSON.stringify({ access_token: 'access-NEW', refresh_token: 'refresh-NEW', expires_in: 3600 }),
         { status: 200, headers: { 'content-type': 'application/json' } },
@@ -124,6 +133,121 @@ describe('OAuthTokenStore.materializeBearer', () => {
     expect(persisted?.accessToken).toBe('access-NEW');
     expect(persisted?.refreshToken).toBe('refresh-NEW');
     expect(persisted?.expiresAt).toBe(now + 3600 * 1000);
+    expect(new URLSearchParams(requestBody).get('resource')).toBe(resource);
+    expect(persisted?.resource).toBe(resource);
+  });
+
+  it('refreshes a pre-registered client without persisting its credentials', async () => {
+    const now = 1_000_000;
+    const clientId = 'pre-registered-client';
+    const clientSecret = 'pre-registered-secret';
+    vi.stubEnv('MCP_REFRESH_CLIENT_ID', clientId);
+    vi.stubEnv('MCP_REFRESH_CLIENT_SECRET', clientSecret);
+    const tokens = mkTokens({
+      clientId: undefined,
+      clientSecret: undefined,
+      authorizationServerIssuer: 'https://identity.example.com',
+      clientIdEnv: 'MCP_REFRESH_CLIENT_ID',
+      clientSecretEnv: 'MCP_REFRESH_CLIENT_SECRET',
+      expiresAt: now + 1000,
+    });
+    await writeTokens(dataDir, 'private/private', tokens);
+
+    let requestInit: RequestInit | undefined;
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      requestInit = init;
+      return new Response(
+        JSON.stringify({ access_token: 'access-NEW', refresh_token: 'refresh-NEW', expires_in: 3600 }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    }) as typeof fetch;
+
+    const store = new OAuthTokenStore({ dataDir, now: () => now, fetchImpl });
+    expect(await store.materializeBearer('private/private')).toBe('access-NEW');
+
+    const headers = requestInit?.headers as Record<string, string>;
+    expect(headers.Authorization).toMatch(/^Basic /u);
+    expect(requestInit?.body).not.toContain(clientId);
+    expect(requestInit?.body).not.toContain(clientSecret);
+    const persisted = await readTokens(dataDir, 'private/private');
+    expect(persisted?.clientIdEnv).toBe('MCP_REFRESH_CLIENT_ID');
+    expect(persisted?.clientSecretEnv).toBe('MCP_REFRESH_CLIENT_SECRET');
+    expect(persisted?.clientId).toBeUndefined();
+    expect(persisted?.clientSecret).toBeUndefined();
+    expect(persisted?.authorizationServerIssuer).toBe('https://identity.example.com');
+  });
+
+  it('checks the pinned issuer before sending a refresh token', async () => {
+    const now = 1_000_000;
+    const tokens = mkTokens({
+      authorizationServerIssuer: 'https://old-identity.example.com',
+      expiresAt: now - 1000,
+    });
+    await writeTokens(dataDir, 'glean/glean', tokens);
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 500 })) as typeof fetch;
+    const store = new OAuthTokenStore({ dataDir, now: () => now, fetchImpl });
+
+    await expect(
+      store.materializeBearer('glean/glean', {
+        authorizationServerIssuer: 'https://identity.example.com',
+        resource: tokens.resource!,
+        scopes: [],
+      }),
+    ).rejects.toThrow(/do not match authorizationServerIssuer/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects a cached token when its MCP resource does not match the configured URL', async () => {
+    const tokens = mkTokens({ expiresAt: Date.now() + 60_000 });
+    await writeTokens(dataDir, 'shared/shared', tokens);
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 500 })) as typeof fetch;
+    const store = new OAuthTokenStore({ dataDir, fetchImpl });
+
+    await expect(store.materializeBearer('shared/shared', {
+      resource: 'https://attacker.example/mcp',
+      scopes: [],
+    })).rejects.toThrow(/different MCP resource/);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects cached grants after scope changes or when grants exceed the current allowlist', async () => {
+    const tokens = mkTokens({
+      scope: 'search:read search:write admin',
+      requestedScopes: ['search:read', 'search:write'],
+      expiresAt: Date.now() + 60_000,
+    });
+    await writeTokens(dataDir, 'shared/shared', tokens);
+    const store = new OAuthTokenStore({ dataDir });
+
+    await expect(store.materializeBearer('shared/shared', {
+      resource: tokens.resource!,
+      scopes: ['search:read'],
+    })).rejects.toThrow(/different requested scopes/);
+    await expect(store.materializeBearer('shared/shared', {
+      resource: tokens.resource!,
+      scopes: ['search:read', 'search:write'],
+    })).rejects.toThrow(/outside the current MCP configuration/);
+  });
+
+  it('does not persist refreshed tokens that broaden the configured scopes', async () => {
+    const now = 1_000_000;
+    const tokens = mkTokens({
+      scope: 'search:read',
+      requestedScopes: ['search:read'],
+      expiresAt: now + 1000,
+    });
+    await writeTokens(dataDir, 'scoped/scoped', tokens);
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ access_token: 'too-broad', scope: 'search:read admin', expires_in: 3600 }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof fetch;
+    const store = new OAuthTokenStore({ dataDir, now: () => now, fetchImpl });
+
+    await expect(store.materializeBearer('scoped/scoped', {
+      resource: tokens.resource!,
+      scopes: ['search:read'],
+    })).rejects.toThrow(/outside the current MCP configuration/);
+    expect((await readTokens(dataDir, 'scoped/scoped'))?.accessToken).toBe('access-original');
   });
 
   it('preserves the original refresh_token when IdP omits it', async () => {
@@ -201,6 +325,18 @@ describe('OAuthTokenStore.materializeBearer', () => {
 
     const store = new OAuthTokenStore({ dataDir, now: () => now, fetchImpl });
     await expect(store.materializeBearer('glean/glean')).rejects.toBeInstanceOf(TokenStoreError);
+  });
+
+  it('rejects a refreshed non-Bearer access token', async () => {
+    const now = 1_000_000;
+    await writeTokens(dataDir, 'glean/glean', mkTokens({ expiresAt: now + 1000 }));
+    const fetchImpl = (async () => new Response(
+      JSON.stringify({ access_token: 'access-NEW', token_type: 'DPoP', expires_in: 3600 }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )) as typeof fetch;
+    const store = new OAuthTokenStore({ dataDir, now: () => now, fetchImpl });
+
+    await expect(store.materializeBearer('glean/glean')).rejects.toThrow(/missing required fields/);
   });
 
   it('writeTokens followed by external read sees the new bundle (atomic via rename)', async () => {

@@ -35,8 +35,8 @@ move on.
   daemon, then `talonctl` is available for everything else.
 - **One question at a time.** Never dump a wall of options.
 - **No secrets.** Never ask for or write actual tokens. Only show
-  `${ENV_VAR}` placeholders in `config/talond.yaml`. Real values go in
-  `.env`.
+  `${ENV_VAR}` placeholders in `config/talond.yaml` and MCP `headers` / `env`
+  fields. Real values go in `.env`.
 - **Show output.** When you run a command, show what came back.
 
 ## Detect state first
@@ -107,7 +107,7 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl status` | Daemon health, active runs, queue depth |
 | `talonctl doctor` | Validate config + environment |
 | `talonctl config-show` | Show current config (secrets masked) |
-| `talonctl env-check` | List env-var placeholders the config expects |
+| `talonctl env-check` | List config and MCP env references (names/status only) |
 | `talonctl list-channels` | Configured channels |
 | `talonctl add-channel --name <n> --type <t>` | Add a channel |
 | `talonctl remove-channel --name <n>` | Remove a channel |
@@ -116,7 +116,8 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl remove-persona --name <n>` | Remove a persona |
 | `talonctl bind --persona <p> --channel <c>` | Bind persona to channel |
 | `talonctl unbind --persona <p> --channel <c>` | Remove a binding |
-| `talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add an MCP server to a skill |
+| `talonctl add-mcp --skill <s> --name <n> --transport <stdio|sse|http> ...` | Add an MCP server to a skill |
+| `talonctl auth-mcp <skill>:<server> --docker` | Authorize an HTTP MCP server from the host browser |
 | `talonctl list-providers` | Configured AI providers |
 | `talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]` | Add a provider |
 | `talonctl set-default-provider --name <n> --context <ctx>` | Set default provider |
@@ -346,6 +347,46 @@ Once boot is verified, anything else uses `talonctl`:
   GitHub, Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
 
+#### MCP authentication
+
+For static HTTP tokens or stdio credentials, use `${ENV_VAR}` placeholders
+and keep the values in `.env`:
+
+```bash
+talonctl add-mcp --skill work-search --name internal-search --transport http \
+  --url https://search.example.com/mcp \
+  --headers 'Authorization=Bearer ${SEARCH_API_TOKEN}'
+talonctl env-check
+```
+
+For OAuth, use an HTTPS resource URL, add the server with `--auth oauth2`, then
+authorize it from the host browser:
+
+```bash
+talonctl add-mcp --skill work-search --name glean --transport http \
+  --url https://search.example.com/mcp --auth oauth2
+talonctl auth-mcp work-search:glean --docker
+```
+
+If the authorization server does not support Dynamic Client Registration,
+provide `--client-id-env`, pin it with `--authorization-server-issuer https://<issuer>`,
+and optionally set `--client-secret-env` when adding it.
+The optional `--token-endpoint-auth-method` is `client_secret_post` or
+`client_secret_basic`. The starter publishes the temporary OAuth callback on
+`127.0.0.1:8788` only; custom `--port` values must match the Compose mapping.
+The daemon reads the new token bundle on its next agent run, so no restart is
+needed. `env-check` scans MCP headers, stdio env values, and OAuth client
+references without showing secret values.
+On OAuth-backed runs, native shell/filesystem tools are disabled while Talon
+tools and configured MCP servers remain available. Codex CLI is rejected
+because it cannot disable those built-ins; this is not OS-level isolation from
+same-user processes. Use `--scopes` to request only the OAuth scopes the persona
+needs; Talon does not automatically request every advertised scope.
+Re-run `auth-mcp` after changing the MCP resource URL or configured scopes;
+cached credentials are bound to both.
+Talon expands MCP header/stdio env references once and rejects resulting
+values that still look like provider environment-variable syntax.
+
 #### Subscription-backed sub-agents
 
 Only offer this when the user explicitly wants a small, bounded sub-agent task
@@ -395,8 +436,9 @@ talonctl test-provider --name <n>   # if a provider was added
 
 ## Rules
 
-1. **Never write actual secrets.** Only `${ENV_VAR}` placeholders in
-   `config/talond.yaml`. Real values are in `.env`, edited by the user.
+1. **Never write actual secrets.** Use `${ENV_VAR}` references in
+   `config/talond.yaml` and MCP `headers` / `env`; real values are in `.env`,
+   edited by the user.
 2. **Use `talonctl` for all post-boot mutations.** Exceptions: persona
    `system.md` files (these are agent-facing prompts and benefit from
    hand-editing) and `.env`.

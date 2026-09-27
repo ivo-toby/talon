@@ -74,6 +74,27 @@ describe('CodexCliProvider', () => {
     expect(provider.name).toBe('codex-work');
   });
 
+  it('fails closed for background OAuth runs because Codex built-in tools cannot be disabled', () => {
+    const provider = makeProvider();
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Search the docs.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {
+        oauthSearch: {
+          transport: 'http',
+          url: 'https://mcp.example.test',
+          headers: { Authorization: 'Bearer token' },
+        },
+      },
+      disableNativeShellAndFilesystemTools: true,
+      cwd: '/workspace/repo',
+      timeoutMs: 60_000,
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toMatch(/codex-cli provider cannot disable those built-in tools/i);
+  });
+
   it('does not render unsupported reasoning effort none into Codex config', () => {
     const provider = makeProvider();
     const rendered = (provider as any).renderConfigToml({
@@ -243,6 +264,23 @@ describe('CodexCliProvider', () => {
     } finally {
       executeInvocation.mockRestore();
     }
+  });
+
+  it('fails closed for foreground OAuth runs because Codex built-in tools cannot be disabled', async () => {
+    const provider = makeProvider();
+    const strategy = provider.createExecutionStrategy();
+
+    await expect(collectEvents(strategy.run({
+      threadId: 'thread-001',
+      prompt: 'Search the docs.',
+      systemPrompt: 'You are helpful.',
+      mcpServers: {},
+      cwd: '/workspace/repo',
+      model: 'gpt-5.4',
+      maxTurns: 5,
+      timeoutMs: 60_000,
+      disableNativeShellAndFilesystemTools: true,
+    }))).rejects.toThrow(/codex-cli provider cannot disable those built-in tools/i);
   });
 
   it('does not reuse stale foreground last-message output when a subsequent run does not write one', async () => {

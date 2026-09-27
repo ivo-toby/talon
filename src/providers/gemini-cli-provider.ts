@@ -61,6 +61,7 @@ export class GeminiCliProvider implements AgentProvider {
           cwd: input.cwd,
           timeoutMs: input.timeoutMs,
           model: input.model,
+          disableNativeShellAndFilesystemTools: input.disableNativeShellAndFilesystemTools,
         });
         if (invocationResult.isErr()) {
           throw invocationResult.error;
@@ -184,6 +185,9 @@ export class GeminiCliProvider implements AgentProvider {
                 enabled: false,
               },
             },
+            ...(input.disableNativeShellAndFilesystemTools
+              ? { tools: { core: ['google_web_search', 'web_fetch'] } }
+              : {}),
             mcpServers: this.toGeminiMcpServers(input.mcpServers),
           },
           null,

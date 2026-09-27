@@ -518,6 +518,7 @@ describe('OpenAiCompatibleProvider', () => {
       cwd: '/workspace/repo',
       timeoutMs: 60_000,
       model: 'qwen3-coder:30b',
+      disableNativeShellAndFilesystemTools: true,
     });
 
     expect(result.isOk()).toBe(true);
@@ -549,6 +550,7 @@ describe('OpenAiCompatibleProvider', () => {
       // only the terminal result/error event — otherwise the background
       // stdout buffer (100KB) could truncate away the summary line.
       streamEvents: false,
+      disableNativeShellAndFilesystemTools: true,
     });
     // The wrapper must receive the same result-file path the background
     // runner will later read from, so large outputs bypass the stdout cap.
@@ -794,6 +796,7 @@ describe('OpenAiCompatibleProvider', () => {
       model: 'qwen3-coder:30b',
       maxTurns: 10,
       timeoutMs: 5_000,
+      disableNativeShellAndFilesystemTools: true,
     })) {
       void _event;
     }
@@ -802,6 +805,7 @@ describe('OpenAiCompatibleProvider', () => {
     expect(stdinJoined.length).toBeGreaterThan(0);
     const payload = JSON.parse(stdinJoined) as Record<string, unknown>;
     expect(payload.streamEvents).toBe(true);
+    expect(payload.disableNativeShellAndFilesystemTools).toBe(true);
     expect(payload).not.toHaveProperty('maxSteps');
   });
 

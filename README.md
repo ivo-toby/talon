@@ -1105,14 +1105,69 @@ Skills with unmet capabilities produce a warning at startup and are skipped.
 
 For HTTP / SSE MCP servers that require OAuth (e.g. Glean, GitHub Enterprise),
 Talon owns the token lifecycle directly — no `mcp-remote` or other stdio
-bridge process at runtime.
+bridge process at runtime. The auth flow supports Dynamic Client Registration
+or a pre-registered OAuth client whose credentials are referenced from the
+daemon environment.
 
 The interactive OAuth dance lives in `talonctl auth-mcp`, runs once per
 server, and writes a refreshable token bundle into Talon's data dir. The
 daemon reads + refreshes that bundle on every agent run and injects the
 resulting `Authorization: Bearer <token>` header into the MCP server config
-before the provider sees it. Providers (claude-code, gemini-cli, codex-cli,
-openai-compatible) stay completely unaware of the OAuth flow.
+before the provider sees it. Providers never receive the OAuth cache or client
+credentials; Talon applies a native-tool restriction for runs that use an
+OAuth-authenticated MCP server.
+
+**Add an OAuth-protected server:**
+
+```bash
+talonctl add-mcp --skill work-search --name glean --transport http \
+  --url https://search.example.com/mcp --auth oauth2
+```
+
+By default, `talonctl auth-mcp` uses Dynamic Client Registration when the
+authorization server advertises it. For a pre-registered client, set the
+client credential variable names (not their values) when adding the server:
+
+```bash
+talonctl add-mcp --skill work-search --name enterprise-search --transport http \
+  --url https://search.example.com/mcp --auth oauth2 \
+  --scopes search:read \
+  --client-id-env SEARCH_OAUTH_CLIENT_ID \
+  --authorization-server-issuer https://identity.example.com \
+  --client-secret-env SEARCH_OAUTH_CLIENT_SECRET \
+  --token-endpoint-auth-method client_secret_basic
+```
+
+`client_secret_post` is also supported. With a client secret, the default is
+`client_secret_basic`; if no secret is needed, omit `--client-secret-env` and
+the client defaults to the public `none` method. Put
+the actual values in `.env`, which Docker Compose injects into the daemon.
+Talon requests no OAuth scopes by default; use `--scopes <scope...>` to ask
+only for the scopes this persona needs, rather than automatically requesting
+every scope advertised by the provider.
+Register `http://127.0.0.1:8788/callback` as an allowed redirect URI for a
+pre-registered client (and use the matching port if you change it).
+If the MCP resource URL or configured scopes change, rerun `auth-mcp`; Talon
+rejects a cached token bundle whose authorization context no longer matches.
+Talon expands `${ENV_VAR}` references in MCP headers and stdio environment
+values once. If the resulting value still contains provider-expandable
+environment syntax (for example `$VAR` or `${VAR}`), Talon fails closed before
+provider startup because some provider CLIs expand those references in their
+MCP configuration.
+
+For an MCP server using a static API token instead, use an environment
+placeholder in an HTTP header or stdio environment value. Quote the argument
+so your shell does not expand it before Talon writes the skill definition:
+
+```bash
+talonctl add-mcp --skill work-search --name internal-search --transport http \
+  --url https://search.example.com/mcp \
+  --headers 'Authorization=Bearer ${SEARCH_API_TOKEN}'
+```
+
+`talonctl env-check` reports missing variables referenced by `talond.yaml` and
+by MCP server definitions under `skills/*/mcp/*.json`. It reports names and
+status only, never values.
 
 **Skill config shape:**
 
@@ -1123,7 +1178,13 @@ openai-compatible) stay completely unaware of the OAuth flow.
     "name": "glean",
     "transport": "http",
     "url": "https://contentful-be.glean.com/mcp/default",
-    "auth": { "kind": "oauth2" }
+  "auth": {
+    "kind": "oauth2",
+    "clientIdEnv": "SEARCH_OAUTH_CLIENT_ID",
+    "clientSecretEnv": "SEARCH_OAUTH_CLIENT_SECRET",
+    "authorizationServerIssuer": "https://identity.example.com",
+    "tokenEndpointAuthMethod": "client_secret_basic"
+    }
   }
 }
 ```
@@ -1135,21 +1196,41 @@ omitted. Token bundles live at `<dataDir>/mcp-auth/<tokenStore>.json` (mode
 **One-time authorisation:**
 
 ```bash
-# Interactive (operator's desktop — opens local browser)
-npx talonctl auth-mcp glean:glean
+# Native install (operator's desktop — opens local browser)
+talonctl auth-mcp work-search:glean
 
-# Headless (operator on the daemon's host over SSH)
-npx talonctl auth-mcp glean:glean --headless
+# Docker starter on the same desktop: open the printed URL in the host browser
+talonctl auth-mcp work-search:glean --docker
+
+# Remote native daemon (operator connects over SSH)
+talonctl auth-mcp work-search:glean --headless
 # Prints the auth URL plus an `ssh -L <port>:localhost:<port> server`
 # command. Run the SSH forward from your local machine, then open the URL
 # in your local browser — the callback comes back over the forward.
 ```
 
-The command performs Dynamic Client Registration (RFC 7591) when the
-server advertises a `registration_endpoint`, generates a PKCE challenge,
-runs the standard authorisation-code flow, and persists the resulting
-access + refresh tokens. After it completes, the daemon picks up the new
-bundle on the next agent run — no daemon restart required.
+The Docker starter publishes the callback on host loopback only
+(`127.0.0.1:8788`). `--docker` listens on the container interface only while
+the one-time authorization command is running; it does not expose the callback
+to the LAN. If you change `--port`, change the Compose port mapping to match.
+
+OAuth MCP resource URLs must use HTTPS. The command performs Dynamic Client
+Registration (RFC 7591) when configured without a client id, generates a PKCE
+challenge, runs the standard authorisation-code flow, and persists the
+resulting access + refresh tokens.
+For pre-registered clients, `authorizationServerIssuer` is required and pins
+metadata discovery to the configured HTTPS issuer; pre-registered credentials
+use environment-variable references and the client secret is not copied into
+the token bundle. DCR-issued token
+bundles are stored under `<dataDir>/mcp-auth/` with mode `0600`; the daemon
+picks up a new bundle on the next agent run, with no restart required.
+
+When a persona uses an OAuth-authenticated HTTP/SSE MCP server, Talon disables
+the provider's native shell and filesystem tools. Provider web search/fetch,
+Talon's capability-gated host tools, and configured MCP servers remain
+available. Codex CLI cannot disable its native tools, so those runs fail closed
+with a provider-switch message. This limits model-visible tool access; it is
+not OS-level isolation from another process running as the daemon's Unix user.
 
 **Refresh:** the daemon automatically refreshes access tokens that fall
 within 60 s of expiry, using the cached `refresh_token` and the OAuth
@@ -1768,7 +1849,14 @@ npx talonctl chat --token mytoken --persona assistant
 | `--command <cmd>`     | Command to run (required for stdio)                  | —        |
 | `--args <args...>`    | Command arguments (space-separated)                  | —        |
 | `--url <url>`         | Server URL (required for sse/http)                   | —        |
-| `--env <pairs>`       | Environment variables (`KEY=VAL,KEY2=VAL2`)          | —        |
+| `--headers <pairs>`   | HTTP headers (`KEY=VALUE,...`); use `${ENV_VAR}` for secrets | — |
+| `--auth oauth2`       | Enable OAuth for an HTTP/SSE server                  | —        |
+| `--client-id-env`     | Environment variable with a pre-registered client id | —       |
+| `--client-secret-env` | Environment variable with its client secret          | —        |
+| `--authorization-server-issuer` | Pin the pre-registered client's HTTPS OAuth issuer | — |
+| `--scopes <scopes...>` | Explicit OAuth scopes to request; none by default | — |
+| `--token-endpoint-auth-method` | `none`, `client_secret_post`, or `client_secret_basic` | — |
+| `--env <pairs>`       | Stdio environment (`KEY=VALUE,...`); use `${ENV_VAR}` for secrets | — |
 | `--skills-dir <path>` | Skills directory                                     | `skills` |
 
 ```bash
@@ -1794,8 +1882,11 @@ npx talonctl add-mcp --skill web-search --name tavily \
 | `unbind`            | Remove a persona-channel binding                                       |
 | `remove-channel`    | Remove a channel and its bindings                                      |
 | `remove-persona`    | Remove a persona, its directory, and bindings                          |
-| `env-check`         | Audit config for `${ENV_VAR}` placeholders and report missing env vars |
+| `env-check`         | Audit Talon config and MCP definitions for missing env vars            |
 | `config-show`       | Display resolved config with secrets masked                            |
+
+`env-check` also accepts `--skills-dir <path>` (default `skills`). It reports
+variable names and set/missing status only; it never prints values.
 
 **`list-skills`** options:
 
@@ -1978,7 +2069,8 @@ If your upstream does not emit `prompt_tokens_details`, `cache_read_input_tokens
 | Option                | Description                                                                                                  | Default       |
 | --------------------- | ------------------------------------------------------------------------------------------------------------ | ------------- |
 | `--headless`          | Don't try to open a browser. Print the auth URL + suggested SSH forward command. Use this on remote daemons. | off           |
-| `--port <port>`       | Localhost callback port. Must match the SSH `-L` forward in headless mode.                                   | `8788`        |
+| `--docker`            | Use the callback published on host loopback by the Docker starter; open the printed URL on the host.         | off           |
+| `--port <port>`       | Localhost callback port; custom ports must match the SSH forward or Compose mapping.                        | `8788`        |
 | `--config <path>`     | Path to talond.yaml                                                                                          | `talond.yaml` |
 | `--skills-dir <path>` | Path to the skills directory                                                                                 | `skills`      |
 
@@ -2318,10 +2410,10 @@ Complex SQL patterns (UNION, subqueries, CTEs, INTERSECT, EXCEPT) are rejected t
 
 ### Secrets Management
 
-- Credentials use `${ENV_VAR}` substitution in `talond.yaml` — never hardcoded
+- Credentials use `${ENV_VAR}` references in `talond.yaml` and MCP `headers` / `env` fields — never hardcoded
 - Environment variables loaded from `.env` file at startup
 - `talonctl config-show` masks all secret values in output
-- `talonctl env-check` audits for missing environment variables
+- `talonctl env-check` audits config and MCP references without printing values
 
 ### `requireApproval` configuration
 
@@ -2600,31 +2692,30 @@ If `autoDestroyOnCompletion` is `false`, the VM persists after task completion a
 
 ## MCP Integration
 
-Talon supports the [Model Context Protocol](https://modelcontextprotocol.io) for connecting external tool servers to personas. MCP servers are added per-persona via `talonctl add-mcp`.
+Talon supports the [Model Context Protocol](https://modelcontextprotocol.io)
+for connecting external tool servers to personas through skills. Add a server
+to a skill that is attached to the persona:
 
 ```bash
-# Add an MCP server to a persona
-npx talonctl add-mcp --name web-search --persona assistant \
-  --command npx --args @anthropic-ai/mcp-web-search --transport stdio
+# Local stdio server
+npx talonctl add-mcp --skill web-search --name filesystem \
+  --transport stdio --command npx --args -y @modelcontextprotocol/server-filesystem /userdata
 
-# Add a custom MCP server
-npx talonctl add-mcp --name my-tools --persona assistant \
-  --command node --args ./tools/server.js --transport stdio
+# Remote HTTP server with OAuth
+npx talonctl add-mcp --skill work-search --name glean --transport http \
+  --url https://search.example.com/mcp --auth oauth2
+npx talonctl auth-mcp work-search:glean
 ```
 
-This adds the MCP server to the persona's config in `talond.yaml`:
+For static tokens, use `${ENV_VAR}` in HTTP headers or stdio `--env` values,
+and put the real value in `.env`. Do not place credentials literally in the
+skill's MCP JSON file. The Docker starter uses
+`talonctl auth-mcp <skill>:<server> --docker`; see
+[HTTP MCP Servers and OAuth](#http-mcp-servers-and-oauth) for client setup,
+refresh, and callback details.
 
-```yaml
-personas:
-  - name: assistant
-    mcpServers:
-      - name: web-search
-        command: npx
-        args: ['@anthropic-ai/mcp-web-search']
-        transport: stdio
-```
-
-MCP servers are passed through to the provider runtime at execution time. Each persona gets its own set of MCP servers.
+MCP servers are passed through to the provider runtime at execution time. Each
+persona receives only the servers supplied by its configured skills.
 
 ---
 

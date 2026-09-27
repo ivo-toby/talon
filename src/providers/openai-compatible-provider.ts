@@ -44,6 +44,7 @@ interface WrapperPayload {
   reasoningEffort?: ReasoningEffort;
   headers?: Record<string, string>;
   mcpServers: Record<string, Exclude<CanonicalMcpServer, { transport: 'sdk' }>>;
+  disableNativeShellAndFilesystemTools?: boolean;
   /**
    * Foreground runs stream every text delta and tool event on stdout so the
    * agent-runner can surface incremental updates. Background runs ask the
@@ -289,6 +290,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
         reasoningEffort: input.reasoningEffort,
         sessionId: input.sessionId,
         maxTurns: input.maxTurns,
+        disableNativeShellAndFilesystemTools: input.disableNativeShellAndFilesystemTools,
       },
       { streamEvents: true, cleanupPaths: [] },
     );
@@ -531,6 +533,9 @@ export class OpenAiCompatibleProvider implements AgentProvider {
         ? { previousResponseId: sessionInput.sessionId }
         : {}),
       mcpServers: this.toSerializableMcpServers(input.mcpServers),
+      ...(input.disableNativeShellAndFilesystemTools
+        ? { disableNativeShellAndFilesystemTools: true }
+        : {}),
       streamEvents: options.streamEvents,
       ...(options.outputFilePath ? { outputFilePath: options.outputFilePath } : {}),
       ...(this.readNumericOption('toolOutputCap') !== undefined

@@ -95,6 +95,39 @@ describe('ClaudeCodeProvider', () => {
     expect(readdirSync(dirname(configPath)).sort()).toEqual(['mcp-config.json']);
   });
 
+  it('keeps MCP tools while restricting OAuth runs to web tools', () => {
+    const result = provider.prepareBackgroundInvocation({
+      prompt: 'Search the docs.',
+      systemPrompt: 'You are a helpful assistant.',
+      mcpServers: {
+        oauthSearch: {
+          transport: 'http',
+          url: 'https://mcp.example.test',
+          headers: { Authorization: 'Bearer token' },
+        },
+      },
+      disableNativeShellAndFilesystemTools: true,
+      cwd: '/tmp',
+      timeoutMs: 60_000,
+    });
+
+    expect(result.isOk()).toBe(true);
+    const invocation = result._unsafeUnwrap();
+    cleanupPaths.push(...invocation.cleanupPaths);
+    expect(invocation.args).toContain('--tools');
+    expect(invocation.args).toContain('WebSearch,WebFetch');
+    const configPath = invocation.args[invocation.args.indexOf('--mcp-config') + 1];
+    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
+      mcpServers: {
+        oauthSearch: {
+          type: 'http',
+          url: 'https://mcp.example.test',
+          headers: { Authorization: 'Bearer token' },
+        },
+      },
+    });
+  });
+
   it('writes an empty MCP config when no background MCP servers are configured', () => {
     const result = provider.prepareBackgroundInvocation({
       prompt: 'Ping.',
@@ -328,6 +361,7 @@ describe('ClaudeCodeProvider', () => {
         cwd: '/tmp',
         maxTurns: 4,
         timeoutMs: 30_000,
+        disableNativeShellAndFilesystemTools: true,
       })) {
         // drain iterable
       }
@@ -342,6 +376,7 @@ describe('ClaudeCodeProvider', () => {
               url: 'https://mcp.example.test',
             },
           },
+          tools: ['WebSearch', 'WebFetch'],
         }),
       });
     } finally {

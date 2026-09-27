@@ -330,6 +330,11 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private async *runForeground(input: AgentRunInput): AsyncIterable<AgentStreamEvent> {
+    if (input.disableNativeShellAndFilesystemTools) {
+      throw new BackgroundAgentError(
+        'OAuth-authenticated MCP servers require native shell and filesystem tools to be disabled, but the codex-cli provider cannot disable those built-in tools. Use claude-code, gemini-cli, or openai-compatible for this persona.',
+      );
+    }
     const homeDir = this.buildForegroundHome(input.threadId);
     const lastMessagePath = join(homeDir, 'last-message.txt');
     const resultFiles = { lastMessagePath };
@@ -422,6 +427,13 @@ export class CodexCliProvider implements AgentProvider {
   private prepareBackgroundCodexInvocation(
     input: ProviderSpawnInput,
   ): Result<PreparedProviderInvocation, BackgroundAgentError> {
+    if (input.disableNativeShellAndFilesystemTools) {
+      return err(
+        new BackgroundAgentError(
+          'OAuth-authenticated MCP servers require native shell and filesystem tools to be disabled, but the codex-cli provider cannot disable those built-in tools. Use claude-code, gemini-cli, or openai-compatible for this persona.',
+        ),
+      );
+    }
     const homeDir = this.buildBackgroundHome();
     const resultFiles = { lastMessagePath: join(homeDir, 'last-message.txt') };
     const model = input.model ?? this.readDefaultModel();
