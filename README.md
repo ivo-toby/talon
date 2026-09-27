@@ -1089,6 +1089,8 @@ eager: true
 
 Defaults to `false`. Useful when a persona runs on a model that doesn't reliably autonomously call `skill_load` for indirect triggers (most open-weight ≤70B-effective models).
 
+The Talon + Postgram starter stack includes an eager `postgram-memory` skill. Its search guidance treats compact Postgram hits as matched chunks: before answering factual status, policy, completion, or verification questions from memory, the agent recalls the relevant full entities by ID and reports when the answer cannot be confirmed. See [`starter-stack/README.md`](starter-stack/README.md#how-the-agent-uses-postgram).
+
 ### Skill Resolution
 
 Persona capabilities and skill requirements are intersected at runtime:

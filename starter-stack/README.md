@@ -86,7 +86,10 @@ See the main [Subscription-backed sub-agents guide](https://github.com/ivo-toby/
   (rendered from `.template` by `bootstrap.sh` with your API key).
 - `SKILL.md` — usage guidance, marked `eager: true` so it's always in the
   agent's system prompt. Memory use is reflexive — the agent shouldn't
-  have to decide to "load" it.
+  have to decide to "load" it. Compact search hits are matched chunks,
+  not full sources: for factual status or policy answers, the agent recalls
+  relevant entity IDs first, compares conflicting sources, and says when
+  the result cannot be confirmed.
 
 The `assistant` persona in `config/talond.yaml` lists `postgram-memory`
 in its `skills:`, so the agent gets the Postgram tools and the guidance.
