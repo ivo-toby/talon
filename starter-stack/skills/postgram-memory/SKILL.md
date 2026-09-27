@@ -36,7 +36,18 @@ Search Postgram, silently, when:
   context for.
 - You're about to ask the user for context you might already have.
 
-Search first, then answer. Don't announce "let me search" — just do it.
+Search results are discovery hints: compact hits contain matched chunks, not
+complete entities. Before answering a factual question about current status,
+policy, completion, verification, or a decision, call `postgram_recall` with
+the selected hit's ID and read the full entity — even if the chunk looks
+conclusive. If plausible hits disagree, recall the relevant candidates and
+compare their content and dates. Use the newest applicable evidence; a later
+conclusion in the same entity supersedes an earlier provisional statement.
+If recall fails or the full sources do not establish the answer, say it
+cannot be confirmed rather than inferring from a chunk. Recall only the IDs
+needed to answer; don't use `full_response: true` as a routine shortcut.
+
+Don't announce "let me search" — just do it.
 
 ## Store — capture what matters
 

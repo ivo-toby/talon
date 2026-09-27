@@ -169,7 +169,7 @@ Always make sure you are in a feature or fix branch before getting to work
 
 ### Reviews
 
-Before every commit you need to use the codex skill to ask Gpt-5.4 for a review, address the issues, only if there a no critical, high or medium issues are found the work can be committed.
+Before every commit, request a fresh independent code review from GPT-6-sol. Address all critical, high, and medium findings; commit only when none remain.
 When dealing with PR reviews, always resolve a comment when it's fixed or deemed invalid, always add a comment what you fixed, which commit, or why the comment was invalid
 
 ### Documentation
