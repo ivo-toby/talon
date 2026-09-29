@@ -82,6 +82,41 @@ changes (add another channel, swap providers, etc.).
 | `userdata/` | Files you want the agent to see. Bind-mounted at `/userdata`. |
 | `data/` | Persistent state (SQLite DB, IPC socket). Back this up. |
 
+## MCP authentication
+
+For static API tokens, reference a variable in MCP headers or stdio env values
+and put the actual secret in `.env`:
+
+```bash
+talonctl add-mcp --skill work-search --name internal-search --transport http \
+  --url https://search.example.com/mcp \
+  --headers 'Authorization=Bearer ${SEARCH_API_TOKEN}'
+talonctl env-check
+```
+
+For OAuth, add the HTTP server and run the one-time authorization in Docker
+mode:
+
+```bash
+talonctl add-mcp --skill work-search --name glean --transport http \
+  --url https://search.example.com/mcp --auth oauth2
+talonctl auth-mcp work-search:glean --docker
+```
+
+Open the printed URL in your Mac browser. The starter publishes the temporary
+OAuth callback on `127.0.0.1:8788` only. Refresh tokens live in the persistent
+`data/` directory with restricted file permissions; include it in protected
+backups, not source control. For pre-registered OAuth clients, pass
+`--client-id-env`, `--authorization-server-issuer https://<issuer>`, and
+optionally `--client-secret-env` when adding the server; keep client values in
+`.env`. OAuth-backed runs disable provider-native shell/filesystem tools while
+leaving Talon and configured MCP tools available. Codex CLI is rejected because
+it cannot enforce that restriction. Use `--scopes` to request only the OAuth
+permissions this persona needs. See the main README's
+[HTTP MCP Servers and OAuth](../README.md#http-mcp-servers-and-oauth) guide for
+the available token-endpoint methods. Re-run `auth-mcp` after changing the MCP
+resource URL or configured scopes; cached credentials are bound to both.
+
 ## Using a different AI provider
 
 The minimal `talond.yaml` defaults to Claude (`claude-code` provider) and reads

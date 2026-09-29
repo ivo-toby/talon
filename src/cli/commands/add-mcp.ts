@@ -12,6 +12,12 @@ import path from 'node:path';
 import {
   validateName,
 } from '../config-utils.js';
+import { isEnvironmentVariableName } from '../../core/config/environment.js';
+import {
+  isHttpsUrlWithoutUserInfoOrFragment,
+  isOAuthIssuerIdentifier,
+} from '../../auth/oauth-issuer.js';
+import type { McpOAuth2AuthConfig } from '../../mcp/mcp-types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,7 +30,9 @@ export interface AddMcpOptions {
   command?: string;
   args?: string[];
   url?: string;
+  headers?: Record<string, string>;
   env?: Record<string, string>;
+  auth?: Omit<McpOAuth2AuthConfig, 'tokenStore'>;
   skillsDir?: string;
 }
 
@@ -57,7 +65,7 @@ export async function addMcp(options: AddMcpOptions): Promise<AddMcpResult> {
 
   // Validate transport value.
   const validTransports = ['stdio', 'sse', 'http'] as const;
-  if (!validTransports.includes(options.transport as (typeof validTransports)[number])) {
+  if (!validTransports.includes(options.transport)) {
     throw new Error(`Invalid transport "${options.transport}". Must be one of: ${validTransports.join(', ')}.`);
   }
 
@@ -67,6 +75,58 @@ export async function addMcp(options: AddMcpOptions): Promise<AddMcpResult> {
   }
   if ((options.transport === 'sse' || options.transport === 'http') && !options.url) {
     throw new Error('--url is required for sse/http transport.');
+  }
+  if (options.auth && options.transport === 'stdio') {
+    throw new Error('OAuth auth is supported only for sse/http MCP servers.');
+  }
+  if (options.auth && options.url && !isHttpsUrlWithoutUserInfoOrFragment(options.url)) {
+    throw new Error('OAuth MCP server URLs must use HTTPS and contain no user-info or fragment.');
+  }
+  if (options.headers && options.transport === 'stdio') {
+    throw new Error('HTTP headers are supported only for sse/http MCP servers.');
+  }
+  if (options.auth?.clientIdEnv && !isEnvironmentVariableName(options.auth.clientIdEnv)) {
+    throw new Error('--client-id-env must be a valid environment variable name.');
+  }
+  if (options.auth?.clientSecretEnv && !isEnvironmentVariableName(options.auth.clientSecretEnv)) {
+    throw new Error('--client-secret-env must be a valid environment variable name.');
+  }
+  if (options.auth?.clientSecretEnv && !options.auth.clientIdEnv) {
+    throw new Error('--client-secret-env requires --client-id-env.');
+  }
+  if (options.auth?.scopes?.some((scope) => scope.trim().length === 0)) {
+    throw new Error('--scopes must contain non-empty scope names.');
+  }
+  if (options.auth?.clientIdEnv && !options.auth.authorizationServerIssuer) {
+    throw new Error('--client-id-env requires --authorization-server-issuer.');
+  }
+  if (
+    options.auth?.authorizationServerIssuer
+    && !isOAuthIssuerIdentifier(options.auth.authorizationServerIssuer)
+  ) {
+    throw new Error('--authorization-server-issuer must be an HTTPS URL without user-info, query, or fragment.');
+  }
+  if (options.auth?.authorizationServerIssuer && !options.auth.clientIdEnv) {
+    throw new Error('--authorization-server-issuer requires --client-id-env.');
+  }
+  if (
+    options.auth?.tokenEndpointAuthMethod
+    && !['none', 'client_secret_post', 'client_secret_basic'].includes(options.auth.tokenEndpointAuthMethod)
+  ) {
+    throw new Error('--token-endpoint-auth-method must be none, client_secret_post, or client_secret_basic.');
+  }
+  if (options.auth?.tokenEndpointAuthMethod && !options.auth.clientIdEnv) {
+    throw new Error('--token-endpoint-auth-method requires --client-id-env.');
+  }
+  if (
+    options.auth?.tokenEndpointAuthMethod
+    && options.auth.tokenEndpointAuthMethod !== 'none'
+    && !options.auth.clientSecretEnv
+  ) {
+    throw new Error('--token-endpoint-auth-method requires --client-secret-env.');
+  }
+  if (options.auth?.tokenEndpointAuthMethod === 'none' && options.auth.clientSecretEnv) {
+    throw new Error('token endpoint auth method "none" cannot be used with --client-secret-env.');
   }
 
   // Verify skill directory exists.
@@ -95,7 +155,9 @@ export async function addMcp(options: AddMcpOptions): Promise<AddMcpResult> {
       ...(options.command ? { command: options.command } : {}),
       ...(options.args && options.args.length > 0 ? { args: options.args } : {}),
       ...(options.url ? { url: options.url } : {}),
+      ...(options.headers && Object.keys(options.headers).length > 0 ? { headers: options.headers } : {}),
       ...(options.env && Object.keys(options.env).length > 0 ? { env: options.env } : {}),
+      ...(options.auth ? { auth: options.auth } : {}),
     },
   };
 

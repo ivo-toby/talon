@@ -23,6 +23,8 @@ export interface AgentRunInput {
   timeoutMs: number;
   sessionId?: string;
   reasoningEffort?: ReasoningEffort;
+  /** Disable provider-native shell and filesystem tools for OAuth-authenticated MCP runs. */
+  disableNativeShellAndFilesystemTools?: boolean;
 }
 
 export interface AgentRunResult {

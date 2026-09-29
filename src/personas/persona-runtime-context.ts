@@ -46,29 +46,6 @@ export function buildSkillIndex(resolvedSkills: LoadedSkill[]): string {
   ].join('\n');
 }
 
-function resolveEnvPlaceholder(value: string): string {
-  const match = /^\$\{(\w+)\}$/.exec(value);
-  return match ? (process.env[match[1] ?? ''] ?? '') : value;
-}
-
-function resolveHeaderPlaceholders(
-  value: string,
-  serverName: string,
-  header: string,
-  logger?: BuildPersonaRuntimeContextOptions['logger'],
-): string {
-  return value.replace(/\$\{(\w+)\}/g, (_match, varName: string) => {
-    const envValue = process.env[varName];
-    if (envValue === undefined) {
-      logger?.warn(
-        { mcpServer: serverName, header, variable: varName },
-        'agent-sdk: unresolved env var in MCP header — value will be empty',
-      );
-    }
-    return envValue ?? '';
-  });
-}
-
 export function buildPersonaRuntimeContext(
   options: BuildPersonaRuntimeContextOptions,
 ): PersonaRuntimeContext {
@@ -118,24 +95,13 @@ export function buildPersonaRuntimeContext(
     }
 
     const cfg = server.config;
-    const resolvedEnv: Record<string, string> = {};
-    if (cfg.env) {
-      for (const [key, value] of Object.entries(cfg.env)) {
-        resolvedEnv[key] = resolveEnvPlaceholder(value);
-      }
-    }
-
-    const resolvedHeaders: Record<string, string> = {};
-    if (cfg.headers && (cfg.transport === 'http' || cfg.transport === 'sse')) {
-      for (const [key, value] of Object.entries(cfg.headers)) {
-        resolvedHeaders[key] = resolveHeaderPlaceholders(
-          value,
-          server.name,
-          key,
-          options.logger,
-        );
-      }
-    }
+    // SkillLoader expands configured environment references once. Keep the
+    // resulting values literal: a secret may itself contain `${...}` text.
+    const resolvedEnv = cfg.env ? { ...cfg.env } : {};
+    const resolvedHeaders =
+      cfg.headers && (cfg.transport === 'http' || cfg.transport === 'sse')
+        ? { ...cfg.headers }
+        : {};
 
     if (cfg.transport === 'stdio') {
       if (!cfg.command) {

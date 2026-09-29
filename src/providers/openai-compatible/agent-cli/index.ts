@@ -49,6 +49,7 @@ interface WrapperInput {
   reasoningEffort?: ReasoningEffort;
   headers?: Record<string, string>;
   mcpServers: Record<string, SerializableMcpServer>;
+  disableNativeShellAndFilesystemTools?: boolean;
   streamEvents?: boolean;
   outputFilePath?: string;
   /**
@@ -191,16 +192,7 @@ async function main(): Promise<void> {
     const input = parseInput(await readStdin());
     installStreamOptionsInterceptor(input.baseUrl);
 
-    // Mastra Workspace provides fs + bash feature parity with claude-code,
-    // codex-cli, and gemini-cli. Mastra auto-injects read_file, write_file,
-    // list_files, execute_command, etc. onto the Agent when a workspace is
-    // set. We configure it with:
-    //   - contained: false — tools are NOT jailed to basePath; the model can
-    //     reach anywhere the daemon process can, matching claude-code behavior.
-    //   - isolation: 'none' — commands run directly on the host.
-    //   - maxOutputTokens caps on verbose tools to prevent stalls from huge
-    //     directory listings or command output.
-    //   - Heavy/redundant tools disabled.
+    // OAuth-backed MCP runs must not expose these unrestricted local tools.
     const workspaceToolsConfig: WorkspaceToolsConfig = {
       mastra_workspace_list_files: { maxOutputTokens: 2000 },
       mastra_workspace_read_file: { maxOutputTokens: 3000 },
@@ -214,22 +206,25 @@ async function main(): Promise<void> {
       mastra_workspace_kill_process: { enabled: false },
     };
 
-    workspace = new Workspace({
-      filesystem: new LocalFilesystem({
-        basePath: input.cwd,
-        contained: false,
-      }),
-      sandbox: new LocalSandbox({
-        workingDirectory: input.cwd,
-        env: process.env,
-      }),
-      tools: workspaceToolsConfig,
-    });
-    await workspace.init();
-    const workspaceTools = (await createWorkspaceTools(workspace)) as Record<
-      string,
-      Tool<unknown, unknown, unknown, unknown>
-    >;
+    let workspaceTools: Record<string, Tool<unknown, unknown, unknown, unknown>> = {};
+    if (!input.disableNativeShellAndFilesystemTools) {
+      workspace = new Workspace({
+        filesystem: new LocalFilesystem({
+          basePath: input.cwd,
+          contained: false,
+        }),
+        sandbox: new LocalSandbox({
+          workingDirectory: input.cwd,
+          env: process.env,
+        }),
+        tools: workspaceToolsConfig,
+      });
+      await workspace.init();
+      workspaceTools = createWorkspaceTools(workspace) as Record<
+        string,
+        Tool<unknown, unknown, unknown, unknown>
+      >;
+    }
 
     const mcpServers = toMastraMcpServers(input.mcpServers);
     const rawMcpTools =
@@ -298,7 +293,7 @@ async function main(): Promise<void> {
         ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         tools: { ...combinedTools, ...workspaceTools },
         executionContext: {
-          workspace,
+          ...(workspace ? { workspace } : {}),
           requestContext,
           ...(input.threadId ? { threadId: input.threadId } : {}),
         },
@@ -351,7 +346,7 @@ async function main(): Promise<void> {
         ...(input.apiKey ? { apiKey: input.apiKey } : {}),
         ...(input.headers ? { headers: input.headers } : {}),
       },
-      workspace,
+      ...(workspace ? { workspace } : {}),
       tools: combinedTools,
     });
 
@@ -624,6 +619,9 @@ function parseInput(raw: string): WrapperInput {
       : {}),
     ...(parsed.headers ? { headers: parsed.headers } : {}),
     mcpServers: parsed.mcpServers ?? {},
+    ...(parsed.disableNativeShellAndFilesystemTools === true
+      ? { disableNativeShellAndFilesystemTools: true }
+      : {}),
     ...(typeof parsed.streamEvents === 'boolean' ? { streamEvents: parsed.streamEvents } : {}),
     ...(typeof parsed.outputFilePath === 'string' && parsed.outputFilePath.length > 0
       ? { outputFilePath: parsed.outputFilePath }
@@ -860,6 +858,13 @@ function isWrapperInput(value: unknown): value is WrapperInput {
   }
 
   if (value.apiKey !== undefined && typeof value.apiKey !== 'string') {
+    return false;
+  }
+
+  if (
+    value.disableNativeShellAndFilesystemTools !== undefined
+    && typeof value.disableNativeShellAndFilesystemTools !== 'boolean'
+  ) {
     return false;
   }
 

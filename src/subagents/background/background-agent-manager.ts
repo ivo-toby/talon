@@ -26,7 +26,11 @@ import type {
 } from '../../observability/langfuse/observability-types.js';
 import type { ExecutionEnvManager } from '../../execution-env/execution-env-manager.js';
 import type { OAuthTokenStore } from '../../auth/oauth-token-store.js';
-import { resolveMcpServers } from '../../mcp/resolve-mcp-servers.js';
+import {
+  assertMcpServersSafeForProvider,
+  hasOAuthMcpAuth,
+  resolveMcpServers,
+} from '../../mcp/resolve-mcp-servers.js';
 import type { HostToolsBridge } from '../../tools/host-tools-bridge.js';
 import {
   generateBridgeSecret,
@@ -282,17 +286,36 @@ export class BackgroundAgentManager {
     // remote MCP would 401 because the Authorization header is never
     // injected (issue surfaced in PR #212 codex review). When no token
     // store is provided we pass through unresolved — the MCP server
-    // will surface the failure clearly.
-    const resolvedWorkerMcpServers = this.deps.oauthTokenStore
-      ? await resolveMcpServers(workerMcpServers, {
+    // will surface the failure clearly, but still reject provider-expandable
+    // header/env values before they reach a provider.
+    let resolvedWorkerMcpServers: Record<string, CanonicalMcpServer>;
+    try {
+      if (this.deps.oauthTokenStore) {
+        resolvedWorkerMcpServers = await resolveMcpServers(workerMcpServers, {
           tokenStore: this.deps.oauthTokenStore,
-        })
-      : workerMcpServers;
+        });
+      } else {
+        assertMcpServersSafeForProvider(workerMcpServers);
+        resolvedWorkerMcpServers = workerMcpServers;
+      }
+    } catch (cause) {
+      observation?.end();
+      this.cleanupPaths(this.mergeCleanupPaths([], sandboxContext));
+      await this.destroyOwnedExecutionEnv(taskId);
+      return err(new BackgroundAgentError(
+        `Failed to prepare MCP servers for background agent: ${cause instanceof Error ? cause.message : String(cause)}`,
+        cause instanceof Error ? cause : undefined,
+      ));
+    }
+    const disableNativeShellAndFilesystemTools = hasOAuthMcpAuth(workerMcpServers);
 
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
       prompt: input.prompt,
       systemPrompt,
       mcpServers: resolvedWorkerMcpServers,
+      ...(disableNativeShellAndFilesystemTools
+        ? { disableNativeShellAndFilesystemTools: true }
+        : {}),
       cwd: sandboxContext?.controlDirectory ?? input.workingDirectory ?? process.cwd(),
       timeoutMs: timeoutMinutes * 60 * 1000,
       traceparent: childTraceparent,
@@ -806,10 +829,9 @@ export class BackgroundAgentManager {
     if (options.allowedMcpTools.length > 0) {
       mcpServers.__talond_host_tools = {
         transport: 'stdio',
-        command: 'node',
+        command: process.execPath,
         args: [join(import.meta.dirname, '../../../dist/tools/host-tools-mcp-server.js')],
         env: {
-          ...process.env,
           [TALOND_BRIDGE_SECRET_ENV]: options.bridgeSecret,
           TALOND_SOCKET: this.deps.hostToolsSocketPath,
           TALOND_RUN_ID: options.taskId,
@@ -834,10 +856,9 @@ export class BackgroundAgentManager {
     if (options.hasSkills) {
       mcpServers.__talond_skill_loader = {
         transport: 'stdio',
-        command: 'node',
+        command: process.execPath,
         args: [join(import.meta.dirname, '../../../dist/tools/skill-loader-mcp-server.js')],
         env: {
-          ...process.env,
           [TALOND_BRIDGE_SECRET_ENV]: options.bridgeSecret,
           TALOND_SOCKET: this.deps.hostToolsSocketPath,
           TALOND_RUN_ID: options.taskId,

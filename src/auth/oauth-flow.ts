@@ -27,6 +27,15 @@ import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { hostname } from 'node:os';
 import { URL } from 'node:url';
+import {
+  addOAuthClientCredentials,
+  isOAuthTokenEndpointAuthMethod,
+  type OAuthClientCredentials,
+} from './oauth-client-auth.js';
+import {
+  isHttpsUrlWithoutUserInfoOrFragment,
+  isOAuthIssuerIdentifier,
+} from './oauth-issuer.js';
 import type { CachedTokens } from './oauth-token-store.js';
 
 /** Subset of RFC 8414 metadata we actually consume. */
@@ -55,8 +64,21 @@ export interface RunOAuthFlowOptions {
   /**
    * Localhost callback port. Must be reachable from the user's browser
    * (or via SSH forward in headless mode). Defaults to 8788.
-   */
+  */
   callbackPort?: number;
+  /** Address for the temporary callback listener; Docker mode uses 0.0.0.0. */
+  callbackListenAddress?: '127.0.0.1' | '0.0.0.0';
+  /** Existing OAuth registration; otherwise Dynamic Client Registration is used. */
+  registeredClient?: OAuthClientCredentials;
+  /**
+   * Operator-pinned authorization-server issuer for a pre-registered client.
+   * When present, discovery is performed only against this issuer.
+   */
+  expectedAuthorizationServerIssuer?: string;
+  /** Optional least-privilege scopes selected by the operator. */
+  scopes?: string[];
+  /** Print Docker Desktop instructions instead of opening a browser or SSH tunnel. */
+  dockerMode?: boolean;
   /**
    * Headless mode prints the authorization URL and waits without trying
    * to open a browser. The operator forwards the callback port
@@ -88,12 +110,21 @@ export async function runOAuthFlow(
   options: RunOAuthFlowOptions,
 ): Promise<RunOAuthFlowResult> {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
-  const print = options.printLine ?? ((line) => process.stdout.write(`${line}\n`));
+  const print = options.printLine ?? ((line): void => {
+    process.stdout.write(`${line}\n`);
+  });
   const callbackPort = options.callbackPort ?? 8788;
   const clientName = options.clientName ?? `Talon (${hostname()})`;
   const timeoutMs = options.timeoutMs ?? 5 * 60_000;
+  if (!isHttpsUrlWithoutUserInfoOrFragment(options.resourceUrl)) {
+    throw new Error('OAuth MCP resource URL must use HTTPS and contain no user-info or fragment');
+  }
 
-  const asMeta = await discoverAuthorizationServer(options.resourceUrl, fetchImpl);
+  const asMeta = await discoverAuthorizationServer(
+    options.resourceUrl,
+    fetchImpl,
+    options.expectedAuthorizationServerIssuer,
+  );
   if (
     asMeta.code_challenge_methods_supported
     && !asMeta.code_challenge_methods_supported.includes('S256')
@@ -103,8 +134,8 @@ export async function runOAuthFlow(
     );
   }
 
-  const redirectUri = `http://localhost:${callbackPort}/callback`;
-  const { clientId, clientSecret } = await registerOrReuseClient(
+  const redirectUri = `http://127.0.0.1:${callbackPort}/callback`;
+  const client = options.registeredClient ?? await registerOrReuseClient(
     asMeta,
     redirectUri,
     clientName,
@@ -114,13 +145,11 @@ export async function runOAuthFlow(
   const verifier = randomBase64Url(64);
   const challenge = sha256Base64Url(verifier);
   const state = randomBase64Url(16);
-  const scope = options.headless
-    ? asMeta.scopes_supported?.join(' ')
-    : asMeta.scopes_supported?.join(' ');
+  const scope = options.scopes?.join(' ');
 
   const authUrl = new URL(asMeta.authorization_endpoint);
   authUrl.searchParams.set('response_type', 'code');
-  authUrl.searchParams.set('client_id', clientId);
+  authUrl.searchParams.set('client_id', client.clientId);
   authUrl.searchParams.set('redirect_uri', redirectUri);
   authUrl.searchParams.set('code_challenge', challenge);
   authUrl.searchParams.set('code_challenge_method', 'S256');
@@ -130,11 +159,21 @@ export async function runOAuthFlow(
 
   const callbackPromise = waitForCallback({
     port: callbackPort,
+    listenAddress: options.callbackListenAddress ?? '127.0.0.1',
     expectedState: state,
     timeoutMs,
   });
 
-  if (options.headless) {
+  if (options.dockerMode) {
+    print('');
+    print('=== Docker MCP OAuth ===');
+    print(`Open the authorization URL in your host browser. The callback returns through 127.0.0.1:${callbackPort}, published by the Talon Docker starter.`);
+    print('');
+    print(`  ${authUrl.toString()}`);
+    print('');
+    print(`Waiting for callback on 127.0.0.1:${callbackPort} (timeout ${Math.round(timeoutMs / 1000)}s)…`);
+    print('');
+  } else if (options.headless) {
     print('');
     print('=== headless OAuth ===');
     print('On your local machine, run:');
@@ -143,7 +182,7 @@ export async function runOAuthFlow(
     print('Then open this URL in your local browser:');
     print(`  ${authUrl.toString()}`);
     print('');
-    print(`Waiting for callback on localhost:${callbackPort} (timeout ${Math.round(timeoutMs / 1000)}s)…`);
+    print(`Waiting for callback on 127.0.0.1:${callbackPort} (timeout ${Math.round(timeoutMs / 1000)}s)…`);
     print('');
   } else {
     print(`Opening browser to authorise. If it does not open, visit: ${authUrl.toString()}`);
@@ -156,10 +195,10 @@ export async function runOAuthFlow(
     tokenEndpoint: asMeta.token_endpoint,
     code,
     redirectUri,
-    clientId,
-    clientSecret,
+    client,
     codeVerifier: verifier,
     resource: options.resourceUrl,
+    scopes: options.scopes,
     fetchImpl,
   });
 
@@ -167,8 +206,10 @@ export async function runOAuthFlow(
     tokens: {
       ...tokens,
       tokenEndpoint: asMeta.token_endpoint,
-      ...(clientId ? { clientId } : {}),
-      ...(clientSecret ? { clientSecret } : {}),
+      resource: options.resourceUrl,
+      requestedScopes: options.scopes ?? [],
+      authorizationServerIssuer: asMeta.issuer,
+      ...client,
     },
     authorizationServer: asMeta,
   };
@@ -181,12 +222,30 @@ export async function runOAuthFlow(
 async function discoverAuthorizationServer(
   resourceUrl: string,
   fetchImpl: typeof fetch,
+  expectedIssuer?: string,
 ): Promise<AuthorizationServerMetadata> {
+  if (expectedIssuer) {
+    if (!isOAuthIssuerIdentifier(expectedIssuer)) {
+      throw new Error(
+        'authorizationServerIssuer must be an HTTPS URL without user-info, query, or fragment',
+      );
+    }
+    const pinnedMeta = await fetchAuthorizationServerMetadata(
+      expectedIssuer,
+      fetchImpl,
+      expectedIssuer,
+    );
+    if (pinnedMeta) return pinnedMeta;
+    throw new Error(
+      `OAuth metadata for configured authorizationServerIssuer ${expectedIssuer} was not found`,
+    );
+  }
+
   // 1. RFC 9728 protected-resource metadata at the resource itself.
   const prMeta = await fetchProtectedResourceMetadata(resourceUrl, fetchImpl);
   if (prMeta?.authorization_servers && prMeta.authorization_servers.length > 0) {
     const asUrl = prMeta.authorization_servers[0];
-    const asMeta = await fetchAuthorizationServerMetadata(asUrl, fetchImpl);
+    const asMeta = await fetchAuthorizationServerMetadata(asUrl, fetchImpl, asUrl);
     if (asMeta) return asMeta;
   }
 
@@ -212,30 +271,64 @@ async function fetchProtectedResourceMetadata(
 async function fetchAuthorizationServerMetadata(
   baseUrl: string,
   fetchImpl: typeof fetch,
+  expectedIssuer?: string,
 ): Promise<AuthorizationServerMetadata | undefined> {
+  if (expectedIssuer && !isOAuthIssuerIdentifier(expectedIssuer)) {
+    throw new Error('OAuth authorization server identifiers must use HTTPS without user-info, query, or fragments');
+  }
   const wellKnown = wellKnownUrl(baseUrl, 'oauth-authorization-server');
-  const meta = await fetchJson<AuthorizationServerMetadata>(wellKnown, fetchImpl);
+  const meta = await fetchJson<unknown>(wellKnown, fetchImpl);
   if (!meta) return undefined;
-  if (typeof meta.authorization_endpoint !== 'string' || typeof meta.token_endpoint !== 'string') {
+  if (typeof meta !== 'object' || meta === null) {
     return undefined;
   }
-  return meta;
+  const candidate = meta as Partial<AuthorizationServerMetadata>;
+  if (
+    typeof candidate.authorization_endpoint !== 'string'
+    || typeof candidate.token_endpoint !== 'string'
+    || typeof candidate.issuer !== 'string'
+  ) {
+    return undefined;
+  }
+  if (expectedIssuer && candidate.issuer !== expectedIssuer) {
+    throw new Error(
+      `OAuth issuer mismatch: metadata for ${expectedIssuer} declared issuer ${candidate.issuer}`,
+    );
+  }
+  if (!isOAuthIssuerIdentifier(candidate.issuer)) {
+    throw new Error('OAuth metadata issuer must be an HTTPS URL without user-info, query, or fragment');
+  }
+  for (const endpoint of [
+    candidate.authorization_endpoint,
+    candidate.token_endpoint,
+    ...(typeof candidate.registration_endpoint === 'string'
+      ? [candidate.registration_endpoint]
+      : []),
+  ]) {
+    if (!isHttpsUrlWithoutUserInfoOrFragment(endpoint)) {
+      throw new Error(
+        `OAuth metadata for ${candidate.issuer} must use HTTPS endpoints without user-info or fragments`,
+      );
+    }
+  }
+  return candidate as AuthorizationServerMetadata;
 }
 
 /**
- * RFC 8414 places `.well-known/` at the origin root. We try that first
- * and fall back to a path-prefixed location so older non-conforming
- * servers still work.
+ * RFC 8414 places `.well-known/` between the issuer origin and path.
+ * Try that standards-based location first, then the origin-root form
+ * for servers that publish one shared metadata document.
  */
 function wellKnownUrl(input: string, suffix: string): string[] {
   const url = new URL(input);
   const origin = `${url.protocol}//${url.host}`;
-  const candidates = [`${origin}/.well-known/${suffix}`];
+  const candidates: string[] = [];
   const path = url.pathname.replace(/\/$/, '');
   if (path.length > 0) {
     candidates.push(`${origin}/.well-known/${suffix}${path}`);
   }
-  return candidates as unknown as string[];
+  candidates.push(`${origin}/.well-known/${suffix}`);
+  return candidates;
 }
 
 async function fetchJson<T>(
@@ -247,6 +340,7 @@ async function fetchJson<T>(
     try {
       const response = await fetchImpl(url, {
         method: 'GET',
+        redirect: 'error',
         headers: { Accept: 'application/json' },
       });
       if (response.ok) {
@@ -268,10 +362,10 @@ async function registerOrReuseClient(
   redirectUri: string,
   clientName: string,
   fetchImpl: typeof fetch,
-): Promise<{ clientId: string; clientSecret?: string }> {
+): Promise<OAuthClientCredentials> {
   if (!asMeta.registration_endpoint) {
     throw new Error(
-      `OAuth server at ${asMeta.issuer} does not advertise a registration_endpoint; cannot complete dynamic client registration. Pre-register a client and add its ID to the skill config manually.`,
+      `OAuth server at ${asMeta.issuer} does not advertise a registration_endpoint. Configure auth.clientIdEnv for a pre-registered client, then retry talonctl auth-mcp.`,
     );
   }
 
@@ -287,6 +381,7 @@ async function registerOrReuseClient(
   try {
     response = await fetchImpl(asMeta.registration_endpoint, {
       method: 'POST',
+      redirect: 'error',
       headers: {
         'Content-Type': 'application/json',
         Accept: 'application/json',
@@ -306,13 +401,43 @@ async function registerOrReuseClient(
     );
   }
 
-  const payload = (await response.json()) as { client_id?: string; client_secret?: string };
-  if (typeof payload.client_id !== 'string') {
+  const payload = (await response.json()) as {
+    client_id?: string;
+    client_secret?: string;
+    token_endpoint_auth_method?: unknown;
+  };
+  if (typeof payload.client_id !== 'string' || payload.client_id.length === 0) {
     throw new Error('dynamic client registration response missing client_id');
+  }
+  if (
+    payload.token_endpoint_auth_method !== undefined
+    && !isOAuthTokenEndpointAuthMethod(payload.token_endpoint_auth_method)
+  ) {
+    const unsupportedMethod = typeof payload.token_endpoint_auth_method === 'string'
+      ? payload.token_endpoint_auth_method
+      : JSON.stringify(payload.token_endpoint_auth_method);
+    throw new Error(
+      `dynamic client registration returned unsupported token_endpoint_auth_method: ${unsupportedMethod}`,
+    );
+  }
+  const tokenEndpointAuthMethod = isOAuthTokenEndpointAuthMethod(payload.token_endpoint_auth_method)
+    ? payload.token_endpoint_auth_method
+    : typeof payload.client_secret === 'string'
+      ? 'client_secret_basic'
+      : 'none';
+  const hasClientSecret = typeof payload.client_secret === 'string' && payload.client_secret.length > 0;
+  if (tokenEndpointAuthMethod !== 'none' && !hasClientSecret) {
+    throw new Error(
+      `dynamic client registration method "${tokenEndpointAuthMethod}" requires a client_secret`,
+    );
+  }
+  if (tokenEndpointAuthMethod === 'none' && payload.client_secret !== undefined) {
+    throw new Error('dynamic client registration method "none" must not return a client_secret');
   }
   return {
     clientId: payload.client_id,
-    ...(typeof payload.client_secret === 'string' ? { clientSecret: payload.client_secret } : {}),
+    ...(hasClientSecret ? { clientSecret: payload.client_secret } : {}),
+    tokenEndpointAuthMethod,
   };
 }
 
@@ -322,6 +447,7 @@ async function registerOrReuseClient(
 
 interface WaitForCallbackOptions {
   port: number;
+  listenAddress: '127.0.0.1' | '0.0.0.0';
   expectedState: string;
   timeoutMs: number;
 }
@@ -344,25 +470,38 @@ async function waitForCallback(options: WaitForCallbackOptions): Promise<string>
         res.writeHead(400).end();
         return;
       }
-      const url = new URL(req.url, `http://localhost:${options.port}`);
+      let url: URL;
+      try {
+        url = new URL(req.url, `http://127.0.0.1:${options.port}`);
+      } catch {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('Malformed OAuth callback URL — callback ignored.');
+        return;
+      }
       if (url.pathname !== '/callback') {
         res.writeHead(404).end();
+        return;
+      }
+      if (req.method !== 'GET') {
+        res.writeHead(405, { Allow: 'GET' }).end();
         return;
       }
       const state = url.searchParams.get('state');
       const code = url.searchParams.get('code');
       const error = url.searchParams.get('error');
 
+      // Do not let a caller that cannot prove it knows the OAuth state
+      // terminate the pending browser flow (for example from another
+      // container on Docker's shared network).
+      if (state !== options.expectedState) {
+        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('OAuth state mismatch — callback ignored.');
+        return;
+      }
       if (error) {
         res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end(`OAuth error: ${error}\nYou can close this tab.`);
         finish(new Error(`OAuth callback returned error: ${error}`));
-        return;
-      }
-      if (state !== options.expectedState) {
-        res.writeHead(400, { 'Content-Type': 'text/plain; charset=utf-8' });
-        res.end('OAuth state mismatch — possible CSRF. Aborted.');
-        finish(new Error('OAuth state mismatch'));
         return;
       }
       if (!code) {
@@ -377,7 +516,7 @@ async function waitForCallback(options: WaitForCallbackOptions): Promise<string>
     });
 
     server.on('error', (err) => finish(err));
-    server.listen(options.port, '127.0.0.1');
+    server.listen(options.port, options.listenAddress);
 
     const timer = setTimeout(
       () => finish(new Error(`OAuth callback timed out after ${options.timeoutMs}ms`)),
@@ -419,35 +558,35 @@ interface ExchangeOptions {
   tokenEndpoint: string;
   code: string;
   redirectUri: string;
-  clientId: string;
-  clientSecret?: string;
+  client: OAuthClientCredentials;
   codeVerifier: string;
   resource: string;
+  scopes?: string[];
   fetchImpl: typeof fetch;
 }
 
 async function exchangeCodeForTokens(
   options: ExchangeOptions,
-): Promise<Omit<CachedTokens, 'tokenEndpoint' | 'clientId' | 'clientSecret'>> {
+): Promise<Omit<CachedTokens, 'tokenEndpoint' | 'clientId' | 'clientSecret' | 'tokenEndpointAuthMethod'>> {
   const body = new URLSearchParams({
     grant_type: 'authorization_code',
     code: options.code,
     redirect_uri: options.redirectUri,
-    client_id: options.clientId,
     code_verifier: options.codeVerifier,
     resource: options.resource,
   });
-  if (options.clientSecret) body.set('client_secret', options.clientSecret);
+  const request = addOAuthClientCredentials(body, {
+    'Content-Type': 'application/x-www-form-urlencoded',
+    Accept: 'application/json',
+  }, options.client);
 
   let response: Response;
   try {
     response = await options.fetchImpl(options.tokenEndpoint, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-      },
-      body: body.toString(),
+      redirect: 'error',
+      headers: request.headers,
+      body: request.body.toString(),
     });
   } catch (cause) {
     throw new Error(
@@ -456,9 +595,8 @@ async function exchangeCodeForTokens(
   }
 
   if (!response.ok) {
-    const text = await safeText(response);
     throw new Error(
-      `token exchange returned ${response.status} from ${options.tokenEndpoint}: ${text}`,
+      `token exchange returned ${response.status} from ${options.tokenEndpoint}`,
     );
   }
 
@@ -467,15 +605,34 @@ async function exchangeCodeForTokens(
     refresh_token?: string;
     expires_in?: number;
     scope?: string;
+    token_type?: unknown;
   };
-  if (typeof payload.access_token !== 'string' || typeof payload.expires_in !== 'number') {
-    throw new Error('token exchange response missing access_token or expires_in');
+  if (
+    typeof payload.access_token !== 'string'
+    || payload.access_token.length === 0
+    || typeof payload.expires_in !== 'number'
+    || !Number.isFinite(payload.expires_in)
+    || payload.expires_in <= 0
+    || (payload.scope !== undefined && typeof payload.scope !== 'string')
+    || (payload.token_type !== undefined
+      && (typeof payload.token_type !== 'string' || payload.token_type.toLowerCase() !== 'bearer'))
+  ) {
+    throw new Error('token exchange response has missing or unsupported fields (Bearer access_token and positive expires_in required)');
+  }
+  const grantedScopes = payload.scope?.split(/\s+/u).filter(Boolean);
+  const requestedScopes = new Set(options.scopes ?? []);
+  if (grantedScopes?.some((scope) => !requestedScopes.has(scope)) && requestedScopes.size > 0) {
+    throw new Error('token exchange granted scopes broader than the explicitly requested OAuth scopes');
   }
   return {
     accessToken: payload.access_token,
     expiresAt: Date.now() + payload.expires_in * 1000,
     ...(payload.refresh_token ? { refreshToken: payload.refresh_token } : {}),
-    ...(payload.scope ? { scope: payload.scope } : {}),
+    ...(payload.scope !== undefined
+      ? { scope: payload.scope }
+      : (options.scopes && options.scopes.length > 0
+        ? { scope: options.scopes.join(' ') }
+        : {})),
     refreshedAt: new Date().toISOString(),
   };
 }

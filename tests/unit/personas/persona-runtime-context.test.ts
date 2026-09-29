@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildPersonaRuntimeContext,
   buildSkillIndex,
@@ -27,6 +27,10 @@ function makeLoadedSkill(name: string, servers: McpServerDef[]): LoadedSkill {
 }
 
 describe('buildPersonaRuntimeContext', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   const loadedPersona: LoadedPersona = {
     config: {
       name: 'assistant',
@@ -166,9 +170,9 @@ describe('buildPersonaRuntimeContext', () => {
     });
   });
 
-  it('merges prompt fragments and resolves env placeholders in MCP config', () => {
-    process.env.TEST_API_KEY = 'secret-token';
-    process.env.TEST_BEARER = 'bearer-token';
+  it('keeps already-resolved MCP config values literal', () => {
+    vi.stubEnv('NESTED_API_KEY', 'must-not-be-expanded-again');
+    vi.stubEnv('NESTED_BEARER', 'must-not-be-expanded-again');
 
     const loadedSkills = [
       makeLoadedSkill('search', [
@@ -179,7 +183,7 @@ describe('buildPersonaRuntimeContext', () => {
             transport: 'stdio',
             command: 'npx',
             args: ['perplexity-mcp'],
-            env: { API_KEY: '${TEST_API_KEY}' },
+            env: { API_KEY: '${NESTED_API_KEY}' },
           },
         },
       ]),
@@ -190,7 +194,7 @@ describe('buildPersonaRuntimeContext', () => {
             name: 'browser',
             transport: 'http',
             url: 'https://mcp.example.test',
-            headers: { Authorization: 'Bearer ${TEST_BEARER}' },
+            headers: { Authorization: 'Bearer ${NESTED_BEARER}' },
           },
         },
       ]),
@@ -216,12 +220,12 @@ describe('buildPersonaRuntimeContext', () => {
         transport: 'stdio',
         command: 'npx',
         args: ['perplexity-mcp'],
-        env: { API_KEY: 'secret-token' },
+        env: { API_KEY: '${NESTED_API_KEY}' },
       },
       browser: {
         transport: 'http',
         url: 'https://mcp.example.test',
-        headers: { Authorization: 'Bearer bearer-token' },
+        headers: { Authorization: 'Bearer ${NESTED_BEARER}' },
       },
     });
   });

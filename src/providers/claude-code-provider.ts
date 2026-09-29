@@ -96,6 +96,9 @@ export class ClaudeCodeProvider implements AgentProvider {
         '--mcp-config',
         mcpConfigPath,
         '--strict-mcp-config',
+        ...(input.disableNativeShellAndFilesystemTools
+          ? ['--tools', 'WebSearch,WebFetch']
+          : []),
         '--dangerously-skip-permissions',
         '--no-session-persistence',
       ];
@@ -199,6 +202,9 @@ export class ClaudeCodeProvider implements AgentProvider {
       allowDangerouslySkipPermissions: true,
       cwd: input.cwd,
       maxTurns: input.maxTurns,
+      ...(input.disableNativeShellAndFilesystemTools
+        ? { tools: ['WebSearch', 'WebFetch'] }
+        : {}),
     };
 
     if (Object.keys(input.mcpServers).length > 0) {

@@ -208,11 +208,15 @@ describe('BackgroundAgentManager', () => {
       },
     });
 
-    expect(tokenStore.materializeBearer).toHaveBeenCalledWith('glean/glean');
+    expect(tokenStore.materializeBearer).toHaveBeenCalledWith('glean/glean', {
+      resource: 'https://contentful-be.glean.com/mcp/default',
+      scopes: [],
+    });
     expect(prepareBackgroundInvocation).toHaveBeenCalledTimes(1);
     const passed = (
       prepareBackgroundInvocation.mock.calls[0][0] as {
         mcpServers: Record<string, unknown>;
+        disableNativeShellAndFilesystemTools?: boolean;
       }
     ).mcpServers;
     expect(passed.glean).toEqual({
@@ -222,6 +226,9 @@ describe('BackgroundAgentManager', () => {
     });
     // The auth field must be stripped — providers never see it.
     expect((passed.glean as Record<string, unknown>).auth).toBeUndefined();
+    expect(
+      prepareBackgroundInvocation.mock.calls[0][0].disableNativeShellAndFilesystemTools,
+    ).toBe(true);
   });
 
   it('passes server entries through unchanged when no oauthTokenStore is wired', async () => {
@@ -252,6 +259,35 @@ describe('BackgroundAgentManager', () => {
       kind: 'oauth2',
       tokenStore: 'glean/glean',
     });
+  });
+
+  it('rejects provider-expandable MCP values when no oauthTokenStore is wired', async () => {
+    const manager = createManager();
+    const unsafeServers = [
+      {
+        search: {
+          transport: 'http' as const,
+          url: 'https://search.example.com/mcp',
+          headers: { Authorization: 'Bearer ${NESTED_SECRET}' },
+        },
+      },
+      {
+        localSearch: {
+          transport: 'stdio' as const,
+          command: 'node',
+          args: ['search.js'],
+          env: { API_TOKEN: '$NESTED_SECRET' },
+        },
+      },
+    ];
+
+    for (const mcpServers of unsafeServers) {
+      const result = await manager.spawn({ ...spawnInput, mcpServers });
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toMatch(/provider-expandable environment-variable syntax/i);
+    }
+
+    expect(prepareBackgroundInvocation).not.toHaveBeenCalled();
   });
 
   it('creates a running task and returns its id', async () => {
@@ -289,7 +325,7 @@ describe('BackgroundAgentManager', () => {
     expect(mcpServers['__talond_skill_loader']).toBeDefined();
     expect(mcpServers['__talond_skill_loader']).toMatchObject({
       transport: 'stdio',
-      command: 'node',
+      command: process.execPath,
       env: expect.objectContaining({
         TALOND_BRIDGE_SECRET: expect.any(String),
         TALOND_SOCKET: '/tmp/test-host-tools.sock',
@@ -297,6 +333,7 @@ describe('BackgroundAgentManager', () => {
         TALOND_PERSONA_ID: 'persona-1',
       }),
     });
+    expect((mcpServers['__talond_skill_loader'] as any).env).not.toHaveProperty('HOME');
   });
 
   it('does not include __talond_skill_loader when hasSkills is false', async () => {
@@ -348,10 +385,12 @@ describe('BackgroundAgentManager', () => {
       any
     >;
     expect(mcpServers['__talond_host_tools']).toMatchObject({
+      command: process.execPath,
       env: expect.objectContaining({
         TALOND_BRIDGE_SECRET: expect.any(String),
       }),
     });
+    expect((mcpServers['__talond_host_tools'] as any).env).not.toHaveProperty('HOME');
   });
 
   it('builds the append-system-prompt from persona and task context', async () => {

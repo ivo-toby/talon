@@ -69,6 +69,7 @@ describe('GeminiCliProvider', () => {
       },
       cwd: '/tmp',
       timeoutMs: 60_000,
+      disableNativeShellAndFilesystemTools: true,
     });
 
     expect(result.isOk()).toBe(true);
@@ -108,6 +109,9 @@ describe('GeminiCliProvider', () => {
         folderTrust: {
           enabled: false,
         },
+      },
+      tools: {
+        core: ['google_web_search', 'web_fetch'],
       },
       mcpServers: {
         hostTools: {
@@ -237,6 +241,40 @@ describe('GeminiCliProvider', () => {
           timeoutMs: 60_000,
         }),
       ).rejects.toThrow(/Upgrade gemini-cli/);
+    } finally {
+      executeInvocation.mockRestore();
+    }
+  });
+
+  it('keeps native shell and filesystem tools disabled in foreground OAuth runs', async () => {
+    const executeInvocation = vi
+      .spyOn(GeminiCliProvider.prototype as any, 'executeInvocation')
+      .mockImplementation(async (invocation: { env?: Record<string, string>; cleanupPaths: string[] }) => {
+        cleanupPaths.push(...invocation.cleanupPaths);
+        const settingsPath = invocation.env?.GEMINI_CLI_SYSTEM_SETTINGS_PATH;
+        expect(settingsPath).toBeDefined();
+        expect(JSON.parse(readFileSync(settingsPath!, 'utf8')).tools.core).toEqual([
+          'google_web_search',
+          'web_fetch',
+        ]);
+        return {
+          stdout: JSON.stringify({ response: 'Search complete.' }),
+          stderr: '',
+          exitCode: 0,
+          timedOut: false,
+        };
+      });
+
+    try {
+      const result = await provider.createExecutionStrategy().run({
+        prompt: 'Search the docs.',
+        systemPrompt: 'You are helpful.',
+        mcpServers: {},
+        cwd: '/tmp',
+        timeoutMs: 60_000,
+        disableNativeShellAndFilesystemTools: true,
+      });
+      expect(result.output).toBe('Search complete.');
     } finally {
       executeInvocation.mockRestore();
     }

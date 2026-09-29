@@ -27,7 +27,7 @@ conversational wizard. Ask one question at a time, act on the answer, move on.
 - **One question at a time.** Never dump a wall of questions.
 - **Detect state first.** Skip steps that are already done.
 - **Use talonctl commands.** Never edit talond.yaml directly except system prompts and task prompts.
-- **No secrets.** Never ask for or write actual tokens. Use `${ENV_VAR}` placeholders only.
+- **No secrets.** Never ask for or write actual tokens. Use `${ENV_VAR}` references in config and MCP `headers` / `env` values only.
 - **Show what you do.** When running commands, show the output.
 
 ## Available talonctl commands
@@ -42,7 +42,8 @@ All config mutations go through these commands:
 | `npx talonctl add-skill --name <n> --persona <p> [--format <fmt>]` | Add a skill to a persona |
 | `npx talonctl bind --persona <p> --channel <c>` | Bind persona to channel |
 | `npx talonctl unbind --persona <p> --channel <c>` | Remove binding |
-| `npx talonctl add-mcp --skill <s> --name <n> --transport stdio --command <c>` | Add MCP server |
+| `npx talonctl add-mcp --skill <s> --name <n> --transport <stdio|sse|http> ...` | Add MCP server |
+| `npx talonctl auth-mcp <skill>:<server>` | Authorize an HTTP MCP server with OAuth |
 | `npx talonctl add-provider --name <n> --command <c> [--context both] [--type <t>]` | Add a provider |
 | `npx talonctl set-default-provider --name <n> --context <ctx>` | Set default provider |
 | `npx talonctl test-provider --name <n>` | Test a provider works |
@@ -466,6 +467,41 @@ node dist/index.js          # foreground with logs
 sudo systemctl start talond
 ```
 
+## MCP authentication
+
+For static HTTP tokens or stdio credentials, use a `${ENV_VAR}` placeholder
+and store the actual value in `.env`:
+
+```bash
+npx talonctl add-mcp --skill work-search --name internal-search --transport http \
+  --url https://search.example.com/mcp \
+  --headers 'Authorization=Bearer ${SEARCH_API_TOKEN}'
+npx talonctl env-check
+```
+
+For OAuth, use an HTTPS resource URL, `--auth oauth2`, and then authorize the server:
+
+```bash
+npx talonctl add-mcp --skill work-search --name glean --transport http \
+  --url https://search.example.com/mcp --auth oauth2
+npx talonctl auth-mcp work-search:glean
+```
+
+If the authorization server has no Dynamic Client Registration endpoint,
+provide `--client-id-env` and, if required, `--client-secret-env` when adding
+the server, and pin the issuer with `--authorization-server-issuer https://<issuer>`.
+`--token-endpoint-auth-method` accepts `client_secret_post` or
+`client_secret_basic`. On OAuth-backed runs, native shell/filesystem tools are
+disabled while Talon tools and configured MCP servers remain available;
+Codex CLI is rejected because it cannot disable those built-ins. Request only
+needed scopes with `--scopes`; Talon does not request all provider-advertised
+scopes automatically. Environment checks report variable names and status,
+not values. Talon expands MCP header/stdIO env references once and rejects
+resulting values that still look like provider environment-variable syntax.
+Re-run `auth-mcp` after changing the MCP resource URL or configured
+scopes; cached credentials are bound to both. For Docker Desktop, use `auth-mcp ... --docker`; see the Docker
+setup skill for the host-local callback requirements.
+
 ## Shared memory between agents
 
 Talon supports shared memory between personas using the [Anthropic Memory MCP server](https://github.com/anthropics/memory). This is a knowledge graph stored in a single JSON file. When multiple personas use the same file, they share knowledge automatically.
@@ -485,7 +521,7 @@ When to suggest this: when the user has multiple personas and asks about sharing
 
 ## Rules
 
-1. **Never write actual secrets.** Only `${ENV_VAR}` placeholders in config files.
+1. **Never write actual secrets.** Only `${ENV_VAR}` placeholders in config and MCP `headers` / `env` fields.
 2. **Use talonctl commands for all config mutations.** Exceptions: system prompt files, task prompt files, and `.env`.
 3. **One question per message.** Do not batch questions.
 4. **Show command output.** Let the user see what happened.

@@ -22,6 +22,11 @@ services:
       TALOND_DATA_DIR: /data
       TALOND_CONFIG_PATH: /config/talond.yaml
 
+    # OAuth callbacks are only listened to while `talonctl auth-mcp --docker`
+    # is running. Keep the host-side port bound to loopback.
+    ports:
+      - "127.0.0.1:8788:8788"
+
     networks:
       - default
       - codex-runner
