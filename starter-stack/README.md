@@ -19,6 +19,12 @@ The bundled `postgram-memory` skill connects Talon's agent to Postgram
 over MCP — the agent gets `search` / `store` / `recall` / task tools and
 guidance on when to use them.
 
+The `talond` image also includes GitHub CLI (`gh`). To authenticate GitHub
+operations from the container, set optional `GH_TOKEN` in `.env`. Processes
+launched by `talond` inherit it, so use a fine-grained token limited to the
+repositories and permissions your agents need. Run `docker compose up -d talond`
+after changing it so the container receives the new value.
+
 ## Requirements
 
 - Docker (Engine on Linux, or Docker Desktop on macOS/Windows) with `docker compose`
@@ -39,6 +45,7 @@ cd talon-postgram-stack
 # 3. Configure
 cp .env.example .env                              # POSTGRES_PASSWORD, OPENAI_API_KEY,
                                                   # ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN
+                                                  # optionally GH_TOKEN for GitHub CLI access
 cp config/talond.example.yaml config/talond.yaml  # set allowedChatIds
 
 # 4. Bring up the stack

@@ -2202,9 +2202,11 @@ docker compose up -d
 The image is published at `ghcr.io/ivo-toby/talond` (`:latest` and
 per-release tags, linux/amd64 + linux/arm64). The bundle bind-mounts
 `config/`, `personas/`, `data/`, and `userdata/` so you edit everything
-from the host. See [`starter/README.md`](starter/README.md) for the full
-walkthrough, [`starter/docs/providers.md`](starter/docs/providers.md) for
-provider configuration, and
+from the host. The image includes GitHub CLI (`gh`); set optional `GH_TOKEN`
+in `.env` for authenticated GitHub operations. The token is available to
+processes launched by `talond`, so scope it to the repositories and permissions
+needed. See [`starter/README.md`](starter/README.md) for the full walkthrough,
+[`starter/docs/providers.md`](starter/docs/providers.md) for provider configuration, and
 [`starter/docs/troubleshooting.md`](starter/docs/troubleshooting.md) when
 something misbehaves.
 
