@@ -182,6 +182,11 @@ which env var the user needs to fill:
 | Terminal | `TERMINAL_TOKEN` (just `talonctl chat`) |
 
 Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Claude).
+The image includes GitHub CLI (`gh`). If the user wants authenticated GitHub
+operations, tell them to set `GH_TOKEN` in `.env` with a fine-grained token
+restricted to the needed repositories and permissions. This variable is
+available to all processes launched by `talond`; never ask the user to paste
+its value into chat or display it.
 
 Tell the user **exactly** which lines to uncomment/fill in `.env`.
 Do not write the actual secrets to disk.
@@ -307,8 +312,12 @@ Once boot is verified, anything else uses `talonctl`:
 - **Adjust capabilities** — `talonctl set-capabilities --persona <p> --show`
   to see current, then `--add` or `--remove`.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
+- **Use GitHub CLI** — the image includes `gh`; set `GH_TOKEN` in `.env` only
+  when authenticated GitHub access is needed. Use a fine-grained token with
+  only the required repository permissions. After changing `.env`, run
+  `docker compose up -d talond` to pass the new value into the container.
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
-  GitHub, Atlassian, Gmail, Slack, etc. are documented in
+  Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
 
 Each mutation modifies `config/talond.yaml`. The daemon **does not

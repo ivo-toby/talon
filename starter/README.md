@@ -11,11 +11,14 @@ Run [Talon](https://github.com/ivo-toby/talon) without cloning the source.
 - `bin/talonctl` — host-side wrapper for the in-container CLI
 - `.claude/skills/` — Claude Code skills that walk you through setup interactively
 
-The container image ships with `git`, `curl`, `jq`, and `ca-certificates`
-preinstalled alongside Node.js, so the agent can clone repos, fetch URLs,
-and parse JSON without you adding tools. More specialized integrations
-(GitHub, Atlassian, Gmail, Slack, …) come through MCP servers added via
-`talonctl add-mcp` — no image rebuild needed.
+The container image ships with `git`, GitHub CLI (`gh`), `curl`, `jq`, and
+`ca-certificates` alongside Node.js. Agents can use `gh` for GitHub operations
+from commands running in the container. To authenticate, set the optional
+`GH_TOKEN` in `.env`; it is available to processes launched by `talond`, so
+use a fine-grained token limited to the repositories and permissions needed.
+After adding or changing it, run `docker compose up -d` to apply the new value.
+Other integrations (Atlassian, Gmail, Slack, …) can be added through MCP
+servers with `talonctl add-mcp` — no image rebuild needed.
 
 ## Requirements
 
@@ -34,7 +37,8 @@ cd talon-starter
 ./install.sh
 
 # 3. Configure
-cp .env.example .env                              # fill in TELEGRAM_BOT_TOKEN; ANTHROPIC_API_KEY too if using the default Claude provider
+cp .env.example .env                              # set channel/provider credentials
+# Optionally add GH_TOKEN for authenticated GitHub CLI use.
 cp config/talond.example.yaml config/talond.yaml  # edit allowedChatIds at minimum
 
 # 4. Run
