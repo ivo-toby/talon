@@ -2,12 +2,13 @@
  * Discord channel connector.
  *
  * Implements the ChannelConnector interface using Discord's REST API for
- * outbound messages and an external Gateway event feed for inbound messages.
- * This connector is push-based: a caller feeds Gateway events via
- * `feedEvent()` rather than the connector managing the WebSocket itself.
+ * outbound messages and a self-managed Gateway WebSocket for inbound events.
+ * The connector establishes a persistent Gateway connection with automatic
+ * reconnect (exponential backoff), heartbeat management, and RESUME support.
  */
 
 import type pino from 'pino';
+import WebSocket from 'ws';
 import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
@@ -19,7 +20,10 @@ import type {
   DiscordSendMessageBody,
   DiscordSendMessageResult,
   DiscordApiError,
+  DiscordGatewayHello,
+  DiscordGatewayReady,
 } from './discord-types.js';
+import { DEFAULT_INTENTS } from './discord-types.js';
 import { markdownToDiscord } from './discord-format.js';
 
 // ---------------------------------------------------------------------------
@@ -37,6 +41,29 @@ const GATEWAY_OP_DISPATCH = 0;
 
 /** Maximum number of retry attempts on a rate-limited request. */
 const MAX_RATE_LIMIT_RETRIES = 3;
+
+/** Initial backoff after a Gateway connection error, in milliseconds. */
+const INITIAL_BACKOFF_MS = 1_000;
+
+/** Maximum backoff after repeated connection errors, in milliseconds. */
+const MAX_BACKOFF_MS = 60_000;
+
+/** Discord Gateway protocol version to use. */
+const DISCORD_GATEWAY_VERSION = 10;
+
+/**
+ * Discord WebSocket close codes that require clearing session state and
+ * re-IDENTIFYing rather than attempting a RESUME.
+ */
+const NON_RESUMABLE_CLOSE_CODES = new Set([4007, 4009]);
+
+/**
+ * Discord WebSocket close codes that indicate a fatal configuration error.
+ * The connector stops reconnecting when it receives one of these.
+ * 4004 = Authentication failed, 4010 = Invalid shard, 4011 = Sharding required,
+ * 4012 = Invalid API version, 4013 = Invalid intent(s), 4014 = Disallowed intent(s).
+ */
+const FATAL_CLOSE_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 
 // ---------------------------------------------------------------------------
 // Thread ID encoding
@@ -85,24 +112,52 @@ export function decodeThreadId(externalThreadId: string): {
 // ---------------------------------------------------------------------------
 
 /**
- * Channel connector for Discord via REST API + external Gateway event feed.
+ * Channel connector for Discord via REST API + Gateway WebSocket.
  *
- * The Gateway WebSocket connection is managed externally. Callers should feed
- * MESSAGE_CREATE events to this connector using `feedEvent()`.
+ * `start()` opens a persistent Gateway WebSocket connection with automatic
+ * reconnect (exponential backoff 1s → 60s). The connector manages heartbeats,
+ * handles IDENTIFY on fresh connections, and sends RESUME when a prior session
+ * exists after a disconnect.
  *
  * Usage:
  * 1. Construct with a DiscordConfig and a channel name.
  * 2. Call `onMessage()` to register an inbound event handler.
- * 3. Call `start()` to mark the connector as active.
- * 4. Feed Gateway events via `feedEvent()`.
- * 5. Call `stop()` to mark the connector as inactive.
+ * 3. Call `start()` to open the Gateway connection.
+ * 4. Call `stop()` to disconnect gracefully.
  */
 export class DiscordConnector implements ChannelConnector {
   readonly type = 'discord';
   readonly name: string;
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
-  private active = false;
+
+  // Lifecycle
+  private running = false;
+  /** Active Gateway WebSocket, if connected. */
+  private ws?: WebSocket;
+  /** Promise tracking the Gateway reconnect loop. */
+  private gatewayLoopPromise?: Promise<void>;
+  /** AbortController for cancelling sleep and in-flight fetch during stop(). */
+  private abortController?: AbortController;
+
+  // Gateway session state
+  private sessionId?: string;
+  private resumeGatewayUrl?: string;
+  private lastSequence: number | null = null;
+  private heartbeatTimer?: ReturnType<typeof setInterval>;
+  /** Jitter setTimeout handle — stored so it can be cleared on stop/reconnect. */
+  private heartbeatJitterTimer?: ReturnType<typeof setTimeout>;
+  /**
+   * Set to true when a heartbeat is sent; cleared when op 11 ACK is received.
+   * If a second heartbeat fires while this is true the socket is considered a
+   * zombie and is terminated so the reconnect loop can establish a new session.
+   */
+  private awaitingHeartbeatAck = false;
+  /**
+   * The close code received from the last WebSocket close event.
+   * Used by gatewayLoop to decide whether to reconnect, clear session, or stop.
+   */
+  private lastCloseCode: number | null = null;
 
   constructor(
     private readonly config: DiscordConfig,
@@ -117,28 +172,47 @@ export class DiscordConnector implements ChannelConnector {
   // ---------------------------------------------------------------------------
 
   /**
-   * Mark the connector as active. Idempotent — no-op if already active.
+   * Start the connector. Opens a Discord Gateway WebSocket connection with
+   * automatic reconnect on failure. Idempotent — no-op if already running.
    */
   start(): Promise<void> {
-    if (this.active) {
-      this.logger.debug({ channelName: this.name }, 'discord connector already active');
+    if (this.running) {
+      this.logger.debug({ channelName: this.name }, 'discord connector already running');
       return Promise.resolve();
     }
-    this.active = true;
-    this.logger.info({ channelName: this.name }, 'discord connector started');
+    this.running = true;
+    this.logger.info({ channelName: this.name }, 'discord connector starting (gateway)');
+    this.gatewayLoopPromise = this.gatewayLoop();
     return Promise.resolve();
   }
 
   /**
-   * Mark the connector as inactive. Idempotent — no-op if already stopped.
+   * Stop the connector gracefully. Closes the Gateway WebSocket and waits for
+   * the reconnect loop to exit. Idempotent — no-op if already stopped.
    */
-  stop(): Promise<void> {
-    if (!this.active) {
-      return Promise.resolve();
+  async stop(): Promise<void> {
+    if (!this.running) {
+      return;
     }
-    this.active = false;
+    this.running = false;
+    this.logger.info({ channelName: this.name }, 'discord connector stopping');
+
+    // Abort any in-flight fetch or sleep so the reconnect loop unblocks.
+    this.abortController?.abort();
+
+    // Stop heartbeat timer.
+    this.stopHeartbeat();
+
+    // Close the WebSocket so the reconnect loop exits.
+    if (this.ws) {
+      this.ws.close(1000, 'connector stopping');
+      this.ws = undefined;
+    }
+
+    // Wait for the reconnect loop to exit cleanly.
+    await this.gatewayLoopPromise;
+    this.gatewayLoopPromise = undefined;
     this.logger.info({ channelName: this.name }, 'discord connector stopped');
-    return Promise.resolve();
   }
 
   /**
@@ -159,8 +233,9 @@ export class DiscordConnector implements ChannelConnector {
    * Only DISPATCH events (op=0) with event type `MESSAGE_CREATE` are handled.
    * All other events are silently ignored.
    *
-   * This method is called by external Gateway connection management code
-   * whenever a new event is received from the Discord WebSocket.
+   * This method is also called internally by the Gateway WebSocket handler
+   * whenever a new DISPATCH event is received. It can also be called externally
+   * for testing purposes.
    *
    * @param event - Raw Discord Gateway event payload.
    */
@@ -209,6 +284,314 @@ export class DiscordConnector implements ChannelConnector {
 
   setSiblingBotIds(_ids: Set<string>): void {
     // No-op: Discord connector already drops all messages from bot authors.
+  }
+
+  // ---------------------------------------------------------------------------
+  // Gateway — reconnect loop
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Reconnect loop for the Discord Gateway. Fetches a WSS URL via
+   * GET /gateway/bot, connects, and re-connects with exponential backoff on
+   * failure. Exits when `this.running` is set to false.
+   */
+  private async gatewayLoop(): Promise<void> {
+    let backoffMs = INITIAL_BACKOFF_MS;
+
+    while (this.running) {
+      this.abortController = new AbortController();
+      this.lastCloseCode = null;
+      try {
+        const gatewayUrl = await this.fetchGatewayUrl();
+        await this.runGateway(gatewayUrl);
+
+        if (!this.running) break;
+
+        const code = this.lastCloseCode;
+
+        // Fatal codes (bad token, invalid config) — stop reconnecting.
+        if (code !== null && FATAL_CLOSE_CODES.has(code)) {
+          this.running = false;
+          this.logger.error(
+            { channelName: this.name, code },
+            'discord gateway: fatal close code, connector stopped',
+          );
+          break;
+        }
+
+        // Non-resumable codes — clear session so next connection IDENTIFYs.
+        if (code !== null && NON_RESUMABLE_CLOSE_CODES.has(code)) {
+          this.logger.warn(
+            { channelName: this.name, code },
+            'discord gateway: non-resumable close code, clearing session',
+          );
+          this.sessionId = undefined;
+          this.resumeGatewayUrl = undefined;
+          this.lastSequence = null;
+        }
+
+        // Apply a short backoff to avoid tight reconnect loops.
+        backoffMs = INITIAL_BACKOFF_MS;
+        await this.sleep(backoffMs);
+      } catch (connectErr) {
+        if (!this.running) break;
+        this.logger.warn(
+          { channelName: this.name, err: connectErr, backoffMs },
+          'discord gateway connection error, backing off',
+        );
+        await this.sleep(backoffMs);
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+      }
+    }
+  }
+
+  /**
+   * Fetch the Discord Gateway WebSocket URL via GET /gateway/bot.
+   * Returns the URL with version and encoding query parameters appended.
+   */
+  private async fetchGatewayUrl(): Promise<string> {
+    let response: Response;
+    try {
+      response = await fetch(`${DISCORD_API_BASE}/gateway/bot`, {
+        headers: { Authorization: `Bot ${this.config.botToken}` },
+        signal: this.abortController?.signal,
+      });
+    } catch (fetchErr) {
+      throw new ChannelError(`Discord gateway URL fetch error: ${String(fetchErr)}`);
+    }
+    if (!response.ok) {
+      throw new ChannelError(`Discord /gateway/bot failed (HTTP ${response.status})`);
+    }
+    const data = (await response.json()) as { url: string };
+    if (!data.url) throw new ChannelError('Discord /gateway/bot returned no url');
+    return `${data.url}?v=${DISCORD_GATEWAY_VERSION}&encoding=json`;
+  }
+
+  /**
+   * Connect to the Discord Gateway WSS URL and process messages until the
+   * connection closes or an error occurs. Uses `resume_gateway_url` when a
+   * prior session exists. Returns a promise that resolves when the WebSocket
+   * closes.
+   */
+  private runGateway(url: string): Promise<void> {
+    // Use resume_gateway_url if we have a session to resume.
+    const connectUrl =
+      this.sessionId && this.resumeGatewayUrl
+        ? `${this.resumeGatewayUrl}?v=${DISCORD_GATEWAY_VERSION}&encoding=json`
+        : url;
+
+    return new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(connectUrl);
+      this.ws = ws;
+
+      ws.on('open', () => {
+        this.logger.info({ channelName: this.name }, 'discord gateway connected');
+      });
+
+      ws.on('message', (raw: Buffer) => {
+        this.handleGatewayMessage(ws, raw).catch((err) => {
+          this.logger.error({ channelName: this.name, err }, 'error handling gateway message');
+        });
+      });
+
+      ws.on('close', (code, reason) => {
+        this.logger.info(
+          { channelName: this.name, code, reason: reason.toString() },
+          'discord gateway disconnected',
+        );
+        this.stopHeartbeat();
+        this.lastCloseCode = code;
+        // Only clear the reference if this is still the active socket —
+        // prevents a late-firing stale socket from clearing a newer one.
+        if (this.ws === ws) this.ws = undefined;
+        resolve();
+      });
+
+      ws.on('error', (wsErr) => {
+        this.logger.error(
+          { channelName: this.name, err: wsErr },
+          'discord gateway websocket error',
+        );
+        // Terminate the socket to release resources before reconnecting.
+        ws.terminate();
+        if (this.ws === ws) this.ws = undefined;
+        reject(wsErr);
+      });
+    });
+  }
+
+  /**
+   * Handle a single raw Gateway message. Tracks sequence numbers, routes
+   * opcodes to the appropriate handler, and delegates DISPATCH events to
+   * `feedEvent()`.
+   */
+  private async handleGatewayMessage(ws: WebSocket, raw: Buffer): Promise<void> {
+    let payload: DiscordGatewayEvent;
+    try {
+      payload = JSON.parse(raw.toString()) as DiscordGatewayEvent;
+    } catch {
+      this.logger.debug(
+        { channelName: this.name },
+        'discord gateway: unparseable message, skipping',
+      );
+      return;
+    }
+
+    // Track sequence number for heartbeats and RESUME.
+    if (payload.s !== null && payload.s !== undefined) {
+      this.lastSequence = payload.s;
+    }
+
+    switch (payload.op) {
+      case 10: {
+        // OP 10 HELLO — start heartbeat and identify/resume
+        const hello = payload.d as DiscordGatewayHello;
+        this.startHeartbeat(ws, hello.heartbeat_interval);
+        if (this.sessionId) {
+          // Attempt to resume the previous session.
+          // Gateway token payload uses the raw token (no "Bot " prefix).
+          this.sendGatewayPayload(ws, 6, {
+            token: this.config.botToken,
+            session_id: this.sessionId,
+            seq: this.lastSequence ?? 0,
+          });
+          this.logger.debug({ channelName: this.name }, 'discord gateway: sent RESUME');
+        } else {
+          // Fresh IDENTIFY.
+          // Gateway token payload uses the raw token (no "Bot " prefix).
+          this.sendGatewayPayload(ws, 2, {
+            token: this.config.botToken,
+            intents: this.config.intents ?? DEFAULT_INTENTS,
+            properties: { os: 'linux', browser: 'talon', device: 'talon' },
+          });
+          this.logger.debug({ channelName: this.name }, 'discord gateway: sent IDENTIFY');
+        }
+        break;
+      }
+      case 0: {
+        // OP 0 DISPATCH — inbound event
+        if (payload.t === 'READY') {
+          const ready = payload.d as DiscordGatewayReady;
+          this.sessionId = ready.session_id;
+          this.resumeGatewayUrl = ready.resume_gateway_url;
+          this.logger.info(
+            { channelName: this.name, sessionId: this.sessionId },
+            'discord gateway: READY',
+          );
+        }
+        await this.feedEvent(payload);
+        break;
+      }
+      case 1: {
+        // OP 1 HEARTBEAT — server is requesting an immediate heartbeat
+        this.sendGatewayPayload(ws, 1, this.lastSequence);
+        break;
+      }
+      case 7: {
+        // OP 7 RECONNECT — server wants us to reconnect.
+        // Use close code 4000 so Discord does NOT invalidate the session,
+        // which allows us to attempt RESUME on the next connection.
+        // (Codes 1000/1001 are treated by Discord as intent to end the session.)
+        this.logger.info(
+          { channelName: this.name },
+          'discord gateway: server requested reconnect',
+        );
+        ws.close(4000, 'server requested reconnect');
+        break;
+      }
+      case 9: {
+        // OP 9 INVALID_SESSION — session is invalid; resumable if d === true.
+        const resumable = payload.d as boolean;
+        if (!resumable) {
+          // Non-resumable: clear session state so the next connection IDENTIFYs.
+          this.sessionId = undefined;
+          this.resumeGatewayUrl = undefined;
+          this.lastSequence = null;
+        }
+        this.logger.warn(
+          { channelName: this.name, resumable },
+          'discord gateway: invalid session',
+        );
+        // Use 4000 for resumable sessions to preserve them; use 1000 for
+        // non-resumable to signal a clean close (session already cleared above).
+        ws.close(resumable ? 4000 : 1000, 'invalid session');
+        break;
+      }
+      case 11: {
+        // OP 11 HEARTBEAT_ACK — server acknowledged our heartbeat
+        this.awaitingHeartbeatAck = false;
+        this.logger.debug({ channelName: this.name }, 'discord gateway: heartbeat ack');
+        break;
+      }
+      default:
+        this.logger.debug(
+          { channelName: this.name, op: payload.op },
+          'discord gateway: unhandled opcode',
+        );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Gateway — heartbeat
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Start sending periodic heartbeats. Uses a random initial jitter delay to
+   * avoid thundering-herd reconnects, then sends at the specified interval.
+   *
+   * Both the jitter setTimeout and the recurring setInterval handles are
+   * tracked so stopHeartbeat() can cancel them at any point.
+   */
+  private startHeartbeat(ws: WebSocket, intervalMs: number): void {
+    this.stopHeartbeat();
+    this.awaitingHeartbeatAck = false;
+
+    const sendHeartbeat = (label: string) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (this.awaitingHeartbeatAck) {
+        // Previous heartbeat was never acknowledged — zombie connection.
+        this.logger.warn(
+          { channelName: this.name },
+          'discord gateway: heartbeat ACK missed, terminating zombie connection',
+        );
+        ws.terminate();
+        return;
+      }
+      this.awaitingHeartbeatAck = true;
+      this.sendGatewayPayload(ws, 1, this.lastSequence);
+      this.logger.debug({ channelName: this.name }, `discord gateway: heartbeat sent (${label})`);
+    };
+
+    const jitteredTimeout = Math.floor(Math.random() * intervalMs);
+    this.heartbeatJitterTimer = setTimeout(() => {
+      this.heartbeatJitterTimer = undefined;
+      sendHeartbeat('jitter');
+      this.heartbeatTimer = setInterval(() => sendHeartbeat('interval'), intervalMs);
+    }, jitteredTimeout);
+  }
+
+  /**
+   * Stop and clear both the heartbeat interval and any pending jitter timeout.
+   */
+  private stopHeartbeat(): void {
+    if (this.heartbeatJitterTimer !== undefined) {
+      clearTimeout(this.heartbeatJitterTimer);
+      this.heartbeatJitterTimer = undefined;
+    }
+    if (this.heartbeatTimer !== undefined) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = undefined;
+    }
+    this.awaitingHeartbeatAck = false;
+  }
+
+  /**
+   * Send a Gateway payload to Discord via the WebSocket, if it is open.
+   */
+  private sendGatewayPayload(ws: WebSocket, op: number, d: unknown): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ op, d }));
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -401,9 +784,26 @@ export class DiscordConnector implements ChannelConnector {
   }
 
   /**
-   * Resolve after `ms` milliseconds.
+   * Resolve after `ms` milliseconds. Resolves early if the abort controller
+   * fires (e.g. during stop()), so shutdown is not blocked by long backoffs.
    */
   private sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => {
+      // If the signal is already aborted (stop() called before sleep()),
+      // resolve immediately to avoid stalling shutdown.
+      if (this.abortController?.signal.aborted) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      this.abortController?.signal.addEventListener(
+        'abort',
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true },
+      );
+    });
   }
 }
