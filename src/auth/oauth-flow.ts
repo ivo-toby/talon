@@ -425,14 +425,16 @@ async function registerOrReuseClient(
     : typeof payload.client_secret === 'string'
       ? 'client_secret_basic'
       : 'none';
-  const hasClientSecret = typeof payload.client_secret === 'string' && payload.client_secret.length > 0;
+  // Some providers (including Atlassian) return an unused client_secret even
+  // when they explicitly register the client as public. Never retain or send
+  // that secret when the declared token endpoint method is `none`.
+  const hasClientSecret = tokenEndpointAuthMethod !== 'none'
+    && typeof payload.client_secret === 'string'
+    && payload.client_secret.length > 0;
   if (tokenEndpointAuthMethod !== 'none' && !hasClientSecret) {
     throw new Error(
       `dynamic client registration method "${tokenEndpointAuthMethod}" requires a client_secret`,
     );
-  }
-  if (tokenEndpointAuthMethod === 'none' && payload.client_secret !== undefined) {
-    throw new Error('dynamic client registration method "none" must not return a client_secret');
   }
   return {
     clientId: payload.client_id,

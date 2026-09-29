@@ -169,6 +169,67 @@ describe('runOAuthFlow()', () => {
     });
   }, 8000);
 
+  it('ignores an extraneous client secret when DCR declares no token endpoint auth', async () => {
+    const callbackPort = await findAvailablePort();
+    let authorizationUrl: URL | undefined;
+    let tokenRequest: RequestInit | undefined;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth-protected-resource')) return new Response(null, { status: 404 });
+      if (url.endsWith('/.well-known/oauth-authorization-server')) {
+        return jsonResponse({
+          ...authorizationServerMetadata,
+          registration_endpoint: 'https://identity.example.com/register',
+        });
+      }
+      if (url === 'https://identity.example.com/register') {
+        return jsonResponse({
+          client_id: 'dcr-public-client',
+          client_secret: 'unexpected-secret',
+          token_endpoint_auth_method: 'none',
+        });
+      }
+      if (url === authorizationServerMetadata.token_endpoint) {
+        tokenRequest = init;
+        return jsonResponse({ access_token: 'access-token', expires_in: 3600 });
+      }
+      return new Response(null, { status: 404 });
+    }) as typeof fetch;
+
+    const flow = runOAuthFlow({
+      resourceUrl: 'https://search.example.com/mcp',
+      callbackPort,
+      headless: true,
+      timeoutMs: 3000,
+      fetchImpl,
+      printLine: (line) => {
+        const candidate = line.trim();
+        if (candidate.startsWith('https://identity.example.com/authorize?')) {
+          authorizationUrl = new URL(candidate);
+        }
+      },
+    });
+    activeFlows.push(flow);
+
+    await vi.waitFor(() => expect(authorizationUrl).toBeDefined());
+    const state = authorizationUrl?.searchParams.get('state');
+    expect(state).toBeTruthy();
+    const callbackResponse = await retryCallback(
+      `http://127.0.0.1:${callbackPort}/callback?code=auth-code&state=${state}`,
+    );
+    expect(callbackResponse.status).toBe(200);
+    const result = await flow;
+
+    expect(tokenRequest?.headers).not.toHaveProperty('Authorization');
+    expect(String(tokenRequest?.body)).toContain('client_id=dcr-public-client');
+    expect(String(tokenRequest?.body)).not.toContain('client_secret=');
+    expect(result.tokens).toMatchObject({
+      clientId: 'dcr-public-client',
+      tokenEndpointAuthMethod: 'none',
+    });
+    expect(result.tokens.clientSecret).toBeUndefined();
+  }, 8000);
+
   it('rejects non-HTTPS OAuth endpoints before starting the authorization flow', async () => {
     const fetchImpl = (async (input: RequestInfo | URL) => {
       const url = String(input);
