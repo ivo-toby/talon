@@ -51,11 +51,15 @@ describe('GeminiCliProvider', () => {
           command: 'node',
           args: ['dist/tools/host-tools-mcp-server.js'],
           env: { TALOND_SOCKET: '/tmp/talond.sock' },
+          timeoutMs: 180_000,
+          toolOutputCap: 12_000,
         },
         remoteBrowser: {
           transport: 'http',
           url: 'https://mcp.example.test',
           headers: { Authorization: 'Bearer token' },
+          toolOutputCap: 0,
+          timeoutMs: 1_000,
         },
         liveFeed: {
           transport: 'sse',
@@ -104,7 +108,8 @@ describe('GeminiCliProvider', () => {
     expect(existsSync(settingsPath!)).toBe(true);
     expect(existsSync(systemPath!)).toBe(true);
     expect(readFileSync(systemPath!, 'utf8')).toBe('You are a helpful assistant.');
-    expect(JSON.parse(readFileSync(settingsPath!, 'utf8'))).toEqual({
+    const settings = JSON.parse(readFileSync(settingsPath!, 'utf8')) as unknown;
+    expect(settings).toEqual({
       security: {
         folderTrust: {
           enabled: false,
@@ -129,6 +134,14 @@ describe('GeminiCliProvider', () => {
         },
       },
     });
+    // Talon runtime MCP limits (per-server timeoutMs/toolOutputCap) must NOT
+    // leak into the Gemini-native config; the full 60_000ms invocation
+    // timeout must not become a native per-server timeout either.
+    for (const name of ['hostTools', 'remoteBrowser', 'liveFeed']) {
+      expect(settings).not.toHaveProperty(`mcpServers.${name}.timeoutMs`);
+      expect(settings).not.toHaveProperty(`mcpServers.${name}.toolOutputCap`);
+      expect(settings).not.toHaveProperty(`mcpServers.${name}.timeout`);
+    }
   });
 
   it('uses input.model override when provided, ignoring the configured default', () => {

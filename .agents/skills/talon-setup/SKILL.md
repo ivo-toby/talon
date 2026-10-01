@@ -502,6 +502,43 @@ Re-run `auth-mcp` after changing the MCP resource URL or configured
 scopes; cached credentials are bound to both. For Docker Desktop, use `auth-mcp ... --docker`; see the Docker
 setup skill for the host-local callback requirements.
 
+## MCP request timeout and tool-output cap
+
+When a persona's MCP server returns large results or makes slow calls, set
+per-server limits to keep the agent's context under control. Both keys live
+under `config` in the skill's MCP JSON (`skills/<skill>/mcp/<server>.json`):
+add `"timeoutMs": <integer ≥ 1000>` and `"toolOutputCap": <integer ≥ 0>`,
+and `talonctl add-mcp` accepts the same values as `--timeout-ms` /
+`--tool-output-cap` flags:
+
+```bash
+npx talonctl add-mcp --skill work-search --name glean --transport http \
+  --url https://search.example.com/mcp --auth oauth2 \
+  --timeout-ms 180000 --tool-output-cap 12000
+```
+
+- `timeoutMs` (integer ≥ 1000): per-MCP-request timeout. Omitted → Mastra's
+  60 000 ms default. The outer query timeout still wins.
+- `toolOutputCap` (integer ≥ 0): caps a tool result before it enters message
+  history. `0` disables excerpting for that server only. Omitted →
+  provider-level `toolOutputCap` or 4 000. Precedence: server > provider >
+  4 000; provider-level `0` disables only the fallback — an explicit positive
+  per-server cap still applies.
+
+Provider compatibility: only the Mastra / OpenAI-compatible provider honors
+these limits; native Claude, Gemini, and Codex CLI runs omit the metadata, so
+the limits have no effect there. The caps bound MCP model-history injection,
+not network bytes: when any effective MCP cap is positive, MCP results (also
+zero-cap servers) stay in a run-local in-memory store retrievable via
+`fetch_tool_output` in up to 8 000 content-character slices (framing
+additional) when available — a discovered MCP tool that already owns that
+reserved name takes it and the synthetic recovery is skipped; with all
+effective MCP caps at `0` no wrapper/recovery is injected. Built-in
+file/shell tools are unchanged. For an existing server,
+edit only the two numeric keys under `config` in the JSON file directly
+(preserving name/URL/transport/headers/env/auth) — `add-mcp` rejects
+duplicate names.
+
 ## Shared memory between agents
 
 Talon supports shared memory between personas using the [Anthropic Memory MCP server](https://github.com/anthropics/memory). This is a knowledge graph stored in a single JSON file. When multiple personas use the same file, they share knowledge automatically.
@@ -522,7 +559,7 @@ When to suggest this: when the user has multiple personas and asks about sharing
 ## Rules
 
 1. **Never write actual secrets.** Only `${ENV_VAR}` placeholders in config and MCP `headers` / `env` fields.
-2. **Use talonctl commands for all config mutations.** Exceptions: system prompt files, task prompt files, and `.env`.
+2. **Use talonctl commands for all config mutations.** Exceptions: system prompt files, task prompt files, and `.env`. Narrow exception: the two numeric keys `timeoutMs` / `toolOutputCap` under `config` in an existing MCP server JSON (`skills/<skill>/mcp/<server>.json`) may be edited manually — no other manual MCP JSON or config edits.
 3. **One question per message.** Do not batch questions.
 4. **Show command output.** Let the user see what happened.
 5. **Don't start the daemon.** Setup only. The user starts it themselves.

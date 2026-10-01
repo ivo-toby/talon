@@ -230,6 +230,127 @@ describe('buildPersonaRuntimeContext', () => {
     });
   });
 
+  it('copies defined per-server limits into canonical entries (zero survives)', () => {
+    const resolvedSkills = [
+      makeLoadedSkill('search', [
+        {
+          name: 'local-search',
+          config: {
+            name: 'local-search',
+            transport: 'stdio',
+            command: 'node',
+            args: ['search.js'],
+            timeoutMs: 1000,
+            toolOutputCap: 0,
+          },
+        },
+      ]),
+      makeLoadedSkill('browser', [
+        {
+          name: 'glean',
+          config: {
+            name: 'glean',
+            transport: 'http',
+            url: 'https://glean.example.com/mcp',
+            timeoutMs: 180000,
+            toolOutputCap: 12000,
+          },
+        },
+        {
+          name: 'feeds',
+          config: {
+            name: 'feeds',
+            transport: 'sse',
+            url: 'https://feeds.example.com/mcp',
+            timeoutMs: 1000,
+            toolOutputCap: 0,
+          },
+        },
+      ]),
+    ];
+
+    const skillResolver = {
+      mergePromptFragments: vi.fn().mockReturnValue(''),
+      collectMcpServers: vi
+        .fn()
+        .mockReturnValue(resolvedSkills.flatMap((skill) => skill.resolvedMcpServers)),
+    };
+
+    const result = buildPersonaRuntimeContext({
+      loadedPersona,
+      resolvedSkills,
+      skillResolver: skillResolver as any,
+    });
+
+    expect(result.mcpServers).toEqual({
+      'local-search': {
+        transport: 'stdio',
+        command: 'node',
+        args: ['search.js'],
+        timeoutMs: 1000,
+        toolOutputCap: 0,
+      },
+      glean: {
+        transport: 'http',
+        url: 'https://glean.example.com/mcp',
+        timeoutMs: 180000,
+        toolOutputCap: 12000,
+      },
+      feeds: {
+        transport: 'sse',
+        url: 'https://feeds.example.com/mcp',
+        timeoutMs: 1000,
+        toolOutputCap: 0,
+      },
+    });
+  });
+
+  it('keeps omitted limit fields absent from canonical entries', () => {
+    const resolvedSkills = [
+      makeLoadedSkill('search', [
+        {
+          name: 'local-search',
+          config: {
+            name: 'local-search',
+            transport: 'stdio',
+            command: 'node',
+            args: ['search.js'],
+          },
+        },
+        {
+          name: 'remote',
+          config: {
+            name: 'remote',
+            transport: 'http',
+            url: 'https://remote.example.com/mcp',
+          },
+        },
+      ]),
+    ];
+
+    const skillResolver = {
+      mergePromptFragments: vi.fn().mockReturnValue(''),
+      collectMcpServers: vi
+        .fn()
+        .mockReturnValue(resolvedSkills.flatMap((skill) => skill.resolvedMcpServers)),
+    };
+
+    const result = buildPersonaRuntimeContext({
+      loadedPersona,
+      resolvedSkills,
+      skillResolver: skillResolver as any,
+    });
+
+    expect(result.mcpServers).toEqual({
+      'local-search': { transport: 'stdio', command: 'node', args: ['search.js'] },
+      remote: { transport: 'http', url: 'https://remote.example.com/mcp' },
+    });
+    for (const entry of Object.values(result.mcpServers)) {
+      expect(entry).not.toHaveProperty('timeoutMs');
+      expect(entry).not.toHaveProperty('toolOutputCap');
+    }
+  });
+
   it('filters excluded MCP servers and lets later definitions win', () => {
     const resolvedSkills = [
       makeLoadedSkill('first', [

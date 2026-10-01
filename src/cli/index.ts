@@ -30,7 +30,7 @@ import { listSkillsCommand } from './commands/list-skills.js';
 import { listCapabilitiesCommand } from './commands/list-capabilities.js';
 import { bindCommand } from './commands/bind.js';
 import { unbindCommand } from './commands/unbind.js';
-import { addMcpCommand } from './commands/add-mcp.js';
+import { addMcpCommand, parseCliDecimalInteger } from './commands/add-mcp.js';
 import { envCheckCommand } from './commands/env-check.js';
 import { removeChannelCommand } from './commands/remove-channel.js';
 import { removePersonaCommand } from './commands/remove-persona.js';
@@ -410,6 +410,8 @@ program
   .option('--scopes <scopes...>', 'Explicit OAuth scopes to request during authorization')
   .option('--token-endpoint-auth-method <method>', 'OAuth token auth method (client_secret_post or client_secret_basic)')
   .option('--env <pairs>', 'Stdio environment (KEY=VALUE; use ${ENV_VAR} for secrets)')
+  .option('--timeout-ms <ms>', 'Per-request timeout in milliseconds (integer >= 1000)')
+  .option('--tool-output-cap <chars>', 'Per-tool output cap in characters (integer >= 0)')
   .option('--skills-dir <path>', 'Skills directory', 'skills')
   .action(
     async (opts: {
@@ -427,6 +429,8 @@ program
       scopes?: string[];
       tokenEndpointAuthMethod?: string;
       env?: string;
+      timeoutMs?: string;
+      toolOutputCap?: string;
       skillsDir: string;
     }) => {
       const auth = opts.auth === 'oauth2'
@@ -445,6 +449,26 @@ program
         : undefined;
       const envPairs = opts.env ? parseKeyValuePairs(opts.env) : undefined;
       const headerPairs = opts.headers ? parseKeyValuePairs(opts.headers) : undefined;
+      let timeoutMs: number | undefined;
+      if (opts.timeoutMs !== undefined) {
+        const parsed = parseCliDecimalInteger(opts.timeoutMs);
+        if (parsed === null || parsed < 1000) {
+          console.error(`Error: --timeout-ms must be an integer number of milliseconds >= 1000 (got "${opts.timeoutMs}").`);
+          process.exit(1);
+          return;
+        }
+        timeoutMs = parsed;
+      }
+      let toolOutputCap: number | undefined;
+      if (opts.toolOutputCap !== undefined) {
+        const parsed = parseCliDecimalInteger(opts.toolOutputCap);
+        if (parsed === null) {
+          console.error(`Error: --tool-output-cap must be an integer number of characters >= 0 (got "${opts.toolOutputCap}").`);
+          process.exit(1);
+          return;
+        }
+        toolOutputCap = parsed;
+      }
       if (opts.auth && !auth) {
         console.error(`Error: unsupported MCP auth mode "${opts.auth}". Use "oauth2".`);
         process.exit(1);
@@ -471,6 +495,8 @@ program
         headers: headerPairs,
         auth,
         env: envPairs,
+        timeoutMs,
+        toolOutputCap,
         skillsDir: opts.skillsDir,
       });
     },

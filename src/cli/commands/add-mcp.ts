@@ -33,7 +33,29 @@ export interface AddMcpOptions {
   headers?: Record<string, string>;
   env?: Record<string, string>;
   auth?: Omit<McpOAuth2AuthConfig, 'tokenStore'>;
+  /** Per-request timeout in milliseconds (integer >= 1000). */
+  timeoutMs?: number;
+  /** Per-tool output cap in characters (integer >= 0; 0 means unlimited). */
+  toolOutputCap?: number;
   skillsDir?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Strict CLI numeric parsing
+// ---------------------------------------------------------------------------
+
+const DECIMAL_INTEGER = /^[0-9]+$/;
+
+// CLI flags carry decimal digit strings only; other forms must not change meaning.
+export function parseCliDecimalInteger(raw: string): number | null {
+  if (typeof raw !== 'string' || !DECIMAL_INTEGER.test(raw)) {
+    return null;
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    return null;
+  }
+  return value;
 }
 
 export interface AddMcpResult {
@@ -129,6 +151,24 @@ export async function addMcp(options: AddMcpOptions): Promise<AddMcpResult> {
     throw new Error('token endpoint auth method "none" cannot be used with --client-secret-env.');
   }
 
+  // Validate per-server numeric limits before any filesystem side effects.
+  // Values must be exactly representable integers; unsafe, fractional, NaN and
+  // infinite inputs are rejected with a flag-specific error.
+  if (options.timeoutMs !== undefined) {
+    if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 1000) {
+      throw new Error(
+        `--timeout-ms must be an integer number of milliseconds >= 1000 (got ${JSON.stringify(options.timeoutMs)}).`,
+      );
+    }
+  }
+  if (options.toolOutputCap !== undefined) {
+    if (!Number.isSafeInteger(options.toolOutputCap) || options.toolOutputCap < 0) {
+      throw new Error(
+        `--tool-output-cap must be an integer number of characters >= 0 (got ${JSON.stringify(options.toolOutputCap)}).`,
+      );
+    }
+  }
+
   // Verify skill directory exists.
   const skillDir = path.join(skillsDir, options.skillName);
   if (!existsSync(skillDir)) {
@@ -158,6 +198,8 @@ export async function addMcp(options: AddMcpOptions): Promise<AddMcpResult> {
       ...(options.headers && Object.keys(options.headers).length > 0 ? { headers: options.headers } : {}),
       ...(options.env && Object.keys(options.env).length > 0 ? { env: options.env } : {}),
       ...(options.auth ? { auth: options.auth } : {}),
+      ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(options.toolOutputCap !== undefined ? { toolOutputCap: options.toolOutputCap } : {}),
     },
   };
 

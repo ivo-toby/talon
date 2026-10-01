@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs/promises';
-import { mkdtempSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { addMcp } from '../../../src/cli/commands/add-mcp.js';
+import { addMcp, parseCliDecimalInteger, type AddMcpOptions } from '../../../src/cli/commands/add-mcp.js';
 
 let tmpDir: string;
 
@@ -212,5 +212,197 @@ describe('addMcp()', () => {
       command: 'cmd',
       skillsDir,
     })).rejects.toThrow(/invalid/);
+  });
+});
+
+describe('addMcp() per-server limits', () => {
+  interface LimitCase {
+    transport: 'stdio' | 'sse' | 'http';
+    options: Partial<AddMcpOptions>;
+    timeoutMs: number;
+    toolOutputCap: number;
+  }
+
+  const validLimitCases: LimitCase[] = [
+    {
+      transport: 'stdio',
+      options: { command: 'npx' },
+      timeoutMs: 1000,
+      toolOutputCap: 0,
+    },
+    {
+      transport: 'stdio',
+      options: { command: 'npx' },
+      timeoutMs: 180000,
+      toolOutputCap: 12000,
+    },
+    {
+      transport: 'http',
+      options: { url: 'https://example.com/mcp' },
+      timeoutMs: 1000,
+      toolOutputCap: 0,
+    },
+    {
+      transport: 'http',
+      options: { url: 'https://example.com/mcp' },
+      timeoutMs: 180000,
+      toolOutputCap: 12000,
+    },
+    {
+      transport: 'sse',
+      options: { url: 'http://localhost:3000/sse' },
+      timeoutMs: 1000,
+      toolOutputCap: 0,
+    },
+    {
+      transport: 'sse',
+      options: { url: 'http://localhost:3000/sse' },
+      timeoutMs: 180000,
+      toolOutputCap: 12000,
+    },
+  ];
+
+  it.each(validLimitCases)('writes numeric timeoutMs and toolOutputCap for $transport', async (tc) => {
+    const skillsDir = createSkillDir('web-search');
+    const result = await addMcp({
+      skillName: 'web-search',
+      name: 'limited-server',
+      transport: tc.transport,
+      timeoutMs: tc.timeoutMs,
+      toolOutputCap: tc.toolOutputCap,
+      skillsDir,
+      ...tc.options,
+    });
+
+    const content = JSON.parse(readFileSync(result.mcpConfigPath, 'utf-8')) as unknown;
+    expect(content).toMatchObject({
+      name: 'limited-server',
+      config: {
+        transport: tc.transport,
+        ...(tc.options.command ? { command: tc.options.command } : {}),
+        ...(tc.options.url ? { url: tc.options.url } : {}),
+        timeoutMs: tc.timeoutMs,
+        toolOutputCap: tc.toolOutputCap,
+      },
+    });
+  });
+
+  it('omits both limit keys when flags are absent', async () => {
+    const skillsDir = createSkillDir('web-search');
+    const result = await addMcp({
+      skillName: 'web-search',
+      name: 'plain-server',
+      transport: 'stdio',
+      command: 'npx',
+      skillsDir,
+    });
+
+    const content = JSON.parse(readFileSync(result.mcpConfigPath, 'utf-8')) as unknown;
+    expect(content).toMatchObject({
+      name: 'plain-server',
+      config: { transport: 'stdio', command: 'npx' },
+    });
+    expect(content).not.toHaveProperty('config.timeoutMs');
+    expect(content).not.toHaveProperty('config.toolOutputCap');
+  });
+
+  interface InvalidLimitCase {
+    options: { timeoutMs?: number; toolOutputCap?: number };
+    message: RegExp;
+  }
+
+  const invalidLimitCases: InvalidLimitCase[] = [
+    { options: { timeoutMs: 999 }, message: /--timeout-ms/ },
+    { options: { timeoutMs: 0 }, message: /--timeout-ms/ },
+    { options: { timeoutMs: -1 }, message: /--timeout-ms/ },
+    { options: { timeoutMs: 1000.5 }, message: /--timeout-ms/ },
+    { options: { timeoutMs: NaN }, message: /--timeout-ms/ },
+    { options: { timeoutMs: Number.POSITIVE_INFINITY }, message: /--timeout-ms/ },
+    { options: { timeoutMs: Number.MAX_SAFE_INTEGER + 1 }, message: /--timeout-ms/ },
+    { options: { toolOutputCap: -1 }, message: /--tool-output-cap/ },
+    { options: { toolOutputCap: 1.5 }, message: /--tool-output-cap/ },
+    { options: { toolOutputCap: NaN }, message: /--tool-output-cap/ },
+    { options: { toolOutputCap: Number.POSITIVE_INFINITY }, message: /--tool-output-cap/ },
+    { options: { toolOutputCap: Number.MAX_SAFE_INTEGER + 1 }, message: /--tool-output-cap/ },
+  ];
+
+  it.each(invalidLimitCases)('rejects invalid numeric limits without filesystem effects', async (tc) => {
+    const skillsDir = createSkillDir('web-search');
+    const mcpDir = join(skillsDir, 'web-search', 'mcp');
+
+    await expect(addMcp({
+      skillName: 'web-search',
+      name: 'bad-limits',
+      transport: 'stdio',
+      command: 'npx',
+      skillsDir,
+      ...tc.options,
+    })).rejects.toThrow(tc.message);
+
+    expect(existsSync(mcpDir)).toBe(false);
+  });
+
+  it('rejects an unsafe timeoutMs and preserves an existing sibling config byte-for-byte', async () => {
+    const skillsDir = createSkillDir('web-search');
+    const mcpDir = join(skillsDir, 'web-search', 'mcp');
+    const existingConfig = join(mcpDir, 'existing.json');
+    mkdirSync(mcpDir, { recursive: true });
+    const existingContent = JSON.stringify({ name: 'existing', config: { transport: 'stdio', command: 'cmd' } }, null, 2) + '\n';
+    writeFileSync(existingConfig, existingContent, 'utf-8');
+
+    await expect(addMcp({
+      skillName: 'web-search',
+      name: 'bad-limits',
+      transport: 'stdio',
+      command: 'npx',
+      timeoutMs: Number.MAX_SAFE_INTEGER + 1,
+      skillsDir,
+    })).rejects.toThrow(/--timeout-ms/);
+
+    expect(existsSync(join(mcpDir, 'bad-limits.json'))).toBe(false);
+    expect(readFileSync(existingConfig, 'utf-8')).toBe(existingContent);
+  });
+
+  it('accepts a zero toolOutputCap while rejecting an invalid timeoutMs', async () => {
+    const skillsDir = createSkillDir('web-search');
+    const mcpDir = join(skillsDir, 'web-search', 'mcp');
+
+    await expect(addMcp({
+      skillName: 'web-search',
+      name: 'zero-cap',
+      transport: 'stdio',
+      command: 'npx',
+      timeoutMs: 500,
+      toolOutputCap: 0,
+      skillsDir,
+    })).rejects.toThrow(/--timeout-ms/);
+
+    expect(existsSync(mcpDir)).toBe(false);
+  });
+});
+
+describe('parseCliDecimalInteger()', () => {
+  it('parses plain decimal integer strings', () => {
+    expect(parseCliDecimalInteger('1000')).toBe(1000);
+    expect(parseCliDecimalInteger('0')).toBe(0);
+    expect(parseCliDecimalInteger('180000')).toBe(180000);
+  });
+
+  it('rejects junk, whitespace, fractional, scientific, negative and unsafe values', () => {
+    expect(parseCliDecimalInteger('')).toBeNull();
+    expect(parseCliDecimalInteger('  ')).toBeNull();
+    expect(parseCliDecimalInteger('1000junk')).toBeNull();
+    expect(parseCliDecimalInteger('1000 ')).toBeNull();
+    expect(parseCliDecimalInteger(' 1000')).toBeNull();
+    expect(parseCliDecimalInteger('1000.5')).toBeNull();
+    expect(parseCliDecimalInteger('1e3')).toBeNull();
+    expect(parseCliDecimalInteger('-1000')).toBeNull();
+    expect(parseCliDecimalInteger('+1000')).toBeNull();
+    expect(parseCliDecimalInteger('NaN')).toBeNull();
+    expect(parseCliDecimalInteger('Infinity')).toBeNull();
+    expect(parseCliDecimalInteger('0x10')).toBeNull();
+    expect(parseCliDecimalInteger('1_000')).toBeNull();
+    // Unsafe: exceeds Number.MAX_SAFE_INTEGER.
+    expect(parseCliDecimalInteger('99999999999999999999999999')).toBeNull();
   });
 });

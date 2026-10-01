@@ -117,6 +117,10 @@ export function buildPersonaRuntimeContext(
         command: cfg.command,
         args: cfg.args ?? [],
         ...(Object.keys(resolvedEnv).length > 0 ? { env: resolvedEnv } : {}),
+        // Runtime metadata only; copied when defined so an explicit 0
+        // (disable excerpting) is not dropped.
+        ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+        ...(cfg.toolOutputCap !== undefined ? { toolOutputCap: cfg.toolOutputCap } : {}),
       };
       continue;
     }
@@ -133,6 +137,10 @@ export function buildPersonaRuntimeContext(
       transport: cfg.transport,
       url: cfg.url,
       ...(Object.keys(resolvedHeaders).length > 0 ? { headers: resolvedHeaders } : {}),
+      // Runtime metadata only; copied when defined so an explicit 0
+      // (disable excerpting) is not dropped.
+      ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
+      ...(cfg.toolOutputCap !== undefined ? { toolOutputCap: cfg.toolOutputCap } : {}),
       // Forward dynamic auth verbatim. `resolveMcpServers()` runs in the
       // agent-runner and turns this into a materialized Bearer header
       // before the entry reaches a provider — domain `McpAuthConfig`

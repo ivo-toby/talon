@@ -85,6 +85,65 @@ describe('resolveMcpServers', () => {
     expect((resolved.glean as Record<string, unknown>).auth).toBeUndefined();
   });
 
+  it('preserves per-server limit metadata on stdio entries', async () => {
+    const servers: Record<string, CanonicalMcpServer> = {
+      local: {
+        transport: 'stdio',
+        command: 'node',
+        args: ['search.js'],
+        timeoutMs: 1000,
+        toolOutputCap: 0,
+      },
+    };
+    const resolved = await resolveMcpServers(servers, {
+      tokenStore: fakeTokenStore('NEVER'),
+    });
+    expect(resolved.local).toEqual(servers.local);
+  });
+
+  it('preserves per-server limit metadata on HTTP entries without auth', async () => {
+    const servers: Record<string, CanonicalMcpServer> = {
+      github: {
+        transport: 'http',
+        url: 'https://api.github.com/mcp',
+        headers: { 'X-API-Key': 'static' },
+        timeoutMs: 180000,
+        toolOutputCap: 12000,
+      },
+    };
+    const resolved = await resolveMcpServers(servers, {
+      tokenStore: fakeTokenStore('NEVER'),
+    });
+    expect(resolved.github).toEqual(servers.github);
+  });
+
+  it('materializes Bearer while preserving limit metadata and unrelated headers', async () => {
+    const servers: Record<string, CanonicalMcpServer> = {
+      glean: {
+        transport: 'http',
+        url: 'https://contentful-be.glean.com/mcp/default',
+        headers: { 'X-Trace': 't1' },
+        auth: { kind: 'oauth2', tokenStore: 'glean/glean' },
+        timeoutMs: 180000,
+        toolOutputCap: 12000,
+      },
+    };
+
+    const resolved = await resolveMcpServers(servers, {
+      tokenStore: fakeTokenStore('access'),
+    });
+
+    expect(resolved.glean).toEqual({
+      transport: 'http',
+      url: 'https://contentful-be.glean.com/mcp/default',
+      headers: { 'X-Trace': 't1', Authorization: 'Bearer access:glean/glean' },
+      timeoutMs: 180000,
+      toolOutputCap: 12000,
+    });
+    // Provider never sees the auth field.
+    expect((resolved.glean as Record<string, unknown>).auth).toBeUndefined();
+  });
+
   it('rejects OAuth bearer tokens that a provider could expand as an environment reference', async () => {
     const secretPlaceholder = '${DAEMON_SECRET}';
     await expect(resolveMcpServers({

@@ -320,6 +320,32 @@ Once boot is verified, anything else uses `talonctl`:
   Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
 
+When an MCP server returns large results or makes slow calls, add per-server
+limits with `--timeout-ms` (integer ≥ 1000; omitted → Mastra 60 000 ms default;
+outer query timeout still wins) and `--tool-output-cap` (integer ≥ 0; `0`
+disables excerpting for that server only; precedence: server > provider >
+4 000; provider-level `0` disables only the fallback). These are stored under
+`config` in the skill's MCP JSON as `timeoutMs` / `toolOutputCap`. Only the
+Mastra / OpenAI-compatible provider honors them; native Claude, Gemini, and
+Codex CLI runs omit the metadata, so the limits have no effect there. They
+bound MCP model-history injection, not network bytes: when any effective MCP
+cap is positive, MCP results (also zero-cap servers) stay in a run-local
+in-memory store retrievable via `fetch_tool_output` in up to 8 000
+content-character slices (framing additional) when available — a discovered
+MCP tool that already owns that reserved name takes it and the synthetic
+recovery is skipped; with all effective MCP caps at `0` no wrapper/recovery
+is injected. Built-in file/shell tools are unchanged.
+For an existing server, edit only the two numeric keys under `config` in the
+mounted skill JSON directly (preserving name/URL/transport/headers/env/auth)
+— `add-mcp` rejects duplicate names. The repository Glean definition
+(`skills/glean/mcp/glean.json`) pre-sets `timeoutMs: 180000` /
+`toolOutputCap: 12000`, but that file is git-ignored and NOT packaged in the
+Docker image or either starter bundle; a rebuild does not update a Glean JSON
+you already copied into your mounted `skills/` tree. Add or replace the two
+keys under `config` in your existing copy (preserve your real URL/auth); any
+release claiming bundled Glean limit defaults is a release blocker until
+packaging bundles the skill.
+
 Each mutation modifies `config/talond.yaml`. The daemon **does not
 auto-reload** — after a mutation, tell the user to apply it:
 

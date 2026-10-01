@@ -419,11 +419,15 @@ describe('CodexCliProvider', () => {
           command: 'node',
           args: ['dist/tools/host-tools-mcp-server.js'],
           env: { TALOND_SOCKET: '/tmp/talond.sock' },
+          timeoutMs: 180_000,
+          toolOutputCap: 12_000,
         },
         remoteBrowser: {
           transport: 'http',
           url: 'https://mcp.example.test',
           headers: { Authorization: 'Bearer secret-token' },
+          toolOutputCap: 0,
+          timeoutMs: 1_000,
         },
         remoteStream: {
           transport: 'sse',
@@ -474,6 +478,12 @@ describe('CodexCliProvider', () => {
     expect(configToml).toContain('[mcp_servers."remoteStream"]');
     expect(configToml).toContain('url = "https://sse.example.test/mcp"');
     expect(configToml).not.toContain('[mcp_servers.inProcess]');
+    // Talon runtime MCP limits must not leak into the Codex-native TOML as
+    // per-server keys; exact-key checks so existing native controls such as
+    // startup_timeout_sec are never matched accidentally.
+    expect(configToml).not.toContain('timeoutMs =');
+    expect(configToml).not.toContain('toolOutputCap =');
+    expect(configToml).not.toContain('timeout =');
     expect(Object.values(invocation.env ?? {})).toContain('secret-token');
     expect(Object.values(invocation.env ?? {})).toContain('sse-secret-token');
   });

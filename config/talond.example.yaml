@@ -198,13 +198,20 @@ agentRunner:
         baseUrl: http://127.0.0.1:11434/v1
         defaultModel: qwen3-coder:30b
         providerId: ollama
-        # Cap a single tool result's size (in chars) before it enters the
+        # Cap a single MCP tool result's size (in chars) before it enters the
         # agent's message history. The full output is retained in-memory for
         # the current run; the model can fetch ranges via the built-in
-        # `fetch_tool_output` tool. Recommended for small-window models
-        # (Ollama 8K-32K). Set to 0 to disable. Defaults to 4000 when the
-        # key is omitted.
+        # `fetch_tool_output` tool when available (a discovered MCP tool that
+        # already owns that reserved name takes it, and the synthetic
+        # recovery is skipped). Recommended for small-window models
+        # (Ollama 8K-32K). For MCP servers, 0 disables this provider-level
+        # fallback only — explicit positive per-server caps still apply.
+        # Defaults to 4000 when the key is omitted.
         toolOutputCap: 4000
+        # Per-MCP-server caps and timeouts live in skills/<skill>/mcp/<server>.json
+        # (see README "Per-server MCP request timeout and tool-output cap");
+        # they are not daemon-level settings. An explicit per-server value
+        # overrides the provider-level fallback above.
     # Add more OpenAI-compatible endpoints by giving each provider a unique
     # name and pointing type at the shared implementation.
     ollama-mac:
