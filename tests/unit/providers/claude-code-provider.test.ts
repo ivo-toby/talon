@@ -49,11 +49,15 @@ describe('ClaudeCodeProvider', () => {
           command: 'node',
           args: ['dist/tools/host-tools-mcp-server.js'],
           env: { TALOND_SOCKET: '/tmp/talond.sock' },
+          timeoutMs: 180_000,
+          toolOutputCap: 12_000,
         },
         remoteBrowser: {
           transport: 'http',
           url: 'https://mcp.example.test',
           headers: { Authorization: 'Bearer token' },
+          toolOutputCap: 0,
+          timeoutMs: 1_000,
         },
       },
       cwd: '/tmp',
@@ -77,7 +81,8 @@ describe('ClaudeCodeProvider', () => {
 
     const configPath = invocation.args[invocation.args.indexOf('--mcp-config') + 1];
     expect(existsSync(configPath)).toBe(true);
-    expect(JSON.parse(readFileSync(configPath, 'utf8'))).toEqual({
+    const parsedConfig = JSON.parse(readFileSync(configPath, 'utf8')) as unknown;
+    expect(parsedConfig).toEqual({
       mcpServers: {
         hostTools: {
           type: 'stdio',
@@ -92,6 +97,14 @@ describe('ClaudeCodeProvider', () => {
         },
       },
     });
+    // Talon runtime MCP limits (per-server timeoutMs/toolOutputCap) must NOT
+    // leak into the Claude-native MCP config; the 60_000ms invocation
+    // timeout must not become a native per-server timeout either.
+    for (const name of ['hostTools', 'remoteBrowser']) {
+      expect(parsedConfig).not.toHaveProperty(`mcpServers.${name}.timeoutMs`);
+      expect(parsedConfig).not.toHaveProperty(`mcpServers.${name}.toolOutputCap`);
+      expect(parsedConfig).not.toHaveProperty(`mcpServers.${name}.timeout`);
+    }
     expect(readdirSync(dirname(configPath)).sort()).toEqual(['mcp-config.json']);
   });
 

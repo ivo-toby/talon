@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs';
 import type { JSONObject } from '@ai-sdk/provider';
 import { Agent } from '@mastra/core/agent';
 import { RequestContext, MASTRA_THREAD_ID_KEY } from '@mastra/core/di';
-import { createTool, type Tool } from '@mastra/core/tools';
+import { type Tool } from '@mastra/core/tools';
 import {
   Workspace,
   LocalFilesystem,
@@ -10,8 +10,7 @@ import {
   createWorkspaceTools,
   type WorkspaceToolsConfig,
 } from '@mastra/core/workspace';
-import { MCPClient, type MastraMCPServerDefinition } from '@mastra/mcp';
-import { z } from 'zod';
+import { MCPClient } from '@mastra/mcp';
 import {
   chooseUsage,
   extractCumulativeUsage,
@@ -20,13 +19,13 @@ import {
   normalizeUsage,
   type UsageSnapshot,
 } from './usage.js';
+import { ToolOutputStore } from './tool-output-excerpter.js';
 import {
-  excerptToolOutput,
-  fetchToolOutputSlice,
-  ToolOutputStore,
-  DEFAULT_TOOL_OUTPUT_CAP,
-  DEFAULT_FETCH_SLICE_CAP,
-} from './tool-output-excerpter.js';
+  applyMcpToolLimits,
+  isSerializableMcpServer,
+  toMastraMcpServers,
+  type SerializableMcpServer,
+} from './mcp-tool-limits.js';
 import { runResponsesLoop } from './responses-api.js';
 
 const DEFAULT_MAX_STEPS = 1000;
@@ -70,27 +69,15 @@ interface WrapperInput {
   /** High safety net for model/tool-call steps. Defaults to DEFAULT_MAX_STEPS. */
   maxSteps?: number;
   /**
-   * Max chars of tool output allowed into the agent's message history.
-   * A head/tail excerpt is injected and the full output is kept in-memory
-   * for the run so the agent can re-fetch ranges via fetch_tool_output.
-   * 0 disables the feature. Defaults to DEFAULT_TOOL_OUTPUT_CAP when
-   * omitted.
+   * Provider fallback cap: max chars of tool output allowed into the agent's
+   * message history. A head/tail excerpt is injected and the full output is
+   * kept in-memory for the run so the agent can re-fetch ranges via
+   * fetch_tool_output. Per-server mcpServers[*].toolOutputCap values override
+   * this fallback; 0 disables only this fallback (positive per-server caps
+   * still apply). Defaults to DEFAULT_TOOL_OUTPUT_CAP when omitted.
    */
   toolOutputCap?: number;
 }
-
-type SerializableMcpServer =
-  | {
-      transport: 'stdio';
-      command: string;
-      args: string[];
-      env?: Record<string, string>;
-    }
-  | {
-      transport: 'http' | 'sse';
-      url: string;
-      headers?: Record<string, string>;
-    };
 
 type ProviderOptionsPayload = Record<string, JSONObject>;
 
@@ -239,34 +226,27 @@ async function main(): Promise<void> {
     // message history, retain the full output for this run, expose the
     // fetch_tool_output synthetic tool so the agent can re-read ranges.
     // See specs/2026-04-20-tool-output-excerpting-stage1.md.
-    const toolOutputCap = input.toolOutputCap ?? DEFAULT_TOOL_OUTPUT_CAP;
     const toolOutputStore = new ToolOutputStore();
     let syntheticToolCallSeq = 0;
-    const mcpTools =
-      toolOutputCap > 0
-        ? wrapToolsWithOutputCap(
-            rawMcpTools,
-            toolOutputCap,
-            toolOutputStore,
-            () => `talond-mcp-${Date.now()}-${++syntheticToolCallSeq}`,
-          )
-        : rawMcpTools;
-
-    const combinedTools: Record<string, Tool<unknown, unknown, unknown, unknown>> = { ...mcpTools };
-    if (toolOutputCap > 0) {
-      // Guard against an MCP server accidentally exposing a tool named
-      // "fetch_tool_output" — our synthetic tool would silently overwrite
-      // it otherwise. Log and skip registration in that case; the agent
-      // loses the re-fetch affordance but keeps the MCP tool working.
-      if (Object.prototype.hasOwnProperty.call(combinedTools, 'fetch_tool_output')) {
+    const mcpTools = applyMcpToolLimits(
+      rawMcpTools,
+      input.mcpServers,
+      input.toolOutputCap,
+      toolOutputStore,
+      () => `talond-mcp-${Date.now()}-${++syntheticToolCallSeq}`,
+      () => {
+        // Guard against an MCP server accidentally exposing a tool named
+        // "fetch_tool_output" — our synthetic tool would silently overwrite
+        // it otherwise. Log and skip registration in that case; the agent
+        // loses the re-fetch affordance but keeps the MCP tool working.
         process.stderr.write(
           'openai-compatible wrapper: an MCP tool named "fetch_tool_output" is already ' +
             'registered; skipping synthetic tool registration to avoid shadowing.\n',
         );
-      } else {
-        combinedTools.fetch_tool_output = buildFetchToolOutputTool(toolOutputStore);
-      }
-    }
+      },
+    );
+
+    const combinedTools: Record<string, Tool<unknown, unknown, unknown, unknown>> = { ...mcpTools };
 
     const apiMode = resolveApiMode(input);
     const sessionMode = resolveSessionMode(input);
@@ -637,128 +617,6 @@ function parseInput(raw: string): WrapperInput {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Tool-output excerpting glue
-// ---------------------------------------------------------------------------
-
-/**
- * Wrap each tool so its `execute` records the full output in the store and
- * returns a bounded excerpt instead. The downstream stream-chunk handler
- * (see the `tool-result` branch) is the single source of tool_event
- * emission — this helper does NOT emit its own event to avoid duplicates.
- *
- * The toolCallId comes from the Mastra execution context when available;
- * otherwise a synthetic id is generated via `idFactory`. Synthetic ids are
- * still usable with fetch_tool_output within the same run.
- */
-function wrapToolsWithOutputCap(
-  tools: Record<string, Tool<unknown, unknown, unknown, unknown>>,
-  cap: number,
-  store: ToolOutputStore,
-  idFactory: () => string,
-): Record<string, Tool<unknown, unknown, unknown, unknown>> {
-  const wrapped: Record<string, Tool<unknown, unknown, unknown, unknown>> = {};
-  for (const [name, tool] of Object.entries(tools)) {
-    wrapped[name] = wrapOneToolWithOutputCap(name, tool, cap, store, idFactory);
-  }
-  return wrapped;
-}
-
-function wrapOneToolWithOutputCap(
-  toolName: string,
-  tool: Tool<unknown, unknown, unknown, unknown>,
-  cap: number,
-  store: ToolOutputStore,
-  idFactory: () => string,
-): Tool<unknown, unknown, unknown, unknown> {
-  const originalExecute = tool.execute?.bind(tool);
-  if (!originalExecute) return tool;
-
-  // Proxy preserves the Mastra Tool prototype (instanceof checks, metadata)
-  // while overriding execute. Returning a plain object works too but losing
-  // the marker symbol can break introspection.
-  return new Proxy(tool, {
-    get(target, prop, receiver): unknown {
-      if (prop === 'execute') {
-        return async (input: unknown, ctx?: unknown) => {
-          const rawResult = await (
-            originalExecute as (i: unknown, c?: unknown) => Promise<unknown>
-          )(input, ctx);
-          const toolCallId = extractToolCallIdFromContext(ctx) ?? idFactory();
-          const excerpted = excerptToolOutput(toolCallId, toolName, rawResult, cap);
-
-          // Always record — even when truncation didn't fire — so a
-          // follow-up fetch_tool_output call on a normal-sized output still
-          // works. Keeps semantics simple for the model.
-          store.record(toolCallId, {
-            toolName,
-            fullOutput: excerpted.fullOutputString,
-            originalChars: excerpted.originalChars,
-            truncated: excerpted.truncated,
-            excerptChars: excerpted.excerptChars,
-          });
-
-          return excerpted.excerpt;
-        };
-      }
-      return Reflect.get(target, prop, receiver) as unknown;
-    },
-  });
-}
-
-/**
- * Build the synthetic `fetch_tool_output` tool that lets the agent re-read
- * a range of a previously-stored tool output.
- */
-function buildFetchToolOutputTool(
-  store: ToolOutputStore,
-): Tool<unknown, unknown, unknown, unknown> {
-  return createTool({
-    id: 'fetch_tool_output',
-    description:
-      'Retrieve a range of a previously-truncated tool output. Use this when the excerpt ' +
-      'in the message history contains a "TRUNCATED BY TALON" marker and you need a ' +
-      'specific region of the full content. Each call returns at most ' +
-      `${DEFAULT_FETCH_SLICE_CAP} characters; widen ranges carefully to avoid reintroducing the full payload.`,
-    inputSchema: z.object({
-      toolCallId: z.string().describe('The toolCallId from the truncation marker.'),
-      startChar: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe('0-indexed start (inclusive). Defaults to 0.'),
-      endChar: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe(`Exclusive end. Defaults to startChar + ${DEFAULT_FETCH_SLICE_CAP}.`),
-    }),
-    execute: (input): Promise<string> => {
-      const { toolCallId, startChar, endChar } = input;
-      return Promise.resolve(fetchToolOutputSlice(store, toolCallId, startChar, endChar));
-    },
-  }) as unknown as Tool<unknown, unknown, unknown, unknown>;
-}
-
-/**
- * Try to read the tool call id from whatever shape Mastra passes as
- * execution context. Mastra's internal shape evolves; best-effort is fine —
- * we fall back to a synthetic id when nothing matches.
- */
-function extractToolCallIdFromContext(ctx: unknown): string | undefined {
-  if (!isRecord(ctx)) return undefined;
-  const direct = readStringProp(ctx, 'toolCallId');
-  if (direct) return direct;
-  const options = ctx.options;
-  if (isRecord(options)) {
-    const fromOptions = readStringProp(options, 'toolCallId');
-    if (fromOptions) return fromOptions;
-  }
-  return undefined;
-}
-
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) {
@@ -767,78 +625,12 @@ async function readStdin(): Promise<string> {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-function toMastraMcpServers(
-  mcpServers: Record<string, SerializableMcpServer>,
-): Record<string, MastraMCPServerDefinition> {
-  const servers: Record<string, MastraMCPServerDefinition> = {};
-
-  for (const [name, server] of Object.entries(mcpServers)) {
-    if (server.transport === 'stdio') {
-      servers[name] = {
-        command: server.command,
-        args: server.args,
-        ...(server.env ? { env: server.env } : {}),
-        cwd: process.cwd(),
-      };
-      continue;
-    }
-
-    const headers = server.headers;
-    servers[name] = {
-      url: new URL(server.url),
-      ...(headers
-        ? {
-            requestInit: { headers },
-            eventSourceInit: {
-              fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-                const requestHeaders = new Headers(init?.headers);
-                for (const [key, value] of Object.entries(headers)) {
-                  requestHeaders.set(key, value);
-                }
-                return fetch(input, {
-                  ...init,
-                  headers: requestHeaders,
-                });
-              },
-            },
-          }
-        : {}),
-    };
-  }
-
-  return servers;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {
   return isRecord(value) && Object.values(value).every((entry) => typeof entry === 'string');
-}
-
-function isSerializableMcpServer(value: unknown): value is SerializableMcpServer {
-  if (!isRecord(value) || typeof value.transport !== 'string') {
-    return false;
-  }
-
-  if (value.transport === 'stdio') {
-    return (
-      typeof value.command === 'string' &&
-      Array.isArray(value.args) &&
-      value.args.every((entry) => typeof entry === 'string') &&
-      (value.env === undefined || isStringRecord(value.env))
-    );
-  }
-
-  if (value.transport === 'http' || value.transport === 'sse') {
-    return (
-      typeof value.url === 'string' &&
-      (value.headers === undefined || isStringRecord(value.headers))
-    );
-  }
-
-  return false;
 }
 
 function isWrapperInput(value: unknown): value is WrapperInput {

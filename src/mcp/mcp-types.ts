@@ -82,6 +82,23 @@ export interface McpServerConfig {
    * Defaults to 60 tokens per minute if not specified.
    */
   rateLimit?: McpRateLimitConfig;
+
+  /**
+   * Per-server MCP request timeout in milliseconds. Covers `listTools` and
+   * individual `callTool` operations. Integer >= 1000; when omitted the
+   * provider's default applies (Mastra default: 60,000 ms). Talon runtime
+   * metadata only — never sent to the MCP server as a header or auth value.
+   */
+  timeoutMs?: number;
+
+  /**
+   * Per-server cap, in characters, on stringified tool results before they
+   * enter message history. Integer >= 0; `0` disables excerpting for this
+   * server. When omitted, the provider-level `toolOutputCap` fallback (or
+   * the provider default) applies. Talon runtime metadata only — never sent
+   * to the MCP server as a header or auth value.
+   */
+  toolOutputCap?: number;
 }
 
 // ---------------------------------------------------------------------------

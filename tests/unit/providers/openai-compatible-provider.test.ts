@@ -110,14 +110,30 @@ describe('OpenAiCompatibleProvider', () => {
     const result = provider.prepareBackgroundInvocation({
       prompt: 'hi',
       systemPrompt: 's',
-      mcpServers: {},
+      mcpServers: {
+        remoteDocs: {
+          transport: 'http',
+          url: 'https://mcp.example.test',
+          toolOutputCap: 0,
+          timeoutMs: 180_000,
+        },
+      },
       cwd: '/tmp',
       timeoutMs: 10_000,
       model: 'qwen2.5-coder:7b',
     });
     expect(result.isOk()).toBe(true);
     const payload = JSON.parse(result._unsafeUnwrap().stdin) as Record<string, unknown>;
+    // Provider-level cap must be forwarded independently of any per-server
+    // limit; the per-server cap of 0 (disable) is preserved as-is and does
+    // not mask or replace the provider cap.
     expect(payload.toolOutputCap).toBe(2048);
+    expect(payload['mcpServers']).toMatchObject({
+      remoteDocs: {
+        toolOutputCap: 0,
+        timeoutMs: 180_000,
+      },
+    });
   });
 
   it('wraps options.providerOptions under the configured providerId', () => {
@@ -499,11 +515,15 @@ describe('OpenAiCompatibleProvider', () => {
           command: 'node',
           args: ['dist/tools/host-tools-mcp-server.js'],
           env: { TALOND_SOCKET: '/tmp/talond.sock' },
+          timeoutMs: 180_000,
+          toolOutputCap: 12_000,
         },
         remoteDocs: {
           transport: 'http',
           url: 'https://mcp.example.test',
           headers: { Authorization: 'Bearer test-token' },
+          toolOutputCap: 0,
+          timeoutMs: 1_000,
         },
         sseFeed: {
           transport: 'sse',
@@ -564,11 +584,15 @@ describe('OpenAiCompatibleProvider', () => {
         command: 'node',
         args: ['dist/tools/host-tools-mcp-server.js'],
         env: { TALOND_SOCKET: '/tmp/talond.sock' },
+        timeoutMs: 180_000,
+        toolOutputCap: 12_000,
       },
       remoteDocs: {
         transport: 'http',
         url: 'https://mcp.example.test',
         headers: { Authorization: 'Bearer test-token' },
+        toolOutputCap: 0,
+        timeoutMs: 1_000,
       },
       sseFeed: {
         transport: 'sse',

@@ -387,6 +387,66 @@ cached credentials are bound to both.
 Talon expands MCP header/stdio env references once and rejects resulting
 values that still look like provider environment-variable syntax.
 
+#### MCP request timeout and tool-output cap
+
+When an MCP server returns large results or makes slow calls, set per-server
+limits to keep the agent's context under control. Both keys live under
+`config` in the skill's MCP JSON (mounted under `/skills`): add
+`"timeoutMs": <integer ≥ 1000>` and `"toolOutputCap": <integer ≥ 0>`, and
+`talonctl add-mcp` accepts the same values as `--timeout-ms` /
+`--tool-output-cap` flags:
+
+```bash
+talonctl add-mcp --skill work-search --name glean --transport http \
+  --url https://search.example.com/mcp --auth oauth2 \
+  --timeout-ms 180000 --tool-output-cap 12000
+```
+
+- `timeoutMs` (integer ≥ 1000): per-MCP-request timeout. Omitted → Mastra's
+  60 000 ms default. The outer query timeout still wins.
+- `toolOutputCap` (integer ≥ 0): caps a tool result before it enters message
+  history. `0` disables excerpting for that server only. Omitted →
+  provider-level `toolOutputCap` or 4 000. Precedence: server > provider >
+  4 000; provider-level `0` disables only the fallback — an explicit positive
+  per-server cap still applies.
+
+Provider compatibility: only the Mastra / OpenAI-compatible provider honors
+these limits; native Claude, Gemini, and Codex CLI runs omit the metadata, so
+the limits have no effect there. The caps bound MCP model-history injection,
+not network bytes: when any effective MCP cap is positive, MCP results (also
+zero-cap servers) stay in a run-local in-memory store retrievable via
+`fetch_tool_output` in up to 8 000 content-character slices (framing
+additional) when available — a discovered MCP tool that already owns that
+reserved name takes it and the synthetic recovery is skipped; with all
+effective MCP caps at `0` no wrapper/recovery is injected. Built-in
+file/shell tools are unchanged.
+
+For an existing server, edit only the two numeric keys under `config` in the
+mounted skill JSON directly (preserving name/URL/transport/headers/env/auth)
+— `add-mcp` rejects duplicate names. Specifically for Glean: the repository
+definition (`skills/glean/mcp/glean.json`) pre-sets `timeoutMs: 180000` /
+`toolOutputCap: 12000`, but that file is git-ignored and NOT packaged in the
+Docker image or either starter bundle; rebuilding the image does not update a
+Glean JSON you already copied into your mounted `skills/` tree. Add or replace
+the two keys under `config` in your existing copy (generic URL, preserve your
+real URL/auth):
+
+```json
+{
+  "name": "glean",
+  "config": {
+    "name": "glean",
+    "transport": "http",
+    "url": "https://search.example.com/mcp",
+    "timeoutMs": 180000,
+    "toolOutputCap": 12000
+  }
+}
+```
+
+Until packaging bundles the Glean skill, any release claiming bundled Glean
+limit defaults is a release blocker.
+
 #### Subscription-backed sub-agents
 
 Only offer this when the user explicitly wants a small, bounded sub-agent task

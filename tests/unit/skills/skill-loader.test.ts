@@ -582,6 +582,173 @@ describe('SkillLoader', () => {
   });
 
   // -------------------------------------------------------------------------
+  // loadFromDirectory — MCP server limit metadata (timeoutMs / toolOutputCap)
+  // -------------------------------------------------------------------------
+
+  describe('loadFromDirectory — MCP server limit metadata', () => {
+    async function expectLimitValidationFailure(
+      serverName: string,
+      config: Record<string, unknown>,
+      field: 'timeoutMs' | 'toolOutputCap',
+    ): Promise<void> {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeMinimalManifest(skillDir);
+      const mcpDir = join(skillDir, 'mcp');
+      await mkdir(mcpDir);
+      await writeFile(
+        join(mcpDir, 'limited.json'),
+        JSON.stringify({ name: serverName, config }),
+        'utf-8',
+      );
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr()).toBeInstanceOf(SkillError);
+      expect(result._unsafeUnwrapErr().message).toMatch(/mcp server definition validation failed/i);
+      expect(result._unsafeUnwrapErr().message).toContain(`config.${field}`);
+    }
+
+    it('preserves valid timeoutMs and toolOutputCap for stdio, http, and sse at boundary values', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeMinimalManifest(skillDir);
+      const mcpDir = join(skillDir, 'mcp');
+      await mkdir(mcpDir);
+      await writeFile(join(mcpDir, 'a-stdio.json'), JSON.stringify({
+        name: 'a-stdio',
+        config: {
+          name: 'a-stdio',
+          transport: 'stdio',
+          command: 'node',
+          args: ['stdio.js'],
+          timeoutMs: 1000,
+          toolOutputCap: 0,
+        },
+      }), 'utf-8');
+      await writeFile(join(mcpDir, 'b-http.json'), JSON.stringify({
+        name: 'b-http',
+        config: {
+          name: 'b-http',
+          transport: 'http',
+          url: 'https://mcp.example.com/http',
+          timeoutMs: 180000,
+          toolOutputCap: 12000,
+        },
+      }), 'utf-8');
+      await writeFile(join(mcpDir, 'c-sse.json'), JSON.stringify({
+        name: 'c-sse',
+        config: {
+          name: 'c-sse',
+          transport: 'sse',
+          url: 'https://mcp.example.com/sse',
+          timeoutMs: 1000,
+          toolOutputCap: 0,
+        },
+      }), 'utf-8');
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isOk()).toBe(true);
+      const skill = result._unsafeUnwrap();
+      expect(skill.resolvedMcpServers).toHaveLength(3);
+      // Loaded metadata equals the input; no defaults are inserted.
+      expect(skill.resolvedMcpServers.map((def) => def.config)).toEqual([
+        {
+          name: 'a-stdio',
+          transport: 'stdio',
+          command: 'node',
+          args: ['stdio.js'],
+          timeoutMs: 1000,
+          toolOutputCap: 0,
+        },
+        {
+          name: 'b-http',
+          transport: 'http',
+          url: 'https://mcp.example.com/http',
+          timeoutMs: 180000,
+          toolOutputCap: 12000,
+        },
+        {
+          name: 'c-sse',
+          transport: 'sse',
+          url: 'https://mcp.example.com/sse',
+          timeoutMs: 1000,
+          toolOutputCap: 0,
+        },
+      ]);
+    });
+
+    it('keeps omitted limit fields absent from the loaded config', async () => {
+      const skillDir = await makeTmpDir(cleanup);
+      await writeMinimalManifest(skillDir);
+      const mcpDir = join(skillDir, 'mcp');
+      await mkdir(mcpDir);
+      await writeFile(join(mcpDir, 'plain.json'), mcpServerDefJson('plain'), 'utf-8');
+
+      const result = await loader.loadFromDirectory(skillDir);
+      expect(result.isOk()).toBe(true);
+      const skill = result._unsafeUnwrap();
+      expect(skill.resolvedMcpServers).toHaveLength(1);
+      expect(skill.resolvedMcpServers[0].config).not.toHaveProperty('timeoutMs');
+      expect(skill.resolvedMcpServers[0].config).not.toHaveProperty('toolOutputCap');
+    });
+
+    it('rejects timeoutMs below the 1000 ms lower bound', async () => {
+      await expectLimitValidationFailure(
+        'low-timeout',
+        { name: 'low-timeout', transport: 'stdio', command: 'node', timeoutMs: 500 },
+        'timeoutMs',
+      );
+    });
+
+    it('rejects a fractional timeoutMs', async () => {
+      await expectLimitValidationFailure(
+        'fractional-timeout',
+        { name: 'fractional-timeout', transport: 'stdio', command: 'node', timeoutMs: 1000.5 },
+        'timeoutMs',
+      );
+    });
+
+    it('rejects a negative timeoutMs', async () => {
+      await expectLimitValidationFailure(
+        'negative-timeout',
+        { name: 'negative-timeout', transport: 'stdio', command: 'node', timeoutMs: -100 },
+        'timeoutMs',
+      );
+    });
+
+    it('rejects a non-numeric timeoutMs', async () => {
+      await expectLimitValidationFailure(
+        'string-timeout',
+        { name: 'string-timeout', transport: 'stdio', command: 'node', timeoutMs: '1000' },
+        'timeoutMs',
+      );
+    });
+
+    it('rejects a negative toolOutputCap', async () => {
+      await expectLimitValidationFailure(
+        'negative-cap',
+        { name: 'negative-cap', transport: 'http', url: 'https://mcp.example.com/http', toolOutputCap: -1 },
+        'toolOutputCap',
+      );
+    });
+
+    it('rejects a fractional toolOutputCap', async () => {
+      await expectLimitValidationFailure(
+        'fractional-cap',
+        { name: 'fractional-cap', transport: 'http', url: 'https://mcp.example.com/http', toolOutputCap: 1.5 },
+        'toolOutputCap',
+      );
+    });
+
+    it('rejects a non-numeric toolOutputCap', async () => {
+      await expectLimitValidationFailure(
+        'string-cap',
+        { name: 'string-cap', transport: 'http', url: 'https://mcp.example.com/http', toolOutputCap: '0' },
+        'toolOutputCap',
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // loadFromDirectory — migrations
   // -------------------------------------------------------------------------
 

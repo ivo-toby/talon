@@ -175,6 +175,8 @@ const McpServerConfigSchema = z.object({
   allowedTools: z.array(z.string()).optional(),
   credentialScope: z.string().optional(),
   rateLimit: McpRateLimitSchema.optional(),
+  timeoutMs: z.number().int().min(1000).optional(),
+  toolOutputCap: z.number().int().min(0).optional(),
 }).superRefine((server, context) => {
   if (server.auth && server.transport !== 'http' && server.transport !== 'sse') {
     context.addIssue({

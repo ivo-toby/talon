@@ -33,6 +33,10 @@ export interface CanonicalMcpStdioServer {
   command: string;
   args: string[];
   env?: Record<string, string>;
+  /** Per-server MCP request timeout in milliseconds (runtime metadata, never sent to the server). */
+  timeoutMs?: number;
+  /** Per-server tool-output excerpt cap in characters; `0` disables excerpting (runtime metadata). */
+  toolOutputCap?: number;
 }
 
 export interface CanonicalMcpHttpServer {
@@ -47,6 +51,10 @@ export interface CanonicalMcpHttpServer {
    * require touching every provider.
    */
   auth?: McpAuthSpec;
+  /** Per-server MCP request timeout in milliseconds (runtime metadata, never sent to the server). */
+  timeoutMs?: number;
+  /** Per-server tool-output excerpt cap in characters; `0` disables excerpting (runtime metadata). */
+  toolOutputCap?: number;
 }
 
 /**
