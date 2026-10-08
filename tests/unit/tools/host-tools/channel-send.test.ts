@@ -938,9 +938,14 @@ describe('ChannelSendHandler — partial delivery', () => {
     const { ChannelPartialDeliveryError } = await import('../../../../src/core/errors/error-types.js');
     const connector = makeConnector(err(new ChannelPartialDeliveryError('Telegram sendDocument failed (429)', true, 1)));
     const messageRepo = makeMessageRepo();
+    const threadRepo = makeThreadRepo();
+    threadRepo.findByExternalId = vi.fn().mockReturnValue(ok({
+      id: 'thread-001', channel_id: 'chan-001', external_id: 'ext-001',
+      metadata: '{}', created_at: 0, updated_at: 0,
+    }));
     const handler = new ChannelSendHandler({
       channelRegistry: makeRegistry(connector),
-      threadRepository: makeThreadRepo(),
+      threadRepository: threadRepo,
       channelRepository: makeChannelRepo(),
       messageRepository: messageRepo,
       logger: makeLogger(),
