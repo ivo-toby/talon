@@ -14,10 +14,8 @@ Leaving it empty selects `default`. The instance setting selects one workspace;
 it does not start additional Talon daemons. Existing workspace configuration
 and skill definitions are reused without copying files.
 
-The initial workspace configuration is created only when `talond.yaml` is
-absent. Normal restarts and upgrades retain existing state and settings.
-Changing `storage_path` does not relocate existing files; move the workspace
-and database yourself after making a backup.
+The add-on configuration fields for model and Telegram are **bootstrap defaults**:\nthey are used only when creating a new `talond.yaml`. After the first start,\nedit `talond.yaml` in the private add-on terminal (`$TALON_WORKSPACE`) to\nchange the model, credentials, channels or bindings. Changes to these Home\nAssistant option fields will not overwrite an existing workspace. Normal\nrestarts and upgrades retain existing state and settings.\n\nEach named workspace receives its own `state` directory, SQLite database,\nthreads and IPC. For compatibility, the original `default` workspace continues\nusing legacy `/data/talon/state` if it already exists. The `instance` setting\n**selects** a workspace; this add-on still runs one daemon at a time.\n\nIf `talond.yaml` is invalid, the daemon stops but the ingress terminal stays\navailable for editing the private configuration and restarting the add-on.
+Changing `storage_path` does not relocate existing files. Make a backup before\nany migration and update the absolute `storage.path`, `dataDir` and\n`systemPromptFile` paths in the moved `talond.yaml`. The add-on's CLI IPC link\nis resolved from the effective configured `dataDir`; ensure the chosen directory\nis inside private `/data`.
 
 ## Terminal
 
