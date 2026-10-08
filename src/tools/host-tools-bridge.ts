@@ -385,6 +385,23 @@ export class HostToolsBridge {
             return toolResult;
           }
 
+          // Sending text does not grant network access to fetch attachment URLs.
+          // Require a separate explicit allow capability; approval-only is not
+          // sufficient for this non-interactive host-side fetch path.
+          if (normalizedTool === 'channel.send' &&
+              Array.isArray(args['attachments']) && args['attachments'].length > 0 &&
+              !resolvedCaps.allow.includes('channel.send:attachments') &&
+              !resolvedCaps.allow.includes('channel.send:*')) {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: 'channel.send: attachments require channel.send:attachments capability',
+            };
+            toolObservation.update({ output: toolResult, level: 'ERROR', statusMessage: toolResult.error });
+            return toolResult;
+          }
+
           let timeoutId: ReturnType<typeof setTimeout> | undefined;
           const requestTimeoutMs = getHostToolRequestTimeoutMs(normalizedTool, args);
 
