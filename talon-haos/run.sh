@@ -73,6 +73,13 @@ case "$STATE_DIR" in
   /data/*) ;;
   *) echo "[talon] dataDir must be inside /data" >&2; exit 1 ;;
 esac
+# Validate absolute paths before starting daemon; preserve recovery terminal.
+CONFIG_VALID=1
+if [ -f "$CONFIG_FILE" ]; then
+  if ! node /usr/local/lib/talon-check-config.cjs "$CONFIG_FILE" "$WORKSPACE" "$STATE_DIR"; then
+    CONFIG_VALID=0
+  fi
+fi
 IPC_DIR="$STATE_DIR/ipc/daemon"
 mkdir -p "$STATE_DIR/ipc"
 if [ -L "$IPC_DIR" ]; then
@@ -272,7 +279,7 @@ cleanup() {
   trap - INT TERM EXIT
   set +e
   if [ -n "${DAEMON_PID:-}" ]; then
-    kill "$DAEMON_PID" 2>/dev/null || true
+    kill -TERM "-$DAEMON_PID" 2>/dev/null || true
     # Wait for talond to drain queued work, stop connectors and close SQLite.
     wait "$DAEMON_PID" 2>/dev/null || true
     DAEMON_PID=""
@@ -304,14 +311,14 @@ TTYD_PID=$!
 node /usr/local/lib/talon-ingress-proxy.cjs &
 PROXY_PID=$!
 
-if [ ! -f "$CONFIG_FILE" ]; then
+if [ ! -f "$CONFIG_FILE" ] || [ "$CONFIG_VALID" -ne 1 ]; then
   echo "[talon] Recovery terminal available. Create $CONFIG_FILE and restart."
   wait "$TTYD_PID"
   exit $?
 fi
 
 echo "[talon] Starting Talon daemon..."
-runuser -u talond -- node /opt/talond/dist/index.js --config "$CONFIG_FILE" &
+setsid runuser -u talond -- node /opt/talond/dist/index.js --config "$CONFIG_FILE" &
 DAEMON_PID=$!
 
 set +e
