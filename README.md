@@ -2360,7 +2360,7 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 | Tool                  | Purpose                                                                  |
 | --------------------- | ------------------------------------------------------------------------ |
 | `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting; CLI-created schedules must pass it or use `channel_list` / `channel_broadcast`) |
+| `channel_send`        | Send messages to channel connectors; optional `attachments` are supported only on Telegram and require separate permission and allowed download origins. Supports `externalChatId` for explicit targeting. |
 | `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`) |
 | `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
 | `persona_send`        | Submit a delegated A2A task to another persona                           |
