@@ -17,8 +17,18 @@ import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-
 import type { Result } from '../../../core/types/result.js';
 import { err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
-import type { EmailConfig, ParsedEmail, SmtpSendOptions } from './email-types.js';
+import type {
+  EmailConfig,
+  ImapClient,
+  ParsedEmail,
+  SmtpSendOptions,
+  SmtpTransport,
+} from './email-types.js';
 import { markdownToHtml } from './email-format.js';
+import { createImapFlowClient } from './email-imap-client.js';
+import { createNodemailerTransport } from './email-smtp-transport.js';
+
+export type { ImapClient, SmtpTransport } from './email-types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,87 +78,112 @@ export function decodeThreadId(
 }
 
 // ---------------------------------------------------------------------------
-// SMTP transport abstraction (injectable for testing)
+// Thread helpers
 // ---------------------------------------------------------------------------
 
+/** Maximum number of thread reply-metadata entries kept in memory. */
+const MAX_THREAD_META_ENTRIES = 500;
+
 /**
- * Minimal SMTP transport interface.
- * Injected into the connector so unit tests can replace it without a real
- * SMTP connection.
+ * Return the thread anchor (root Message-ID) for an inbound email.
+ * The first entry of `References` is the root of the conversation; falls back
+ * to `In-Reply-To`, then the message's own Message-ID.
  */
-export interface SmtpTransport {
-  /**
-   * Send an email.
-   *
-   * @param from    - Sender address.
-   * @param options - The message payload.
-   * @returns A Result indicating success or failure.
-   */
-  send(from: string, options: SmtpSendOptions): Promise<Result<void, ChannelError>>;
+function threadRootOf(email: ParsedEmail): string {
+  const firstReference = email.references?.trim().split(/\s+/)[0];
+  if (firstReference) return firstReference;
+  return email.inReplyTo || email.messageId;
 }
 
-// ---------------------------------------------------------------------------
-// IMAP transport abstraction (injectable for testing)
-// ---------------------------------------------------------------------------
-
-/**
- * Minimal IMAP client interface.
- * Injected into the connector so unit tests can replace it without a real
- * IMAP connection.
- */
-export interface ImapClient {
-  /**
-   * Fetch unseen messages from the mailbox.
-   *
-   * @param mailbox - The mailbox to poll (e.g. "INBOX").
-   * @returns An array of parsed emails.
-   */
-  fetchUnseen(mailbox: string): Promise<ParsedEmail[]>;
+/** Wrap a Message-ID in exactly one pair of angle brackets. */
+function bracketId(messageId: string): string {
+  return `<${messageId.replace(/^<+|>+$/g, '')}>`;
 }
 
-// ---------------------------------------------------------------------------
-// Default SMTP / IMAP factory functions (real implementations using fetch)
-// ---------------------------------------------------------------------------
+/** Matches an optional leading ARC instance tag, e.g. "i=1; ". */
+const ARC_INSTANCE_TAG = /^\s*i=\d+\s*;\s*/i;
 
 /**
- * Build a production SMTP transport that sends email via an SMTP-over-HTTP
- * relay endpoint.
+ * Extract the authserv-id from one Authentication-Results (or ARC-AR) value,
+ * normalised for comparison: optional ARC instance tag removed, the first
+ * token before `;` taken, any trailing version number dropped, lower-cased and
+ * without a trailing dot.
+ */
+function authServIdOf(value: string): string {
+  const withoutInstance = value.replace(ARC_INSTANCE_TAG, '');
+  const idToken = withoutInstance.split(';')[0].trim().split(/\s+/)[0] ?? '';
+  return idToken.toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * Decide whether a message passed DMARC as attested by the trusted mail provider.
  *
- * In a real deployment this would use nodemailer or a similar library.
- * Here we provide a minimal HTTP-based implementation that calls out to a
- * configurable HTTP SMTP relay so that the connector remains dependency-free.
- * The connector itself delegates to the injected `SmtpTransport`, so callers
- * can inject a nodemailer-based transport in production.
+ * Only values whose authserv-id equals `trustedAuthServId` are considered; all
+ * others are ignored because the sender can forge them. The first trusted value
+ * decides: it must report `dmarc=pass` and its `header.from` must equal the
+ * sender's domain. Fails closed on every missing input.
+ *
+ * @param results            - Authentication-Results values (AR headers, then ARC-AR headers).
+ * @param trustedAuthServId  - The authserv-id of the receiving provider, e.g. "mx.kpnmail.nl".
+ * @param senderAddress      - The sender's address, used for the header.from alignment check.
  */
-export function createDefaultSmtpTransport(_config: EmailConfig): SmtpTransport {
-  // Default implementation: minimal stub that always fails with a clear message
-  // indicating that a real transport must be injected.  This avoids a hard
-  // dependency on nodemailer while still providing a usable interface.
-  return {
-    send(_from: string, _options: SmtpSendOptions): Promise<Result<void, ChannelError>> {
-      return Promise.resolve(
-        err(
-          new ChannelError(
-            'EmailConnector: no SMTP transport provided — inject a SmtpTransport via options.smtpTransport',
-          ),
-        ),
-      );
-    },
-  };
+export function hasDmarcPass(
+  results: string[] | undefined,
+  trustedAuthServId: string | undefined,
+  senderAddress: string,
+): boolean {
+  if (!results || results.length === 0) return false;
+  const trusted = trustedAuthServId?.trim().toLowerCase().replace(/\.$/, '');
+  if (!trusted) return false;
+  const senderDomain = senderAddress.split('@')[1]?.trim().toLowerCase();
+  if (!senderDomain) return false;
+
+  for (const value of results) {
+    if (authServIdOf(value) !== trusted) continue;
+    // First trusted value decides; do not look at lower values.
+    if (!/\bdmarc=pass\b/i.test(value)) return false;
+    const headerFrom = /\bheader\.from=([^\s;]+)/i.exec(value)?.[1]?.toLowerCase();
+    return headerFrom === senderDomain;
+  }
+  return false;
+}
+
+/** Per-thread reply metadata used to build subject and threading headers. */
+interface ThreadReplyMeta {
+  /** Subject of the most recent inbound message in the thread. */
+  subject: string;
+  /** Bracketed Message-ID of the most recent inbound message. */
+  lastMessageId: string;
+  /** Bracketed, space-separated References chain for the thread. */
+  references: string;
+}
+
+// ---------------------------------------------------------------------------
+// Default SMTP / IMAP factory functions (production implementations)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the production SMTP transport (nodemailer, STARTTLS or implicit TLS).
+ *
+ * The connector delegates to the returned `SmtpTransport`; tests can inject a
+ * replacement via `EmailConnectorOptions.smtpTransport`.
+ *
+ * @param config - Email configuration (SMTP section is used).
+ * @returns An SMTP transport backed by nodemailer.
+ */
+export function createDefaultSmtpTransport(config: EmailConfig): SmtpTransport {
+  return createNodemailerTransport(config);
 }
 
 /**
- * Build a production IMAP client.
+ * Build the production IMAP client (imapflow, poll-by-connect-fetch-logout).
  *
- * Same rationale as the SMTP transport — provides a stub that callers replace
- * with a real IMAP implementation in production.
+ * @param config - Email configuration (IMAP section is used).
+ * @param logger - Optional logger for connection-level diagnostics.
+ * @returns An IMAP client that fetches unseen messages on each call.
  */
-export function createDefaultImapClient(_config: EmailConfig): ImapClient {
-  return {
-    fetchUnseen(_mailbox: string): Promise<ParsedEmail[]> {
-      return Promise.resolve([]);
-    },
-  };
+export function createDefaultImapClient(config: EmailConfig, logger?: pino.Logger): ImapClient {
+  return createImapFlowClient(config, logger);
 }
 
 // ---------------------------------------------------------------------------
@@ -159,9 +194,9 @@ export function createDefaultImapClient(_config: EmailConfig): ImapClient {
  * Options for constructing an EmailConnector.
  */
 export interface EmailConnectorOptions {
-  /** Inject a custom SMTP transport (e.g. nodemailer wrapper). */
+  /** Inject a custom SMTP transport (defaults to the nodemailer-backed transport). */
   smtpTransport?: SmtpTransport;
-  /** Inject a custom IMAP client (e.g. imap-simple wrapper). */
+  /** Inject a custom IMAP client (defaults to the imapflow-backed client). */
   imapClient?: ImapClient;
 }
 
@@ -192,6 +227,8 @@ export class EmailConnector implements ChannelConnector {
 
   private readonly smtpTransport: SmtpTransport;
   private readonly imapClient: ImapClient;
+  /** Reply metadata keyed by externalThreadId (bounded to MAX_THREAD_META_ENTRIES). */
+  private readonly threadMeta = new Map<string, ThreadReplyMeta>();
 
   constructor(
     private readonly config: EmailConfig,
@@ -201,7 +238,7 @@ export class EmailConnector implements ChannelConnector {
   ) {
     this.name = channelName;
     this.smtpTransport = options.smtpTransport ?? createDefaultSmtpTransport(config);
-    this.imapClient = options.imapClient ?? createDefaultImapClient(config);
+    this.imapClient = options.imapClient ?? createDefaultImapClient(config, logger);
   }
 
   // ---------------------------------------------------------------------------
@@ -278,13 +315,14 @@ export class EmailConnector implements ChannelConnector {
 
     const { address, messageId } = decoded;
     const html = this.format(output.body);
+    const meta = this.threadMeta.get(externalThreadId);
 
     const sendOptions: SmtpSendOptions = {
       to: address,
-      subject: 'Re: message', // Default subject for replies
+      subject: replySubject(meta?.subject),
       html,
-      inReplyTo: `<${messageId}>`,
-      references: `<${messageId}>`,
+      inReplyTo: meta?.lastMessageId ?? bracketId(messageId),
+      references: meta?.references ?? bracketId(messageId),
     };
 
     try {
@@ -394,10 +432,23 @@ export class EmailConnector implements ChannelConnector {
       return;
     }
 
-    // Determine the thread ID from In-Reply-To / References if this is a reply,
-    // otherwise use the message's own Message-ID as the thread anchor.
-    const threadAnchorId = email.inReplyTo ?? email.messageId;
-    const externalThreadId = encodeThreadId(senderAddress, threadAnchorId);
+    // Enforce DMARC alignment if configured. The From header is trivially forged,
+    // so only trust a dmarc=pass result written by the configured provider.
+    if (
+      this.config.requireDmarcPass &&
+      !hasDmarcPass(email.authenticationResults, this.config.trustedAuthServId, senderAddress)
+    ) {
+      this.logger.warn(
+        { channelName: this.name, sender: senderAddress },
+        'email failed DMARC check (requireDmarcPass), dropping',
+      );
+      return;
+    }
+
+    // The thread anchor is the root of the conversation so that every reply
+    // in a chain maps to the same externalThreadId.
+    const externalThreadId = encodeThreadId(senderAddress, threadRootOf(email));
+    this.rememberThread(externalThreadId, email);
 
     // Use the Message-ID as the idempotency key (stripped of angle brackets).
     const idempotencyKey = email.messageId.replace(/^<|>$/g, '');
@@ -436,6 +487,31 @@ export class EmailConnector implements ChannelConnector {
   // ---------------------------------------------------------------------------
 
   /**
+   * Record reply metadata for an accepted inbound email so that outbound replies
+   * carry a matching subject and In-Reply-To / References chain.
+   * The map is bounded: the oldest entry is evicted when the limit is exceeded.
+   */
+  private rememberThread(externalThreadId: string, email: ParsedEmail): void {
+    const ownId = bracketId(email.messageId);
+    const chain = [...(email.references ?? '').trim().split(/\s+/), ownId]
+      .filter((id) => id.length > 0)
+      .map((id) => bracketId(id));
+    const references = [...new Set(chain)].join(' ');
+
+    // Re-insert so the most recently active thread is the newest entry.
+    this.threadMeta.delete(externalThreadId);
+    this.threadMeta.set(externalThreadId, {
+      subject: email.subject,
+      lastMessageId: ownId,
+      references,
+    });
+    if (this.threadMeta.size > MAX_THREAD_META_ENTRIES) {
+      const oldest = this.threadMeta.keys().next();
+      if (!oldest.done) this.threadMeta.delete(oldest.value);
+    }
+  }
+
+  /**
    * Sleep for `ms` milliseconds. Resolves early if the abort controller fires.
    */
   private abortableSleep(ms: number): Promise<void> {
@@ -456,6 +532,18 @@ export class EmailConnector implements ChannelConnector {
       }
     });
   }
+}
+
+/**
+ * Build the outbound reply subject from the inbound subject.
+ * Adds a `Re: ` prefix unless one is already present (no `Re: Re:`).
+ *
+ * @param inboundSubject - Subject of the message being replied to, if known.
+ */
+function replySubject(inboundSubject: string | undefined): string {
+  const trimmed = inboundSubject?.trim() ?? '';
+  if (!trimmed) return 'Re: message';
+  return /^re:\s/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
 }
 
 // ---------------------------------------------------------------------------

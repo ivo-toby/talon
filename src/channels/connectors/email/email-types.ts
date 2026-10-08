@@ -9,6 +9,9 @@
 // Configuration
 // ---------------------------------------------------------------------------
 
+import type { Result } from '../../../core/types/result.js';
+import type { ChannelError } from '../../../core/errors/error-types.js';
+
 /**
  * Configuration for an EmailConnector instance.
  */
@@ -58,6 +61,23 @@ export interface EmailConfig {
    * Defaults to "INBOX".
    */
   mailbox?: string;
+
+  /**
+   * When true, inbound mail is dropped unless the topmost `Authentication-Results`
+   * header contains `dmarc=pass`. This guards against forged From headers, since
+   * `allowedSenders` only inspects the (spoofable) From address.
+   * Defaults to false.
+   */
+  requireDmarcPass?: boolean;
+
+  /**
+   * The authserv-id your mail provider writes at the start of its
+   * `Authentication-Results` / `ARC-Authentication-Results` header, e.g.
+   * "mx.kpnmail.nl". Only header values carrying this id are trusted for the
+   * DMARC check; values with any other id are ignored (they may be forged by the
+   * sender). Required for `requireDmarcPass` to ever accept mail.
+   */
+  trustedAuthServId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,6 +110,42 @@ export interface ParsedEmail {
   references?: string;
   /** Unix epoch milliseconds when the message was received. */
   timestamp: number;
+  /**
+   * Values of all `Authentication-Results` headers (top to bottom), followed by
+   * the values of all `ARC-Authentication-Results` headers (top to bottom).
+   */
+  authenticationResults?: string[];
+}
+
+/**
+ * Minimal SMTP transport interface.
+ * Injected into the connector so unit tests can replace it without a real
+ * SMTP connection.
+ */
+export interface SmtpTransport {
+  /**
+   * Send an email.
+   *
+   * @param from    - Sender address.
+   * @param options - The message payload.
+   * @returns A Result indicating success or failure.
+   */
+  send(from: string, options: SmtpSendOptions): Promise<Result<void, ChannelError>>;
+}
+
+/**
+ * Minimal IMAP client interface.
+ * Injected into the connector so unit tests can replace it without a real
+ * IMAP connection.
+ */
+export interface ImapClient {
+  /**
+   * Fetch unseen messages from the mailbox.
+   *
+   * @param mailbox - The mailbox to poll (e.g. "INBOX").
+   * @returns An array of parsed emails.
+   */
+  fetchUnseen(mailbox: string): Promise<ParsedEmail[]>;
 }
 
 /**
