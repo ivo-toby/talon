@@ -107,6 +107,8 @@ export interface ChannelConnector {
   readonly type: string;
   /** Instance name from config, e.g. 'personal-telegram'. */
   readonly name: string;
+  /** Explicit outbound attachment support; absent means unsupported. */
+  readonly supportsAttachments?: boolean;
 
   /**
    * The resolved bot/service user ID for this connector instance.
