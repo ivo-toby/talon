@@ -192,6 +192,10 @@ export class ChannelSendHandler {
     // short-lived download URL.
     let resolvedAttachments: Attachment[] | undefined;
     if (attachments !== undefined) {
+      if (Array.isArray(attachments) && attachments.length > 0 && connector.supportsAttachments !== true) {
+        const msg = `channel.send: channel "${channelId}" does not support file attachments (currently Telegram only)`;
+        return { requestId, tool: 'channel.send', status: 'error', error: msg };
+      }
       if (!Array.isArray(attachments) || attachments.length > 10) {
         const msg = 'channel.send: attachments must be an array with at most 10 items';
         return { requestId, tool: 'channel.send', status: 'error', error: msg };
