@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import pino from 'pino';
-import { EmailConnector, encodeThreadId, decodeThreadId, extractAddress } from '../../../../../src/channels/connectors/email/email-connector.js';
+import { EmailConnector, encodeThreadId, decodeThreadId, extractAddress, hasDmarcPass } from '../../../../../src/channels/connectors/email/email-connector.js';
 import type { EmailConfig, ParsedEmail } from '../../../../../src/channels/connectors/email/email-types.js';
 import type { SmtpTransport, ImapClient, EmailConnectorOptions } from '../../../../../src/channels/connectors/email/email-connector.js';
 import type { InboundEvent } from '../../../../../src/channels/channel-types.js';
@@ -634,5 +634,338 @@ describe('EmailConnector onMessage()', () => {
     // Only the second handler should have been called.
     expect(received1).toHaveLength(0);
     expect(received2).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thread anchoring (root of References)
+// ---------------------------------------------------------------------------
+
+describe('EmailConnector thread anchoring', () => {
+  it('maps a reply-to-a-reply to the same externalThreadId as the first mail', async () => {
+    const connector = makeConnector({}, { smtpTransport: okSmtpTransport() });
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(
+      makeEmail({
+        messageId: '<first@example.com>',
+      }),
+    );
+    await connector.feedInbound(
+      makeEmail({
+        messageId: '<second@example.com>',
+        inReplyTo: '<first@example.com>',
+        references: '<first@example.com>',
+      }),
+    );
+    await connector.feedInbound(
+      makeEmail({
+        messageId: '<third@example.com>',
+        inReplyTo: '<second@example.com>',
+        references: '<first@example.com> <second@example.com>',
+      }),
+    );
+
+    expect(received.map((e) => e.externalThreadId)).toEqual([
+      'alice@example.com:first@example.com',
+      'alice@example.com:first@example.com',
+      'alice@example.com:first@example.com',
+    ]);
+  });
+
+  it('uses the first References entry (root), not In-Reply-To, as the anchor', async () => {
+    const connector = makeConnector();
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(
+      makeEmail({
+        messageId: '<c@example.com>',
+        inReplyTo: '<b@example.com>',
+        references: '<a@example.com> <b@example.com>',
+      }),
+    );
+
+    expect(received[0].externalThreadId).toBe('alice@example.com:a@example.com');
+  });
+
+  it('falls back to In-Reply-To when References is empty', async () => {
+    const connector = makeConnector();
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(
+      makeEmail({
+        messageId: '<c@example.com>',
+        inReplyTo: '<b@example.com>',
+        references: '   ',
+      }),
+    );
+
+    expect(received[0].externalThreadId).toBe('alice@example.com:b@example.com');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reply metadata: subject and In-Reply-To / References on send()
+// ---------------------------------------------------------------------------
+
+describe('EmailConnector reply metadata', () => {
+  async function sendReplyFor(
+    email: Partial<ParsedEmail>,
+  ): Promise<{ subject: string; inReplyTo: string; references: string }> {
+    const smtp = okSmtpTransport();
+    const connector = makeConnector({}, { smtpTransport: smtp });
+    connector.onMessage(async () => {});
+    await connector.feedInbound(makeEmail(email));
+    const threadId = encodeThreadId(
+      'alice@example.com',
+      email.references?.split(' ')[0] ??
+        email.inReplyTo ??
+        email.messageId ??
+        '<msg-001@example.com>',
+    );
+    await connector.send(threadId, { body: 'reply' });
+    const opts = (smtp.send as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
+      subject: string;
+      inReplyTo: string;
+      references: string;
+    };
+    return opts;
+  }
+
+  it('prefixes the inbound subject with "Re: "', async () => {
+    const opts = await sendReplyFor({ subject: 'Project status' });
+    expect(opts.subject).toBe('Re: Project status');
+  });
+
+  it('does not double the "Re:" prefix', async () => {
+    const opts = await sendReplyFor({ subject: 'RE: Project status' });
+    expect(opts.subject).toBe('RE: Project status');
+  });
+
+  it('falls back to "Re: message" when no inbound metadata is known', async () => {
+    const smtp = okSmtpTransport();
+    const connector = makeConnector({}, { smtpTransport: smtp });
+    await connector.send('alice@example.com:unknown@h', { body: 'hi' });
+    const opts = (smtp.send as ReturnType<typeof vi.fn>).mock.calls[0][1] as { subject: string };
+    expect(opts.subject).toBe('Re: message');
+  });
+
+  it('sets In-Reply-To to the latest inbound Message-ID and References to the full chain', async () => {
+    const smtp = okSmtpTransport();
+    const connector = makeConnector({}, { smtpTransport: smtp });
+    connector.onMessage(async () => {});
+
+    await connector.feedInbound(makeEmail({ messageId: '<first@example.com>' }));
+    await connector.feedInbound(
+      makeEmail({
+        messageId: '<second@example.com>',
+        inReplyTo: '<first@example.com>',
+        references: '<first@example.com>',
+      }),
+    );
+
+    await connector.send('alice@example.com:first@example.com', { body: 'reply' });
+
+    expect(smtp.send).toHaveBeenCalledWith(
+      'bot@example.com',
+      expect.objectContaining({
+        inReplyTo: '<second@example.com>',
+        references: '<first@example.com> <second@example.com>',
+      }),
+    );
+  });
+
+  it('keeps exactly one pair of angle brackets on every Message-ID header', async () => {
+    const smtp = okSmtpTransport();
+    const connector = makeConnector({}, { smtpTransport: smtp });
+    connector.onMessage(async () => {});
+
+    await connector.feedInbound(
+      makeEmail({
+        messageId: '<<bracketed@example.com>>',
+        references: '<root@example.com>  <<mid@example.com>>',
+      }),
+    );
+    await connector.send('alice@example.com:root@example.com', { body: 'reply' });
+
+    const opts = (smtp.send as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
+      inReplyTo: string;
+      references: string;
+    };
+    expect(opts.inReplyTo).toBe('<bracketed@example.com>');
+    expect(opts.references).toBe('<root@example.com> <mid@example.com> <bracketed@example.com>');
+  });
+
+  it('bounds the thread metadata map and evicts the oldest thread', async () => {
+    const smtp = okSmtpTransport();
+    const connector = makeConnector({}, { smtpTransport: smtp });
+    connector.onMessage(async () => {});
+
+    // Thread "first" is inserted before 500 newer threads, so it is evicted.
+    await connector.feedInbound(makeEmail({ messageId: '<first@example.com>', subject: 'Oldest' }));
+    for (let i = 0; i < 500; i++) {
+      await connector.feedInbound(
+        makeEmail({ messageId: `<t${i}@example.com>`, subject: `S${i}` }),
+      );
+    }
+
+    await connector.send('alice@example.com:first@example.com', { body: 'x' });
+    const evicted = (smtp.send as ReturnType<typeof vi.fn>).mock.calls[0][1] as {
+      subject: string;
+      inReplyTo: string;
+    };
+    expect(evicted.subject).toBe('Re: message');
+    expect(evicted.inReplyTo).toBe('<first@example.com>');
+
+    await connector.send('alice@example.com:t499@example.com', { body: 'y' });
+    const kept = (smtp.send as ReturnType<typeof vi.fn>).mock.calls[1][1] as { subject: string };
+    expect(kept.subject).toBe('Re: S499');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DMARC gate (requireDmarcPass)
+// ---------------------------------------------------------------------------
+
+/** Real-world KPN ARC-Authentication-Results shape (instance tag, trusted id). */
+const KPN_ARC_PASS =
+  'i=1; mx.kpnmail.nl; spf=pass smtp.mailfrom=alice@example.com; dkim=pass header.d=example.com; dmarc=pass header.from=example.com; arc=none';
+
+describe('hasDmarcPass()', () => {
+  const trusted = 'mx.kpnmail.nl';
+
+  it('accepts a trusted ARC header with dmarc=pass and matching header.from', () => {
+    expect(hasDmarcPass([KPN_ARC_PASS], trusted, 'alice@example.com')).toBe(true);
+  });
+
+  it('rejects when header.from is for another domain', () => {
+    expect(hasDmarcPass([KPN_ARC_PASS], trusted, 'alice@other.example')).toBe(false);
+  });
+
+  it('rejects dmarc=fail from the trusted id', () => {
+    const failed = KPN_ARC_PASS.replace('dmarc=pass', 'dmarc=fail');
+    expect(hasDmarcPass([failed], trusted, 'alice@example.com')).toBe(false);
+  });
+
+  it('ignores a dmarc=pass header from an untrusted authserv-id', () => {
+    const forged = 'i=1; evil.example; dmarc=pass header.from=example.com';
+    expect(hasDmarcPass([forged], trusted, 'alice@example.com')).toBe(false);
+  });
+
+  it('lets the trusted value decide over a forged header below it', () => {
+    const trustedFail = 'i=1; mx.kpnmail.nl; dmarc=fail header.from=example.com';
+    const forgedPass = 'evil.example; dmarc=pass header.from=example.com';
+    expect(hasDmarcPass([trustedFail, forgedPass], trusted, 'alice@example.com')).toBe(false);
+  });
+
+  it('rejects a forged header that only claims dmarc=pass (no trusted value)', () => {
+    const forged = 'evil.example; dmarc=pass header.from=example.com';
+    expect(hasDmarcPass([forged], trusted, 'alice@example.com')).toBe(false);
+  });
+
+  it('fails closed when trustedAuthServId is unset or empty', () => {
+    expect(hasDmarcPass([KPN_ARC_PASS], undefined, 'alice@example.com')).toBe(false);
+    expect(hasDmarcPass([KPN_ARC_PASS], '', 'alice@example.com')).toBe(false);
+  });
+
+  it('fails closed on empty results', () => {
+    expect(hasDmarcPass(undefined, trusted, 'alice@example.com')).toBe(false);
+    expect(hasDmarcPass([], trusted, 'alice@example.com')).toBe(false);
+  });
+
+  it('fails closed when the sender has no domain', () => {
+    expect(hasDmarcPass([KPN_ARC_PASS], trusted, 'alice')).toBe(false);
+  });
+
+  it('matches the authserv-id case-insensitively and ignoring a trailing dot', () => {
+    const value = 'i=1; MX.KPNMAIL.NL.; dmarc=pass header.from=example.com';
+    expect(hasDmarcPass([value], trusted, 'alice@example.com')).toBe(true);
+  });
+
+  it('accepts a plain Authentication-Results value (no i= tag) from the trusted id', () => {
+    const value = 'mx.kpnmail.nl; dkim=pass; dmarc=pass header.from=example.com';
+    expect(hasDmarcPass([value], trusted, 'alice@example.com')).toBe(true);
+  });
+
+  it('ignores a trailing version number after the authserv-id', () => {
+    const value = 'mx.kpnmail.nl 1; dmarc=pass header.from=example.com';
+    expect(hasDmarcPass([value], trusted, 'alice@example.com')).toBe(true);
+  });
+});
+
+describe('EmailConnector requireDmarcPass', () => {
+  const dmarcConfig = { requireDmarcPass: true, trustedAuthServId: 'mx.kpnmail.nl' };
+
+  it('dispatches mail with a trusted dmarc=pass result when requireDmarcPass is true', async () => {
+    const connector = makeConnector(dmarcConfig);
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(makeEmail({ authenticationResults: [KPN_ARC_PASS] }));
+
+    expect(received).toHaveLength(1);
+  });
+
+  it('drops mail whose trusted result is dmarc=fail', async () => {
+    const connector = makeConnector(dmarcConfig);
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(
+      makeEmail({
+        authenticationResults: [KPN_ARC_PASS.replace('dmarc=pass', 'dmarc=fail')],
+      }),
+    );
+
+    expect(received).toHaveLength(0);
+  });
+
+  it('drops mail with no authentication results (fail closed)', async () => {
+    const connector = makeConnector(dmarcConfig);
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(makeEmail());
+
+    expect(received).toHaveLength(0);
+  });
+
+  it('drops everything when requireDmarcPass is set without trustedAuthServId', async () => {
+    const connector = makeConnector({ requireDmarcPass: true });
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(makeEmail({ authenticationResults: [KPN_ARC_PASS] }));
+
+    expect(received).toHaveLength(0);
+  });
+
+  it('is off by default, so mail without DMARC results is dispatched', async () => {
+    const connector = makeConnector();
+    const received: InboundEvent[] = [];
+    connector.onMessage(async (e) => {
+      received.push(e);
+    });
+
+    await connector.feedInbound(makeEmail());
+
+    expect(received).toHaveLength(1);
   });
 });
