@@ -291,6 +291,26 @@ export class ChannelSendHandler {
   }
 
 
+  /**
+   * Restrict host-side downloads to explicitly configured origins. An empty
+   * allowlist fails closed, preserving the default-deny channel capability.
+   * This is an initial barrier, not a substitute for DNS/IP pinning.
+   */
+  private isAttachmentOriginAllowed(url: URL): boolean {
+    const configured = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+    if (!configured) return false;
+    return configured.split(',').some((entry) => {
+      try {
+        const candidate = new URL(entry.trim());
+        if (candidate.username || candidate.password || candidate.pathname !== '/' ||
+            candidate.search || candidate.hash) return false;
+        return candidate.origin === url.origin;
+      } catch {
+        return false;
+      }
+    });
+  }
+
   private async fetchAttachment(input: ChannelSendAttachmentArg): Promise<Attachment> {
     if (!input || typeof input.url !== 'string' || input.url.trim() === '') {
       throw new Error('attachment url is required');
@@ -303,6 +323,10 @@ export class ChannelSendHandler {
     }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       throw new Error('attachment url must use http or https');
+    }
+
+    if (url.username || url.password || !this.isAttachmentOriginAllowed(url)) {
+      throw new Error('attachment origin is not explicitly allowed');
     }
 
     const response = await fetch(url, {
