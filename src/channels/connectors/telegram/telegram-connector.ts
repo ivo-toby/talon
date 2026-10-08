@@ -242,7 +242,7 @@ export class TelegramConnector implements ChannelConnector {
     form.set('chat_id', externalThreadId);
     form.set(
       field,
-      new Blob([new Uint8Array(bytes)], { type: attachment.mimeType || 'application/octet-stream' }),
+      new Blob([bytes], { type: attachment.mimeType || 'application/octet-stream' }),
       attachment.filename,
     );
 
