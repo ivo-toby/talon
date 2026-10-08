@@ -541,6 +541,18 @@ function formatStandardIssues(issues: unknown[]): string {
 }
 
 function schemaToJsonSchema(value: unknown): Record<string, unknown> {
+  // MCP tools may expose a Standard JSON Schema wrapper rather than a plain
+  // JSON Schema object. Extract the declared input schema before falling back.
+  if (isRecord(value) && isRecord(value['~standard'])) {
+    const standard = value['~standard'];
+    if (isRecord(standard.jsonSchema) && typeof standard.jsonSchema.input === 'function') {
+      const schema = (standard.jsonSchema.input as (options: { target: string }) => unknown)(
+        { target: 'draft-07' },
+      );
+      return normalizeJsonSchema(schema);
+    }
+  }
+
   if (isRecord(value) && typeof value.toJSONSchema === 'function') {
     const jsonSchema = (value.toJSONSchema as () => unknown)();
     return normalizeJsonSchema(jsonSchema);
