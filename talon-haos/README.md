@@ -15,7 +15,8 @@ Run Talon in Home Assistant with a built-in management terminal.
 Add this repository to the Home Assistant add-on store, install **Talon**,
 and configure an OpenAI API key if creating a new default workspace.
 For existing workspaces, the existing `talond.yaml` is authoritative, including
-model and Telegram settings. Configure channels using the private terminal.
+model, channel and recipient settings. Secret API keys and bot tokens may stay
+in Home Assistant's password settings and be referenced as environment variables. Configure channels using the private terminal.
 
 The default storage root is `/data/talon`. The optional `storage_path` accepts
 another absolute path below private `/data`, such as `/data/assistant`.
