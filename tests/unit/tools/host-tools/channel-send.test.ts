@@ -933,6 +933,25 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
 });
 
 
+describe('ChannelSendHandler — partial delivery', () => {
+  it('returns a structured partial result instead of suggesting a full resend', async () => {
+    const { ChannelPartialDeliveryError } = await import('../../../../src/core/errors/error-types.js');
+    const connector = makeConnector(err(new ChannelPartialDeliveryError('Telegram sendDocument failed (429)', true, 1)));
+    const messageRepo = makeMessageRepo();
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository: makeThreadRepo(),
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      logger: makeLogger(),
+    });
+    const result = await handler.execute(makeArgs(), makeContext());
+    expect(result.status).toBe('error');
+    expect(result.result).toMatchObject({ partial: true, deliveredText: true, deliveredAttachments: 1, retryWholeBatch: false });
+    expect(messageRepo.insert).toHaveBeenCalled();
+  });
+});
+
 describe('ChannelSendHandler — file attachments', () => {
   it('rejects attachment downloads by default without an explicit origin allowlist', async () => {
     const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
