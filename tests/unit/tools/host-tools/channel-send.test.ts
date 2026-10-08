@@ -962,6 +962,39 @@ describe('ChannelSendHandler — inbound channel and recipient resolution', () =
     };
   }
 
+  it('prefers an existing channel literally named telegram over the inbound alias', async () => {
+    const { handler, connector, registry } = setup();
+    const main = { ...makeConnector(ok(undefined)), name: 'telegram', send: vi.fn().mockResolvedValue(ok(undefined)) };
+    vi.mocked(registry.get).mockImplementation((name: string) =>
+      name === 'telegram' ? main : name === 'my-telegram' ? connector : undefined);
+    const result = await handler.execute(makeArgs({ channelId: 'telegram' }), makeContext());
+    expect(result.status).toBe('success');
+    expect(result.result).toEqual({ channelId: 'telegram', sent: true });
+    expect(main.send).toHaveBeenCalledWith('chat-123', expect.anything());
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+
+  it('resolves a Slack provider-type alias against the inbound Slack channel', async () => {
+    const { handler, connector, registry, channelRepository } = setup('chat-123', 'slack');
+    vi.mocked(registry.get).mockImplementation((name: string) =>
+      name === 'my-telegram' ? connector : undefined);
+    const result = await handler.execute(makeArgs({ channelId: 'slack' }), makeContext());
+    expect(result.status).toBe('success');
+    expect(result.result).toEqual({ channelId: 'my-telegram', sent: true });
+    expect(connector.send).toHaveBeenCalledWith('chat-123', expect.anything());
+    expect(channelRepository.findById).toHaveBeenCalled();
+  });
+
+  it('never resolves provider-type aliases for explicit cross-chat recipients', async () => {
+    const { handler, connector, registry } = setup();
+    vi.mocked(registry.get).mockImplementation((name: string) =>
+      name === 'my-telegram' ? connector : undefined);
+    const result = await handler.execute(
+      makeArgs({ channelId: 'telegram', externalChatId: 'chat-456' }), makeContext());
+    expect(result.status).toBe('error');
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+
   it('maps the telegram provider alias to the registered inbound channel', async () => {
     const { handler, connector } = setup();
     const result = await handler.execute(makeArgs({ channelId: 'telegram' }), makeContext());
