@@ -44,3 +44,11 @@ talonctl reload
 
 The add-on does not mount Home Assistant's shared folders. Integrate external
 services and files through configured MCP servers and Talon permissions.
+
+## Moving private storage safely
+
+Changing `storage_path` selects a different private directory; it never copies or renames files. Stop the add-on and back up its `/data` contents first. Move the workspace, SQLite database and associated runtime state together, then update every absolute path in `talond.yaml` (`storage.path`, `dataDir`, and persona `systemPromptFile`). Reopen the add-on and inspect logs. If the configuration refers to the old directories, the add-on refuses to start the daemon but keeps its recovery terminal available; it does not delete or silently reuse the old database. The previous default state layout remains supported.
+
+## Shutdown
+
+On a Home Assistant stop or upgrade the launcher sends SIGTERM to the daemon process group and waits for shutdown to finish, with an add-on timeout of 60 seconds. The integration check asserts that the actual Talon process logs its clean shutdown. Outstanding AI calls and queued work can still exceed the allowed shutdown time; they are not guaranteed to finish before Home Assistant terminates the container.
