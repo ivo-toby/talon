@@ -43,7 +43,7 @@ export async function downloadAllowedAttachment(
     !isPublicAddress(address, family as 4 | 6))) {
     throw new Error('attachment hostname resolves to a non-public address');
   }
-  const pinned = addresses[0]!;
+  const pinned = addresses[0];
   const transport = url.protocol === 'https:' ? httpsRequest : httpRequest;
   return await new Promise((resolve, reject) => {
     const req = transport(url, {
@@ -51,7 +51,8 @@ export async function downloadAllowedAttachment(
       timeout: timeoutMs,
       headers: { accept: '*/*' },
       lookup: (_hostname, _options, cb) => cb(null, pinned.address, pinned.family),
-    }, async (res) => {
+    }, (res) => {
+      void (async () => {
       try {
         const status = res.statusCode ?? 0;
         if (status >= 300 && status < 400) {
@@ -67,7 +68,7 @@ export async function downloadAllowedAttachment(
           res.destroy();
           throw new Error(`attachment exceeds ${maxBytes} byte limit`);
         }
-        const chunks: Buffer[] = [];
+        const chunks: Uint8Array[] = [];
         let total = 0;
         for await (const part of res) {
           const chunk = Buffer.isBuffer(part) ? part : Buffer.from(part);
@@ -76,13 +77,14 @@ export async function downloadAllowedAttachment(
             res.destroy();
             throw new Error(`attachment exceeds ${maxBytes} byte limit`);
           }
-          chunks.push(chunk);
+          chunks.push(Uint8Array.from(chunk));
         }
         const contentType = res.headers['content-type'];
         resolve({ data: Buffer.concat(chunks, total), contentType: typeof contentType === 'string' ? contentType : undefined });
       } catch (error) {
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
+      })();
     });
     req.on('timeout', () => req.destroy(new Error('attachment download timed out')));
     req.on('error', reject);
