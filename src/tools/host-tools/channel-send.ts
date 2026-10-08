@@ -9,6 +9,7 @@
 import { randomUUID } from 'node:crypto';
 import type pino from 'pino';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
+import type { AgentOutput, Attachment } from '../../channels/channel-types.js';
 import type { ChannelRegistry } from '../../channels/channel-registry.js';
 import type { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
 import type { MessageRepository } from '../../core/database/repositories/message-repository.js';
@@ -44,6 +45,18 @@ export interface ChannelSendTool {
   readonly manifest: ToolManifest;
 }
 
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const ATTACHMENT_FETCH_TIMEOUT_MS = 60_000;
+
+export interface ChannelSendAttachmentArg {
+  /** HTTP(S) URL to fetch immediately before channel delivery. */
+  url: string;
+  /** Optional filename override. */
+  filename?: string;
+  /** Optional MIME type override. */
+  mimeType?: string;
+}
+
 /** Arguments accepted by the channel.send tool. */
 export interface ChannelSendArgs {
   /** Target channel identifier. */
@@ -61,6 +74,8 @@ export interface ChannelSendArgs {
    * and `channel.broadcast`.
    */
   externalChatId?: string;
+  /** Optional files to fetch and attach to the outbound message. */
+  attachments?: ChannelSendAttachmentArg[];
 }
 
 /** Execution context passed to every tool handler. */
@@ -141,7 +156,7 @@ export class ChannelSendHandler {
    */
   async execute(args: ChannelSendArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
-    const { channelId, content, replyTo } = args;
+    const { channelId, content, attachments, replyTo } = args;
 
     this.deps.logger.info(
       { requestId, runId: context.runId, threadId: context.threadId, personaId: context.personaId, channelId },
@@ -169,10 +184,37 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
-    // Build the AgentOutput and call send
-    const output = {
+    // Fetch requested attachments on the host. This keeps large file bytes out of
+    // the model/MCP transcript while still allowing an MCP server to hand Talon a
+    // short-lived download URL.
+    let resolvedAttachments: Attachment[] | undefined;
+    if (attachments !== undefined) {
+      if (!Array.isArray(attachments) || attachments.length > 10) {
+        const msg = 'channel.send: attachments must be an array with at most 10 items';
+        return { requestId, tool: 'channel.send', status: 'error', error: msg };
+      }
+      try {
+        resolvedAttachments = [];
+        for (const attachment of attachments) {
+          resolvedAttachments.push(await this.fetchAttachment(attachment));
+        }
+      } catch (attachmentErr) {
+        const msg =
+          attachmentErr instanceof Error
+            ? `channel.send: failed to fetch attachment — ${attachmentErr.message}`
+            : `channel.send: failed to fetch attachment — ${String(attachmentErr)}`;
+        this.deps.logger.warn({ requestId, channelId, attachmentCount: attachments.length }, msg);
+        return { requestId, tool: 'channel.send', status: 'error', error: msg };
+      }
+    }
+
+    // Build the AgentOutput and call send.
+    const output: AgentOutput = {
       body: content,
       ...(replyTo ? { metadata: { replyTo } } : {}),
+      ...(resolvedAttachments && resolvedAttachments.length > 0
+        ? { attachments: resolvedAttachments }
+        : {}),
     };
 
     // Resolve the thread's external_id (e.g. Telegram chat_id) from the DB.
@@ -246,6 +288,68 @@ export class ChannelSendHandler {
       status: 'success',
       result: { channelId, sent: true },
     };
+  }
+
+
+  private async fetchAttachment(input: ChannelSendAttachmentArg): Promise<Attachment> {
+    if (!input || typeof input.url !== 'string' || input.url.trim() === '') {
+      throw new Error('attachment url is required');
+    }
+    let url: URL;
+    try {
+      url = new URL(input.url);
+    } catch {
+      throw new Error('attachment url is invalid');
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error('attachment url must use http or https');
+    }
+
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS),
+      redirect: 'error',
+    });
+    if (!response.ok) {
+      throw new Error(`attachment download returned HTTP ${response.status}`);
+    }
+
+    const declaredLength = Number(response.headers.get('content-length') ?? '0');
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} byte limit`);
+    }
+
+    const data = Buffer.from(await response.arrayBuffer());
+    if (data.byteLength > MAX_ATTACHMENT_BYTES) {
+      throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} byte limit`);
+    }
+
+    const pathName = decodeURIComponent(url.pathname.split('/').pop() || '');
+    const filename =
+      typeof input.filename === 'string' && input.filename.trim()
+        ? input.filename.trim()
+        : pathName || 'attachment';
+    const responseMime = response.headers.get('content-type')?.split(';')[0]?.trim();
+    const inferredMime = this.inferMimeType(filename);
+    const mimeType =
+      typeof input.mimeType === 'string' && input.mimeType.trim()
+        ? input.mimeType.trim()
+        : responseMime && responseMime !== 'application/octet-stream'
+          ? responseMime
+          : inferredMime ?? responseMime ?? 'application/octet-stream';
+
+    return { filename, mimeType, data, size: data.byteLength };
+  }
+
+  private inferMimeType(filename: string): string | undefined {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    if (lower.endsWith('.mov')) return 'video/quicktime';
+    if (lower.endsWith('.webm')) return 'video/webm';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.pdf')) return 'application/pdf';
+    if (lower.endsWith('.txt')) return 'text/plain';
+    return undefined;
   }
 
   private persistOutboundMessage(input: {

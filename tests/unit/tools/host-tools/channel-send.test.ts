@@ -926,3 +926,39 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
     expect(messageRepo.insert).toHaveBeenCalled();
   });
 });
+
+
+describe('ChannelSendHandler — file attachments', () => {
+  it('downloads a file and passes its bytes to the channel connector', async () => {
+    const connector = makeConnector(ok(undefined));
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      headers: new Headers({ 'content-type': 'application/pdf' }),
+      arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
+    } as Response);
+    try {
+      const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const result = await handler.execute(makeArgs({ attachments: [{ url: 'https://files.example.test/report.pdf', filename: 'report.pdf' }] }), makeContext());
+      expect(result.status).toBe('success');
+      expect(connector.send).toHaveBeenCalledWith('ext-001', expect.objectContaining({
+        attachments: [expect.objectContaining({ filename: 'report.pdf', mimeType: 'application/pdf', data: Buffer.from([1, 2, 3]) })],
+      }));
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('rejects more than ten attachments before attempting a download', async () => {
+    const connector = makeConnector(ok(undefined));
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const result = await handler.execute(makeArgs({ attachments: Array.from({ length: 11 }, () => ({ url: 'https://files.example.test/report.pdf' })) }), makeContext());
+      expect(result.status).toBe('error');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(connector.send).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+});

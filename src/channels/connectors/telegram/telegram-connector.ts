@@ -6,6 +6,7 @@
  * types and Telegram Bot API payloads.
  */
 
+import { readFile } from 'node:fs/promises';
 import type pino from 'pino';
 import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
@@ -172,8 +173,24 @@ export class TelegramConnector implements ChannelConnector {
    * @param output            - Agent output to deliver.
    */
   async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
-    const text = this.format(output.body);
+    if (output.body.trim()) {
+      const messageResult = await this.sendText(externalThreadId, output.body);
+      if (messageResult.isErr()) return messageResult;
+    }
 
+    for (const attachment of output.attachments ?? []) {
+      const attachmentResult = await this.sendAttachment(externalThreadId, attachment);
+      if (attachmentResult.isErr()) return attachmentResult;
+    }
+
+    return ok(undefined);
+  }
+
+  private async sendText(
+    externalThreadId: string,
+    markdown: string,
+  ): Promise<Result<void, ChannelError>> {
+    const text = this.format(markdown);
     const url = this.apiUrl('sendMessage');
     const body = JSON.stringify({
       chat_id: externalThreadId,
@@ -195,13 +212,64 @@ export class TelegramConnector implements ChannelConnector {
       );
     }
 
+    return this.parseSendResponse(response, 'sendMessage');
+  }
+
+  private async sendAttachment(
+    externalThreadId: string,
+    attachment: NonNullable<AgentOutput['attachments']>[number],
+  ): Promise<Result<void, ChannelError>> {
+    let bytes: Buffer;
+    try {
+      bytes =
+        typeof attachment.data === 'string'
+          ? await readFile(attachment.data)
+          : attachment.data;
+    } catch (readErr) {
+      const cause = readErr instanceof Error ? readErr : undefined;
+      return err(
+        new ChannelError(
+          `Telegram attachment read failed for "${attachment.filename}": ${String(readErr)}`,
+          cause,
+        ),
+      );
+    }
+
+    const isVideo = attachment.mimeType.toLowerCase().startsWith('video/');
+    const method = isVideo ? 'sendVideo' : 'sendDocument';
+    const field = isVideo ? 'video' : 'document';
+    const form = new FormData();
+    form.set('chat_id', externalThreadId);
+    form.set(
+      field,
+      new Blob([new Uint8Array(bytes)], { type: attachment.mimeType || 'application/octet-stream' }),
+      attachment.filename,
+    );
+
+    let response: Response;
+    try {
+      response = await fetch(this.apiUrl(method), { method: 'POST', body: form });
+    } catch (fetchErr) {
+      const cause = fetchErr instanceof Error ? fetchErr : undefined;
+      return err(
+        new ChannelError(`Telegram ${method} network error: ${String(fetchErr)}`, cause),
+      );
+    }
+
+    return this.parseSendResponse(response, method);
+  }
+
+  private async parseSendResponse(
+    response: Response,
+    method: string,
+  ): Promise<Result<void, ChannelError>> {
     let data: TelegramSendResult;
     try {
       data = (await response.json()) as TelegramSendResult;
     } catch {
       return err(
         new ChannelError(
-          `Telegram sendMessage: could not parse response (HTTP ${response.status})`,
+          `Telegram ${method}: could not parse response (HTTP ${response.status})`,
         ),
       );
     }
@@ -209,7 +277,7 @@ export class TelegramConnector implements ChannelConnector {
     if (!data.ok) {
       const description = data.description ?? 'unknown error';
       const code = data.error_code ?? response.status;
-      return err(new ChannelError(`Telegram sendMessage failed (${code}): ${description}`));
+      return err(new ChannelError(`Telegram ${method} failed (${code}): ${description}`));
     }
 
     return ok(undefined);

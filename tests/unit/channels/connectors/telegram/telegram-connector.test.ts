@@ -642,3 +642,39 @@ describe('TelegramConnector', () => {
     });
   });
 });
+
+
+describe('TelegramConnector outbound attachments', () => {
+  it('sends video attachments with sendVideo after the text message', async () => {
+    const connector = new TelegramConnector(defaultConfig(), 'test-bot', silentLogger());
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(sendOkResponse()),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await connector.send('1234', {
+      body: 'Here is the clip',
+      attachments: [
+        {
+          filename: 'clip.mp4',
+          mimeType: 'video/mp4',
+          data: Buffer.from('video-bytes'),
+          size: 11,
+        },
+      ],
+    });
+
+    expect(result.isOk()).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(String(mockFetch.mock.calls[0][0])).toContain('sendMessage');
+    expect(String(mockFetch.mock.calls[1][0])).toContain('sendVideo');
+    const form = (mockFetch.mock.calls[1][1] as RequestInit).body as FormData;
+    expect(form.get('chat_id')).toBe('1234');
+    const video = form.get('video') as File;
+    expect(video.name).toBe('clip.mp4');
+
+    vi.restoreAllMocks();
+  });
+});

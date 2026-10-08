@@ -61,11 +61,14 @@ Sends a Markdown message to another Talon channel.
 | `channelId` | string | Required; this is the configured channel name |
 | `content` | string | Required Markdown body |
 | `replyTo` | string | Optional channel-specific thread or message ID |
+| `attachments` | array | Optional HTTP(S) file URLs with optional `filename` and `mimeType`; max 10 files |
 
 Notes:
 
 - The agent does not pass a thread ID directly; Talon resolves the current thread context for the target channel.
 - Output is converted to the target connector's native format automatically.
+- Attachment URLs are fetched by the Talon host immediately before delivery. Telegram sends `video/*` as video and other files as documents.
+- Each downloaded attachment is limited to 50 MiB; redirects are rejected.
 
 ---
 
