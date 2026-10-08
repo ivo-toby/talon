@@ -6,6 +6,7 @@ arch:
   - amd64
 startup: application
 boot: auto
+timeout: 60
 init: false
 ingress: true
 ingress_port: 7681
