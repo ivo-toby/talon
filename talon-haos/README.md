@@ -7,13 +7,15 @@ Run Talon in Home Assistant with a built-in management terminal.
 - One Talon daemon and management CLI in a single add-on
 - Private persistent configuration, workspace, and SQLite database
 - Optional storage location within the add-on's private data directory
-- Optional Telegram channel configuration
+- Channel and model settings managed directly in each private workspace
 - MCP integrations for external tools and files
 
 ## Installation
 
 Add this repository to the Home Assistant add-on store, install **Talon**,
-and configure your OpenAI API key. Telegram settings are optional.
+and configure an OpenAI API key if creating a new default workspace.
+For existing workspaces, the existing `talond.yaml` is authoritative, including
+model and Telegram settings. Configure channels using the private terminal.
 
 The default storage root is `/data/talon`. The optional `storage_path` accepts
 another absolute path below private `/data`, such as `/data/assistant`.
