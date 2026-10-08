@@ -209,7 +209,8 @@ fi
 ln -s "$IPC_DIR" "$CLI_IPC_DIR"
 echo "[talon] CLI IPC bridge: $CLI_IPC_DIR -> $IPC_DIR"
 
-cat >/root/.bashrc <<EOF
+mkdir -p /home/talond
+cat >/home/talond/.bashrc <<EOF
 cd "$WORKSPACE"
 export TALON_WORKSPACE="$WORKSPACE"
 export TALOND_CONFIG_PATH="$CONFIG_FILE"
@@ -227,8 +228,8 @@ echo "     talonctl reload"
 echo
 EOF
 
-cat >/root/.bash_profile <<'EOF'
-[ -f /root/.bashrc ] && . /root/.bashrc
+cat >/home/talond/.bash_profile <<'EOF'
+[ -f /home/talond/.bashrc ] && . /home/talond/.bashrc
 EOF
 
 cleanup() {
@@ -240,6 +241,11 @@ cleanup() {
     wait "$DAEMON_PID" 2>/dev/null || true
     DAEMON_PID=""
   fi
+  if [ -n "${PROXY_PID:-}" ]; then
+    kill "$PROXY_PID" 2>/dev/null || true
+    wait "$PROXY_PID" 2>/dev/null || true
+    PROXY_PID=""
+  fi
   if [ -n "${TTYD_PID:-}" ]; then
     kill "$TTYD_PID" 2>/dev/null || true
     wait "$TTYD_PID" 2>/dev/null || true
@@ -249,15 +255,21 @@ cleanup() {
 trap 'cleanup; exit 143' INT TERM
 trap cleanup EXIT
 
+# Restrict writable workspace/state to the dedicated unprivileged daemon user.
+chown -R talond:talond "$BASE" /home/talond
+chmod 700 "$BASE" "$STATE_DIR" "$WORKSPACE"
 cd "$WORKSPACE"
 echo "[talon] Workspace: $WORKSPACE"
 echo "[talon] Private storage: $BASE"
 echo "[talon] Starting management terminal on ingress port 7681..."
-/usr/local/bin/ttyd -W -p 7681 /bin/bash -l &
+# ttyd is reachable only over loopback; the gate accepts ingress gateway IP.
+runuser -u talond -- /usr/local/bin/ttyd -W -i 127.0.0.1 -p 7682 /bin/bash -l &
 TTYD_PID=$!
+node /usr/local/lib/talon-ingress-proxy.cjs &
+PROXY_PID=$!
 
 echo "[talon] Starting Talon daemon..."
-node /opt/talond/dist/index.js --config "$CONFIG_FILE" &
+runuser -u talond -- node /opt/talond/dist/index.js --config "$CONFIG_FILE" &
 DAEMON_PID=$!
 
 set +e
