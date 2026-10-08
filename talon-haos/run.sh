@@ -57,6 +57,7 @@ STATE_DIR="$WORKSPACE/state"
 if [ "$INSTANCE_DIR" = default ] && [ -d "$BASE/state" ]; then
   STATE_DIR="$BASE/state"
 fi
+EXPECTED_STATE_DIR="$STATE_DIR"
 CONFIG_FILE="$WORKSPACE/talond.yaml"
 PERSONA_DIR="$WORKSPACE/personas/assistant"
 
@@ -76,7 +77,7 @@ esac
 # Validate absolute paths before starting daemon; preserve recovery terminal.
 CONFIG_VALID=1
 if [ -f "$CONFIG_FILE" ]; then
-  if ! node /usr/local/lib/talon-check-config.cjs "$CONFIG_FILE" "$WORKSPACE" "$STATE_DIR"; then
+  if ! node /usr/local/lib/talon-check-config.cjs "$CONFIG_FILE" "$WORKSPACE" "$EXPECTED_STATE_DIR"; then
     CONFIG_VALID=0
   fi
 fi
