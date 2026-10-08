@@ -49,7 +49,7 @@ describe('Standard JSON Schema compatibility', () => {
       n: z.number().default(5),
       t: z.tuple([z.string(), z.number()]),
     });
-    const expected = schema.toJSONSchema();
+    const { $schema: _schemaUri, ...expected } = schema.toJSONSchema();
     const tools = buildResponsesTools({
       zod_tool: { inputSchema: schema } as never,
     });
