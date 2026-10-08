@@ -162,16 +162,16 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
-    // Resolve a provider-type alias only against the registered channel of the
-    // current inbound thread. Do not guess a channel for scheduled or explicit
-    // cross-chat sends.
-    if (channelId === 'telegram' &&
+    // A configured channel name always wins over a provider-type alias.
+    // Resolve an alias only for the current inbound channel, never for a
+    // scheduled thread or a cross-chat send with an explicit recipient.
+    if (!this.deps.channelRegistry.get(channelId) &&
         !(typeof args.externalChatId === 'string' && args.externalChatId.trim()) &&
         this.deps.channelRepository) {
       const origin = this.deps.threadRepository.findById(context.threadId);
       if (origin.isOk() && origin.value && !origin.value.external_id.startsWith('schedule:')) {
         const currentChannel = this.deps.channelRepository.findById(origin.value.channel_id);
-        if (currentChannel.isOk() && currentChannel.value?.type === 'telegram' &&
+        if (currentChannel.isOk() && currentChannel.value?.type === channelId &&
             this.deps.channelRegistry.get(currentChannel.value.name)) {
           channelId = currentChannel.value.name;
         }
