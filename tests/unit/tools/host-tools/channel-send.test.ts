@@ -87,6 +87,7 @@ function makeArgs(overrides: Partial<ChannelSendArgs> = {}): ChannelSendArgs {
 function makeConnector(sendResult: ReturnType<typeof ok | typeof err> = ok(undefined)): ChannelConnector {
   return {
     type: 'telegram',
+    supportsAttachments: true,
     name: 'my-telegram',
     start: vi.fn(),
     stop: vi.fn(),
@@ -954,6 +955,25 @@ describe('ChannelSendHandler — partial delivery', () => {
     expect(result.status).toBe('error');
     expect(result.result).toMatchObject({ partial: true, deliveredText: true, deliveredAttachments: 1, retryWholeBatch: false });
     expect(messageRepo.insert).toHaveBeenCalled();
+  });
+});
+
+describe('ChannelSendHandler — unsupported connector attachments', () => {
+  it('rejects an unsupported connector before any network download or message send', async () => {
+    const connector = makeConnector(ok(undefined));
+    Object.assign(connector, { type: 'slack', supportsAttachments: false });
+    const downloadMock = vi.mocked(downloadAllowedAttachment);
+    downloadMock.mockReset();
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger(),
+    });
+    const result = await handler.execute(makeArgs({
+      attachments: [{ url: 'https://files.example.test/test.pdf' }],
+    }), makeContext());
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('does not support file attachments');
+    expect(downloadMock).not.toHaveBeenCalled();
+    expect(connector.send).not.toHaveBeenCalled();
   });
 });
 
