@@ -934,6 +934,8 @@ describe('ChannelSendHandler — inbound channel and recipient resolution', () =
   ) {
     const connector = makeConnector(ok(undefined));
     const registry = makeRegistry(connector);
+    vi.mocked(registry.get).mockImplementation((name: string) =>
+      name === connector.name ? connector : undefined);
     const threadRepository = {
       findById: vi.fn().mockReturnValue(ok({
         id: 'thread-001',
