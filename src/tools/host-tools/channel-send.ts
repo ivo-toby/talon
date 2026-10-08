@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { downloadAllowedAttachment } from './attachment-download.js';
 import type pino from 'pino';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
 import type { AgentOutput, Attachment } from '../../channels/channel-types.js';
@@ -329,30 +330,19 @@ export class ChannelSendHandler {
       throw new Error('attachment origin is not explicitly allowed');
     }
 
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(ATTACHMENT_FETCH_TIMEOUT_MS),
-      redirect: 'error',
-    });
-    if (!response.ok) {
-      throw new Error(`attachment download returned HTTP ${response.status}`);
-    }
-
-    const declaredLength = Number(response.headers.get('content-length') ?? '0');
-    if (Number.isFinite(declaredLength) && declaredLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} byte limit`);
-    }
-
-    const data = Buffer.from(await response.arrayBuffer());
-    if (data.byteLength > MAX_ATTACHMENT_BYTES) {
-      throw new Error(`attachment exceeds ${MAX_ATTACHMENT_BYTES} byte limit`);
-    }
+    const privateOrigins = (process.env['TALON_ATTACHMENT_PRIVATE_ORIGINS'] ?? '')
+      .split(',').map((entry) => entry.trim());
+    const { data, contentType } = await downloadAllowedAttachment(
+      url, MAX_ATTACHMENT_BYTES, ATTACHMENT_FETCH_TIMEOUT_MS,
+      privateOrigins.includes(url.origin),
+    );
 
     const pathName = decodeURIComponent(url.pathname.split('/').pop() || '');
     const filename =
       typeof input.filename === 'string' && input.filename.trim()
         ? input.filename.trim()
         : pathName || 'attachment';
-    const responseMime = response.headers.get('content-type')?.split(';')[0]?.trim();
+    const responseMime = contentType?.split(';')[0]?.trim();
     const inferredMime = this.inferMimeType(filename);
     const mimeType =
       typeof input.mimeType === 'string' && input.mimeType.trim()
