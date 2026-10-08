@@ -67,7 +67,9 @@ mkdir -p "$IPC_DIR"
 echo "[talon] Local daemon IPC: $IPC_DIR"
 
 OPENAI_API_KEY="$(jq -r '.openai_api_key // ""' "$OPTIONS")"
-OPENAI_MODEL="$(jq -r '.openai_model | select(. != null and . != "") // "gpt-5.4"' "$OPTIONS")"
+OPENAI_MODEL="$(jq -r '(.openai_model // "") | if . == "" then "gpt-5.4" else . end' "$OPTIONS")"
+# Legacy options remain readable ONLY when bootstrapping an installation that
+# predates the streamlined HA schema. Existing talond.yaml is never overwritten.
 TELEGRAM_BOT_TOKEN="$(jq -r '.telegram_bot_token // ""' "$OPTIONS")"
 TELEGRAM_CHAT_ID="$(jq -r '.telegram_chat_id // ""' "$OPTIONS")"
 
