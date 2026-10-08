@@ -47,6 +47,8 @@ export interface ChannelSendTool {
 }
 
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+// Bound the entire batch, not just each individual file.
+const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 const ATTACHMENT_FETCH_TIMEOUT_MS = 60_000;
 
 export interface ChannelSendAttachmentArg {
@@ -196,8 +198,14 @@ export class ChannelSendHandler {
       }
       try {
         resolvedAttachments = [];
+        let remainingBytes = MAX_TOTAL_ATTACHMENT_BYTES;
         for (const attachment of attachments) {
-          resolvedAttachments.push(await this.fetchAttachment(attachment));
+          if (remainingBytes <= 0) {
+            throw new Error('attachment batch exceeds total byte limit');
+          }
+          const resolved = await this.fetchAttachment(attachment, remainingBytes);
+          remainingBytes -= resolved.size ?? resolved.data.length;
+          resolvedAttachments.push(resolved);
         }
       } catch (attachmentErr) {
         const msg =
@@ -312,7 +320,7 @@ export class ChannelSendHandler {
     });
   }
 
-  private async fetchAttachment(input: ChannelSendAttachmentArg): Promise<Attachment> {
+  private async fetchAttachment(input: ChannelSendAttachmentArg, remainingBytes: number): Promise<Attachment> {
     if (!input || typeof input.url !== 'string' || input.url.trim() === '') {
       throw new Error('attachment url is required');
     }
@@ -333,7 +341,7 @@ export class ChannelSendHandler {
     const privateOrigins = (process.env['TALON_ATTACHMENT_PRIVATE_ORIGINS'] ?? '')
       .split(',').map((entry) => entry.trim());
     const { data, contentType } = await downloadAllowedAttachment(
-      url, MAX_ATTACHMENT_BYTES, ATTACHMENT_FETCH_TIMEOUT_MS,
+      url, Math.min(MAX_ATTACHMENT_BYTES, remainingBytes), ATTACHMENT_FETCH_TIMEOUT_MS,
       privateOrigins.includes(url.origin),
     );
 
