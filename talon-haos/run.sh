@@ -18,9 +18,8 @@ case "$BASE" in
   *..*|*//*|*/.) echo "[talon] Invalid storage_path" >&2; exit 1 ;;
 esac
 BASE="${BASE%/}"
-STATE_DIR="$BASE/state"
-# Preserve existing workspace paths when upgrading earlier installations.
-INSTANCE="$(jq -r '.instance // ""' "$OPTIONS" | xargs)"
+# Use one state directory per workspace. Keep legacy default state intact.
+INSTANCE="$(jq -r '.instance // "" | gsub("^\\s+|\\s+$"; "")' "$OPTIONS")"
 
 case "$INSTANCE" in
   "")
@@ -37,12 +36,28 @@ case "$INSTANCE" in
 esac
 
 WORKSPACE="$BASE/workspaces/$INSTANCE_DIR"
+STATE_DIR="$WORKSPACE/state"
+# The initial add-on stored default state at $BASE/state. Never move it
+# automatically: existing config may still reference it and contain live data.
+if [ "$INSTANCE_DIR" = default ] && [ -d "$BASE/state" ]; then
+  STATE_DIR="$BASE/state"
+fi
 CONFIG_FILE="$WORKSPACE/talond.yaml"
 PERSONA_DIR="$WORKSPACE/personas/assistant"
 
 mkdir -p "$STATE_DIR" "$WORKSPACE" "$WORKSPACE/skills" "$WORKSPACE/personas" "$WORKSPACE/subagents" "$WORKSPACE/userdata"
 
 # Keep the daemon and CLI IPC endpoint local and writable.
+# Existing workspaces may point at a different dataDir after a migration.
+# Resolve against the actual configuration, rather than assuming state layout.
+if [ -f "$CONFIG_FILE" ]; then
+  CONFIG_DATA_DIR="$(node -e 'const fs=require("fs");const yaml=require("/opt/talond/node_modules/js-yaml");try{const c=yaml.load(fs.readFileSync(process.argv[1],"utf8"));process.stdout.write(typeof c?.dataDir==="string"?c.dataDir:"")}catch(e){process.stderr.write("Invalid talond.yaml: "+e.message+"\\n");}' "$CONFIG_FILE")"
+  [ -z "$CONFIG_DATA_DIR" ] || STATE_DIR="$CONFIG_DATA_DIR"
+fi
+case "$STATE_DIR" in
+  /data/*) ;;
+  *) echo "[talon] dataDir must be inside /data" >&2; exit 1 ;;
+esac
 IPC_DIR="$STATE_DIR/ipc/daemon"
 mkdir -p "$STATE_DIR/ipc"
 if [ -L "$IPC_DIR" ] || [ -e "$IPC_DIR" ]; then
@@ -52,7 +67,7 @@ mkdir -p "$IPC_DIR"
 echo "[talon] Local daemon IPC: $IPC_DIR"
 
 OPENAI_API_KEY="$(jq -r '.openai_api_key // ""' "$OPTIONS")"
-OPENAI_MODEL="$(jq -r '.openai_model // "gpt-5.4"' "$OPTIONS")"
+OPENAI_MODEL="$(jq -r '.openai_model | select(. != null and . != "") // "gpt-5.4"' "$OPTIONS")"
 TELEGRAM_BOT_TOKEN="$(jq -r '.telegram_bot_token // ""' "$OPTIONS")"
 TELEGRAM_CHAT_ID="$(jq -r '.telegram_chat_id // ""' "$OPTIONS")"
 
@@ -77,10 +92,11 @@ EOF
 fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
+
   if [ -z "$OPENAI_API_KEY" ]; then
-    echo "[talon] An OpenAI API key is required when creating a new default workspace." >&2
-    exit 1
-  fi
+    echo "[talon] New workspace requires an OpenAI API key; configure one then restart." >&2
+    # Leave daemon config missing; keep terminal available for recovery.
+  else
   echo "[talon] No existing workspace found; bootstrapping $CONFIG_FILE."
   cat > "$CONFIG_FILE" <<EOF
 storage:
@@ -194,6 +210,7 @@ auth:
 logLevel: info
 dataDir: $STATE_DIR
 EOF
+  fi
 fi
 
 # Upstream talonctl hardcodes data/ipc/daemon relative to its current workspace,
@@ -268,6 +285,12 @@ TTYD_PID=$!
 node /usr/local/lib/talon-ingress-proxy.cjs &
 PROXY_PID=$!
 
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "[talon] Recovery terminal available. Create $CONFIG_FILE and restart."
+  wait "$TTYD_PID"
+  exit $?
+fi
+
 echo "[talon] Starting Talon daemon..."
 runuser -u talond -- node /opt/talond/dist/index.js --config "$CONFIG_FILE" &
 DAEMON_PID=$!
@@ -276,5 +299,6 @@ set +e
 wait "$DAEMON_PID"
 DAEMON_STATUS=$?
 set -e
-echo "[talon] Daemon exited with status $DAEMON_STATUS"
-exit "$DAEMON_STATUS"
+echo "[talon] Daemon exited with status $DAEMON_STATUS; recovery terminal remains available."
+DAEMON_PID=""
+wait "$TTYD_PID"
