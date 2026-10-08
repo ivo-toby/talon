@@ -13,6 +13,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ok, err } from 'neverthrow';
 import { ChannelSendHandler } from '../../../../src/tools/host-tools/channel-send.js';
+import { downloadAllowedAttachment } from '../../../../src/tools/host-tools/attachment-download.js';
+
+vi.mock('../../../../src/tools/host-tools/attachment-download.js', () => ({
+  downloadAllowedAttachment: vi.fn(),
+}));
 import type { ChannelSendArgs, ToolExecutionContext } from '../../../../src/tools/host-tools/channel-send.js';
 import { ChannelError } from '../../../../src/core/errors/error-types.js';
 import type { ChannelRegistry } from '../../../../src/channels/channel-registry.js';
@@ -951,11 +956,10 @@ describe('ChannelSendHandler — file attachments', () => {
     const connector = makeConnector(ok(undefined));
     const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
     process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = 'https://files.example.test';
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
-      ok: true,
-      headers: new Headers({ 'content-type': 'application/pdf' }),
-      arrayBuffer: async () => Uint8Array.from([1, 2, 3]).buffer,
-    } as Response);
+    const downloadMock = vi.mocked(downloadAllowedAttachment).mockResolvedValue({
+      contentType: 'application/pdf',
+      data: Buffer.from([1, 2, 3]),
+    });
     try {
       const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
       const result = await handler.execute(makeArgs({ attachments: [{ url: 'https://files.example.test/report.pdf', filename: 'report.pdf' }] }), makeContext());
@@ -966,7 +970,7 @@ describe('ChannelSendHandler — file attachments', () => {
     } finally {
       if (previous === undefined) delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
       else process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = previous;
-      fetchMock.mockRestore();
+      downloadMock.mockReset();
     }
   });
 
