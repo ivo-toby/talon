@@ -159,7 +159,7 @@ export function buildResponsesTools(
     type: 'function',
     name,
     description: readStringProp(tool, 'description') ?? name,
-    parameters: schemaToJsonSchema(readUnknownProp(tool, 'inputSchema')),
+    parameters: schemaToJsonSchema(readUnknownProp(tool, 'inputSchema'), name),
   }));
 }
 
@@ -540,22 +540,28 @@ function formatStandardIssues(issues: unknown[]): string {
     .join('; ');
 }
 
-function schemaToJsonSchema(value: unknown): Record<string, unknown> {
-  // MCP tools may expose a Standard JSON Schema wrapper rather than a plain
-  // JSON Schema object. Extract the declared input schema before falling back.
-  if (isRecord(value) && isRecord(value['~standard'])) {
-    const standard = value['~standard'];
-    if (isRecord(standard.jsonSchema) && typeof standard.jsonSchema.input === 'function') {
-      const schema = (standard.jsonSchema.input as (options: { target: string }) => unknown)(
-        { target: 'draft-07' },
-      );
-      return normalizeJsonSchema(schema);
-    }
-  }
-
+function schemaToJsonSchema(value: unknown, toolName: string): Record<string, unknown> {
+  // Preserve existing Zod conversion semantics before trying MCP wrappers.
   if (isRecord(value) && typeof value.toJSONSchema === 'function') {
     const jsonSchema = (value.toJSONSchema as () => unknown)();
     return normalizeJsonSchema(jsonSchema);
+  }
+
+  if (isRecord(value) && isRecord(value['~standard'])) {
+    const standard = value['~standard'];
+    if (isRecord(standard.jsonSchema) && typeof standard.jsonSchema.input === 'function') {
+      const input = standard.jsonSchema.input as (options: { target: string }) => unknown;
+      for (const target of ['draft-07', 'draft-2020-12']) {
+        try {
+          return normalizeJsonSchema(input({ target }));
+        } catch (error) {
+          console.warn(
+            `Unable to convert input schema for tool "${toolName}" to ${target}:`,
+            error,
+          );
+        }
+      }
+    }
   }
 
   return normalizeJsonSchema(value);
