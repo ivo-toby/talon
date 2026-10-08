@@ -926,3 +926,85 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
     expect(messageRepo.insert).toHaveBeenCalled();
   });
 });
+
+describe('ChannelSendHandler — inbound channel and recipient resolution', () => {
+  function setup(
+    threadExternalId = 'chat-123',
+    currentChannelType = 'telegram',
+  ) {
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({
+        id: 'thread-001',
+        channel_id: 'chan-001',
+        external_id: threadExternalId,
+        metadata: '{}',
+      })),
+    } as any;
+    const channelRepository = {
+      findById: vi.fn().mockReturnValue(ok({
+        id: 'chan-001', name: 'my-telegram', type: currentChannelType,
+      })),
+      findByName: vi.fn(),
+    } as any;
+    return {
+      connector,
+      registry,
+      threadRepository,
+      channelRepository,
+      handler: new ChannelSendHandler({
+        channelRegistry: registry,
+        threadRepository,
+        channelRepository,
+        logger: makeLogger(),
+      }),
+    };
+  }
+
+  it('maps the telegram provider alias to the registered inbound channel', async () => {
+    const { handler, connector } = setup();
+    const result = await handler.execute(makeArgs({ channelId: 'telegram' }), makeContext());
+    expect(result.status).toBe('success');
+    expect(result.result).toEqual({ channelId: 'my-telegram', sent: true });
+    expect(connector.send).toHaveBeenCalledWith('chat-123', expect.anything());
+  });
+
+  it('uses the current chat when the optional explicit recipient is blank', async () => {
+    const { handler, connector } = setup();
+    const result = await handler.execute(makeArgs({
+      channelId: 'telegram',
+      externalChatId: '   ',
+    }), makeContext());
+    expect(result.status).toBe('success');
+    expect(connector.send).toHaveBeenCalledWith('chat-123', expect.anything());
+  });
+
+  it('falls back to the current chat for blank explicit recipient on the configured channel', async () => {
+    const { handler, connector } = setup();
+    const result = await handler.execute(makeArgs({ externalChatId: '' }), makeContext());
+    expect(result.status).toBe('success');
+    expect(connector.send).toHaveBeenCalledWith('chat-123', expect.anything());
+  });
+
+  it('preserves nonblank explicit cross-chat destinations', async () => {
+    const { handler, connector } = setup();
+    const result = await handler.execute(makeArgs({ externalChatId: '  chat-456  ' }), makeContext());
+    expect(result.status).toBe('success');
+    expect(connector.send).toHaveBeenCalledWith('chat-456', expect.anything());
+  });
+
+  it('does not resolve a telegram alias against a different provider type', async () => {
+    const { handler, connector } = setup('chat-123', 'discord');
+    const result = await handler.execute(makeArgs({ channelId: 'telegram' }), makeContext());
+    expect(result.status).toBe('error');
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+
+  it('does not route a provider alias from a synthetic schedule thread', async () => {
+    const { handler, connector } = setup('schedule:assistant:telegram-main');
+    const result = await handler.execute(makeArgs({ channelId: 'telegram' }), makeContext());
+    expect(result.status).toBe('error');
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+});
