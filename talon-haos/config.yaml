@@ -16,7 +16,9 @@ options:
   instance: ""
   storage_path: ""
   openai_api_key: ""
+  telegram_bot_token: ""
 schema:
   instance: str
   storage_path: str
   openai_api_key: password
+  telegram_bot_token: password
