@@ -31,7 +31,7 @@ for PART in $REST; do
 done
 IFS="$OLD_IFS"
 case "$BASE" in
-  *[\"\'\x60\\$]*|*[[:space:]]*) echo "[talon] storage_path contains unsupported characters" >&2; exit 1 ;;
+  *[!A-Za-z0-9_./-]*) echo "[talon] storage_path contains unsupported characters" >&2; exit 1 ;;
 esac
 # Use one state directory per workspace. Keep legacy default state intact.
 INSTANCE="$(jq -r '.instance // "" | gsub("^\\s+|\\s+$"; "")' "$OPTIONS")"
