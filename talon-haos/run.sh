@@ -56,15 +56,12 @@ OPENAI_MODEL="$(jq -r '.openai_model // "gpt-5.4"' "$OPTIONS")"
 TELEGRAM_BOT_TOKEN="$(jq -r '.telegram_bot_token // ""' "$OPTIONS")"
 TELEGRAM_CHAT_ID="$(jq -r '.telegram_chat_id // ""' "$OPTIONS")"
 
-if [ -z "$OPENAI_API_KEY" ]; then
-  echo "[talon] openai_api_key is empty. Set it in the app Configuration tab."
-  exit 1
-fi
 
 export OPENAI_API_KEY
 export TELEGRAM_BOT_TOKEN
 export TALON_WORKSPACE="$WORKSPACE"
 export TALOND_CONFIG_PATH="$CONFIG_FILE"
+export TALON_PID_FILE="$STATE_DIR/talond.pid"
 export PATH="/usr/local/bin:/opt/talond/node_modules/.bin:$PATH"
 
 MODEL_JSON="$(printf '%s' "$OPENAI_MODEL" | jq -Rs .)"
@@ -80,6 +77,10 @@ EOF
 fi
 
 if [ ! -f "$CONFIG_FILE" ]; then
+  if [ -z "$OPENAI_API_KEY" ]; then
+    echo "[talon] An OpenAI API key is required when creating a new default workspace." >&2
+    exit 1
+  fi
   echo "[talon] No existing workspace found; bootstrapping $CONFIG_FILE."
   cat > "$CONFIG_FILE" <<EOF
 storage:
@@ -231,11 +232,22 @@ cat >/root/.bash_profile <<'EOF'
 EOF
 
 cleanup() {
+  trap - INT TERM EXIT
   set +e
-  [ -n "${TTYD_PID:-}" ] && kill "$TTYD_PID" 2>/dev/null
-  [ -n "${DAEMON_PID:-}" ] && kill "$DAEMON_PID" 2>/dev/null
+  if [ -n "${DAEMON_PID:-}" ]; then
+    kill "$DAEMON_PID" 2>/dev/null || true
+    # Wait for talond to drain queued work, stop connectors and close SQLite.
+    wait "$DAEMON_PID" 2>/dev/null || true
+    DAEMON_PID=""
+  fi
+  if [ -n "${TTYD_PID:-}" ]; then
+    kill "$TTYD_PID" 2>/dev/null || true
+    wait "$TTYD_PID" 2>/dev/null || true
+    TTYD_PID=""
+  fi
 }
-trap cleanup INT TERM EXIT
+trap 'cleanup; exit 143' INT TERM
+trap cleanup EXIT
 
 cd "$WORKSPACE"
 echo "[talon] Workspace: $WORKSPACE"
