@@ -248,7 +248,7 @@ const TOOLS = [
   {
     name: 'channel_send',
     description:
-      'Sends text and optional file attachments to a configured channel. Use the exact registered channel name. To attach a file, provide a trusted HTTP(S) download URL; the host fetches the bytes before calling the channel connector. Omit externalChatId when replying to the current conversation; specify a verified chat ID for cross-chat delivery or CLI-created schedules.',
+      'Sends text to configured channels; file attachments are currently Telegram-only. Attachment downloads require channel.send:attachments permission and an explicitly allowed download origin. Use the exact registered channel name. To attach a file, provide a trusted HTTP(S) download URL; the host fetches the bytes before calling the channel connector. Omit externalChatId when replying to the current conversation; specify a verified chat ID for cross-chat delivery or CLI-created schedules.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -273,7 +273,7 @@ const TOOLS = [
           type: 'array' as const,
           maxItems: 10,
           description:
-            'Up to ten files provided as HTTP(S) download URLs. The host downloads the bytes before channel delivery; supply filename and mimeType where known. Do not disclose private download URLs in user-facing messages.',
+            'Telegram only: up to ten HTTP(S) download URLs, with a total batch limit of 50 MiB. Requires channel.send:attachments and TALON_ATTACHMENT_ALLOWED_ORIGINS; private origins require TALON_ATTACHMENT_PRIVATE_ORIGINS too. Unsupported channels reject attachments without downloading. Supply filename and mimeType where known. Do not disclose private download URLs in user-facing messages.',
           items: {
             type: 'object' as const,
             properties: {
