@@ -974,6 +974,37 @@ describe('ChannelSendHandler — file attachments', () => {
     }
   });
 
+  it('limits all attachments to a single bounded batch', async () => {
+    const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+    process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = 'https://files.example.test';
+    const downloadMock = vi.mocked(downloadAllowedAttachment).mockImplementation(
+      async (_url, cap) => ({
+        data: Buffer.alloc(cap === 50 * 1024 * 1024 ? 30 * 1024 * 1024 : 20 * 1024 * 1024),
+        contentType: 'application/octet-stream',
+      }),
+    );
+    try {
+      const connector = makeConnector(ok(undefined));
+      const handler = new ChannelSendHandler({
+        channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger(),
+      });
+      const result = await handler.execute(makeArgs({ attachments: [
+        { url: 'https://files.example.test/one' },
+        { url: 'https://files.example.test/two' },
+        { url: 'https://files.example.test/three' },
+      ] }), makeContext());
+      expect(result.status).toBe('error');
+      expect(downloadMock).toHaveBeenCalledTimes(2);
+      expect(downloadMock.mock.calls[0]?.[1]).toBe(50 * 1024 * 1024);
+      expect(downloadMock.mock.calls[1]?.[1]).toBe(20 * 1024 * 1024);
+      expect(connector.send).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+      else process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = previous;
+      downloadMock.mockReset();
+    }
+  });
+
   it('rejects more than ten attachments before attempting a download', async () => {
     const connector = makeConnector(ok(undefined));
     const fetchMock = vi.spyOn(globalThis, 'fetch');
