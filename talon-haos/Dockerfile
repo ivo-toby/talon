@@ -1,4 +1,4 @@
-FROM ghcr.io/ivo-toby/talond:latest
+FROM ghcr.io/ivo-toby/talond:v0.2.7
 
 ARG BUILD_VERSION
 ARG BUILD_ARCH
@@ -17,5 +17,7 @@ COPY ingress-proxy.cjs /usr/local/lib/talon-ingress-proxy.cjs
 COPY run.sh /run.sh
 COPY talonctl /usr/local/bin/talonctl
 RUN chmod 0755 /run.sh /usr/local/bin/talonctl && mkdir -p /data/talon
+
+HEALTHCHECK NONE
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/run.sh"]
