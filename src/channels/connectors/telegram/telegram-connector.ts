@@ -49,6 +49,7 @@ const GET_ME_TIMEOUT_MS = 10_000;
  */
 export class TelegramConnector implements ChannelConnector {
   readonly type = 'telegram';
+  readonly supportsAttachments = true;
   readonly name: string;
 
   private _botUserId: string | undefined;
