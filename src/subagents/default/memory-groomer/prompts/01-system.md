@@ -39,6 +39,10 @@ Analyze entries and recommend one of these actions for each:
 
 Consolidated entries should not exceed ~2000 characters. If a consolidation would exceed this, extract only the most important facts and discard redundant narrative.
 
+## Protected entries
+
+The caller may mark some keys as protected (operational state owned by other tasks). Protected entries are removed before you see the list, so you will never be asked about them. Do not reference ids that are not in the list you were given.
+
 ## Rules
 
 - Every entry must appear in exactly one action.
