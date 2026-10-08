@@ -16,13 +16,7 @@ options:
   instance: ""
   storage_path: ""
   openai_api_key: ""
-  openai_model: "gpt-5.4"
-  telegram_bot_token: ""
-  telegram_chat_id: ""
 schema:
   instance: str
   storage_path: str
   openai_api_key: password
-  openai_model: str
-  telegram_bot_token: password
-  telegram_chat_id: str
