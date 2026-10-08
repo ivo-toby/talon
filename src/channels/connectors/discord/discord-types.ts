@@ -188,3 +188,60 @@ export interface DiscordGatewayEvent {
  * Data payload of a MESSAGE_CREATE gateway event.
  */
 export type DiscordMessageCreateEvent = DiscordMessage;
+
+// ---------------------------------------------------------------------------
+// Discord Gateway opcodes and protocol types
+// ---------------------------------------------------------------------------
+
+/**
+ * Discord Gateway opcode constants.
+ * Reference: https://discord.com/developers/docs/topics/opcodes-and-status-codes
+ */
+export const DiscordGatewayOpcodes = {
+  DISPATCH: 0,
+  HEARTBEAT: 1,
+  IDENTIFY: 2,
+  RESUME: 6,
+  RECONNECT: 7,
+  INVALID_SESSION: 9,
+  HELLO: 10,
+  HEARTBEAT_ACK: 11,
+} as const;
+
+/**
+ * Payload received in OP 10 HELLO — contains the heartbeat interval.
+ */
+export interface DiscordGatewayHello {
+  heartbeat_interval: number;
+}
+
+/**
+ * Payload received in OP 0 READY dispatch event.
+ */
+export interface DiscordGatewayReady {
+  session_id: string;
+  resume_gateway_url: string;
+  v: number;
+}
+
+/**
+ * Payload sent in OP 2 IDENTIFY — authenticates the connection.
+ */
+export interface DiscordGatewayIdentify {
+  token: string;
+  intents: number;
+  properties: {
+    os: string;
+    browser: string;
+    device: string;
+  };
+}
+
+/**
+ * Payload sent in OP 6 RESUME — resumes a previous session.
+ */
+export interface DiscordGatewayResume {
+  token: string;
+  session_id: string;
+  seq: number;
+}
