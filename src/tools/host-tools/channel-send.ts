@@ -20,7 +20,7 @@ import type {
   ThreadRow,
 } from '../../core/database/repositories/thread-repository.js';
 import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
-import { ToolError } from '../../core/errors/error-types.js';
+import { ToolError, ChannelPartialDeliveryError } from '../../core/errors/error-types.js';
 
 /**
  * Returns the origin chat's external_id recorded in a dedicated schedule
@@ -272,6 +272,22 @@ export class ChannelSendHandler {
     const result = await connector.send(externalThreadId, output);
 
     if (result.isErr()) {
+      if (result.error instanceof ChannelPartialDeliveryError) {
+        const { deliveredText, deliveredAttachments, deliveryUncertain } = result.error;
+        if (deliveredText) {
+          this.persistOutboundMessage({
+            requestId, runId: context.runId, channelName: channelId,
+            externalThreadId, content, personaId: context.personaId,
+            runThreadId: context.threadId,
+          });
+        }
+        const msg = `channel.send: partial delivery; ${deliveredText ? 'text delivered' : 'text not delivered'}, ${deliveredAttachments} of ${attachments?.length ?? 0} attachments confirmed. ${deliveryUncertain ? 'Latest upload outcome is unknown.' : 'Next attachment was rejected.'} Do not retry the entire batch. ${result.error.message}`;
+        this.deps.logger.warn({ requestId, channelId, deliveredText, deliveredAttachments, deliveryUncertain }, msg);
+        return {
+          requestId, tool: 'channel.send', status: 'error', error: msg,
+          result: { channelId, sent: false, partial: true, deliveredText, deliveredAttachments, deliveryUncertain, retryWholeBatch: false },
+        };
+      }
       const msg = `channel.send: failed to send message — ${result.error.message}`;
       this.deps.logger.error({ requestId, channelId, err: result.error }, msg);
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
