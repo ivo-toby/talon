@@ -11,7 +11,7 @@ import type pino from 'pino';
 import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
-import { ChannelError } from '../../../core/errors/error-types.js';
+import { ChannelError, ChannelPartialDeliveryError } from '../../../core/errors/error-types.js';
 import type {
   TelegramConfig,
   TelegramUpdate,
@@ -173,14 +173,26 @@ export class TelegramConnector implements ChannelConnector {
    * @param output            - Agent output to deliver.
    */
   async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
+    let deliveredText = false;
+    let deliveredAttachments = 0;
     if (output.body.trim()) {
       const messageResult = await this.sendText(externalThreadId, output.body);
       if (messageResult.isErr()) return messageResult;
+      deliveredText = true;
     }
 
     for (const attachment of output.attachments ?? []) {
       const attachmentResult = await this.sendAttachment(externalThreadId, attachment);
-      if (attachmentResult.isErr()) return attachmentResult;
+      if (attachmentResult.isErr()) {
+        return err(new ChannelPartialDeliveryError(
+          attachmentResult.error.message,
+          deliveredText,
+          deliveredAttachments,
+          // A Telegram timeout/network failure may have delivered the upload.
+          /network error|timed out/i.test(attachmentResult.error.message),
+        ));
+      }
+      deliveredAttachments++;
     }
 
     return ok(undefined);
@@ -248,7 +260,7 @@ export class TelegramConnector implements ChannelConnector {
 
     let response: Response;
     try {
-      response = await fetch(this.apiUrl(method), { method: 'POST', body: form });
+      response = await fetch(this.apiUrl(method), { method: 'POST', body: form, signal: AbortSignal.timeout(90_000) });
     } catch (fetchErr) {
       const cause = fetchErr instanceof Error ? fetchErr : undefined;
       return err(
