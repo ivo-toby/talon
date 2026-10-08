@@ -18,6 +18,21 @@ case "$BASE" in
   *..*|*//*|*/.) echo "[talon] Invalid storage_path" >&2; exit 1 ;;
 esac
 BASE="${BASE%/}"
+# Do not allow configured paths to escape private storage through symlinks.
+CURRENT=/data
+REST="${BASE#/data/}"
+OLD_IFS="$IFS"; IFS=/
+for PART in $REST; do
+  CURRENT="$CURRENT/$PART"
+  if [ -L "$CURRENT" ]; then
+    echo "[talon] storage_path must not contain symlinks" >&2
+    exit 1
+  fi
+done
+IFS="$OLD_IFS"
+case "$BASE" in
+  *[\"\'\x60\\$]*|*[[:space:]]*) echo "[talon] storage_path contains unsupported characters" >&2; exit 1 ;;
+esac
 # Use one state directory per workspace. Keep legacy default state intact.
 INSTANCE="$(jq -r '.instance // "" | gsub("^\\s+|\\s+$"; "")' "$OPTIONS")"
 
@@ -60,8 +75,10 @@ case "$STATE_DIR" in
 esac
 IPC_DIR="$STATE_DIR/ipc/daemon"
 mkdir -p "$STATE_DIR/ipc"
-if [ -L "$IPC_DIR" ] || [ -e "$IPC_DIR" ]; then
-  rm -rf "$IPC_DIR"
+if [ -L "$IPC_DIR" ]; then
+  rm -f "$IPC_DIR"
+elif [ -e "$IPC_DIR" ] && [ ! -d "$IPC_DIR" ]; then
+  echo "[talon] Unsafe IPC path: $IPC_DIR" >&2; exit 1
 fi
 mkdir -p "$IPC_DIR"
 echo "[talon] Local daemon IPC: $IPC_DIR"
@@ -223,7 +240,7 @@ mkdir -p "$CLI_IPC_PARENT"
 if [ -L "$CLI_IPC_DIR" ]; then
   rm -f "$CLI_IPC_DIR"
 elif [ -e "$CLI_IPC_DIR" ]; then
-  rm -rf "$CLI_IPC_DIR"
+  echo "[talon] Existing IPC directory requires manual migration: $CLI_IPC_DIR" >&2; exit 1
 fi
 ln -s "$IPC_DIR" "$CLI_IPC_DIR"
 echo "[talon] CLI IPC bridge: $CLI_IPC_DIR -> $IPC_DIR"
