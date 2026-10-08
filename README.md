@@ -1559,10 +1559,12 @@ If fewer than 10 keyword matches are found, they're returned directly without LL
 | **Model**                 | Haiku 4.5                                                       |
 | **Required capabilities** | `memory.access:*`                                               |
 | **Timeout**               | 30s                                                             |
-| **Input**                 | `{ periodMs? }` (optional: only groom items from the last N ms) |
+| **Input**                 | `{ periodMs?, protectedKeyPrefixes? }` (optional: only groom items from the last N ms; skip keys starting with any given prefix) |
 | **Output**                | `{ pruned, consolidated, kept }` counts                         |
 
 Uses `generateObject` with a Zod discriminated union schema to ensure the LLM returns valid, typed actions.
+
+**Protected keys:** pass `protectedKeyPrefixes` (e.g. `["mail:", "calendar:"]`) to exclude operational-state keys owned by other tasks (last-checked timestamps, dedup lists). Matching memory items (item id = `memory_access` key) are removed before the model sees the list and can never be pruned or consolidated; the summary reports how many were skipped.
 
 #### `session-summarizer`
 
