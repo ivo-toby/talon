@@ -390,8 +390,7 @@ export class HostToolsBridge {
           // sufficient for this non-interactive host-side fetch path.
           if (normalizedTool === 'channel.send' &&
               Array.isArray(args['attachments']) && args['attachments'].length > 0 &&
-              !resolvedCaps.allow.includes('channel.send:attachments') &&
-              !resolvedCaps.allow.includes('channel.send:*')) {
+              !resolvedCaps.allow.includes('channel.send:attachments')) {
             const toolResult: ToolCallResult = {
               requestId: context.requestId ?? 'unknown',
               tool: normalizedTool,
