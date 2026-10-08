@@ -929,8 +929,28 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
 
 
 describe('ChannelSendHandler — file attachments', () => {
+  it('rejects attachment downloads by default without an explicit origin allowlist', async () => {
+    const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+    delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      const connector = makeConnector(ok(undefined));
+      const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const result = await handler.execute(makeArgs({ attachments: [{ url: 'https://files.example.test/report.pdf' }] }), makeContext());
+      expect(result.status).toBe('error');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(connector.send).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+      else process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = previous;
+      fetchMock.mockRestore();
+    }
+  });
+
   it('downloads a file and passes its bytes to the channel connector', async () => {
     const connector = makeConnector(ok(undefined));
+    const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+    process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = 'https://files.example.test';
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
       ok: true,
       headers: new Headers({ 'content-type': 'application/pdf' }),
@@ -944,6 +964,8 @@ describe('ChannelSendHandler — file attachments', () => {
         attachments: [expect.objectContaining({ filename: 'report.pdf', mimeType: 'application/pdf', data: Buffer.from([1, 2, 3]) })],
       }));
     } finally {
+      if (previous === undefined) delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
+      else process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = previous;
       fetchMock.mockRestore();
     }
   });
