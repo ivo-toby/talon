@@ -19,7 +19,9 @@ import uuid
 
 IMAGE = sys.argv[1]
 ADDON_CONFIG = Path(__file__).resolve().with_name("config.yaml")
-version_matches = re.findall(r'(?m)^version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?\s*
+version_matches = re.findall(r'(?m)^version:\s*"?([0-9]+\.[0-9]+\.[0-9]+)"?\s*' + chr(36), ADDON_CONFIG.read_text())
+assert len(version_matches) == 1, "Expected exactly one add-on version in config.yaml"
+EXPECTED_VERSION = version_matches[0]
 PREFIX = "talon-smoke-" + uuid.uuid4().hex[:10]
 NETWORK, VOLUME, ADDON = (PREFIX + suffix for suffix in ("-net", "-data", "-addon"))
 SUPERVISOR_REV = "01b32d6d31125425260638f768980d35659c4874"
