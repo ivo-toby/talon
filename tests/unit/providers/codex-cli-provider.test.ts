@@ -66,6 +66,7 @@ describe('CodexCliProvider', () => {
 
     const originalCodexHome = process.env.CODEX_HOME;
     process.env.CODEX_HOME = persistentCodexHome;
+    // No operatorHome is supplied; a valid credential exists only in CODEX_HOME.
     try {
       const provider = new CodexCliProvider(
         { enabled: true, command: 'codex', contextWindowTokens: 400_000, options: {} },
