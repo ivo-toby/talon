@@ -13,6 +13,25 @@
 
 ---
 
+## Trusted outbound attachment sources
+
+Telegram file attachments require the persona's `channel.send:attachments` permission.
+The Talon host downloads only from origins configured in `talond.yaml`:
+
+```yaml
+attachments:
+  allowedOrigins: ['http://192.168.1.161:3300']
+  privateOrigins: ['http://192.168.1.161:3300']
+```
+
+Both lists default to empty. Private origins must also be included in
+`allowedOrigins`. Each entry must be an HTTP(S) origin without a path, query,
+fragment or credentials. Redirects are forbidden, non-public IP addresses are
+blocked unless that origin is explicitly in `privateOrigins`, and downloads are
+DNS-pinned. A complete attachment send is subject to a shared four-minute
+deadline, shorter than the host-tools bridge timeout. Other tools and direct
+shell networking are not restricted by this attachment allowlist.
+
 ## What is Talon?
 
 Talon is an open-source runtime for long-lived AI workflows. Connect a persona to the channels and tools you already use, choose its model provider and tool boundaries, and run it on infrastructure you control.
