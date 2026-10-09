@@ -62,7 +62,7 @@ export const ALL_HOST_TOOLS = HOST_TOOL_REGISTRY.map((e) => e.internalName);
 
 /** Set of all known capability prefixes (domain.action). Used for validation. */
 export const KNOWN_CAPABILITY_PREFIXES = new Set(
-  HOST_TOOL_REGISTRY.map((e) => e.capabilityPrefix),
+  [...HOST_TOOL_REGISTRY.map((e) => e.capabilityPrefix), 'channel.attachment'],
 );
 
 // ---------------------------------------------------------------------------
@@ -102,6 +102,14 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'channel_send',
     labels: [
       { label: 'channel.send:*', description: 'Send messages to any channel; also grants channel.list (discover targets) and channel.broadcast (fan out to all bound chats)' },
+    ],
+  },
+  {
+    // Capability-only permission: deliberately does NOT grant any host tool.
+    toolPrefix: 'channel.attachment',
+    mcpName: 'channel_send',
+    labels: [
+      { label: 'channel.attachment:send', description: 'Allow attachment URLs on channel.send when separately permitted to send messages' },
     ],
   },
   {

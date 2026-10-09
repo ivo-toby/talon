@@ -642,3 +642,61 @@ describe('TelegramConnector', () => {
     });
   });
 });
+
+
+describe('TelegramConnector partial attachment delivery', () => {
+  it('reports that text and the first attachment arrived when the second fails', async () => {
+    const connector = new TelegramConnector(defaultConfig(), 'test-bot', silentLogger());
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({ status: 200, json: async () => sendOkResponse() })
+      .mockResolvedValueOnce({ status: 200, json: async () => sendOkResponse() })
+      .mockResolvedValueOnce({ status: 429, json: async () => ({ ok: false, error_code: 429, description: 'Too Many Requests' }) });
+    vi.stubGlobal('fetch', mockFetch);
+    const result = await connector.send('1234', {
+      body: 'Two files',
+      attachments: [
+        { filename: 'one.pdf', mimeType: 'application/pdf', data: Buffer.from('one'), size: 3 },
+        { filename: 'two.pdf', mimeType: 'application/pdf', data: Buffer.from('two'), size: 3 },
+      ],
+    });
+    expect(result.isErr()).toBe(true);
+    const error = result._unsafeUnwrapErr();
+    expect(error).toMatchObject({ deliveredText: true, deliveredAttachments: 1, deliveryUncertain: false });
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('TelegramConnector outbound attachments', () => {
+  it('sends video attachments with sendVideo after the text message', async () => {
+    const connector = new TelegramConnector(defaultConfig(), 'test-bot', silentLogger());
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(sendOkResponse()),
+    } as unknown as Response);
+    vi.stubGlobal('fetch', mockFetch);
+
+    const result = await connector.send('1234', {
+      body: 'Here is the clip',
+      attachments: [
+        {
+          filename: 'clip.mp4',
+          mimeType: 'video/mp4',
+          data: Buffer.from('video-bytes'),
+          size: 11,
+        },
+      ],
+    });
+
+    expect(result.isOk()).toBe(true);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(String(mockFetch.mock.calls[0][0])).toContain('sendMessage');
+    expect(String(mockFetch.mock.calls[1][0])).toContain('sendVideo');
+    const form = (mockFetch.mock.calls[1][1] as RequestInit).body as FormData;
+    expect(form.get('chat_id')).toBe('1234');
+    const video = form.get('video') as File;
+    expect(video.name).toBe('clip.mp4');
+
+    vi.restoreAllMocks();
+  });
+});

@@ -60,6 +60,8 @@ Notes:
 - each Telegram `chat_id` becomes its own Talon thread
 - Telegram supports `sendTyping()`, so the daemon shows activity while the agent works
 - non-text inbound updates are ignored
+- outbound file attachments via `channel_send` are supported on Telegram only: `video/*` files use `sendVideo`, other files use `sendDocument`. Other channel connectors reject attachment requests before fetching.
+- to use file attachments, grant both a channel send permission and `channel.attachment:send` in `capabilities.allow`; configure exact trusted download origins under `attachments.allowedOrigins` in `talond.yaml`. Internal hosts also require an explicit matching `attachments.privateOrigins` entry; see the [host tools reference](/reference/host-tools) for security limits and delivery behavior.
 
 ---
 

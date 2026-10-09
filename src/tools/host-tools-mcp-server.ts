@@ -248,7 +248,7 @@ const TOOLS = [
   {
     name: 'channel_send',
     description:
-      'Sends a message to a channel on behalf of a persona. Pass `externalChatId` to target a specific chat on the channel (e.g. a Telegram chat_id). When omitted, the tool routes to the schedule thread\'s origin chat if the run is on a persona-created schedule. If neither is available (CLI-created schedules), the tool errors — use `channel_list` to discover available chats or `channel_broadcast` to fan out.',
+      'Sends text to configured channels; file attachments are currently Telegram-only. Attachment downloads require channel.attachment:send permission and an explicitly allowed download origin. Use the exact registered channel name. To attach a file, provide a trusted HTTP(S) download URL; the host fetches the bytes before calling the channel connector. Omit externalChatId when replying to the current conversation; specify a verified chat ID for cross-chat delivery or CLI-created schedules.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -267,7 +267,31 @@ const TOOLS = [
         externalChatId: {
           type: 'string' as const,
           description:
-            'Optional explicit recipient chat id on the target channel (e.g. Telegram chat_id, Slack channel id). Required for CLI-created scheduled tasks that have no originExternalId.',
+            'Optional recipient chat ID for cross-chat sends or CLI-created schedules. Omit to use the current conversation or its schedule origin.',
+        },
+        attachments: {
+          type: 'array' as const,
+          maxItems: 10,
+          description:
+            'Telegram only: up to ten HTTP(S) download URLs, with a total batch limit of 50 MiB. Requires channel.attachment:send and attachments.allowedOrigins in talond.yaml; private network sources additionally require attachments.privateOrigins. Unsupported channels reject attachments without downloading. Supply filename and mimeType where known. Do not disclose private download URLs in user-facing messages.',
+          items: {
+            type: 'object' as const,
+            properties: {
+              url: {
+                type: 'string' as const,
+                description: 'HTTP(S) URL for the file to fetch.',
+              },
+              filename: {
+                type: 'string' as const,
+                description: 'Optional filename override.',
+              },
+              mimeType: {
+                type: 'string' as const,
+                description: 'Optional MIME type override, e.g. video/mp4.',
+              },
+            },
+            required: ['url'],
+          },
         },
       },
       required: ['channelId', 'content'],

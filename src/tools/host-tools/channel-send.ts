@@ -7,8 +7,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { downloadAllowedAttachment } from './attachment-download.js';
 import type pino from 'pino';
 import type { ToolManifest, ToolCallResult } from '../tool-types.js';
+import type { AgentOutput, Attachment } from '../../channels/channel-types.js';
 import type { ChannelRegistry } from '../../channels/channel-registry.js';
 import type { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
 import type { MessageRepository } from '../../core/database/repositories/message-repository.js';
@@ -18,7 +20,7 @@ import type {
   ThreadRow,
 } from '../../core/database/repositories/thread-repository.js';
 import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
-import { ToolError } from '../../core/errors/error-types.js';
+import { ToolError, ChannelPartialDeliveryError } from '../../core/errors/error-types.js';
 
 /**
  * Returns the origin chat's external_id recorded in a dedicated schedule
@@ -44,6 +46,20 @@ export interface ChannelSendTool {
   readonly manifest: ToolManifest;
 }
 
+const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+// Bound the entire batch, not just each individual file.
+const MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+const ATTACHMENT_FETCH_TIMEOUT_MS = 60_000;
+
+export interface ChannelSendAttachmentArg {
+  /** HTTP(S) URL to fetch immediately before channel delivery. */
+  url: string;
+  /** Optional filename override. */
+  filename?: string;
+  /** Optional MIME type override. */
+  mimeType?: string;
+}
+
 /** Arguments accepted by the channel.send tool. */
 export interface ChannelSendArgs {
   /** Target channel identifier. */
@@ -61,6 +77,8 @@ export interface ChannelSendArgs {
    * and `channel.broadcast`.
    */
   externalChatId?: string;
+  /** Optional files to fetch and attach to the outbound message. */
+  attachments?: ChannelSendAttachmentArg[];
 }
 
 /** Execution context passed to every tool handler. */
@@ -98,6 +116,7 @@ export class ChannelSendHandler {
   constructor(
     private readonly deps: {
       channelRegistry: ChannelRegistry;
+      attachments?: { allowedOrigins: string[]; privateOrigins: string[] };
       threadRepository: ThreadRepository;
       channelRepository?: Pick<ChannelRepository, 'findByName' | 'findById'>;
       messageRepository?: Pick<MessageRepository, 'insert'>;
@@ -186,10 +205,53 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
-    // Build the AgentOutput and call send
-    const output = {
+    // Bound the complete attachment operation beneath the host-tools bridge timeout.
+    // The signal is passed to both downloads and Telegram uploads, so timed-out
+    // operations stop rather than continuing to deliver behind the agent's back.
+    const attachments = args.attachments;
+    const deadlineSignal = attachments?.length ? AbortSignal.timeout(240_000) : undefined;
+
+    // Fetch requested attachments on the host. This keeps large file bytes out of
+    // the model/MCP transcript while still allowing an MCP server to hand Talon a
+    // short-lived download URL.
+    let resolvedAttachments: Attachment[] | undefined;
+    if (attachments !== undefined) {
+      if (Array.isArray(attachments) && attachments.length > 0 && connector.supportsAttachments !== true) {
+        const msg = `channel.send: channel "${channelId}" does not support file attachments (currently Telegram only)`;
+        return { requestId, tool: 'channel.send', status: 'error', error: msg };
+      }
+      if (!Array.isArray(attachments) || attachments.length > 10) {
+        const msg = 'channel.send: attachments must be an array with at most 10 items';
+        return { requestId, tool: 'channel.send', status: 'error', error: msg };
+      }
+      try {
+        resolvedAttachments = [];
+        let remainingBytes = MAX_TOTAL_ATTACHMENT_BYTES;
+        for (const attachment of attachments) {
+          if (remainingBytes <= 0) {
+            throw new Error('attachment batch exceeds total byte limit');
+          }
+          const resolved = await this.fetchAttachment(attachment, remainingBytes, deadlineSignal);
+          remainingBytes -= resolved.size ?? resolved.data.length;
+          resolvedAttachments.push(resolved);
+        }
+      } catch (attachmentErr) {
+        const msg =
+          attachmentErr instanceof Error
+            ? `channel.send: failed to fetch attachment — ${attachmentErr.message}`
+            : `channel.send: failed to fetch attachment — ${String(attachmentErr)}`;
+        this.deps.logger.warn({ requestId, channelId, attachmentCount: attachments.length }, msg);
+        return { requestId, tool: 'channel.send', status: 'error', error: msg };
+      }
+    }
+
+    // Build the AgentOutput and call send.
+    const output: AgentOutput = {
       body: content,
       ...(replyTo ? { metadata: { replyTo } } : {}),
+      ...(resolvedAttachments && resolvedAttachments.length > 0
+        ? { attachments: resolvedAttachments }
+        : {}),
     };
 
     // Resolve the thread's external_id (e.g. Telegram chat_id) from the DB.
@@ -246,9 +308,27 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
-    const result = await connector.send(externalThreadId, output);
+    const result = deadlineSignal
+      ? await connector.send(externalThreadId, output, deadlineSignal)
+      : await connector.send(externalThreadId, output);
 
     if (result.isErr()) {
+      if (result.error instanceof ChannelPartialDeliveryError) {
+        const { deliveredText, deliveredAttachments, deliveryUncertain } = result.error;
+        if (deliveredText) {
+          this.persistOutboundMessage({
+            requestId, runId: context.runId, channelName: channelId,
+            externalThreadId, content, personaId: context.personaId,
+            runThreadId: context.threadId,
+          });
+        }
+        const msg = `channel.send: partial delivery; ${deliveredText ? 'text delivered' : 'text not delivered'}, ${deliveredAttachments} of ${attachments?.length ?? 0} attachments confirmed. ${deliveryUncertain ? 'Latest upload outcome is unknown.' : 'Next attachment was rejected.'} Do not retry the entire batch. ${result.error.message}`;
+        this.deps.logger.warn({ requestId, channelId, deliveredText, deliveredAttachments, deliveryUncertain }, msg);
+        return {
+          requestId, tool: 'channel.send', status: 'error', error: msg,
+          result: { channelId, sent: false, partial: true, deliveredText, deliveredAttachments, deliveryUncertain, retryWholeBatch: false },
+        };
+      }
       const msg = `channel.send: failed to send message — ${result.error.message}`;
       this.deps.logger.error({ requestId, channelId, err: result.error }, msg);
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
@@ -274,6 +354,71 @@ export class ChannelSendHandler {
       status: 'success',
       result: { channelId, sent: true },
     };
+  }
+
+
+  /**
+   * Restrict host-side downloads to explicitly configured origins. An empty
+   * allowlist fails closed, preserving the default-deny channel capability.
+   * This is an initial barrier, not a substitute for DNS/IP pinning.
+   */
+  private isAttachmentOriginAllowed(url: URL): boolean {
+    return (this.deps.attachments?.allowedOrigins ?? []).some(
+      (origin) => new URL(origin).origin === url.origin,
+    );
+  }
+
+  private async fetchAttachment(input: ChannelSendAttachmentArg, remainingBytes: number, deadlineSignal?: AbortSignal): Promise<Attachment> {
+    if (!input || typeof input.url !== 'string' || input.url.trim() === '') {
+      throw new Error('attachment url is required');
+    }
+    let url: URL;
+    try {
+      url = new URL(input.url);
+    } catch {
+      throw new Error('attachment url is invalid');
+    }
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      throw new Error('attachment url must use http or https');
+    }
+
+    if (url.username || url.password || !this.isAttachmentOriginAllowed(url)) {
+      throw new Error('attachment origin is not explicitly allowed');
+    }
+
+    const privateOrigins = this.deps.attachments?.privateOrigins ?? [];
+    const { data, contentType } = await downloadAllowedAttachment(
+      url, Math.min(MAX_ATTACHMENT_BYTES, remainingBytes), ATTACHMENT_FETCH_TIMEOUT_MS,
+      privateOrigins.includes(url.origin), deadlineSignal,
+    );
+
+    const pathName = decodeURIComponent(url.pathname.split('/').pop() || '');
+    const filename =
+      typeof input.filename === 'string' && input.filename.trim()
+        ? input.filename.trim()
+        : pathName || 'attachment';
+    const responseMime = contentType?.split(';')[0]?.trim();
+    const inferredMime = this.inferMimeType(filename);
+    const mimeType =
+      typeof input.mimeType === 'string' && input.mimeType.trim()
+        ? input.mimeType.trim()
+        : responseMime && responseMime !== 'application/octet-stream'
+          ? responseMime
+          : inferredMime ?? responseMime ?? 'application/octet-stream';
+
+    return { filename, mimeType, data, size: data.byteLength };
+  }
+
+  private inferMimeType(filename: string): string | undefined {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.mp4')) return 'video/mp4';
+    if (lower.endsWith('.mov')) return 'video/quicktime';
+    if (lower.endsWith('.webm')) return 'video/webm';
+    if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+    if (lower.endsWith('.png')) return 'image/png';
+    if (lower.endsWith('.pdf')) return 'application/pdf';
+    if (lower.endsWith('.txt')) return 'text/plain';
+    return undefined;
   }
 
   private persistOutboundMessage(input: {

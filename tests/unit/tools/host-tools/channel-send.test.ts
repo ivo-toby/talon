@@ -13,6 +13,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ok, err } from 'neverthrow';
 import { ChannelSendHandler } from '../../../../src/tools/host-tools/channel-send.js';
+import { downloadAllowedAttachment } from '../../../../src/tools/host-tools/attachment-download.js';
+
+vi.mock('../../../../src/tools/host-tools/attachment-download.js', () => ({
+  downloadAllowedAttachment: vi.fn(),
+}));
 import type { ChannelSendArgs, ToolExecutionContext } from '../../../../src/tools/host-tools/channel-send.js';
 import { ChannelError } from '../../../../src/core/errors/error-types.js';
 import type { ChannelRegistry } from '../../../../src/channels/channel-registry.js';
@@ -82,6 +87,7 @@ function makeArgs(overrides: Partial<ChannelSendArgs> = {}): ChannelSendArgs {
 function makeConnector(sendResult: ReturnType<typeof ok | typeof err> = ok(undefined)): ChannelConnector {
   return {
     type: 'telegram',
+    supportsAttachments: true,
     name: 'my-telegram',
     start: vi.fn(),
     stop: vi.fn(),
@@ -776,6 +782,124 @@ describe('ChannelSendHandler — binding-gated persistence', () => {
     expect(connector.send).toHaveBeenCalledWith('chat-42', expect.any(Object));
     expect(bindingRepo.findDefaultForChannel).not.toHaveBeenCalled();
     expect(messageRepo.insert).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChannelSendHandler — partial delivery', () => {
+  it('returns a structured partial result instead of suggesting a full resend', async () => {
+    const { ChannelPartialDeliveryError } = await import('../../../../src/core/errors/error-types.js');
+    const connector = makeConnector(err(new ChannelPartialDeliveryError('Telegram sendDocument failed (429)', true, 1)));
+    const messageRepo = makeMessageRepo();
+    const threadRepo = makeThreadRepo();
+    threadRepo.findByExternalId = vi.fn().mockReturnValue(ok({
+      id: 'thread-001', channel_id: 'chan-001', external_id: 'ext-001',
+      metadata: '{}', created_at: 0, updated_at: 0,
+    }));
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector),
+      threadRepository: threadRepo,
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      logger: makeLogger(),
+    });
+    const result = await handler.execute(makeArgs(), makeContext());
+    expect(result.status).toBe('error');
+    expect(result.result).toMatchObject({ partial: true, deliveredText: true, deliveredAttachments: 1, retryWholeBatch: false });
+    expect(messageRepo.insert).toHaveBeenCalled();
+  });
+});
+
+describe('ChannelSendHandler — unsupported connector attachments', () => {
+  it('rejects an unsupported connector before any network download or message send', async () => {
+    const connector = makeConnector(ok(undefined));
+    Object.assign(connector, { type: 'slack', supportsAttachments: false });
+    const downloadMock = vi.mocked(downloadAllowedAttachment);
+    downloadMock.mockReset();
+    const handler = new ChannelSendHandler({
+      channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger(),
+    });
+    const result = await handler.execute(makeArgs({
+      attachments: [{ url: 'https://files.example.test/test.pdf' }],
+    }), makeContext());
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('does not support file attachments');
+    expect(downloadMock).not.toHaveBeenCalled();
+    expect(connector.send).not.toHaveBeenCalled();
+  });
+});
+
+describe('ChannelSendHandler — file attachments', () => {
+  it('rejects attachment downloads by default without an explicit origin allowlist', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      const connector = makeConnector(ok(undefined));
+      const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const result = await handler.execute(makeArgs({ attachments: [{ url: 'https://files.example.test/report.pdf' }] }), makeContext());
+      expect(result.status).toBe('error');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(connector.send).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
+  });
+
+  it('downloads a file and passes its bytes to the channel connector', async () => {
+    const connector = makeConnector(ok(undefined));
+    const downloadMock = vi.mocked(downloadAllowedAttachment).mockResolvedValue({
+      contentType: 'application/pdf',
+      data: Buffer.from([1, 2, 3]),
+    });
+    try {
+      const handler = new ChannelSendHandler({ attachments: { allowedOrigins: ['https://files.example.test'], privateOrigins: [] }, channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const result = await handler.execute(makeArgs({ attachments: [{ url: 'https://files.example.test/report.pdf', filename: 'report.pdf' }] }), makeContext());
+      expect(result.status).toBe('success');
+      expect(connector.send).toHaveBeenCalledWith('ext-001', expect.objectContaining({
+        attachments: [expect.objectContaining({ filename: 'report.pdf', mimeType: 'application/pdf', data: Buffer.from([1, 2, 3]) })],
+      }), expect.any(AbortSignal));
+    } finally {
+      downloadMock.mockReset();
+    }
+  });
+
+  it('limits all attachments to a single bounded batch', async () => {
+    const downloadMock = vi.mocked(downloadAllowedAttachment).mockImplementation(
+      async (_url, cap) => ({
+        data: Buffer.alloc(cap === 50 * 1024 * 1024 ? 30 * 1024 * 1024 : 20 * 1024 * 1024),
+        contentType: 'application/octet-stream',
+      }),
+    );
+    try {
+      const connector = makeConnector(ok(undefined));
+      const handler = new ChannelSendHandler({
+        attachments: { allowedOrigins: ['https://files.example.test'], privateOrigins: [] }, channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger(),
+      });
+      const result = await handler.execute(makeArgs({ attachments: [
+        { url: 'https://files.example.test/one' },
+        { url: 'https://files.example.test/two' },
+        { url: 'https://files.example.test/three' },
+      ] }), makeContext());
+      expect(result.status).toBe('error');
+      expect(downloadMock).toHaveBeenCalledTimes(2);
+      expect(downloadMock.mock.calls[0]?.[1]).toBe(50 * 1024 * 1024);
+      expect(downloadMock.mock.calls[1]?.[1]).toBe(20 * 1024 * 1024);
+      expect(connector.send).not.toHaveBeenCalled();
+    } finally {
+      downloadMock.mockReset();
+    }
+  });
+
+  it('rejects more than ten attachments before attempting a download', async () => {
+    const connector = makeConnector(ok(undefined));
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    try {
+      const handler = new ChannelSendHandler({ attachments: { allowedOrigins: ['https://files.example.test'], privateOrigins: [] }, channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const result = await handler.execute(makeArgs({ attachments: Array.from({ length: 11 }, () => ({ url: 'https://files.example.test/report.pdf' })) }), makeContext());
+      expect(result.status).toBe('error');
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(connector.send).not.toHaveBeenCalled();
+    } finally {
+      fetchMock.mockRestore();
+    }
   });
 });
 

@@ -53,6 +53,7 @@ Capability labels:
 
 - `channel.send:*`
 - `channel.send:<channel-name>`
+- `channel.attachment:send` (additional explicit allow permission for downloading file attachments)
 
 Sends a Markdown message to another Talon channel.
 
@@ -61,11 +62,19 @@ Sends a Markdown message to another Talon channel.
 | `channelId` | string | Required; this is the configured channel name |
 | `content` | string | Required Markdown body |
 | `replyTo` | string | Optional channel-specific thread or message ID |
+| `attachments` | array | Optional HTTP(S) file URLs with optional `filename` and `mimeType`; max 10 files |
 
 Notes:
 
 - The agent does not pass a thread ID directly; Talon resolves the current thread context for the target channel.
 - Output is converted to the target connector's native format automatically.
+- Attachment URLs are fetched by the Talon host immediately before delivery. Telegram sends `video/*` as video and other files as documents.
+- Outbound file attachments are supported **only on Telegram**. Other connectors reject requests with attachments before downloading anything.
+- An attachment request requires both permission to send on the channel and explicit `channel.attachment:send` in the persona `capabilities.allow` (approval-only is not sufficient).
+- Host downloads are **disabled by default**. Set `attachments.allowedOrigins` in talond.yaml to a list of exact HTTP(S) origins (including port where applicable), for example `https://exports.example.com`. Paths and credentials are not allowed in origin entries.
+- Non-public IP addresses (including loopback, LAN and link-local) are blocked by default, even for an allowed origin. For a trusted internal export service only, add its exact origin to `attachments.privateOrigins` **as well as** `attachments.allowedOrigins`. This is an intentional elevated network trust exception: do not allow arbitrary user-controlled hosts or broad internal services.
+- Hostname resolution is pinned to the checked address for the download connection; HTTP redirects are rejected. Both the individual attachment and the whole batch are limited to 50 MiB; up to 10 files are accepted.
+- Downloads have a 60-second timeout per file; Telegram uploads have a 90-second timeout. On partial delivery, the tool reports the confirmed number of delivered attachments and whether the last delivery is uncertain. **Do not retry the entire batch**; uncertain deliveries cannot yet be deduplicated reliably.
 
 ---
 

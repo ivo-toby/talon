@@ -502,6 +502,33 @@ export const SubAgentOverrideSchema = z.object({
 export const SubAgentsConfigSchema = z.record(z.string(), SubAgentOverrideSchema);
 
 // ---------------------------------------------------------------------------
+/** Validate exact HTTP(S) origins; paths, credentials and query strings are forbidden. */
+const AttachmentOriginSchema = z.string().superRefine((value, ctx) => {
+  try {
+    const url = new URL(value);
+    if ((url.protocol !== 'http:' && url.protocol !== 'https:') ||
+        !url.hostname || url.username || url.password || url.search || url.hash ||
+        url.pathname !== '/' || (value !== url.origin && value !== url.origin + '/')) {
+      throw new Error('not an origin');
+    }
+  } catch {
+    ctx.addIssue({ code: z.ZodIssueCode.custom,
+      message: 'Expected an HTTP(S) origin (scheme, host, optional port; no path or credentials)' });
+  }
+}).transform((value) => new URL(value).origin);
+
+export const AttachmentDownloadConfigSchema = z.object({
+  allowedOrigins: z.array(AttachmentOriginSchema).default([]),
+  privateOrigins: z.array(AttachmentOriginSchema).default([]),
+}).superRefine((value, ctx) => {
+  for (const origin of value.privateOrigins) {
+    if (!value.allowedOrigins.includes(origin)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['privateOrigins'],
+        message: 'Each private origin must also appear in allowedOrigins' });
+    }
+  }
+});
+
 // Root config
 // ---------------------------------------------------------------------------
 
@@ -509,6 +536,7 @@ export const TalondConfigSchema = z
   .object({
     storage: StorageConfigSchema.default(() => StorageConfigSchema.parse({})),
     sandbox: SandboxConfigSchema.default(() => SandboxConfigSchema.parse({})),
+    attachments: AttachmentDownloadConfigSchema.default(() => AttachmentDownloadConfigSchema.parse({})),
     channels: z.array(ChannelConfigSchema).default([]),
     personas: z.array(PersonaConfigSchema).default([]),
     bindings: z.array(BindingConfigSchema).default([]),

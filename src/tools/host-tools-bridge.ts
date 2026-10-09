@@ -94,6 +94,7 @@ export class HostToolsBridge {
 
     this.channelHandler = new ChannelSendHandler({
       channelRegistry: ctx.channelRegistry,
+      attachments: ctx.config.attachments,
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       messageRepository: ctx.repos.message,
@@ -382,6 +383,22 @@ export class HostToolsBridge {
               { personaId: context.personaId, tool: normalizedTool },
               'host-tools-bridge: rejected disallowed tool call',
             );
+            return toolResult;
+          }
+
+          // Sending text does not grant network access to fetch attachment URLs.
+          // Require a separate explicit allow capability; approval-only is not
+          // sufficient for this non-interactive host-side fetch path.
+          if (normalizedTool === 'channel.send' &&
+              Array.isArray(args['attachments']) && args['attachments'].length > 0 &&
+              !resolvedCaps.allow.includes('channel.attachment:send')) {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: 'channel.send: attachments require channel.attachment:send capability',
+            };
+            toolObservation.update({ output: toolResult, level: 'ERROR', statusMessage: toolResult.error });
             return toolResult;
           }
 

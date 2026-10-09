@@ -13,6 +13,25 @@
 
 ---
 
+## Trusted outbound attachment sources
+
+Telegram file attachments require the persona's `channel.attachment:send` permission.
+The Talon host downloads only from origins configured in `talond.yaml`:
+
+```yaml
+attachments:
+  allowedOrigins: ['http://192.168.1.161:3300']
+  privateOrigins: ['http://192.168.1.161:3300']
+```
+
+Both lists default to empty. Private origins must also be included in
+`allowedOrigins`. Each entry must be an HTTP(S) origin without a path, query,
+fragment or credentials. Redirects are forbidden, non-public IP addresses are
+blocked unless that origin is explicitly in `privateOrigins`, and downloads are
+DNS-pinned. A complete attachment send is subject to a shared four-minute
+deadline, shorter than the host-tools bridge timeout. Other tools and direct
+shell networking are not restricted by this attachment allowlist.
+
 ## What is Talon?
 
 Talon is an open-source runtime for long-lived AI workflows. Connect a persona to the channels and tools you already use, choose its model provider and tool boundaries, and run it on infrastructure you control.
@@ -2376,7 +2395,7 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 | Tool                  | Purpose                                                                  |
 | --------------------- | ------------------------------------------------------------------------ |
 | `schedule_manage`     | CRUD + list scheduled tasks (supports `promptFile` for reusable prompts) |
-| `channel_send`        | Send messages to channel connectors (supports `externalChatId` for explicit targeting; CLI-created schedules must pass it or use `channel_list` / `channel_broadcast`) |
+| `channel_send`        | Send messages to channel connectors; optional `attachments` are supported only on Telegram and require separate permission and allowed download origins. Supports `externalChatId` for explicit targeting. For CLI-created schedules, specify `externalChatId` or use `channel_list` to discover recipients / `channel_broadcast` to reach bound chats. |
 | `channel_list`        | List channels bound to the persona + their chat external_ids (discovery for `channel_send`) |
 | `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
 | `persona_send`        | Submit a delegated A2A task to another persona                           |

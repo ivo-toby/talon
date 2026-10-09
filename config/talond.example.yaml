@@ -23,6 +23,16 @@ sandbox:
     cpus: 1
     pidsLimit: 256
 
+# Host-side attachment downloads are disabled unless explicitly allowed.
+# Private addresses additionally require inclusion in privateOrigins.
+attachments:
+  allowedOrigins: []
+  privateOrigins: []
+# Example trusted LAN export server (both lists must name the same origin):
+# attachments:
+#   allowedOrigins: ['http://192.168.1.161:3300']
+#   privateOrigins: ['http://192.168.1.161:3300']
+
 channels:
   - type: telegram
     name: personal-telegram

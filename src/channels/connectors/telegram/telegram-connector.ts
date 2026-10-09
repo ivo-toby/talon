@@ -6,11 +6,12 @@
  * types and Telegram Bot API payloads.
  */
 
+import { readFile } from 'node:fs/promises';
 import type pino from 'pino';
 import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
-import { ChannelError } from '../../../core/errors/error-types.js';
+import { ChannelError, ChannelPartialDeliveryError } from '../../../core/errors/error-types.js';
 import type {
   TelegramConfig,
   TelegramUpdate,
@@ -48,6 +49,7 @@ const GET_ME_TIMEOUT_MS = 10_000;
  */
 export class TelegramConnector implements ChannelConnector {
   readonly type = 'telegram';
+  readonly supportsAttachments = true;
   readonly name: string;
 
   private _botUserId: string | undefined;
@@ -171,9 +173,38 @@ export class TelegramConnector implements ChannelConnector {
    * @param externalThreadId - Telegram chat_id (as a string).
    * @param output            - Agent output to deliver.
    */
-  async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
-    const text = this.format(output.body);
+  async send(externalThreadId: string, output: AgentOutput, signal?: AbortSignal): Promise<Result<void, ChannelError>> {
+    let deliveredText = false;
+    let deliveredAttachments = 0;
+    if (output.body.trim()) {
+      const messageResult = await this.sendText(externalThreadId, output.body, signal);
+      if (messageResult.isErr()) return messageResult;
+      deliveredText = true;
+    }
 
+    for (const attachment of output.attachments ?? []) {
+      const attachmentResult = await this.sendAttachment(externalThreadId, attachment, signal);
+      if (attachmentResult.isErr()) {
+        return err(new ChannelPartialDeliveryError(
+          attachmentResult.error.message,
+          deliveredText,
+          deliveredAttachments,
+          // A Telegram timeout/network failure may have delivered the upload.
+          /network error|timed out/i.test(attachmentResult.error.message),
+        ));
+      }
+      deliveredAttachments++;
+    }
+
+    return ok(undefined);
+  }
+
+  private async sendText(
+    externalThreadId: string,
+    markdown: string,
+    signal?: AbortSignal,
+  ): Promise<Result<void, ChannelError>> {
+    const text = this.format(markdown);
     const url = this.apiUrl('sendMessage');
     const body = JSON.stringify({
       chat_id: externalThreadId,
@@ -187,6 +218,7 @@ export class TelegramConnector implements ChannelConnector {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000),
       });
     } catch (fetchErr) {
       const cause = fetchErr instanceof Error ? fetchErr : undefined;
@@ -195,13 +227,65 @@ export class TelegramConnector implements ChannelConnector {
       );
     }
 
+    return this.parseSendResponse(response, 'sendMessage');
+  }
+
+  private async sendAttachment(
+    externalThreadId: string,
+    attachment: NonNullable<AgentOutput['attachments']>[number],
+    signal?: AbortSignal,
+  ): Promise<Result<void, ChannelError>> {
+    let bytes: Buffer;
+    try {
+      bytes =
+        typeof attachment.data === 'string'
+          ? await readFile(attachment.data)
+          : attachment.data;
+    } catch (readErr) {
+      const cause = readErr instanceof Error ? readErr : undefined;
+      return err(
+        new ChannelError(
+          `Telegram attachment read failed for "${attachment.filename}": ${String(readErr)}`,
+          cause,
+        ),
+      );
+    }
+
+    const isVideo = attachment.mimeType.toLowerCase().startsWith('video/');
+    const method = isVideo ? 'sendVideo' : 'sendDocument';
+    const field = isVideo ? 'video' : 'document';
+    const form = new FormData();
+    form.set('chat_id', externalThreadId);
+    form.set(
+      field,
+      new Blob([new Uint8Array(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength)], { type: attachment.mimeType || 'application/octet-stream' }),
+      attachment.filename,
+    );
+
+    let response: Response;
+    try {
+      response = await fetch(this.apiUrl(method), { method: 'POST', body: form, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000) });
+    } catch (fetchErr) {
+      const cause = fetchErr instanceof Error ? fetchErr : undefined;
+      return err(
+        new ChannelError(`Telegram ${method} network error: ${String(fetchErr)}`, cause),
+      );
+    }
+
+    return this.parseSendResponse(response, method);
+  }
+
+  private async parseSendResponse(
+    response: Response,
+    method: string,
+  ): Promise<Result<void, ChannelError>> {
     let data: TelegramSendResult;
     try {
       data = (await response.json()) as TelegramSendResult;
     } catch {
       return err(
         new ChannelError(
-          `Telegram sendMessage: could not parse response (HTTP ${response.status})`,
+          `Telegram ${method}: could not parse response (HTTP ${response.status})`,
         ),
       );
     }
@@ -209,7 +293,7 @@ export class TelegramConnector implements ChannelConnector {
     if (!data.ok) {
       const description = data.description ?? 'unknown error';
       const code = data.error_code ?? response.status;
-      return err(new ChannelError(`Telegram sendMessage failed (${code}): ${description}`));
+      return err(new ChannelError(`Telegram ${method} failed (${code}): ${description}`));
     }
 
     return ok(undefined);

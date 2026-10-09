@@ -59,6 +59,20 @@ export class ChannelError extends TalonError {
   readonly code = 'CHANNEL_ERROR' as const;
 }
 
+/** A channel request that may have delivered some content before failing. */
+export class ChannelPartialDeliveryError extends ChannelError {
+  readonly deliveredText: boolean;
+  readonly deliveredAttachments: number;
+  readonly deliveryUncertain: boolean;
+
+  constructor(message: string, deliveredText: boolean, deliveredAttachments: number, deliveryUncertain = false) {
+    super(message);
+    this.deliveredText = deliveredText;
+    this.deliveredAttachments = deliveredAttachments;
+    this.deliveryUncertain = deliveryUncertain;
+  }
+}
+
 /** Durable queue enqueue/dequeue error. */
 export class QueueError extends TalonError {
   readonly code = 'QUEUE_ERROR' as const;
