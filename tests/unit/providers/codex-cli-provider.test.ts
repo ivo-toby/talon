@@ -59,6 +59,60 @@ describe('CodexCliProvider', () => {
     return events;
   }
 
+  it('reads persistent CODEX_HOME for provider authentication when operatorHome is unset', () => {
+    const persistentCodexHome = join(runtimeDir, 'persistent-codex-home');
+    mkdirSync(persistentCodexHome, { recursive: true });
+    writeFileSync(join(persistentCodexHome, 'auth.json'), '{"access_token":"persistent"}');
+
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = persistentCodexHome;
+    try {
+      const provider = new CodexCliProvider(
+        { enabled: true, command: 'codex', contextWindowTokens: 400_000, options: {} },
+        { dataDir: runtimeDir },
+      );
+      const result = provider.prepareBackgroundInvocation({
+        prompt: 'Hello',
+        systemPrompt: 'Be helpful',
+        mcpServers: {},
+        cwd: runtimeDir,
+        timeoutMs: 60_000,
+      });
+      expect(result.isOk()).toBe(true);
+      const prepared = result._unsafeUnwrap();
+      expect(readFileSync(join(prepared.env.HOME!, '.codex', 'auth.json'), 'utf8')).toBe('{"access_token":"persistent"}');
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    }
+  });
+
+  it('prefers explicit CODEX_HOME over operatorHome and keeps sessions isolated', () => {
+    const persistentCodexHome = join(runtimeDir, 'persistent-codex-home');
+    mkdirSync(persistentCodexHome, { recursive: true });
+    writeFileSync(join(persistentCodexHome, 'auth.json'), '{"access_token":"persistent"}');
+
+    const originalCodexHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = persistentCodexHome;
+    try {
+      const result = makeProvider().prepareBackgroundInvocation({
+        prompt: 'Hello',
+        systemPrompt: 'Be helpful',
+        mcpServers: {},
+        cwd: runtimeDir,
+        timeoutMs: 60_000,
+      });
+      expect(result.isOk()).toBe(true);
+      const prepared = result._unsafeUnwrap();
+      expect(prepared.env.CODEX_HOME).not.toBe(persistentCodexHome);
+      expect(readFileSync(join(prepared.env.CODEX_HOME!, 'auth.json'), 'utf8'))
+        .toBe('{"access_token":"persistent"}');
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+    }
+  });
+
   it('creates a resumable streaming execution strategy', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
