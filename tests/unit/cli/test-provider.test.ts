@@ -225,7 +225,6 @@ process.stdin.on('end', () => {
     expect(result.response).toBe('hello');
   });
 
-
   it('loads Codex credentials from CODEX_HOME instead of HOME', async () => {
     const customCodexHome = join(testDir, 'persistent-codex-home');
     mkdirSync(customCodexHome, { recursive: true });
