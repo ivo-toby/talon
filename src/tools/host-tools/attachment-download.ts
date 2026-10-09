@@ -33,6 +33,7 @@ export async function downloadAllowedAttachment(
   maxBytes: number,
   timeoutMs: number,
   allowPrivate = false,
+  deadlineSignal?: AbortSignal,
 ): Promise<{ data: Buffer; contentType: string | undefined }> {
   const literalFamily = isIP(url.hostname);
   const addresses = literalFamily
@@ -43,12 +44,14 @@ export async function downloadAllowedAttachment(
     !isPublicAddress(address, family as 4 | 6))) {
     throw new Error('attachment hostname resolves to a non-public address');
   }
+  if (deadlineSignal?.aborted) throw new Error('attachment send deadline exceeded');
   const pinned = addresses[0];
   const transport = url.protocol === 'https:' ? httpsRequest : httpRequest;
   return await new Promise((resolve, reject) => {
     const req = transport(url, {
       method: 'GET',
       timeout: timeoutMs,
+      signal: deadlineSignal ? AbortSignal.any([deadlineSignal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       headers: { accept: '*/*' },
       lookup: (_hostname, options, cb) => {
         if (options.all) {
