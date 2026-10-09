@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - upstream/feat-home-assistant-addon
+  pull_request:
+    paths:
+      - '.github/workflows/ha-addon-validation.yml'
+      - 'talon-haos/**'
   workflow_dispatch:
 
 permissions:
@@ -29,6 +33,10 @@ jobs:
           node --check talon-haos/ingress-proxy.cjs
           node --check talon-haos/sync-attachment-origins.cjs
           node --test talon-haos/*.test.cjs
+      - name: Assert graceful shutdown launcher (regression)
+        run: |
+          sh -n talon-haos/run.sh
+          node --test --test-name-pattern="daemon launcher execs via setpriv" talon-haos/startup.test.cjs
 
   source-image:
     name: Build source image
