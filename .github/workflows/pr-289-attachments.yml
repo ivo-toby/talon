@@ -43,6 +43,7 @@ jobs:
             src/core/config/config-schema.ts \
             src/tools/host-tools-bridge.ts \
             src/tools/host-tools-mcp-server.ts \
+            src/tools/tool-filter.ts \
             src/channels/channel-types.ts
       - name: Attachment and channel tests
         run: |
