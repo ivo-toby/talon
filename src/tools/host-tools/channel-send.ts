@@ -116,6 +116,7 @@ export class ChannelSendHandler {
   constructor(
     private readonly deps: {
       channelRegistry: ChannelRegistry;
+      attachments?: { allowedOrigins: string[]; privateOrigins: string[] };
       threadRepository: ThreadRepository;
       channelRepository?: Pick<ChannelRepository, 'findByName'>;
       messageRepository?: Pick<MessageRepository, 'insert'>;
@@ -326,18 +327,9 @@ export class ChannelSendHandler {
    * This is an initial barrier, not a substitute for DNS/IP pinning.
    */
   private isAttachmentOriginAllowed(url: URL): boolean {
-    const configured = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
-    if (!configured) return false;
-    return configured.split(',').some((entry) => {
-      try {
-        const candidate = new URL(entry.trim());
-        if (candidate.username || candidate.password || candidate.pathname !== '/' ||
-            candidate.search || candidate.hash) return false;
-        return candidate.origin === url.origin;
-      } catch {
-        return false;
-      }
-    });
+    return (this.deps.attachments?.allowedOrigins ?? []).some(
+      (origin) => new URL(origin).origin === url.origin,
+    );
   }
 
   private async fetchAttachment(input: ChannelSendAttachmentArg, remainingBytes: number): Promise<Attachment> {
@@ -358,8 +350,7 @@ export class ChannelSendHandler {
       throw new Error('attachment origin is not explicitly allowed');
     }
 
-    const privateOrigins = (process.env['TALON_ATTACHMENT_PRIVATE_ORIGINS'] ?? '')
-      .split(',').map((entry) => entry.trim());
+    const privateOrigins = this.deps.attachments?.privateOrigins ?? [];
     const { data, contentType } = await downloadAllowedAttachment(
       url, Math.min(MAX_ATTACHMENT_BYTES, remainingBytes), ATTACHMENT_FETCH_TIMEOUT_MS,
       privateOrigins.includes(url.origin),
