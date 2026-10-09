@@ -248,7 +248,7 @@ const TOOLS = [
   {
     name: 'channel_send',
     description:
-      'Sends text to configured channels; file attachments are currently Telegram-only. Attachment downloads require channel.send:attachments permission and an explicitly allowed download origin. Use the exact registered channel name. To attach a file, provide a trusted HTTP(S) download URL; the host fetches the bytes before calling the channel connector. Omit externalChatId when replying to the current conversation; specify a verified chat ID for cross-chat delivery or CLI-created schedules.',
+      'Sends text to configured channels; file attachments are currently Telegram-only. Attachment downloads require channel.attachment:send permission and an explicitly allowed download origin. Use the exact registered channel name. To attach a file, provide a trusted HTTP(S) download URL; the host fetches the bytes before calling the channel connector. Omit externalChatId when replying to the current conversation; specify a verified chat ID for cross-chat delivery or CLI-created schedules.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -273,7 +273,7 @@ const TOOLS = [
           type: 'array' as const,
           maxItems: 10,
           description:
-            'Telegram only: up to ten HTTP(S) download URLs, with a total batch limit of 50 MiB. Requires channel.send:attachments and attachments.allowedOrigins in talond.yaml; private network sources additionally require attachments.privateOrigins. Unsupported channels reject attachments without downloading. Supply filename and mimeType where known. Do not disclose private download URLs in user-facing messages.',
+            'Telegram only: up to ten HTTP(S) download URLs, with a total batch limit of 50 MiB. Requires channel.attachment:send and attachments.allowedOrigins in talond.yaml; private network sources additionally require attachments.privateOrigins. Unsupported channels reject attachments without downloading. Supply filename and mimeType where known. Do not disclose private download URLs in user-facing messages.',
           items: {
             type: 'object' as const,
             properties: {
