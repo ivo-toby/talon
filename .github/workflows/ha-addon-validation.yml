@@ -1,0 +1,74 @@
+name: Home Assistant add-on validation
+
+on:
+  push:
+    branches:
+      - upstream/feat-home-assistant-addon
+  pull_request:
+    paths:
+      - '.github/workflows/ha-addon-validation.yml'
+      - 'talon-haos/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ha-addon-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  addon-scripts:
+    name: Config and startup tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Validate scripts and regression tests
+        run: |
+          sh -n talon-haos/run.sh
+          node --check talon-haos/check-config.cjs
+          node --check talon-haos/ingress-proxy.cjs
+          node --check talon-haos/sync-attachment-origins.cjs
+          node --test talon-haos/*.test.cjs
+      - name: Assert graceful shutdown launcher (regression)
+        run: |
+          sh -n talon-haos/run.sh
+          node --test --test-name-pattern="daemon launcher execs via setpriv" talon-haos/startup.test.cjs
+
+  source-image:
+    name: Build source image
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build local image (not published)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: talon-haos/Dockerfile.source
+          platforms: linux/amd64
+          push: false
+          tags: talon-haos:source-check
+
+  addon-image:
+    name: Build and smoke-test Home Assistant add-on
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build add-on using its actual HA context
+        uses: docker/build-push-action@v6
+        with:
+          context: ./talon-haos
+          file: ./talon-haos/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: talon-haos:ha-check
+      - name: Test image startup and ingress transport
+        run: python3 talon-haos/smoke-image.py talon-haos:ha-check

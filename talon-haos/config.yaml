@@ -1,0 +1,25 @@
+name: Talon
+version: "1.0.11"
+slug: talon
+description: Source-built Talon with Codex CLI and a management terminal.
+arch:
+  - amd64
+startup: application
+boot: auto
+timeout: 60
+init: false
+ingress: true
+ingress_port: 7681
+panel_icon: mdi:console
+map: []
+options:
+  instance: ""
+  storage_path: ""
+  # PR #289: trusted HTTP(S) sources for Telegram attachments.
+  attachment_allowed_origins: []
+schema:
+  instance: str
+  storage_path: str
+  # PR #289 provides the Talon-side attachments.allowedOrigins/privateOrigins schema.
+  attachment_allowed_origins:
+    - str

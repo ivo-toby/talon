@@ -1,0 +1,15 @@
+#!/bin/sh
+set -eu
+
+WORKSPACE="${TALON_WORKSPACE:-}"
+CONFIG="${TALOND_CONFIG_PATH:-}"
+
+if [ -z "$WORKSPACE" ] || [ -z "$CONFIG" ]; then
+  echo "Talon environment is not initialized. Open the terminal from the Talon app." >&2
+  exit 1
+fi
+
+cd "$WORKSPACE"
+export OPENAI_API_KEY="${OPENAI_API_KEY:-talon-cli-placeholder}"
+export TELEGRAM_BOT_TOKEN="${TELEGRAM_BOT_TOKEN:-talon-cli-placeholder}"
+exec node /opt/talond/dist/cli/index.js "$@"
