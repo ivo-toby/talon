@@ -2,9 +2,8 @@
 
 ## 1.0.11
 
-- Add an optional, default-empty Home Assistant allowlist for trusted attachment download origins.
-- Validate configured HTTP(S) origins at startup and set both attachment allowlist environment variables.
-- Document private-network exceptions and their security limits.
+- Refresh source-built add-on packaging and management terminal integration.
+- Preserve existing workspaces, private state and credentials across upgrades.
 
 ## 1.0.10
 
