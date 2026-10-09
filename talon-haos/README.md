@@ -33,28 +33,6 @@ with other add-ons or automatically start multiple instances.
 Changing `storage_path` does not move data. Back up and transfer the existing
 workspace and database before selecting another location.
 
-## Trusted attachment download servers
-
-Telegram video/file attachments can be downloaded only from HTTP(S) origins
-explicitly listed in Home Assistant's `attachment_allowed_origins` option.
-The default empty list disables these downloads. Add a server's **origin**
-(protocol, hostname or IP, and optional port), without a path or credentials:
-
-```yaml
-attachment_allowed_origins:
-  - http://192.168.1.161:3300
-```
-
-Restart the add-on after changing this list. Every listed origin is explicitly
-trusted for attachment downloads, even on a private network. The launcher
-sets both `TALON_ATTACHMENT_ALLOWED_ORIGINS` and
-`TALON_ATTACHMENT_PRIVATE_ORIGINS` to the validated origins. Invalid URLs
-prevent startup instead of silently widening access. Redirects remain blocked;
-the list does not grant access to other ports or IP addresses. The MCP
-server's own authentication and Talon's `channel.send:attachments` capability
-are still required. This option restricts only attachment fetching, **not**
-arbitrary shell/network access available to a configured AI provider.
-
 ## Management
 
 Open **Talon > Open Web UI** and use the terminal:
