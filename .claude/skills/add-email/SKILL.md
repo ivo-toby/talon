@@ -101,6 +101,19 @@ config:
 
 Without this, anyone who emails the address can interact with the bot.
 
+`allowedSenders` is matched against the `From` header, which any sender can forge. Also set `requireDmarcPass: true` together with `trustedAuthServId` so the bot only accepts mail your provider authenticated with DMARC. Without `trustedAuthServId`, `requireDmarcPass` drops all mail.
+
+`trustedAuthServId` is the authserv-id your provider writes at the start of its `Authentication-Results` / `ARC-Authentication-Results` header. To find it, send a test mail to the bot from an address you control, open the raw source in your mailbox, and read the first host name after `i=1;` in the `ARC-Authentication-Results` line (or after the header name if there is no `i=` tag). KPN mail uses `mx.kpnmail.nl`.
+
+```yaml
+config:
+  # ... smtp/imap settings ...
+  allowedSenders:
+    - "user1@example.com"
+  requireDmarcPass: true
+  trustedAuthServId: "mx.kpnmail.nl"   # KPN example; use your provider's value
+```
+
 ## Phase 5: Bind a Persona
 
 ```bash
@@ -142,7 +155,8 @@ journalctl --user -u talond -f
 | SMTP auth failed | Use app-specific password, not account password |
 | Gmail: "Application-specific password required" | Enable 2FA, then create an app password |
 | Long delay before response | Default polling is 30s; lower `pollingIntervalMs` for faster response |
-| Bot replies to spam | Add `allowedSenders` to config |
+| Bot replies to spam | Add `allowedSenders` to config, and set `requireDmarcPass: true` so forged From headers are rejected |
+| Bot ignores mail that looks legitimate | With `requireDmarcPass: true`, mail without a `dmarc=pass` result from `trustedAuthServId` is dropped; set `trustedAuthServId` to the value from the message's `ARC-Authentication-Results` header and check the logs for "failed DMARC check" |
 | HTML formatting broken | Talon sends HTML emails; check if email client renders HTML |
 
 ## Config Reference
@@ -166,8 +180,10 @@ channels:
       smtpSecure: false                    # Required (false for port 587, true for 465)
       # General
       fromAddress: "Talon <bot@gmail.com>" # Required
-      allowedSenders:                      # Optional — restrict who can email the bot
+      allowedSenders:                      # Optional — restrict who can email the bot (matched against the forgeable From header)
         - "user@example.com"
+      requireDmarcPass: true               # Optional (default: false) — accept mail only if the trusted provider reports dmarc=pass for the sender's domain; requires trustedAuthServId
+      trustedAuthServId: "mx.kpnmail.nl"   # Required with requireDmarcPass — your provider's authserv-id from Authentication-Results / ARC-Authentication-Results (KPN: mx.kpnmail.nl)
       pollingIntervalMs: 30000             # Optional (default: 30000 = 30s)
       mailbox: "INBOX"                     # Optional (default: INBOX)
 ```
@@ -176,5 +192,5 @@ channels:
 
 - Inbound: polls IMAP at configurable intervals (default 30s)
 - Outbound: sends via SMTP with HTML formatting
-- Threading: uses Message-ID / In-Reply-To headers to maintain conversation threads
-- Each sender email address maps to one Talon thread
+- Threading: uses Message-ID / References / In-Reply-To headers to maintain conversation threads; replies carry the matching `Re:` subject
+- Each conversation (root of the References chain) maps to one Talon thread per sender address

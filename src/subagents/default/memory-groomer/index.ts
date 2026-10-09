@@ -46,6 +46,18 @@ function formatMemories(items: MemoryItemRow[]): string {
     .join('\n\n');
 }
 
+/**
+ * Read `protectedKeyPrefixes` from the sub-agent input. Memory item ids are the
+ * keys used by `memory_access`; any item whose id starts with one of these
+ * prefixes (or equals it) is operational state owned by another task and must
+ * never be shown to the model or pruned/consolidated.
+ */
+function readProtectedPrefixes(input: SubAgentInput): string[] {
+  const raw = input.protectedKeyPrefixes;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((p): p is string => typeof p === 'string' && p.length > 0);
+}
+
 export async function run(
   ctx: SubAgentContext,
   input: SubAgentInput,
@@ -68,6 +80,18 @@ export async function run(
     const cutoff = Date.now() - periodMs;
     items = items.filter((item) => item.created_at >= cutoff);
   }
+
+  // Exclude protected keys before the model ever sees them. Because the action
+  // loop only accepts ids from `items`, protected ids can never be pruned or
+  // consolidated even if the model hallucinates them.
+  const protectedPrefixes = readProtectedPrefixes(input);
+  let protectedCount = 0;
+  if (protectedPrefixes.length > 0) {
+    const before = items.length;
+    items = items.filter((item) => !protectedPrefixes.some((prefix) => item.id.startsWith(prefix)));
+    protectedCount = before - items.length;
+  }
+
   if (items.length === 0) {
     return ok({
       summary: 'No memory items to groom.',
@@ -101,6 +125,8 @@ export async function run(
         },
       });
     }
+
+    const protectedNote = protectedCount > 0 ? ` ${protectedCount} protected key(s) skipped.` : '';
 
     // 4. Execute actions — only operate on IDs that exist in the fetched items.
     const knownIds = new Set(items.map((i) => i.id));
@@ -182,8 +208,8 @@ export async function run(
     }
 
     return ok({
-      summary: `Memory grooming complete: ${pruned} pruned, ${consolidated} consolidated, ${kept} kept.`,
-      data: { pruned, consolidated, kept },
+      summary: `Memory grooming complete: ${pruned} pruned, ${consolidated} consolidated, ${kept} kept.${protectedNote}`,
+      data: protectedCount > 0 ? { pruned, consolidated, kept, protected: protectedCount } : { pruned, consolidated, kept },
       usage: {
         inputTokens: usage?.inputTokens ?? 0,
         outputTokens: usage?.outputTokens ?? 0,

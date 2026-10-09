@@ -101,7 +101,7 @@ integration, or automation is safe without your configuration and review.
 - **Terminal** — WebSocket server with `talonctl chat` client, rendered markdown output, persistent threads
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
-- **Email** — IMAP polling + SMTP send, thread tracking via In-Reply-To headers _(not yet tested)_
+- **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
 
 ### Agent System
 
@@ -830,7 +830,7 @@ Once authenticated, the daemon uses the saved credentials — no QR code display
 
 ### Email
 
-> **Not yet tested**: The connector has IMAP polling and SMTP send implementations, but has not been tested end-to-end. See TASK-049.
+> **Partly verified live**: IMAP polling (including the `ARC-Authentication-Results` / `requireDmarcPass` check) has been run against a live KPN mailbox. SMTP send is implemented and unit-tested but not yet verified against a live SMTP server. See TASK-049.
 
 Dual-mode connector with IMAP polling and SMTP outbound.
 
@@ -851,13 +851,27 @@ channels:
       smtpPass: ${EMAIL_PASSWORD}
       smtpSecure: false
       fromAddress: 'Talon <agent@example.com>'
+      # Optional
+      allowedSenders:                  # see note below
+        - 'alice@example.com'
+      requireDmarcPass: true           # recommended when allowedSenders is set; needs trustedAuthServId
+      trustedAuthServId: 'mx.kpnmail.nl'  # your provider's authserv-id (see below)
+      pollingIntervalMs: 30000         # default 30000
+      mailbox: 'INBOX'                 # default INBOX
 ```
 
-- **Inbound**: IMAP polling (or webhook via `feedInbound()`)
-- **Outbound**: SMTP with HTML formatting
+- **Inbound**: IMAP polling of unseen messages (up to 20 per poll, oldest first; each message is marked `\Seen` after it parses). Webhook delivery via `feedInbound()` is also supported.
+- **Outbound**: SMTP (nodemailer) with HTML formatting and a plain-text alternative
 - **Idempotency key**: `Message-ID` header
-- **Thread mapping**: `In-Reply-To` / `References` headers
+- **Thread mapping**: the thread anchor is the root of the `References` chain (falling back to `In-Reply-To`, then `Message-ID`), so every reply in a conversation maps to one Talon thread. Replies carry the matching `Re:` subject and `In-Reply-To` / `References` headers.
 - **Format**: Markdown to HTML conversion
+- **`allowedSenders`**: matched against the `From` header, which is trivially forgeable. Use `requireDmarcPass: true` so inbound mail is only accepted when your mail provider reports `dmarc=pass` for the sender's domain. It defaults to `false`.
+- **`requireDmarcPass`**: only works together with `trustedAuthServId`. Without it, every message is dropped (fail closed). The check reads `Authentication-Results` and `ARC-Authentication-Results` headers, but only values whose authserv-id equals `trustedAuthServId` are trusted; values from other hosts are ignored because a sender can forge them. The first trusted value must contain `dmarc=pass` and a `header.from=` matching the sender's domain.
+- **`trustedAuthServId`**: the authserv-id your provider writes at the start of its `Authentication-Results` / `ARC-Authentication-Results` header. For KPN mail this is `mx.kpnmail.nl`. To find yours, open a received message's source (raw headers) from your mailbox and look at the first token after `i=1;` (or after the header name, if there is no `i=` tag) in the `ARC-Authentication-Results` or `Authentication-Results` line, for example `ARC-Authentication-Results: i=1; mx.kpnmail.nl; spf=pass ...`.
+- **Size limit**: messages larger than 10 MiB are skipped and marked as read, so they are not retried.
+- **Delivery caveat**: messages are marked as read in the mailbox before the agent handles them. If the daemon crashes in between, that one message is not processed.
+- **`pollingIntervalMs`**: delay between IMAP polls (default 30 seconds). Errors back off exponentially up to 60 seconds.
+- **`mailbox`**: IMAP folder to poll (default `INBOX`).
 
 ### Terminal
 
@@ -1578,10 +1592,12 @@ If fewer than 10 keyword matches are found, they're returned directly without LL
 | **Model**                 | Haiku 4.5                                                       |
 | **Required capabilities** | `memory.access:*`                                               |
 | **Timeout**               | 30s                                                             |
-| **Input**                 | `{ periodMs? }` (optional: only groom items from the last N ms) |
+| **Input**                 | `{ periodMs?, protectedKeyPrefixes? }` (optional: only groom items from the last N ms; skip keys starting with any given prefix) |
 | **Output**                | `{ pruned, consolidated, kept }` counts                         |
 
 Uses `generateObject` with a Zod discriminated union schema to ensure the LLM returns valid, typed actions.
+
+**Protected keys:** pass `protectedKeyPrefixes` (e.g. `["mail:", "calendar:"]`) to exclude operational-state keys owned by other tasks (last-checked timestamps, dedup lists). Matching memory items (item id = `memory_access` key) are removed before the model sees the list and can never be pruned or consolidated; the summary reports how many were skipped.
 
 #### `session-summarizer`
 

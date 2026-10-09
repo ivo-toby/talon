@@ -328,4 +328,72 @@ describe('memory-groomer', () => {
     expect(result.isOk()).toBe(true);
     expect(result._unsafeUnwrap().data!.kept).toBe(1);
   });
+
+  describe('protectedKeyPrefixes', () => {
+    it('does not show protected keys to the model', async () => {
+      const items = [
+        makeMemoryItem({ id: 'mail:last_checked:imap', content: '2026-10-08T10:00:00Z' }),
+        makeMemoryItem({ id: 'prefs:theme', content: 'User prefers dark mode' }),
+      ];
+      const ctx = makeCtx({ findByThread: vi.fn().mockReturnValue(ok(items)) });
+      generateObjectMock.mockResolvedValueOnce({
+        object: { actions: [{ type: 'keep', ids: ['prefs:theme'], reason: 'ok' }] },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      });
+
+      const result = await run(ctx, { protectedKeyPrefixes: ['mail:'] });
+
+      expect(result.isOk()).toBe(true);
+      const prompt = generateObjectMock.mock.calls[0]![0].prompt as string;
+      expect(prompt).not.toContain('mail:last_checked:imap');
+      expect(prompt).toContain('prefs:theme');
+      const value = result._unsafeUnwrap();
+      expect(value.data).toEqual({ pruned: 0, consolidated: 0, kept: 1, protected: 1 });
+      expect(value.summary).toContain('1 protected key(s) skipped');
+    });
+
+    it('never deletes a protected key even if the model hallucinates its id', async () => {
+      const items = [
+        makeMemoryItem({ id: 'calendar:alerted_events', content: 'evt1@2026-10-09' }),
+        makeMemoryItem({ id: 'prefs:theme', content: 'User prefers dark mode' }),
+      ];
+      const deleteFn = vi.fn().mockReturnValue(ok(undefined));
+      const ctx = makeCtx({ findByThread: vi.fn().mockReturnValue(ok(items)), delete: deleteFn });
+      generateObjectMock.mockResolvedValueOnce({
+        object: { actions: [{ type: 'prune', ids: ['calendar:alerted_events'], reason: 'looks stale' }] },
+        usage: { inputTokens: 10, outputTokens: 5 },
+      });
+
+      const result = await run(ctx, { protectedKeyPrefixes: ['calendar:'] });
+
+      expect(result.isOk()).toBe(true);
+      expect(deleteFn).not.toHaveBeenCalled();
+      expect(result._unsafeUnwrap().data!.pruned).toBe(0);
+    });
+
+    it('returns early without a model call when every item is protected', async () => {
+      const items = [makeMemoryItem({ id: 'google:auth_warned', content: 'true' })];
+      const ctx = makeCtx({ findByThread: vi.fn().mockReturnValue(ok(items)) });
+
+      const result = await run(ctx, { protectedKeyPrefixes: ['google:'] });
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().summary).toContain('No memory items');
+      expect(generateObjectMock).not.toHaveBeenCalled();
+    });
+
+    it('ignores malformed protectedKeyPrefixes values', async () => {
+      const items = [makeMemoryItem({ id: 'prefs:theme' })];
+      const ctx = makeCtx({ findByThread: vi.fn().mockReturnValue(ok(items)) });
+      generateObjectMock.mockResolvedValueOnce({
+        object: { actions: [{ type: 'keep', ids: ['prefs:theme'], reason: 'ok' }] },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      });
+
+      const result = await run(ctx, { protectedKeyPrefixes: ['', 42, null] });
+
+      expect(result.isOk()).toBe(true);
+      expect(result._unsafeUnwrap().data).toEqual({ pruned: 0, consolidated: 0, kept: 1 });
+    });
+  });
 });

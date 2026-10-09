@@ -124,8 +124,9 @@ function createHandler(overrides: Record<string, unknown> = {}) {
             transport: 'stdio',
             command: 'npx',
             args: ['perplexity-mcp'],
+            // SkillLoader expands env references before the runtime context
+            // is built, so the resolver hands over already-resolved values.
             env: {
-              // SkillLoader expands env references before runtime context assembly.
               API_KEY: 'secret',
             },
           },
