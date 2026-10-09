@@ -279,7 +279,9 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
-    const result = await connector.send(externalThreadId, output, deadlineSignal);
+    const result = deadlineSignal
+      ? await connector.send(externalThreadId, output, deadlineSignal)
+      : await connector.send(externalThreadId, output);
 
     if (result.isErr()) {
       if (result.error instanceof ChannelPartialDeliveryError) {
