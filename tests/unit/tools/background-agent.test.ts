@@ -124,8 +124,10 @@ function createHandler(overrides: Record<string, unknown> = {}) {
             transport: 'stdio',
             command: 'npx',
             args: ['perplexity-mcp'],
+            // SkillLoader expands env references before the runtime context
+            // is built, so the resolver hands over already-resolved values.
             env: {
-              API_KEY: '${PERPLEXITY_API_KEY}',
+              API_KEY: 'secret',
             },
           },
         },
@@ -163,7 +165,6 @@ describe('BackgroundAgentHandler', () => {
   });
 
   it('spawns a background task using current persona and thread context', async () => {
-    process.env.PERPLEXITY_API_KEY = 'secret';
     const { handler, backgroundAgentManager, deps } = createHandler();
 
     const result = await handler.execute(
