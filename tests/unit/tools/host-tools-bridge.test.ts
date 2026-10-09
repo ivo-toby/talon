@@ -326,6 +326,59 @@ describe('HostToolsBridge', () => {
     });
   });
 
+  describe('attachment privilege isolation', () => {
+    it('refuses channel sending when only the attachment capability is allowed', async () => {
+      (mockCtx.personaLoader.getByName as any).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: ['channel.attachment:send'],
+          requireApproval: [],
+        },
+      }));
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'channel_send',
+        args: {
+          channelId: 'telegram-main',
+          content: 'This must not be sent',
+          attachments: [{ url: 'https://example.com/report.pdf' }],
+        },
+        context: {
+          runId: 'run-001', threadId: 'thread-001',
+          personaId: 'persona-001', requestId: 'req-attachments-only',
+        },
+      });
+      expect(JSON.stringify(response)).toContain('not allowed');
+    });
+
+    it('refuses attachment downloading when only normal channel send is allowed', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'channel_send',
+        args: {
+          channelId: 'telegram-main',
+          content: 'No attachment privilege',
+          attachments: [{ url: 'https://example.com/report.pdf' }],
+        },
+        context: {
+          runId: 'run-001', threadId: 'thread-001',
+          personaId: 'persona-001', requestId: 'req-send-only',
+        },
+      });
+      expect(JSON.stringify(response)).toContain('channel.attachment:send');
+    });
+  });
+
   describe('dispatch', () => {
     it('rejects direct bridge requests without a bridge secret', async () => {
       bridge = new HostToolsBridge(mockCtx);
