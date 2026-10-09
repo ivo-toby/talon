@@ -89,7 +89,7 @@ describe('CodexCliProvider', () => {
     }
   });
 
-  it('prefers explicit CODEX_HOME over operatorHome and keeps sessions isolated', () => {
+  it('prefers explicit operatorHome over CODEX_HOME and keeps sessions isolated', () => {
     const persistentCodexHome = join(runtimeDir, 'persistent-codex-home');
     mkdirSync(persistentCodexHome, { recursive: true });
     writeFileSync(join(persistentCodexHome, 'auth.json'), '{"access_token":"persistent"}');
@@ -107,8 +107,9 @@ describe('CodexCliProvider', () => {
       expect(result.isOk()).toBe(true);
       const prepared = result._unsafeUnwrap();
       expect(prepared.env.CODEX_HOME).not.toBe(persistentCodexHome);
+      expect(prepared.env.CODEX_HOME).toBe(join(prepared.env.HOME!, '.codex'));
       expect(readFileSync(join(prepared.env.CODEX_HOME!, 'auth.json'), 'utf8')).toBe(
-        '{"access_token":"persistent"}',
+        '{"access_token":"test"}',
       );
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
