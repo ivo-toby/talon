@@ -74,13 +74,6 @@ case "$STATE_DIR" in
   /data/*) ;;
   *) echo "[talon] dataDir must be inside /data" >&2; exit 1 ;;
 esac
-# Validate absolute paths before starting daemon; preserve recovery terminal.
-CONFIG_VALID=1
-if [ -f "$CONFIG_FILE" ]; then
-  if ! node /usr/local/lib/talon-check-config.cjs "$CONFIG_FILE" "$WORKSPACE" "$EXPECTED_STATE_DIR"; then
-    CONFIG_VALID=0
-  fi
-fi
 IPC_DIR="$STATE_DIR/ipc/daemon"
 mkdir -p "$STATE_DIR/ipc"
 if [ -L "$IPC_DIR" ]; then
@@ -237,6 +230,17 @@ auth:
       baseURL: https://api.openai.com/v1
 EOF
   fi
+fi
+
+# PR #289 provides the attachments schema. Sync only the HA-managed origin
+# stanza, keeping other talond.yaml settings and comments unchanged.
+# Invalid origins leave the recovery terminal accessible, without starting Talon.
+CONFIG_VALID=1
+if ! node /usr/local/lib/talon-sync-attachment-origins.cjs "$OPTIONS" "$CONFIG_FILE"; then
+  CONFIG_VALID=0
+fi
+if ! node /usr/local/lib/talon-check-config.cjs "$CONFIG_FILE" "$WORKSPACE" "$EXPECTED_STATE_DIR"; then
+  CONFIG_VALID=0
 fi
 
 # Upstream talonctl hardcodes data/ipc/daemon relative to its current workspace,
