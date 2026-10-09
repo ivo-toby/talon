@@ -515,7 +515,7 @@ const AttachmentOriginSchema = z.string().superRefine((value, ctx) => {
     ctx.addIssue({ code: z.ZodIssueCode.custom,
       message: 'Expected an HTTP(S) origin (scheme, host, optional port; no path or credentials)' });
   }
-});
+}).transform((value) => new URL(value).origin);
 
 export const AttachmentDownloadConfigSchema = z.object({
   allowedOrigins: z.array(AttachmentOriginSchema).default([]),
