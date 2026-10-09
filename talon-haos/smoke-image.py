@@ -176,6 +176,13 @@ try:
 
     # Break only the disposable fixture's config and verify recovery access.
     docker("stop", "-t", "60", ADDON)
+    stopped_state = inspect(ADDON)["State"]
+    assert stopped_state["Status"] == "exited", stopped_state
+    assert stopped_state["ExitCode"] == 0, stopped_state
+    stop_logs = docker("logs", ADDON)
+    assert "daemon: stopped" in stop_logs, "Talon did not complete shutdown"
+    assert "Session terminated, killing shell" not in stop_logs, "runuser shell termination persists"
+    print("PASS normal Docker stop exits 0 after daemon shutdown; no runuser kill", flush=True)
     repair = PREFIX + "-repair"
     created_containers.append(repair)
     docker("run", "--rm", "--name", repair, "-v", VOLUME + ":/data", "--entrypoint", "node", IMAGE,
