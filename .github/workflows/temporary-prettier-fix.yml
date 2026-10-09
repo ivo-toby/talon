@@ -1,0 +1,32 @@
+name: One-time PR 296 Prettier fix
+on:
+  push:
+    paths:
+      - .github/workflows/temporary-prettier-fix.yml
+permissions:
+  contents: write
+jobs:
+  format:
+    if: github.repository == 'lukkezen/talon' && github.ref == 'refs/heads/upstream/fix-codex-cli-reliability'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Format only PR 296 files
+        run: npx prettier --write src/cli/commands/test-provider.ts src/providers/codex-cli-provider.ts tests/unit/cli/test-provider.test.ts tests/unit/providers/codex-cli-provider.test.ts
+      - name: Check formatting
+        run: npx prettier --check src/cli/commands/test-provider.ts src/providers/codex-cli-provider.ts tests/unit/cli/test-provider.test.ts tests/unit/providers/codex-cli-provider.test.ts
+      - name: Commit formatted code and remove temporary workflow
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git rm .github/workflows/temporary-prettier-fix.yml
+          git add src/cli/commands/test-provider.ts src/providers/codex-cli-provider.ts tests/unit/cli/test-provider.test.ts tests/unit/providers/codex-cli-provider.test.ts
+          git commit -m 'style: format Codex PR files with Prettier'
+          git push
