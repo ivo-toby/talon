@@ -275,3 +275,38 @@ describe('ALL_HOST_TOOLS', () => {
     expect(ALL_HOST_TOOLS).toContain('subagent.background');
   });
 });
+
+describe('attachment capability isolation', () => {
+  it('does not expose channel tools for an attachment-only capability', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['channel.attachment:send'],
+      requireApproval: [],
+    };
+    expect(filterAllowedMcpTools(caps)).toEqual([]);
+    expect(filterAllowedTools(caps)).toEqual([]);
+    expect(isToolAllowed('channel.send', caps)).toBe(false);
+    expect(isToolAllowed('channel.list', caps)).toBe(false);
+    expect(isToolAllowed('channel.broadcast', caps)).toBe(false);
+  });
+
+  it('does not accept legacy channel.send:attachments as an attachment-only capability', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['channel.send:attachments'],
+      requireApproval: [],
+    };
+    // The old scoped label still matches the normal channel.send prefix.
+    // It must not be used as an attachment permission after the migration.
+    expect(filterAllowedMcpTools(caps)).toContain('channel_send');
+    expect(isToolAllowed('channel.send', caps)).toBe(true);
+  });
+
+  it('grants channel tools only when the separate channel sending capability is present', () => {
+    const caps: ResolvedCapabilities = {
+      allow: ['channel.attachment:send', 'channel.send:*'],
+      requireApproval: [],
+    };
+    expect(filterAllowedMcpTools(caps)).toEqual(expect.arrayContaining([
+      'channel_send', 'channel_list', 'channel_broadcast',
+    ]));
+  });
+});
