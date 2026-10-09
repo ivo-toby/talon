@@ -118,7 +118,7 @@ export class ChannelSendHandler {
       channelRegistry: ChannelRegistry;
       attachments?: { allowedOrigins: string[]; privateOrigins: string[] };
       threadRepository: ThreadRepository;
-      channelRepository?: Pick<ChannelRepository, 'findByName'>;
+      channelRepository?: Pick<ChannelRepository, 'findByName' | 'findById'>;
       messageRepository?: Pick<MessageRepository, 'insert'>;
       /**
        * When provided, outbound persistence is gated on the current
@@ -160,7 +160,8 @@ export class ChannelSendHandler {
    */
   async execute(args: ChannelSendArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
-    const { channelId, content, attachments, replyTo } = args;
+    let { channelId } = args;
+    const { content, attachments, replyTo } = args;
 
     this.deps.logger.info(
       { requestId, runId: context.runId, threadId: context.threadId, personaId: context.personaId, channelId },
@@ -178,6 +179,22 @@ export class ChannelSendHandler {
       const error = new ToolError('channel.send: content is required and must be a non-empty string');
       this.deps.logger.warn({ requestId }, error.message);
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
+    }
+
+    // A configured channel name always wins over a provider-type alias.
+    // Resolve an alias only for the current inbound channel, never for a
+    // scheduled thread or a cross-chat send with an explicit recipient.
+    if (!this.deps.channelRegistry.get(channelId) &&
+        !(typeof args.externalChatId === 'string' && args.externalChatId.trim()) &&
+        this.deps.channelRepository) {
+      const origin = this.deps.threadRepository.findById(context.threadId);
+      if (origin.isOk() && origin.value && !origin.value.external_id.startsWith('schedule:')) {
+        const currentChannel = this.deps.channelRepository.findById(origin.value.channel_id);
+        if (currentChannel.isOk() && currentChannel.value?.type === channelId &&
+            this.deps.channelRegistry.get(currentChannel.value.name)) {
+          channelId = currentChannel.value.name;
+        }
+      }
     }
 
     // Look up the connector
@@ -266,8 +283,18 @@ export class ChannelSendHandler {
     // synthetic `schedule:<persona>:<channel>` fallback because it isn't a
     // valid provider-side chat id and the connector would reject it with
     // "chat not found" (the silent-failure mode this branch fixes).
+    // Blank optional recipient IDs should not override the real chat ID of
+    // the current thread. Keep explicit recipients and schedule origins first.
+    const explicitChatId =
+      typeof args.externalChatId === 'string' && args.externalChatId.trim()
+        ? args.externalChatId.trim()
+        : null;
+    const scheduleOriginId =
+      typeof originExternalId === 'string' && originExternalId.trim()
+        ? originExternalId.trim()
+        : null;
     const externalThreadId =
-      args.externalChatId ?? originExternalId ?? (isSyntheticFallback ? null : fallbackExternalId);
+      explicitChatId ?? scheduleOriginId ?? (isSyntheticFallback ? null : fallbackExternalId);
     if (!externalThreadId) {
       const msg =
         'channel.send: no recipient chat id. This run is on a schedule thread without an originExternalId (likely created from the CLI). ' +
