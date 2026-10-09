@@ -1004,7 +1004,7 @@ describe('ChannelSendHandler — file attachments', () => {
       expect(result.status).toBe('success');
       expect(connector.send).toHaveBeenCalledWith('ext-001', expect.objectContaining({
         attachments: [expect.objectContaining({ filename: 'report.pdf', mimeType: 'application/pdf', data: Buffer.from([1, 2, 3]) })],
-      }));
+      }), expect.any(AbortSignal));
     } finally {
       downloadMock.mockReset();
     }
