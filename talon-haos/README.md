@@ -33,6 +33,33 @@ with other add-ons or automatically start multiple instances.
 Changing `storage_path` does not move data. Back up and transfer the existing
 workspace and database before selecting another location.
 
+## Trusted attachment download origins (PR #289)
+
+Home Assistant exposes `attachment_allowed_origins` as a default-empty list of
+trusted HTTP(S) origins for Telegram file downloads. This depends on
+[PR #289](https://github.com/ivo-toby/talon/pull/289), which adds the
+`attachments.allowedOrigins` and `attachments.privateOrigins` settings to Talon.
+
+Example add-on configuration:
+
+```yaml
+attachment_allowed_origins:
+  - "http://192.168.1.161:3300"
+```
+
+At startup, the add-on validates every origin and synchronizes a **marked
+Home Assistant-managed block** in the selected workspace's `talond.yaml`.
+This keeps the rest of the file intact. The trusted origins populate both
+allowed and private origin lists; allowing a private origin is an explicit
+per-server exception to Talon's public-IP restriction. Redirects remain blocked.
+Removing all origins removes only the managed block.
+
+If you already have an independently managed top-level `attachments:` block
+in `talond.yaml`, configure origins there instead; the add-on refuses to
+overwrite it when its HA origin list is nonempty. Invalid settings prevent
+the daemon from starting, but the recovery terminal remains accessible.
+Restart the add-on after changing these settings.
+
 ## Management
 
 Open **Talon > Open Web UI** and use the terminal:
