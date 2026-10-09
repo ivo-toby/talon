@@ -21,3 +21,12 @@ test('daemon launcher execs via setpriv without runuser session timeout', () => 
   assert.match(script, /kill -TERM "\-\$DAEMON_PID"/);
   assert.match(script, /wait "\$DAEMON_PID"/);
 });
+
+test('HA stop cleanly exits and terminal is an exec-style process group', () => {
+  const script = fs.readFileSync(path.join(__dirname, 'run.sh'), 'utf8');
+  assert.match(script, /^trap 'cleanup; exit 0' INT TERM$/m);
+  assert.match(script, /^setsid setpriv --reuid=talond --regid=talond --init-groups -- \/usr\/local\/bin\/ttyd .* &$/m);
+  assert.doesNotMatch(script, /^runuser -u talond -- .*ttyd/m);
+  assert.match(script, /kill -TERM "-\$TTYD_PID"/);
+  assert.match(script, /wait "\$TTYD_PID"/);
+});
