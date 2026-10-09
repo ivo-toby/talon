@@ -40,6 +40,52 @@ talonctl list-skills
 talonctl reload
 ```
 
+## Startup verification
+
+Version 1.0.10 omits the explicit `HEALTHCHECK NONE` instruction. Docker stores
+that instruction as a nonempty `Config.Healthcheck` object with `Test: ["NONE"]`.
+Supervisor versions that treat any such object as an enabled check can remain
+in `startup`: Docker does not execute a disabled check or emit its health events.
+The Node base image supplies no check; CI verifies the resulting image metadata.
+`startup: application` controls boot order, and `timeout: 60` is the stop timeout;
+neither setting nor the daemon's `READY` log releases that wait.
+
+The ingress proxy still accepts only gateway `172.30.32.2` by default. It passes
+HTTP and WebSockets to ttyd on loopback port 7682, which launches an unprivileged
+`talond` shell. No host ports or wider subnet access are required. The launcher
+stays in the foreground and keeps the recovery terminal alive if the daemon
+configuration is invalid or the daemon exits.
+
+Build and exercise the **actual** HA build context on a disposable Linux Docker
+host (the test creates and removes only its own named containers/network/volume):
+
+```sh
+docker build -t talon-haos:1.0.10-check talon-haos
+python3 talon-haos/smoke-image.py talon-haos:1.0.10-check
+```
+
+The test requires subnet `172.30.32.0/24` to be unused; do not run it on the live
+Supervisor host. It reproduces the old disabled-healthcheck metadata, evaluates
+the pinned upstream state method, and checks HTML, an interactive WebSocket,
+rejection of other source IPs, startup without an API key, persistent YAML/SQLite
+state across restart, and the recovery terminal. This is transport validation;
+it does not run Supervisor or validate real HA authentication/session routing.
+
+After an operator installs/rebuilds 1.0.10, verify on Home Assistant itself:
+
+1. Record `ha supervisor info` and `ha addons info <slug>`; version must be
+   1.0.10 and state must become `started`.
+2. With host Docker access, inspect the add-on container's `Config.Healthcheck`
+   and `State`; expect no healthcheck and a running container. Inspect only those
+   fields, not environment variables containing credentials.
+3. Open **Web UI** from the authenticated HA session. Confirm the terminal page
+   loads and its WebSocket upgrades with HTTP 101, then execute `talonctl status`.
+4. Check Supervisor logs if the state still remains `startup`. Record the actual
+   installed image ID/version and metadata before attributing it to this fix.
+
+Image/CI success alone must never be reported as a verified fix on a live HA
+installation. No CI job here deploys or publishes the image.
+
 ## External tools and files
 
 The add-on does not mount Home Assistant's shared folders. Integrate external
