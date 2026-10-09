@@ -25,8 +25,20 @@ any original model and Telegram configuration when updating the add-on.
 The API key and Telegram token are exported as `OPENAI_API_KEY` and
 `TELEGRAM_BOT_TOKEN` for configurations that reference them. A workspace using
 another provider does not need a dummy API key.
-Normal restarts and upgrades preserve this configuration.\n\nEach named workspace receives its own `state` directory, SQLite database,\nthreads and IPC. For compatibility, the original `default` workspace continues\nusing legacy `/data/talon/state` if it already exists. The `instance` setting\n**selects** a workspace; this add-on still runs one daemon at a time.\n\nIf `talond.yaml` is invalid, the daemon stops but the ingress terminal stays\navailable for editing the private configuration and restarting the add-on.
-Changing `storage_path` does not relocate existing files. Make a backup before\nany migration and update the absolute `storage.path`, `dataDir` and\n`systemPromptFile` paths in the moved `talond.yaml`. The add-on's CLI IPC link\nis resolved from the effective configured `dataDir`; ensure the chosen directory\nis inside private `/data`.
+Normal restarts and upgrades preserve this configuration.
+
+Each named workspace receives its own `state` directory, SQLite database,
+threads and IPC. For compatibility, the original `default` workspace continues
+using legacy `/data/talon/state` if it already exists. The `instance` setting
+**selects** a workspace; this add-on still runs one daemon at a time.
+
+If `talond.yaml` is invalid, the daemon stops but the ingress terminal stays
+available for editing the private configuration and restarting the add-on.
+Changing `storage_path` does not relocate existing files. Make a backup before
+any migration and update the absolute `storage.path`, `dataDir` and
+`systemPromptFile` paths in the moved `talond.yaml`. The add-on's CLI IPC link
+is resolved from the effective configured `dataDir`; ensure the chosen directory
+is inside private `/data`.
 
 ## Terminal
 
