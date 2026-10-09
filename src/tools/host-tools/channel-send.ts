@@ -188,6 +188,11 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
+    // Bound the complete attachment operation beneath the host-tools bridge timeout.
+    // The signal is passed to both downloads and Telegram uploads, so timed-out
+    // operations stop rather than continuing to deliver behind the agent's back.
+    const deadlineSignal = attachments?.length ? AbortSignal.timeout(240_000) : undefined;
+
     // Fetch requested attachments on the host. This keeps large file bytes out of
     // the model/MCP transcript while still allowing an MCP server to hand Talon a
     // short-lived download URL.
@@ -208,7 +213,7 @@ export class ChannelSendHandler {
           if (remainingBytes <= 0) {
             throw new Error('attachment batch exceeds total byte limit');
           }
-          const resolved = await this.fetchAttachment(attachment, remainingBytes);
+          const resolved = await this.fetchAttachment(attachment, remainingBytes, deadlineSignal);
           remainingBytes -= resolved.size ?? resolved.data.length;
           resolvedAttachments.push(resolved);
         }
@@ -274,7 +279,7 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
-    const result = await connector.send(externalThreadId, output);
+    const result = await connector.send(externalThreadId, output, deadlineSignal);
 
     if (result.isErr()) {
       if (result.error instanceof ChannelPartialDeliveryError) {
@@ -332,7 +337,7 @@ export class ChannelSendHandler {
     );
   }
 
-  private async fetchAttachment(input: ChannelSendAttachmentArg, remainingBytes: number): Promise<Attachment> {
+  private async fetchAttachment(input: ChannelSendAttachmentArg, remainingBytes: number, deadlineSignal?: AbortSignal): Promise<Attachment> {
     if (!input || typeof input.url !== 'string' || input.url.trim() === '') {
       throw new Error('attachment url is required');
     }
@@ -353,7 +358,7 @@ export class ChannelSendHandler {
     const privateOrigins = this.deps.attachments?.privateOrigins ?? [];
     const { data, contentType } = await downloadAllowedAttachment(
       url, Math.min(MAX_ATTACHMENT_BYTES, remainingBytes), ATTACHMENT_FETCH_TIMEOUT_MS,
-      privateOrigins.includes(url.origin),
+      privateOrigins.includes(url.origin), deadlineSignal,
     );
 
     const pathName = decodeURIComponent(url.pathname.split('/').pop() || '');
