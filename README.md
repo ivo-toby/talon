@@ -15,7 +15,7 @@
 
 ## Trusted outbound attachment sources
 
-Telegram file attachments require the persona's `channel.send:attachments` permission.
+Telegram file attachments require the persona's `channel.attachment:send` permission.
 The Talon host downloads only from origins configured in `talond.yaml`:
 
 ```yaml
