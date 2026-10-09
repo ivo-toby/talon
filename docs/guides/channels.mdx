@@ -61,7 +61,7 @@ Notes:
 - Telegram supports `sendTyping()`, so the daemon shows activity while the agent works
 - non-text inbound updates are ignored
 - outbound file attachments via `channel_send` are supported on Telegram only: `video/*` files use `sendVideo`, other files use `sendDocument`. Other channel connectors reject attachment requests before fetching.
-- to use file attachments, grant the persona `channel.send:attachments` in `capabilities.allow` and configure `TALON_ATTACHMENT_ALLOWED_ORIGINS` for the exact trusted download origins. Internal hosts also require an explicit matching `TALON_ATTACHMENT_PRIVATE_ORIGINS` entry; see the [host tools reference](/reference/host-tools) for security limits and delivery behavior.
+- to use file attachments, grant both a channel send permission and `channel.attachment:send` in `capabilities.allow`; configure exact trusted download origins under `attachments.allowedOrigins` in `talond.yaml`. Internal hosts also require an explicit matching `attachments.privateOrigins` entry; see the [host tools reference](/reference/host-tools) for security limits and delivery behavior.
 
 ---
 
