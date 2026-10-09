@@ -97,4 +97,4 @@ Changing `storage_path` selects a different private directory; it never copies o
 
 ## Shutdown
 
-On a Home Assistant stop or upgrade the launcher sends SIGTERM to the daemon process group and waits for shutdown to finish, with an add-on timeout of 60 seconds. The integration check asserts that the actual Talon process logs its clean shutdown. Outstanding AI calls and queued work can still exceed the allowed shutdown time; they are not guaranteed to finish before Home Assistant terminates the container.
+On a Home Assistant stop or upgrade the launcher sends SIGTERM to the daemon process group and waits for shutdown to finish, with an add-on timeout of 60 seconds. The launcher uses setpriv to run the daemon directly without the runuser session timeout. CI checks the launcher command and shutdown signal/wait handling; a full graceful-shutdown integration test has not yet been executed. Outstanding AI calls and queued work can still exceed the allowed shutdown time; they are not guaranteed to finish before Home Assistant terminates the container.
