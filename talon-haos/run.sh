@@ -295,12 +295,12 @@ cleanup() {
     PROXY_PID=""
   fi
   if [ -n "${TTYD_PID:-}" ]; then
-    kill "$TTYD_PID" 2>/dev/null || true
+    kill -TERM "-$TTYD_PID" 2>/dev/null || true
     wait "$TTYD_PID" 2>/dev/null || true
     TTYD_PID=""
   fi
 }
-trap 'cleanup; exit 143' INT TERM
+trap 'cleanup; exit 0' INT TERM
 trap cleanup EXIT
 
 # Restrict writable workspace/state to the dedicated unprivileged daemon user.
@@ -311,7 +311,7 @@ echo "[talon] Workspace: $WORKSPACE"
 echo "[talon] Private storage: $BASE"
 echo "[talon] Starting management terminal on ingress port 7681..."
 # ttyd is reachable only over loopback; the gate accepts ingress gateway IP.
-runuser -u talond -- /usr/local/bin/ttyd -W -i 127.0.0.1 -p 7682 /bin/bash -l &
+setsid setpriv --reuid=talond --regid=talond --init-groups -- /usr/local/bin/ttyd -W -i 127.0.0.1 -p 7682 /bin/bash -l &
 TTYD_PID=$!
 node /usr/local/lib/talon-ingress-proxy.cjs &
 PROXY_PID=$!
