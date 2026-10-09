@@ -323,7 +323,7 @@ if [ ! -f "$CONFIG_FILE" ] || [ "$CONFIG_VALID" -ne 1 ]; then
 fi
 
 echo "[talon] Starting Talon daemon..."
-setsid runuser -u talond -- node /opt/talond/dist/index.js --config "$CONFIG_FILE" &
+setsid setpriv --reuid=talond --regid=talond --init-groups -- node /opt/talond/dist/index.js --config "$CONFIG_FILE" &
 DAEMON_PID=$!
 
 set +e
