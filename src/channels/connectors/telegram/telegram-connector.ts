@@ -173,17 +173,17 @@ export class TelegramConnector implements ChannelConnector {
    * @param externalThreadId - Telegram chat_id (as a string).
    * @param output            - Agent output to deliver.
    */
-  async send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>> {
+  async send(externalThreadId: string, output: AgentOutput, signal?: AbortSignal): Promise<Result<void, ChannelError>> {
     let deliveredText = false;
     let deliveredAttachments = 0;
     if (output.body.trim()) {
-      const messageResult = await this.sendText(externalThreadId, output.body);
+      const messageResult = await this.sendText(externalThreadId, output.body, signal);
       if (messageResult.isErr()) return messageResult;
       deliveredText = true;
     }
 
     for (const attachment of output.attachments ?? []) {
-      const attachmentResult = await this.sendAttachment(externalThreadId, attachment);
+      const attachmentResult = await this.sendAttachment(externalThreadId, attachment, signal);
       if (attachmentResult.isErr()) {
         return err(new ChannelPartialDeliveryError(
           attachmentResult.error.message,
@@ -202,6 +202,7 @@ export class TelegramConnector implements ChannelConnector {
   private async sendText(
     externalThreadId: string,
     markdown: string,
+    signal?: AbortSignal,
   ): Promise<Result<void, ChannelError>> {
     const text = this.format(markdown);
     const url = this.apiUrl('sendMessage');
@@ -217,6 +218,7 @@ export class TelegramConnector implements ChannelConnector {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body,
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000),
       });
     } catch (fetchErr) {
       const cause = fetchErr instanceof Error ? fetchErr : undefined;
@@ -231,6 +233,7 @@ export class TelegramConnector implements ChannelConnector {
   private async sendAttachment(
     externalThreadId: string,
     attachment: NonNullable<AgentOutput['attachments']>[number],
+    signal?: AbortSignal,
   ): Promise<Result<void, ChannelError>> {
     let bytes: Buffer;
     try {
@@ -261,7 +264,7 @@ export class TelegramConnector implements ChannelConnector {
 
     let response: Response;
     try {
-      response = await fetch(this.apiUrl(method), { method: 'POST', body: form, signal: AbortSignal.timeout(90_000) });
+      response = await fetch(this.apiUrl(method), { method: 'POST', body: form, signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(90_000)]) : AbortSignal.timeout(90_000) });
     } catch (fetchErr) {
       const cause = fetchErr instanceof Error ? fetchErr : undefined;
       return err(
