@@ -331,8 +331,9 @@ For the full deployment walkthrough, see the [setup guide](docs/setup-guide.md).
 - **Node.js 24+**
 - **Claude Code** (default provider), and optionally **Gemini CLI** and/or **Codex CLI** installed and authenticated
 
-For **Codex CLI**, Talon honors the standard `CODEX_HOME` environment variable when locating operator authentication (`auth.json`). If `CODEX_HOME` is unset, it falls back to the operator's `.codex` directory. Each invocation uses a separate temporary Codex home seeded with the operator credentials; the original `CODEX_HOME` is not used as the invocation's writable session directory.
 - **SQLite** (ships with better-sqlite3, no separate install)
+
+For **Codex CLI**, Talon looks for operator authentication (`auth.json`) in the explicit Talon `operatorHome` `.codex` directory first, then in `CODEX_HOME` if set, and finally in the user's default `~/.codex` directory. Each invocation uses a separate temporary Codex home seeded with operator credentials. In Home Assistant, `CODEX_HOME` can point to persistent add-on storage such as `/data/talon/codex-home`.
 
 ### Install
 
