@@ -44,6 +44,7 @@ export interface TestProviderResult {
 // ---------------------------------------------------------------------------
 
 const SPAWN_TIMEOUT_MS = 30_000;
+const CODEX_TEST_TIMEOUT_MS = 120_000;
 const ENV_VAR_PATTERN = /\$\{(\w+)\}/g;
 
 /**
@@ -56,7 +57,7 @@ function runProcess(
   command: string,
   args: string[],
   input?: string,
-  options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+  options?: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number },
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = options?.env ? { ...process.env, ...options.env } : process.env;
@@ -79,8 +80,8 @@ function runProcess(
 
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
-      reject(new Error(`Process timed out after ${SPAWN_TIMEOUT_MS}ms`));
-    }, SPAWN_TIMEOUT_MS);
+      reject(new Error(`Process timed out after ${options?.timeoutMs ?? SPAWN_TIMEOUT_MS}ms`));
+    }, options?.timeoutMs ?? SPAWN_TIMEOUT_MS);
 
     child.on('error', (err) => {
       clearTimeout(timer);
@@ -98,8 +99,9 @@ function runProcess(
 
     if (input !== undefined && child.stdin) {
       child.stdin.write(input);
-      child.stdin.end();
     }
+    // Codex and other CLIs may wait for stdin EOF even when the prompt is an argument.
+    child.stdin?.end();
   });
 }
 
@@ -434,8 +436,8 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
       const codexDir = join(tempHome, '.codex');
       await mkdir(codexDir, { recursive: true, mode: 0o700 });
 
-      const operatorHome = process.env.HOME ?? homedir();
-      const authSrc = join(operatorHome, '.codex', 'auth.json');
+      const operatorCodexDir = process.env.CODEX_HOME || join(process.env.HOME ?? homedir(), '.codex');
+      const authSrc = join(operatorCodexDir, 'auth.json');
       const authDest = join(codexDir, 'auth.json');
       const authJson = await readFile(authSrc, 'utf8');
       await writeFile(authDest, authJson, { encoding: 'utf8', mode: 0o600 });
@@ -464,7 +466,9 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
         env: {
           ...process.env,
           HOME: tempHome,
+          CODEX_HOME: codexDir,
         },
+        timeoutMs: CODEX_TEST_TIMEOUT_MS,
       });
 
       const parsed = parseCodexJsonl(testOutput);
