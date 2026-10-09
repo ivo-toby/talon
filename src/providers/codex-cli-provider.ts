@@ -114,7 +114,9 @@ export class CodexCliProvider implements AgentProvider {
   }
 
   private operatorCodexDir(): string {
-    return join(this.runtime.operatorHome ?? homedir(), '.codex');
+    // CODEX_HOME is the Codex CLI's explicit configuration directory.
+    // Only fall back to Talon's operator home when it is not set.
+    return process.env.CODEX_HOME || join(this.runtime.operatorHome ?? homedir(), '.codex');
   }
 
   private seedCodexHome(
@@ -362,6 +364,7 @@ export class CodexCliProvider implements AgentProvider {
       stdin: this.composePromptStdin(input.systemPrompt, input.prompt),
       env: {
         HOME: homeDir,
+        CODEX_HOME: join(homeDir, '.codex'),
         ...seedResult.value.configEnv,
       },
       cwd: input.cwd,
@@ -458,6 +461,7 @@ export class CodexCliProvider implements AgentProvider {
       stdin: this.composePromptStdin(input.systemPrompt, input.prompt),
       env: {
         HOME: homeDir,
+        CODEX_HOME: join(homeDir, '.codex'),
         ...seedResult.value.configEnv,
         ...(input.traceparent ? { TALOND_TRACEPARENT: input.traceparent } : {}),
       },
