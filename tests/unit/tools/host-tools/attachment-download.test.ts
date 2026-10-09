@@ -1,5 +1,4 @@
 import { createServer } from 'node:http';
-import { getDefaultResultOrder, setDefaultResultOrder } from 'node:dns';
 import { afterEach, describe, expect, it } from 'vitest';
 import { downloadAllowedAttachment } from '../../../../src/tools/host-tools/attachment-download.js';
 
@@ -34,16 +33,17 @@ describe('pinned attachment network transport', () => {
   });
 
   it('downloads from a hostname when Node requests all DNS results', async () => {
-    const url = await serverUrl((_req, res) => res.end('hostname-ok'));
-    url.hostname = 'localhost';
-    const previousOrder = getDefaultResultOrder();
-    setDefaultResultOrder('ipv4first');
-    try {
-      const result = await downloadAllowedAttachment(url, 1024, 1000, true);
-      expect(result.data.toString()).toBe('hostname-ok');
-    } finally {
-      setDefaultResultOrder(previousOrder);
-    }
+    // Listen on the dual-stack wildcard address: localhost may resolve to
+    // either ::1 or 127.0.0.1, and the downloader intentionally pins the
+    // first result from its own DNS lookup (verbatim order).
+    const server = createServer((_req, res) => res.end('hostname-ok'));
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('missing address');
+    const url = new URL(`http://localhost:${address.port}/file`);
+    const result = await downloadAllowedAttachment(url, 1024, 1000, true);
+    expect(result.data.toString()).toBe('hostname-ok');
   });
 
   it('cancels a stalled download when the shared send deadline expires', async () => {
