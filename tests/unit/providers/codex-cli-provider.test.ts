@@ -80,7 +80,9 @@ describe('CodexCliProvider', () => {
       });
       expect(result.isOk()).toBe(true);
       const prepared = result._unsafeUnwrap();
-      expect(readFileSync(join(prepared.env.HOME!, '.codex', 'auth.json'), 'utf8')).toBe('{"access_token":"persistent"}');
+      expect(readFileSync(join(prepared.env.HOME!, '.codex', 'auth.json'), 'utf8')).toBe(
+        '{"access_token":"persistent"}',
+      );
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = originalCodexHome;
@@ -105,8 +107,9 @@ describe('CodexCliProvider', () => {
       expect(result.isOk()).toBe(true);
       const prepared = result._unsafeUnwrap();
       expect(prepared.env.CODEX_HOME).not.toBe(persistentCodexHome);
-      expect(readFileSync(join(prepared.env.CODEX_HOME!, 'auth.json'), 'utf8'))
-        .toBe('{"access_token":"persistent"}');
+      expect(readFileSync(join(prepared.env.CODEX_HOME!, 'auth.json'), 'utf8')).toBe(
+        '{"access_token":"persistent"}',
+      );
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = originalCodexHome;
