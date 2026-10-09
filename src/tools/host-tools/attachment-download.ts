@@ -53,13 +53,12 @@ export async function downloadAllowedAttachment(
       timeout: timeoutMs,
       signal: deadlineSignal ? AbortSignal.any([deadlineSignal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
       headers: { accept: '*/*' },
-      lookup: (_hostname, options, cb) => {
-        if (options.all) {
-          cb(null, [{ address: pinned.address, family: pinned.family }]);
-        } else {
-          cb(null, pinned.address, pinned.family);
-        }
-      },
+      // Node's autoSelectFamily uses lookup({ all: true }); return the
+      // multi-address callback shape without letting DNS re-resolve the host.
+      lookup: ((_hostname: string, options: { all?: boolean }, cb: (...args: unknown[]) => void) =>
+        options?.all
+          ? cb(null, [{ address: pinned.address, family: pinned.family }])
+          : cb(null, pinned.address, pinned.family)) as never,
     }, (res) => {
       void (async () => {
       try {
