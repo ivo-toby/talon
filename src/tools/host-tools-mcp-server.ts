@@ -273,7 +273,7 @@ const TOOLS = [
           type: 'array' as const,
           maxItems: 10,
           description:
-            'Telegram only: up to ten HTTP(S) download URLs, with a total batch limit of 50 MiB. Requires channel.send:attachments and TALON_ATTACHMENT_ALLOWED_ORIGINS; private origins require TALON_ATTACHMENT_PRIVATE_ORIGINS too. Unsupported channels reject attachments without downloading. Supply filename and mimeType where known. Do not disclose private download URLs in user-facing messages.',
+            'Telegram only: up to ten HTTP(S) download URLs, with a total batch limit of 50 MiB. Requires channel.send:attachments and attachments.allowedOrigins in talond.yaml; private network sources additionally require attachments.privateOrigins. Unsupported channels reject attachments without downloading. Supply filename and mimeType where known. Do not disclose private download URLs in user-facing messages.',
           items: {
             type: 'object' as const,
             properties: {
