@@ -12,10 +12,7 @@ import { spawn } from 'node:child_process';
 import { basename, join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import {
-  DEFAULT_CONFIG_PATH,
-  readConfig,
-} from '../config-utils.js';
+import { DEFAULT_CONFIG_PATH, readConfig } from '../config-utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -116,15 +113,17 @@ function extractVersion(output: string): string | null {
 
 function readRecord(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
+    ? (value as Record<string, unknown>)
     : undefined;
 }
 
 function readString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
-  const substituted = value.replace(ENV_VAR_PATTERN, (_match, varName: string) => {
-    return process.env[varName] ?? `\${${varName}}`;
-  }).trim();
+  const substituted = value
+    .replace(ENV_VAR_PATTERN, (_match, varName: string) => {
+      return process.env[varName] ?? `\${${varName}}`;
+    })
+    .trim();
   return substituted.length > 0 ? substituted : undefined;
 }
 
@@ -144,16 +143,15 @@ async function testOpenAiCompatible(options: {
   const providerAuth = readRecord(authProviders?.[providerId]);
   const fallbackAuth = readRecord(authProviders?.['openai-compatible']);
   const baseUrl =
-    readString(providerOptions?.baseUrl)
-    ?? readString(providerAuth?.baseURL)
-    ?? readString(fallbackAuth?.baseURL);
-  const apiKey =
-    readString(providerAuth?.apiKey)
-    ?? readString(fallbackAuth?.apiKey);
+    readString(providerOptions?.baseUrl) ??
+    readString(providerAuth?.baseURL) ??
+    readString(fallbackAuth?.baseURL);
+  const apiKey = readString(providerAuth?.apiKey) ?? readString(fallbackAuth?.apiKey);
   const model = readString(providerOptions?.defaultModel);
 
   if (!baseUrl) {
-    options.result.error = 'OpenAI-compatible provider has no options.baseUrl, auth.providers.<providerId>.baseURL, or auth.providers.openai-compatible.baseURL configured.';
+    options.result.error =
+      'OpenAI-compatible provider has no options.baseUrl, auth.providers.<providerId>.baseURL, or auth.providers.openai-compatible.baseURL configured.';
     return options.result;
   }
 
@@ -185,7 +183,7 @@ async function testOpenAiCompatible(options: {
       return options.result;
     }
 
-    const parsed = await response.json() as Record<string, unknown>;
+    const parsed = (await response.json()) as Record<string, unknown>;
     const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
     const firstChoice = readRecord(choices[0]);
     const message = readRecord(firstChoice?.message);
@@ -193,19 +191,23 @@ async function testOpenAiCompatible(options: {
     const usage = readRecord(parsed.usage);
 
     if (!content) {
-      options.result.error = 'OpenAI-compatible response did not include choices[0].message.content.';
+      options.result.error =
+        'OpenAI-compatible response did not include choices[0].message.content.';
       return options.result;
     }
 
     options.result.response = content;
     options.result.jsonValid = true;
-    options.result.inputTokens = typeof usage?.prompt_tokens === 'number' ? usage.prompt_tokens : null;
-    options.result.outputTokens = typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : null;
+    options.result.inputTokens =
+      typeof usage?.prompt_tokens === 'number' ? usage.prompt_tokens : null;
+    options.result.outputTokens =
+      typeof usage?.completion_tokens === 'number' ? usage.completion_tokens : null;
     return options.result;
   } catch (err) {
-    const message = err instanceof Error && err.name === 'AbortError'
-      ? `Process timed out after ${SPAWN_TIMEOUT_MS}ms`
-      : (err as Error).message;
+    const message =
+      err instanceof Error && err.name === 'AbortError'
+        ? `Process timed out after ${SPAWN_TIMEOUT_MS}ms`
+        : (err as Error).message;
     options.result.error = `OpenAI-compatible test query failed: ${message}`;
     return options.result;
   } finally {
@@ -219,7 +221,9 @@ async function testOpenAiCompatible(options: {
  *
  * Returns { text, inputTokens, outputTokens } or null if unparseable.
  */
-function parseJsonResponse(raw: string): { text: string; inputTokens: number | null; outputTokens: number | null } | null {
+function parseJsonResponse(
+  raw: string,
+): { text: string; inputTokens: number | null; outputTokens: number | null } | null {
   // Try to find a JSON object/array anywhere in the output (providers may
   // prefix with warnings or ANSI codes).
   const jsonStart = raw.indexOf('{');
@@ -269,7 +273,8 @@ function parseJsonResponse(raw: string): { text: string; inputTokens: number | n
       for (const modelStats of Object.values(models)) {
         const tokens = modelStats?.tokens as Record<string, unknown> | undefined;
         if (typeof tokens?.input === 'number') inputTokens = (inputTokens ?? 0) + tokens.input;
-        if (typeof tokens?.candidates === 'number') outputTokens = (outputTokens ?? 0) + tokens.candidates;
+        if (typeof tokens?.candidates === 'number')
+          outputTokens = (outputTokens ?? 0) + tokens.candidates;
       }
     }
     return { text: obj.response, inputTokens, outputTokens };
@@ -361,9 +366,7 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
 
   const providerEntry = providers[options.name] as Record<string, unknown>;
   if (providerEntry.enabled === false) {
-    throw new Error(
-      `Provider "${options.name}" is disabled. Enable it before testing.`,
-    );
+    throw new Error(`Provider "${options.name}" is disabled. Enable it before testing.`);
   }
 
   const command = typeof providerEntry.command === 'string' ? providerEntry.command : '';
@@ -400,25 +403,28 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
     .replace(/\.(cmd|exe|bat)$/u, '');
   const normalizedName = options.name.trim().toLowerCase();
   const normalizedType = readString(providerEntry.type)?.toLowerCase();
-  const isCodex = normalizedType === 'codex-cli'
-    || normalizedName.includes('codex')
-    || normalizedCommandBase.includes('codex')
-    || normalizedCommandFull.includes('codex');
-  const isGemini = normalizedType === 'gemini-cli'
-    || normalizedName.includes('gemini')
-    || normalizedCommandBase.includes('gemini')
-    || normalizedCommandFull.includes('gemini');
-  const isOpenAiCompatible = normalizedType === 'openai-compatible'
-    || normalizedName === 'openai-compatible';
+  const isCodex =
+    normalizedType === 'codex-cli' ||
+    normalizedName.includes('codex') ||
+    normalizedCommandBase.includes('codex') ||
+    normalizedCommandFull.includes('codex');
+  const isGemini =
+    normalizedType === 'gemini-cli' ||
+    normalizedName.includes('gemini') ||
+    normalizedCommandBase.includes('gemini') ||
+    normalizedCommandFull.includes('gemini');
+  const isOpenAiCompatible =
+    normalizedType === 'openai-compatible' || normalizedName === 'openai-compatible';
   const providerOptions = (
     typeof providerEntry.options === 'object' && providerEntry.options !== null
       ? providerEntry.options
       : undefined
   ) as Record<string, unknown> | undefined;
-  const defaultModel = typeof providerOptions?.defaultModel === 'string'
-    && providerOptions.defaultModel.trim().length > 0
-    ? providerOptions.defaultModel.trim()
-    : undefined;
+  const defaultModel =
+    typeof providerOptions?.defaultModel === 'string' &&
+    providerOptions.defaultModel.trim().length > 0
+      ? providerOptions.defaultModel.trim()
+      : undefined;
 
   if (isOpenAiCompatible) {
     return testOpenAiCompatible({
@@ -436,7 +442,8 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
       const codexDir = join(tempHome, '.codex');
       await mkdir(codexDir, { recursive: true, mode: 0o700 });
 
-      const operatorCodexDir = process.env.CODEX_HOME || join(process.env.HOME ?? homedir(), '.codex');
+      const operatorCodexDir =
+        process.env.CODEX_HOME || join(process.env.HOME ?? homedir(), '.codex');
       const authSrc = join(operatorCodexDir, 'auth.json');
       const authDest = join(codexDir, 'auth.json');
       const authJson = await readFile(authSrc, 'utf8');
@@ -484,7 +491,8 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
       }
 
       if (!result.jsonValid) {
-        result.error = 'Codex CLI returned invalid JSONL output (expected thread.started and turn.completed).';
+        result.error =
+          'Codex CLI returned invalid JSONL output (expected thread.started and turn.completed).';
       }
       if (!result.response) {
         result.error = result.error
@@ -519,7 +527,8 @@ export async function testProvider(options: TestProviderOptions): Promise<TestPr
       // version is incompatible or misconfigured.
       result.response = testOutput.trim().split('\n')[0].trim() || null;
       result.jsonValid = false;
-      result.error = 'Gemini CLI returned non-JSON output despite --output-format json. Upgrade to a compatible version.';
+      result.error =
+        'Gemini CLI returned non-JSON output despite --output-format json. Upgrade to a compatible version.';
     } else {
       // Claude plain-text fallback is acceptable for the test.
       result.response = testOutput.trim().split('\n')[0].trim() || null;
@@ -580,7 +589,9 @@ export async function testProviderCommand(options: TestProviderOptions): Promise
         console.log(`${label('Test query:')}${result.response !== null ? 'ok' : 'running...'}`);
         if (result.response !== null) {
           console.log(`${label('Response:')}${JSON.stringify(result.response)}`);
-          console.log(`${label('JSON output:')}${result.jsonValid ? 'valid' : 'invalid (plain text)'}`);
+          console.log(
+            `${label('JSON output:')}${result.jsonValid ? 'valid' : 'invalid (plain text)'}`,
+          );
           if (result.inputTokens !== null || result.outputTokens !== null) {
             const inp = result.inputTokens ?? '?';
             const out = result.outputTokens ?? '?';

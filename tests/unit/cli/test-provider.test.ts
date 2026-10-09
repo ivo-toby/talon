@@ -1,12 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import {
-  chmodSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { testProvider } from '../../../src/cli/commands/test-provider.js';
@@ -20,7 +13,11 @@ beforeEach(() => {
   testDir = mkdtempSync(join(tmpdir(), 'talon-test-provider-cli-'));
   operatorHome = mkdtempSync(join(tmpdir(), 'talon-test-provider-operator-'));
   mkdirSync(join(operatorHome, '.codex'), { recursive: true });
-  writeFileSync(join(operatorHome, '.codex', 'auth.json'), '{"access_token":"operator-token"}', 'utf8');
+  writeFileSync(
+    join(operatorHome, '.codex', 'auth.json'),
+    '{"access_token":"operator-token"}',
+    'utf8',
+  );
   originalHome = process.env.HOME;
   originalCodexHome = process.env.CODEX_HOME;
   delete process.env.CODEX_HOME;
@@ -201,7 +198,9 @@ process.exit(0);
 describe('testProvider() Codex smoke branch', () => {
   it('closes stdin for a Codex process that needs EOF before completing', async () => {
     const fakeCli = join(testDir, 'codex-wait-for-eof');
-    writeFileSync(fakeCli, `#!/usr/bin/env node
+    writeFileSync(
+      fakeCli,
+      `#!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
 const args = process.argv.slice(2);
@@ -216,7 +215,9 @@ process.stdin.on('end', () => {
   console.log(JSON.stringify({ type: 'thread.started', thread_id: 'test-thread' }));
   console.log(JSON.stringify({ type: 'turn.completed' }));
 });
-`, { mode: 0o755 });
+`,
+      { mode: 0o755 },
+    );
     const configPath = writeConfig('codex-smoke', fakeCli);
     const result = await testProvider({ name: 'codex-smoke', configPath });
 

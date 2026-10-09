@@ -151,7 +151,9 @@ describe('CodexCliProvider', () => {
     });
 
     expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr().message).toMatch(/codex-cli provider cannot disable those built-in tools/i);
+    expect(result._unsafeUnwrapErr().message).toMatch(
+      /codex-cli provider cannot disable those built-in tools/i,
+    );
   });
 
   it('does not render unsupported reasoning effort none into Codex config', () => {
@@ -329,17 +331,21 @@ describe('CodexCliProvider', () => {
     const provider = makeProvider();
     const strategy = provider.createExecutionStrategy();
 
-    await expect(collectEvents(strategy.run({
-      threadId: 'thread-001',
-      prompt: 'Search the docs.',
-      systemPrompt: 'You are helpful.',
-      mcpServers: {},
-      cwd: '/workspace/repo',
-      model: 'gpt-5.4',
-      maxTurns: 5,
-      timeoutMs: 60_000,
-      disableNativeShellAndFilesystemTools: true,
-    }))).rejects.toThrow(/codex-cli provider cannot disable those built-in tools/i);
+    await expect(
+      collectEvents(
+        strategy.run({
+          threadId: 'thread-001',
+          prompt: 'Search the docs.',
+          systemPrompt: 'You are helpful.',
+          mcpServers: {},
+          cwd: '/workspace/repo',
+          model: 'gpt-5.4',
+          maxTurns: 5,
+          timeoutMs: 60_000,
+          disableNativeShellAndFilesystemTools: true,
+        }),
+      ),
+    ).rejects.toThrow(/codex-cli provider cannot disable those built-in tools/i);
   });
 
   it('does not reuse stale foreground last-message output when a subsequent run does not write one', async () => {
