@@ -159,9 +159,10 @@ export class ChannelSendHandler {
    * @returns ToolCallResult with status 'success' or 'error'.
    */
   async execute(args: ChannelSendArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
+    const { attachments } = args;
     const requestId = context.requestId ?? 'unknown';
     let { channelId } = args;
-    const { content, attachments, replyTo } = args;
+    const { content, replyTo } = args;
 
     this.deps.logger.info(
       { requestId, runId: context.runId, threadId: context.threadId, personaId: context.personaId, channelId },
@@ -295,6 +296,7 @@ export class ChannelSendHandler {
         : null;
     const externalThreadId =
       explicitChatId ?? scheduleOriginId ?? (isSyntheticFallback ? null : fallbackExternalId);
+
     if (!externalThreadId) {
       const msg =
         'channel.send: no recipient chat id. This run is on a schedule thread without an originExternalId (likely created from the CLI). ' +
