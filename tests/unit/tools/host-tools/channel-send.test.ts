@@ -1050,6 +1050,3 @@ describe('ChannelSendHandler — cross-thread session rotation', () => {
     expect(messageRepo.insert).toHaveBeenCalled();
   });
 });
-
-
-
