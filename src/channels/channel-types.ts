@@ -151,7 +151,7 @@ export interface ChannelConnector {
    * @param output            - The agent output to deliver.
    * @returns Ok on success, Err(ChannelError) on failure.
    */
-  send(externalThreadId: string, output: AgentOutput): Promise<Result<void, ChannelError>>;
+  send(externalThreadId: string, output: AgentOutput, signal?: AbortSignal): Promise<Result<void, ChannelError>>;
 
   /**
    * Signal that the agent is working (e.g. "typing" indicator).
