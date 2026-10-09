@@ -46,6 +46,21 @@ describe('pinned attachment network transport', () => {
     }
   });
 
+  it('cancels a stalled download when the shared send deadline expires', async () => {
+    const url = await serverUrl((_req, res) => {
+      res.write('partial');
+      // Intentionally keep the response open; cancellation must close it.
+    });
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30);
+    try {
+      await expect(downloadAllowedAttachment(url, 1024, 5000, true, controller.signal))
+        .rejects.toThrow();
+    } finally {
+      clearTimeout(timer);
+    }
+  });
+
   it('refuses redirects without accessing the destination', async () => {
     const url = await serverUrl((_req, res) => {
       res.writeHead(302, { location: 'http://127.0.0.1:1/secret' });
