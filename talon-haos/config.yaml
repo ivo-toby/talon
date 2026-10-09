@@ -1,7 +1,7 @@
 name: Talon
-version: "1.0.1"
+version: "1.0.11"
 slug: talon
-description: Run Talon with a built-in management terminal.
+description: Source-built Talon with Codex CLI and a management terminal.
 arch:
   - amd64
 startup: application
@@ -15,10 +15,6 @@ map: []
 options:
   instance: ""
   storage_path: ""
-  openai_api_key: ""
-  telegram_bot_token: ""
 schema:
   instance: str
   storage_path: str
-  openai_api_key: password
-  telegram_bot_token: password
