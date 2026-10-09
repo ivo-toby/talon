@@ -28,6 +28,7 @@ COPY run.sh /run.sh
 COPY talonctl /usr/local/bin/talonctl
 COPY ingress-proxy.cjs /usr/local/lib/talon-ingress-proxy.cjs
 COPY check-config.cjs /usr/local/lib/talon-check-config.cjs
+COPY sync-attachment-origins.cjs /usr/local/lib/talon-sync-attachment-origins.cjs
 RUN chmod 0755 /run.sh /usr/local/bin/talonctl && mkdir -p /data/talon
 # Intentionally omit HEALTHCHECK. Explicit NONE leaves a nonempty metadata
 # object that Supervisor treats as a check, waiting forever for a health event.
