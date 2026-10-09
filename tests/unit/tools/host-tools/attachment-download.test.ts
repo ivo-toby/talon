@@ -1,4 +1,5 @@
 import { createServer } from 'node:http';
+import { getDefaultResultOrder, setDefaultResultOrder } from 'node:dns';
 import { afterEach, describe, expect, it } from 'vitest';
 import { downloadAllowedAttachment } from '../../../../src/tools/host-tools/attachment-download.js';
 
@@ -30,6 +31,19 @@ describe('pinned attachment network transport', () => {
     const result = await downloadAllowedAttachment(url, 1024, 1000, true);
     expect(result.data.toString()).toBe('sample');
     expect(result.contentType).toBe('application/pdf');
+  });
+
+  it('downloads from a hostname when Node requests all DNS results', async () => {
+    const url = await serverUrl((_req, res) => res.end('hostname-ok'));
+    url.hostname = 'localhost';
+    const previousOrder = getDefaultResultOrder();
+    setDefaultResultOrder('ipv4first');
+    try {
+      const result = await downloadAllowedAttachment(url, 1024, 1000, true);
+      expect(result.data.toString()).toBe('hostname-ok');
+    } finally {
+      setDefaultResultOrder(previousOrder);
+    }
   });
 
   it('refuses redirects without accessing the destination', async () => {
