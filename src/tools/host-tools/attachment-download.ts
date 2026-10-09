@@ -50,7 +50,13 @@ export async function downloadAllowedAttachment(
       method: 'GET',
       timeout: timeoutMs,
       headers: { accept: '*/*' },
-      lookup: (_hostname, _options, cb) => cb(null, pinned.address, pinned.family),
+      lookup: (_hostname, options, cb) => {
+        if (options.all) {
+          cb(null, [{ address: pinned.address, family: pinned.family }]);
+        } else {
+          cb(null, pinned.address, pinned.family);
+        }
+      },
     }, (res) => {
       void (async () => {
       try {
