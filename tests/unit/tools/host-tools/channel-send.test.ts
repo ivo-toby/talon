@@ -979,8 +979,6 @@ describe('ChannelSendHandler — unsupported connector attachments', () => {
 
 describe('ChannelSendHandler — file attachments', () => {
   it('rejects attachment downloads by default without an explicit origin allowlist', async () => {
-    const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
-    delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     try {
       const connector = makeConnector(ok(undefined));
@@ -990,37 +988,29 @@ describe('ChannelSendHandler — file attachments', () => {
       expect(fetchMock).not.toHaveBeenCalled();
       expect(connector.send).not.toHaveBeenCalled();
     } finally {
-      if (previous === undefined) delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
-      else process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = previous;
       fetchMock.mockRestore();
     }
   });
 
   it('downloads a file and passes its bytes to the channel connector', async () => {
     const connector = makeConnector(ok(undefined));
-    const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
-    process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = 'https://files.example.test';
     const downloadMock = vi.mocked(downloadAllowedAttachment).mockResolvedValue({
       contentType: 'application/pdf',
       data: Buffer.from([1, 2, 3]),
     });
     try {
-      const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const handler = new ChannelSendHandler({ attachments: { allowedOrigins: ['https://files.example.test'], privateOrigins: [] }, channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
       const result = await handler.execute(makeArgs({ attachments: [{ url: 'https://files.example.test/report.pdf', filename: 'report.pdf' }] }), makeContext());
       expect(result.status).toBe('success');
       expect(connector.send).toHaveBeenCalledWith('ext-001', expect.objectContaining({
         attachments: [expect.objectContaining({ filename: 'report.pdf', mimeType: 'application/pdf', data: Buffer.from([1, 2, 3]) })],
       }));
     } finally {
-      if (previous === undefined) delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
-      else process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = previous;
       downloadMock.mockReset();
     }
   });
 
   it('limits all attachments to a single bounded batch', async () => {
-    const previous = process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
-    process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = 'https://files.example.test';
     const downloadMock = vi.mocked(downloadAllowedAttachment).mockImplementation(
       async (_url, cap) => ({
         data: Buffer.alloc(cap === 50 * 1024 * 1024 ? 30 * 1024 * 1024 : 20 * 1024 * 1024),
@@ -1030,7 +1020,7 @@ describe('ChannelSendHandler — file attachments', () => {
     try {
       const connector = makeConnector(ok(undefined));
       const handler = new ChannelSendHandler({
-        channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger(),
+        attachments: { allowedOrigins: ['https://files.example.test'], privateOrigins: [] }, channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger(),
       });
       const result = await handler.execute(makeArgs({ attachments: [
         { url: 'https://files.example.test/one' },
@@ -1043,8 +1033,6 @@ describe('ChannelSendHandler — file attachments', () => {
       expect(downloadMock.mock.calls[1]?.[1]).toBe(20 * 1024 * 1024);
       expect(connector.send).not.toHaveBeenCalled();
     } finally {
-      if (previous === undefined) delete process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'];
-      else process.env['TALON_ATTACHMENT_ALLOWED_ORIGINS'] = previous;
       downloadMock.mockReset();
     }
   });
@@ -1053,7 +1041,7 @@ describe('ChannelSendHandler — file attachments', () => {
     const connector = makeConnector(ok(undefined));
     const fetchMock = vi.spyOn(globalThis, 'fetch');
     try {
-      const handler = new ChannelSendHandler({ channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
+      const handler = new ChannelSendHandler({ attachments: { allowedOrigins: ['https://files.example.test'], privateOrigins: [] }, channelRegistry: makeRegistry(connector), threadRepository: makeThreadRepo(), logger: makeLogger() });
       const result = await handler.execute(makeArgs({ attachments: Array.from({ length: 11 }, () => ({ url: 'https://files.example.test/report.pdf' })) }), makeContext());
       expect(result.status).toBe('error');
       expect(fetchMock).not.toHaveBeenCalled();
