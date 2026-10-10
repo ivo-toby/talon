@@ -332,6 +332,8 @@ For the full deployment walkthrough, see the [setup guide](docs/setup-guide.md).
 - **Claude Code** (default provider), and optionally **Gemini CLI** and/or **Codex CLI** installed and authenticated
 - **SQLite** (ships with better-sqlite3, no separate install)
 
+For **Codex CLI**, Talon looks for operator credentials (`auth.json`) in `CODEX_HOME` if set, otherwise in `~/.codex`. Each invocation uses a separate temporary Codex home seeded with those credentials. In Home Assistant, `CODEX_HOME` can point to persistent add-on storage such as `/data/talon/codex-home`.
+
 ### Install
 
 ```bash
