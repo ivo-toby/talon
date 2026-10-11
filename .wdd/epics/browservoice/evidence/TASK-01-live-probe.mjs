@@ -6,7 +6,8 @@ const HOST = '127.0.0.1';
 const PORT = Number(process.env.PROBE_PORT ?? 8787);
 const API_BASE = 'https://api.openai.com';
 const MODEL = 'gpt-live-1';
-const MAX_BUDGET_MS = 5 * 60 * 1000;
+const OUTPUT_VOICE = 'marin';
+const MAX_BUDGET_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const CLOSE_GRACE_MS = 5_000;
 const MAX_EVENTS = 250;
@@ -35,12 +36,12 @@ const page = `<!doctype html>
 <body>
   <h1>TASK-01 GPT-Live probe</h1>
   <p class="warn">Disposable probe. No Talon daemon, persona, queue, MCP, native tool, or external action is connected.</p>
-  <p>Click start, allow microphone access, and speak these two short Dutch turns. The page records event types and timing only, not transcript text or audio.</p>
+  <p>Click start, allow microphone access, and speak the two short Dutch turns below. The page records event types and timing only, not transcript text or audio.</p>
   <ol>
-    <li>Zeg: “Zeg alleen dat de verbinding werkt.”</li>
-    <li>Zeg daarna: “Nee, ik bedoel: zeg alleen hallo.”</li>
-    <li>Use <strong>mute input</strong> while the assistant speaks if possible. This measures provider input muting, not natural output interruption.</li>
-    <li>Click close, wait for <code>session.closed</code>, then click invalid startup once.</li>
+    <li>Zeg: “Vertel kort iets over Amsterdam.”</li>
+    <li>Onderbreek de hoorbare respons met: “Nee, ik bedoel Rotterdam.”</li>
+    <li>Gebruik <strong>mute input</strong> niet als vervanging voor deze hoorbare onderbreking.</li>
+    <li>Klik na de waarneming op <strong>Close session</strong>.</li>
   </ol>
   <p>
     <button id="start">Start GPT-Live session</button>
@@ -49,7 +50,6 @@ const page = `<!doctype html>
     <button id="mute" disabled>Mute input</button>
     <button id="unmute" disabled>Unmute input</button>
     <button id="close" disabled>Close session</button>
-    <button id="invalid" disabled>Invalid startup once</button>
   </p>
   <pre id="state">state=idle</pre>
   <pre id="events"></pre>
@@ -71,7 +71,6 @@ const page = `<!doctype html>
       mute: document.querySelector("#mute"),
       unmute: document.querySelector("#unmute"),
       close: document.querySelector("#close"),
-      invalid: document.querySelector("#invalid"),
     };
 
     function write(line) {
@@ -107,7 +106,6 @@ const page = `<!doctype html>
       if (event.type === "session.closed") {
         closed = true;
         buttons.close.disabled = true;
-        buttons.invalid.disabled = false;
         cleanup(false);
       }
     }
@@ -180,23 +178,12 @@ const page = `<!doctype html>
       }
     }
 
-    async function invalidStartup() {
-      buttons.invalid.disabled = true;
-      try {
-        const result = await post("/invalid-startup", {});
-        write("probe invalid_startup status=" + result.status + " result=" + result.result);
-      } catch (error) {
-        write("probe invalid_startup error=" + (error?.message ?? "unknown"));
-      }
-    }
-
     buttons.start.onclick = start;
     buttons.status.onclick = () => command("status");
     buttons.mutation.onclick = () => command("client-mutation");
     buttons.mute.onclick = () => command("mute");
     buttons.unmute.onclick = () => command("unmute");
     buttons.close.onclick = () => command("close");
-    buttons.invalid.onclick = invalidStartup;
 
     setInterval(async () => {
       const result = await fetch("/state").then((response) => response.json()).catch(() => null);
@@ -434,6 +421,7 @@ async function createLiveSession(offerSdp) {
       model: MODEL,
       store: false,
       delegation: { type: 'client' },
+      audio: { output: { voice: OUTPUT_VOICE } },
       instructions:
         'Spreek kort Nederlands. Dit is een begrensde connectiviteitsproef. ' +
         'Beantwoord de gebruiker direct. Gebruik clientdelegatie voor de eerste aanvraag ' +
@@ -465,7 +453,12 @@ async function createLiveSession(offerSdp) {
     voiceSeconds: null,
     closeReason: null,
   };
-  record('session_created', { status: response.status, session_id: data.session.id, model: MODEL });
+  record('session_created', {
+    status: response.status,
+    session_id: data.session.id,
+    model: MODEL,
+    output_voice: OUTPUT_VOICE,
+  });
   return data;
 }
 
@@ -482,7 +475,11 @@ async function invalidStartup() {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        session: { model: MODEL, delegation: { type: 'client' } },
+        session: {
+          model: MODEL,
+          delegation: { type: 'client' },
+          audio: { output: { voice: OUTPUT_VOICE } },
+        },
         transport: { type: 'webrtc', sdp: 'invalid-probe-sdp' },
       }),
       signal: controller.signal,

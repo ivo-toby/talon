@@ -183,6 +183,8 @@ export interface VoicePolicySnapshot {
   readonly personaId: string;
   readonly providerName: string;
   readonly modelName: string;
+  /** Server-selected output voice; browser input cannot override it. */
+  readonly voiceName: VoiceOutputVoice;
   readonly capabilityNames: readonly string[];
   readonly allowedToolNames: readonly string[];
   readonly allowedMcpServerNames: readonly string[];
@@ -244,12 +246,25 @@ export interface VoiceClientSessionDescriptor {
   readonly expiresAt: number;
 }
 
+/** Default selected by Talon's browservoice configuration. */
+export const DEFAULT_VOICE_OUTPUT_VOICE = 'marin' as const;
+
+/** Provider voice names remain open for a later adapter or configured voice. */
+export type VoiceOutputVoice = typeof DEFAULT_VOICE_OUTPUT_VOICE | (string & {});
+
+export interface VoiceAudioOutputSettings {
+  readonly voice: VoiceOutputVoice;
+}
+
 export interface LiveVoiceSessionRequest {
   readonly sessionId: VoiceSessionId;
   readonly ownerId: string;
   readonly modelName: string;
   readonly instructions: string;
   readonly delegationMode: 'client';
+  readonly audio: {
+    readonly output: VoiceAudioOutputSettings;
+  };
 }
 
 export interface LiveVoiceSession {
@@ -470,6 +485,8 @@ export interface VoiceSessionUpdateRequest {
 export interface VoiceSessionReadProjection {
   readonly session: VoiceSessionRecord;
   readonly delegations: readonly VoiceDelegationRecord[];
+  /** Retained bounded results, including progress and final output history. */
+  readonly outputs: readonly VoiceOutputStatusDto[];
 }
 
 export interface VoiceSessionListQuery {
@@ -703,6 +720,8 @@ export interface VoiceDelegationStatusDto {
 }
 
 export interface VoiceOutputStatusDto {
+  /** Associates retained output history with its durable delegation. */
+  readonly delegationId: VoiceDelegationId;
   readonly id: VoiceOutputId;
   readonly kind: VoiceOutputKind;
   /** Bounded, redacted result text; raw traces and reasoning never appear here. */
