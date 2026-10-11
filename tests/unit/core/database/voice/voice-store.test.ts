@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
+import { ok } from 'neverthrow';
 import { runMigrations } from '../../../../../src/core/database/migrations/runner.js';
 import { DurableVoiceStore } from '../../../../../src/voice/voice-store.js';
 import type {
@@ -10,6 +11,7 @@ import type {
   VoiceDelegationRecord,
   VoicePolicySnapshot,
   VoiceSessionRecord,
+  VoiceStoreTransaction,
 } from '../../../../../src/voice/voice-types.js';
 
 function migrationsDir(): string {
@@ -166,6 +168,49 @@ describe('DurableVoiceStore', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM voice_delegations').get()).toEqual({ count: 0 });
   });
 
+  it('rejects queue requests that do not match the complete reserved request', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+
+    const input = admission();
+    const mismatchedQueueRequest = makeRequest({
+      policy: { ...policy, generation: 9 },
+    });
+    const result = store.admitDelegation({
+      ...input,
+      queue: { ...input.queue, request: mismatchedQueueRequest },
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM voice_delegations').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM queue_items').get()).toEqual({ count: 0 });
+
+    const inconsistentContext = makeDelegation({ contextVersion: 9 });
+    expect(store.admitDelegation(admission(inconsistentContext)).isErr()).toBe(true);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM voice_delegations').get()).toEqual({ count: 0 });
+  });
+
+  it('rolls back reserve-only transactions and expires their transaction view', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+    let transaction: VoiceStoreTransaction | undefined;
+
+    const result = store.runInTransaction((tx) => {
+      transaction = tx;
+      const reserved = tx.reserveDelegation(admission());
+      expect(reserved.isOk()).toBe(true);
+      return ok(reserved._unsafeUnwrap());
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM voice_delegations').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM queue_items').get()).toEqual({ count: 0 });
+    expect(transaction?.findSession('session-1').isErr()).toBe(true);
+    expect(transaction?.reserveDelegation(admission()).isErr()).toBe(true);
+  });
+
   it('deduplicates provider events and rejects a reused provider delegation id with new context', () => {
     db = createDb();
     const store = new DurableVoiceStore(db);
@@ -185,6 +230,46 @@ describe('DurableVoiceStore', () => {
     });
     expect(store.admitDelegation(admission(changed, 'queue-2')).isErr()).toBe(true);
     expect(db.prepare('SELECT COUNT(*) AS count FROM voice_delegations').get()).toEqual({ count: 1 });
+  });
+
+  it('returns the original admission receipt after claim and completion without changing work', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+    const input = admission();
+    const first = store.admitDelegation(input)._unsafeUnwrap();
+
+    store.claimDelegation({
+      delegationId: 'delegation-1',
+      expectedRevision: 2,
+      queueItemId: 'queue-1',
+      claimedAt: 300,
+    });
+    const claimedBefore = store.findDelegation('delegation-1')._unsafeUnwrap()!;
+    const queueClaimedBefore = db.prepare('SELECT status, attempts FROM queue_items WHERE id = ?').get('queue-1');
+    expect(store.admitDelegation(input)._unsafeUnwrap()).toEqual(first);
+    expect(store.findDelegation('delegation-1')._unsafeUnwrap()).toEqual(claimedBefore);
+    expect(db.prepare('SELECT status, attempts FROM queue_items WHERE id = ?').get('queue-1')).toEqual(queueClaimedBefore);
+
+    store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'output-1',
+      kind: 'final',
+      text: 'done',
+      execution: 'succeeded',
+      output: {
+        execution: 'succeeded',
+        delivery: 'pending',
+        providerAcknowledgement: 'acknowledged',
+        playback: 'not_started',
+      },
+      occurredAt: 400,
+    });
+    const completedBefore = store.findDelegation('delegation-1')._unsafeUnwrap()!;
+    const queueCompletedBefore = db.prepare('SELECT status, attempts FROM queue_items WHERE id = ?').get('queue-1');
+    expect(store.admitDelegation(input)._unsafeUnwrap()).toEqual(first);
+    expect(store.findDelegation('delegation-1')._unsafeUnwrap()).toEqual(completedBefore);
+    expect(db.prepare('SELECT status, attempts FROM queue_items WHERE id = ?').get('queue-1')).toEqual(queueCompletedBefore);
   });
 
   it('claims pending work atomically and prevents superseding after the claim', () => {
@@ -249,6 +334,104 @@ describe('DurableVoiceStore', () => {
       queueItemId: 'queue-1',
       claimedAt: 600,
     })._unsafeUnwrap().outcome).toBe('lost');
+  });
+
+  it('keeps a terminal final result ahead of a late progress event', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+    store.admitDelegation(admission());
+
+    const final = store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'output-final',
+      kind: 'final',
+      text: 'final answer',
+      execution: 'succeeded',
+      output: {
+        execution: 'succeeded',
+        delivery: 'pending',
+        providerAcknowledgement: 'acknowledged',
+        playback: 'not_started',
+      },
+      occurredAt: 400,
+    })._unsafeUnwrap();
+
+    const lateProgress = store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'output-progress',
+      kind: 'progress',
+      text: 'working',
+      execution: 'running',
+      output: {
+        execution: 'running',
+        delivery: 'pending',
+        providerAcknowledgement: 'sent',
+        playback: 'not_started',
+      },
+      occurredAt: 300,
+    });
+    expect(lateProgress.isOk()).toBe(true);
+    expect(lateProgress._unsafeUnwrap().revision).toBe(final.revision);
+    expect(lateProgress._unsafeUnwrap().status).toBe('completed');
+    expect(lateProgress._unsafeUnwrap().execution).toBe('succeeded');
+    expect(store.readSession('session-1')._unsafeUnwrap()!.outputs).toHaveLength(1);
+    expect(store.readSession('session-1')._unsafeUnwrap()!.outputs[0]?.id).toBe('output-final');
+  });
+
+  it('rejects lifecycle execution contradictions and preserves backend execution state', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+    store.admitDelegation(admission());
+
+    const contradictoryResult = store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'output-1',
+      kind: 'final',
+      text: 'answer',
+      execution: 'succeeded',
+      output: {
+        execution: 'failed',
+        delivery: 'pending',
+        providerAcknowledgement: 'not_sent',
+        playback: 'not_started',
+      },
+      occurredAt: 400,
+    });
+    expect(contradictoryResult.isErr()).toBe(true);
+    expect(store.findDelegation('delegation-1')._unsafeUnwrap()!.execution).toBe('not_started');
+    expect(store.readSession('session-1')._unsafeUnwrap()!.outputs).toHaveLength(0);
+
+    store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'output-1',
+      kind: 'final',
+      text: 'answer',
+      execution: 'succeeded',
+      output: {
+        execution: 'succeeded',
+        delivery: 'pending',
+        providerAcknowledgement: 'not_sent',
+        playback: 'not_started',
+      },
+      occurredAt: 500,
+    });
+    const lifecycle = store.recordOutputLifecycle({
+      delegationId: 'delegation-1',
+      outputId: 'output-1',
+      lifecycle: {
+        execution: 'failed',
+        delivery: 'acknowledged',
+        providerAcknowledgement: 'acknowledged',
+        playback: 'played',
+      },
+    });
+    expect(lifecycle.isErr()).toBe(true);
+    const delegation = store.findDelegation('delegation-1')._unsafeUnwrap()!;
+    expect(delegation.status).toBe('completed');
+    expect(delegation.execution).toBe('succeeded');
+    expect(store.readSession('session-1')._unsafeUnwrap()!.outputs[0]?.lifecycle.execution).toBe('succeeded');
   });
 
   it('keeps execution and delivery lifecycle separate and retains results after reopening', () => {

@@ -52,6 +52,12 @@ class TransactionRollback extends Error {
   }
 }
 
+interface VoiceTransactionState {
+  active: boolean;
+  reservedDelegationIds: Set<string>;
+  enqueuedDelegationIds: Set<string>;
+}
+
 /** Stable JSON keeps idempotency comparisons independent of object key order. */
 function stableJson(value: unknown): string {
   if (value === undefined) return 'null';
@@ -109,7 +115,6 @@ export class DurableVoiceStore implements VoiceStoreContract {
   private readonly db: Database.Database;
   private readonly repository: VoiceRepository;
   private readonly queueRepository: QueueRepository;
-  private readonly transactionView: VoiceStoreTransaction;
 
   constructor(db: Database.Database, queueRepository?: QueueRepository, repository?: VoiceRepository);
   constructor(repository: VoiceRepository, queueRepository?: QueueRepository);
@@ -126,26 +131,6 @@ export class DurableVoiceStore implements VoiceStoreContract {
       this.repository = repository ?? new VoiceRepository(dbOrRepository);
     }
     this.queueRepository = queueRepository ?? new QueueRepository(this.db);
-    this.transactionView = {
-      findSession: (id: string): VoiceResult<VoiceSessionRecord | null> => this.findSession(id),
-      createSession: (session: VoiceSessionRecord): VoiceResult<VoiceSessionRecord> => this.createSession(session),
-      updateSession: (input: VoiceSessionUpdateRequest): VoiceResult<VoiceSessionRecord> => this.updateSession(input),
-      readSession: (id: string): VoiceResult<VoiceSessionReadProjection | null> => this.readSession(id),
-      listSessions: (input: VoiceSessionListQuery): VoiceResult<readonly VoiceSessionReadProjection[]> => this.listSessions(input),
-      recoverSessions: (input: VoiceSessionRecoveryQuery): VoiceResult<readonly VoiceSessionReadProjection[]> => this.recoverSessions(input),
-      findDelegation: (id: string): VoiceResult<VoiceDelegationRecord | null> => this.findDelegation(id),
-      claimDelegation: (input: VoiceClaimRequest): VoiceResult<VoiceClaimResult> => this.claimDelegationInTransaction(input),
-      supersedeDelegation: (input: VoiceSupersedeRequest): VoiceResult<VoiceSupersedeResult> => this.supersedeDelegationInTransaction(input),
-      skipDelegation: (input: VoiceSkipRequest): VoiceResult<VoiceDelegationRecord> => this.skipDelegationInTransaction(input),
-      recordBackendResult: (result: VoiceBackendResult): VoiceResult<VoiceDelegationRecord> => this.recordBackendResultInTransaction(result),
-      recordOutputLifecycle: (input: VoiceOutputLifecycleUpdate): VoiceResult<VoiceOutputStatusDto> => this.recordOutputLifecycleInTransaction(input),
-      reserveDelegation: (input: VoiceAdmissionRequest): VoiceResult<VoiceDelegationRecord> => this.reserveDelegationInTransaction(input),
-      enqueueVoiceWork: (input: VoiceAdmissionRequest['queue']): VoiceResult<{
-        queueItemId: string;
-        delegationId: string;
-        admittedAt: number;
-      }> => this.enqueueVoiceWorkInTransaction(input),
-    };
   }
 
   findSession(id: string): VoiceResult<VoiceSessionRecord | null> {
@@ -472,6 +457,17 @@ export class DurableVoiceStore implements VoiceStoreContract {
     if (currentResult.isErr()) return err(currentResult.error);
     if (!currentResult.value) return err(new DbError(`Voice delegation not found: ${result.delegationId}`));
     const current = currentResult.value;
+    if (result.output.execution !== result.execution) {
+      return err(conflict(`backend result execution disagrees with its output lifecycle`));
+    }
+
+    const latestOutputResult = current.latest_output_id
+      ? this.repository.findOutputById(current.latest_output_id)
+      : ok(null);
+    if (latestOutputResult.isErr()) return err(latestOutputResult.error);
+    const terminalOrFinal =
+      isTerminalExecution(current.execution_status) ||
+      (latestOutputResult.value?.kind === 'final' && result.kind === 'progress');
 
     let outputId: string | null = null;
     let duplicateOutput = false;
@@ -491,7 +487,7 @@ export class DurableVoiceStore implements VoiceStoreContract {
           return err(conflict(`output id ${result.outputId} has different content`));
         }
         duplicateOutput = true;
-      } else {
+      } else if (!terminalOrFinal) {
         const lifecycle = lifecycleToColumns(result.output);
         const inserted = this.repository.insertOutput({
           id: result.outputId,
@@ -507,7 +503,7 @@ export class DurableVoiceStore implements VoiceStoreContract {
       }
     }
 
-    if (duplicateOutput) {
+    if (terminalOrFinal || duplicateOutput) {
       return this.delegationFromRow(current);
     }
 
@@ -544,6 +540,21 @@ export class DurableVoiceStore implements VoiceStoreContract {
     }
 
     const current = outputResult.value;
+    if (input.lifecycle.execution !== current.execution_status) {
+      return err(conflict(`output ${input.outputId} cannot change backend execution status`));
+    }
+
+    const delegationResult = this.repository.findDelegationById(input.delegationId);
+    if (delegationResult.isErr()) return err(delegationResult.error);
+    if (!delegationResult.value) return err(new DbError(`Voice delegation not found: ${input.delegationId}`));
+    const delegation = delegationResult.value;
+    if (
+      delegation.latest_output_id === input.outputId &&
+      input.lifecycle.execution !== delegation.execution_status
+    ) {
+      return err(conflict(`output ${input.outputId} disagrees with delegation execution status`));
+    }
+
     const updatedOutput: VoiceOutputRow = {
       ...current,
       ...lifecycleToColumns(input.lifecycle),
@@ -553,16 +564,13 @@ export class DurableVoiceStore implements VoiceStoreContract {
     if (savedOutput.isErr()) return err(savedOutput.error);
     if (!savedOutput.value) return err(new DbError(`Voice output update lost: ${input.outputId}`));
 
-    const delegationResult = this.repository.findDelegationById(input.delegationId);
-    if (delegationResult.isErr()) return err(delegationResult.error);
-    if (!delegationResult.value) return err(new DbError(`Voice delegation not found: ${input.delegationId}`));
-    const delegation = delegationResult.value;
     if (delegation.latest_output_id === input.outputId) {
       const lifecycle = lifecycleToColumns(input.lifecycle);
       const updatedDelegation: VoiceDelegationRow = {
         ...delegation,
         revision: delegation.revision + 1,
         ...lifecycle,
+        execution_status: delegation.execution_status,
         updated_at: updatedOutput.updated_at,
       };
       const savedDelegation = this.repository.updateDelegation(updatedDelegation, delegation.revision);
@@ -573,19 +581,73 @@ export class DurableVoiceStore implements VoiceStoreContract {
     return this.outputDtoFromRow(savedOutput.value);
   }
 
+  private createTransactionView(state: VoiceTransactionState): VoiceStoreTransaction {
+    const invoke = <T>(operation: () => VoiceResult<T>): VoiceResult<T> => {
+      if (!state.active) return err(new DbError('Voice transaction is no longer active'));
+      return operation();
+    };
+
+    return {
+      findSession: (id) => invoke(() => this.findSession(id)),
+      createSession: (session) => invoke(() => this.createSession(session)),
+      updateSession: (input) => invoke(() => this.updateSession(input)),
+      readSession: (id) => invoke(() => this.readSession(id)),
+      listSessions: (input) => invoke(() => this.listSessions(input)),
+      recoverSessions: (input) => invoke(() => this.recoverSessions(input)),
+      findDelegation: (id) => invoke(() => this.findDelegation(id)),
+      claimDelegation: (input) => invoke(() => this.claimDelegationInTransaction(input)),
+      supersedeDelegation: (input) => invoke(() => this.supersedeDelegationInTransaction(input)),
+      skipDelegation: (input) => invoke(() => this.skipDelegationInTransaction(input)),
+      recordBackendResult: (result) => invoke(() => this.recordBackendResultInTransaction(result)),
+      recordOutputLifecycle: (input) => invoke(() => this.recordOutputLifecycleInTransaction(input)),
+      reserveDelegation: (input) => invoke(() => {
+        const result = this.reserveDelegationInTransaction(input);
+        if (result.isOk()) state.reservedDelegationIds.add(result.value.id);
+        return result;
+      }),
+      enqueueVoiceWork: (input) => invoke(() => {
+        if (!state.reservedDelegationIds.has(input.delegationId)) {
+          return err(new DbError(`Voice queue work was not paired with a reservation: ${input.delegationId}`));
+        }
+        if (state.enqueuedDelegationIds.has(input.delegationId)) {
+          return err(new DbError(`Voice queue work was already enqueued: ${input.delegationId}`));
+        }
+        const result = this.enqueueVoiceWorkInTransaction(input);
+        if (result.isOk()) state.enqueuedDelegationIds.add(input.delegationId);
+        return result;
+      }),
+    };
+  }
+
   runInTransaction<T>(operation: (transaction: VoiceStoreTransaction) => VoiceResult<T>): VoiceResult<T> {
     let outcome: VoiceResult<T> | undefined;
+    const state: VoiceTransactionState = {
+      active: true,
+      reservedDelegationIds: new Set(),
+      enqueuedDelegationIds: new Set(),
+    };
+    const transaction = this.createTransactionView(state);
     try {
       this.db.transaction(() => {
-        const result = operation(this.transactionView);
+        const result = operation(transaction);
         outcome = result;
         if (result.isErr()) throw new TransactionRollback(result.error);
+        const unpaired = [...state.reservedDelegationIds].find(
+          (id) => !state.enqueuedDelegationIds.has(id),
+        );
+        if (unpaired !== undefined) {
+          throw new TransactionRollback(
+            new DbError(`Voice reservation was not paired with queue work: ${unpaired}`),
+          );
+        }
         return result.value;
       })();
       return outcome ?? err(new DbError('Voice transaction returned no result'));
     } catch (cause) {
       if (cause instanceof TransactionRollback) return err(cause.error);
       return err(new DbError(`Voice transaction failed: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    } finally {
+      state.active = false;
     }
   }
 
@@ -610,20 +672,8 @@ export class DurableVoiceStore implements VoiceStoreContract {
     input: VoiceAdmissionRequest,
   ): VoiceResult<VoiceDelegationRecord> {
     const delegation = input.delegation;
-    const queue = input.queue;
-    if (
-      delegation.sessionId !== delegation.request.sessionId ||
-      queue.delegationId !== delegation.id ||
-      queue.threadId !== delegation.request.threadId ||
-      queue.request.sessionId !== delegation.sessionId ||
-      queue.request.delegationId !== delegation.id ||
-      queue.request.providerDelegationId !== delegation.providerDelegationId
-    ) {
-      return err(new DbError('Voice admission contains mismatched session, delegation, or queue identity'));
-    }
-    if (queue.maxAttempts !== 1) {
-      return err(new DbError('Voice queue work must use maxAttempts=1'));
-    }
+    const validationError = this.validateAdmission(input);
+    if (validationError) return err(validationError);
 
     const session = this.repository.findSessionById(delegation.sessionId);
     if (session.isErr()) return err(session.error);
@@ -658,6 +708,29 @@ export class DurableVoiceStore implements VoiceStoreContract {
     return this.delegationFromRow(inserted.value);
   }
 
+  private validateAdmission(input: VoiceAdmissionRequest): DbError | undefined {
+    const { delegation, queue } = input;
+    const request = delegation.request;
+    if (
+      delegation.id !== request.delegationId ||
+      delegation.sessionId !== request.sessionId ||
+      delegation.providerDelegationId !== request.providerDelegationId ||
+      delegation.contextVersion !== request.context.version ||
+      delegation.contextDigest !== request.context.digest ||
+      queue.delegationId !== delegation.id ||
+      queue.threadId !== request.threadId ||
+      stableJson(queue.request) !== stableJson(request)
+    ) {
+      return new DbError(
+        'Voice admission must preserve the complete delegation request and context identity',
+      );
+    }
+    if (queue.maxAttempts !== 1) {
+      return new DbError('Voice queue work must use maxAttempts=1');
+    }
+    return undefined;
+  }
+
   private enqueueVoiceWorkInTransaction(input: VoiceAdmissionRequest['queue']): VoiceResult<{
     queueItemId: string;
     delegationId: string;
@@ -669,6 +742,9 @@ export class DurableVoiceStore implements VoiceStoreContract {
     const delegation = delegationResult.value;
     if (delegation.queue_item_id !== null && delegation.queue_item_id !== input.queueItemId) {
       return err(conflict(`delegation ${input.delegationId} is bound to another queue item`));
+    }
+    if (delegation.status !== 'admitted' && delegation.queue_item_id !== input.queueItemId) {
+      return err(new DbError(`Voice delegation ${input.delegationId} has no matching queue binding`));
     }
 
     const payload = JSON.stringify({
@@ -714,8 +790,6 @@ export class DurableVoiceStore implements VoiceStoreContract {
       const updated = this.repository.updateDelegation(next, delegation.revision);
       if (updated.isErr()) return err(updated.error);
       if (!updated.value) return err(new DbError(`Voice delegation queue admission lost: ${input.delegationId}`));
-    } else if (delegation.status !== 'queued') {
-      return err(new DbError(`Voice delegation cannot be queued from ${delegation.status}`));
     }
 
     return ok({
