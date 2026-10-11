@@ -35,6 +35,11 @@ import type { VoiceOutputSink } from '../voice/voice-output-sink.js';
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const SUPPORTED_VOICE_PROVIDER_TYPES = new Set(['claude-code', 'gemini-cli', 'openai-compatible']);
+const VOICE_NATIVE_TOOL_NAMES: Readonly<Record<string, readonly string[]>> = {
+  'claude-code': ['WebSearch', 'WebFetch'],
+  'gemini-cli': ['google_web_search', 'web_fetch'],
+  'openai-compatible': [],
+};
 
 class AgentQueryAttemptError extends Error {
   constructor(
@@ -843,7 +848,7 @@ export class AgentRunner {
                       capabilityNames: actualCapabilityNames,
                       allowedToolNames: allowedMcpTools,
                       allowedMcpServerNames: actualMcpServerNames,
-                      nativeToolNames: [],
+                      nativeToolNames: VOICE_NATIVE_TOOL_NAMES[providerEntry.type] ?? [],
                       nativeToolsDisabled: disableNativeShellAndFilesystemTools,
                       requireApproval: resolvedCapabilities.requireApproval.length > 0,
                     };
@@ -868,12 +873,16 @@ export class AgentRunner {
                   };
 
                   let activeIterator: AsyncIterator<unknown> | undefined;
+                  let queryCancelled = false;
 
                   const queryPromise = (async (): Promise<void> => {
                     if (strategy.type === 'sdk') {
                       let stream: ReturnType<typeof strategy.run>;
                       try {
                         await ensureVoiceExecutionEligible();
+                        if (queryCancelled) {
+                          throw new Error('Agent query timed out before provider start');
+                        }
                         if (isVoiceTask) voiceProviderStarted = true;
                         stream = strategy.run(queryInput);
                       } catch (cause) {
@@ -905,13 +914,13 @@ export class AgentRunner {
 
                           if (event.result.isError) {
                             this.ctx.logger.warn(
-                              { runId, result: event.result.output },
+                              isVoiceTask
+                                ? { runId, result: '[voice provider error redacted]' }
+                                : { runId, result: event.result.output },
                               'agent-runner: run ended with provider error',
                             );
                             if (isVoiceTask) {
-                              throw new Error(
-                                `Voice provider returned an error: ${event.result.output || 'unknown error'}`,
-                              );
+                              throw new Error('Voice provider returned an error');
                             }
                           }
                         } else if (event.type === 'tool_event') {
@@ -987,6 +996,7 @@ export class AgentRunner {
                             pendingProviderToolTasks,
                             pendingNoIdToolObservations,
                             event,
+                            isVoiceTask,
                           );
                           this.ctx.logger.debug(
                             {
@@ -1006,6 +1016,9 @@ export class AgentRunner {
                     }
 
                     await ensureVoiceExecutionEligible();
+                    if (queryCancelled) {
+                      throw new Error('Agent query timed out before provider start');
+                    }
                     if (isVoiceTask) voiceProviderStarted = true;
                     const result = await strategy.run(queryInput);
                     sawEvents = true;
@@ -1017,23 +1030,25 @@ export class AgentRunner {
 
                     if (result.isError) {
                       throw new Error(
-                        `CLI provider returned error: ${result.output || 'unknown error'}`,
+                        isVoiceTask
+                          ? 'Voice provider returned an error'
+                          : `CLI provider returned error: ${result.output || 'unknown error'}`,
                       );
                     }
                   })();
 
                   let timeoutId: ReturnType<typeof setTimeout>;
                   const timeoutPromise = new Promise<never>((_, reject) => {
-                    timeoutId = setTimeout(
-                      () =>
-                        reject(new Error(`Agent query timed out after ${queryTimeoutMs / 1000}s`)),
-                      queryTimeoutMs,
-                    );
+                    timeoutId = setTimeout(() => {
+                      queryCancelled = true;
+                      reject(new Error(`Agent query timed out after ${queryTimeoutMs / 1000}s`));
+                    }, queryTimeoutMs);
                   });
 
                   try {
                     await Promise.race([queryPromise, timeoutPromise]);
                   } catch (cause) {
+                    queryCancelled = true;
                     // Abort the in-flight provider stream to prevent leaked work
                     if (activeIterator?.return) {
                       activeIterator.return(undefined).catch(() => {});
@@ -1185,7 +1200,7 @@ export class AgentRunner {
             }
 
             if (isVoiceTask && voiceSink) {
-              const finalResult = voiceSink.final(voiceRequest.delegationId, fullOutputText);
+              const finalResult = voiceSink.final(voiceRequest.delegationId, outputText);
               if (finalResult.isErr()) {
                 throw new Error(
                   `voice final result persistence failed: ${finalResult.error.message}`,
@@ -1477,6 +1492,7 @@ export class AgentRunner {
       subtype?: string;
       serverName?: string;
     },
+    redactContent: boolean,
   ): void {
     if (this.shouldSkipProviderToolObservation(event)) {
       if (event.toolUseId) {
@@ -1496,7 +1512,7 @@ export class AgentRunner {
       const observation = this.ctx.observability.startWithTraceparent(traceparent, {
         type: 'tool',
         name: this.getProviderToolObservationName(event),
-        input: event.input ?? {},
+        input: redactContent ? '[voice tool input redacted]' : (event.input ?? {}),
         metadata: {
           ...metadata,
           messageType: event.messageType,
@@ -1516,7 +1532,7 @@ export class AgentRunner {
       }
 
       observation.update({
-        output: event.output,
+        output: redactContent ? '[voice tool output redacted]' : event.output,
         level: event.isError ? 'ERROR' : undefined,
         statusMessage: event.isError ? `Tool call ${event.toolUseId} returned an error` : undefined,
       });
@@ -1530,7 +1546,7 @@ export class AgentRunner {
       const observation = pendingNoIdToolObservations.shift();
       if (observation) {
         observation.update({
-          output: event.output,
+          output: redactContent ? '[voice tool output redacted]' : event.output,
           level: event.isError ? 'ERROR' : undefined,
           statusMessage: event.isError ? 'Tool call returned an error' : undefined,
         });
@@ -1548,7 +1564,7 @@ export class AgentRunner {
     const noIdObservation = this.ctx.observability.startWithTraceparent(traceparent, {
       type: 'tool',
       name: this.getProviderToolObservationName(event),
-      input: event.input ?? {},
+      input: redactContent ? '[voice tool input redacted]' : (event.input ?? {}),
       metadata: {
         ...metadata,
         messageType: event.messageType,

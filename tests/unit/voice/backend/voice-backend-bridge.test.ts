@@ -10,6 +10,7 @@ import { DurableVoiceStore } from '../../../../src/voice/voice-store.js';
 import { VoiceOutputSink } from '../../../../src/voice/voice-output-sink.js';
 import type {
   VoiceBackendRequest,
+  VoiceBackendResult,
   VoicePolicySnapshot,
   VoiceSessionRecord,
 } from '../../../../src/voice/voice-types.js';
@@ -210,6 +211,33 @@ describe('DurableVoiceBackendBridge', () => {
     expect(admitted.delegationId).toBe('delegation-1');
   });
 
+  it('rejects retained provider web tools even when the disable flag is set', async () => {
+    const callback = vi.fn(() => ok(undefined));
+    const setup = makeSetup();
+    db = setup.db;
+    const bridge = new DurableVoiceBackendBridge(setup.store, setup.queue, {
+      executionGate: callback,
+    });
+    const req = request();
+
+    const rejected = await bridge.beforeProvider({
+      request: req,
+      owner: { ownerId: req.policy.ownerId, loginRevision: req.policy.loginRevision },
+      providerName: req.policy.providerName,
+      providerType: 'claude-code',
+      modelName: req.policy.modelName,
+      capabilityNames: req.policy.capabilityNames,
+      allowedToolNames: req.policy.allowedToolNames,
+      allowedMcpServerNames: req.policy.allowedMcpServerNames,
+      nativeToolNames: ['WebSearch', 'WebFetch'],
+      nativeToolsDisabled: true,
+      requireApproval: false,
+    });
+
+    expect(rejected.isErr()).toBe(true);
+    expect(callback).not.toHaveBeenCalled();
+  });
+
   it('persists output before publishing and keeps delivery separate', async () => {
     const setup = makeSetup();
     db = setup.db;
@@ -228,15 +256,68 @@ describe('DurableVoiceBackendBridge', () => {
     await bridge.admit(request());
     const started = sink.executionStarted('delegation-1');
     const finished = sink.final('delegation-1', 'The service is healthy.');
+    const late = sink.unknown('delegation-1', 'LATE_UNKNOWN');
 
     expect(started.isOk()).toBe(true);
     expect(finished.isOk()).toBe(true);
-    expect(events).toEqual(['progress', 'final']);
+    expect(late.isOk()).toBe(true);
+    expect(late._unsafeUnwrap()).toMatchObject({ kind: 'final', text: 'The service is healthy.' });
+    expect(events).toEqual(['progress', 'final', 'final']);
     expect(bridge.result('delegation-1')._unsafeUnwrap()).toMatchObject({
       kind: 'final',
       text: 'The service is healthy.',
       execution: 'succeeded',
     });
+  });
+
+  it('publishes the accepted final result when a later bridge write is stale', async () => {
+    const setup = makeSetup();
+    db = setup.db;
+    await setup.bridge.admit(request());
+    const events: VoiceBackendResult['kind'][] = [];
+    setup.bridge.onResult('delegation-1', (result) => {
+      events.push(result.kind);
+    });
+
+    const lifecycle = {
+      execution: 'succeeded' as const,
+      delivery: 'pending' as const,
+      providerAcknowledgement: 'not_sent' as const,
+      playback: 'not_started' as const,
+    };
+    const final = setup.bridge.publish({
+      delegationId: 'delegation-1',
+      outputId: 'output-final',
+      kind: 'final',
+      text: 'done',
+      execution: 'succeeded',
+      output: lifecycle,
+      occurredAt: 301,
+    });
+    const late = setup.bridge.publish({
+      delegationId: 'delegation-1',
+      outputId: 'output-unknown',
+      kind: 'unknown',
+      execution: 'unknown',
+      output: {
+        execution: 'unknown',
+        delivery: 'unknown',
+        providerAcknowledgement: 'unknown',
+        playback: 'unknown',
+      },
+      errorCode: 'LATE_UNKNOWN',
+      occurredAt: 302,
+    });
+
+    expect(final.isOk()).toBe(true);
+    expect(late.isOk()).toBe(true);
+    expect(late._unsafeUnwrap()).toMatchObject({
+      outputId: 'output-final',
+      kind: 'final',
+      text: 'done',
+      execution: 'succeeded',
+    });
+    expect(events).toEqual(['final', 'final']);
   });
 
   it('bounds retained output before persistence and publication', async () => {

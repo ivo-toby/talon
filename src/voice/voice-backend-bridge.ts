@@ -16,6 +16,7 @@ import type {
   QueueRepository,
 } from '../core/database/repositories/queue-repository.js';
 import { DbError, PolicyError } from '../core/errors/index.js';
+import { authoritativeVoiceResult } from './voice-output-sink.js';
 import type {
   VoiceAdmissionReceipt,
   VoiceAsyncResult,
@@ -234,9 +235,11 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
   publish(result: VoiceBackendResult): VoiceResult<VoiceBackendResult> {
     const persisted = this.store.recordBackendResult(result);
     if (persisted.isErr()) return err(persisted.error);
-    this.recentResults.set(result.delegationId, result);
-    this.notifyResult(result);
-    return ok(result);
+    const authoritative = authoritativeVoiceResult(this.store, persisted.value);
+    if (authoritative.isErr()) return err(authoritative.error);
+    this.recentResults.set(authoritative.value.delegationId, authoritative.value);
+    this.notifyResultListeners(authoritative.value);
+    return ok(authoritative.value);
   }
 
   /** Alias kept explicit for callers that want to emphasize durable recording. */

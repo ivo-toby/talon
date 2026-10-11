@@ -9,11 +9,14 @@
 import { v4 as uuidv4 } from 'uuid';
 import { err, ok } from 'neverthrow';
 
+import { DbError } from '../core/errors/index.js';
 import type {
   VoiceBackendResult,
+  VoiceDelegationRecord,
   VoiceDeliveryStatus,
   VoiceExecutionStatus,
   VoiceOutputLifecycle,
+  VoiceOutputStatusDto,
   VoiceResult,
   VoiceStore,
 } from './voice-types.js';
@@ -26,6 +29,46 @@ export type VoiceOutputPublisher = (result: VoiceBackendResult) => void | VoiceR
 export interface VoiceOutputSinkOptions {
   readonly now?: () => number;
   readonly maxOutputChars?: number;
+}
+
+/**
+ * Reconstructs the result represented by the state accepted by the store.
+ *
+ * The store deliberately returns the current delegation for duplicate and
+ * stale writes. Callers must publish that durable state instead of the
+ * rejected incoming result.
+ */
+export function authoritativeVoiceResult(
+  store: Pick<VoiceStore, 'readSession'>,
+  persisted: VoiceDelegationRecord,
+): VoiceResult<VoiceBackendResult> {
+  const projectionResult = store.readSession(persisted.sessionId);
+  if (projectionResult.isErr()) return err(projectionResult.error);
+  if (!projectionResult.value) {
+    return err(new DbError(`Voice session not found: ${persisted.sessionId}`));
+  }
+
+  const outputs = projectionResult.value.outputs
+    .filter((output) => output.delegationId === persisted.id)
+    .sort(compareOutputStatus);
+  const latest = outputs.at(-1);
+  if (
+    isTerminalExecution(persisted.execution) &&
+    (!latest || latest.lifecycle.execution !== persisted.execution)
+  ) {
+    return ok({
+      delegationId: persisted.id,
+      outputId: `voice-terminal:${persisted.id}`,
+      kind: persisted.execution === 'failed' ? 'error' : 'unknown',
+      execution: persisted.execution,
+      output: persisted.output,
+      occurredAt: persisted.completedAt ?? persisted.createdAt,
+    });
+  }
+  if (!latest) {
+    return err(new DbError(`Voice delegation has no retained output: ${persisted.id}`));
+  }
+  return ok(resultFromOutput(latest));
 }
 
 /** Methods used by AgentRunner to persist execution and result transitions. */
@@ -145,19 +188,21 @@ export class VoiceOutputSink {
           };
     const persisted = this.store.recordBackendResult(boundedResult);
     if (persisted.isErr()) return err(persisted.error);
-    if (!this.publisher) return ok(boundedResult);
+    const authoritative = authoritativeVoiceResult(this.store, persisted.value);
+    if (authoritative.isErr()) return err(authoritative.error);
+    if (!this.publisher) return authoritative;
 
     try {
-      const publication = this.publisher(boundedResult);
+      const publication = this.publisher(authoritative.value);
       if (publication && publication.isErr()) {
         // Delivery is intentionally separate from execution. The lifecycle
         // owner records this failure through recordOutputLifecycle().
-        return ok(boundedResult);
+        return authoritative;
       }
     } catch {
       // A sideband/delivery callback must never cause provider work to replay.
     }
-    return ok(boundedResult);
+    return authoritative;
   }
 
   private boundText(text: string): string | undefined {
@@ -178,5 +223,25 @@ function lifecycle(
     delivery,
     providerAcknowledgement: 'not_sent',
     playback: 'not_started',
+  };
+}
+
+function isTerminalExecution(execution: VoiceExecutionStatus): boolean {
+  return execution === 'failed' || execution === 'unknown' || execution === 'skipped';
+}
+
+function compareOutputStatus(left: VoiceOutputStatusDto, right: VoiceOutputStatusDto): number {
+  return left.createdAt - right.createdAt || left.updatedAt - right.updatedAt;
+}
+
+function resultFromOutput(output: VoiceOutputStatusDto): VoiceBackendResult {
+  return {
+    delegationId: output.delegationId,
+    outputId: output.id,
+    kind: output.kind,
+    ...(output.text !== undefined ? { text: output.text } : {}),
+    execution: output.lifecycle.execution,
+    output: output.lifecycle,
+    occurredAt: output.updatedAt,
   };
 }

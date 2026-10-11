@@ -298,6 +298,46 @@ async function* makeProviderStream(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeVoiceBackendRequest(id = 'voice-delegation-1'): VoiceBackendRequest {
+  return {
+    sessionId: 'voice-session-1',
+    delegationId: id,
+    providerDelegationId: `provider-${id}`,
+    threadId: 'thread-001',
+    personaId: 'persona-001',
+    context: {
+      version: 4,
+      digest: 'context-digest-4',
+      capturedAt: 100,
+      text: 'Current voice request: report service health.',
+      fragments: [],
+      truncated: false,
+    },
+    policy: {
+      generation: 9,
+      ownerId: 'owner-1',
+      personaId: 'persona-001',
+      providerName: 'claude-code',
+      modelName: 'claude-sonnet-4-20250514',
+      voiceName: 'marin',
+      capabilityNames: ['channel.send:*', 'memory.access', 'schedule.manage'],
+      allowedToolNames: [
+        'channel_send',
+        'channel_list',
+        'channel_broadcast',
+        'memory_access',
+        'schedule_manage',
+      ],
+      allowedMcpServerNames: [],
+      nativeToolNames: [],
+      requireApproval: false,
+      loginRevision: 3,
+      capturedAt: 100,
+    },
+    requestedAt: 100,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1725,7 +1765,7 @@ describe('AgentRunner', () => {
           providerType: 'claude-code',
           modelName: 'claude-sonnet-4-20250514',
           nativeToolsDisabled: true,
-          nativeToolNames: [],
+          nativeToolNames: ['WebSearch', 'WebFetch'],
         }),
       );
       expect(sink.executionStarted).toHaveBeenCalledWith(
@@ -1744,6 +1784,188 @@ describe('AgentRunner', () => {
       expect(ctx.repos.message.insert).not.toHaveBeenCalled();
       expect(ctx.channelRegistry.get('test-channel')?.send).not.toHaveBeenCalled();
     });
+
+    it('publishes only remaining final text and redacts provider tool content', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-progress');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const toolObservation = makeStartedObservationHandle(null);
+      ctx.observability.startWithTraceparent = vi.fn(() => toolObservation);
+
+      async function* streamWithVoiceTool() {
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'progress' }] },
+        };
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'voice-tool-1',
+                name: 'Read',
+                input: { secret: 'voice input' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'voice-tool-1',
+                content: 'voice output',
+                is_error: false,
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'final' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'progress final',
+          session_id: 'voice-session-result',
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithVoiceTool());
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(sink.progress).toHaveBeenCalledWith(request.delegationId, 'progress');
+      expect(sink.final).toHaveBeenCalledWith(request.delegationId, 'final');
+      expect(ctx.observability.startWithTraceparent).toHaveBeenCalledWith(
+        GENERATION_TRACEPARENT,
+        expect.objectContaining({
+          type: 'tool',
+          input: '[voice tool input redacted]',
+        }),
+      );
+      expect(toolObservation.update).toHaveBeenCalledWith(
+        expect.objectContaining({ output: '[voice tool output redacted]' }),
+      );
+    });
+
+    it('does not retain provider error text in voice telemetry or run status', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-error');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      mockQuery.mockReturnValue(makeAgentStream({ result: 'provider secret', is_error: true }));
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider returned an error');
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ result: '[voice provider error redacted]' }),
+        'agent-runner: run ended with provider error',
+      );
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: expect.not.stringContaining('provider secret') }),
+      );
+    });
+
+    it('cancels a timed out eligibility gate before it can start the provider', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-timeout');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      let resolveGate: ((value: unknown) => void) | undefined;
+      let gateCalledResolve: (() => void) | undefined;
+      const gateResult = new Promise<unknown>((resolve) => {
+        resolveGate = resolve;
+      });
+      const gateCalled = new Promise<void>((resolve) => {
+        gateCalledResolve = resolve;
+      });
+      const gate = vi.fn(() => {
+        gateCalledResolve?.();
+        return gateResult;
+      });
+      const shortRunner = new AgentRunner(ctx, {
+        queryTimeoutMs: 20,
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const resultPromise = shortRunner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+      await gateCalled;
+      const result = await resultPromise;
+      resolveGate?.(ok(undefined));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('timed out after');
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(sink.failure).toHaveBeenCalledWith(request.delegationId, 'VOICE_EXECUTION_FAILED');
+    }, 10_000);
   });
 
   describe('background task notifications', () => {
