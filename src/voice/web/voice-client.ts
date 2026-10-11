@@ -252,11 +252,14 @@ export class VoiceBrowserClient {
         this.openEventStream(response.session.id);
       } else if (this.stateValue.pendingDelegation) {
         this.openEventStream(response.session.id);
+        this.setState({ message: 'Gesprek beëindigd. Een taak wordt nog afgerond.' });
+      } else {
+        this.setState({ message: 'Gesprek beëindigd.' });
       }
     } catch (cause) {
       if (!this.isCurrent(generation)) return;
-      this.clearPersistedSession();
-      if (cause instanceof VoiceBrowserError && ['UNAUTHORIZED', 'NOT_FOUND', 'HTTP_404'].includes(cause.code)) {
+      if (cause instanceof VoiceBrowserError && ['UNAUTHORIZED', 'HTTP_401', 'NOT_FOUND', 'HTTP_404'].includes(cause.code)) {
+        this.clearPersistedSession();
         this.setState({ authenticated: false, phase: 'logged_out', message: 'Log in om een gesprek te beginnen.' });
         return;
       }
@@ -288,6 +291,9 @@ export class VoiceBrowserClient {
   async hangup(reason: VoiceCloseReason = 'hangup'): Promise<void> {
     const generation = this.invalidateLifecycle();
     const currentSessionId = this.activeSessionId;
+    const capturedPeer = this.peer;
+    const capturedStream = this.localStream;
+    const capturedEventSource = this.eventSource;
     if (!currentSessionId) {
       this.disposeTransport();
       if (this.stateValue.authenticated) {
@@ -312,14 +318,19 @@ export class VoiceBrowserClient {
       this.applySessionStatus(response.session, response.pendingDelegation);
     } catch (cause) {
       if (cause instanceof VoiceAttemptCancelledError) {
-        this.releaseAudioTransport();
         return;
       }
       closeError = asVoiceBrowserError(cause, 'Het gesprek kon niet volledig worden afgesloten.');
     } finally {
-      this.releaseAudioTransport();
-      if (closeError || !this.stateValue.pendingDelegation) this.closeEventStream();
+      if (this.isCurrent(generation)) {
+        this.releaseCapturedTransport(generation, capturedPeer, capturedStream);
+        if (closeError || !this.stateValue.pendingDelegation) {
+          this.closeEventStream(capturedEventSource);
+        }
+      }
     }
+
+    if (!this.isCurrent(generation)) return;
 
     if (closeError) {
       this.setState({
@@ -351,30 +362,35 @@ export class VoiceBrowserClient {
       generation = this.invalidateLifecycle();
     }
 
+    let logoutError: VoiceBrowserError | null = null;
     try {
       await this.requestJson('/logout', { method: 'POST', csrf: true });
       this.ensureCurrent(generation);
-    } finally {
-      this.disposeTransport();
-      this.clearPersistedSession();
-      this.activeSessionId = null;
-      this.retainedSessionId = null;
-      this.setState({
-        authenticated: false,
-        phase: 'logged_out',
-        message: 'Log in om een gesprek te beginnen.',
-        errorMessage: null,
-        activeSessionId: null,
-        retainedSessionId: null,
-        session: null,
-        delegations: [],
-        outputs: [],
-        usage: INITIAL_USAGE,
-        pendingDelegation: false,
-        muted: false,
-        audioBlocked: false,
-      });
+    } catch (cause) {
+      logoutError = asVoiceBrowserError(cause, 'Uitloggen is niet voltooid.');
     }
+    if (!this.isCurrent(generation)) return;
+
+    this.disposeTransport();
+    this.clearPersistedSession();
+    this.activeSessionId = null;
+    this.retainedSessionId = null;
+    this.setState({
+      authenticated: false,
+      phase: 'logged_out',
+      message: 'Log in om een gesprek te beginnen.',
+      errorMessage: null,
+      activeSessionId: null,
+      retainedSessionId: null,
+      session: null,
+      delegations: [],
+      outputs: [],
+      usage: INITIAL_USAGE,
+      pendingDelegation: false,
+      muted: false,
+      audioBlocked: false,
+    });
+    if (logoutError) throw logoutError;
   }
 
   /** Release browser resources when the page is hidden or discarded. */
@@ -457,9 +473,9 @@ export class VoiceBrowserClient {
       }
     } catch (cause) {
       if (createdSessionId) {
-        await this.closeCreatedSession(createdSessionId, this.isCurrent(generation));
+        await this.closeCreatedSession(createdSessionId, generation);
       }
-      this.cleanupAttempt(stream, peer);
+      this.cleanupAttempt(generation, stream, peer);
       if (!this.isCurrent(generation) || cause instanceof VoiceAttemptCancelledError) return;
       this.disposeTransport();
       const error = asVoiceBrowserError(cause, 'Het gesprek kon niet worden gestart.');
@@ -472,7 +488,7 @@ export class VoiceBrowserClient {
     }
   }
 
-  private async closeCreatedSession(sessionId: string, applyState: boolean): Promise<void> {
+  private async closeCreatedSession(sessionId: string, generation: number): Promise<void> {
     try {
       const response = await this.requestJson<{
         readonly session: VoiceSessionStatusDto;
@@ -482,7 +498,9 @@ export class VoiceBrowserClient {
         body: { reason: 'transport_failure' satisfies VoiceCloseReason },
         csrf: true,
       });
-      if (applyState) this.applySessionStatus(response.session, response.pendingDelegation);
+      if (this.isCurrent(generation)) {
+        this.applySessionStatus(response.session, response.pendingDelegation);
+      }
     } catch {
       // The session deadline and server reconciler remain responsible for
       // cleanup when a transport setup failure races with an HTTP failure.
@@ -628,10 +646,13 @@ export class VoiceBrowserClient {
 
   private async playAudio(): Promise<void> {
     if (!this.audioElement) return;
+    const generation = this.lifecycleGeneration;
     try {
       await this.audioElement.play();
+      if (!this.isCurrent(generation)) return;
       this.setState({ audioBlocked: false });
     } catch {
+      if (!this.isCurrent(generation)) return;
       this.setState({
         audioBlocked: true,
         message: 'Audio staat klaar. Tik op “Audio afspelen” om Talon te horen.',
@@ -726,7 +747,8 @@ export class VoiceBrowserClient {
     this.releaseAudioTransport();
   }
 
-  private closeEventStream(): void {
+  private closeEventStream(expected?: VoiceEventSource | null): void {
+    if (expected !== undefined && this.eventSource !== expected) return;
     this.eventSource?.close();
     this.eventSource = null;
   }
@@ -764,7 +786,25 @@ export class VoiceBrowserClient {
     if (!this.isCurrent(generation)) throw new VoiceAttemptCancelledError();
   }
 
-  private cleanupAttempt(stream: MediaStream | null, peer: VoicePeerConnection | null): void {
+  private releaseCapturedTransport(
+    generation: number,
+    peer: VoicePeerConnection | null,
+    stream: MediaStream | null,
+  ): void {
+    if (!this.isCurrent(generation)) return;
+    if ((peer && this.peer === peer) || (stream && this.localStream === stream)) {
+      this.releaseAudioTransport();
+    }
+  }
+
+  private cleanupAttempt(
+    generation: number,
+    stream: MediaStream | null,
+    peer: VoicePeerConnection | null,
+  ): void {
+    const ownsPeer = peer !== null && this.peer === peer;
+    const ownsStream = stream !== null && this.localStream === stream;
+    if (!this.isCurrent(generation) && (ownsPeer || ownsStream)) return;
     if (peer) {
       peer.ontrack = null;
       peer.onconnectionstatechange = null;
@@ -772,9 +812,9 @@ export class VoiceBrowserClient {
       this.closePeer(peer);
     }
     this.stopStream(stream);
-    if (this.peer === peer) this.peer = null;
-    if (this.localStream === stream) this.localStream = null;
-    if (this.peer === null && this.localStream === null) {
+    if (this.isCurrent(generation) && ownsPeer) this.peer = null;
+    if (this.isCurrent(generation) && ownsStream) this.localStream = null;
+    if (this.isCurrent(generation) && this.peer === null && this.localStream === null) {
       this.transportConnected = false;
       this.providerReady = false;
     }

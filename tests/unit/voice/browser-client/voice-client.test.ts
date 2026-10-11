@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import { okResponse } from '../../../support/http-test-helpers.js';
 import type {
   VoiceBrowserClient,
   VoiceBrowserClientOptions,
@@ -526,6 +525,129 @@ describe('VoiceBrowserClient', () => {
     expect(storage.values.get('talon.voice.session-id')).toBe('session-2');
   });
 
+  it('does not let a stale hangup response tear down a newer call', async () => {
+    const first = makeStream();
+    const second = makeStream();
+    const firstPeer = makePeer();
+    const secondPeer = makePeer();
+    const firstSource = new FakeEventSource();
+    const secondSource = new FakeEventSource();
+    const sources = [firstSource, secondSource];
+    const oldClose = deferred<Response>();
+    let oldCloseRequested = false;
+    let createCount = 0;
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) {
+        createCount += 1;
+        return okResponse(createResponse(makeStatus({ id: `session-${createCount}`, status: 'connected' })));
+      }
+      if (input.endsWith('/sessions/session-1/close')) {
+        oldCloseRequested = true;
+        return oldClose.promise;
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source: firstSource,
+      eventSourceFactory: () => sources.shift() ?? secondSource,
+      peer: firstPeer,
+      peerConnectionFactory: vi.fn(() => (createCount === 0 ? firstPeer.peer : secondPeer.peer)),
+      mediaDevices: {
+        getUserMedia: vi.fn(async () => (createCount === 0 ? first.stream : second.stream)),
+      },
+    });
+
+    await client.login('operator-token');
+    await client.startCall();
+    const oldHangup = client.hangup();
+    await vi.waitFor(() => expect(oldCloseRequested).toBe(true));
+
+    firstSource.emit('session', {
+      kind: 'session',
+      version: 2,
+      session: makeStatus({ id: 'session-1', status: 'closed', closedAt: 300 }),
+      occurredAt: 300,
+    });
+    await client.startCall();
+    secondSource.emit('session', {
+      kind: 'session',
+      version: 1,
+      session: makeStatus({ id: 'session-2', status: 'connected' }),
+      occurredAt: 400,
+    });
+    secondPeer.emitProviderEvent({ type: 'session.started', session: { id: 'provider-session-2' } });
+    expect(client.state.phase).toBe('connected');
+
+    oldClose.resolve(
+      okResponse({
+        session: makeStatus({ id: 'session-1', status: 'closed', closedAt: 300 }),
+        pendingDelegation: false,
+      }),
+    );
+    await oldHangup;
+
+    expect(client.state.activeSessionId).toBe('session-2');
+    expect(client.state.phase).toBe('connected');
+    expect(second.track.stop).not.toHaveBeenCalled();
+    expect(secondPeer.close).not.toHaveBeenCalled();
+    expect(secondSource.close).not.toHaveBeenCalled();
+  });
+
+  it('does not let late startup cleanup restore a session after logout', async () => {
+    const { stream, track } = makeStream();
+    const peer = makePeer();
+    peer.setRemoteDescription.mockRejectedValueOnce(new Error('remote description failed'));
+    const source = new FakeEventSource();
+    const storage = makeStorage();
+    const cleanupClose = deferred<Response>();
+    let closeCount = 0;
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) return okResponse(createResponse(makeStatus({ id: 'session-1' })));
+      if (input.endsWith('/close')) {
+        closeCount += 1;
+        if (closeCount === 1) return cleanupClose.promise;
+        return okResponse({
+          session: makeStatus({ id: 'session-1', status: 'closed', closedAt: 300 }),
+          pendingDelegation: false,
+        });
+      }
+      if (input.endsWith('/logout')) return okResponse({ loggedOut: true });
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source,
+      peer,
+      sessionStorage: storage,
+      mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+    });
+
+    await client.login('operator-token');
+    const start = client.startCall();
+    await vi.waitFor(() => expect(closeCount).toBe(1));
+    const logout = client.logout();
+    await logout;
+    expect(client.state.phase).toBe('logged_out');
+    expect(storage.values.has('talon.voice.session-id')).toBe(false);
+
+    cleanupClose.resolve(
+      okResponse({
+        session: makeStatus({ id: 'session-1', status: 'closed', closedAt: 300 }),
+        pendingDelegation: false,
+      }),
+    );
+    await start;
+
+    expect(client.state.phase).toBe('logged_out');
+    expect(client.state.activeSessionId).toBeNull();
+    expect(client.state.retainedSessionId).toBeNull();
+    expect(storage.values.has('talon.voice.session-id')).toBe(false);
+    expect(track.stop).toHaveBeenCalledOnce();
+  });
+
   it('restores retained results through the authenticated cookie without replaying a call', async () => {
     const storage = makeStorage('session-1');
     const status = makeStatus({
@@ -553,6 +675,27 @@ describe('VoiceBrowserClient', () => {
     expect(client.state.retainedSessionId).toBe('session-1');
     expect(client.state.outputs[0]?.text).toBe('De taak is afgerond.');
     expect(client.state.phase).toBe('closed');
+    expect(client.state.message).toBe('Gesprek beëindigd.');
+  });
+
+  it.each(['network', 'server'] as const)('keeps the saved session ID after a %s restore failure', async (failure) => {
+    const storage = makeStorage('session-1');
+    const fetcher: VoiceFetch = vi.fn(async () => {
+      if (failure === 'network') throw new Error('offline');
+      return new Response(JSON.stringify({ error: { code: 'VOICE_ERROR', message: 'temporary' } }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const client = makeClient({
+      fetcher,
+      source: new FakeEventSource(),
+      peer: makePeer(),
+      sessionStorage: storage,
+    });
+
+    await expect(client.restore()).rejects.toMatchObject({ code: failure === 'network' ? 'NETWORK_ERROR' : 'VOICE_ERROR' });
+    expect(storage.values.get('talon.voice.session-id')).toBe('session-1');
   });
 
   it('reports a status stream network loss while keeping the session available to hang up', async () => {
