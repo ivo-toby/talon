@@ -18,7 +18,15 @@
     "auto:16:de93e790f760244c",
     "auto:17:ac48859b50d24b54",
     "auto:18:7f39efd2ab32300b",
-    "auto:19:149d97f1caac5b09"
+    "auto:19:149d97f1caac5b09",
+    "auto:20:de93e790f760244c",
+    "auto:21:ac48859b50d24b54",
+    "auto:22:64c0e29fad487155",
+    "auto:23:c2b6cdb085bd754c",
+    "auto:24:2843183faef0f782",
+    "auto:25:de93e790f760244c",
+    "auto:26:ac48859b50d24b54",
+    "auto:27:4957e059e5cc0c2a"
   ],
   "archiveBlocked": null,
   "archivePending": null,
@@ -164,6 +172,62 @@
       "revision": 19,
       "task": "TASK-01-contracts",
       "type": "task.pr_recorded"
+    },
+    {
+      "at": "2026-10-11T11:23:57Z",
+      "idempotencyKey": "auto:20:de93e790f760244c",
+      "revision": 20,
+      "task": null,
+      "type": "intake.design_approved"
+    },
+    {
+      "at": "2026-10-11T11:23:57Z",
+      "idempotencyKey": "auto:21:ac48859b50d24b54",
+      "revision": 21,
+      "task": null,
+      "type": "plan.approved"
+    },
+    {
+      "at": "2026-10-11T11:23:57Z",
+      "idempotencyKey": "auto:22:64c0e29fad487155",
+      "revision": 22,
+      "task": "TASK-01-contracts",
+      "type": "task.rebound"
+    },
+    {
+      "at": "2026-10-11T11:24:10Z",
+      "idempotencyKey": "auto:23:c2b6cdb085bd754c",
+      "revision": 23,
+      "task": "TASK-01-contracts",
+      "type": "review.recorded"
+    },
+    {
+      "at": "2026-10-11T11:27:04Z",
+      "idempotencyKey": "auto:24:2843183faef0f782",
+      "revision": 24,
+      "task": "TASK-01-contracts",
+      "type": "note.added"
+    },
+    {
+      "at": "2026-10-11T11:33:03Z",
+      "idempotencyKey": "auto:25:de93e790f760244c",
+      "revision": 25,
+      "task": null,
+      "type": "intake.design_approved"
+    },
+    {
+      "at": "2026-10-11T11:33:03Z",
+      "idempotencyKey": "auto:26:ac48859b50d24b54",
+      "revision": 26,
+      "task": null,
+      "type": "plan.approved"
+    },
+    {
+      "at": "2026-10-11T11:33:03Z",
+      "idempotencyKey": "auto:27:4957e059e5cc0c2a",
+      "revision": 27,
+      "task": "TASK-01-contracts",
+      "type": "task.rebound"
     }
   ],
   "intake": {
@@ -173,10 +237,10 @@
       "sha256": "sha256:d8e5eb4a46dab9ceb6375b0beaa3b7ec879a0ad7e3b90beed8778d3a081c6629"
     },
     "design": {
-      "at": "2026-10-11T11:20:48Z",
+      "at": "2026-10-11T11:33:03Z",
       "by": "Ivo",
       "deliverableCommand": "npm run lint && npx tsc --noEmit && npx vitest run tests/integration/voice && npm run build",
-      "sha256": "sha256:076fe416c744f01e3f81d141154f146096b06e7a21852201202829ca8648c699"
+      "sha256": "sha256:3116950e5805e6b79ef7affee003ca15c07b49c56415c1424345f3d3af83d12d"
     },
     "research": {
       "artifacts": [
@@ -219,15 +283,21 @@
     "everyNMerges": 1,
     "lastCheckpointAt": null,
     "mergesSinceCheckpoint": 0,
-    "pendingNotes": []
+    "pendingNotes": [
+      {
+        "at": "2026-10-11T11:27:04Z",
+        "note": "Ivo explicitly approved scoped test additions/changes and removed global ask-before-test-edit rule. Ivo explicitly approved controller integration of reviewed and verified task branches locally into epic/browservoice for autonomous completion. No push or merge to main. Marin is the explicit default voice. Paid probe budget remains five total session minutes, no Talon tools.",
+        "task": "TASK-01-contracts"
+      }
+    ]
   },
-  "revision": 19,
+  "revision": 27,
   "schemaVersion": 7,
   "scope": {
     "approval": {
-      "at": "2026-10-11T11:20:55Z",
+      "at": "2026-10-11T11:33:03Z",
       "by": "Ivo",
-      "sha256": "sha256:fbd0d512610efef5dafe226db23ee1448515da5c9d02e3d3485efd2f91f4808d"
+      "sha256": "sha256:ca48571fca9cbd897b45dcebc6cd82191f7ab3b42bfd8cfc080562d0289b942e"
     },
     "baseRef": "epic/browservoice",
     "id": "SCOPE-browservoice",
@@ -256,7 +326,7 @@
       "inputs": [
         {
           "path": "tasks/TASK-01-contracts.md",
-          "sha256": "sha256:37317f3addaf1e08d83d1fe46ec62748a527ac81e222e753625152191292c74b"
+          "sha256": "sha256:e569afcd43d48444f16fda06fa370e35ab81ef9751462bca817d86bd5bf97a60"
         },
         {
           "path": "spec.md",
@@ -264,22 +334,56 @@
         },
         {
           "path": "design.md",
-          "sha256": "sha256:076fe416c744f01e3f81d141154f146096b06e7a21852201202829ca8648c699"
+          "sha256": "sha256:3116950e5805e6b79ef7affee003ca15c07b49c56415c1424345f3d3af83d12d"
         }
       ],
       "merge": null,
       "model": null,
       "pr": "branch:task/TASK-01-contracts@e4f20801b84a",
       "rebound": {
-        "at": "2026-10-11T11:20:59Z",
+        "at": "2026-10-11T11:33:03Z",
         "by": "Codex"
       },
-      "review": null,
+      "review": {
+        "baseSha": "abab3f2a4694992e857a178f9209d4ae871db2c2",
+        "configSha256": "sha256:1b98bad2b9720ddf79cf0f0efa3891e3527150f8c6cefd600ac6b830e16c06f4",
+        "findings": [
+          {
+            "file": "src/voice/voice-types.ts",
+            "line": 259,
+            "severity": "P2",
+            "summary": "Add bounded browser SDP transport offer through HTTP, session service and provider creation contracts."
+          },
+          {
+            "file": ".wdd/epics/browservoice/evidence/TASK-01-live-probe.mjs",
+            "line": 512,
+            "severity": "P2",
+            "summary": "Client mutation probe currently sends over privileged server sideband; use WebRTC data channel and correlate rejection, correct evidence."
+          },
+          {
+            "file": ".wdd/epics/browservoice/evidence/TASK-01-live-probe.mjs",
+            "line": 109,
+            "severity": "P2",
+            "summary": "Stop microphone tracks and disable controls after session.closed; cleanup(false) leaves capture active."
+          },
+          {
+            "file": ".wdd/epics/browservoice/evidence/TASK-01-live-probe.mjs",
+            "line": 354,
+            "severity": "P2",
+            "summary": "On graceful finalization timeout attempt bounded REST hangup and signal browser cleanup; closing sideband alone does not stop WebRTC."
+          }
+        ],
+        "headSha": "e4f20801b84a03f35620f348e9f681b2ac95ce41",
+        "outcome": "blocking",
+        "resolvedRisk": "high",
+        "reviewModel": "gpt-6.1-sol",
+        "reviewer": "gpt-6.1-sol-xhigh"
+      },
       "reviewModel": null,
       "risk": "high",
       "snapshot": "dispatch/TASK-01-contracts-2",
       "specPath": "tasks/TASK-01-contracts.md",
-      "status": "review",
+      "status": "in_progress",
       "title": "Contracten en haalbaarheidsproef",
       "verification": null,
       "worktree": null
@@ -579,7 +683,7 @@
     }
   },
   "telemetry": {
-    "eventApplications": 19,
+    "eventApplications": 27,
     "renderCount": 0
   }
 }

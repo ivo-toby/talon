@@ -59,7 +59,7 @@ TASK-03-browser-server, TASK-05-backend, TASK-07-browser-ui
 
 ## Verification
 
-Concrete commands (bij implementatie; nieuwe tests pas na toestemming):
+Concrete commands (gerichte testwijzigingen zijn door Ivo toegestaan):
 
 ```sh
 npm run lint
@@ -74,7 +74,7 @@ Test de race tussen enqueue en providerstart: gewijzigde of ingetrokken login/pe
 
 Gerichte config/lifecycle-tests voor revoke, reload, shutdown, oude sessie-events, deadline zonder browser, pending versus running werk en policyverandering. Daemon-smoke volgens run-talon-smoke na toestemming voor service-start.
 
-Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Testbestanden in deze brief zijn gepland, niet nu aangemaakt. Toestemming voor testwijzigingen en service/API-gebruik moet vóór uitvoering geregeld zijn conform AGENTS.md. Geen volledige suite zonder toestemming.
+Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Gerichte testwijzigingen uit dit plan zijn door Ivo toegestaan. Service/API-gebruik vereist aparte autorisatie conform AGENTS.md. Geen volledige suite zonder toestemming.
 
 ## Non-scope
 

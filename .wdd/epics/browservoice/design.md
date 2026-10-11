@@ -67,13 +67,13 @@ TASK-01 bevriest VoiceTransport, provider-events, VoiceStore-transacties, policy
 
 ## Epic deliverable
 
-Een werkende, opt-in browservoice-integratie met Talon en de negen criteria uit spec.md. Het finale automatische bewijs is `npm run lint && npx tsc --noEmit && npx vitest run tests/integration/voice && npm run build`. De integratiesuite wordt in TASK-08 geschreven na toestemming voor tests. Gerichte unitregressies en de apart geautoriseerde live browserproef blijven bovendien vereist; dit commando alleen bewijst geen Nederlandse gesprekskwaliteit.
+Een werkende, opt-in browservoice-integratie met Talon en de negen criteria uit spec.md. Het finale automatische bewijs is `npm run lint && npx tsc --noEmit && npx vitest run tests/integration/voice && npm run build`. Ivo heeft de gerichte unit- en integratietestwijzigingen uit dit plan toegestaan. Gerichte unitregressies en de apart geautoriseerde live browserproef blijven bovendien vereist; dit commando alleen bewijst geen Nederlandse gesprekskwaliteit.
 
 ## Detailed design
 
 # Browservoice voor Talon — eerste versie
 
-Ontwerp uit de besproken planning van 11 oktober 2026. Dit document wordt nu geregistreerd voor uitvoering; implementatie is nog niet gestart.
+Ontwerp uit de besproken planning van 11 oktober 2026. Uitvoering is gestart via WDD.
 Broncodebasis: `0bf45cf332a0644fb3a13f2ad99d60102c5be972`.
 
 ## Doel en afbakening
@@ -217,7 +217,7 @@ Lint/typecheck, gerichte tests en build slagen. Browsercontrole en een expliciet
 3. De backendbrug met veilige uitvoerings-/aflevergrenzen; daarna lifecycle en daemonregistratie.
 4. Een kleine browserpagina, integratiecontrole en documentatie.
 
-Zie `plan.json` en `tasks/` voor concrete eigenaarschapgrenzen. Het plan wordt op verzoek van Ivo klaargezet; implementatie wordt nog niet gestart. Testwijzigingen, service-starts en toegang tot credentials vereisen volgens de aangeleverde AGENTS-regels toestemming; dit plan maakt die acties niet alvast toegestaan. Push en merge blijven afzonderlijk geautoriseerd.
+Zie `plan.json` en `tasks/` voor concrete eigenaarschapgrenzen. Ivo heeft uitvoering en de gerichte testwijzigingen toegestaan. Service-starts en toegang tot credentials vereisen afzonderlijke autorisatie; de begrensde voiceproeven zijn apart toegestaan. Gereviewde en geverifieerde taakbranches mogen via WDD lokaal in epic/browservoice worden geïntegreerd. Push en merge naar main zijn uitgesloten.
 
 De WDD-controller is geïnitialiseerd en de goedgekeurde configuratie is geratificeerd. Deze planning staat in de controller-aangemaakte namespace browservoice. Implementatie gebruikt GPT-5.6 Luna / max; PR-werk en WDD-reviews gebruiken GPT-6.1 Sol / xhigh. Er is geen verplichte review vóór iedere commit.
 

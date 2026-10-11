@@ -38,7 +38,7 @@ Geen; deze taak is de haalbaarheids- en contractgate.
 
 ## Verification
 
-Concrete commands (bij implementatie; nieuwe tests pas na toestemming):
+Concrete commands (gerichte testwijzigingen zijn door Ivo toegestaan):
 
 ```sh
 npm run lint
@@ -50,7 +50,7 @@ Deze taak bevriest interfaces en proefbewijs; er bestaat nog geen unitgedrag om 
 
 Contractreview en geregistreerde proefresultaten, inclusief Nederlands, interruptie en mislukte setup. Geen service of betaalde API gebruiken zonder toestemming.
 
-Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Testbestanden in deze brief zijn gepland, niet nu aangemaakt. Toestemming voor testwijzigingen en service/API-gebruik moet vóór uitvoering geregeld zijn conform AGENTS.md. Geen volledige suite zonder toestemming.
+Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Gerichte testwijzigingen uit dit plan zijn door Ivo toegestaan. Service/API-gebruik vereist aparte autorisatie conform AGENTS.md. Geen volledige suite zonder toestemming.
 
 ## Non-scope
 

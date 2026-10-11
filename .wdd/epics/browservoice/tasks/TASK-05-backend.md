@@ -49,7 +49,7 @@ TASK-02-persistence, TASK-04-live-adapter
 
 ## Verification
 
-Concrete commands (bij implementatie; nieuwe tests pas na toestemming):
+Concrete commands (gerichte testwijzigingen zijn door Ivo toegestaan):
 
 ```sh
 npm run lint
@@ -64,7 +64,7 @@ Test de race tussen enqueue en providerstart: gewijzigde of ingetrokken login/pe
 
 Gerichte bestaande runner/queue/context-tests plus voice-regressies: toolactie gevolgd door afleverfout, procesherstart, replay en contextcorrectie. Bewijs dat tekstkanalen hun bestaande gedrag behouden. Test onbekende effecten zonder heruitvoering.
 
-Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Testbestanden in deze brief zijn gepland, niet nu aangemaakt. Toestemming voor testwijzigingen en service/API-gebruik moet vóór uitvoering geregeld zijn conform AGENTS.md. Geen volledige suite zonder toestemming.
+Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Gerichte testwijzigingen uit dit plan zijn door Ivo toegestaan. Service/API-gebruik vereist aparte autorisatie conform AGENTS.md. Geen volledige suite zonder toestemming.
 
 ## Non-scope
 

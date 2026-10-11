@@ -37,7 +37,7 @@ TASK-01-contracts
 
 ## Verification
 
-Concrete commands (bij implementatie; nieuwe tests pas na toestemming):
+Concrete commands (gerichte testwijzigingen zijn door Ivo toegestaan):
 
 ```sh
 npm run lint
@@ -50,7 +50,7 @@ Verifieer claim-versus-supersede transactioneel: correctie en hangup kunnen alle
 
 Gerichte SQLite-tests voor transactierollback, dubbele events, conflicterende inhoud en crashherstel. Heropen de database met een verse verbinding en voer gewone writes uit. Kies bij implementatie het dan volgende migratienummer.
 
-Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Testbestanden in deze brief zijn gepland, niet nu aangemaakt. Toestemming voor testwijzigingen en service/API-gebruik moet vóór uitvoering geregeld zijn conform AGENTS.md. Geen volledige suite zonder toestemming.
+Voor bronwijzigingen: eerst lint/typecheck, gerichte bestaande tests, build en zichtbaar gedrag. Gerichte testwijzigingen uit dit plan zijn door Ivo toegestaan. Service/API-gebruik vereist aparte autorisatie conform AGENTS.md. Geen volledige suite zonder toestemming.
 
 ## Non-scope
 
