@@ -185,6 +185,33 @@ describe('ChannelSendHandler — success', () => {
     expect(connectorOutput.messageId).toBe(persistedMessage.id);
   });
 
+  it('uses the trusted context runId for sourceRunId', async () => {
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepo(),
+      logger: makeLogger(),
+    });
+    const args = {
+      ...makeArgs(),
+      sourceRunId: 'attacker-supplied-source-run-id',
+      runId: 'attacker-supplied-run-id',
+    } as ChannelSendArgs;
+
+    await handler.execute(args, makeContext({ runId: 'trusted-context-run-id' }));
+
+    const output = vi.mocked(connector.send).mock.calls[0]?.[1] as {
+      messageId?: string;
+      sourceRunId?: string;
+      runId?: string;
+    };
+    expect(output.sourceRunId).toBe('trusted-context-run-id');
+    expect(output.sourceRunId).not.toBe('attacker-supplied-source-run-id');
+    expect(output.runId).toBeUndefined();
+    expect(output.messageId).toBeDefined();
+  });
+
   it('keeps same-text deliveries distinct', async () => {
     const messageRepo = makeMessageRepo();
     const connector = makeConnector(ok(undefined));
