@@ -87,6 +87,7 @@ V1 bevat starten, microfoon dempen, ophangen, verbindingsstatus, zichtbare taaks
 Dit zijn concrete ontwerpvoorstellen, geen reeds goedgekeurde productpolicy:
 
 - Eén operator, één ingestelde voice-persona en maximaal één gesprek tegelijk per daemon.
+- Marin (`marin`) is de door Ivo gekozen standaardstem. De GPT-Live-adapter zet bij sessiecreatie expliciet `audio.output.voice: "marin"`, zodat Talon niet afhankelijk is van een veranderende providerdefault.
 - Voice staat standaard uit. Een afzonderlijke luisterpoort bindt standaard aan loopback; voor een telefoon is een bestaande HTTPS reverse proxy of private netwerkroute nodig. Geen automatische tunnel of publieke deployment.
 - Een expliciet geconfigureerd voice-toegangstoken wordt via een loginformulier ingewisseld voor een kortlevende HttpOnly, SameSite=Strict cookie. Secure bij HTTPS; localhost is de enige ontwikkeluitzondering. Geen tokens in URL, localStorage of logregels. Logout trekt de login in en sluit bijbehorende gesprekken.
 - Vijftien minuten maximale gespreksduur als instelbaar V1-voorstel. De server bewaakt dit, ook wanneer de browser verdwijnt. Sessies hebben tevens een eindige setup- en afsluitdeadline.

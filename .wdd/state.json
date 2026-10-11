@@ -8,7 +8,17 @@
     "auto:6:de93e790f760244c",
     "auto:7:73796432355dae23",
     "auto:8:670a8e1329928d5d",
-    "auto:9:f3ec8c5fc7917c0a"
+    "auto:9:f3ec8c5fc7917c0a",
+    "auto:10:e54f115f078e5425",
+    "auto:11:97de0cf90ff95ebb",
+    "auto:12:26d9583726279adb",
+    "auto:13:210912989ddcb289",
+    "auto:14:e54f115f078e5425",
+    "auto:15:a3233b09e9b6fa02",
+    "auto:16:de93e790f760244c",
+    "auto:17:ac48859b50d24b54",
+    "auto:18:7f39efd2ab32300b",
+    "auto:19:149d97f1caac5b09"
   ],
   "archiveBlocked": null,
   "archivePending": null,
@@ -84,6 +94,76 @@
       "revision": 9,
       "task": null,
       "type": "plan.applied"
+    },
+    {
+      "at": "2026-10-11T10:49:16Z",
+      "idempotencyKey": "auto:10:e54f115f078e5425",
+      "revision": 10,
+      "task": "TASK-01-contracts",
+      "type": "task.started"
+    },
+    {
+      "at": "2026-10-11T10:49:16Z",
+      "idempotencyKey": "auto:11:97de0cf90ff95ebb",
+      "revision": 11,
+      "task": "TASK-01-contracts",
+      "type": "task.dispatched"
+    },
+    {
+      "at": "2026-10-11T10:49:38Z",
+      "idempotencyKey": "auto:12:26d9583726279adb",
+      "revision": 12,
+      "task": "TASK-01-contracts",
+      "type": "task.blocked"
+    },
+    {
+      "at": "2026-10-11T10:53:45Z",
+      "idempotencyKey": "auto:13:210912989ddcb289",
+      "revision": 13,
+      "task": "TASK-01-contracts",
+      "type": "task.unblocked"
+    },
+    {
+      "at": "2026-10-11T10:54:23Z",
+      "idempotencyKey": "auto:14:e54f115f078e5425",
+      "revision": 14,
+      "task": "TASK-01-contracts",
+      "type": "task.started"
+    },
+    {
+      "at": "2026-10-11T10:54:23Z",
+      "idempotencyKey": "auto:15:a3233b09e9b6fa02",
+      "revision": 15,
+      "task": "TASK-01-contracts",
+      "type": "task.dispatched"
+    },
+    {
+      "at": "2026-10-11T11:20:48Z",
+      "idempotencyKey": "auto:16:de93e790f760244c",
+      "revision": 16,
+      "task": null,
+      "type": "intake.design_approved"
+    },
+    {
+      "at": "2026-10-11T11:20:55Z",
+      "idempotencyKey": "auto:17:ac48859b50d24b54",
+      "revision": 17,
+      "task": null,
+      "type": "plan.approved"
+    },
+    {
+      "at": "2026-10-11T11:20:59Z",
+      "idempotencyKey": "auto:18:7f39efd2ab32300b",
+      "revision": 18,
+      "task": "TASK-01-contracts",
+      "type": "task.rebound"
+    },
+    {
+      "at": "2026-10-11T11:20:59Z",
+      "idempotencyKey": "auto:19:149d97f1caac5b09",
+      "revision": 19,
+      "task": "TASK-01-contracts",
+      "type": "task.pr_recorded"
     }
   ],
   "intake": {
@@ -93,10 +173,10 @@
       "sha256": "sha256:d8e5eb4a46dab9ceb6375b0beaa3b7ec879a0ad7e3b90beed8778d3a081c6629"
     },
     "design": {
-      "at": "2026-10-11T10:43:14Z",
+      "at": "2026-10-11T11:20:48Z",
       "by": "Ivo",
       "deliverableCommand": "npm run lint && npx tsc --noEmit && npx vitest run tests/integration/voice && npm run build",
-      "sha256": "sha256:a037147eb32a1095af4902d10310abc349f7de0dab519dc370bcd877b8d42df8"
+      "sha256": "sha256:076fe416c744f01e3f81d141154f146096b06e7a21852201202829ca8648c699"
     },
     "research": {
       "artifacts": [
@@ -116,6 +196,17 @@
       "sha256": "sha256:94d50148b7ad3b9c6fbbedd077025518a880176348237a17eccc086e727ac42b"
     }
   },
+  "leases": {
+    "TASK-01-contracts": {
+      "acquiredAt": "2026-10-11T10:54:23Z",
+      "baseRef": "epic/browservoice",
+      "baseSha": "abab3f2a4694992e857a178f9209d4ae871db2c2",
+      "branch": "task/TASK-01-contracts",
+      "headSha": "abab3f2a4694992e857a178f9209d4ae871db2c2",
+      "status": "active",
+      "worktree": "/Users/ivo.toby/workspace/talon/.worktrees/SCOPE-browservoice/TASK-01-contracts"
+    }
+  },
   "monitoring": {
     "lastCheckedAt": null,
     "mode": "manual",
@@ -130,13 +221,13 @@
     "mergesSinceCheckpoint": 0,
     "pendingNotes": []
   },
-  "revision": 9,
+  "revision": 19,
   "schemaVersion": 7,
   "scope": {
     "approval": {
-      "at": "2026-10-11T10:45:45Z",
+      "at": "2026-10-11T11:20:55Z",
       "by": "Ivo",
-      "sha256": "sha256:bb8d076c77a1fa26dc6c3fa84737b66131d3c1e6d4f348e0ec639ce737850590"
+      "sha256": "sha256:fbd0d512610efef5dafe226db23ee1448515da5c9d02e3d3485efd2f91f4808d"
     },
     "baseRef": "epic/browservoice",
     "id": "SCOPE-browservoice",
@@ -146,7 +237,7 @@
   "tasks": {
     "TASK-01-contracts": {
       "blocker": null,
-      "branch": null,
+      "branch": "task/TASK-01-contracts",
       "conflictDomains": [
         "src/voice/voice-types.ts",
         ".wdd/epics/browservoice/evidence/**"
@@ -160,19 +251,35 @@
       ],
       "dependsOn": [],
       "freshness": null,
-      "headSha": null,
+      "headSha": "e4f20801b84a03f35620f348e9f681b2ac95ce41",
       "id": "TASK-01-contracts",
-      "inputs": [],
+      "inputs": [
+        {
+          "path": "tasks/TASK-01-contracts.md",
+          "sha256": "sha256:37317f3addaf1e08d83d1fe46ec62748a527ac81e222e753625152191292c74b"
+        },
+        {
+          "path": "spec.md",
+          "sha256": "sha256:94d50148b7ad3b9c6fbbedd077025518a880176348237a17eccc086e727ac42b"
+        },
+        {
+          "path": "design.md",
+          "sha256": "sha256:076fe416c744f01e3f81d141154f146096b06e7a21852201202829ca8648c699"
+        }
+      ],
       "merge": null,
       "model": null,
-      "pr": null,
-      "rebound": null,
+      "pr": "branch:task/TASK-01-contracts@e4f20801b84a",
+      "rebound": {
+        "at": "2026-10-11T11:20:59Z",
+        "by": "Codex"
+      },
       "review": null,
       "reviewModel": null,
       "risk": "high",
-      "snapshot": null,
+      "snapshot": "dispatch/TASK-01-contracts-2",
       "specPath": "tasks/TASK-01-contracts.md",
-      "status": "todo",
+      "status": "review",
       "title": "Contracten en haalbaarheidsproef",
       "verification": null,
       "worktree": null
@@ -472,7 +579,7 @@
     }
   },
   "telemetry": {
-    "eventApplications": 9,
+    "eventApplications": 19,
     "renderCount": 0
   }
 }

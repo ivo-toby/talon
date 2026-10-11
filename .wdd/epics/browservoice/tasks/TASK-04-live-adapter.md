@@ -12,6 +12,8 @@ Een afgebakende wijziging voor bovenstaande verantwoordelijkheid, met relevante 
 
 ## Interfaces
 
+Gebruik Marin (`marin`) als expliciete standaardstem bij GPT-Live-sessiecreatie via `audio.output.voice`. Dit is de door Ivo gekozen productdefault; vertrouw niet op een impliciete providerdefault.
+
 Gebruik de contracten uit TASK-01-contracts: VoiceTransport, LiveVoiceProvider, VoiceSessionService en VoiceBackendBridge. Resultaten en fouten gebruiken Talons Result-patroon. Concrete method signatures worden in taak 01 bevroren; volgende taken mogen deze niet onafhankelijk herdefiniëren.
 
 ## Acceptance criteria context
