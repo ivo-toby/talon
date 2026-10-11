@@ -294,6 +294,51 @@ after user confirmation. Run
 daemon because hot reload does not rebuild the sub-agent resolver. Do not run a
 live sub-agent merely to test it: that would consume the user's subscription quota.
 
+### Optional browser voice
+
+Ask one question: **"Do you want to enable the opt-in browser voice UI?"**
+Leave it disabled unless the user explicitly opts in. Browser voice currently
+supports authenticated WebRTC only and requires the selected persona's
+provider to be an enabled `openai-compatible` implementation. Its `voice.model`
+is the live voice model; the persona's `model` remains the backend model.
+
+If enabled, add environment-backed auth slots and the `voice` block to the
+config. Never ask for or write the token values:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  provider: openai-compatible
+  persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedTransportTypes: [webrtc]
+  allowedOrigins: [https://voice.example.com]
+```
+
+For a non-local browser, put HTTPS in front of the loopback listener. The
+reverse proxy must preserve `Host` and `Origin` and send
+`X-Forwarded-Proto: https`; set `publicHost` to the public hostname. Run
+`npx talonctl doctor --config talond.yaml` after the change and open
+`https://<publicHost>/voice/`. SIP, physical-phone, and live paid-provider
+verification are separate acceptance steps.
+
+If the operator supplies a current provider rate, `voice.usdPerMinute` makes
+the UI's voice amount a duration estimate. There is no default rate. Final
+provider usage remains `estimated`; a configured rate with known usage and an
+incomplete close is `incomplete`, and an omitted rate is `unavailable`. Backend
+cost comes only from AgentRunner run accounting.
+
 ### Step 4: Channel configuration
 
 Ask: **"Which channel do you want to connect first?"**

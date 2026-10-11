@@ -380,6 +380,27 @@ auth:
     #   baseURL: https://ollama.com/v1
     #   apiKey: ${OLLAMA_API_KEY}
 
+# Optional browser voice. Disabled by default. Keep the access token and live
+# provider key in environment variables referenced by auth.providers; do not
+# put literal secrets in this file.
+voice:
+  enabled: false
+  host: 127.0.0.1
+  port: 0
+  # publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible
+  # model: gpt-live-1
+  # persona: assistant
+  voice: marin
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedTransportTypes:
+    - webrtc
+  allowedOrigins: []
+  allowedToolNames: []
+  allowedMcpServerNames: []
+
 # Langfuse observability — traces agent runs, tool calls, and LLM generations.
 # Sign up at https://cloud.langfuse.com or self-host: https://langfuse.com/docs/deployment/self-host
 langfuse:
