@@ -51,7 +51,7 @@ env -u OPENAI_BASE_URL node --env-file=/Users/ivo.toby/workspace/talon/.env \
 
 De lokale server luistert uitsluitend op `127.0.0.1:8787`. De sleutel wordt niet naar de browser gestuurd, opgeslagen, gelogd of in de worktree geschreven. De browserpagina toont alleen eventtypen, opaque IDs, offsets, karakterlengtes, statuscodes, sluitreden en usage-seconden; geen audio, SDP, volledige transcriptie of promptinhoud wordt vastgelegd.
 
-De budgettimer start vóór het eerste `POST /v1/live/sessions`-verzoek, zodat ook startup-tijd en een mislukte poging binnen de grens vallen. De eerder vastgelegde run had één geldige sessiepoging, één optionele ongeldige-authenticatiepoging na close en een server-side harde timer van 300 seconden. De aanvullende handmatige run gebruikt maximaal 60 seconden vanaf sessiecreatie, zonder nieuwe invalid-startup-poging. Bij de timer stuurt de server `session.close` via de sideband en gebruikt hij alleen als fallback de officiële hangup-endpoint. De 5-minutengrens van de eerdere run en de 60-secondenlimiet van deze aanvullende run zijn operationele stopgrenzen, geen claim over billing- of server-side afdwinging.
+De budgettimer start vóór het eerste `POST /v1/live/sessions`-verzoek, zodat ook startup-tijd en een mislukte poging binnen de grens vallen. De huidige harnasversie heeft een harde timer van 60 seconden; de eerder vastgelegde eerste handmatige run gebruikte een oudere versie met 300 seconden. Bij de timer stuurt de server `session.close` via de sideband en gebruikt hij alleen als fallback de officiële hangup-endpoint. De 5-minutengrens van de eerdere run en de 60-secondenlimiet van deze harnasversie zijn operationele stopgrenzen, geen claim over billing- of server-side afdwinging.
 
 ## Uitvoering
 
@@ -102,12 +102,13 @@ resultaat.` Dat moet samen met input-transcriptfragmenten, de daaropvolgende
 delegatie-offset en een acknowledgement met hetzelfde delegatie-ID worden
 waargenomen. Deze tekst beschrijft een volgende proef; die is niet uitgevoerd.
 
-## Stille WebRTC-proef met synthetische invoer
+## Eerste synthetische WebRTC-proef (vóór timingfix)
 
-Om transcriptie zonder microfoon te testen is daarna precies één extra
-WebRTC-poging uitgevoerd. De lokale macOS-spraaksynthetiseerder schreef de
-vaste Engelse zin naar een tijdelijk AIFF-bestand; `afconvert` maakte daarvan
-een 24 kHz mono-WAV. Er is geen `afplay` of andere afspeelopdracht uitgevoerd.
+Om transcriptie zonder microfoon te testen is precies één WebRTC-poging
+uitgevoerd met de toenmalige harnasversie. De lokale macOS-spraaksynthetiseerder
+schreef de vaste Engelse zin naar een tijdelijk AIFF-bestand; `afconvert` maakte
+daarvan een 24 kHz mono-WAV. Er is geen `afplay` of andere afspeelopdracht
+uitgevoerd.
 
 ```text
 say -v Samantha -o <temporary-dir>/request.aiff \
@@ -123,11 +124,13 @@ Open daarna `http://127.0.0.1:8787/?mode=synthetic` and click **Start
 synthetic probe**. Deze expliciete modus gebruikt
 `AudioContext.createMediaStreamDestination()` zonder verbinding met
 `AudioContext.destination`; de browser vraagt geen microfoon en maakt geen
-`audio.srcObject` voor provideroutput. De modus stuurt de directe
-`session.update`-mutatie één keer via het WebRTC-datachannel en sluit na een
-handmatige close of de harde 60-secondenlimiet. Een `session.closed`-event
-ruimt de synthetische track, datachannel en peerconnection op; bij ontbrekende
-finalisatie volgt de bestaande begrensde REST-hangup en browsercleanup.
+`audio.srcObject` voor provideroutput. In deze eerste versie startte de
+synthetische bron meteen tijdens `start()`, vóór de provider-SDP-handshake en
+sideband klaar waren. De modus stuurde de directe `session.update`-mutatie één
+keer via het WebRTC-datachannel en sloot na een handmatige close. Een
+`session.closed`-event ruimde de synthetische track, datachannel en
+peerconnection op; bij ontbrekende finalisatie volgde de bestaande begrensde
+REST-hangup en browsercleanup.
 
 De poging maakte een sessie met HTTP 201, opende de sideband en kreeg
 `session.started`. Er kwamen 15 input-transcriptfragmenten en 15 provider
@@ -148,7 +151,27 @@ alleen als inkomende WebRTC-track ontvangen en direct uitgeschakeld; er is
 geen hoorbare output beoordeeld. De status blijft `NEEDS_CONTEXT`: de
 synthetische WebRTC-transport- en transcriptieketen is aangetoond, maar de
 verplichte koppeling transcript → clientdelegatie → offset → acknowledgement
-is in deze ene poging niet waargenomen.
+is in deze eerste poging niet waargenomen.
+
+De harnascode is daarna offline aangepast: de track en SDP worden eerst
+opgebouwd, maar de bron start pas nadat `session.started`, het browser-datachannel
+en de server-side sideband alle drie gereed zijn. De directe clientmutatie wordt
+pas daarna naar de server gemarkeerd en verzonden; een fout zonder provider-ID
+wordt alleen temporeel gecorreleerd en blijft als zodanig gelabeld.
+
+## Tweede synthetische poging (niet gestart)
+
+Op 11 oktober 2026 is één nieuwe poging voorbereid met de gecorrigeerde
+harnascode en een nieuwe 24 kHz mono-WAV voor:
+`Please ask the probe backend for the status of code seven three one.` De lokale
+server startte op `127.0.0.1:8787` met de 60-secondenlimiet. De desktop was op
+dat moment vergrendeld: CUA kon geen browserapp openen. Er was in de worktree
+geen geïnstalleerde Playwright/Chromium- of Node-WebRTC-runtime om de synthetische
+pagina zonder microfoon of luidspreker uit te voeren. Daardoor is geen
+`POST /v1/live/sessions` gedaan, geen provider-sessie gemaakt en geen extra
+providerbudget gebruikt. De server is gestopt en poort 8787 is gecontroleerd
+vrij. Resultaat: `NEEDS_CONTEXT`; de timingfix en het harnas zijn offline
+geverifieerd, maar een tweede live resultaat ontbreekt.
 
 ## Gemeten run
 

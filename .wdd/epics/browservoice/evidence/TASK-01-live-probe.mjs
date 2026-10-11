@@ -14,8 +14,7 @@ const HANGUP_TIMEOUT_MS = 5_000;
 const CLOSE_GRACE_MS = 5_000;
 const MAX_EVENTS = 250;
 const SYNTHETIC_AUDIO_PATH = process.env.PROBE_AUDIO_PATH ?? null;
-const SYNTHETIC_REQUEST =
-  'For the silent browser probe, look up testcode731 and wait for the client result.';
+const SYNTHETIC_REQUEST = 'Please ask the probe backend for the status of code seven three one.';
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
@@ -67,6 +66,12 @@ const page = `<!doctype html>
     let syntheticContext;
     let syntheticSource;
     let syntheticDestination;
+    let syntheticStart;
+    let syntheticStarted = false;
+    let providerStarted = false;
+    let dataChannelOpen = false;
+    let sidebandReady = false;
+    let syntheticCloseTimer;
     let sessionId;
     let closed = false;
     let mutationSent = false;
@@ -116,6 +121,10 @@ const page = `<!doctype html>
         return;
       }
       write("browser " + JSON.stringify(eventSummary(event)));
+      if (event.type === "session.started") {
+        providerStarted = true;
+        maybeStartSynthetic();
+      }
       if (event.type === "session.closed") {
         closed = true;
         buttons.close.disabled = true;
@@ -157,6 +166,7 @@ const page = `<!doctype html>
         void syntheticContext?.close();
         syntheticContext = undefined;
       }
+      if (syntheticCloseTimer) clearTimeout(syntheticCloseTimer);
       if (dc && dc.readyState !== "closed") dc.close();
       if (pc && pc.connectionState !== "closed") pc.close();
       if (stopInput) setActive(false);
@@ -174,21 +184,43 @@ const page = `<!doctype html>
       source.buffer = buffer;
       source.connect(destination);
       source.onended = () => write("browser synthetic_audio=ended");
-      source.start();
       syntheticContext = context;
       syntheticDestination = destination;
       syntheticSource = source;
       write("browser synthetic_audio=media_stream_destination_only");
-      return destination.stream.getAudioTracks()[0];
+      return {
+        track: destination.stream.getAudioTracks()[0],
+        start() {
+          if (syntheticStarted) return;
+          syntheticStarted = true;
+          source.start();
+          write("browser synthetic_audio=started_after_session_ready");
+          syntheticCloseTimer = setTimeout(() => void command("close"), 45_000);
+        },
+      };
     }
 
-    function sendClientMutation() {
+    function maybeStartSynthetic() {
+      if (!syntheticMode || syntheticStarted || !syntheticStart) return;
+      if (!providerStarted || !dataChannelOpen || !sidebandReady) return;
+      syntheticStart();
+      setTimeout(() => void sendClientMutation(), 1_000);
+    }
+
+    async function sendClientMutation() {
       if (mutationSent) return;
       if (!dc || dc.readyState !== "open") {
         write("browser client_mutation=unavailable");
         return;
       }
       mutationSent = true;
+      await post("/client-mutation-sent", { sessionId }).catch(() => {
+        write("browser client_mutation=timing_record_unavailable");
+      });
+      if (dc.readyState !== "open") {
+        write("browser client_mutation=unavailable_after_timing");
+        return;
+      }
       dc.send(JSON.stringify({
         type: "session.update",
         event_id: "probe_client_mutation",
@@ -206,9 +238,11 @@ const page = `<!doctype html>
       buttons.start.disabled = true;
       state.textContent = syntheticMode ? "state=requesting_synthetic_audio" : "state=requesting_microphone";
       try {
+        const syntheticInput = syntheticMode ? await createSyntheticInput() : null;
         const inputTrack = syntheticMode
-          ? await createSyntheticInput()
+          ? syntheticInput.track
           : (microphone = await navigator.mediaDevices.getUserMedia({ audio: true })).getAudioTracks()[0];
+        syntheticStart = syntheticInput?.start;
         pc = new RTCPeerConnection();
         pc.ontrack = (event) => {
           if (syntheticMode) {
@@ -224,8 +258,9 @@ const page = `<!doctype html>
         };
         dc = pc.createDataChannel("oai-events");
         dc.onopen = () => {
+          dataChannelOpen = true;
           write("browser data_channel=open");
-          if (syntheticMode) setTimeout(sendClientMutation, 500);
+          maybeStartSynthetic();
         };
         dc.onclose = () => write("browser data_channel=closed");
         dc.onmessage = (event) => receive(event.data);
@@ -261,7 +296,7 @@ const page = `<!doctype html>
 
     buttons.start.onclick = start;
     buttons.status.onclick = () => command("status");
-    buttons.mutation.onclick = sendClientMutation;
+    buttons.mutation.onclick = () => void sendClientMutation();
     buttons.mute.onclick = () => command("mute");
     buttons.unmute.onclick = () => command("unmute");
     buttons.close.onclick = () => command("close");
@@ -269,6 +304,8 @@ const page = `<!doctype html>
     setInterval(async () => {
       const result = await fetch("/state").then((response) => response.json()).catch(() => null);
       if (!result) return;
+      sidebandReady = result.sideband_ready === true;
+      maybeStartSynthetic();
       if (result.cleanup_required && !closed) {
         closed = true;
         write("browser cleanup=forced_after_incomplete_finalization");
@@ -471,7 +508,10 @@ function attachSideband(sessionId) {
     headers: { Authorization: `Bearer ${apiKey}` },
   });
   state.active.sideband = sideband;
-  sideband.on('open', () => record('sideband_opened'));
+  sideband.on('open', () => {
+    state.active.sidebandReady = true;
+    record('sideband_opened');
+  });
   sideband.on('message', (raw) => {
     let event;
     try {
@@ -512,14 +552,21 @@ function attachSideband(sessionId) {
       record('client_mutation_unexpectedly_accepted');
       void closeSession('unexpected_client_mutation_acceptance', true);
     }
-    if (
+    const mutationErrorHasId =
+      event.client_event_id === 'probe_client_mutation' ||
+      event.error?.event_id === 'probe_client_mutation' ||
+      event.event_id === 'probe_client_mutation';
+    const mutationErrorIsTemporallyCorrelated =
       event.type === 'error' &&
-      (event.client_event_id === 'probe_client_mutation' ||
-        event.error?.event_id === 'probe_client_mutation' ||
-        event.event_id === 'probe_client_mutation')
-    ) {
+      event.error?.code === 'immutable_field_update' &&
+      state.active.clientMutationSentAt !== null;
+    if (event.type === 'error' && (mutationErrorHasId || mutationErrorIsTemporallyCorrelated)) {
       state.active.clientMutationRejected = true;
-      record('client_mutation_rejected', { error_code: event.error?.code ?? 'unknown' });
+      state.active.clientMutationCorrelation = mutationErrorHasId ? 'client_event_id' : 'temporal';
+      record('client_mutation_rejected', {
+        error_code: event.error?.code ?? 'unknown',
+        correlation: state.active.clientMutationCorrelation,
+      });
     }
     if (event.type === 'session.closed') {
       state.active.finalized = true;
@@ -535,7 +582,10 @@ function attachSideband(sessionId) {
     }
   });
   sideband.on('error', () => record('sideband_error'));
-  sideband.on('close', () => record('sideband_closed'));
+  sideband.on('close', () => {
+    state.active.sidebandReady = false;
+    record('sideband_closed');
+  });
 }
 
 async function createLiveSession(offerSdp, syntheticMode) {
@@ -548,11 +598,22 @@ async function createLiveSession(offerSdp, syntheticMode) {
       delegation: { type: 'client' },
       audio: { output: { voice: OUTPUT_VOICE } },
       instructions: syntheticMode
-        ? 'This is a bounded silent technical probe. The user will speak this fixed request: ' +
-          SYNTHETIC_REQUEST +
-          ' ' +
-          'Use client delegation for that request, wait for the application commentary acknowledgement, ' +
-          'and do not perform any backend, tool, service, account, or external action.'
+        ? 'You are a calm, clear voice assistant for a bounded technical probe. ' +
+          'Speak naturally and wait for the user. ' +
+          'Backchannel policy: Use moderate backchannels. Acknowledge naturally without competing with the main response. ' +
+          'Interruption policy: Stop speaking when the user interrupts. Listen to what they say. ' +
+          'Delegation policy:\n' +
+          'Backend tools:\n' +
+          '- Probe status: the probe backend knows the status of code731.\n' +
+          'Delegate to the backend when:\n' +
+          '- The user asks for the status of code731 or asks for a probe backend lookup.\n' +
+          '- The request needs the probe backend capability.\n' +
+          'Do not delegate to the backend when:\n' +
+          '- The user greets you or asks you to repeat a result already provided.\n' +
+          '- You cannot tell what they are asking for without a brief clarification.\n' +
+          'Delegate before giving an answer that depends on backend work. ' +
+          'Do not guess the result while waiting. The fixed test utterance is: ' +
+          SYNTHETIC_REQUEST
         : 'Spreek kort Nederlands. Dit is een begrensde connectiviteitsproef. ' +
           'Beantwoord de gebruiker direct. Gebruik clientdelegatie voor de eerste aanvraag ' +
           'en wacht op een korte bevestiging; er is geen backendactie of externe actie beschikbaar.',
@@ -576,6 +637,7 @@ async function createLiveSession(offerSdp, syntheticMode) {
   state.active = {
     sessionId: data.session.id,
     sideband: null,
+    sidebandReady: false,
     closeRequested: false,
     finalized: false,
     finalizationTimedOut: false,
@@ -588,6 +650,8 @@ async function createLiveSession(offerSdp, syntheticMode) {
     commentaryEventId: null,
     commentaryAcknowledged: false,
     clientMutationRejected: false,
+    clientMutationSentAt: null,
+    clientMutationCorrelation: null,
     hangupAttempted: false,
     voiceSeconds: null,
     closeReason: null,
@@ -687,12 +751,14 @@ async function route(request, response) {
       budget_remaining_ms: remainingMs(),
       voice_seconds: active?.voiceSeconds ?? null,
       synthetic_mode: active?.syntheticMode ?? false,
+      sideband_ready: active?.sidebandReady ?? false,
       input_transcript_fragments: active?.inputTranscriptFragments ?? 0,
       output_transcript_fragments: active?.outputTranscriptFragments ?? 0,
       delegation_count: active?.delegationIds.length ?? 0,
       delegation_offset_ms: active?.delegationOffsetMs ?? null,
       commentary_acknowledged: active?.commentaryAcknowledged ?? false,
       client_mutation_rejected: active?.clientMutationRejected ?? false,
+      client_mutation_correlation: active?.clientMutationCorrelation ?? null,
       finalized: active?.finalized ?? false,
       cleanup_required: active?.finalizationTimedOut ?? false,
       create_attempted: state.createAttempted,
@@ -735,6 +801,14 @@ async function route(request, response) {
       return json(response, 409, { error: 'session_not_available' });
     attachSideband(state.active.sessionId);
     return json(response, 200, { attached: true });
+  }
+
+  if (url.pathname === '/client-mutation-sent') {
+    if (!state.active || state.active.finalized)
+      return json(response, 409, { error: 'session_not_available' });
+    state.active.clientMutationSentAt = elapsedMs();
+    record('client_mutation_sent');
+    return json(response, 200, { recorded: true });
   }
 
   if (url.pathname === '/command') {
