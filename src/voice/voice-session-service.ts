@@ -23,12 +23,14 @@ import type {
   LiveVoiceEvent,
   LiveVoiceProvider,
   LiveVoiceSideband,
+  VoiceAdmissionRequest,
   VoiceAsyncResult,
   VoiceBackendBridge,
   VoiceBackendRequest,
   VoiceBackendResult,
   VoiceCloseReason,
   VoiceContextSnapshot,
+  VoiceDelegationRecord,
   VoiceEventHandler,
   VoiceOwnerContext,
   VoiceOutputLifecycle,
@@ -46,12 +48,14 @@ import type {
   VoiceSessionService as VoiceSessionServiceContract,
   VoiceSessionStatusDto,
   VoiceStatusEventDto,
+  VoiceSupersedeResult,
   VoiceTransport,
   VoiceTransportEvent,
   VoiceTransportHandle,
   VoiceTransportOpenRequest,
   VoiceTransportStatus,
   VoiceUnsubscribe,
+  VoiceUsageUpdate,
 } from './voice-types.js';
 import type { VoiceStore } from './voice-types.js';
 
@@ -70,6 +74,8 @@ export interface VoiceSessionServiceOptions {
   readonly personaId: string;
   readonly providerName?: string;
   readonly modelName: string;
+  /** GPT-Live model; backend policy keeps using the persona modelName. */
+  readonly liveModelName?: string;
   readonly instructions: string;
   readonly voiceName: string;
   readonly generation?: () => number;
@@ -355,7 +361,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const providerSession = await this.options.provider.createSession({
       sessionId,
       ownerId: owner.ownerId,
-      modelName: policy.value.modelName,
+      modelName: this.options.liveModelName ?? policy.value.modelName,
       instructions: this.options.instructions,
       delegationMode: 'client',
       transport: input.transport,
@@ -474,7 +480,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const projection = this.options.store.readSession(sessionId);
     if (projection.isErr()) return err(projection.error);
     if (!projection.value) return ok(null);
-    if (!sameOwner(projection.value.session.owner, owner)) return ok(null);
+    if (projection.value.session.owner.ownerId !== owner.ownerId) return ok(null);
     const ownerError = this.ensureOwnerActive(owner);
     if (ownerError) return err(ownerError);
     return ok(statusDto(projection.value));
@@ -509,13 +515,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const runtime = this.runtimes.get(sessionId);
     if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
     if (runtime) {
-      runtime.unsubscribeProvider();
       runtime.unsubscribeTransport();
       if (!pendingDelegation) {
         for (const unsubscribe of runtime.resultUnsubscribes.values()) unsubscribe();
         runtime.resultUnsubscribes.clear();
       }
       await runtime.sideband.close(input.reason !== 'transport_failure');
+      const finalUsage = latestSidebandUsage(runtime.sideband);
+      if (finalUsage) this.persistUsage(sessionId, finalUsage);
+      runtime.unsubscribeProvider();
     }
     await this.options.transport.close(sessionId, input.reason);
     if (current.providerSessionId) await this.closeProvider(current.providerSessionId, input.reason !== 'transport_failure');
@@ -530,7 +538,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       patch: {
         status: terminalStatus,
         closedAt: this.now(),
-        finalization: finalizationFromRuntime(runtime),
+        finalization: finalizationFromRuntime(runtime, latestSidebandUsage(runtime?.sideband)),
         ...(pendingDelegation ? {} : { activeDelegationId: undefined }),
       },
       updatedAt: this.now(),
@@ -607,7 +615,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (ownerError) return err(ownerError);
     const projection = this.options.store.readSession(sessionId);
     if (projection.isErr()) return err(projection.error);
-    if (!projection.value || !sameOwner(projection.value.session.owner, owner)) {
+    if (!projection.value || projection.value.session.owner.ownerId !== owner.ownerId) {
       return err(new PolicyError('Voice session owner does not match'));
     }
     const runtime = this.runtimes.get(sessionId);
@@ -743,31 +751,29 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (projection.isErr()) return err(projection.error);
     if (!projection.value) return err(new PolicyError('Voice session was not found'));
     const session = projection.value.session;
-    if (session.status === 'closing' || ['closed', 'expired', 'failed'].includes(session.status)) {
+    if (
+      ['closed', 'expired', 'failed'].includes(session.status) ||
+      (session.status === 'closing' && event.kind !== 'usage' && event.kind !== 'session_closed')
+    ) {
       return ok(undefined);
     }
     if (event.kind === 'transcript') return ok(undefined);
     if (event.kind === 'usage') {
-      const usage = {
-        ...session.usage,
-        ...(event.update.voiceSeconds !== undefined ? { voiceSeconds: event.update.voiceSeconds } : {}),
-        voiceCostStatus: session.usage.voiceCostStatus,
-        backendCostStatus: session.usage.backendCostStatus,
-      };
-      const saved = this.options.store.updateSession({
-        sessionId,
-        expectedRevision: session.revision,
-        patch: { usage },
-        updatedAt: this.now(),
-      });
-      if (saved.isErr()) return err(saved.error);
-      this.publishSession(saved.value);
-      return ok(undefined);
+      return this.persistUsage(sessionId, event.update);
     }
     if (event.kind === 'provider_acknowledgement') {
-      return this.recordProviderAcknowledgement(sessionId, event.delegationId, event.outputId);
+      const internalDelegation = projection.value.delegations.find(
+        (delegation) => delegation.providerDelegationId === event.delegationId,
+      );
+      if (!internalDelegation) return ok(undefined);
+      return this.recordProviderAcknowledgement(sessionId, internalDelegation.id, event.outputId);
     }
     if (event.kind === 'session_closed') {
+      if (event.usage) {
+        const usage = this.persistUsage(sessionId, event.usage);
+        if (usage.isErr()) return usage;
+      }
+      if (session.status === 'closing') return ok(undefined);
       await this.closeSession(session.owner, sessionId, { reason: 'hangup' });
       return ok(undefined);
     }
@@ -792,12 +798,17 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I already received that request. Please make a new request if you still need help.');
       return ok(undefined);
     }
-    if (session.status !== 'connected' || session.activeDelegationId) {
+    if (session.status !== 'connected') {
       await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The previous request is still being handled.');
       return ok(undefined);
     }
     if (session.deadlineAt <= this.now()) {
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'This voice session has expired.');
+      await this.closeSession(session.owner, sessionId, { reason: 'deadline' });
+      return ok(undefined);
+    }
+    const ownerError = this.ensureOwnerActive(session.owner);
+    if (ownerError) {
+      await this.closeSession(session.owner, sessionId, { reason: 'logout' });
       return ok(undefined);
     }
     const contextResult = this.contextForDelegation(runtime.sideband, proposal.providerDelegationId);
@@ -821,6 +832,38 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       await sendClarification(runtime.sideband, proposal.providerDelegationId, 'This request is no longer permitted.');
       return ok(undefined);
     }
+    const activeDelegation = findPendingDelegation(session, projection.value.delegations);
+    if (activeDelegation) {
+      if (
+        activeDelegation.contextVersion === boundedContext.version &&
+        activeDelegation.contextDigest === boundedContext.digest
+      ) {
+        await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The previous request is still being handled.');
+        return ok(undefined);
+      }
+      const replacement = this.supersedePendingDelegation(
+        session,
+        activeDelegation,
+        proposal,
+        boundedContext,
+      );
+      if (replacement.isErr()) {
+        await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I could not safely update that request. Please repeat it.');
+        return ok(undefined);
+      }
+      if (replacement.value.outcome !== 'replaced') {
+        await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The previous request has already started. Please wait for its result.');
+        return ok(undefined);
+      }
+      this.publishDelegation(sessionId, replacement.value.original.id);
+      this.publishDelegation(sessionId, replacement.value.replacement.id);
+      return this.attachBackendResult(
+        runtime,
+        replacement.value.request,
+        replacement.value.session,
+        true,
+      );
+    }
     const request: VoiceBackendRequest = {
       sessionId,
       delegationId: uuidv4(),
@@ -831,6 +874,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       policy: session.policy,
       requestedAt: this.now(),
     };
+    const admissionOwnerError = this.ensureOwnerActive(session.owner);
+    if (admissionOwnerError) {
+      await this.closeSession(session.owner, sessionId, { reason: 'logout' });
+      return ok(undefined);
+    }
     const admitted = await this.options.backendBridge.admit(request);
     if (admitted.isErr()) {
       await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I could not safely queue that request. Please repeat it.');
@@ -900,6 +948,123 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         activeSession = claimedActive.value;
       }
     }
+    return this.attachBackendResult(runtime, request, activeSession, ownsActiveDelegation);
+  }
+
+  private supersedePendingDelegation(
+    session: VoiceSessionRecord,
+    original: VoiceDelegationRecord,
+    proposal: { readonly providerDelegationId: string; readonly offsetMs: number; readonly receivedAt: number },
+    context: VoiceContextSnapshot,
+  ): VoiceResult<
+    | {
+        readonly outcome: 'replaced';
+        readonly request: VoiceBackendRequest;
+        readonly session: VoiceSessionRecord;
+        readonly original: VoiceDelegationRecord;
+        readonly replacement: VoiceDelegationRecord;
+      }
+    | {
+        readonly outcome: 'not_replaceable';
+        readonly reason: Extract<VoiceSupersedeResult, { readonly outcome: 'not_replaceable' }>['reason'];
+      }
+  > {
+    const request: VoiceBackendRequest = {
+      sessionId: session.id,
+      delegationId: uuidv4(),
+      providerDelegationId: proposal.providerDelegationId,
+      threadId: session.threadId,
+      personaId: session.personaId,
+      context,
+      policy: session.policy,
+      requestedAt: this.now(),
+    };
+    const queueItemId = uuidv4();
+    const replacement: VoiceDelegationRecord & { readonly supersedesDelegationId: string } = {
+      id: request.delegationId,
+      sessionId: session.id,
+      providerDelegationId: request.providerDelegationId,
+      revision: 0,
+      contextVersion: context.version,
+      contextDigest: context.digest,
+      request,
+      status: 'admitted',
+      execution: 'not_started',
+      output: initialOutputLifecycle(),
+      queueItemId,
+      supersedesDelegationId: original.id,
+      createdAt: request.requestedAt,
+    };
+    // The original queue row and replacement reservation must commit together;
+    // the bridge's ordinary admission path cannot express that CAS.
+    return this.options.store.runInTransaction((transaction) => {
+      const currentSession = transaction.findSession(session.id);
+      if (currentSession.isErr()) return err(currentSession.error);
+      if (
+        !currentSession.value ||
+        currentSession.value.status !== 'connected' ||
+        (currentSession.value.activeDelegationId !== undefined &&
+          currentSession.value.activeDelegationId !== original.id)
+      ) {
+        return ok({ outcome: 'not_replaceable' as const, reason: 'stale_revision' as const });
+      }
+      const superseded = transaction.supersedeDelegation({
+        originalDelegationId: original.id,
+        expectedRevision: original.revision,
+        replacement,
+        supersededAt: request.requestedAt,
+      });
+      if (superseded.isErr()) return err(superseded.error);
+      if (superseded.value.outcome !== 'superseded') {
+        return ok({ outcome: 'not_replaceable' as const, reason: superseded.value.reason });
+      }
+      const admission: VoiceAdmissionRequest = {
+        delegation: replacement,
+        queue: {
+          queueItemId,
+          threadId: request.threadId,
+          delegationId: request.delegationId,
+          request,
+          maxAttempts: 1,
+        },
+      };
+      const reserved = transaction.reserveDelegation(admission);
+      if (reserved.isErr()) return err(reserved.error);
+      const queued = transaction.enqueueVoiceWork({
+        queueItemId,
+        threadId: request.threadId,
+        delegationId: request.delegationId,
+        request,
+        maxAttempts: 1,
+      });
+      if (queued.isErr()) return err(queued.error);
+      const current = currentSession.value;
+      const updatedSession = transaction.updateSession({
+        sessionId: session.id,
+        expectedRevision: current.revision,
+        patch: { activeDelegationId: replacement.id },
+        updatedAt: request.requestedAt,
+      });
+      if (updatedSession.isErr()) return err(updatedSession.error);
+      const queuedDelegation = transaction.findDelegation(replacement.id);
+      if (queuedDelegation.isErr()) return err(queuedDelegation.error);
+      if (!queuedDelegation.value) return err(new PolicyError('Voice replacement was not persisted'));
+      return ok({
+        outcome: 'replaced' as const,
+        request,
+        session: updatedSession.value,
+        original: superseded.value.original,
+        replacement: queuedDelegation.value,
+      });
+    });
+  }
+
+  private async attachBackendResult(
+    runtime: SessionRuntime,
+    request: VoiceBackendRequest,
+    activeSession: VoiceSessionRecord,
+    ownsActiveDelegation: boolean,
+  ): Promise<VoiceResult<void>> {
     const unsubscribe = this.options.backendBridge.onResult(request.delegationId, (result) => {
       void this.handleBackendResult(result);
     });
@@ -971,6 +1136,35 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     ) {
       this.runtimes.delete(delegation.value.sessionId);
     }
+  }
+
+  private persistUsage(sessionId: string, update: VoiceUsageUpdate): VoiceResult<void> {
+    const projection = this.options.store.readSession(sessionId);
+    if (projection.isErr()) return err(projection.error);
+    if (!projection.value) return err(new PolicyError('Voice session was not found'));
+    const previousSeconds = projection.value.session.usage.voiceSeconds;
+    if (
+      update.voiceSeconds !== undefined &&
+      previousSeconds !== undefined &&
+      update.voiceSeconds < previousSeconds
+    ) {
+      return ok(undefined);
+    }
+    const usage = {
+      ...projection.value.session.usage,
+      ...(update.voiceSeconds !== undefined ? { voiceSeconds: update.voiceSeconds } : {}),
+      voiceCostStatus: projection.value.session.usage.voiceCostStatus,
+      backendCostStatus: projection.value.session.usage.backendCostStatus,
+    };
+    const saved = this.options.store.updateSession({
+      sessionId,
+      expectedRevision: projection.value.session.revision,
+      patch: { usage },
+      updatedAt: this.now(),
+    });
+    if (saved.isErr()) return err(saved.error);
+    this.publishSession(saved.value);
+    return ok(undefined);
   }
 
   private recordProviderAcknowledgement(
@@ -1172,13 +1366,60 @@ function hasPendingDelegation(projection: VoiceSessionReadProjection): boolean {
   );
 }
 
+function findPendingDelegation(
+  session: VoiceSessionRecord,
+  delegations: readonly VoiceDelegationRecord[],
+): VoiceDelegationRecord | undefined {
+  const active = session.activeDelegationId
+    ? delegations.find((delegation) => delegation.id === session.activeDelegationId)
+    : undefined;
+  if (active && isPendingDelegation(active)) return active;
+  return delegations.find(isPendingDelegation);
+}
+
+function isPendingDelegation(delegation: VoiceDelegationRecord): boolean {
+  return (
+    delegation.status === 'admitted' ||
+    delegation.status === 'queued' ||
+    delegation.status === 'claimed' ||
+    delegation.status === 'running'
+  );
+}
+
+function initialOutputLifecycle(): VoiceOutputLifecycle {
+  return {
+    execution: 'not_started',
+    delivery: 'not_requested',
+    providerAcknowledgement: 'not_sent',
+    playback: 'not_started',
+  };
+}
+
 function closeReason(reason: VoiceCloseReason): 'hangup' | 'logout' | 'deadline' | 'shutdown' {
   return reason === 'transport_failure' ? 'hangup' : reason;
 }
 
-function finalizationFromRuntime(runtime: SessionRuntime | undefined): VoiceSessionRecord['finalization'] {
-  const candidate = runtime?.sideband as (LiveVoiceSideband & { finalizationStatus?: 'pending' | 'confirmed' | 'incomplete' }) | undefined;
-  return { status: candidate?.finalizationStatus ?? 'incomplete' };
+function latestSidebandUsage(sideband: LiveVoiceSideband | undefined): VoiceUsageUpdate | undefined {
+  const candidate = sideband as
+    | (LiveVoiceSideband & { latestUsage?: VoiceUsageUpdate; usage?: VoiceUsageUpdate })
+    | undefined;
+  return candidate?.latestUsage ?? candidate?.usage;
+}
+
+function finalizationFromRuntime(
+  runtime: SessionRuntime | undefined,
+  usage: VoiceUsageUpdate | undefined,
+): VoiceSessionRecord['finalization'] {
+  const candidate = runtime?.sideband as
+    | (LiveVoiceSideband & { finalizationStatus?: 'pending' | 'confirmed' | 'incomplete' })
+    | undefined;
+  const status = candidate?.finalizationStatus === 'confirmed' || usage?.final
+    ? 'confirmed'
+    : candidate?.finalizationStatus ?? 'incomplete';
+  return {
+    status,
+    ...(status === 'confirmed' ? { confirmedAt: usage?.receivedAt } : {}),
+  };
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {

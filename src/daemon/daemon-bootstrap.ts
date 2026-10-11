@@ -628,17 +628,6 @@ export async function bootstrap(
         ),
       );
     }
-    if (
-      config.voice.model !== undefined &&
-      config.voice.model !== loadedVoicePersona.value.config.model
-    ) {
-      await cleanupBootstrapFailure(db, observability, logger);
-      return err(
-        new DaemonError(
-          `voice.model must match the selected persona model "${loadedVoicePersona.value.config.model}"`,
-        ),
-      );
-    }
     const voiceProviderEntry = providerRegistry.get(voiceProviderName);
     if (!voiceProviderEntry || voiceProviderEntry.type !== 'openai-compatible') {
       await cleanupBootstrapFailure(db, observability, logger);
@@ -674,7 +663,8 @@ export async function bootstrap(
       accessToken: voiceAccessToken,
       ownerId: `voice:${voicePersonaName}`,
     });
-    const voiceModel = config.voice.model ?? loadedVoicePersona.value.config.model;
+    const voiceBackendModel = loadedVoicePersona.value.config.model;
+    const voiceLiveModel = config.voice.model ?? 'gpt-live-1';
     const captureVoicePolicy = (owner: VoiceOwnerContext): VoiceResult<VoicePolicySnapshot> => {
       const runtimeConfig = voiceRuntimeConfig.current.voice;
       const personaName = runtimeConfig.persona ?? voicePersonaName;
@@ -682,7 +672,7 @@ export async function bootstrap(
       if (currentPersona.isErr()) return err(currentPersona.error);
       if (!currentPersona.value) return err(new DaemonError(`Voice persona not found: ${personaName}`));
       const currentProvider = runtimeConfig.provider ?? currentPersona.value.config.provider ?? voiceProviderName;
-      const currentModel = runtimeConfig.model ?? currentPersona.value.config.model;
+      const currentModel = currentPersona.value.config.model;
       return voicePolicy!.capture({
         generation: voiceGeneration.value,
         ownerId: owner.ownerId,
@@ -762,7 +752,8 @@ export async function bootstrap(
       channelId: voiceChannel.value,
       personaId: loadedVoicePersona.value.config.name,
       providerName: voiceProviderName,
-      modelName: voiceModel,
+      modelName: voiceBackendModel,
+      liveModelName: voiceLiveModel,
       instructions: config.voice.instructions,
       voiceName: config.voice.voice,
       generation: (): number => voiceGeneration.value,

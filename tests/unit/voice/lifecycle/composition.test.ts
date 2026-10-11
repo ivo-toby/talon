@@ -22,6 +22,7 @@ import type {
   LiveVoiceSideband,
   VoiceContextSnapshot,
   VoiceEventHandler,
+  VoiceUsageUpdate,
   VoiceSessionRecord,
   VoiceTransport,
   VoiceUnsubscribe,
@@ -30,10 +31,12 @@ import type {
 class FakeSideband implements LiveVoiceSideband {
   readonly providerSessionId = 'provider-session-1';
   readonly commands: string[] = [];
+  readonly contexts = new Map<string, VoiceContextSnapshot>();
+  latestUsage: VoiceUsageUpdate | undefined;
   private handler: VoiceEventHandler<import('../../../../src/voice/voice-types.js').LiveVoiceEvent> | undefined;
 
-  contextForDelegation(_providerDelegationId: string): VoiceContextSnapshot {
-    return {
+  contextForDelegation(providerDelegationId: string): VoiceContextSnapshot {
+    return this.contexts.get(providerDelegationId) ?? {
       version: 1,
       digest: 'context-digest-1',
       capturedAt: 10,
@@ -41,6 +44,10 @@ class FakeSideband implements LiveVoiceSideband {
       fragments: [],
       truncated: false,
     };
+  }
+
+  setContext(providerDelegationId: string, context: VoiceContextSnapshot): void {
+    this.contexts.set(providerDelegationId, context);
   }
 
   send(command: import('../../../../src/voice/voice-types.js').LiveVoiceCommand) {
@@ -56,6 +63,16 @@ class FakeSideband implements LiveVoiceSideband {
   }
 
   close(_graceful: boolean) {
+    if (this.latestUsage) {
+      this.handler?.({
+        kind: 'session_closed',
+        eventId: 'session-closed',
+        sequence: 99,
+        reason: 'client_close',
+        usage: this.latestUsage,
+        receivedAt: this.latestUsage.receivedAt,
+      });
+    }
     return Promise.resolve(ok(undefined));
   }
 
@@ -67,8 +84,10 @@ class FakeSideband implements LiveVoiceSideband {
 class FakeProvider implements LiveVoiceProvider {
   readonly name = 'openai-live';
   readonly sideband = new FakeSideband();
+  lastModelName: string | undefined;
 
   createSession(input: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
+    this.lastModelName = input.modelName;
     const session: LiveVoiceSession = {
       providerSessionId: 'provider-session-1',
       client: {
@@ -122,6 +141,87 @@ function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
     };
     tick();
   });
+}
+
+function context(version: number, digest: string, text: string): VoiceContextSnapshot {
+  return {
+    version,
+    digest,
+    capturedAt: version,
+    text,
+    fragments: [],
+    truncated: false,
+  };
+}
+
+function createHarness(options: {
+  owner?: { ownerId: string; loginRevision: number };
+  backendModel?: string;
+  liveModel?: string;
+  isOwnerActive?: (owner: { ownerId: string; loginRevision: number }) => boolean;
+} = {}) {
+  const harnessDb = createDb();
+  const queueRepository = new QueueRepository(harnessDb);
+  const threadRepository = new ThreadRepository(harnessDb);
+  const store = new DurableVoiceStore(harnessDb, queueRepository);
+  const bridge = new DurableVoiceBackendBridge(store, queueRepository, { now: () => 20 });
+  const provider = new FakeProvider();
+  const transport: VoiceTransport = new BrowserVoiceTransport({ now: () => 20 });
+  const policy = new VoicePolicy({
+    providerTypes: new Map([['agent-provider', 'openai-compatible']]),
+  });
+  const owner = options.owner ?? { ownerId: 'owner-1', loginRevision: 1 };
+  const backendModel = options.backendModel ?? 'voice-model';
+  const capturePolicy = () =>
+    policy.capture({
+      generation: 1,
+      ownerId: owner.ownerId,
+      personaId: 'persona-1',
+      providerName: 'agent-provider',
+      modelName: backendModel,
+      voiceName: 'marin',
+      capabilityNames: [],
+      allowedToolNames: [],
+      allowedMcpServerNames: [],
+      nativeToolNames: [],
+      requireApproval: false,
+      loginRevision: owner.loginRevision,
+    });
+  const service = new DurableVoiceSessionService({
+    store,
+    provider,
+    transport,
+    backendBridge: bridge,
+    policy,
+    threadRepository,
+    channelId: 'voice-channel',
+    personaId: 'persona-1',
+    modelName: backendModel,
+    liveModelName: options.liveModel,
+    instructions: 'voice instructions',
+    voiceName: 'marin',
+    capturePolicy,
+    currentPolicy: () => capturePolicy(),
+    isOwnerActive: options.isOwnerActive,
+  });
+  const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
+  const queueManager = new QueueManager(
+    queueRepository,
+    threadRepository,
+    { maxAttempts: 1, backoffBaseMs: 1, backoffMaxMs: 1, concurrencyLimit: 1 },
+    pino({ level: 'silent' }),
+    bridge.claimQueueItem.bind(bridge),
+  );
+  return {
+    db: harnessDb,
+    store,
+    bridge,
+    provider,
+    service,
+    sink,
+    queueManager,
+    owner,
+  };
 }
 
 describe('browser voice lifecycle composition', () => {
@@ -309,5 +409,206 @@ describe('browser voice lifecycle composition', () => {
     await waitFor(() => provider.sideband.commands.includes('The retained result is safe.'));
     expect(service.status(owner, session.session.id)._unsafeUnwrap()?.status).toBe('closed');
     queueManager.stopProcessing();
+  });
+
+  it('passes the configured GPT-Live model while preserving the backend policy model', async () => {
+    const harness = createHarness({ backendModel: 'gpt-5.4', liveModel: 'gpt-live-1' });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    expect(harness.provider.lastModelName).toBe('gpt-live-1');
+    expect(created._unsafeUnwrap().session.policy.modelName).toBe('gpt-5.4');
+    await harness.service.closeSession(harness.owner, created._unsafeUnwrap().session.id, { reason: 'hangup' });
+  });
+
+  it('supersedes stale queued context before claim and executes only the replacement', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    harness.provider.sideband.setContext(
+      'provider-original',
+      context(1, 'digest-original', 'Do the original request.'),
+    );
+    const originalResult = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-original',
+        sequence: 1,
+        proposal: { providerDelegationId: 'provider-original', offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    harness.provider.sideband.setContext(
+      'provider-correction',
+      context(2, 'digest-correction', 'Do the corrected request.'),
+    );
+    const correctionResult = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-correction',
+        sequence: 2,
+        proposal: { providerDelegationId: 'provider-correction', offsetMs: 0, receivedAt: 40 },
+      },
+    });
+    if (originalResult.isErr()) throw new Error(originalResult.error.message);
+    if (correctionResult.isErr()) throw new Error(correctionResult.error.message);
+
+    const beforeClaim = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(beforeClaim?.delegations).toHaveLength(2);
+    expect(beforeClaim?.delegations[0]).toMatchObject({
+      providerDelegationId: 'provider-original',
+      status: 'superseded',
+      contextDigest: 'digest-original',
+    });
+    expect(beforeClaim?.delegations[1]).toMatchObject({
+      providerDelegationId: 'provider-correction',
+      status: 'queued',
+      contextDigest: 'digest-correction',
+      supersedesDelegationId: beforeClaim?.delegations[0]?.id,
+    });
+
+    const executedProviders: string[] = [];
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as {
+        request?: { delegationId?: string; providerDelegationId?: string };
+      };
+      const request = payload.request;
+      if (!request?.delegationId || !request.providerDelegationId) return ok(undefined);
+      executedProviders.push(request.providerDelegationId);
+      const result = harness.sink.final(request.delegationId, 'The corrected request is complete.', 50);
+      if (result.isErr()) throw result.error;
+      return ok(undefined);
+    });
+    await waitFor(() => {
+      const projection = harness.store.readSession(sessionId);
+      return projection.isOk() && projection.value?.delegations[1]?.execution === 'succeeded';
+    });
+    harness.queueManager.stopProcessing();
+    expect(executedProviders).toEqual(['provider-correction']);
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+  });
+
+  it('closes a revoked session before admitting durable voice work', async () => {
+    let active = true;
+    const harness = createHarness({ isOwnerActive: () => active });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    active = false;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-revoked',
+        sequence: 1,
+        proposal: { providerDelegationId: 'provider-revoked', offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.session.status).toBe('closed');
+    expect(projection?.delegations).toHaveLength(0);
+    expect(harness.db.prepare('SELECT COUNT(*) AS count FROM queue_items').get()).toMatchObject({ count: 0 });
+  });
+
+  it('maps provider acknowledgements to the internal delegation record', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-ack',
+        sequence: 1,
+        proposal: { providerDelegationId: 'provider-ack', offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    const beforeResult = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const delegationId = beforeResult?.delegations[0]?.id;
+    expect(delegationId).toBeDefined();
+    const final = harness.sink.final(delegationId!, 'Acknowledged result.', 40)._unsafeUnwrap();
+    await waitFor(() => harness.provider.sideband.commands.includes('Acknowledged result.'));
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'provider_acknowledgement',
+        eventId: 'event-provider-ack',
+        sequence: 2,
+        delegationId: 'provider-ack',
+        outputId: final.outputId,
+        receivedAt: 50,
+      },
+    });
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.outputs.find((output) => output.id === final.outputId)?.lifecycle.providerAcknowledgement).toBe(
+      'acknowledged',
+    );
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+  });
+
+  it('retains final cumulative usage received while closing the provider session', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'usage',
+        eventId: 'usage-periodic',
+        sequence: 1,
+        update: { voiceSeconds: 10, receivedAt: 30, final: false },
+      },
+    });
+    harness.provider.sideband.latestUsage = { voiceSeconds: 40, receivedAt: 50, final: true };
+    const closed = await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+    expect(closed.isOk()).toBe(true);
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.session.usage.voiceSeconds).toBe(40);
+    expect(projection?.session.finalization.status).toBe('confirmed');
+  });
+
+  it('allows a current login revision to read retained status while mutations stay exact-owner', async () => {
+    let activeRevision = 1;
+    const harness = createHarness({
+      isOwnerActive: (owner) => owner.loginRevision === activeRevision,
+    });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    activeRevision = 2;
+    const currentOwner = { ownerId: 'owner-1', loginRevision: 2 };
+    expect(harness.service.status(currentOwner, sessionId).isOk()).toBe(true);
+    expect((await harness.service.closeSession(currentOwner, sessionId, { reason: 'hangup' })).isErr()).toBe(true);
+    const subscription = harness.service.subscribe(currentOwner, sessionId, () => undefined);
+    expect(subscription.isOk()).toBe(true);
+    subscription._unsafeUnwrap()();
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
   });
 });
