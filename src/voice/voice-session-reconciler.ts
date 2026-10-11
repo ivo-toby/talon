@@ -125,6 +125,7 @@ export class VoiceSessionReconciler {
       projection.session.usage,
       this.usdPerMinute,
       finalization.status,
+      true,
     );
     const usageChanged = JSON.stringify(usage) !== JSON.stringify(projection.session.usage);
     const finalizationChanged =

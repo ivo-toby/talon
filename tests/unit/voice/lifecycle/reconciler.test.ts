@@ -195,4 +195,112 @@ describe('voice startup reconciliation', () => {
     expect(recovered?.usage.voiceCostUsd).toBeUndefined();
     expect(recovered?.finalization).toEqual({ status: 'incomplete' });
   });
+
+  it('preserves retained cost when the operator changes the rate', () => {
+    db = createDb();
+    const queue = new QueueRepository(db);
+    const store = new DurableVoiceStore(db, queue);
+    const backendUsage = {
+      backendCostUsd: 1.25,
+      backendCostStatus: 'estimated' as const,
+    };
+    expect(
+      store.createSession(
+        session('changed-finalized', 'closed', {
+          usage: {
+            voiceSeconds: 120,
+            voiceCostUsd: 0.12,
+            voiceCostStatus: 'estimated',
+            ...backendUsage,
+          },
+          finalization: { status: 'confirmed', confirmedAt: 20 },
+        }),
+      ).isOk(),
+    ).toBe(true);
+    expect(
+      store.createSession(
+        session('changed-interrupted', 'connected', {
+          usage: {
+            voiceSeconds: 60,
+            voiceCostUsd: 0.06,
+            voiceCostStatus: 'estimated',
+            ...backendUsage,
+          },
+        }),
+      ).isOk(),
+    ).toBe(true);
+
+    const report = reconcileVoiceSessions(store, { now: () => 10, usdPerMinute: 0.6 });
+    expect(report.isOk()).toBe(true);
+    const finalized = store.findSession('changed-finalized')._unsafeUnwrap();
+    expect(finalized?.usage).toMatchObject({
+      voiceSeconds: 120,
+      voiceCostUsd: 0.12,
+      voiceCostStatus: 'estimated',
+      ...backendUsage,
+    });
+    expect(finalized?.finalization.status).toBe('confirmed');
+    const interrupted = store.findSession('changed-interrupted')._unsafeUnwrap();
+    expect(interrupted?.status).toBe('expired');
+    expect(interrupted?.usage).toMatchObject({
+      voiceSeconds: 60,
+      voiceCostUsd: 0.06,
+      voiceCostStatus: 'incomplete',
+      ...backendUsage,
+    });
+  });
+
+  it('preserves retained cost when the current rate is unset', () => {
+    db = createDb();
+    const queue = new QueueRepository(db);
+    const store = new DurableVoiceStore(db, queue);
+    const backendUsage = {
+      backendCostUsd: 1.25,
+      backendCostStatus: 'estimated' as const,
+    };
+    expect(
+      store.createSession(
+        session('unset-finalized', 'closed', {
+          usage: {
+            voiceSeconds: 120,
+            voiceCostUsd: 0.12,
+            voiceCostStatus: 'estimated',
+            ...backendUsage,
+          },
+          finalization: { status: 'confirmed', confirmedAt: 20 },
+        }),
+      ).isOk(),
+    ).toBe(true);
+    expect(
+      store.createSession(
+        session('unset-interrupted', 'connected', {
+          usage: {
+            voiceSeconds: 60,
+            voiceCostUsd: 0.06,
+            voiceCostStatus: 'estimated',
+            ...backendUsage,
+          },
+        }),
+      ).isOk(),
+    ).toBe(true);
+
+    const report = reconcileVoiceSessions(store, { now: () => 10 });
+    expect(report.isOk()).toBe(true);
+    const finalized = store.findSession('unset-finalized')._unsafeUnwrap();
+    expect(finalized?.usage).toMatchObject({
+      voiceSeconds: 120,
+      voiceCostUsd: 0.12,
+      voiceCostStatus: 'estimated',
+      ...backendUsage,
+    });
+    expect(finalized?.finalization.status).toBe('confirmed');
+    const interrupted = store.findSession('unset-interrupted')._unsafeUnwrap();
+    expect(interrupted?.status).toBe('expired');
+    expect(interrupted?.usage).toMatchObject({
+      voiceSeconds: 60,
+      voiceCostUsd: 0.06,
+      voiceCostStatus: 'incomplete',
+      ...backendUsage,
+    });
+  });
 });

@@ -1487,7 +1487,18 @@ export function applyVoiceCost(
   usage: VoiceSessionRecord['usage'],
   usdPerMinute: number | undefined,
   finalizationStatus: VoiceSessionRecord['finalization']['status'],
+  preserveExisting = false,
 ): VoiceSessionRecord['usage'] {
+  if (
+    preserveExisting &&
+    usage.voiceCostUsd !== undefined &&
+    Number.isFinite(usage.voiceCostUsd) &&
+    usage.voiceCostUsd >= 0
+  ) {
+    return finalizationStatus === 'incomplete' && usage.voiceCostStatus !== 'incomplete'
+      ? { ...usage, voiceCostStatus: 'incomplete' }
+      : usage;
+  }
   const estimated = estimateVoiceCost(usage.voiceSeconds, usdPerMinute);
   if (estimated === undefined) return usage;
   return {
