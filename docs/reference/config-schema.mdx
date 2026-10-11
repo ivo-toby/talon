@@ -278,6 +278,7 @@ voice:
 | `model` | non-empty string | `gpt-live-1` at bootstrap | Live voice model; the persona's `model` remains the backend model |
 | `persona` | non-empty string | first configured persona | Persona used for backend policy and execution |
 | `voice` | non-empty string | `marin` | Server-selected live output voice |
+| `usdPerMinute` | finite number ≥ 0 | — | Optional operator-supplied voice rate used for a duration estimate; there is no default |
 | `instructions` | string | `You are Talon, a helpful voice assistant.` | Live provider instructions |
 | `allowedTransportTypes` | non-empty string[] | `['webrtc']` | Transport allowlist; current runtime accepts only `webrtc` |
 | `allowedOrigins` | URL[] | `[]` | Explicit browser origins; `publicHost` contributes an HTTPS origin |
@@ -302,6 +303,12 @@ not change the persona backend model.
 Voice stores bounded session text, outputs, usage, and lifecycle state in
 SQLite. Raw audio is not represented in the voice schema, and provider-side
 cloud retention remains governed by the provider account and API settings.
+When `usdPerMinute` is configured, voice cost is estimated from cumulative
+provider-reported seconds. Final provider usage does not confirm billing, so
+the status remains `estimated`; when that rate has known seconds but an
+incomplete close, the status is `incomplete`, while an omitted rate is
+`unavailable`. Backend cost comes only from AgentRunner run accounting and
+remains separate.
 
 ---
 

@@ -70,6 +70,7 @@ voice:
   model: gpt-live-1
   persona: assistant
   voice: marin
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedTransportTypes: [webrtc]
   allowedOrigins:
     - https://voice.example.com
@@ -112,7 +113,12 @@ Talon stores bounded text, output, usage, and lifecycle state in SQLite and no
 raw audio. Local voice rows have no automatic TTL cleanup, so include them in
 the operator's retention policy. Provider-side audio/transcript retention is
 controlled by the provider account. Voice cost is reported only when provider
-usage supports it and may be unavailable; backend run accounting is separate.
+usage supports it and may be unavailable; set `voice.usdPerMinute` only with a
+current operator-supplied provider rate. The value produces a duration
+estimate with no default rate; final provider usage remains `estimated`, a
+configured rate with known usage and an incomplete close is `incomplete`, and
+no rate is `unavailable`. Backend cost comes only from AgentRunner run
+accounting.
 
 See [the browser voice guide](../../../docs/guides/voice.mdx) and [the config
 reference](../../../docs/reference/config-schema.mdx) for the route list and

@@ -331,6 +331,7 @@ voice:
   liveApiKeyRef: openai
   provider: openai-compatible
   persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedTransportTypes: [webrtc]
   allowedOrigins: [https://voice.example.com]
 ```
@@ -344,6 +345,12 @@ the voice listener to `0.0.0.0`; the server intentionally accepts loopback
 hosts only. Run `talonctl doctor` after the config change and open
 `https://<publicHost>/voice/`. SIP, physical-phone, and paid live-provider
 verification remain separate acceptance steps.
+
+If the operator supplies a current provider rate, `voice.usdPerMinute` makes
+the displayed voice amount a duration estimate. There is no default rate;
+final provider usage remains `estimated`, a configured rate with known usage
+and an incomplete close is `incomplete`, and an omitted rate is `unavailable`.
+Backend cost comes only from AgentRunner run accounting.
 
 ### Step 4: Boot the daemon
 

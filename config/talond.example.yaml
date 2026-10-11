@@ -394,6 +394,7 @@ voice:
   # model: gpt-live-1
   # persona: assistant
   voice: marin
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedTransportTypes:
     - webrtc
   allowedOrigins: []

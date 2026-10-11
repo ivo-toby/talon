@@ -47,6 +47,7 @@ voice:
   model: gpt-live-1
   persona: assistant
   voice: marin
+  # usdPerMinute: 0.00 # replace with a current provider rate; omitted means unavailable
   allowedOrigins:
     - https://voice.example.com
   allowedTransportTypes:
@@ -119,13 +120,18 @@ provider's account and API settings, not by Talon. Talon does not claim to
 delete or control provider-side retention.
 
 Local SQLite stores bounded text snapshots and output text needed for session
-recovery and audit. Raw audio is not persisted in the voice schema. Voice
-usage reports provider-reported duration when available and marks voice cost
-as estimated, confirmed, incomplete, or unavailable; Talon never fabricates a
-voice dollar amount from token totals. Backend run accounting is kept as a
-separate snapshot. Voice prompt and output content is redacted from the
-Langfuse voice observation path, while local database and operational logs may
-still contain sensitive bounded text.
+recovery and audit. Raw audio is not persisted in the voice schema. Set
+`voice.usdPerMinute` only when the operator has a current provider rate; it is
+optional and has no default. With a configured rate, Talon estimates voice cost
+from cumulative provider-reported seconds. Final provider usage does not
+confirm billing, so that estimate remains `estimated`; when that rate has
+known usage but an incomplete close, the status is `incomplete`, and no
+configured rate is `unavailable`.
+Talon never fabricates a voice dollar amount from token totals. Backend cost is
+reported only from the AgentRunner run accounting and is kept separate. Voice
+prompt and output content is redacted from the Langfuse voice observation path,
+while local database and operational logs may still contain sensitive bounded
+text.
 
 ## Validation boundaries
 

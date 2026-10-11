@@ -2399,6 +2399,7 @@ voice:
   liveApiKeyRef: openai
   provider: openai-compatible
   persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedOrigins:
     - https://voice.example.com
 ```

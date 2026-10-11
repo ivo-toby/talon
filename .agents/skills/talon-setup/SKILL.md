@@ -321,6 +321,7 @@ voice:
   liveApiKeyRef: openai
   provider: openai-compatible
   persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedTransportTypes: [webrtc]
   allowedOrigins: [https://voice.example.com]
 ```
@@ -331,6 +332,12 @@ reverse proxy must preserve `Host` and `Origin` and send
 `npx talonctl doctor --config talond.yaml` after the change and open
 `https://<publicHost>/voice/`. SIP, physical-phone, and live paid-provider
 verification are separate acceptance steps.
+
+If the operator supplies a current provider rate, `voice.usdPerMinute` makes
+the UI's voice amount a duration estimate. There is no default rate. Final
+provider usage remains `estimated`; a configured rate with known usage and an
+incomplete close is `incomplete`, and an omitted rate is `unavailable`. Backend
+cost comes only from AgentRunner run accounting.
 
 ### Step 4: Channel configuration
 

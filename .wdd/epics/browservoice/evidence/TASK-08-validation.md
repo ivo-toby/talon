@@ -13,7 +13,8 @@ PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH \
   npx vitest run tests/integration/voice/browser-voice-flow.test.ts --reporter=verbose
 ```
 
-Result: **1 file, 4 tests passed** in 1.90 seconds.
+Result: **1 file, 4 tests passed** in 2.30 seconds on the TASK13-combined
+verification checkout.
 
 The harness composes the actual `BrowserVoiceServer`, cookie/CSRF auth, SQLite
 migrations and repositories, `DurableVoiceStore`,
@@ -28,11 +29,13 @@ migrations and repositories, `DurableVoiceStore`,
 - a claimed/running backend result remains retained after hangup and is visible
   after a new login;
 - a generation policy change blocks admission before queue/runner execution;
-- a second normalized `fake-sip` transport crosses the service seam without
-  changing browser or AgentRunner code.
+- a second normalized `fake-sip` transport passes through the service,
+  bridge, durable queue claim, and unchanged `AgentRunner` path to one
+  retained final result that survives session cleanup.
 
-The fake provider reports backend cost only as a test value; no paid provider,
-microphone, network call, or persistent service was used.
+The fake provider reports backend cost only as a test value; no external
+provider call, microphone, or persistent service was used. The HTTP part uses
+an ephemeral local listener and local `fetch` requests.
 
 The complete voice-focused local run also passed:
 
@@ -56,6 +59,22 @@ Result: **18 files, 262 tests passed** in 6.27 seconds. The controller later
 observed the integrated release target's expanded 27-file, 556-test targeted
 set pass as well; that observation includes the additional queue/repository,
 daemon, config, and channel tests rerun by the controller.
+
+After TASK13 added the bounded voice-rate setting, a temporary checkout
+combining that commit with this worker's changes reran the voice target plus
+the config and bootstrap tests:
+
+```text
+PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH \
+  npx vitest run tests/integration/voice tests/unit/voice tests/unit/core/database/voice \
+  tests/unit/core/config/config-schema.test.ts tests/unit/daemon/daemon-bootstrap.test.ts \
+  tests/unit/daemon/agent-runner.test.ts tests/unit/daemon/context-assembler.test.ts \
+  tests/unit/queue --reporter=dot
+```
+
+Result: **20 files, 391 tests passed** in 6.27 seconds. This combined run
+also verified the explicit `voice.usdPerMinute` estimate remains `estimated`
+after provider finalization is confirmed.
 
 ## Repository checks
 
@@ -113,14 +132,18 @@ Migration `014-voice-sessions.sql` stores `voice_sessions`,
 column. Local bounded text, usage, policy, and lifecycle state is retained for
 recovery and status reads. The current runtime has no automatic voice-row TTL
 cleanup. Provider-side cloud audio/transcript retention remains controlled by
-the provider account and API settings. Voice cost can be unavailable or
-incomplete when provider pricing/usage is absent; backend run accounting stays
-separate.
+the provider account and API settings. An optional operator-supplied
+`voice.usdPerMinute` rate produces a duration estimate from cumulative
+provider-reported seconds; there is no default rate. Final provider usage stays
+`estimated`; a configured rate with known usage and an incomplete close is
+`incomplete`, and an omitted rate is `unavailable`. Backend cost comes only
+from AgentRunner run accounting.
 
-## Pending separate repairs and limits
+## Historical review context and limits
 
-Cross-component review identified three runtime findings that this worker did
-not change because they are outside the assigned ownership:
+At the `e4564942` base used for this evidence, cross-component review had
+identified three runtime findings that this worker did not change because they
+were outside the assigned ownership:
 
 - TASK10: service-running correction results must retain the result while
   suppressing stale commentary and clarifying the user-facing state;
@@ -128,6 +151,8 @@ not change because they are outside the assigned ownership:
   call reservation;
 - TASK12: ordinary collaboration recovery must handle SQL `NULL` values.
 
-Those findings remain pending their separate WDD repairs and final rerun. No
-physical mobile acceptance, live paid call, SIP transport, or deployment proxy
-was exercised here.
+TASK10 and TASK11 were subsequently merged and reviewed, and TASK12 completed
+its review after this historical evidence point. The controller records final
+verification against the merged epic head. No physical mobile acceptance, live
+paid call, physical/provider SIP transport, or deployment proxy was exercised
+here.

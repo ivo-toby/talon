@@ -3,7 +3,8 @@
  *
  * These tests deliberately cross the HTTP/auth, SQLite, lifecycle, durable
  * queue, and AgentRunner boundaries. The live provider is replaced by a fake
- * normalized transport, so no network, microphone, or paid API is needed.
+ * normalized transport, so no external provider call, microphone, or paid API
+ * is needed.
  */
 
 import { join } from 'node:path';
@@ -540,7 +541,7 @@ interface Harness {
   generation: number;
 }
 
-async function createHarness(runDelayMs = 0): Promise<Harness> {
+async function createHarness(runDelayMs = 0, usdPerMinute?: number): Promise<Harness> {
   const db = createDatabase();
   const dataDir = mkdtempSync(join(tmpdir(), 'talon-voice-integration-'));
   const queueRepository = new QueueRepository(db);
@@ -592,6 +593,7 @@ async function createHarness(runDelayMs = 0): Promise<Harness> {
     currentPolicy,
     isOwnerActive: (candidate) => auth.resolve(candidate) !== undefined,
     maxSessionLifetimeMs: 30_000,
+    usdPerMinute,
   });
   const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
   const queueManager = new QueueManager(
@@ -686,7 +688,7 @@ describe('browser voice offline integration', () => {
   });
 
   it('authenticates, admits SQLite work, runs AgentRunner, streams lifecycle, and retains closed cost state', async () => {
-    const harness = await createHarness();
+    const harness = await createHarness(0, 0.06);
     harnesses.push(harness);
     const url = baseUrl(harness.server);
 
@@ -869,8 +871,12 @@ describe('browser voice offline integration', () => {
     const retainedBody = await jsonResponse(retained);
     expect(retainedBody.session).toMatchObject({
       status: 'closed',
-      usage: { voiceSeconds: 4, voiceCostStatus: 'unavailable' },
+      usage: { voiceSeconds: 4, voiceCostStatus: 'estimated' },
+      finalization: { status: 'confirmed' },
     });
+    expect(
+      (retainedBody.session as { usage: { voiceCostUsd: number } }).usage.voiceCostUsd,
+    ).toBeCloseTo(0.004, 10);
     expect(JSON.stringify(retainedBody)).not.toContain(ACCESS_TOKEN);
 
     const retainedStreamAbort = new AbortController();
@@ -991,19 +997,28 @@ describe('browser voice offline integration', () => {
     ).toBe(false);
   });
 
-  it('accepts a second normalized transport through the service seam without AgentRunner or browser code', async () => {
+  it('runs a second normalized transport through the durable AgentRunner path', async () => {
     const db = createDatabase();
+    const dataDir = mkdtempSync(join(tmpdir(), 'talon-voice-sip-integration-'));
     const queueRepository = new QueueRepository(db);
     const threadRepository = new ThreadRepository(db);
     const store = new DurableVoiceStore(db, queueRepository);
     const provider = new FakeLiveProvider();
     const policyParts = makePolicy(() => 1, { ownerId: 'sip-owner', loginRevision: 1 });
     const transport = new FakeSipTransport();
+    const bridge = new DurableVoiceBackendBridge(store, queueRepository, {
+      executionGate: (input) =>
+        input.providerType === 'openai-compatible' &&
+        input.nativeToolsDisabled &&
+        !input.requireApproval
+          ? ok(undefined)
+          : err(new Error('fake SIP voice execution posture mismatch')),
+    });
     const service = new DurableVoiceSessionService({
       store,
       provider,
       transport,
-      backendBridge: new DurableVoiceBackendBridge(store, queueRepository),
+      backendBridge: bridge,
       policy: policyParts.policy,
       threadRepository,
       channelId: CHANNEL_ID,
@@ -1016,18 +1031,89 @@ describe('browser voice offline integration', () => {
       capturePolicy: (owner) => policyParts.capture(owner),
       currentPolicy: (owner) => policyParts.capture(owner),
     });
+    const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
+    const queueManager = new QueueManager(
+      queueRepository,
+      threadRepository,
+      { maxAttempts: 1, backoffBaseMs: 1, backoffMaxMs: 1, concurrencyLimit: 1 },
+      pino({ level: 'silent' }),
+      bridge.claimQueueItem.bind(bridge),
+    );
+    const daemonContext = makeDaemonContext(db, queueManager, provider, bridge, sink, dataDir);
+    const runner = new AgentRunner(daemonContext, {
+      voiceOutputSink: sink,
+      voiceExecutionGate: bridge.beforeProvider.bind(bridge),
+    });
     const owner = { ownerId: 'sip-owner', loginRevision: 1 };
-    const created = await service.createSession(owner, {
-      transport: { type: 'fake-sip', sdp: 'offer' },
-    });
-    expect(created.isOk()).toBe(true);
-    expect(created._unsafeUnwrap().client.transport).toBe('fake-sip');
-    expect(created._unsafeUnwrap().session.transport).toBe('fake-sip');
-    const closed = await service.closeSession(owner, created._unsafeUnwrap().session.id, {
-      reason: 'hangup',
-    });
-    expect(closed.isOk()).toBe(true);
-    expect(closed._unsafeUnwrap().session.status).toBe('closed');
-    db.close();
+
+    try {
+      const created = await service.createSession(owner, {
+        transport: { type: 'fake-sip', sdp: 'offer' },
+      });
+      expect(created.isOk()).toBe(true);
+      const session = created._unsafeUnwrap().session;
+      expect(created._unsafeUnwrap().client.transport).toBe('fake-sip');
+      expect(session.transport).toBe('fake-sip');
+      expect(transport.status(session.id)._unsafeUnwrap()).toBe('connected');
+
+      const sideband = provider.sidebandFor(created._unsafeUnwrap().client.providerSessionId);
+      sideband.contexts.set(
+        'sip-delegation',
+        context(1, 'sip-digest', 'Run the normalized fake SIP request.'),
+      );
+      queueManager.startProcessing((item) => runner.run(item));
+      sideband.emit({
+        kind: 'delegation',
+        eventId: 'sip-delegation-event',
+        sequence: 1,
+        proposal: {
+          providerDelegationId: 'sip-delegation',
+          offsetMs: 0,
+          receivedAt: Date.now(),
+        },
+      });
+
+      await waitFor(() => {
+        const projection = store.readSession(session.id);
+        return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+      });
+
+      const retained = store.readSession(session.id)._unsafeUnwrap();
+      const delegation = retained.delegations[0];
+      const queueItem = queueRepository.findById(delegation.queueItemId!)._unsafeUnwrap();
+      const finalOutput = retained.outputs.find(
+        (output) => output.delegationId === delegation.id && output.kind === 'final',
+      );
+      expect(provider.runStarted).toBe(true);
+      expect(delegation.providerDelegationId).toBe('sip-delegation');
+      expect(delegation.status).toBe('completed');
+      expect(delegation.claimedAt).toEqual(expect.any(Number));
+      expect(queueItem.status).toBe('completed');
+      expect(finalOutput).toMatchObject({
+        kind: 'final',
+        text: 'Backend verified the voice request.',
+        lifecycle: { execution: 'succeeded' },
+      });
+
+      const closed = await service.closeSession(owner, session.id, { reason: 'hangup' });
+      expect(closed.isOk()).toBe(true);
+      expect(closed._unsafeUnwrap().session.status).toBe('closed');
+      expect(transport.status(session.id)._unsafeUnwrap()).toBe('closed');
+      const retainedAfterClose = store.readSession(session.id)._unsafeUnwrap();
+      expect(
+        retainedAfterClose.outputs.find(
+          (output) => output.delegationId === delegation.id && output.kind === 'final',
+        ),
+      ).toMatchObject({
+        kind: 'final',
+        text: 'Backend verified the voice request.',
+        lifecycle: { execution: 'succeeded' },
+      });
+    } finally {
+      queueManager.stopProcessing();
+      await service.shutdown();
+      db.close();
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 });
