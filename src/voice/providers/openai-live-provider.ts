@@ -1179,21 +1179,22 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       return;
     }
     const context = this.delegationContexts.get(providerDelegationId);
+    const signature = userContextSignature(context?.snapshot ?? null);
+    const reusesPublishedContext =
+      signature !== undefined && this.publishedUserSignatures.has(signature);
     this.hasPublishedDelegation = true;
-    if (pending.requiresFreshUserTurn === true) {
-      const signature = userContextSignature(context?.snapshot ?? null);
-      if (
-        !context ||
-        context.uncertain ||
-        context.reason !== undefined ||
-        !signature ||
-        !hasFreshUserTurn(pending, context?.snapshot ?? null) ||
-        signature === pending.baselineUserSignature ||
-        this.publishedUserSignatures.has(signature) ||
-        this.blockedUserSignatures.has(signature)
-      ) {
-        this.terminalizeUnsafeDelegationContext(providerDelegationId, context);
-      }
+    if (
+      reusesPublishedContext ||
+      (pending.requiresFreshUserTurn === true &&
+        (!context ||
+          context.uncertain ||
+          context.reason !== undefined ||
+          !signature ||
+          !hasFreshUserTurn(pending, context.snapshot) ||
+          signature === pending.baselineUserSignature ||
+          this.blockedUserSignatures.has(signature)))
+    ) {
+      this.terminalizeUnsafeDelegationContext(providerDelegationId, context);
     }
     this.rememberPublishedDelegation(providerDelegationId);
     this.retirePendingDelegation(providerDelegationId);

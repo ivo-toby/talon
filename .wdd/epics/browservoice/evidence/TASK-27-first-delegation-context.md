@@ -22,6 +22,11 @@ boundary, not proof that the latest user turn is complete; if required
 transcript text arrives after first publication, the existing late-change
 clarification path fails closed.
 
+Every pending notice rechecks the bounded published-user-signature set at
+publication time. This also covers notices captured while an earlier first
+notice is still settling; a distinct new user fragment may still make that
+later notice safe.
+
 Admitted context compares user fragment identity, order, semantic kind, and
 text. It ignores assistant-only speech and timing metadata that keeps the
 captured user membership safe, preserving the complete admitted snapshot for
@@ -33,8 +38,9 @@ The regression suite includes the actual `OpenAiLiveVoiceSideband`, a fake
 socket, the real `DurableVoiceSessionService`, SQLite voice store, durable
 bridge, and queue. It covers same-tick and 500 ms delayed first transcripts,
 partial first fragments plus continuation, one-time admission, timeout
-stickiness, a later delegation without a fresh user turn, assistant progress
-and notification speech before and after terminal delivery, same-text timing
+stickiness, overlapping first notices that reuse a published user turn,
+a later delegation without a fresh user turn, assistant progress and
+notification speech before and after terminal delivery, same-text timing
 enrichment, real user correction, duplicate/replay handling, and close cleanup.
 
 ## Focused verification
@@ -48,7 +54,7 @@ PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH \
   tests/integration/voice/transcript-stability.test.ts
 ```
 
-Result: **8 files, 56 tests passed**.
+Result: **8 files, 57 tests passed**.
 
 ```text
 PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH \

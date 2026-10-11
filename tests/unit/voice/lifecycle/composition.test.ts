@@ -538,6 +538,74 @@ describe('browser voice lifecycle composition', () => {
     expect(closed.isOk()).toBe(true);
   });
 
+  it('clarifies an overlapping first notice that reuses the admitted user turn', async () => {
+    db = createDb();
+    const provider = new SocketProvider();
+    const harness = createHarness({ provider });
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap();
+    const handledDelegations: string[] = [];
+
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as { request?: { delegationId?: string } };
+      const delegationId = payload.request?.delegationId;
+      if (!delegationId) return ok(undefined);
+      handledDelegations.push(delegationId);
+      const result = harness.sink.final(delegationId, 'The overlapping result is safe.', 40);
+      if (result.isErr()) throw result.error;
+      return ok(undefined);
+    });
+    provider.socket.receive({
+      type: 'session.input_transcript.completed',
+      event_id: 'socket-overlap-user',
+      item_id: 'socket-overlap-user',
+      text: 'Perform one action.',
+      start_ms: 0,
+      end_ms: 100,
+    });
+    provider.socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'socket-overlap-delegation-1',
+      delegation: { id: 'socket-overlap-provider-1', target: 'client' },
+      offset_ms: 100,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    provider.socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'socket-overlap-delegation-2',
+      delegation: { id: 'socket-overlap-provider-2', target: 'client' },
+      offset_ms: 100,
+    });
+
+    await waitFor(() => {
+      const projection = harness.store.readSession(session.session.id);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    await waitFor(() =>
+      provider.socket.sent.some((command) => command.type === 'session.instructions.append'),
+    );
+    harness.queueManager.stopProcessing();
+
+    const projection = harness.store.readSession(session.session.id)._unsafeUnwrap();
+    expect(handledDelegations).toHaveLength(1);
+    expect(projection?.delegations).toHaveLength(1);
+    expect(projection?.delegations[0]).toMatchObject({
+      providerDelegationId: 'socket-overlap-provider-1',
+      execution: 'succeeded',
+    });
+    expect(
+      provider.socket.sent.filter((command) => command.type === 'session.instructions.append'),
+    ).toHaveLength(1);
+
+    const closed = await harness.service.closeSession(harness.owner, session.session.id, {
+      reason: 'transport_failure',
+    });
+    expect(closed.isOk()).toBe(true);
+  });
+
   it('keeps a claimed result listener alive after hangup', async () => {
     db = createDb();
     const queueRepository = new QueueRepository(db);
