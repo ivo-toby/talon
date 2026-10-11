@@ -5,6 +5,7 @@ import { describe, expect, it, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { ok } from 'neverthrow';
 import { runMigrations } from '../../../../../src/core/database/migrations/runner.js';
+import { QueueRepository } from '../../../../../src/core/database/repositories/queue-repository.js';
 import { DurableVoiceStore } from '../../../../../src/voice/voice-store.js';
 import type {
   VoiceBackendRequest,
@@ -211,6 +212,30 @@ describe('DurableVoiceStore', () => {
     expect(transaction?.reserveDelegation(admission()).isErr()).toBe(true);
   });
 
+  it('validates direct transaction enqueue against the persisted reservation', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+    const input = admission();
+
+    const result = store.runInTransaction((tx) => {
+      const reserved = tx.reserveDelegation(input);
+      expect(reserved.isOk()).toBe(true);
+      const alteredQueue = tx.enqueueVoiceWork({
+        ...input.queue,
+        request: makeRequest({
+          policy: { ...policy, generation: 9 },
+        }),
+      });
+      expect(alteredQueue.isErr()).toBe(true);
+      return alteredQueue.map(() => undefined);
+    });
+
+    expect(result.isErr()).toBe(true);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM voice_delegations').get()).toEqual({ count: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM queue_items').get()).toEqual({ count: 0 });
+  });
+
   it('deduplicates provider events and rejects a reused provider delegation id with new context', () => {
     db = createDb();
     const store = new DurableVoiceStore(db);
@@ -270,6 +295,36 @@ describe('DurableVoiceStore', () => {
     expect(store.admitDelegation(input)._unsafeUnwrap()).toEqual(first);
     expect(store.findDelegation('delegation-1')._unsafeUnwrap()).toEqual(completedBefore);
     expect(db.prepare('SELECT status, attempts FROM queue_items WHERE id = ?').get('queue-1')).toEqual(queueCompletedBefore);
+  });
+
+  it('does not recreate queue work when a completed binding was purged', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    const queue = new QueueRepository(db);
+    store.createSession(makeSession());
+    const input = admission();
+    store.admitDelegation(input);
+    store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'output-1',
+      kind: 'final',
+      text: 'done',
+      execution: 'succeeded',
+      output: {
+        execution: 'succeeded',
+        delivery: 'acknowledged',
+        providerAcknowledgement: 'acknowledged',
+        playback: 'played',
+      },
+      occurredAt: 400,
+    });
+    queue.complete('queue-1');
+    expect(queue.purge(['completed'])._unsafeUnwrap()).toBe(1);
+
+    const duplicate = store.admitDelegation(input);
+    expect(duplicate.isErr()).toBe(true);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM queue_items').get()).toEqual({ count: 0 });
+    expect(store.findDelegation('delegation-1')._unsafeUnwrap()!.status).toBe('completed');
   });
 
   it('claims pending work atomically and prevents superseding after the claim', () => {
@@ -377,6 +432,84 @@ describe('DurableVoiceStore', () => {
     expect(lateProgress._unsafeUnwrap().execution).toBe('succeeded');
     expect(store.readSession('session-1')._unsafeUnwrap()!.outputs).toHaveLength(1);
     expect(store.readSession('session-1')._unsafeUnwrap()!.outputs[0]?.id).toBe('output-final');
+  });
+
+  it('accepts a final after terminal state without output and after terminal progress', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+    store.admitDelegation(admission());
+
+    store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'unknown-result',
+      kind: 'unknown',
+      execution: 'unknown',
+      output: {
+        execution: 'unknown',
+        delivery: 'unknown',
+        providerAcknowledgement: 'unknown',
+        playback: 'unknown',
+      },
+      occurredAt: 300,
+    });
+    const finalAfterUnknown = store.recordBackendResult({
+      delegationId: 'delegation-1',
+      outputId: 'final-after-unknown',
+      kind: 'final',
+      text: 'recovered answer',
+      execution: 'succeeded',
+      output: {
+        execution: 'succeeded',
+        delivery: 'pending',
+        providerAcknowledgement: 'acknowledged',
+        playback: 'not_started',
+      },
+      occurredAt: 400,
+    });
+    expect(finalAfterUnknown.isOk()).toBe(true);
+    expect(store.readSession('session-1')._unsafeUnwrap()!.outputs[0]?.id).toBe('final-after-unknown');
+
+    const second = makeDelegation({
+      id: 'delegation-2',
+      providerDelegationId: 'provider-delegation-2',
+      request: makeRequest({ delegationId: 'delegation-2', providerDelegationId: 'provider-delegation-2' }),
+    });
+    store.admitDelegation(admission(second, 'queue-2'));
+    store.recordBackendResult({
+      delegationId: 'delegation-2',
+      outputId: 'progress-before-final',
+      kind: 'progress',
+      text: 'initial progress',
+      execution: 'succeeded',
+      output: {
+        execution: 'succeeded',
+        delivery: 'pending',
+        providerAcknowledgement: 'acknowledged',
+        playback: 'not_started',
+      },
+      occurredAt: 500,
+    });
+    const finalAfterProgress = store.recordBackendResult({
+      delegationId: 'delegation-2',
+      outputId: 'final-after-progress',
+      kind: 'final',
+      text: 'complete answer',
+      execution: 'succeeded',
+      output: {
+        execution: 'succeeded',
+        delivery: 'pending',
+        providerAcknowledgement: 'acknowledged',
+        playback: 'not_started',
+      },
+      occurredAt: 600,
+    });
+    expect(finalAfterProgress.isOk()).toBe(true);
+    const outputs = store.readSession('session-1')._unsafeUnwrap()!.outputs;
+    expect(outputs.filter((output) => output.delegationId === 'delegation-2').map((output) => output.id)).toEqual([
+      'progress-before-final',
+      'final-after-progress',
+    ]);
   });
 
   it('rejects lifecycle execution contradictions and preserves backend execution state', () => {

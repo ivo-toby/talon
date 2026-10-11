@@ -465,9 +465,9 @@ export class DurableVoiceStore implements VoiceStoreContract {
       ? this.repository.findOutputById(current.latest_output_id)
       : ok(null);
     if (latestOutputResult.isErr()) return err(latestOutputResult.error);
-    const terminalOrFinal =
-      isTerminalExecution(current.execution_status) ||
-      (latestOutputResult.value?.kind === 'final' && result.kind === 'progress');
+    const staleResult =
+      latestOutputResult.value?.kind === 'final' ||
+      (isTerminalExecution(current.execution_status) && result.kind !== 'final');
 
     let outputId: string | null = null;
     let duplicateOutput = false;
@@ -487,7 +487,7 @@ export class DurableVoiceStore implements VoiceStoreContract {
           return err(conflict(`output id ${result.outputId} has different content`));
         }
         duplicateOutput = true;
-      } else if (!terminalOrFinal) {
+      } else if (!staleResult) {
         const lifecycle = lifecycleToColumns(result.output);
         const inserted = this.repository.insertOutput({
           id: result.outputId,
@@ -503,7 +503,7 @@ export class DurableVoiceStore implements VoiceStoreContract {
       }
     }
 
-    if (terminalOrFinal || duplicateOutput) {
+    if (staleResult || duplicateOutput) {
       return this.delegationFromRow(current);
     }
 
@@ -731,6 +731,28 @@ export class DurableVoiceStore implements VoiceStoreContract {
     return undefined;
   }
 
+  private validateQueueAdmission(
+    input: VoiceAdmissionRequest['queue'],
+    delegation: VoiceDelegationRow,
+    persistedRequest: VoiceBackendRequest,
+  ): DbError | undefined {
+    if (
+      input.delegationId !== delegation.id ||
+      input.threadId !== persistedRequest.threadId ||
+      input.request.sessionId !== delegation.session_id ||
+      input.request.delegationId !== delegation.id ||
+      input.request.providerDelegationId !== delegation.provider_delegation_id ||
+      delegation.context_version !== persistedRequest.context.version ||
+      delegation.context_digest !== persistedRequest.context.digest ||
+      stableJson(input.request) !== stableJson(persistedRequest)
+    ) {
+      return new DbError(
+        'Voice queue work must preserve the persisted delegation request and context identity',
+      );
+    }
+    return undefined;
+  }
+
   private enqueueVoiceWorkInTransaction(input: VoiceAdmissionRequest['queue']): VoiceResult<{
     queueItemId: string;
     delegationId: string;
@@ -740,6 +762,10 @@ export class DurableVoiceStore implements VoiceStoreContract {
     if (delegationResult.isErr()) return err(delegationResult.error);
     if (!delegationResult.value) return err(new DbError(`Voice delegation not found: ${input.delegationId}`));
     const delegation = delegationResult.value;
+    const persistedRecord = this.delegationFromRow(delegation);
+    if (persistedRecord.isErr()) return err(persistedRecord.error);
+    const queueValidationError = this.validateQueueAdmission(input, delegation, persistedRecord.value.request);
+    if (queueValidationError) return err(queueValidationError);
     if (delegation.queue_item_id !== null && delegation.queue_item_id !== input.queueItemId) {
       return err(conflict(`delegation ${input.delegationId} is bound to another queue item`));
     }
@@ -767,6 +793,9 @@ export class DurableVoiceStore implements VoiceStoreContract {
       }
       queueRow = existing.value;
     } else {
+      if (delegation.status !== 'admitted' || delegation.queue_item_id !== null) {
+        return err(new DbError(`Voice delegation ${input.delegationId} has no retained queue binding`));
+      }
       const inserted = this.queueRepository.enqueue({
         id: input.queueItemId,
         thread_id: input.threadId,
