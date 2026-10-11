@@ -1,8 +1,10 @@
 # TASK-01 live haalbaarheidsproef
 
-Status: `NEEDS_CONTEXT` — de provider- en lifecycle-proef slaagden en de
-primaire WebSocket-PCM-proef bewees technische clientdelegatie; browsermatige
-clientmutatiecorrelatie en natuurlijke interruptie blijven onbewezen.
+Status: `PASS (begrensd)` — provider-toegang en lifecycle, primaire WebSocket-
+clientdelegatie met acknowledgement, WebRTC-transport/transcriptie en Ivo's
+gebruikersrapport over de exacte correctie zijn vastgelegd. Dit is geen
+Talon-end-to-end bewijs; clientmutatiecorrelatie is temporeel en de
+spraak-/interruptiebeoordeling blijft gebruikersrapportage.
 
 ## Preflight
 
@@ -51,7 +53,7 @@ env -u OPENAI_BASE_URL node --env-file=/Users/ivo.toby/workspace/talon/.env \
 
 De lokale server luistert uitsluitend op `127.0.0.1:8787`. De sleutel wordt niet naar de browser gestuurd, opgeslagen, gelogd of in de worktree geschreven. De browserpagina toont alleen eventtypen, opaque IDs, offsets, karakterlengtes, statuscodes, sluitreden en usage-seconden; geen audio, SDP, volledige transcriptie of promptinhoud wordt vastgelegd.
 
-De budgettimer start vóór het eerste `POST /v1/live/sessions`-verzoek, zodat ook startup-tijd en een mislukte poging binnen de grens vallen. De huidige harnasversie heeft een harde timer van 60 seconden; de eerder vastgelegde eerste handmatige run gebruikte een oudere versie met 300 seconden. Bij de timer stuurt de server `session.close` via de sideband en gebruikt hij alleen als fallback de officiële hangup-endpoint. De 5-minutengrens van de eerdere run en de 60-secondenlimiet van deze harnasversie zijn operationele stopgrenzen, geen claim over billing- of server-side afdwinging.
+De budgettimer start vóór het eerste `POST /v1/live/sessions`-verzoek, zodat ook startup-tijd en een mislukte poging binnen de grens vallen. De huidige harnasversie heeft een harde timer van 60 seconden; de eerder vastgelegde eerste handmatige run gebruikte een oudere versie met 300 seconden. Bij de timer stuurt de server `session.close` via de sideband en gebruikt hij alleen als fallback de officiële hangup-endpoint. Bij procesafsluiting wacht het harnas op `session.closed` of op de begrensde REST-hangup vóór de lokale server sluit. De 5-minutengrens van de eerdere run en de 60-secondenlimiet van deze harnasversie zijn operationele stopgrenzen, geen claim over billing- of server-side afdwinging.
 
 ## Uitvoering
 
@@ -239,14 +241,14 @@ Vul alleen met gemeten waarden in. `PENDING` betekent onbekend, niet geslaagd.
 | Controle                   | Verwacht bewijs                                                                     | Gemeten resultaat                                                                                   |
 | -------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | Modeltoegang               | `GET /v1/models/gpt-live-1` bevestigt toegang                                       | `HTTP 200; model_access=yes`                                                                        |
-| Nederlandse beurt          | Transcriptvolgorde, offsets en eerste bruikbare respons                             | `PENDING`                                                                                           |
-| Correctie                  | Nieuwe contextfragmenten na eerdere fragmenten; geen gokken bij ontbrekende context | `PENDING`                                                                                           |
+| Nederlandse beurt          | Transcriptvolgorde, offsets en eerste bruikbare respons                             | `USER_REPORTED; Amsterdam-beurt uitgevoerd; 12 inputfragmenten in handmatige run`                   |
+| Correctie                  | Nieuwe contextfragmenten na eerdere fragmenten; geen gokken bij ontbrekende context | `USER_REPORTED; Rotterdam-correctie uitgevoerd; geen gecontroleerde audiometriek`                   |
 | Clientdelegatie            | Delegatie-ID/offset/target; geen backendactie                                       | `PASS technisch; WebSocket PCM: 10 inputfragmenten, offset 4.000 ms, target client, commentary-ack` |
 | Sideband ownership         | Server-statusupdate geaccepteerd                                                    | `PASS; session.thinking.appended`                                                                   |
-| Clientmutatie              | Direct WebRTC-datachannel-commando wordt geweigerd of fout gemeld                   | `NEEDS_CONTEXT; immutable_field_update zonder behouden client-event-ID`                             |
+| Clientmutatie              | Direct WebRTC-datachannel-commando wordt geweigerd of fout gemeld                   | `PASS beperkt; immutable_field_update temporeel gekoppeld; geen client_event_id`                    |
 | Input mute                 | `session.input_audio.muted` en unmuted-ack                                          | `PASS; muted + unmuted`                                                                             |
 | Hoorbare output            | Handmatige bevestiging door Ivo                                                     | `PASS; gehoord en overtuigend gerapporteerd`                                                        |
-| Natuurlijke interruptie    | Alleen handmatig beoordeeld wanneer output tijdens nieuwe spraak liep               | `PENDING`                                                                                           |
+| Natuurlijke interruptie    | Alleen handmatig beoordeeld wanneer output tijdens nieuwe spraak liep               | `USER_REPORTED; Ivo meldde direct na Amsterdam → Rotterdam: "gedaan! Werkt mooi!"`                  |
 | Aanvullende handmatige run | Gebruikersrapport van gehoorde output en correctie                                  | `USER_REPORTED; "gedaan! Werkt mooi!"; geen delegatie-event`                                        |
 | Graceful close             | `session.closed`, reden, cumulatieve usage, cleanup                                 | `PASS; WebSocket PCM 5 voice-seconden; WebRTC synthetic 15 seconden; geen server-cleanup`           |
 | Mislukte setup             | Ongeldige auth geweigerd; geen bruikbare sessie                                     | `PASS; HTTP 401; rejected`                                                                          |

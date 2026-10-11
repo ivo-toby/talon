@@ -479,7 +479,12 @@ async function requestHangup(active, reason) {
 
 async function closeSession(reason, force = false) {
   const active = state.active;
-  if (!active || active.closeRequested) return;
+  if (!active) return;
+  if (active.finalizationPromise) return active.finalizationPromise;
+  if (active.finalized) return;
+  active.finalizationPromise = new Promise((resolve) => {
+    active.resolveFinalization = resolve;
+  });
   active.closeRequested = true;
   record('close_requested', { reason, force });
   const sent = sendSideband({
@@ -489,18 +494,21 @@ async function closeSession(reason, force = false) {
   if (!sent && active.sessionId) {
     await requestHangup(active, 'sideband_unavailable');
   }
-  setTimeout(
-    () => {
+  active.finalizationTimer = setTimeout(
+    async () => {
       if (state.active?.sessionId === active.sessionId && !active.finalized) {
         record('finalization_timeout');
         active.finalized = false;
         active.finalizationTimedOut = true;
-        void requestHangup(active, 'finalization_timeout');
+        await requestHangup(active, 'finalization_timeout');
         active.sideband?.close();
       }
+      active.resolveFinalization?.();
+      active.resolveFinalization = null;
     },
     force ? 1_000 : CLOSE_GRACE_MS,
   );
+  return active.finalizationPromise;
 }
 
 function attachSideband(sessionId) {
@@ -576,10 +584,14 @@ function attachSideband(sessionId) {
       if (Number.isFinite(event.usage?.seconds)) state.active.voiceSeconds = event.usage.seconds;
       if (state.budgetTimer) clearTimeout(state.budgetTimer);
       state.budgetTimer = null;
+      if (state.active.finalizationTimer) clearTimeout(state.active.finalizationTimer);
+      state.active.finalizationTimer = null;
       record('session_finalized', {
         reason: state.active.closeReason,
         voice_seconds: state.active.voiceSeconds ?? null,
       });
+      state.active.resolveFinalization?.();
+      state.active.resolveFinalization = null;
       setTimeout(() => state.active?.sideband?.close(), 250);
     }
   });
@@ -643,6 +655,9 @@ async function createLiveSession(offerSdp, syntheticMode) {
     closeRequested: false,
     finalized: false,
     finalizationTimedOut: false,
+    finalizationPromise: null,
+    finalizationTimer: null,
+    resolveFinalization: null,
     syntheticMode,
     delegationReplySent: false,
     delegationIds: [],
@@ -841,7 +856,7 @@ async function shutdown(signal) {
   record('probe_shutdown', { signal });
   if (state.active && !state.active.finalized) await closeSession('process_shutdown', true);
   server.close(() => process.exit(0));
-  setTimeout(() => process.exit(1), 2_000).unref();
+  setTimeout(() => process.exit(1), HANGUP_TIMEOUT_MS + CLOSE_GRACE_MS).unref();
 }
 
 process.once('SIGINT', () => void shutdown('SIGINT'));
