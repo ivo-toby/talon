@@ -192,6 +192,68 @@ describe('QueueProcessor', () => {
     });
   });
 
+  describe('processNext — voice items use their own claim boundary', () => {
+    it('does not collaboration-bypass a voice item behind an inflight run', async () => {
+      const inflightItemId = enqueueItem(repo, threadId);
+      repo.claimNext(threadId);
+      const voiceItemId = enqueueItem(repo, threadId, {
+        type: 'collaboration',
+        payload: JSON.stringify({
+          kind: 'voice_backend',
+          delegationId: 'voice-delegation-1',
+        }),
+        max_attempts: 1,
+      });
+      const voiceClaimer = vi.fn(() => ok(null));
+      const proc = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, createTestLogger()),
+        createTestLogger(),
+        1000,
+        60_000,
+        voiceClaimer,
+      );
+
+      const handled = await proc.processNext(async () => ok(undefined));
+
+      expect(handled).toBeNull();
+      expect(voiceClaimer).not.toHaveBeenCalled();
+      expect((repo.findById(inflightItemId)._unsafeUnwrap() as { status: string }).status).toBe(
+        'claimed',
+      );
+      expect((repo.findById(voiceItemId)._unsafeUnwrap() as { status: string }).status).toBe(
+        'pending',
+      );
+    });
+
+    it('delegates an idle voice item to the transactional claimer', async () => {
+      const voiceItemId = enqueueItem(repo, threadId, {
+        type: 'collaboration',
+        payload: JSON.stringify({
+          kind: 'voice_backend',
+          delegationId: 'voice-delegation-2',
+        }),
+        max_attempts: 1,
+      });
+      const voiceClaimer = vi.fn((row) => repo.claimNext(row.thread_id));
+      const proc = new QueueProcessor(
+        repo,
+        calculateBackoff,
+        new DeadLetterHandler(repo, createTestLogger()),
+        createTestLogger(),
+        1000,
+        60_000,
+        voiceClaimer,
+      );
+
+      const handled = await proc.processNext(async () => ok(undefined));
+
+      expect(handled?.id).toBe(voiceItemId);
+      expect(voiceClaimer).toHaveBeenCalledWith(expect.objectContaining({ id: voiceItemId }));
+    });
+  });
+
   // -------------------------------------------------------------------------
   // complete
   // -------------------------------------------------------------------------
