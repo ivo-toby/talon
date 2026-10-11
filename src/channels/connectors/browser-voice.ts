@@ -10,12 +10,16 @@ import type pino from 'pino';
 import { err, ok, type Result } from '../../core/types/result.js';
 import { ChannelError } from '../../core/errors/error-types.js';
 import type { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
-import type { VoiceSessionService } from '../../voice/voice-types.js';
+import {
+  VOICE_THREAD_EXTERNAL_PREFIX,
+  parseSharedVoiceThreadMetadata,
+  type VoiceSessionService,
+} from '../../voice/voice-types.js';
 import type { AgentOutput, ChannelConnector, InboundEvent } from '../channel-types.js';
 
 const VOICE_CHANNEL_TYPE = 'voice';
 const VOICE_CHANNEL_NAME = 'browser-voice';
-const VOICE_EXTERNAL_PREFIX = 'voice:';
+const LEGACY_VOICE_EXTERNAL_PREFIX = 'voice:';
 
 export interface BrowserVoiceConnectorOptions {
   readonly channelId: string;
@@ -93,8 +97,11 @@ export class BrowserVoiceConnector implements ChannelConnector {
 }
 
 function isVoiceThread(metadata: string, externalThreadId: string): boolean {
-  if (!externalThreadId.startsWith(VOICE_EXTERNAL_PREFIX)) return false;
-  const sessionId = externalThreadId.slice(VOICE_EXTERNAL_PREFIX.length);
+  if (externalThreadId.startsWith(VOICE_THREAD_EXTERNAL_PREFIX)) {
+    return parseSharedVoiceThreadMetadata(metadata, externalThreadId) !== null;
+  }
+  if (!externalThreadId.startsWith(LEGACY_VOICE_EXTERNAL_PREFIX)) return false;
+  const sessionId = externalThreadId.slice(LEGACY_VOICE_EXTERNAL_PREFIX.length);
   if (!sessionId) return false;
   try {
     const parsed = JSON.parse(metadata) as unknown;

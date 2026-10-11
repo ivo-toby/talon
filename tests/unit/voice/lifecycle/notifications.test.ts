@@ -503,13 +503,15 @@ describe('voice channel notifications', () => {
     );
 
     const rows = harness.messages.findByThread(session.threadId, 10, 0)._unsafeUnwrap();
-    expect(rows).toHaveLength(2);
-    expect(rows.map((row) => JSON.parse(row.content))).toEqual(
+    const notificationRows = rows.filter((row) => !JSON.parse(row.content).voice);
+    expect(notificationRows).toHaveLength(2);
+    expect(notificationRows.map((row) => JSON.parse(row.content))).toEqual(
       expect.arrayContaining([
         { body: 'Booked Friday via channel_send.' },
         { body: 'Independent background update.' },
       ]),
     );
+    expect(rows).toHaveLength(3);
   });
 
   it('rejects unbounded notification text', async () => {

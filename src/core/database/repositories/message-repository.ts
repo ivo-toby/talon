@@ -34,6 +34,7 @@ export class MessageRepository extends BaseRepository {
   private readonly findLatestByThreadStmt: Database.Statement;
   private readonly findLatestByThreadSinceStmt: Database.Statement;
   private readonly findByIdempotencyKeyStmt: Database.Statement;
+  private readonly updateVoiceTranscriptStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -77,6 +78,14 @@ export class MessageRepository extends BaseRepository {
     this.findByIdempotencyKeyStmt = db.prepare(`
       SELECT * FROM messages WHERE idempotency_key = ?
     `);
+
+    this.updateVoiceTranscriptStmt = db.prepare(`
+      UPDATE messages
+      SET content = @content, provider_id = @provider_id, run_id = @run_id
+      WHERE idempotency_key = @idempotency_key
+        AND thread_id = @thread_id
+        AND direction = @direction
+    `);
   }
 
   /**
@@ -96,6 +105,38 @@ export class MessageRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to insert message: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Inserts or corrects a voice transcript row. A correction uses the same
+   * idempotency key, so UPDATE preserves the original row identity and order.
+   */
+  upsertVoiceTranscript(input: InsertMessageInput): Result<MessageRow, DbError> {
+    try {
+      const existing = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as
+        | MessageRow
+        | undefined;
+      if (existing) {
+        if (existing.thread_id !== input.thread_id || existing.direction !== input.direction) {
+          return err(new DbError('Voice transcript idempotency key belongs to another message'));
+        }
+        this.updateVoiceTranscriptStmt.run(input);
+        const persisted = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as MessageRow;
+        return ok(persisted);
+      }
+
+      const row: MessageRow = { ...input, created_at: this.now() };
+      this.insertStmt.run(row);
+      const persisted = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as MessageRow;
+      return ok(persisted);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to upsert voice transcript: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );
