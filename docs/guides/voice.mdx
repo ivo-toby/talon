@@ -17,8 +17,9 @@ other transports are not currently supported.
 - A voice access token and, when the live provider requires one, a live API
   key. Keep both in environment variables referenced by `auth.providers`.
 - HTTPS for a browser reached through a network. Local loopback testing can
-  use HTTP. The daemon itself binds to loopback; a reverse proxy is required
-  for a public hostname.
+  use HTTP. The listener defaults to loopback; when a reverse proxy runs in a
+  different VM, container, or network namespace, set `voice.host` to a
+  reachable interface address (or `0.0.0.0`) and restrict network access.
 - A reverse proxy that preserves the public `Host` and `Origin` headers and
   sends `X-Forwarded-Proto: https`. Talon uses that header when deciding
   whether to mark the authentication cookies `Secure` and when checking the
@@ -64,8 +65,10 @@ provider tools for this boundary; approval-gated capabilities and unproven
 MCP servers do not become silently available in a voice call.
 
 `publicHost` adds `https://<publicHost>` to the allowed origins and documents
-the external URL. It does not make the daemon listen publicly. Keep `host`
-loopback and configure the proxy to forward `/voice/` to that listener.
+the external URL. It does not change the listener address. Keep the default
+loopback `host` when the proxy shares the daemon's network namespace; for a
+remote proxy, configure `host` to the address that proxy can reach. Origin,
+authentication, and CSRF checks still apply to every listener address.
 
 ## Login and session flow
 

@@ -326,10 +326,12 @@ voice:
   allowedOrigins: [https://voice.example.com]
 ```
 
-For a non-local browser, put HTTPS in front of the loopback listener. The
-reverse proxy must preserve `Host` and `Origin` and send
-`X-Forwarded-Proto: https`; set `publicHost` to the public hostname. Run
-`npx talonctl doctor --config talond.yaml` after the change and open
+The listener defaults to loopback. For a non-local browser, put HTTPS in front
+of it. If the reverse proxy runs in another VM, container, or network
+namespace, set `voice.host` to a reachable interface address or `0.0.0.0` and
+restrict network access. Preserve `Host` and `Origin`, send
+`X-Forwarded-Proto: https`, set `publicHost` to the public hostname, then run
+`npx talonctl doctor --config talond.yaml` and open
 `https://<publicHost>/voice/`. SIP, physical-phone, and live paid-provider
 verification are separate acceptance steps.
 

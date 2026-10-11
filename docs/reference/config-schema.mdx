@@ -242,9 +242,9 @@ auth:
 
 ## `voice`
 
-Browser voice is opt-in and disabled by default. It starts a loopback HTTP
-listener for the authenticated WebRTC UI and uses the ordinary durable queue
-and `AgentRunner` path for backend work.
+Browser voice is opt-in and disabled by default. It starts an HTTP listener
+for the authenticated WebRTC UI on `voice.host` (loopback by default) and uses
+the ordinary durable queue and `AgentRunner` path for backend work.
 
 ```yaml
 voice:
@@ -268,7 +268,7 @@ voice:
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | boolean | `false` | Start the browser voice runtime |
-| `host` | string | `127.0.0.1` | Listener host; the runtime accepts loopback hosts only |
+| `host` | string | `127.0.0.1` | Node listener host or address; defaults to loopback and accepts configured wildcard or IPv6 addresses |
 | `port` | integer `0..65535` | `0` | Listener port; `0` selects an available port |
 | `publicHost` | non-empty string | — | Public HTTPS host; adds `https://<publicHost>` to allowed origins |
 | `accessToken` | string | — | Direct access token; prefer `accessTokenRef` and an environment-backed auth provider |
@@ -297,8 +297,10 @@ configured access token is resolved from `voice.accessToken`, then the
 `accessTokenRef` provider, then the global `auth.apiKey`. Use HTTPS through a
 reverse proxy for non-local browsers, preserve `Host` and `Origin`, and send
 `X-Forwarded-Proto: https` so secure cookies and origin checks reflect the
-public connection. `voice.model` controls the live voice provider only; it does
-not change the persona backend model.
+public connection. If that proxy runs outside the daemon's network namespace,
+set `voice.host` to a reachable interface or wildcard address and restrict
+network exposure at the proxy or firewall. `voice.model` controls the live
+voice provider only; it does not change the persona backend model.
 
 Voice stores bounded session text, outputs, usage, and lifecycle state in
 SQLite. Raw audio is not represented in the voice schema, and provider-side
