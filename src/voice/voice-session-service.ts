@@ -581,6 +581,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (text.length > MAX_VOICE_NOTIFICATION_CHARS) {
       return err(new PolicyError('Voice notification text exceeds the bounded delivery limit'));
     }
+    const notificationId = input.messageId?.trim() || randomUUID();
 
     const sessions = this.options.store.listSessions({});
     if (sessions.isErr()) return err(sessions.error);
@@ -593,11 +594,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       session.status !== 'connected' ||
       session.deadlineAt <= this.now()
     ) {
-      return ok({ sessionId: session.id, speechRequested: false });
+      return ok({ sessionId: session.id, notificationId, speechRequested: false });
     }
 
     let outcome: VoiceResult<VoiceNotificationResult> = ok({
       sessionId: session.id,
+      notificationId,
       speechRequested: false,
     });
     const run = runtime.eventChain
@@ -616,12 +618,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
           runtime.closing ||
           this.runtimes.get(session.id) !== runtime
         ) {
-          outcome = ok({ sessionId: session.id, speechRequested: false });
+          outcome = ok({ sessionId: session.id, notificationId, speechRequested: false });
           return;
         }
         const activeOwnerError = this.ensureOwnerActive(latest.value.owner);
         const output: VoiceNotificationStatusDto = {
-          id: randomUUID(),
+          id: notificationId,
           text,
           createdAt: this.now(),
         };
@@ -649,7 +651,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
             );
           }
         }
-        outcome = ok({ sessionId: session.id, speechRequested });
+        outcome = ok({ sessionId: session.id, notificationId, speechRequested });
         this.publish(runtime, {
           kind: 'notification',
           version: latest.value.revision,

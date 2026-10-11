@@ -80,7 +80,7 @@ class FakeVoiceSessionService implements VoiceSessionService {
   }
 
   async notifyThread(input: { threadId: string; text: string }) {
-    return ok({ sessionId: input.threadId, speechRequested: false });
+    return ok({ sessionId: input.threadId, notificationId: 'message-1', speechRequested: false });
   }
 
   async receiveProviderEvent(): Promise<ReturnType<typeof ok<void>>> {

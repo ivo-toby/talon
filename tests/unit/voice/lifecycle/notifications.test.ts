@@ -162,8 +162,10 @@ describe('voice channel notifications', () => {
     expect(created.isOk()).toBe(true);
     const session = created._unsafeUnwrap().session;
     const events: string[] = [];
+    const notificationIds: string[] = [];
     harness.service.subscribe(harness.owner, session.id, (event) => {
       events.push(event.kind);
+      if (event.kind === 'notification') notificationIds.push(event.notification.id);
     });
 
     const notified = await harness.service.notifyThread({
@@ -171,7 +173,10 @@ describe('voice channel notifications', () => {
       text: 'The scheduled result is ready.',
     });
 
-    expect(notified._unsafeUnwrap()).toEqual({ sessionId: session.id, speechRequested: true });
+    const result = notified._unsafeUnwrap();
+    expect(result).toMatchObject({ sessionId: session.id, speechRequested: true });
+    expect(result.notificationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(notificationIds).toEqual([result.notificationId]);
     expect(harness.provider.sideband.commands).toEqual([
       expect.objectContaining({
         kind: 'instruction',
@@ -209,7 +214,7 @@ describe('voice channel notifications', () => {
       run_id: null,
     });
 
-    expect(retained._unsafeUnwrap()).toEqual({ sessionId: session.id, speechRequested: false });
+    expect(retained._unsafeUnwrap()).toMatchObject({ sessionId: session.id, notificationId: expect.any(String), speechRequested: false });
     expect(harness.provider.sideband.commands).toHaveLength(commandCount);
     expect(harness.provider.createCount).toBe(providerCreates);
     expect(harness.service.status(harness.owner, session.id)._unsafeUnwrap()?.notifications).toEqual([
@@ -272,8 +277,58 @@ describe('voice channel notifications', () => {
       text: 'Retain this while speech is unavailable.',
     });
 
-    expect(notified._unsafeUnwrap()).toEqual({ sessionId: session.id, speechRequested: false });
+    expect(notified._unsafeUnwrap()).toMatchObject({ sessionId: session.id, notificationId: expect.any(String), speechRequested: false });
     expect(harness.provider.sideband.commands).toHaveLength(0);
+  });
+
+  it('uses the normal message identity for live and retained same-text notifications', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    const eventIds: string[] = [];
+    harness.service.subscribe(harness.owner, session.id, (event) => {
+      if (event.kind === 'notification') eventIds.push(event.notification.id);
+    });
+    const channelRepository = new ChannelRepository(harness.db);
+    const registry = new ChannelRegistry(pino({ level: 'silent' }));
+    const registered = registerVoiceConnector({
+      channelRegistry: registry,
+      channelRepo: channelRepository,
+      threadRepository: harness.threads,
+      sessionService: harness.service,
+      logger: pino({ level: 'silent' }),
+    });
+    expect(registered.isOk()).toBe(true);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      channelRepository,
+      messageRepository: harness.messages,
+      bindingRepository: new BindingRepository(harness.db),
+      threadRepository: harness.threads,
+      logger: pino({ level: 'silent' }),
+    });
+
+    const first = await handler.execute(
+      { channelId: 'browser-voice', content: 'Same text twice.' },
+      { runId: 'run-same-text-1', threadId: session.threadId, personaId: 'persona-1', requestId: 'request-same-text-1' },
+    );
+    const second = await handler.execute(
+      { channelId: 'browser-voice', content: 'Same text twice.' },
+      { runId: 'run-same-text-2', threadId: session.threadId, personaId: 'persona-1', requestId: 'request-same-text-2' },
+    );
+    expect(first.status).toBe('success');
+    expect(second.status).toBe('success');
+
+    const rows = harness.messages.findByThread(session.threadId, 10, 0)._unsafeUnwrap();
+    const status = harness.service.status(harness.owner, session.id)._unsafeUnwrap();
+    const retainedIds = status?.notifications?.map((notification) => notification.id) ?? [];
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+    expect(new Set(eventIds)).toEqual(new Set(rows.map((row) => row.id)));
+    expect(new Set(retainedIds)).toEqual(new Set(rows.map((row) => row.id)));
   });
 
   it('rejects unbounded notification text', async () => {

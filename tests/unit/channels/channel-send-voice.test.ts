@@ -56,7 +56,7 @@ describe('channel.send through browser voice', () => {
         sessionService: {
           notifyThread: async (input) => {
             notifications.push(input);
-            return ok({ sessionId: 'session-1', speechRequested: false });
+            return ok({ sessionId: 'session-1', notificationId: 'message-1', speechRequested: false });
           },
         },
         logger: pino({ level: 'silent' }),

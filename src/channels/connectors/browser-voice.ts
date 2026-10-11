@@ -68,9 +68,11 @@ export class BrowserVoiceConnector implements ChannelConnector {
       return err(new ChannelError('Browser voice recipient is not an authorized voice thread'));
     }
 
+    const requestedMessageId = output.messageId?.trim() || undefined;
     const delivered = await this.options.sessionService.notifyThread({
       threadId: thread.value.id,
       text,
+      ...(requestedMessageId ? { messageId: requestedMessageId } : {}),
     });
     if (delivered.isErr()) {
       this.options.logger?.warn(
@@ -79,6 +81,7 @@ export class BrowserVoiceConnector implements ChannelConnector {
       );
       return err(new ChannelError(`Browser voice notification failed: ${delivered.error.message}`));
     }
+    if (!output.messageId) output.messageId = delivered.value.notificationId;
     return ok(undefined);
   }
 

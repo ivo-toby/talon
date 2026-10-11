@@ -29,7 +29,7 @@ describe('BrowserVoiceConnector', () => {
       sessionService: {
         notifyThread: async (input) => {
           notifications.push(input);
-          return ok({ sessionId: 'session-1', speechRequested: true });
+          return ok({ sessionId: 'session-1', notificationId: 'message-1', speechRequested: true });
         },
       },
     });
@@ -42,6 +42,29 @@ describe('BrowserVoiceConnector', () => {
     ]);
   });
 
+  it('forwards the normal outbound message identity to the voice service', async () => {
+    const output = { body: 'A stable background result.', messageId: 'message-42' };
+    const notifications: Array<{ threadId: string; text: string; messageId?: string }> = [];
+    const connector = new BrowserVoiceConnector({
+      channelId: 'voice-channel',
+      threadRepository: { findByExternalId: () => ok(voiceThread()) },
+      sessionService: {
+        notifyThread: async (input) => {
+          notifications.push(input);
+          return ok({ sessionId: 'session-1', notificationId: 'message-42', speechRequested: true });
+        },
+      },
+    });
+
+    const sent = await connector.send('voice:session-1', output);
+
+    expect(sent.isOk()).toBe(true);
+    expect(notifications).toEqual([
+      { threadId: 'session-1', text: 'A stable background result.', messageId: 'message-42' },
+    ]);
+    expect(output.messageId).toBe('message-42');
+  });
+
   it('rejects arbitrary recipients and unsupported payloads', async () => {
     const connector = new BrowserVoiceConnector({
       channelId: 'voice-channel',
@@ -52,7 +75,7 @@ describe('BrowserVoiceConnector', () => {
             : ok(null),
       },
       sessionService: {
-        notifyThread: async () => ok({ sessionId: 'session-1', speechRequested: false }),
+        notifyThread: async () => ok({ sessionId: 'session-1', notificationId: 'message-1', speechRequested: false }),
       },
     });
 

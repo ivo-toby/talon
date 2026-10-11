@@ -49,6 +49,8 @@ export interface Action {
 export interface AgentOutput {
   /** Markdown body text. */
   body: string;
+  /** Stable outbound identity allocated by the normal delivery pipeline. */
+  messageId?: string;
   /** Optional file attachments. */
   attachments?: Attachment[];
   /** Optional interactive actions (buttons, approval prompts). */

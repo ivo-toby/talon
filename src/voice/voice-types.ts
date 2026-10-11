@@ -687,10 +687,14 @@ export interface VoiceNotificationRequest {
   readonly threadId: string;
   /** Markdown text retained by the normal message store and optionally spoken. */
   readonly text: string;
+  /** Existing outbound message identity, when allocated by channel.send. */
+  readonly messageId?: string;
 }
 
 export interface VoiceNotificationResult {
   readonly sessionId: VoiceSessionId;
+  /** Stable notification identity shared with the normal outbound row. */
+  readonly notificationId: string;
   /** Whether the existing live provider session accepted speech delivery. */
   readonly speechRequested: boolean;
 }
