@@ -310,9 +310,9 @@ For other channels, refer to the matching `add-*` skill.
 
 Ask one question: **"Do you want to enable the opt-in browser voice UI?"**
 Leave it disabled unless the user explicitly opts in. Voice currently accepts
-authenticated WebRTC only and requires the selected persona's provider to use
-the `openai-compatible` implementation. Use env references, never literal
-tokens, in `config/talond.yaml`:
+authenticated WebRTC only and requires the selected persona's provider to be
+enabled. The provider's normal OAuth and native-tool restrictions remain in
+force. Use env references, never literal tokens, in `config/talond.yaml`:
 
 ```yaml
 auth:
@@ -329,12 +329,21 @@ voice:
   publicHost: voice.example.com
   accessTokenRef: voice
   liveApiKeyRef: openai
-  provider: openai-compatible
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
   persona: assistant
   # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedTransportTypes: [webrtc]
   allowedOrigins: [https://voice.example.com]
 ```
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Do not configure an ordinary channel with that name; startup
+rejects the conflict and leaves an existing non-voice `browser-voice` database
+row untouched. `voice.persona` selects an existing normal persona, including
+its backend model, ordinary tools, skills, and configured MCP servers. The
+separate `voice.model` is the live audio model. Approval-gated capabilities are
+unavailable because voice has no interactive approval channel, and the legacy
+`voice.allowedToolNames` / `voice.allowedMcpServerNames` fields are ignored.
 
 The starter bundle's published `127.0.0.1:8788` port is for OAuth callbacks;
 it does not publish browser voice. The voice listener defaults to loopback. To

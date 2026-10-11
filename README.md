@@ -2375,11 +2375,11 @@ planned as an additional layer.
 
 Browser voice is disabled by default. When enabled, Talon binds the configured
 `voice.host` HTTP listener (`127.0.0.1` by default) and a reverse proxy can
-publish it over HTTPS. The browser
-exchanges an operator-configured token for an expiring cookie session; the
-server then selects the persona, backend provider, live model, WebRTC transport,
-and capability policy. Only an enabled `openai-compatible` backend provider is
-accepted, and native provider tools remain disabled.
+publish it over HTTPS. The browser exchanges an operator-configured token for
+an expiring cookie session; `voice.persona` then selects an existing normal
+persona, its backend provider/model, ordinary tools, skills, and configured MCP
+servers. The selected backend provider must be enabled, and its normal
+provider, OAuth, and native-tool restrictions still apply.
 
 Use environment references for both the browser token and live provider key:
 
@@ -2398,21 +2398,34 @@ voice:
   publicHost: voice.example.com
   accessTokenRef: voice
   liveApiKeyRef: openai
-  provider: openai-compatible
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
   persona: assistant
   # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedOrigins:
     - https://voice.example.com
 ```
 
+The old `voice.allowedToolNames` and `voice.allowedMcpServerNames` fields are
+deprecated compatibility fields and are ignored. Voice inherits the selected
+persona's normal capability and skill/MCP policy. A capability in
+`requireApproval` remains unavailable to voice because there is no interactive
+approval channel; grant only tools that can run without approval.
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Startup rejects a conflicting ordinary channel configuration and
+does not overwrite an existing non-voice `browser-voice` database row.
+
 The default loopback bind is suitable when the proxy shares the daemon's
 network namespace. If the proxy is remote, set `voice.host` to a reachable
 interface or `0.0.0.0` and restrict network access; `allowedOrigins`,
 authentication, and CSRF checks still apply. The reverse proxy must preserve
-the public `Host` and `Origin` and send `X-Forwarded-Proto: https`. Talon
-stores bounded session text, output, usage, and lifecycle state in local
-SQLite, not raw audio. Cloud provider retention is controlled by the provider
-account. See the [browser voice guide](docs/guides/voice.mdx)
+the public `Host` and `Origin` and send `X-Forwarded-Proto: https`. Voice uses
+one durable owner/persona thread across calls. Prompt history is bounded by
+`DEFAULT_VOICE_HISTORY_ROWS` and `DEFAULT_VOICE_HISTORY_CHARACTERS`; durable
+voice rows have no automatic TTL cleanup, and old calls or messages from other
+channels are not imported. Talon stores bounded prompt fragments, output,
+usage, and lifecycle state in local SQLite, not raw audio. Cloud provider
+retention is controlled by the provider account. See the [browser voice guide](docs/guides/voice.mdx)
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.
 

@@ -12,8 +12,9 @@ other transports are not currently supported.
 
 ## Requirements
 
-- A persona whose configured provider is an enabled `openai-compatible`
-  provider. Voice backend work uses that persona's normal model and queue.
+- A persona whose configured provider is enabled. Voice backend work uses that
+  persona's normal model and queue, including its provider's normal OAuth and
+  native-tool restrictions.
 - A voice access token and, when the live provider requires one, a live API
   key. Keep both in environment variables referenced by `auth.providers`.
 - HTTPS for a browser reached through a network. Local loopback testing can
@@ -44,7 +45,7 @@ voice:
   publicHost: voice.example.com
   accessTokenRef: voice
   liveApiKeyRef: openai
-  provider: openai-compatible
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
   model: gpt-live-1
   persona: assistant
   voice: marin
@@ -57,12 +58,23 @@ voice:
   allowedMcpServerNames: []
 ```
 
-`voice.provider` selects the agent provider entry used for backend work. That
-entry must have `type: openai-compatible`, even when its config key has a
-different name. The persona's `model` is the backend model. `voice.model` is
-the separate live voice model sent to the live provider. Talon rejects native
-provider tools for this boundary; approval-gated capabilities and unproven
-MCP servers do not become silently available in a voice call.
+`voice.persona` selects an existing normal persona. Its backend model, ordinary
+tools, skills, and configured MCP servers are used through the same
+`AgentRunner` path as text work. The selected persona's configured provider (or
+the agent-runner default) is authoritative and must be enabled; the provider's
+normal OAuth and native-tool restrictions remain in force. The persona's
+`model` is the backend model. `voice.model` is the separate live voice model
+sent to the live provider. Approval-gated capabilities are unavailable because
+voice has no interactive approval channel, and unproven MCP servers fail
+closed.
+
+The old `voice.allowedToolNames` and `voice.allowedMcpServerNames` fields are
+deprecated compatibility fields and are ignored. Do not use them to grant
+voice access. The selected persona's normal capability policy is authoritative.
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Startup rejects a conflicting ordinary channel configuration and
+does not overwrite an existing non-voice `browser-voice` database row.
 
 `publicHost` adds `https://<publicHost>` to the allowed origins and documents
 the external URL. It does not change the listener address. Keep the default
@@ -93,16 +105,21 @@ The HTTP boundary exposes these routes:
 | `POST /voice/sessions/:id/close`    | Hang up or close a session                                 |
 | `POST /voice/sessions/:id/playback` | Report output playback state                               |
 
-The browser sends a transport offer. The server chooses the persona, provider,
-live model, output voice, tools, and MCP policy from configuration and the
-current login. Provider events become bounded context snapshots, then durable
-voice delegations on the ordinary queue and `AgentRunner` path.
+The browser sends a transport offer. The server chooses the configured persona,
+provider, live model, output voice, tools, and MCP policy from the current
+login. Provider events become bounded context snapshots, then durable voice
+delegations on the ordinary queue and `AgentRunner` path.
 
 ## Lifecycle and limits
 
-Talon stores session, delegation, bounded text output, policy, usage, and
-finalization state in SQLite. A transcript correction supersedes the earlier
-context before queue claim; it must not replay an already claimed delegation.
+Talon stores session, delegation, bounded prompt fragments, policy, usage, and
+finalization state in SQLite. The owner/persona pair uses one durable voice
+thread across calls. Prompt history is bounded by
+`DEFAULT_VOICE_HISTORY_ROWS` and `DEFAULT_VOICE_HISTORY_CHARACTERS`; a
+restart recovers that history without replaying completed queue work. A
+transcript correction supersedes the earlier context before queue claim; it
+must not replay an already claimed delegation. Older calls and messages from
+other channels are not imported automatically.
 Policy is checked again before execution, so a revoked login or changed
 generation/policy prevents new backend work. A hangup skips unclaimed work and
 retains the result of work that was already claimed or running. Output state
@@ -122,8 +139,10 @@ call. Provider-side cloud retention and deletion are controlled by that
 provider's account and API settings, not by Talon. Talon does not claim to
 delete or control provider-side retention.
 
-Local SQLite stores bounded text snapshots and output text needed for session
-recovery and audit. Raw audio is not persisted in the voice schema. Set
+Local SQLite stores bounded prompt snapshots and output text needed for session
+recovery and audit. There is no automatic TTL cleanup for durable voice rows;
+include the SQLite voice tables in the operator's retention and backup policy.
+Raw audio is not persisted in the voice schema. Set
 `voice.usdPerMinute` only when the operator has a current provider rate; it is
 optional and has no default. With a configured rate, Talon estimates voice cost
 from cumulative provider-reported seconds. Final provider usage does not
@@ -138,13 +157,16 @@ text.
 
 ## Validation boundaries
 
-The repository includes an offline integration harness using an actual
-`BrowserVoiceServer`, cookie/CSRF authentication, SQLite voice migrations,
-`VoiceSessionService`, the durable bridge, queue, and `AgentRunner` with fake
-live/provider transports. It also exercises a second fake transport directly
-through the transport seam. Browser UI checks cover login, denied microphone
-handling, mute/hangup/restart, retained closed sessions, a 390px viewport, and
-console errors against integrated build assets.
+The repository includes an offline integration harness using actual daemon
+bootstrap, `BrowserVoiceServer`, cookie/CSRF authentication, SQLite voice
+migrations, `VoiceSessionService`, the durable bridge, queue, channel
+connector, OAuth resolver, and `AgentRunner`; only the live provider and
+external backend command are fake. It covers normal persona/provider selection,
+permitted `channel_send`, approval denial including a direct bridge attempt,
+shared-thread recovery across restart, and no old-work replay. Browser UI
+checks cover login, denied microphone handling, mute/hangup/restart, retained
+closed sessions, a 390px viewport, and console errors against integrated build
+assets.
 
 Those checks do not establish a physical iPhone/Safari call or a paid live
 provider call. Run those separately before treating external-provider or

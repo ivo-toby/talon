@@ -298,9 +298,10 @@ live sub-agent merely to test it: that would consume the user's subscription quo
 
 Ask one question: **"Do you want to enable the opt-in browser voice UI?"**
 Leave it disabled unless the user explicitly opts in. Browser voice currently
-supports authenticated WebRTC only and requires the selected persona's
-provider to be an enabled `openai-compatible` implementation. Its `voice.model`
-is the live voice model; the persona's `model` remains the backend model.
+supports authenticated WebRTC only and requires the selected persona's provider
+to be enabled. The provider's normal OAuth and native-tool restrictions remain
+in force. Its `voice.model` is the live voice model; the persona's `model`
+remains the backend model.
 
 If enabled, add environment-backed auth slots and the `voice` block to the
 config. Never ask for or write the token values:
@@ -319,12 +320,22 @@ voice:
   port: 8787
   accessTokenRef: voice
   liveApiKeyRef: openai
-  provider: openai-compatible
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
   persona: assistant
   # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
   allowedTransportTypes: [webrtc]
   allowedOrigins: [https://voice.example.com]
 ```
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Do not configure an ordinary channel with that name; a
+conflicting channel is rejected during startup.
+
+`voice.persona` selects an existing normal persona. Its backend model,
+capabilities, skills, and configured MCP servers are reused by voice. The
+separate `voice.model` is the live audio model. Approval-gated capabilities are
+unavailable because voice has no interactive approval channel, and the legacy
+`voice.allowedToolNames` / `voice.allowedMcpServerNames` fields are ignored.
 
 The listener defaults to loopback. For a non-local browser, put HTTPS in front
 of it. If the reverse proxy runs in another VM, container, or network

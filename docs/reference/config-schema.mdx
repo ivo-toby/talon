@@ -254,13 +254,15 @@ voice:
   # publicHost: voice.example.com
   accessTokenRef: voice
   liveApiKeyRef: openai
-  # provider: openai-compatible
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
   # model: gpt-live-1
   # persona: assistant
   voice: marin
   allowedTransportTypes:
     - webrtc
   allowedOrigins: []
+  # Deprecated compatibility fields. Voice inherits the persona policy; these
+  # empty lists are ignored.
   allowedToolNames: []
   allowedMcpServerNames: []
 ```
@@ -274,7 +276,7 @@ voice:
 | `accessToken` | string | — | Direct access token; prefer `accessTokenRef` and an environment-backed auth provider |
 | `accessTokenRef` | non-empty string | `voice` | `auth.providers.<name>.apiKey` slot used for browser login |
 | `liveApiKeyRef` | non-empty string | `openai` | `auth.providers.<name>` slot used by the live voice provider |
-| `provider` | non-empty string | selected persona provider | Backend provider name; when enabled its implementation type must be `openai-compatible` |
+| `provider` | non-empty string | selected persona provider | Deprecated compatibility field; the selected persona's provider (or agent-runner default) is authoritative and must be enabled |
 | `model` | non-empty string | `gpt-live-1` at bootstrap | Live voice model; the persona's `model` remains the backend model |
 | `persona` | non-empty string | first configured persona | Persona used for backend policy and execution |
 | `voice` | non-empty string | `marin` | Server-selected live output voice |
@@ -282,8 +284,8 @@ voice:
 | `instructions` | string | `You are Talon, a helpful voice assistant.` | Live provider instructions |
 | `allowedTransportTypes` | non-empty string[] | `['webrtc']` | Transport allowlist; current runtime accepts only `webrtc` |
 | `allowedOrigins` | URL[] | `[]` | Explicit browser origins; `publicHost` contributes an HTTPS origin |
-| `allowedToolNames` | non-empty string[] | `[]` | Voice tool allowlist, still subject to persona policy |
-| `allowedMcpServerNames` | non-empty string[] | `[]` | MCP allowlist; only proven/configured servers can be used |
+| `allowedToolNames` | string[] | `[]` | Deprecated compatibility field; ignored. Voice inherits the selected persona's normal capabilities |
+| `allowedMcpServerNames` | string[] | `[]` | Deprecated compatibility field; ignored. Voice inherits the selected persona's configured skills and MCP servers |
 | `maxSessionLifetimeMs` | integer ≥ 1000 | `900000` | Maximum voice session lifetime |
 | `maxContextChars` | integer `256..256000` | `32000` | Bound for voice context passed to the live provider |
 | `maxConcurrentSessions` | integer ≥ 1 | `1` | Active browser session limit |
@@ -291,9 +293,10 @@ voice:
 | `sessionCreationWindowMs` | integer ≥ 1000 | `60000` | Session creation rate-limit window |
 | `heartbeatIntervalMs` | integer ≥ 1000 | `15000` | SSE heartbeat interval |
 
-When `voice.enabled` is true, Talon requires a configured persona and an
-enabled provider whose implementation type is `openai-compatible`. The
-configured access token is resolved from `voice.accessToken`, then the
+When `voice.enabled` is true, Talon requires a configured persona and its
+selected provider (or the agent-runner default) to be enabled. The provider's
+normal implementation, OAuth, and native-tool restrictions remain in force.
+The configured access token is resolved from `voice.accessToken`, then the
 `accessTokenRef` provider, then the global `auth.apiKey`. Use HTTPS through a
 reverse proxy for non-local browsers, preserve `Host` and `Origin`, and send
 `X-Forwarded-Proto: https` so secure cookies and origin checks reflect the
@@ -302,9 +305,21 @@ set `voice.host` to a reachable interface or wildcard address and restrict
 network exposure at the proxy or firewall. `voice.model` controls the live
 voice provider only; it does not change the persona backend model.
 
-Voice stores bounded session text, outputs, usage, and lifecycle state in
+`voice.persona` selects an existing normal persona, including its backend
+model, ordinary tools, skills, and configured MCP servers. Capabilities in
+`requireApproval` remain unavailable because voice has no interactive approval
+channel. The owner/persona pair uses one durable voice thread across calls;
+prompt history is bounded by `DEFAULT_VOICE_HISTORY_ROWS` and
+`DEFAULT_VOICE_HISTORY_CHARACTERS`. Durable voice rows have no automatic TTL
+cleanup, and old calls or messages from other channels are not imported.
+Voice stores bounded prompt fragments, outputs, usage, and lifecycle state in
 SQLite. Raw audio is not represented in the voice schema, and provider-side
 cloud retention remains governed by the provider account and API settings.
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Startup rejects a conflicting ordinary channel configuration and
+does not overwrite an existing non-voice `browser-voice` database row.
+
 When `usdPerMinute` is configured, voice cost is estimated from cumulative
 provider-reported seconds. Final provider usage does not confirm billing, so
 the status remains `estimated`; when that rate has known seconds but an
