@@ -234,6 +234,7 @@ export const VoiceConfigSchema = z.object({
   model: z.string().trim().min(1).optional(),
   persona: z.string().trim().min(1).optional(),
   voice: z.string().trim().min(1).default('marin'),
+  usdPerMinute: z.number().finite().nonnegative().optional(),
   instructions: z.string().default('You are Talon, a helpful voice assistant.'),
   allowedTransportTypes: z.array(z.string().trim().min(1)).min(1).default(['webrtc']),
   allowedOrigins: z.array(z.string().url()).default([]),

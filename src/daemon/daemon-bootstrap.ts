@@ -563,7 +563,9 @@ export async function bootstrap(
   // queue crash recovery. Voice queue rows are excluded from the generic
   // reset, so an uncertain provider effect can never be replayed by polling.
   const voiceStore = new DurableVoiceStore(db, repos.queue, new VoiceRepository(db));
-  const voiceReconciliation = reconcileVoiceSessions(voiceStore);
+  const voiceReconciliation = reconcileVoiceSessions(voiceStore, {
+    usdPerMinute: config.voice?.usdPerMinute,
+  });
   if (voiceReconciliation.isErr()) {
     await cleanupBootstrapFailure(db, observability, logger);
     return err(
@@ -762,6 +764,7 @@ export async function bootstrap(
       isOwnerActive: (owner): boolean => voiceAuth?.resolve(owner) !== undefined,
       maxSessionLifetimeMs: config.voice.maxSessionLifetimeMs,
       maxContextChars: config.voice.maxContextChars,
+      usdPerMinute: config.voice.usdPerMinute,
       logger,
     });
     const publicOrigins = [...config.voice.allowedOrigins];
