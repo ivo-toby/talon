@@ -91,7 +91,13 @@ vi.mock('../../../src/channels/channel-router.js', () => ({
 }));
 
 vi.mock('../../../src/channels/channel-setup.js', () => ({
+  BROWSER_VOICE_CHANNEL_NAME: 'browser-voice',
   registerChannels: vi.fn(),
+  registerVoiceChannel: vi.fn().mockReturnValue({
+    isErr: () => false,
+    isOk: () => true,
+    value: 'voice-channel-id',
+  }),
 }));
 
 vi.mock('../../../src/pipeline/message-pipeline.js', () => ({
@@ -181,7 +187,10 @@ import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
 import { reconcileVoiceSessions } from '../../../src/voice/voice-session-reconciler.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
-import { BackgroundTaskRepository } from '../../../src/core/database/repositories/index.js';
+import {
+  BackgroundTaskRepository,
+  PersonaRepository,
+} from '../../../src/core/database/repositories/index.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
 import { createDiscardLogger } from './helpers.js';
@@ -294,6 +303,65 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
   };
 }
 
+function makeVoicePersonaFixture(personaName = 'assistant') {
+  const personaConfig = {
+    name: personaName,
+    model: 'backend-model',
+    provider: 'voice-backend',
+    skills: [],
+    capabilities: { allow: [], requireApproval: [] },
+    mounts: [],
+  };
+  const loadedPersona = {
+    config: personaConfig,
+    resolvedCapabilities: { allow: [], requireApproval: [] },
+  };
+  const config = makeConfig({
+    personas: [personaConfig],
+    auth: {
+      mode: 'api_key',
+      apiKey: 'global-secret',
+      providers: {
+        openai: { apiKey: 'live-secret' },
+      },
+    },
+    agentRunner: {
+      defaultProvider: 'voice-backend',
+      providers: {
+        'voice-backend': makeAgentRunnerProviderConfig({
+          type: 'openai-compatible',
+          command: 'offline-voice-provider',
+          contextManagement: { enabled: false },
+        }),
+      },
+    },
+    voice: {
+      enabled: true,
+      host: '127.0.0.1',
+      port: 0,
+      persona: personaName,
+      provider: 'voice-backend',
+      accessToken: 'voice-secret',
+      accessTokenRef: 'voice',
+      liveApiKeyRef: 'openai',
+      model: 'gpt-live-offline',
+      voice: 'marin',
+      instructions: 'Offline voice test.',
+      allowedTransportTypes: ['webrtc'],
+      allowedOrigins: [],
+      allowedToolNames: [],
+      allowedMcpServerNames: [],
+      maxSessionLifetimeMs: 900_000,
+      maxContextChars: 32_000,
+      maxConcurrentSessions: 1,
+      maxSessionCreations: 5,
+      sessionCreationWindowMs: 60_000,
+      heartbeatIntervalMs: 15_000,
+    },
+  });
+  return { config, loadedPersona };
+}
+
 function makeMockDb() {
   const mockStatement = {
     run: vi.fn().mockReturnValue({ changes: 0, lastInsertRowid: 0 }),
@@ -332,11 +400,40 @@ function setupSuccessfulMocks() {
     loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
     getByName: vi.fn().mockReturnValue(ok({})),
   }) as any);
+  vi.mocked(PersonaRepository).mockImplementation(() => ({}) as any);
   vi.mocked(SkillLoader).mockImplementation(() => ({
     loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
   }) as any);
 
   return { config, db, observability };
+}
+
+function setupVoiceBootstrapMocks(
+  config: unknown,
+  loadedPersona: unknown,
+  personaRowResult: unknown,
+) {
+  const db = makeMockDb();
+  const observability = {
+    observe: vi.fn(),
+    observeWithTraceparent: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  };
+  const personaRepo = {
+    findByName: vi.fn().mockReturnValue(personaRowResult),
+  };
+
+  vi.mocked(loadConfig).mockReturnValue(ok(config as any));
+  vi.mocked(createDatabase).mockReturnValue(ok(db as any));
+  vi.mocked(runMigrations).mockReturnValue(ok(1));
+  vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
+  vi.mocked(PersonaRepository).mockImplementation(() => personaRepo as any);
+  vi.mocked(PersonaLoader).mockImplementation(() => ({
+    loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+    getByName: vi.fn().mockReturnValue(ok(loadedPersona)),
+  }) as any);
+
+  return { db, observability, personaRepo };
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +819,72 @@ describe('bootstrap', () => {
         expect.anything(),
         { usdPerMinute: 0.06 },
       );
+    });
+
+    it('uses the persisted persona id for voice startup and current policy capture', async () => {
+      const persistedPersonaId = 'persona-uuid-1234';
+      const personaName = 'assistant';
+      const { config, loadedPersona } = makeVoicePersonaFixture(personaName);
+      const { personaRepo } = setupVoiceBootstrapMocks(
+        config,
+        loadedPersona,
+        ok({
+          id: persistedPersonaId,
+          name: personaName,
+          model: 'backend-model',
+        }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const service = result._unsafeUnwrap().voiceSessionService as unknown as {
+        options: {
+          personaId: string;
+          capturePolicy: (owner: { ownerId: string; loginRevision: number }) => ReturnType<typeof ok>;
+        };
+      };
+      expect(service.options.personaId).toBe(persistedPersonaId);
+      const captured = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(captured.isOk()).toBe(true);
+      expect(captured._unsafeUnwrap()).toMatchObject({ personaId: persistedPersonaId });
+
+      personaRepo.findByName.mockReturnValueOnce(ok(null));
+      const missingCurrentPersona = service.options.capturePolicy({
+        ownerId: 'voice:assistant',
+        loginRevision: 1,
+      });
+      expect(missingCurrentPersona.isErr()).toBe(true);
+
+      personaRepo.findByName.mockReturnValueOnce(err(new Error('persona row lookup failed')));
+      const erroredCurrentPersona = service.options.capturePolicy({
+        ownerId: 'voice:assistant',
+        loginRevision: 1,
+      });
+      expect(erroredCurrentPersona.isErr()).toBe(true);
+      expect(erroredCurrentPersona._unsafeUnwrapErr().message).toContain('persona row lookup failed');
+      expect(personaRepo.findByName).toHaveBeenCalledWith(personaName);
+      expect(personaRepo.findByName).toHaveBeenCalledTimes(4);
+    });
+
+    it.each([
+      ['missing', ok(null), 'Voice persona not found'],
+      ['lookup error', err(new Error('persona row lookup failed')), 'persona row lookup failed'],
+    ])('fails voice startup when the persisted persona row is %s', async (_state, personaRowResult, expectedMessage) => {
+      const { config, loadedPersona } = makeVoicePersonaFixture();
+      const { db, observability } = setupVoiceBootstrapMocks(
+        config,
+        loadedPersona,
+        personaRowResult,
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isErr()).toBe(true);
+      const bootstrapError = result._unsafeUnwrapErr();
+      expect(bootstrapError.cause?.message ?? bootstrapError.message).toContain(expectedMessage);
+      expect(db.close).toHaveBeenCalledOnce();
+      expect(observability.shutdown).toHaveBeenCalledOnce();
     });
 
     it('creates HostToolsBridge and attaches it to context', async () => {
