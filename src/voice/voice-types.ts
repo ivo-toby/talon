@@ -626,6 +626,8 @@ export interface VoiceStoreOperations {
     input: VoiceSessionRecoveryQuery,
   ): VoiceResult<readonly VoiceSessionReadProjection[]>;
   findDelegation(id: VoiceDelegationId): VoiceResult<VoiceDelegationRecord | null>;
+  /** Finds the voice delegation whose queue work produced an agent run. */
+  findDelegationByRunId(runId: string): VoiceResult<VoiceDelegationRecord | null>;
   claimDelegation(input: VoiceClaimRequest): VoiceResult<VoiceClaimResult>;
   supersedeDelegation(input: VoiceSupersedeRequest): VoiceResult<VoiceSupersedeResult>;
   skipDelegation(input: VoiceSkipRequest): VoiceResult<VoiceDelegationRecord>;
@@ -689,6 +691,8 @@ export interface VoiceNotificationRequest {
   readonly text: string;
   /** Existing outbound message identity, when allocated by channel.send. */
   readonly messageId?: string;
+  /** Trusted originating agent run identity, when delivered by channel.send. */
+  readonly sourceRunId?: string;
 }
 
 export interface VoiceNotificationResult {

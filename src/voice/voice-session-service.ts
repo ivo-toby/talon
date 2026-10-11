@@ -588,6 +588,21 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const projection = sessions.value.find((candidate) => candidate.session.threadId === input.threadId);
     if (!projection) return err(new PolicyError('Voice thread was not found'));
     const session = projection.session;
+    const sourceRunId = input.sourceRunId?.trim() || undefined;
+    let sourceDelegation: VoiceDelegationRecord | undefined;
+    let sourceLookupFailed = false;
+    if (sourceRunId) {
+      const source = this.options.store.findDelegationByRunId(sourceRunId);
+      if (source.isErr()) {
+        sourceLookupFailed = true;
+        this.options.logger?.warn(
+          { sourceRunId, threadId: input.threadId, cause: source.error },
+          'voice notification provenance lookup failed; suppressing speech',
+        );
+      } else {
+        sourceDelegation = source.value ?? undefined;
+      }
+    }
     const runtime = this.runtimes.get(session.id);
     if (
       !runtime ||
@@ -622,13 +637,23 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
           return;
         }
         const activeOwnerError = this.ensureOwnerActive(latest.value.owner);
+        const sourceBelongsToCurrentSession =
+          sourceDelegation !== undefined &&
+          sourceDelegation.sessionId === session.id &&
+          sourceDelegation.request.threadId === input.threadId;
+        const suppressSpeech =
+          sourceLookupFailed ||
+          (sourceDelegation !== undefined &&
+            (!sourceBelongsToCurrentSession ||
+              runtime.staleDelegationIds.has(sourceDelegation.id) ||
+              this.delegationContextInvalidated(runtime, sourceDelegation)));
         const output: VoiceNotificationStatusDto = {
           id: notificationId,
           text,
           createdAt: this.now(),
         };
         let speechRequested = false;
-        if (!activeOwnerError) {
+        if (!activeOwnerError && !suppressSpeech) {
           try {
             const sent = await runtime.sideband.send({
               kind: 'instruction',

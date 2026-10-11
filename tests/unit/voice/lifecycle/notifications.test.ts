@@ -9,6 +9,7 @@ import { BindingRepository } from '../../../../src/core/database/repositories/bi
 import { runMigrations } from '../../../../src/core/database/migrations/runner.js';
 import { MessageRepository } from '../../../../src/core/database/repositories/message-repository.js';
 import { QueueRepository } from '../../../../src/core/database/repositories/queue-repository.js';
+import { RunRepository } from '../../../../src/core/database/repositories/run-repository.js';
 import { ThreadRepository } from '../../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRegistry } from '../../../../src/channels/channel-registry.js';
 import { registerVoiceConnector } from '../../../../src/channels/channel-setup.js';
@@ -25,6 +26,7 @@ import type {
   LiveVoiceSession,
   LiveVoiceSideband,
   LiveVoiceCommand,
+  VoiceContextSnapshot,
   VoiceEventHandler,
   VoiceUnsubscribe,
 } from '../../../../src/voice/voice-types.js';
@@ -32,7 +34,23 @@ import type {
 class FakeSideband implements LiveVoiceSideband {
   readonly providerSessionId = 'provider-session-1';
   readonly commands: LiveVoiceCommand[] = [];
+  readonly contexts = new Map<string, VoiceContextSnapshot>();
+  readonly invalidContexts = new Set<string>();
   sendError = false;
+
+  contextForDelegation(providerDelegationId: string): VoiceContextSnapshot | null {
+    if (this.invalidContexts.has(providerDelegationId)) return null;
+    return this.contexts.get(providerDelegationId) ?? null;
+  }
+
+  setContext(providerDelegationId: string, context: VoiceContextSnapshot): void {
+    this.contexts.set(providerDelegationId, context);
+    this.invalidContexts.delete(providerDelegationId);
+  }
+
+  invalidateContext(providerDelegationId: string): void {
+    this.invalidContexts.add(providerDelegationId);
+  }
 
   send(command: LiveVoiceCommand) {
     if (this.sendError) return Promise.resolve(err(new PolicyError('sideband unavailable')));
@@ -142,7 +160,7 @@ function createHarness(options: { readonly ownerActive?: () => boolean } = {}) {
     currentPolicy: () => capturePolicy(),
     isOwnerActive: options.ownerActive,
   });
-  return { db, messages, owner, provider, service, threads };
+  return { db, messages, owner, provider, service, store, threads };
 }
 
 describe('voice channel notifications', () => {
@@ -329,6 +347,169 @@ describe('voice channel notifications', () => {
     expect(new Set(rows.map((row) => row.id)).size).toBe(2);
     expect(new Set(eventIds)).toEqual(new Set(rows.map((row) => row.id)));
     expect(new Set(retainedIds)).toEqual(new Set(rows.map((row) => row.id)));
+  });
+
+  it('retains stale voice channel output without speaking it, while background output still speaks', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    const providerDelegationId = 'provider-stale-channel-send';
+    harness.provider.sideband.setContext(providerDelegationId, {
+      version: 1,
+      digest: 'digest-book-friday',
+      capturedAt: 30,
+      text: 'Book Friday.',
+      fragments: [],
+      truncated: false,
+    });
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId: session.id,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-stale-channel-send',
+        sequence: 1,
+        proposal: { providerDelegationId, offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+    const admittedProjection = harness.store.readSession(session.id)._unsafeUnwrap();
+    const delegation = admittedProjection?.delegations[0];
+    expect(delegation).toBeDefined();
+    const running = harness.store.recordBackendResult({
+      delegationId: delegation!.id,
+      outputId: 'voice-progress-stale-channel-send',
+      kind: 'progress',
+      execution: 'running',
+      output: {
+        execution: 'running',
+        delivery: 'not_requested',
+        providerAcknowledgement: 'not_sent',
+        playback: 'not_started',
+      },
+      occurredAt: 40,
+    });
+    expect(running.isOk()).toBe(true);
+
+    const runInserted = new RunRepository(harness.db).insert({
+      id: 'voice-run-stale-channel-send',
+      thread_id: session.threadId,
+      persona_id: 'persona-1',
+      provider_name: 'agent-provider',
+      model_name: 'voice-model',
+      sandbox_id: null,
+      session_id: null,
+      status: 'running',
+      parent_run_id: null,
+      queue_item_id: delegation!.queueItemId ?? null,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      error: null,
+      started_at: 40,
+      ended_at: null,
+    });
+    expect(runInserted.isOk()).toBe(true);
+    expect(harness.store.findDelegationByRunId('voice-run-stale-channel-send')._unsafeUnwrap()?.id).toBe(
+      delegation!.id,
+    );
+
+    harness.provider.sideband.invalidateContext(providerDelegationId);
+    const correction = await harness.service.receiveProviderEvent({
+      sessionId: session.id,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-stale-channel-send-correction',
+        sequence: 2,
+        fragment: {
+          id: 'utterance-stale-channel-send-correction',
+          role: 'user',
+          kind: 'correction',
+          sequence: 2,
+          text: 'No Thursday.',
+          receivedAt: 50,
+        },
+      },
+    });
+    expect(correction.isOk()).toBe(true);
+    expect(harness.provider.sideband.commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: 'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+        }),
+      ]),
+    );
+
+    const channelRepository = new ChannelRepository(harness.db);
+    const registry = new ChannelRegistry(pino({ level: 'silent' }));
+    const registered = registerVoiceConnector({
+      channelRegistry: registry,
+      channelRepo: channelRepository,
+      threadRepository: harness.threads,
+      sessionService: harness.service,
+      logger: pino({ level: 'silent' }),
+    });
+    expect(registered.isOk()).toBe(true);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      channelRepository,
+      messageRepository: harness.messages,
+      bindingRepository: new BindingRepository(harness.db),
+      threadRepository: harness.threads,
+      logger: pino({ level: 'silent' }),
+    });
+
+    const beforeStaleSend = harness.provider.sideband.commands.length;
+    const staleSent = await handler.execute(
+      { channelId: 'browser-voice', content: 'Booked Friday via channel_send.' },
+      {
+        runId: 'voice-run-stale-channel-send',
+        threadId: session.threadId,
+        personaId: 'persona-1',
+        requestId: 'request-stale-channel-send',
+      },
+    );
+    expect(staleSent.status).toBe('success');
+    expect(harness.provider.sideband.commands.slice(beforeStaleSend)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'Booked Friday via channel_send.' }),
+      ]),
+    );
+
+    const beforeBackgroundSend = harness.provider.sideband.commands.length;
+    const backgroundSent = await handler.execute(
+      { channelId: 'browser-voice', content: 'Independent background update.' },
+      {
+        runId: 'background-run-1',
+        threadId: session.threadId,
+        personaId: 'persona-1',
+        requestId: 'request-background-1',
+      },
+    );
+    expect(backgroundSent.status).toBe('success');
+    expect(harness.provider.sideband.commands.slice(beforeBackgroundSend)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: 'Independent background update.',
+          delegationId: null,
+        }),
+      ]),
+    );
+
+    const rows = harness.messages.findByThread(session.threadId, 10, 0)._unsafeUnwrap();
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => JSON.parse(row.content))).toEqual(
+      expect.arrayContaining([
+        { body: 'Booked Friday via channel_send.' },
+        { body: 'Independent background update.' },
+      ]),
+    );
   });
 
   it('rejects unbounded notification text', async () => {

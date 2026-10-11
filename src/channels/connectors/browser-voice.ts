@@ -69,10 +69,12 @@ export class BrowserVoiceConnector implements ChannelConnector {
     }
 
     const requestedMessageId = output.messageId?.trim() || undefined;
+    const sourceRunId = output.sourceRunId?.trim() || undefined;
     const delivered = await this.options.sessionService.notifyThread({
       threadId: thread.value.id,
       text,
       ...(requestedMessageId ? { messageId: requestedMessageId } : {}),
+      ...(sourceRunId ? { sourceRunId } : {}),
     });
     if (delivered.isErr()) {
       this.options.logger?.warn(

@@ -253,6 +253,23 @@ export class VoiceRepository extends BaseRepository {
     }
   }
 
+  findDelegationByRunId(runId: string): Result<VoiceDelegationRow | null, DbError> {
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT vd.* FROM voice_delegations vd
+            LEFT JOIN runs r ON r.queue_item_id = vd.queue_item_id
+            WHERE vd.run_id = ? OR r.id = ?
+            ORDER BY vd.created_at DESC
+            LIMIT 1`,
+        )
+        .get(runId, runId) as VoiceDelegationRow | undefined;
+      return ok(row ?? null);
+    } catch (cause) {
+      return err(this.dbError('find voice delegation by run id', cause));
+    }
+  }
+
   findDelegationsBySession(sessionId: string): Result<VoiceDelegationRow[], DbError> {
     try {
       const rows = this.db

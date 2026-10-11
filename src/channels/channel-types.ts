@@ -51,6 +51,8 @@ export interface AgentOutput {
   body: string;
   /** Stable outbound identity allocated by the normal delivery pipeline. */
   messageId?: string;
+  /** Trusted originating agent run identity assigned by the host tool boundary. */
+  sourceRunId?: string;
   /** Optional file attachments. */
   attachments?: Attachment[];
   /** Optional interactive actions (buttons, approval prompts). */
