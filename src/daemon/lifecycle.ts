@@ -39,8 +39,12 @@ export function recoverFromCrash(queueRepo: QueueRepository, logger: pino.Logger
          WHERE status IN ('claimed', 'processing')
            AND NOT (
              type = 'collaboration'
-             AND json_valid(payload) = 1
-             AND json_extract(payload, '$.kind') = 'voice_backend'
+             AND COALESCE(
+               CASE WHEN json_valid(payload) = 1
+                 THEN json_extract(payload, '$.kind')
+               END,
+               ''
+             ) = 'voice_backend'
            )`,
       )
       .run(now);
