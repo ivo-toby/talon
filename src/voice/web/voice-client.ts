@@ -573,7 +573,10 @@ export class VoiceBrowserClient {
     }
     this.persistSession(status.id);
     const outputs = outputsFromDelegations(status.delegations);
-    const notifications = status.notifications ?? [];
+    const liveNotifications = this.stateValue.session?.id === status.id
+      ? this.stateValue.notifications
+      : [];
+    const notifications = mergeNotifications(status.notifications ?? [], liveNotifications);
     const pending =
       pendingOverride ??
       status.delegations.some((delegation) => PENDING_DELEGATION_STATUSES.has(delegation.status));
@@ -949,6 +952,15 @@ function outputsFromDelegations(
     for (const output of delegation.outputs) byId.set(output.id, output);
   }
   return [...byId.values()].sort((left, right) => left.createdAt - right.createdAt);
+}
+
+function mergeNotifications(
+  persisted: readonly VoiceNotificationStatusDto[],
+  live: readonly VoiceNotificationStatusDto[],
+): readonly VoiceNotificationStatusDto[] {
+  const byId = new Map<string, VoiceNotificationStatusDto>();
+  for (const notification of [...persisted, ...live]) byId.set(notification.id, notification);
+  return [...byId.values()].sort((left, right) => left.createdAt - right.createdAt).slice(-100);
 }
 
 function toRtcDescription(answer: VoiceTransportAnswer): RTCSessionDescriptionInit {

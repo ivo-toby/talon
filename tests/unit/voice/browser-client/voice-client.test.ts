@@ -318,6 +318,17 @@ describe('VoiceBrowserClient', () => {
     });
     expect(client.state.notifications).toEqual([makeNotification()]);
     expect(client.state.message).toBe('De geplande update is klaar.');
+
+    // A provider usage callback can publish a session snapshot before the
+    // channel.send caller persists the notification row. Keep the live event
+    // visible until a later snapshot includes it.
+    source.emit('session', {
+      kind: 'session',
+      version: 3,
+      session: makeStatus({ status: 'connected', notifications: [] }),
+      occurredAt: 260,
+    });
+    expect(client.state.notifications).toEqual([makeNotification()]);
   });
 
   it('waits for complete ICE gathering before sending the offer', async () => {
