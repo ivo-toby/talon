@@ -25,7 +25,8 @@ export type TranscriptContextReason =
   | 'missing_transcript'
   | 'truncated'
   | 'boundary_fragment'
-  | 'untimed_fragment';
+  | 'untimed_fragment'
+  | 'transcript_changed';
 
 export interface TranscriptContextResult {
   readonly snapshot: VoiceContextSnapshot | null;

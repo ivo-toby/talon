@@ -304,7 +304,9 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
         );
       }
       try {
-        return ok((await response.json()) as unknown);
+        const body = await response.text();
+        if (body.trim() === '') return ok(undefined);
+        return ok(JSON.parse(body) as unknown);
       } catch {
         return err(providerError('invalid_response', 'GPT-Live returned a non-JSON response'));
       }
@@ -347,6 +349,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private readonly seenEventIds = new Set<string>();
   private readonly seenEventOrder: string[] = [];
   private readonly delegationContexts = new Map<string, TranscriptContextResult>();
+  private readonly delegationOffsets = new Map<string, number>();
   private sequence = 0;
   private connected = false;
   private opened = false;
@@ -486,7 +489,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     this.closeTimer = setTimeout(() => {
       if (this.finalized) return;
       this.finalization = 'incomplete';
-      this.closeSocket();
+      this.closeSocket(true);
       this.resolveClose?.(
         err(providerError('finalization_incomplete', 'GPT-Live close was not finalized')),
       );
@@ -568,7 +571,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       type,
       event_id: eventId,
       content: command.content,
-      ...(command.delegationId ? { delegation_id: command.delegationId } : {}),
+      delegation_id: command.delegationId,
     };
     return ok({
       eventId,
@@ -699,6 +702,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     };
     const appended = this.transcript.append(fragment);
     if (appended.outcome === 'duplicate') return;
+    this.refreshDelegationContexts();
     this.publish({
       kind: 'transcript',
       eventId,
@@ -738,6 +742,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     };
     const context = this.transcript.captureAt(offsetMs);
     this.rememberDelegationContext(providerDelegationId, context);
+    this.delegationOffsets.set(providerDelegationId, offsetMs);
     this.publish({ kind: 'delegation', eventId, sequence, proposal });
   }
 
@@ -928,6 +933,20 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       const oldest = this.delegationContexts.keys().next().value;
       if (typeof oldest !== 'string') break;
       this.delegationContexts.delete(oldest);
+      this.delegationOffsets.delete(oldest);
+    }
+  }
+
+  private refreshDelegationContexts(): void {
+    for (const [delegationId, offsetMs] of this.delegationOffsets) {
+      const previous = this.delegationContexts.get(delegationId);
+      if (!previous) continue;
+      const refreshed = this.transcript.captureAt(offsetMs);
+      const changed = previous.snapshot?.digest !== refreshed.snapshot?.digest;
+      this.delegationContexts.set(
+        delegationId,
+        changed ? { ...refreshed, uncertain: true, reason: 'transcript_changed' } : refreshed,
+      );
     }
   }
 
@@ -936,9 +955,22 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     return this.sequence;
   }
 
-  private closeSocket(): void {
+  private closeSocket(force = false): void {
     this.connected = false;
     clearTimeout(this.closeTimer);
+    if (force) {
+      try {
+        if (this.socket.terminate) this.socket.terminate();
+        else this.socket.close(1000, 'closed');
+      } catch {
+        try {
+          this.socket.close(1000, 'closed');
+        } catch {
+          // The transport is already unavailable; the caller records the close failure.
+        }
+      }
+      return;
+    }
     if (this.socket.readyState !== 3) {
       try {
         this.socket.close(1000, 'closed');
@@ -974,6 +1006,7 @@ const ACK_EVENT_TYPES = new Set([
 const IGNORED_PROVIDER_EVENT_TYPES = new Set([
   'session.input_audio.muted',
   'session.input_audio.unmuted',
+  'session.input_audio.append',
   'session.rate_limits.updated',
   'response.created',
   'response.done',

@@ -8,6 +8,7 @@ import type { LiveVoiceSessionRequest } from '../../../../src/voice/voice-types.
 
 class FakeSocket {
   readyState = 0;
+  terminated = false;
   readonly sent: string[] = [];
   private readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>();
 
@@ -26,6 +27,12 @@ class FakeSocket {
   close(): void {
     this.readyState = 3;
     this.emit('close', 1000, Buffer.from('closed'));
+  }
+
+  terminate(): void {
+    this.terminated = true;
+    this.readyState = 3;
+    this.emit('close', 1000, Buffer.from('terminated'));
   }
 
   open(): void {
@@ -121,9 +128,15 @@ describe('OpenAiLiveVoiceProvider', () => {
       type: 'session.input_transcript.delta',
       event_id: 'transcript-1',
       item_id: 'utterance-1',
-      delta: 'check status',
+      delta: 'Book Friday',
       start_ms: 0,
       end_ms: 100,
+    });
+    socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'delegation-1',
+      delegation: { id: 'provider-delegation-1', target: 'client' },
+      offset_ms: 100,
     });
     socket.receive({
       type: 'session.input_transcript.delta',
@@ -137,15 +150,9 @@ describe('OpenAiLiveVoiceProvider', () => {
       type: 'session.input_transcript.correction',
       event_id: 'transcript-2',
       item_id: 'utterance-1',
-      text: 'check status seven three one',
+      text: 'No Thursday',
       start_ms: 0,
-      end_ms: 100,
-    });
-    socket.receive({
-      type: 'session.delegation.created',
-      event_id: 'delegation-1',
-      delegation: { id: 'provider-delegation-1', target: 'client' },
-      offset_ms: 100,
+      end_ms: 80,
     });
 
     const command = await sideband.send({
@@ -175,9 +182,12 @@ describe('OpenAiLiveVoiceProvider', () => {
     const transcriptEvents = events.filter((event) => event.kind === 'transcript');
     expect(transcriptEvents).toHaveLength(2);
     expect((transcriptEvents[1].fragment as { kind: string }).kind).toBe('correction');
-    expect(sideband.getContextForDelegation('provider-delegation-1')?.snapshot?.text).toContain(
-      'check status seven three one',
-    );
+    const delegationContext = sideband.getContextForDelegation('provider-delegation-1');
+    expect(delegationContext?.snapshot?.text).toContain('No Thursday');
+    expect(delegationContext?.snapshot?.version).toBe(2);
+    expect(delegationContext?.uncertain).toBe(true);
+    expect(delegationContext?.reason).toBe('transcript_changed');
+    expect(sideband.contextForDelegation('provider-delegation-1')).toBeNull();
     expect(events.some((event) => event.kind === 'delegation')).toBe(true);
     expect(events.some((event) => event.kind === 'provider_acknowledgement')).toBe(true);
     expect(
@@ -206,6 +216,18 @@ describe('OpenAiLiveVoiceProvider', () => {
     socket.open();
     expect((await opened).isOk()).toBe(true);
 
+    const status = await sideband.send({
+      kind: 'thinking',
+      delegationId: null,
+      content: 'Session status update.',
+      outputId: 'output-status',
+    });
+    expect(status.isOk()).toBe(true);
+    expect(JSON.parse(socket.sent[0] ?? '{}')).toMatchObject({
+      type: 'session.thinking.append',
+      delegation_id: null,
+    });
+
     socket.receive({
       type: 'session.delegation.created',
       event_id: 'delegation-missing-context',
@@ -217,12 +239,16 @@ describe('OpenAiLiveVoiceProvider', () => {
       event_id: 'ack-unknown',
       client_event_id: 'missing',
     });
+    socket.receive({ type: 'session.input_audio.append', audio: 'reflected-audio' });
 
     expect(sideband.contextForDelegation('provider-delegation-missing')).toBeNull();
     expect(events.some((event) => event.kind === 'delegation')).toBe(true);
     expect(
       events.some((event) => event.kind === 'error' && event.code === 'UNKNOWN_ACKNOWLEDGEMENT'),
     ).toBe(true);
+    expect(
+      events.some((event) => event.kind === 'error' && event.code === 'UNSUPPORTED_PROVIDER_EVENT'),
+    ).toBe(false);
   });
 
   it('rejects sideband attachment after the provider session deadline', async () => {
@@ -245,6 +271,28 @@ describe('OpenAiLiveVoiceProvider', () => {
     expect(result._unsafeUnwrapErr().reason).toBe('session_expired');
   });
 
+  it('accepts a successful empty hangup response', async () => {
+    let requestCount = 0;
+    const provider = new OpenAiLiveVoiceProvider({
+      apiKey: 'test-key',
+      fetch: vi.fn(async () => {
+        requestCount += 1;
+        if (requestCount === 1)
+          return response({
+            session: { id: 'provider-session-hangup' },
+            transport: { sdp: 'answer' },
+          });
+        return new Response(null, { status: 200 });
+      }),
+    });
+    const created = await provider.createSession(request({ sessionId: 'voice-session-hangup' }));
+
+    const result = await provider.closeSession(created._unsafeUnwrap().providerSessionId);
+
+    expect(result.isOk()).toBe(true);
+    expect(requestCount).toBe(2);
+  });
+
   it('returns an incomplete finalization error when close deadline expires', async () => {
     const socket = new FakeSocket();
     const sideband = new OpenAiLiveVoiceSideband(
@@ -263,12 +311,16 @@ describe('OpenAiLiveVoiceProvider', () => {
     socket.open();
     expect((await opened).isOk()).toBe(true);
 
-    const result = await sideband.close(true);
+    const closing = sideband.close(true);
+    await Promise.resolve();
+    socket.readyState = 2;
+    const result = await closing;
 
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().reason).toBe('finalization_incomplete');
     expect(sideband.finalizationStatus).toBe('incomplete');
     expect(JSON.parse(socket.sent[0] ?? '{}')).toMatchObject({ type: 'session.close' });
+    expect(socket.terminated).toBe(true);
   });
 
   it('confirms graceful close and retains final cumulative usage', async () => {
