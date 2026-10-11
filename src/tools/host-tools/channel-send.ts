@@ -186,9 +186,14 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
+    // Allocate the delivery identity before sending so connectors and the
+    // persisted outbound row refer to the same message.
+    const messageId = randomUUID();
+
     // Build the AgentOutput and call send
     const output = {
       body: content,
+      messageId,
       ...(replyTo ? { metadata: { replyTo } } : {}),
     };
 
@@ -266,6 +271,7 @@ export class ChannelSendHandler {
       content,
       personaId: context.personaId,
       runThreadId: context.threadId,
+      messageId,
     });
 
     return {
@@ -283,6 +289,7 @@ export class ChannelSendHandler {
     externalThreadId: string;
     content: string;
     personaId: string;
+    messageId: string;
     /**
      * The thread the current run is executing on. When the resolved
      * recipient thread differs from this (cross-thread delivery — the
@@ -322,7 +329,7 @@ export class ChannelSendHandler {
     const idempotencyRequestId =
       input.requestId === 'unknown' ? randomUUID() : input.requestId;
     const insertResult = this.deps.messageRepository.insert({
-      id: randomUUID(),
+      id: input.messageId,
       thread_id: targetThread.id,
       direction: 'outbound',
       content: JSON.stringify({ body: input.content }),
