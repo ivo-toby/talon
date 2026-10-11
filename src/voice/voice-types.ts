@@ -113,6 +113,8 @@ export interface VoiceUsageSummary {
 
 export interface VoiceSessionRecord {
   readonly id: VoiceSessionId;
+  /** Monotonic compare-and-set revision for recovery and concurrent updates. */
+  readonly revision: number;
   readonly owner: VoiceOwnerContext;
   readonly personaId: string;
   readonly threadId: string;
@@ -445,6 +447,50 @@ export interface VoiceDelegationRecord {
   readonly completedAt?: number;
 }
 
+export interface VoiceSessionUpdateRequest {
+  readonly sessionId: VoiceSessionId;
+  readonly expectedRevision: number;
+  /** Session identity and the admission policy are immutable after creation. */
+  readonly patch: Partial<
+    Pick<
+      VoiceSessionRecord,
+      | 'status'
+      | 'providerSessionId'
+      | 'startedAt'
+      | 'closingAt'
+      | 'closedAt'
+      | 'usage'
+      | 'finalization'
+      | 'activeDelegationId'
+    >
+  >;
+  readonly updatedAt: number;
+}
+
+export interface VoiceSessionReadProjection {
+  readonly session: VoiceSessionRecord;
+  readonly delegations: readonly VoiceDelegationRecord[];
+}
+
+export interface VoiceSessionListQuery {
+  readonly ownerId?: string;
+  readonly statuses?: readonly VoiceSessionStatus[];
+}
+
+export interface VoiceSessionRecoveryQuery {
+  readonly before: number;
+  readonly statuses: readonly Extract<
+    VoiceSessionStatus,
+    'created' | 'connecting' | 'connected' | 'closing'
+  >[];
+}
+
+export interface VoiceOutputLifecycleUpdate {
+  readonly delegationId: VoiceDelegationId;
+  readonly outputId: VoiceOutputId;
+  readonly lifecycle: VoiceOutputLifecycle;
+}
+
 export interface VoiceQueueAdmission {
   /** Allocated before the shared transaction so both rows can reference it. */
   readonly queueItemId: string;
@@ -542,15 +588,19 @@ export interface VoiceSkipRequest {
 
 export interface VoiceStoreOperations {
   findSession(id: VoiceSessionId): VoiceResult<VoiceSessionRecord | null>;
+  createSession(session: VoiceSessionRecord): VoiceResult<VoiceSessionRecord>;
+  updateSession(input: VoiceSessionUpdateRequest): VoiceResult<VoiceSessionRecord>;
+  readSession(id: VoiceSessionId): VoiceResult<VoiceSessionReadProjection | null>;
+  listSessions(input: VoiceSessionListQuery): VoiceResult<readonly VoiceSessionReadProjection[]>;
+  recoverSessions(
+    input: VoiceSessionRecoveryQuery,
+  ): VoiceResult<readonly VoiceSessionReadProjection[]>;
   findDelegation(id: VoiceDelegationId): VoiceResult<VoiceDelegationRecord | null>;
   claimDelegation(input: VoiceClaimRequest): VoiceResult<VoiceClaimResult>;
   supersedeDelegation(input: VoiceSupersedeRequest): VoiceResult<VoiceSupersedeResult>;
   skipDelegation(input: VoiceSkipRequest): VoiceResult<VoiceDelegationRecord>;
   recordBackendResult(result: VoiceBackendResult): VoiceResult<VoiceDelegationRecord>;
-  recordOutputLifecycle(
-    delegationId: VoiceDelegationId,
-    output: VoiceOutputLifecycle,
-  ): VoiceResult<VoiceDelegationRecord>;
+  recordOutputLifecycle(input: VoiceOutputLifecycleUpdate): VoiceResult<VoiceOutputStatusDto>;
 }
 
 export interface VoiceStoreTransaction extends VoiceStoreOperations {
