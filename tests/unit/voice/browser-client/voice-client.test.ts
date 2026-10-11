@@ -10,6 +10,7 @@ import type {
 import { VoiceBrowserClient as BrowserClient } from '../../../../src/voice/web/voice-client.js';
 import type {
   VoiceDelegationStatusDto,
+  VoiceNotificationStatusDto,
   VoiceOutputStatusDto,
   VoiceSessionStatusDto,
 } from '../../../../src/voice/voice-types.js';
@@ -164,6 +165,17 @@ function makeOutput(overrides: Partial<VoiceOutputStatusDto> = {}): VoiceOutputS
   };
 }
 
+function makeNotification(
+  overrides: Partial<VoiceNotificationStatusDto> = {},
+): VoiceNotificationStatusDto {
+  return {
+    id: 'notification-1',
+    text: 'De geplande update is klaar.',
+    createdAt: 120,
+    ...overrides,
+  };
+}
+
 function makeDelegation(
   overrides: Partial<VoiceDelegationStatusDto> = {},
 ): VoiceDelegationStatusDto {
@@ -297,6 +309,26 @@ describe('VoiceBrowserClient', () => {
     });
     expect(client.state.outputs[0]?.text).toBe('De taak is afgerond.');
     expect(client.state.pendingDelegation).toBe(true);
+
+    source.emit('notification', {
+      kind: 'notification',
+      version: 2,
+      notification: makeNotification(),
+      occurredAt: 250,
+    });
+    expect(client.state.notifications).toEqual([makeNotification()]);
+    expect(client.state.message).toBe('De geplande update is klaar.');
+
+    // A provider usage callback can publish a session snapshot before the
+    // channel.send caller persists the notification row. Keep the live event
+    // visible until a later snapshot includes it.
+    source.emit('session', {
+      kind: 'session',
+      version: 3,
+      session: makeStatus({ status: 'connected', notifications: [] }),
+      occurredAt: 260,
+    });
+    expect(client.state.notifications).toEqual([makeNotification()]);
   });
 
   it('waits for complete ICE gathering before sending the offer', async () => {
@@ -654,6 +686,7 @@ describe('VoiceBrowserClient', () => {
       id: 'session-1',
       status: 'closed',
       delegations: [makeDelegation({ status: 'completed', execution: 'succeeded' })],
+      notifications: [makeNotification()],
     });
     const requests: Array<{ input: string; init?: RequestInit }> = [];
     const source = new FakeEventSource();
@@ -674,6 +707,7 @@ describe('VoiceBrowserClient', () => {
     expect(client.state.authenticated).toBe(true);
     expect(client.state.retainedSessionId).toBe('session-1');
     expect(client.state.outputs[0]?.text).toBe('De taak is afgerond.');
+    expect(client.state.notifications).toEqual([makeNotification()]);
     expect(client.state.phase).toBe('closed');
     expect(client.state.message).toBe('Gesprek beëindigd.');
   });

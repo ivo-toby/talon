@@ -4,6 +4,7 @@ import type {
   VoiceDelegationStatusDto,
   VoiceErrorHttpResponse,
   VoiceGetSessionHttpResponse,
+  VoiceNotificationStatusDto,
   VoiceOutputStatusDto,
   VoiceSessionStatusDto,
   VoiceStatusEventDto,
@@ -33,6 +34,7 @@ export interface VoiceBrowserState {
   readonly retainedSessionId: string | null;
   readonly session: VoiceSessionStatusDto | null;
   readonly delegations: readonly VoiceDelegationStatusDto[];
+  readonly notifications: readonly VoiceNotificationStatusDto[];
   readonly outputs: readonly VoiceOutputStatusDto[];
   readonly usage: VoiceUsageSummary;
   readonly pendingDelegation: boolean;
@@ -121,6 +123,7 @@ const INITIAL_STATE: VoiceBrowserState = {
   retainedSessionId: null,
   session: null,
   delegations: [],
+  notifications: [],
   outputs: [],
   usage: INITIAL_USAGE,
   pendingDelegation: false,
@@ -221,6 +224,7 @@ export class VoiceBrowserClient {
       retainedSessionId: null,
       session: null,
       delegations: [],
+      notifications: [],
       outputs: [],
       usage: INITIAL_USAGE,
       pendingDelegation: false,
@@ -515,6 +519,7 @@ export class VoiceBrowserClient {
     this.eventSource = source;
     source.addEventListener('session', (event) => this.handleStatusEvent(event, source));
     source.addEventListener('delegation', (event) => this.handleStatusEvent(event, source));
+    source.addEventListener('notification', (event) => this.handleStatusEvent(event, source));
     source.addEventListener('error', (event) => {
       const data = eventData(event);
       if (data !== null) {
@@ -550,6 +555,10 @@ export class VoiceBrowserClient {
       this.applySessionStatus(parsed.session);
       return;
     }
+    if (parsed.kind === 'notification') {
+      this.applyNotification(parsed.notification);
+      return;
+    }
     this.applyDelegationStatus(parsed.delegation);
   }
 
@@ -564,6 +573,10 @@ export class VoiceBrowserClient {
     }
     this.persistSession(status.id);
     const outputs = outputsFromDelegations(status.delegations);
+    const liveNotifications = this.stateValue.session?.id === status.id
+      ? this.stateValue.notifications
+      : [];
+    const notifications = mergeNotifications(status.notifications ?? [], liveNotifications);
     const pending =
       pendingOverride ??
       status.delegations.some((delegation) => PENDING_DELEGATION_STATUSES.has(delegation.status));
@@ -579,6 +592,7 @@ export class VoiceBrowserClient {
       retainedSessionId: this.retainedSessionId,
       session: status,
       delegations: status.delegations,
+      notifications,
       outputs,
       usage: status.usage,
       pendingDelegation: pending,
@@ -588,6 +602,14 @@ export class VoiceBrowserClient {
       this.releaseAudioTransport();
       if (!pending) this.closeEventStream();
     }
+  }
+
+  private applyNotification(notification: VoiceNotificationStatusDto): void {
+    const current = this.stateValue.notifications.filter((item) => item.id !== notification.id);
+    const notifications = [...current, notification]
+      .sort((left, right) => left.createdAt - right.createdAt)
+      .slice(-100);
+    this.setState({ notifications, message: notification.text, errorMessage: null });
   }
 
   private applyDelegationStatus(delegation: VoiceDelegationStatusDto): void {
@@ -734,6 +756,7 @@ export class VoiceBrowserClient {
       retainedSessionId: null,
       session: null,
       delegations: [],
+      notifications: [],
       outputs: [],
       usage: INITIAL_USAGE,
       pendingDelegation: false,
@@ -931,6 +954,15 @@ function outputsFromDelegations(
   return [...byId.values()].sort((left, right) => left.createdAt - right.createdAt);
 }
 
+function mergeNotifications(
+  persisted: readonly VoiceNotificationStatusDto[],
+  live: readonly VoiceNotificationStatusDto[],
+): readonly VoiceNotificationStatusDto[] {
+  const byId = new Map<string, VoiceNotificationStatusDto>();
+  for (const notification of [...persisted, ...live]) byId.set(notification.id, notification);
+  return [...byId.values()].sort((left, right) => left.createdAt - right.createdAt).slice(-100);
+}
+
 function toRtcDescription(answer: VoiceTransportAnswer): RTCSessionDescriptionInit {
   if (answer.type !== 'webrtc' || answer.sdp.trim().length === 0) {
     throw new VoiceBrowserError('Talon gaf geen geldige audioverbinding terug.', 'INVALID_SDP');
@@ -984,7 +1016,15 @@ function isVoiceStatusEvent(value: unknown): value is VoiceStatusEventDto {
     return typeof value.message === 'string' && typeof value.code === 'string';
   }
   if (value.kind === 'session') {
-    return isRecord(value.session) && Array.isArray(value.session.delegations) && isRecord(value.session.usage);
+    return (
+      isRecord(value.session) &&
+      Array.isArray(value.session.delegations) &&
+      (value.session.notifications === undefined || Array.isArray(value.session.notifications)) &&
+      isRecord(value.session.usage)
+    );
+  }
+  if (value.kind === 'notification') {
+    return isRecord(value.notification) && typeof value.notification.text === 'string';
   }
   return value.kind === 'delegation' && isRecord(value.delegation) && Array.isArray(value.delegation.outputs);
 }

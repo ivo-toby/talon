@@ -243,6 +243,12 @@ export class DurableVoiceStore implements VoiceStoreContract {
     return result.value ? this.delegationFromRow(result.value) : ok(null);
   }
 
+  findDelegationByRunId(runId: string): VoiceResult<VoiceDelegationRecord | null> {
+    const result = this.repository.findDelegationByRunId(runId);
+    if (result.isErr()) return err(result.error);
+    return result.value ? this.delegationFromRow(result.value) : ok(null);
+  }
+
   claimDelegation(input: VoiceClaimRequest): VoiceResult<VoiceClaimResult> {
     return this.runInTransaction((tx) => tx.claimDelegation(input));
   }
@@ -595,6 +601,7 @@ export class DurableVoiceStore implements VoiceStoreContract {
       listSessions: (input) => invoke(() => this.listSessions(input)),
       recoverSessions: (input) => invoke(() => this.recoverSessions(input)),
       findDelegation: (id) => invoke(() => this.findDelegation(id)),
+      findDelegationByRunId: (runId) => invoke(() => this.findDelegationByRunId(runId)),
       claimDelegation: (input) => invoke(() => this.claimDelegationInTransaction(input)),
       supersedeDelegation: (input) => invoke(() => this.supersedeDelegationInTransaction(input)),
       skipDelegation: (input) => invoke(() => this.skipDelegationInTransaction(input)),

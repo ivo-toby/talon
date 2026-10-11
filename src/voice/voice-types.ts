@@ -626,6 +626,8 @@ export interface VoiceStoreOperations {
     input: VoiceSessionRecoveryQuery,
   ): VoiceResult<readonly VoiceSessionReadProjection[]>;
   findDelegation(id: VoiceDelegationId): VoiceResult<VoiceDelegationRecord | null>;
+  /** Finds the voice delegation whose queue work produced an agent run. */
+  findDelegationByRunId(runId: string): VoiceResult<VoiceDelegationRecord | null>;
   claimDelegation(input: VoiceClaimRequest): VoiceResult<VoiceClaimResult>;
   supersedeDelegation(input: VoiceSupersedeRequest): VoiceResult<VoiceSupersedeResult>;
   skipDelegation(input: VoiceSkipRequest): VoiceResult<VoiceDelegationRecord>;
@@ -681,6 +683,26 @@ export interface VoiceSessionCloseResult {
   readonly pendingDelegation: boolean;
 }
 
+/** A bounded text notification delivered to a voice conversation thread. */
+export interface VoiceNotificationRequest {
+  /** Durable voice thread that owns the notification. */
+  readonly threadId: string;
+  /** Markdown text retained by the normal message store and optionally spoken. */
+  readonly text: string;
+  /** Existing outbound message identity, when allocated by channel.send. */
+  readonly messageId?: string;
+  /** Trusted originating agent run identity, when delivered by channel.send. */
+  readonly sourceRunId?: string;
+}
+
+export interface VoiceNotificationResult {
+  readonly sessionId: VoiceSessionId;
+  /** Stable notification identity shared with the normal outbound row. */
+  readonly notificationId: string;
+  /** Whether the existing live provider session accepted speech delivery. */
+  readonly speechRequested: boolean;
+}
+
 export interface VoiceProviderEventEnvelope {
   readonly sessionId: VoiceSessionId;
   readonly providerSessionId: LiveProviderSessionId;
@@ -707,6 +729,8 @@ export interface VoiceSessionService {
     sessionId: VoiceSessionId,
     input: VoiceSessionCloseRequest,
   ): VoiceAsyncResult<VoiceSessionCloseResult>;
+  /** Deliver a normal channel notification without creating a delegation. */
+  notifyThread(input: VoiceNotificationRequest): VoiceAsyncResult<VoiceNotificationResult>;
   receiveProviderEvent(input: VoiceProviderEventEnvelope): VoiceAsyncResult<void>;
   reportPlayback(
     owner: VoiceOwnerContext,
@@ -754,9 +778,17 @@ export interface VoiceSessionStatusDto {
   readonly closedAt?: number;
   /** Bounded recent history so completed results remain queryable after hangup. */
   readonly delegations: readonly VoiceDelegationStatusDto[];
+  /** Bounded outbound text delivered through the voice channel. */
+  readonly notifications?: readonly VoiceNotificationStatusDto[];
   readonly activeDelegation?: VoiceDelegationStatusDto;
   readonly usage: VoiceUsageSummary;
   readonly finalization: VoiceFinalizationState;
+}
+
+export interface VoiceNotificationStatusDto {
+  readonly id: string;
+  readonly text: string;
+  readonly createdAt: number;
 }
 
 export type VoiceStatusEventDto =
@@ -777,6 +809,12 @@ export type VoiceStatusEventDto =
       readonly version: number;
       readonly code: string;
       readonly message: string;
+      readonly occurredAt: number;
+    }
+  | {
+      readonly kind: 'notification';
+      readonly version: number;
+      readonly notification: VoiceNotificationStatusDto;
       readonly occurredAt: number;
     };
 

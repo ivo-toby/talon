@@ -11,6 +11,7 @@ import type pino from 'pino';
 import { v4 as uuidv4 } from 'uuid';
 import { err, ok } from '../core/types/result.js';
 import { PolicyError, TalonError } from '../core/errors/index.js';
+import type { MessageRepository } from '../core/database/repositories/message-repository.js';
 import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
 import {
   VoiceAuth,
@@ -32,6 +33,9 @@ import type {
   VoiceContextSnapshot,
   VoiceDelegationRecord,
   VoiceEventHandler,
+  VoiceNotificationRequest,
+  VoiceNotificationResult,
+  VoiceNotificationStatusDto,
   VoiceOwnerContext,
   VoiceOutputLifecycle,
   VoicePlaybackReport,
@@ -62,6 +66,8 @@ import type { VoiceStore } from './voice-types.js';
 const DEFAULT_SESSION_LIFETIME_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_CONTEXT_CHARS = 32_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
+const MAX_VOICE_NOTIFICATION_CHARS = 16_000;
+const MAX_RETAINED_VOICE_NOTIFICATIONS = 100;
 
 export interface VoiceSessionServiceOptions {
   readonly store: VoiceStore;
@@ -70,6 +76,8 @@ export interface VoiceSessionServiceOptions {
   readonly backendBridge: VoiceBackendBridge;
   readonly policy: VoicePolicyEvaluator;
   readonly threadRepository?: ThreadRepository;
+  /** Existing message history is the durable notification projection. */
+  readonly messageRepository?: Pick<MessageRepository, 'findLatestByThread'>;
   readonly channelId?: string;
   readonly personaId: string;
   readonly providerName?: string;
@@ -102,6 +110,7 @@ interface SessionRuntime {
   unsubscribeTransport: VoiceUnsubscribe;
   deadlineTimer?: ReturnType<typeof setTimeout>;
   eventChain: Promise<void>;
+  closing: boolean;
   readonly listeners: Set<VoiceEventHandler<VoiceStatusEventDto>>;
   readonly resultUnsubscribes: Map<string, VoiceUnsubscribe>;
   readonly handledOutputIds: Set<string>;
@@ -430,6 +439,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       unsubscribeProvider: () => undefined,
       unsubscribeTransport: () => undefined,
       eventChain: Promise.resolve(),
+      closing: false,
       listeners: new Set(),
       resultUnsubscribes: new Map(),
       handledOutputIds: new Set(),
@@ -491,7 +501,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (projection.value.session.owner.ownerId !== owner.ownerId) return ok(null);
     const ownerError = this.ensureOwnerActive(owner);
     if (ownerError) return err(ownerError);
-    return ok(statusDto(projection.value));
+    return this.statusDto(projection.value);
   }
 
   async closeSession(
@@ -523,6 +533,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const runtime = this.runtimes.get(sessionId);
     if (runtime?.deadlineTimer) clearTimeout(runtime.deadlineTimer);
     if (runtime) {
+      runtime.closing = true;
       runtime.unsubscribeTransport();
       if (!pendingDelegation) {
         for (const unsubscribe of runtime.resultUnsubscribes.values()) unsubscribe();
@@ -562,6 +573,120 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     this.publishSession(terminal.value);
     if (!pendingDelegation) this.runtimes.delete(sessionId);
     return ok({ session: terminal.value, pendingDelegation });
+  }
+
+  async notifyThread(input: VoiceNotificationRequest): VoiceAsyncResult<VoiceNotificationResult> {
+    const text = input.text.trim();
+    if (text.length === 0) return err(new PolicyError('Voice notification text is empty'));
+    if (text.length > MAX_VOICE_NOTIFICATION_CHARS) {
+      return err(new PolicyError('Voice notification text exceeds the bounded delivery limit'));
+    }
+    const notificationId = input.messageId?.trim() || randomUUID();
+
+    const sessions = this.options.store.listSessions({});
+    if (sessions.isErr()) return err(sessions.error);
+    const projection = sessions.value.find((candidate) => candidate.session.threadId === input.threadId);
+    if (!projection) return err(new PolicyError('Voice thread was not found'));
+    const session = projection.session;
+    const sourceRunId = input.sourceRunId?.trim() || undefined;
+    let sourceDelegation: VoiceDelegationRecord | undefined;
+    let sourceLookupFailed = false;
+    if (sourceRunId) {
+      const source = this.options.store.findDelegationByRunId(sourceRunId);
+      if (source.isErr()) {
+        sourceLookupFailed = true;
+        this.options.logger?.warn(
+          { sourceRunId, threadId: input.threadId, cause: source.error },
+          'voice notification provenance lookup failed; suppressing speech',
+        );
+      } else {
+        sourceDelegation = source.value ?? undefined;
+      }
+    }
+    const runtime = this.runtimes.get(session.id);
+    if (
+      !runtime ||
+      session.status !== 'connected' ||
+      session.deadlineAt <= this.now()
+    ) {
+      return ok({ sessionId: session.id, notificationId, speechRequested: false });
+    }
+
+    let outcome: VoiceResult<VoiceNotificationResult> = ok({
+      sessionId: session.id,
+      notificationId,
+      speechRequested: false,
+    });
+    const run = runtime.eventChain
+      .catch(() => undefined)
+      .then(async () => {
+        const latest = this.options.store.findSession(session.id);
+        if (latest.isErr()) {
+          outcome = err(latest.error);
+          return;
+        }
+        if (
+          !latest.value ||
+          latest.value.threadId !== input.threadId ||
+          latest.value.status !== 'connected' ||
+          latest.value.deadlineAt <= this.now() ||
+          runtime.closing ||
+          this.runtimes.get(session.id) !== runtime
+        ) {
+          outcome = ok({ sessionId: session.id, notificationId, speechRequested: false });
+          return;
+        }
+        const activeOwnerError = this.ensureOwnerActive(latest.value.owner);
+        const sourceBelongsToCurrentSession =
+          sourceDelegation !== undefined &&
+          sourceDelegation.sessionId === session.id &&
+          sourceDelegation.request.threadId === input.threadId;
+        const suppressSpeech =
+          sourceLookupFailed ||
+          (sourceDelegation !== undefined &&
+            (!sourceBelongsToCurrentSession ||
+              runtime.staleDelegationIds.has(sourceDelegation.id) ||
+              this.delegationContextInvalidated(runtime, sourceDelegation)));
+        const output: VoiceNotificationStatusDto = {
+          id: notificationId,
+          text,
+          createdAt: this.now(),
+        };
+        let speechRequested = false;
+        if (!activeOwnerError && !suppressSpeech) {
+          try {
+            const sent = await runtime.sideband.send({
+              kind: 'instruction',
+              delegationId: null,
+              content: text,
+              outputId: output.id,
+            });
+            if (sent.isOk()) {
+              speechRequested = true;
+            } else {
+              this.options.logger?.warn(
+                { sessionId: session.id, cause: sent.error },
+                'voice notification speech delivery failed; retaining text notification',
+              );
+            }
+          } catch (cause) {
+            this.options.logger?.warn(
+              { sessionId: session.id, cause },
+              'voice notification speech delivery threw; retaining text notification',
+            );
+          }
+        }
+        outcome = ok({ sessionId: session.id, notificationId, speechRequested });
+        this.publish(runtime, {
+          kind: 'notification',
+          version: latest.value.revision,
+          notification: output,
+          occurredAt: this.now(),
+        });
+      });
+    runtime.eventChain = run;
+    await run;
+    return outcome;
   }
 
   receiveProviderEvent(input: {
@@ -628,11 +753,13 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (!projection.value || projection.value.session.owner.ownerId !== owner.ownerId) {
       return err(new PolicyError('Voice session owner does not match'));
     }
+    const status = this.statusDto(projection.value);
+    if (status.isErr()) return err(status.error);
     const runtime = this.runtimes.get(sessionId);
     const event: VoiceStatusEventDto = {
       kind: 'session',
       version: projection.value.session.revision,
-      session: statusDto(projection.value),
+      session: status.value,
       occurredAt: this.now(),
     };
     if (!runtime) {
@@ -1430,13 +1557,50 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (!runtime) return;
     const projection = this.options.store.readSession(session.id);
     if (projection.isErr() || !projection.value) return;
+    const status = this.statusDto(projection.value);
+    if (status.isErr()) return;
     const event: VoiceStatusEventDto = {
       kind: 'session',
       version: session.revision,
-      session: statusDto(projection.value),
+      session: status.value,
       occurredAt: this.now(),
     };
     this.publish(runtime, event);
+  }
+
+  private statusDto(
+    projection: VoiceSessionReadProjection,
+  ): VoiceResult<VoiceSessionStatusDto> {
+    const notifications = this.readNotifications(projection.session.threadId);
+    if (notifications.isErr()) return err(notifications.error);
+    return ok(statusDto(projection, notifications.value));
+  }
+
+  private readNotifications(threadId: string): VoiceResult<readonly VoiceNotificationStatusDto[]> {
+    if (!this.options.messageRepository) return ok([]);
+    const rows = this.options.messageRepository.findLatestByThread(
+      threadId,
+      MAX_RETAINED_VOICE_NOTIFICATIONS,
+    );
+    if (rows.isErr()) return err(rows.error);
+    const notifications: VoiceNotificationStatusDto[] = [];
+    for (const row of rows.value) {
+      if (row.direction !== 'outbound') continue;
+      try {
+        const parsed = JSON.parse(row.content) as unknown;
+        if (!isRecord(parsed) || typeof parsed.body !== 'string') continue;
+        const text = parsed.body.trim();
+        if (!text) continue;
+        notifications.push({
+          id: row.id,
+          text: text.slice(0, MAX_VOICE_NOTIFICATION_CHARS),
+          createdAt: row.created_at,
+        });
+      } catch {
+        // Malformed message rows are not voice notifications.
+      }
+    }
+    return ok(notifications);
   }
 
   private publishDelegation(sessionId: string, delegationId: string): void {
@@ -1534,7 +1698,10 @@ function emptyUsage(): VoiceSessionRecord['usage'] {
   };
 }
 
-function statusDto(projection: VoiceSessionReadProjection): VoiceSessionStatusDto {
+function statusDto(
+  projection: VoiceSessionReadProjection,
+  notifications: readonly VoiceNotificationStatusDto[] = [],
+): VoiceSessionStatusDto {
   const delegations = projection.delegations.map((delegation) => delegationDto(delegation, projection));
   return {
     id: projection.session.id,
@@ -1548,9 +1715,14 @@ function statusDto(projection: VoiceSessionReadProjection): VoiceSessionStatusDt
     ...(projection.session.activeDelegationId
       ? { activeDelegation: delegations.find((delegation) => delegation.id === projection.session.activeDelegationId) }
       : {}),
+    ...(notifications.length > 0 ? { notifications } : {}),
     usage: projection.session.usage,
     finalization: projection.session.finalization,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 function delegationDto(
