@@ -66,12 +66,6 @@ export interface VoiceBackendBridgeOptions {
   readonly logger?: pino.Logger;
 }
 
-const SUPPORTED_RESTRICTED_PROVIDER_TYPES = new Set([
-  'claude-code',
-  'gemini-cli',
-  'openai-compatible',
-]);
-
 const INITIAL_OUTPUT_LIFECYCLE: VoiceOutputLifecycle = {
   execution: 'not_started',
   delivery: 'not_requested',
@@ -362,7 +356,6 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
       request.policy.ownerId.length === 0 ||
       request.policy.personaId !== request.personaId ||
       request.policy.requireApproval ||
-      request.policy.nativeToolNames.length > 0 ||
       request.policy.allowedMcpServerNames.some((name) => name.startsWith('__talond_'))
     ) {
       return new PolicyError('Voice admission contains an unsupported or approval-gated policy');
@@ -404,21 +397,15 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
       return new PolicyError('Voice execution provider or model does not match admission');
     }
     if (
-      !SUPPORTED_RESTRICTED_PROVIDER_TYPES.has(input.providerType) ||
-      !input.nativeToolsDisabled ||
-      input.nativeToolNames.length > 0 ||
-      input.requireApproval ||
-      policy.requireApproval ||
-      policy.nativeToolNames.length > 0
-    ) {
-      return new PolicyError('Voice provider native tools or approval posture is not proven safe');
-    }
-    if (
       !sameSet(input.capabilityNames, policy.capabilityNames) ||
       !sameSet(input.allowedToolNames, policy.allowedToolNames) ||
-      !sameSet(input.allowedMcpServerNames, policy.allowedMcpServerNames)
+      !sameSet(input.allowedMcpServerNames, policy.allowedMcpServerNames) ||
+      !sameSet(input.nativeToolNames, policy.nativeToolNames) ||
+      input.requireApproval !== policy.requireApproval
     ) {
-      return new PolicyError('Voice execution capabilities or MCP access changed after admission');
+      return new PolicyError(
+        'Voice execution capabilities, native tools, or MCP access changed after admission',
+      );
     }
     return undefined;
   }

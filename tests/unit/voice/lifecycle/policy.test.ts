@@ -37,15 +37,16 @@ function session(policy: VoicePolicySnapshot): VoiceSessionRecord {
 }
 
 describe('VoicePolicy', () => {
-  it('denies unsupported provider, approval, native tools, and unproven MCP at capture', () => {
+  it('accepts configured providers and native posture while denying unproven access', () => {
     const policy = new VoicePolicy({
       providerTypes: new Map([['agent-provider', 'openai-compatible'], ['claude', 'claude-code']]),
       provenMcpServers: new Set(['proven']),
     });
-    expect(policy.capture({ ...baseInput, providerName: 'claude' }).isErr()).toBe(true);
-    expect(policy.capture({ ...baseInput, requireApproval: true }).isErr()).toBe(true);
-    expect(policy.capture({ ...baseInput, nativeToolNames: ['WebSearch'] }).isErr()).toBe(true);
+    expect(policy.capture({ ...baseInput, providerName: 'claude' }).isOk()).toBe(true);
+    expect(policy.capture({ ...baseInput, requireApproval: true }).isOk()).toBe(true);
+    expect(policy.capture({ ...baseInput, nativeToolNames: ['WebSearch'] }).isOk()).toBe(true);
     expect(policy.capture({ ...baseInput, allowedMcpServerNames: ['unknown'] }).isErr()).toBe(true);
+    expect(policy.capture({ ...baseInput, providerName: 'missing' }).isErr()).toBe(true);
   });
 
   it('rejects policy drift and terminal sessions at the execution boundary', () => {
