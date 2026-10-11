@@ -596,9 +596,6 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       return ok({ sessionId: session.id, speechRequested: false });
     }
 
-    const ownerError = this.ensureOwnerActive(session.owner);
-    if (ownerError) return err(ownerError);
-
     let outcome: VoiceResult<VoiceNotificationResult> = ok({
       sessionId: session.id,
       speechRequested: false,
@@ -623,26 +620,36 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
           return;
         }
         const activeOwnerError = this.ensureOwnerActive(latest.value.owner);
-        if (activeOwnerError) {
-          outcome = err(activeOwnerError);
-          return;
-        }
         const output: VoiceNotificationStatusDto = {
           id: randomUUID(),
           text,
           createdAt: this.now(),
         };
-        const sent = await runtime.sideband.send({
-          kind: 'instruction',
-          delegationId: null,
-          content: text,
-          outputId: output.id,
-        });
-        if (sent.isErr()) {
-          outcome = err(sent.error);
-          return;
+        let speechRequested = false;
+        if (!activeOwnerError) {
+          try {
+            const sent = await runtime.sideband.send({
+              kind: 'instruction',
+              delegationId: null,
+              content: text,
+              outputId: output.id,
+            });
+            if (sent.isOk()) {
+              speechRequested = true;
+            } else {
+              this.options.logger?.warn(
+                { sessionId: session.id, cause: sent.error },
+                'voice notification speech delivery failed; retaining text notification',
+              );
+            }
+          } catch (cause) {
+            this.options.logger?.warn(
+              { sessionId: session.id, cause },
+              'voice notification speech delivery threw; retaining text notification',
+            );
+          }
         }
-        outcome = ok({ sessionId: session.id, speechRequested: true });
+        outcome = ok({ sessionId: session.id, speechRequested });
         this.publish(runtime, {
           kind: 'notification',
           version: latest.value.revision,

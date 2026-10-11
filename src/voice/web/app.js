@@ -23,6 +23,9 @@ const audioNotice = query('[data-role="audio-notice"]');
 const resultsList = query('[data-role="results"]');
 const emptyTasks = query('[data-role="empty-tasks"]');
 const taskCount = query('[data-role="task-count"]');
+const notificationsList = query('[data-role="notifications"]');
+const emptyNotifications = query('[data-role="empty-notifications"]');
+const notificationCount = query('[data-role="notification-count"]');
 const pendingBanner = query('[data-role="pending-banner"]');
 const voiceCost = query('[data-role="voice-cost"]');
 const voiceDuration = query('[data-role="voice-duration"]');
@@ -96,6 +99,7 @@ function render(state) {
   text(startLabel, phase.startLabel);
   text(muteLabel, state.muted ? 'Geluid aan' : 'Dempen');
   text(taskCount, String(state.outputs.length));
+  text(notificationCount, String(state.notifications.length));
   text(sessionClock, state.session ? sessionLabel(state.session.status) : 'Privé');
   connectionPill?.classList.toggle('is-live', state.phase === 'connected');
   connectionPill?.classList.toggle('is-warn', state.phase === 'network_lost' || state.phase === 'failed');
@@ -114,6 +118,7 @@ function render(state) {
   else hide(callError);
   renderUsage(state);
   renderResults(state.outputs);
+  renderNotifications(state.notifications);
 }
 
 function renderUsage(state) {
@@ -147,6 +152,20 @@ function renderResults(outputs) {
     playback.textContent = `Uitspraak: ${playbackLabel(output.lifecycle.playback)}`;
     item.append(top, body, playback);
     resultsList.append(item);
+  }
+}
+
+function renderNotifications(notifications) {
+  if (!notificationsList) return;
+  notificationsList.replaceChildren();
+  setHidden(emptyNotifications, notifications.length > 0);
+  for (const notification of [...notifications].reverse()) {
+    const item = document.createElement('li');
+    item.className = 'notification-item';
+    const body = document.createElement('p');
+    body.textContent = notification.text;
+    item.append(body);
+    notificationsList.append(item);
   }
 }
 

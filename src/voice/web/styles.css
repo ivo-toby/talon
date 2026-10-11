@@ -161,6 +161,9 @@ h2 { margin: 6px 0 0; font-size: 1.05rem; font-weight: 680; letter-spacing: -0.0
 .result-list { display: grid; gap: 9px; margin: 23px 0 0; padding: 0; list-style: none; }
 .result-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: rgba(14, 24, 42, 0.4); }
 .result-item p { margin: 10px 0 8px; color: var(--ink); font-size: 0.76rem; line-height: 1.5; overflow-wrap: anywhere; }
+.notification-list { display: grid; gap: 9px; margin: 23px 0 0; padding: 0; list-style: none; }
+.notification-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: rgba(14, 24, 42, 0.4); }
+.notification-item p { margin: 0; color: var(--ink); font-size: 0.76rem; line-height: 1.5; overflow-wrap: anywhere; }
 .result-kind, .result-status, .result-playback { font-size: 0.64rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
 .result-kind { color: var(--muted); }
 .result-status { color: var(--accent); }

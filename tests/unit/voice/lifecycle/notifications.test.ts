@@ -1,11 +1,18 @@
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
+import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ok } from '../../../../src/core/types/result.js';
+import { err, ok } from '../../../../src/core/types/result.js';
+import { PolicyError } from '../../../../src/core/errors/error-types.js';
+import { ChannelRepository } from '../../../../src/core/database/repositories/channel-repository.js';
+import { BindingRepository } from '../../../../src/core/database/repositories/binding-repository.js';
 import { runMigrations } from '../../../../src/core/database/migrations/runner.js';
 import { MessageRepository } from '../../../../src/core/database/repositories/message-repository.js';
 import { QueueRepository } from '../../../../src/core/database/repositories/queue-repository.js';
 import { ThreadRepository } from '../../../../src/core/database/repositories/thread-repository.js';
+import { ChannelRegistry } from '../../../../src/channels/channel-registry.js';
+import { registerVoiceConnector } from '../../../../src/channels/channel-setup.js';
+import { ChannelSendHandler } from '../../../../src/tools/host-tools/channel-send.js';
 import { DurableVoiceBackendBridge } from '../../../../src/voice/voice-backend-bridge.js';
 import { VoicePolicy } from '../../../../src/voice/voice-policy.js';
 import {
@@ -25,8 +32,10 @@ import type {
 class FakeSideband implements LiveVoiceSideband {
   readonly providerSessionId = 'provider-session-1';
   readonly commands: LiveVoiceCommand[] = [];
+  sendError = false;
 
   send(command: LiveVoiceCommand) {
+    if (this.sendError) return Promise.resolve(err(new PolicyError('sideband unavailable')));
     this.commands.push(command);
     return Promise.resolve(ok(undefined));
   }
@@ -71,7 +80,7 @@ class FakeProvider implements LiveVoiceProvider {
   }
 }
 
-function createHarness() {
+function createHarness(options: { readonly ownerActive?: () => boolean } = {}) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   const migrations = runMigrations(
@@ -82,6 +91,14 @@ function createHarness() {
   db.prepare(
     `INSERT INTO channels (id, type, name, config, enabled, created_at, updated_at)
      VALUES ('voice-channel', 'voice', 'browser-voice', '{}', 1, 1, 1)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO personas (id, name, model, skills, capabilities, mounts, created_at, updated_at)
+     VALUES ('persona-1', 'voice-persona', 'model', '[]', '{}', '[]', 1, 1)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO bindings (id, channel_id, thread_id, persona_id, is_default, created_at, updated_at)
+     VALUES ('binding-1', 'voice-channel', NULL, 'persona-1', 1, 1, 1)`,
   ).run();
   const queue = new QueueRepository(db);
   const threads = new ThreadRepository(db);
@@ -123,8 +140,9 @@ function createHarness() {
     voiceName: 'marin',
     capturePolicy,
     currentPolicy: () => capturePolicy(),
+    isOwnerActive: options.ownerActive,
   });
-  return { db, messages, owner, provider, service };
+  return { db, messages, owner, provider, service, threads };
 }
 
 describe('voice channel notifications', () => {
@@ -198,6 +216,64 @@ describe('voice channel notifications', () => {
       expect.objectContaining({ text: 'This is retained for the next authenticated visit.' }),
     ]);
     expect(harness.service.status({ ownerId: 'other-owner', loginRevision: 1 }, session.id)._unsafeUnwrap()).toBeNull();
+  });
+
+  it('persists a background notification after login expiry without requesting speech', async () => {
+    let ownerActive = true;
+    const harness = createHarness({ ownerActive: () => ownerActive });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    ownerActive = false;
+
+    const registry = new ChannelRegistry(pino({ level: 'silent' }));
+    const registered = registerVoiceConnector({
+      channelRegistry: registry,
+      channelRepo: new ChannelRepository(harness.db),
+      threadRepository: harness.threads,
+      sessionService: harness.service,
+      logger: pino({ level: 'silent' }),
+    });
+    expect(registered.isOk()).toBe(true);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      channelRepository: new ChannelRepository(harness.db),
+      messageRepository: harness.messages,
+      bindingRepository: new BindingRepository(harness.db),
+      threadRepository: harness.threads,
+      logger: pino({ level: 'silent' }),
+    });
+
+    const sent = await handler.execute(
+      { channelId: 'browser-voice', content: 'The background task is complete.' },
+      { runId: 'run-expired-login', threadId: session.threadId, personaId: 'persona-1', requestId: 'request-expired-login' },
+    );
+
+    expect(sent.status).toBe('success');
+    expect(harness.provider.sideband.commands).toHaveLength(0);
+    const rows = harness.messages.findByThread(session.threadId, 10, 0)._unsafeUnwrap();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]?.content ?? '{}')).toEqual({ body: 'The background task is complete.' });
+  });
+
+  it('retains a notification when the live sideband is unavailable', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    harness.provider.sideband.sendError = true;
+
+    const notified = await harness.service.notifyThread({
+      threadId: session.threadId,
+      text: 'Retain this while speech is unavailable.',
+    });
+
+    expect(notified._unsafeUnwrap()).toEqual({ sessionId: session.id, speechRequested: false });
+    expect(harness.provider.sideband.commands).toHaveLength(0);
   });
 
   it('rejects unbounded notification text', async () => {
