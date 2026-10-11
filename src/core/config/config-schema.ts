@@ -218,6 +218,36 @@ export const AuthConfigSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Browser voice
+// ---------------------------------------------------------------------------
+
+/** Opt-in browservoice runtime. Secrets are resolved here, never copied into channels. */
+export const VoiceConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  host: z.string().default('127.0.0.1'),
+  port: z.number().int().min(0).max(65_535).default(0),
+  publicHost: z.string().trim().min(1).optional(),
+  accessToken: z.string().optional(),
+  accessTokenRef: z.string().trim().min(1).default('voice'),
+  liveApiKeyRef: z.string().trim().min(1).default('openai'),
+  provider: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
+  persona: z.string().trim().min(1).optional(),
+  voice: z.string().trim().min(1).default('marin'),
+  instructions: z.string().default('You are Talon, a helpful voice assistant.'),
+  allowedTransportTypes: z.array(z.string().trim().min(1)).min(1).default(['webrtc']),
+  allowedOrigins: z.array(z.string().url()).default([]),
+  allowedToolNames: z.array(z.string().trim().min(1)).default([]),
+  allowedMcpServerNames: z.array(z.string().trim().min(1)).default([]),
+  maxSessionLifetimeMs: z.number().int().min(1_000).default(15 * 60 * 1000),
+  maxContextChars: z.number().int().min(256).max(256_000).default(32_000),
+  maxConcurrentSessions: z.number().int().min(1).default(1),
+  maxSessionCreations: z.number().int().min(1).default(5),
+  sessionCreationWindowMs: z.number().int().min(1_000).default(60_000),
+  heartbeatIntervalMs: z.number().int().min(1_000).default(15_000),
+});
+
+// ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
 
@@ -516,6 +546,7 @@ export const TalondConfigSchema = z
     queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
     scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),
     auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
+    voice: VoiceConfigSchema.default(() => VoiceConfigSchema.parse({})),
     agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
     backgroundAgent: BackgroundAgentConfigSchema.default(() =>
       BackgroundAgentConfigSchema.parse({}),

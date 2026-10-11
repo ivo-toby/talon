@@ -138,6 +138,26 @@ describe('recoverFromCrash', () => {
     expect(row.status).toBe('pending');
   });
 
+  it('leaves voice backend work for voice reconciliation instead of replaying it', () => {
+    const id = uuid();
+    queueRepo.enqueue({
+      id,
+      thread_id: threadId,
+      message_id: null,
+      type: 'collaboration',
+      payload: JSON.stringify({ kind: 'voice_backend', sessionId: 'session-1', delegationId: 'delegation-1' }),
+      max_attempts: 1,
+    });
+    db.prepare(`UPDATE queue_items SET status = 'claimed' WHERE id = ?`).run(id);
+
+    recoverFromCrash(queueRepo, logger);
+
+    const row = db.prepare('SELECT status FROM queue_items WHERE id = ?').get(id) as {
+      status: string;
+    };
+    expect(row.status).toBe('claimed');
+  });
+
   it('resets multiple in-flight items in a single call', () => {
     const id1 = enqueueItem(queueRepo, threadId, 'claimed');
     const id2 = enqueueItem(queueRepo, threadId, 'processing');

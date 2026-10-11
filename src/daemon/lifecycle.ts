@@ -36,7 +36,12 @@ export function recoverFromCrash(queueRepo: QueueRepository, logger: pino.Logger
       .prepare(
         `UPDATE queue_items
          SET status = 'pending', updated_at = ?
-         WHERE status IN ('claimed', 'processing')`,
+         WHERE status IN ('claimed', 'processing')
+           AND NOT (
+             type = 'collaboration'
+             AND json_valid(payload) = 1
+             AND json_extract(payload, '$.kind') = 'voice_backend'
+           )`,
       )
       .run(now);
 

@@ -38,12 +38,13 @@ import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.j
 
 import { ChannelRegistry } from '../channels/channel-registry.js';
 import { ChannelRouter } from '../channels/channel-router.js';
-import { registerChannels } from '../channels/channel-setup.js';
+import { registerChannels, registerVoiceChannel, BROWSER_VOICE_CHANNEL_NAME } from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
 import { DaemonError } from '../core/errors/error-types.js';
+import { PolicyError } from '../core/errors/index.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
 import { PersonaLoader } from '../personas/persona-loader.js';
@@ -77,6 +78,25 @@ import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import { VoiceRepository } from '../core/database/repositories/voice-repository.js';
+import { DurableVoiceStore } from '../voice/voice-store.js';
+import { DurableVoiceBackendBridge, type VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
+import { VoiceOutputSink } from '../voice/voice-output-sink.js';
+import { VoicePolicy } from '../voice/voice-policy.js';
+import {
+  BrowserVoiceTransport,
+  IndexedVoiceAuth,
+  DurableVoiceSessionService,
+} from '../voice/voice-session-service.js';
+import { reconcileVoiceSessions } from '../voice/voice-session-reconciler.js';
+import { OpenAiLiveVoiceProvider } from '../voice/providers/openai-live-provider.js';
+import { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import type {
+  VoiceOwnerContext,
+  VoicePolicySnapshot,
+  VoiceResult,
+  VoiceSessionRecord,
+} from '../voice/voice-types.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -539,14 +559,248 @@ export async function bootstrap(
     }
   }
 
-  // 10. Crash recovery
+  // 10. Voice durability and startup reconciliation must run before generic
+  // queue crash recovery. Voice queue rows are excluded from the generic
+  // reset, so an uncertain provider effect can never be replayed by polling.
+  const voiceStore = new DurableVoiceStore(db, repos.queue, new VoiceRepository(db));
+  const voiceReconciliation = reconcileVoiceSessions(voiceStore);
+  if (voiceReconciliation.isErr()) {
+    await cleanupBootstrapFailure(db, observability, logger);
+    return err(
+      new DaemonError(
+        `Failed to reconcile browser voice state: ${voiceReconciliation.error.message}`,
+        voiceReconciliation.error,
+      ),
+    );
+  }
+  if (
+    voiceReconciliation.value.unknownDelegations.length > 0 ||
+    voiceReconciliation.value.skippedDelegations.length > 0
+  ) {
+    logger.warn(
+      {
+        unknown: voiceReconciliation.value.unknownDelegations.length,
+        skipped: voiceReconciliation.value.skippedDelegations.length,
+      },
+      'bootstrap: reconciled browser voice state without replay',
+    );
+  }
+
+  let voicePolicy: VoicePolicy | null = null;
+  let voiceAuth: IndexedVoiceAuth | null = null;
+  let voiceBackendBridge: DurableVoiceBackendBridge | null = null;
+  let voiceOutputSink: VoiceOutputSink | null = null;
+  let voiceSessionService: DurableVoiceSessionService | null = null;
+  let voiceProvider: OpenAiLiveVoiceProvider | null = null;
+  let voiceTransport: BrowserVoiceTransport | null = null;
+  let voiceServer: BrowserVoiceServer | null = null;
+  const voiceRuntimeConfig = { current: config };
+  const voiceGeneration = { value: 0 };
+  if (config.voice?.enabled) {
+    const voicePersonaName = config.voice.persona ?? config.personas[0]?.name;
+    if (!voicePersonaName) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('voice.persona is required when voice.enabled is true'));
+    }
+    const loadedVoicePersona = personaLoader.getByName(voicePersonaName);
+    if (loadedVoicePersona.isErr() || !loadedVoicePersona.value) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Voice persona not found: ${voicePersonaName}`,
+          loadedVoicePersona.isErr() ? loadedVoicePersona.error : undefined,
+        ),
+      );
+    }
+
+    const voiceProviderName =
+      config.voice.provider ??
+      loadedVoicePersona.value.config.provider ??
+      config.agentRunner.defaultProvider;
+    if (
+      loadedVoicePersona.value.config.provider !== undefined &&
+      loadedVoicePersona.value.config.provider !== voiceProviderName
+    ) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `voice.provider must match persona provider "${loadedVoicePersona.value.config.provider}" when it is configured`,
+        ),
+      );
+    }
+    const voiceProviderEntry = providerRegistry.get(voiceProviderName);
+    if (!voiceProviderEntry || voiceProviderEntry.type !== 'openai-compatible') {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Voice requires an enabled openai-compatible agent provider; "${voiceProviderName}" is unavailable or unsupported`,
+        ),
+      );
+    }
+    if (config.voice.allowedTransportTypes.some((type) => type !== 'webrtc')) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('Browser voice currently supports only the webrtc transport'));
+    }
+
+    const voiceAccessToken =
+      config.voice.accessToken ??
+      config.auth.providers[config.voice.accessTokenRef]?.apiKey ??
+      config.auth.apiKey;
+    if (!voiceAccessToken) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('voice.accessToken or its configured auth provider is required'));
+    }
+
+    const providerTypes = new Map<string, string>();
+    for (const [name, providerConfig] of Object.entries(config.agentRunner.providers)) {
+      providerTypes.set(name, providerConfig.type ?? name);
+    }
+    voicePolicy = new VoicePolicy({
+      providerTypes,
+      provenMcpServers: new Set(config.voice.allowedMcpServerNames),
+    });
+    voiceAuth = new IndexedVoiceAuth({
+      accessToken: voiceAccessToken,
+      ownerId: `voice:${voicePersonaName}`,
+    });
+    const voiceBackendModel = loadedVoicePersona.value.config.model;
+    const voiceLiveModel = config.voice.model ?? 'gpt-live-1';
+    const captureVoicePolicy = (owner: VoiceOwnerContext): VoiceResult<VoicePolicySnapshot> => {
+      const runtimeConfig = voiceRuntimeConfig.current.voice;
+      const personaName = runtimeConfig.persona ?? voicePersonaName;
+      const currentPersona = personaLoader.getByName(personaName);
+      if (currentPersona.isErr()) return err(currentPersona.error);
+      if (!currentPersona.value) return err(new DaemonError(`Voice persona not found: ${personaName}`));
+      const currentProvider = runtimeConfig.provider ?? currentPersona.value.config.provider ?? voiceProviderName;
+      const currentModel = currentPersona.value.config.model;
+      return voicePolicy!.capture({
+        generation: voiceGeneration.value,
+        ownerId: owner.ownerId,
+        personaId: currentPersona.value.config.name,
+        providerName: currentProvider,
+        modelName: currentModel,
+        voiceName: runtimeConfig.voice,
+        capabilityNames: [
+          ...currentPersona.value.resolvedCapabilities.allow,
+          ...currentPersona.value.resolvedCapabilities.requireApproval,
+        ],
+        allowedToolNames: runtimeConfig.allowedToolNames,
+        allowedMcpServerNames: runtimeConfig.allowedMcpServerNames,
+        nativeToolNames: [],
+        requireApproval: currentPersona.value.resolvedCapabilities.requireApproval.length > 0,
+        loginRevision: owner.loginRevision,
+      });
+    };
+    const currentVoicePolicy = (
+      owner: VoiceOwnerContext,
+      _session: VoiceSessionRecord,
+    ): VoiceResult<VoicePolicySnapshot> =>
+      captureVoicePolicy(owner);
+    const liveAuth = config.auth.providers[config.voice.liveApiKeyRef];
+    voiceProvider = new OpenAiLiveVoiceProvider({
+      apiKey: liveAuth?.apiKey,
+      baseUrl: liveAuth?.baseURL,
+      maxCharacters: config.voice.maxContextChars,
+    });
+    voiceTransport = new BrowserVoiceTransport();
+    const voiceChannel = registerVoiceChannel(
+      { channelRepo: repos.channel, logger },
+      BROWSER_VOICE_CHANNEL_NAME,
+    );
+    if (voiceChannel.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError(`Failed to register browser voice channel: ${voiceChannel.error.message}`));
+    }
+    const voiceExecutionGate = (input: VoiceExecutionGateInput): VoiceResult<void> => {
+      if (input.providerType !== 'openai-compatible' || !input.nativeToolsDisabled) {
+        return err(new PolicyError('Voice execution requires the proven openai-compatible tool posture'));
+      }
+      if (!voiceAuth!.resolve(input.owner)) {
+        return err(new PolicyError('Voice login is no longer active'));
+      }
+      const sessionResult = voiceStore.findSession(input.request.sessionId);
+      if (sessionResult.isErr()) return err(sessionResult.error);
+      if (!sessionResult.value) return err(new PolicyError('Voice session was not found'));
+      const current = captureVoicePolicy(input.owner);
+      if (current.isErr()) return err(current.error);
+      const eligible = voicePolicy!.checkExecution({
+        session: sessionResult.value,
+        admitted: input.request.policy,
+        current: current.value,
+        now: Date.now(),
+      });
+      if (eligible.isErr()) return err(eligible.error);
+      if (!eligible.value.eligible) {
+        return err(new PolicyError(`Voice execution denied: ${eligible.value.reason ?? 'policy_changed'}`));
+      }
+      return ok(undefined);
+    };
+    voiceBackendBridge = new DurableVoiceBackendBridge(voiceStore, repos.queue, {
+      executionGate: voiceExecutionGate,
+      logger,
+    });
+    voiceOutputSink = new VoiceOutputSink(voiceStore, (result) => {
+      voiceBackendBridge?.notifyResult(result);
+    });
+    voiceSessionService = new DurableVoiceSessionService({
+      store: voiceStore,
+      provider: voiceProvider,
+      transport: voiceTransport,
+      backendBridge: voiceBackendBridge,
+      policy: voicePolicy,
+      threadRepository: repos.thread,
+      channelId: voiceChannel.value,
+      personaId: loadedVoicePersona.value.config.name,
+      providerName: voiceProviderName,
+      modelName: voiceBackendModel,
+      liveModelName: voiceLiveModel,
+      instructions: config.voice.instructions,
+      voiceName: config.voice.voice,
+      generation: (): number => voiceGeneration.value,
+      capturePolicy: captureVoicePolicy,
+      currentPolicy: currentVoicePolicy,
+      isOwnerActive: (owner): boolean => voiceAuth?.resolve(owner) !== undefined,
+      maxSessionLifetimeMs: config.voice.maxSessionLifetimeMs,
+      maxContextChars: config.voice.maxContextChars,
+      logger,
+    });
+    const publicOrigins = [...config.voice.allowedOrigins];
+    if (config.voice.publicHost) publicOrigins.push(`https://${config.voice.publicHost}`);
+    voiceServer = new BrowserVoiceServer(
+      {
+        accessToken: voiceAccessToken,
+        host: config.voice.host,
+        port: config.voice.port,
+        staticDirectory: join(import.meta.dirname, '../voice/web'),
+        allowedOrigins: publicOrigins.length > 0 ? publicOrigins : undefined,
+        allowedTransportTypes: config.voice.allowedTransportTypes,
+        maxConcurrentSessions: config.voice.maxConcurrentSessions,
+        maxSessionCreations: config.voice.maxSessionCreations,
+        sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
+        heartbeatIntervalMs: config.voice.heartbeatIntervalMs,
+      },
+      { sessionService: voiceSessionService, auth: voiceAuth, logger },
+    );
+    logger.info(
+      { persona: voicePersonaName, provider: voiceProviderName },
+      'bootstrap: browser voice runtime initialized',
+    );
+  }
+
+  // 11. Generic recovery follows voice reconciliation and excludes voice rows.
   recoverFromCrash(repos.queue, logger);
 
-  // 11. Channel registry
+  // 12. Channel registry
   const channelRegistry = new ChannelRegistry(logger);
 
-  // 12. Queue manager
-  const queueManager = new QueueManager(repos.queue, repos.thread, config.queue, logger);
+  // 13. Queue manager. Voice rows must claim through the durable bridge.
+  const queueManager = new QueueManager(
+    repos.queue,
+    repos.thread,
+    config.queue,
+    logger,
+    voiceBackendBridge?.claimQueueItem.bind(voiceBackendBridge),
+  );
 
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
@@ -674,6 +928,17 @@ export async function bootstrap(
     logger,
     a2aServer,
     a2aTaskMapper,
+    voiceStore,
+    voicePolicy,
+    voiceAuth,
+    voiceBackendBridge,
+    voiceOutputSink,
+    voiceSessionService,
+    voiceProvider,
+    voiceTransport,
+    voiceServer,
+    voiceRuntimeConfig,
+    voiceGeneration,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);

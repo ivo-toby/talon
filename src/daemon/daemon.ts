@@ -98,7 +98,7 @@ export class TalondDaemon {
         startupTimeoutMs: codexRunner.startupTimeoutMs,
       });
       if (runnerReady.isErr()) {
-        return this.failStartup(runnerReady.error);
+        return this.failStartup(runnerReady.error, 'Failed to start Codex sandbox runner dependency');
       }
       this.logger.info(
         { endpoint: new URL(codexRunner.endpoint).origin },
@@ -123,7 +123,10 @@ export class TalondDaemon {
     await this.mcpRegistry.startAll();
 
     // 3. Create the agent runner and start the host-tools bridge.
-    this.agentRunner = new AgentRunner(this.ctx);
+    this.agentRunner = new AgentRunner(this.ctx, {
+      voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
+    });
     this.ctx.hostToolsBridge.start();
 
     // 4. Start channel connectors (non-fatal).
@@ -139,6 +142,17 @@ export class TalondDaemon {
 
     // Inject sibling bot IDs for multi-connector self-filtering.
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
+
+    if (this.ctx.voiceServer && this.ctx.config.voice?.enabled) {
+      try {
+        await this.ctx.voiceServer.start(this.ctx.config.voice.host, this.ctx.config.voice.port);
+      } catch (cause) {
+        return this.failStartup(
+          cause instanceof Error ? cause : new Error(String(cause)),
+          'Failed to start browser voice server',
+        );
+      }
+    }
 
     // 5. Start queue processing.
     this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
@@ -213,6 +227,13 @@ export class TalondDaemon {
 
       this.ctx.scheduler.stop();
 
+      await this.ctx.voiceSessionService?.shutdown();
+      try {
+        await this.ctx.voiceServer?.stop();
+      } catch (cause) {
+        this.logger.warn({ cause }, 'daemon: failed to stop browser voice server');
+      }
+
       if (this.mcpRegistry !== null) {
         await this.mcpRegistry.stopAll();
         this.mcpRegistry = null;
@@ -255,13 +276,40 @@ export class TalondDaemon {
     this.logger.info('daemon: stopped');
   }
 
-  private async failStartup(cause: Error): Promise<Result<void, DaemonError>> {
+  private async failStartup(
+    cause: Error,
+    message = 'Failed to start daemon',
+  ): Promise<Result<void, DaemonError>> {
     const context = this.ctx;
     this.ctx = null;
     this.agentRunner = null;
     this._state = 'error';
 
     if (context !== null) {
+      try {
+        await context.channelRegistry.stopAll();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop channel connectors after startup failure',
+        );
+      }
+      context.scheduler.stop();
+      try {
+        await context.voiceSessionService?.shutdown();
+        await context.voiceServer?.stop();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop browser voice runtime after startup failure',
+        );
+      }
+      if (this.mcpRegistry !== null) {
+        await this.mcpRegistry.stopAll();
+        this.mcpRegistry = null;
+      }
+      context.queueManager.stopProcessing();
+      context.hostToolsBridge.stop();
       try {
         await context.backgroundAgentManager?.shutdown();
       } catch (cleanupCause) {
@@ -289,7 +337,7 @@ export class TalondDaemon {
     }
 
     return err(
-      new DaemonError(`Failed to start Codex sandbox runner dependency: ${cause.message}`, cause),
+      new DaemonError(`${message}: ${cause.message}`, cause),
     );
   }
 
@@ -347,6 +395,26 @@ export class TalondDaemon {
     const newConfig = configResult.value;
     const oldConfig = this.ctx.config;
 
+    // Freeze voice admission and invalidate browser auth before personas,
+    // skills, or MCP definitions become mutable. This preserves the policy
+    // generation captured by every existing delegation.
+    const voiceReload = this.ctx.voiceSessionService;
+    const voiceConfigChanged = JSON.stringify(oldConfig.voice) !== JSON.stringify(newConfig.voice);
+    if (voiceReload) {
+      voiceReload.closeAdmission();
+      voiceReload.bumpGeneration();
+      if (this.ctx.voiceGeneration) this.ctx.voiceGeneration.value += 1;
+      this.ctx.voiceAuth?.invalidateRuntime();
+      await voiceReload.shutdown();
+      if (voiceConfigChanged) {
+        try {
+          await this.ctx.voiceServer?.stop();
+        } catch (cause) {
+          this.logger.warn({ cause }, 'daemon: reload — failed to stop old browser voice server');
+        }
+      }
+    }
+
     this.logger.info({ configPath: effectivePath }, 'daemon: applying hot-reload');
 
     // Log level — apply immediately.
@@ -392,6 +460,7 @@ export class TalondDaemon {
     // Reload personas.
     const personaReload = await this.ctx.personaLoader.loadFromConfig(newConfig.personas);
     if (personaReload.isErr()) {
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
       return err(new DaemonError(`Failed to reload personas: ${personaReload.error.message}`));
     }
 
@@ -402,6 +471,7 @@ export class TalondDaemon {
       this.ctx.dataDir,
     );
     if (loadedSkillsResult.isErr()) {
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
       return err(
         new DaemonError(`Failed to reload skills: ${loadedSkillsResult.error.message}`),
       );
@@ -453,10 +523,21 @@ export class TalondDaemon {
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
-    this.agentRunner = new AgentRunner(this.ctx);
+    this.agentRunner = new AgentRunner(this.ctx, {
+      voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
+    });
 
     // Update config snapshot.
     (this.ctx as { config: TalondConfig }).config = newConfig;
+    if (this.ctx.voiceRuntimeConfig) this.ctx.voiceRuntimeConfig.current = newConfig;
+    if (voiceReload && !voiceConfigChanged && newConfig.voice?.enabled) {
+      voiceReload.openAdmission();
+    } else if (voiceReload && voiceConfigChanged) {
+      this.logger.warn('daemon: reload — browser voice configuration changed; restart required to rebuild its provider and auth runtime');
+    } else if (!voiceReload && newConfig.voice?.enabled) {
+      this.logger.warn('daemon: reload — browser voice was enabled; restart required to initialize its provider and auth runtime');
+    }
 
     this.logger.info('daemon: hot-reload complete');
     return ok(undefined);
