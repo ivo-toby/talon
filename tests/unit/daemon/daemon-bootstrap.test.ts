@@ -924,6 +924,61 @@ describe('bootstrap', () => {
       expect(personaRepo.findByName).toHaveBeenCalledWith('assistant');
     });
 
+    it('captures current loaded skills after a hot reload', async () => {
+      const fixture = makeVoicePersonaFixture();
+      const config = fixture.config as any;
+      config.personas[0].skills = ['voice-tools'];
+      fixture.loadedPersona.config.skills = ['voice-tools'];
+      const initialSkill = {
+        manifest: { name: 'voice-tools', description: '', eager: false },
+        resolvedMcpServers: [
+          {
+            name: 'stale-search',
+            config: { transport: 'stdio', command: 'stale-search' },
+          },
+        ],
+      };
+      const reloadedSkill = {
+        manifest: { name: 'voice-tools', description: '', eager: false },
+        resolvedMcpServers: [
+          {
+            name: 'current-search',
+            config: { transport: 'stdio', command: 'current-search' },
+          },
+        ],
+      };
+      vi.mocked(SkillLoader).mockImplementation(() => ({
+        loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([initialSkill])),
+      }) as any);
+      setupVoiceBootstrapMocks(
+        config,
+        fixture.loadedPersona,
+        ok({ id: 'persona-uuid-1234', name: 'assistant', model: 'backend-model' }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      const service = ctx.voiceSessionService as unknown as {
+        options: {
+          capturePolicy: (owner: { ownerId: string; loginRevision: number }) => ReturnType<typeof ok>;
+        };
+      };
+      const initial = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(initial.isOk()).toBe(true);
+      expect(initial._unsafeUnwrap()).toMatchObject({
+        allowedMcpServerNames: ['stale-search'],
+      });
+
+      (ctx as unknown as { loadedSkills: unknown[] }).loadedSkills = [reloadedSkill];
+      const reloaded = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(reloaded.isOk()).toBe(true);
+      expect(reloaded._unsafeUnwrap()).toMatchObject({
+        allowedMcpServerNames: ['current-search'],
+      });
+    });
+
     it.each([
       ['missing', ok(null), 'Voice persona not found'],
       ['lookup error', err(new Error('persona row lookup failed')), 'persona row lookup failed'],

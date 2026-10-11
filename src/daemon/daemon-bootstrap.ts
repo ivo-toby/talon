@@ -601,6 +601,9 @@ export async function bootstrap(
   let voiceServer: BrowserVoiceServer | null = null;
   const voiceRuntimeConfig = { current: config };
   const voiceGeneration = { value: 0 };
+  const daemonContextRef: {
+    current?: Pick<DaemonContext, 'loadedSkills'>;
+  } = {};
   if (config.voice?.enabled) {
     const voicePersonaName = config.voice.persona ?? config.personas[0]?.name;
     if (!voicePersonaName) {
@@ -688,9 +691,9 @@ export async function bootstrap(
       if (!currentProviderEntry) {
         return err(new DaemonError(`Voice provider "${currentProvider}" is not enabled`));
       }
-      const personaSkills = loadedSkills.value.filter((skill) =>
-        persona.config.skills.includes(skill.manifest.name),
-      );
+      const personaSkills = (
+        daemonContextRef.current?.loadedSkills ?? loadedSkills.value
+      ).filter((skill) => persona.config.skills.includes(skill.manifest.name));
       let personaRuntimeContext;
       try {
         personaRuntimeContext = buildPersonaRuntimeContext({
@@ -991,6 +994,7 @@ export async function bootstrap(
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;
+  daemonContextRef.current = ctx;
 
   logger.info('bootstrap: context ready');
 
