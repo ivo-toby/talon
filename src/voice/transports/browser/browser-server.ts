@@ -77,6 +77,12 @@ const CLOSE_REASONS: readonly VoiceCloseReason[] = [
   'transport_failure',
 ];
 
+const TERMINAL_SESSION_STATUSES: ReadonlySet<VoiceSessionStatusDto['status']> = new Set([
+  'closed',
+  'expired',
+  'failed',
+]);
+
 const PLAYBACK_STATUSES = ['started', 'played', 'interrupted'] as const;
 
 export interface BrowserVoiceServerConfig extends Omit<VoiceAuthConfig, 'accessToken'> {
@@ -111,6 +117,7 @@ interface StatusStream {
   readonly response: ServerResponse;
   readonly request: IncomingMessage;
   readonly sessionId: string;
+  readonly authSession: VoiceAuthSession;
   unsubscribe?: () => void;
   heartbeat?: NodeJS.Timeout;
   closed: boolean;
@@ -288,7 +295,14 @@ export class BrowserVoiceServer {
       return;
     }
 
-    if (!this.isAllowedOrigin(request)) {
+    const route = url.pathname.slice(VOICE_PREFIX.length);
+    const sessionRoute = parseSessionRoute(route);
+    const sameOriginRead =
+      request.method === 'GET' &&
+      (route === '/healthz' ||
+        sessionRoute?.action === 'status' ||
+        sessionRoute?.action === 'stream');
+    if (!this.isAllowedOrigin(request, sameOriginRead)) {
       this.writeError(response, requestId, {
         status: 403,
         code: 'ORIGIN_DENIED',
@@ -298,7 +312,6 @@ export class BrowserVoiceServer {
     }
     applyCorsHeaders(response, request.headers.origin);
 
-    const route = url.pathname.slice(VOICE_PREFIX.length);
     if ((route === '/login' || route === '/auth/login') && request.method === 'POST') {
       await this.handleLogin(request, response, requestId);
       return;
@@ -316,7 +329,6 @@ export class BrowserVoiceServer {
       return;
     }
 
-    const sessionRoute = parseSessionRoute(route);
     if (!sessionRoute) {
       this.writeError(response, requestId, {
         status: 404,
@@ -414,6 +426,8 @@ export class BrowserVoiceServer {
     const authenticated = this.authenticate(request, response, requestId, true);
     if (!authenticated) return;
 
+    this.auth.revoke(authenticated);
+    this.closeStreamsForAuth(authenticated);
     const sessionIds = this.sessionsByAuthCookie.get(authenticated.cookieValue);
     if (sessionIds) {
       for (const sessionId of [...sessionIds]) {
@@ -426,11 +440,10 @@ export class BrowserVoiceServer {
           // server must never keep an authentication cookie alive on a
           // best-effort cleanup failure.
         }
-        this.activeSessionIds.delete(sessionId);
+        this.forgetActiveSession(sessionId);
       }
       this.sessionsByAuthCookie.delete(authenticated.cookieValue);
     }
-    this.auth.revoke(authenticated);
     response.setHeader('set-cookie', this.auth.clearCookieHeaders(this.isSecureRequest(request)));
     this.writeJson(response, 200, { loggedOut: true });
   }
@@ -442,6 +455,7 @@ export class BrowserVoiceServer {
   ): Promise<void> {
     const authenticated = this.authenticate(request, response, requestId, true);
     if (!authenticated) return;
+    this.reconcileTerminalSessions();
     const maxConcurrentSessions =
       this.config.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS;
     if (this.activeSessionIds.size + this.creatingSessions >= maxConcurrentSessions) {
@@ -470,6 +484,14 @@ export class BrowserVoiceServer {
         this.writeRequestFailure(response, requestId, cause);
         return;
       }
+      if (!this.auth.isActive(authenticated)) {
+        this.writeError(response, requestId, {
+          status: 401,
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+        return;
+      }
       const parsed = this.parseCreateRequest(body);
       if (parsed instanceof RequestFailure) {
         this.writeError(response, requestId, parsed.failure);
@@ -493,6 +515,22 @@ export class BrowserVoiceServer {
       }
 
       const sessionId = result.value.session.id;
+      if (!this.auth.isActive(authenticated)) {
+        try {
+          await this.sessionService.closeSession(authenticated.owner, sessionId, {
+            reason: 'logout',
+          });
+        } catch {
+          // The login is already revoked. Cleanup is best effort and the
+          // session is intentionally never admitted to browser state.
+        }
+        this.writeError(response, requestId, {
+          status: 401,
+          code: 'UNAUTHORIZED',
+          message: 'Authentication required',
+        });
+        return;
+      }
       this.activeSessionIds.add(sessionId);
       this.sessionOwners.set(sessionId, authenticated.owner);
       let owned = this.sessionsByAuthCookie.get(authenticated.cookieValue);
@@ -596,8 +634,7 @@ export class BrowserVoiceServer {
       return;
     }
 
-    this.activeSessionIds.delete(sessionId);
-    this.sessionsByAuthCookie.get(authenticated.cookieValue)?.delete(sessionId);
+    this.forgetActiveSession(sessionId);
     const status = this.statusAfterMutation(authenticated, sessionId, result.value.session);
     applyCorsHeaders(response, request.headers.origin);
     this.writeJson(response, 200, {
@@ -729,6 +766,7 @@ export class BrowserVoiceServer {
       request,
       response,
       sessionId,
+      authSession: authenticated,
       unsubscribe: subscribed.value,
       closed: false,
     };
@@ -748,7 +786,12 @@ export class BrowserVoiceServer {
       occurredAt: Date.now(),
     });
     stream.heartbeat = setInterval(() => {
-      if (!stream.closed && !response.writableEnded) response.write(': keep-alive\n\n');
+      if (stream.closed || response.writableEnded) return;
+      if (!this.auth.isActive(stream.authSession)) {
+        this.closeStream(stream);
+        return;
+      }
+      response.write(': keep-alive\n\n');
     }, this.config.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS);
     request.once('aborted', () => this.closeStream(stream));
     response.once('close', () => this.closeStream(stream));
@@ -878,9 +921,43 @@ export class BrowserVoiceServer {
     return true;
   }
 
-  private isAllowedOrigin(request: IncomingMessage): boolean {
+  private reconcileTerminalSessions(): void {
+    for (const sessionId of this.activeSessionIds) {
+      const owner = this.sessionOwners.get(sessionId);
+      if (!owner) continue;
+      try {
+        const result = this.sessionService.status(owner, sessionId);
+        if (
+          result.isOk() &&
+          (result.value === null || TERMINAL_SESSION_STATUSES.has(result.value.status))
+        ) {
+          this.forgetActiveSession(sessionId);
+        }
+      } catch {
+        // Keep the reservation when authoritative status cannot be read.
+      }
+    }
+  }
+
+  private forgetActiveSession(sessionId: string): void {
+    this.activeSessionIds.delete(sessionId);
+    for (const [cookieValue, sessionIds] of this.sessionsByAuthCookie) {
+      sessionIds.delete(sessionId);
+      if (sessionIds.size === 0) this.sessionsByAuthCookie.delete(cookieValue);
+    }
+  }
+
+  private closeStreamsForAuth(authenticated: VoiceAuthSession): void {
+    for (const stream of [...this.streams]) {
+      if (stream.authSession === authenticated) this.closeStream(stream);
+    }
+  }
+
+  private isAllowedOrigin(request: IncomingMessage, sameOriginRead = false): boolean {
     const origin = request.headers.origin;
-    if (typeof origin !== 'string' || origin.length === 0 || origin === 'null') return false;
+    if (typeof origin !== 'string' || origin.length === 0 || origin === 'null') {
+      return sameOriginRead && this.isVerifiedSameOriginRead(request);
+    }
     if (this.allowedOrigins) return this.allowedOrigins.includes(origin);
     if (DEFAULT_ALLOWED_ORIGINS.has(origin)) return true;
     const host = request.headers.host;
@@ -889,6 +966,35 @@ export class BrowserVoiceServer {
       const originUrl = new URL(origin);
       const hostUrl = new URL(`${originUrl.protocol}//${host}`);
       return isLoopbackHostname(hostUrl.hostname) && originUrl.origin === hostUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+
+  private isVerifiedSameOriginRead(request: IncomingMessage): boolean {
+    const host = request.headers.host;
+    if (!host) return false;
+    let hostUrl: URL;
+    try {
+      hostUrl = new URL(`http://${host}`);
+    } catch {
+      return false;
+    }
+
+    const fetchSite = request.headers['sec-fetch-site'];
+    if (typeof fetchSite === 'string') {
+      const normalizedFetchSite = fetchSite.toLowerCase();
+      if (normalizedFetchSite !== 'same-origin' && normalizedFetchSite !== 'none') {
+        return false;
+      }
+    }
+
+    const referer = request.headers.referer;
+    if (typeof referer !== 'string') return isLoopbackHostname(hostUrl.hostname);
+    try {
+      const refererUrl = new URL(referer);
+      if (this.allowedOrigins?.includes(refererUrl.origin)) return true;
+      return isLoopbackHostname(hostUrl.hostname) && refererUrl.host === hostUrl.host;
     } catch {
       return false;
     }
@@ -1014,6 +1120,10 @@ export class BrowserVoiceServer {
 
   private writeStatusEvent(stream: StatusStream, event: VoiceStatusEventDto): void {
     if (stream.closed || stream.response.writableEnded) return;
+    if (!this.auth.isActive(stream.authSession)) {
+      this.closeStream(stream);
+      return;
+    }
     const id = String(event.version);
     stream.response.write(`event: ${event.kind}\nid: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
   }
@@ -1152,9 +1262,7 @@ function isStaticPath(pathname: string): boolean {
   );
 }
 
-function parseSessionRoute(
-  route: string,
-): {
+function parseSessionRoute(route: string): {
   readonly action: 'status' | 'stream' | 'close' | 'playback';
   readonly sessionId: string;
 } | null {

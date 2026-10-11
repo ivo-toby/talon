@@ -215,12 +215,22 @@ export class VoiceAuth {
       return err(new VoiceAuthError('invalid_cookie'));
     }
 
-    if (session.expiresAt <= this.now()) {
-      this.sessions.delete(cookieValue);
+    if (!this.isActive(session)) {
       return err(new VoiceAuthError('expired_cookie'));
     }
 
     return ok(session);
+  }
+
+  /** Check that an earlier authentication result is still live. */
+  isActive(session: VoiceAuthSession): boolean {
+    const current = this.sessions.get(session.cookieValue);
+    if (current !== session) return false;
+    if (session.expiresAt <= this.now()) {
+      this.sessions.delete(session.cookieValue);
+      return false;
+    }
+    return true;
   }
 
   /** Require the double-submit CSRF cookie and header to match this session. */
