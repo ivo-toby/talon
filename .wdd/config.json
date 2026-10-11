@@ -1,0 +1,50 @@
+{
+  "branching": {
+    "targetBranch": "main",
+    "basePattern": "epic/{scope-slug}",
+    "taskPattern": "task/{task-id}"
+  },
+  "concurrency": {
+    "maxConcurrent": 3
+  },
+  "kind": "wdd_config",
+  "merge": {
+    "surface": "local",
+    "mode": "human",
+    "reconcileEveryNMerges": 1
+  },
+  "models": {
+    "planning": null,
+    "implementation": {
+      "default": "gpt-5.6-luna",
+      "highRisk": "gpt-5.6-luna"
+    },
+    "review": "gpt-6.1-sol",
+    "specReview": "gpt-6.1-sol"
+  },
+  "openQuestions": [],
+  "review": {
+    "policy": "always",
+    "blockingSeverities": [
+      "P1",
+      "P2"
+    ]
+  },
+  "riskRules": [],
+  "runners": {},
+  "schemaVersion": 1,
+  "taskProvider": {
+    "type": "local"
+  },
+  "verification": {
+    "commands": [
+      "npm run lint",
+      "npx tsc --noEmit",
+      "npm run build"
+    ],
+    "unavailableJustification": null
+  },
+  "worktrees": {
+    "root": ".worktrees"
+  }
+}

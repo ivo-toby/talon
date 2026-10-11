@@ -1,0 +1,478 @@
+{
+  "appliedIdempotencyKeys": [
+    "auto:1:aaaca08e9329c252",
+    "auto:2:d0806e492ff48529",
+    "auto:3:4017bd625981011c",
+    "auto:4:75a26b894acf9730",
+    "auto:5:57682d281b1e676d",
+    "auto:6:de93e790f760244c",
+    "auto:7:73796432355dae23",
+    "auto:8:670a8e1329928d5d",
+    "auto:9:f3ec8c5fc7917c0a"
+  ],
+  "archiveBlocked": null,
+  "archivePending": null,
+  "constitution": {
+    "ratification": {
+      "at": "2026-10-11T10:42:13Z",
+      "by": "Ivo",
+      "decisionFingerprint": "sha256:4e43696127e93bf0fc436614e4b168b92821c7b631b87111075d4c331f8dd6ea"
+    },
+    "status": "ratified"
+  },
+  "epic": "browservoice",
+  "events": [
+    {
+      "at": "2026-10-11T10:42:13Z",
+      "idempotencyKey": "auto:1:aaaca08e9329c252",
+      "revision": 1,
+      "task": null,
+      "type": "constitution.ratified"
+    },
+    {
+      "at": "2026-10-11T10:42:13Z",
+      "idempotencyKey": "auto:2:d0806e492ff48529",
+      "revision": 2,
+      "task": null,
+      "type": "epic.created"
+    },
+    {
+      "at": "2026-10-11T10:43:14Z",
+      "idempotencyKey": "auto:3:4017bd625981011c",
+      "revision": 3,
+      "task": null,
+      "type": "intake.configured"
+    },
+    {
+      "at": "2026-10-11T10:43:14Z",
+      "idempotencyKey": "auto:4:75a26b894acf9730",
+      "revision": 4,
+      "task": null,
+      "type": "intake.spec_approved"
+    },
+    {
+      "at": "2026-10-11T10:43:14Z",
+      "idempotencyKey": "auto:5:57682d281b1e676d",
+      "revision": 5,
+      "task": null,
+      "type": "intake.research_recorded"
+    },
+    {
+      "at": "2026-10-11T10:43:14Z",
+      "idempotencyKey": "auto:6:de93e790f760244c",
+      "revision": 6,
+      "task": null,
+      "type": "intake.design_approved"
+    },
+    {
+      "at": "2026-10-11T10:43:43Z",
+      "idempotencyKey": "auto:7:73796432355dae23",
+      "revision": 7,
+      "task": null,
+      "type": "plan.applied"
+    },
+    {
+      "at": "2026-10-11T10:44:59Z",
+      "idempotencyKey": "auto:8:670a8e1329928d5d",
+      "revision": 8,
+      "task": null,
+      "type": "plan.applied"
+    },
+    {
+      "at": "2026-10-11T10:45:45Z",
+      "idempotencyKey": "auto:9:f3ec8c5fc7917c0a",
+      "revision": 9,
+      "task": null,
+      "type": "plan.applied"
+    }
+  ],
+  "intake": {
+    "configure": {
+      "at": "2026-10-11T10:43:14Z",
+      "by": "Ivo",
+      "sha256": "sha256:d8e5eb4a46dab9ceb6375b0beaa3b7ec879a0ad7e3b90beed8778d3a081c6629"
+    },
+    "design": {
+      "at": "2026-10-11T10:43:14Z",
+      "by": "Ivo",
+      "deliverableCommand": "npm run lint && npx tsc --noEmit && npx vitest run tests/integration/voice && npm run build",
+      "sha256": "sha256:a037147eb32a1095af4902d10310abc349f7de0dab519dc370bcd877b8d42df8"
+    },
+    "research": {
+      "artifacts": [
+        {
+          "path": "research/architecture.md",
+          "sha256": "sha256:09e239db1350c7c6ad15469cb15454850a971825ada8319a3fca935f1b468fec"
+        }
+      ],
+      "at": "2026-10-11T10:43:14Z",
+      "by": "Codex",
+      "done": true
+    },
+    "spec": {
+      "at": "2026-10-11T10:43:14Z",
+      "by": "Ivo",
+      "criteria": 9,
+      "sha256": "sha256:94d50148b7ad3b9c6fbbedd077025518a880176348237a17eccc086e727ac42b"
+    }
+  },
+  "monitoring": {
+    "lastCheckedAt": null,
+    "mode": "manual",
+    "nextCheckDueAt": null,
+    "observations": {},
+    "status": "inactive"
+  },
+  "parked": {},
+  "reconcile": {
+    "everyNMerges": 1,
+    "lastCheckpointAt": null,
+    "mergesSinceCheckpoint": 0,
+    "pendingNotes": []
+  },
+  "revision": 9,
+  "schemaVersion": 7,
+  "scope": {
+    "approval": {
+      "at": "2026-10-11T10:45:45Z",
+      "by": "Ivo",
+      "sha256": "sha256:bb8d076c77a1fa26dc6c3fa84737b66131d3c1e6d4f348e0ec639ce737850590"
+    },
+    "baseRef": "epic/browservoice",
+    "id": "SCOPE-browservoice",
+    "maxConcurrent": 3,
+    "reviewPolicy": "always"
+  },
+  "tasks": {
+    "TASK-01-contracts": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "src/voice/voice-types.ts",
+        ".wdd/epics/browservoice/evidence/**"
+      ],
+      "context": [
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-8",
+        "design.md"
+      ],
+      "dependsOn": [],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-01-contracts",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-01-contracts.md",
+      "status": "todo",
+      "title": "Contracten en haalbaarheidsproef",
+      "verification": null,
+      "worktree": null
+    },
+    "TASK-02-persistence": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "src/voice/voice-store.ts",
+        "src/core/database/repositories/voice-repository.ts",
+        "src/core/database/repositories/index.ts",
+        "src/core/database/migrations/*-voice-*.sql",
+        "tests/unit/core/database/voice/**"
+      ],
+      "context": [
+        "spec.md#AC-5",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-01-contracts"
+      ],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-02-persistence",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-02-persistence.md",
+      "status": "todo",
+      "title": "Duurzame voice-sessies en delegaties",
+      "verification": null,
+      "worktree": null
+    },
+    "TASK-03-browser-server": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "src/voice/transports/browser/**",
+        "src/voice/voice-auth.ts",
+        "tests/unit/voice/browser-server/**",
+        "tests/unit/voice/browser-server/voice-auth.test.ts"
+      ],
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-4",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-01-contracts"
+      ],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-03-browser-server",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-03-browser-server.md",
+      "status": "todo",
+      "title": "Browserauthenticatie en sessie-endpoints",
+      "verification": null,
+      "worktree": null
+    },
+    "TASK-04-live-adapter": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "src/voice/providers/**",
+        "tests/unit/voice/providers/**"
+      ],
+      "context": [
+        "spec.md#AC-3",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-01-contracts"
+      ],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-04-live-adapter",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-04-live-adapter.md",
+      "status": "todo",
+      "title": "GPT-Live-provideradapter",
+      "verification": null,
+      "worktree": null
+    },
+    "TASK-05-backend": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "src/voice/voice-backend-bridge.ts",
+        "src/voice/voice-output-sink.ts",
+        "src/daemon/agent-runner.ts",
+        "src/daemon/context-assembler.ts",
+        "src/queue/queue-manager.ts",
+        "src/queue/queue-processor.ts",
+        "src/queue/queue-types.ts",
+        "src/core/database/repositories/queue-repository.ts",
+        "src/core/database/repositories/voice-repository.ts",
+        "src/channels/channel-types.ts",
+        "tests/unit/voice/backend/**",
+        "tests/unit/daemon/agent-runner*.test.ts",
+        "tests/unit/daemon/context-assembler*.test.ts",
+        "tests/unit/queue/**",
+        "tests/unit/core/database/repositories/queue-repository.test.ts"
+      ],
+      "context": [
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-02-persistence",
+        "TASK-04-live-adapter"
+      ],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-05-backend",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-05-backend.md",
+      "status": "todo",
+      "title": "Queue- en AgentRunner-brug",
+      "verification": null,
+      "worktree": null
+    },
+    "TASK-06-lifecycle": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "src/voice/voice-session-service.ts",
+        "src/voice/voice-session-reconciler.ts",
+        "src/voice/voice-policy.ts",
+        "src/daemon/daemon-bootstrap.ts",
+        "src/daemon/daemon-context.ts",
+        "src/daemon/daemon.ts",
+        "src/core/config/config-schema.ts",
+        "src/core/config/config-types.ts",
+        "src/channels/channel-setup.ts",
+        "src/daemon/channel-factory.ts",
+        "tests/unit/voice/lifecycle/**",
+        "tests/unit/voice/lifecycle/policy.test.ts",
+        "tests/unit/daemon/daemon*.test.ts",
+        "tests/unit/core/config/**",
+        "tests/unit/daemon/reload.test.ts",
+        "tests/unit/daemon/channel-factory.test.ts",
+        "src/daemon/lifecycle.ts",
+        "tests/unit/channels/channel-setup.test.ts",
+        "tests/unit/daemon/lifecycle.test.ts"
+      ],
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-03-browser-server",
+        "TASK-05-backend",
+        "TASK-07-browser-ui"
+      ],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-06-lifecycle",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-06-lifecycle.md",
+      "status": "todo",
+      "title": "Sessiebeheer en daemonintegratie",
+      "verification": null,
+      "worktree": null
+    },
+    "TASK-07-browser-ui": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "src/voice/web/**",
+        "package.json",
+        "tests/unit/voice/browser-client/**"
+      ],
+      "context": [
+        "spec.md#AC-2",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-03-browser-server",
+        "TASK-04-live-adapter"
+      ],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-07-browser-ui",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-07-browser-ui.md",
+      "status": "todo",
+      "title": "Kleine mobiele browserinterface",
+      "verification": null,
+      "worktree": null
+    },
+    "TASK-08-validation-docs": {
+      "blocker": null,
+      "branch": null,
+      "conflictDomains": [
+        "tests/integration/voice/**",
+        "README.md",
+        "AGENTS.md",
+        "config/talond.example.yaml",
+        "docs/guides/voice.mdx",
+        "docs/reference/config-schema.mdx",
+        ".agents/skills/talon-setup/**",
+        ".agents/skills/talon-setup-docker/**",
+        ".agents/skills/add-voice/**",
+        ".wdd/epics/browservoice/evidence/**"
+      ],
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-8",
+        "spec.md#AC-9",
+        "design.md"
+      ],
+      "dependsOn": [
+        "TASK-06-lifecycle",
+        "TASK-07-browser-ui"
+      ],
+      "freshness": null,
+      "headSha": null,
+      "id": "TASK-08-validation-docs",
+      "inputs": [],
+      "merge": null,
+      "model": null,
+      "pr": null,
+      "rebound": null,
+      "review": null,
+      "reviewModel": null,
+      "risk": "high",
+      "snapshot": null,
+      "specPath": "tasks/TASK-08-validation-docs.md",
+      "status": "todo",
+      "title": "Integratiebewijs en gebruiksdocumentatie",
+      "verification": null,
+      "worktree": null
+    }
+  },
+  "telemetry": {
+    "eventApplications": 9,
+    "renderCount": 0
+  }
+}

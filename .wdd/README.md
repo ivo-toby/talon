@@ -1,19 +1,15 @@
 # Wave-Driven Development
 
-`.wdd/` is the durable source of truth for Talon WDD planning and execution.
-External trackers, GitHub PRs, and review comments are adapters; they do not
-replace the local text artifacts.
+Talon uses wddctl for development coordination. It is not a runtime dependency of Talon.
 
-Typical phase order:
+- constitution.md: governance proposal and human-approved policy.
+- config.json: machine-consumed branches, checks, review, models and merge policy.
+- state.json: controller-owned execution state; never hand-edit.
+- epics/<slug>/: controller-created specs, designs, plan.json and worker briefs.
+- shared-context/: durable development findings, without secrets.
 
-1. Constitution: maintain `.wdd/constitution.md`.
-2. Start a micro-wave for bounded ticket-sized work, or start an epic for
-   larger feature, migration, refactor, hardening, or bug-cluster work.
-3. Plan tickets, tasks, dependencies, conflict domains, and shared context.
-4. Execute eligible waves in task branches or local patches.
-5. Reconcile each wave before starting the next one.
-6. Validate completed epics when applicable.
-7. Prepare the final handoff or final PR.
+Start with wddctl constitution status and wddctl next. Ratify the reviewed configuration only after Ivo approves its exact content. Create an epic via the controller, complete intake, review the plan and run preview/dry-run before applying an approved plan. Dispatch only after the necessary task permissions are established.
 
-WDD itself is text-only. It does not require a CLI, scripts, package
-installation, generated validators, or runtime integration with Talon.
+The templates/ and work/ directories are legacy planning references. They remain for historical context and must not override the constitution, current CLI or AGENTS.md. EPIC-browservoice is an unactivated draft prepared before controller initialization; import its content into a controller-created namespace when that plan is approved.
+
+Current setup is local and requires human merge approval. Governance was ratified by Ivo on 2026-10-11; the authoritative ratification is in controller state. The approved constitution text is retained byte-for-byte, including its draft-era frontmatter, to preserve that fingerprint. The active browservoice plan is in epics/browservoice; EPIC-browservoice is the superseded draft. No implementation workers have started.

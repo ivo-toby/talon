@@ -1,0 +1,5 @@
+dispatch/
+.*.lock
+.*.tmp
+state.json.v2.bak
+constitution.md.pre-config
