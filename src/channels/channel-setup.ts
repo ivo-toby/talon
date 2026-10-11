@@ -59,6 +59,13 @@ export function registerVoiceChannel(
   const existing = deps.channelRepo.findByName(name);
   if (existing.isErr()) return err(existing.error);
   if (existing.value) {
+    if (existing.value.type !== BROWSER_VOICE_CHANNEL_TYPE) {
+      return err(
+        new DbError(
+          `Channel name "${name}" is already used by ${existing.value.type}; refusing to adopt it for browser voice`,
+        ),
+      );
+    }
     const updated = deps.channelRepo.update(existing.value.id, {
       type: BROWSER_VOICE_CHANNEL_TYPE,
       config: '{}',
@@ -120,7 +127,25 @@ export function registerVoiceConnector(
   const channel = deps.channelRepo.findByName(name);
   if (channel.isErr()) return err(channel.error);
   if (!channel.value) return err(new DbError(`Browser voice channel "${name}" was not found`));
-  if (deps.channelRegistry.get(name)) return ok(undefined);
+  if (channel.value.type !== BROWSER_VOICE_CHANNEL_TYPE) {
+    return err(
+      new DbError(
+        `Channel name "${name}" is already used by ${channel.value.type}; refusing to register browser voice`,
+      ),
+    );
+  }
+  const existingConnector = deps.channelRegistry.get(name);
+  if (existingConnector) {
+    if (
+      existingConnector.type !== BROWSER_VOICE_CHANNEL_TYPE ||
+      !(existingConnector instanceof BrowserVoiceConnector)
+    ) {
+      return err(
+        new DbError(`Channel connector "${name}" is not the browser voice connector`),
+      );
+    }
+    return ok(undefined);
+  }
 
   deps.channelRegistry.register(
     new BrowserVoiceConnector({
