@@ -102,6 +102,54 @@ resultaat.` Dat moet samen met input-transcriptfragmenten, de daaropvolgende
 delegatie-offset en een acknowledgement met hetzelfde delegatie-ID worden
 waargenomen. Deze tekst beschrijft een volgende proef; die is niet uitgevoerd.
 
+## Stille WebRTC-proef met synthetische invoer
+
+Om transcriptie zonder microfoon te testen is daarna precies één extra
+WebRTC-poging uitgevoerd. De lokale macOS-spraaksynthetiseerder schreef de
+vaste Engelse zin naar een tijdelijk AIFF-bestand; `afconvert` maakte daarvan
+een 24 kHz mono-WAV. Er is geen `afplay` of andere afspeelopdracht uitgevoerd.
+
+```text
+say -v Samantha -o <temporary-dir>/request.aiff \
+  'For the silent browser probe, look up testcode731 and wait for the client result.'
+afconvert -f WAVE -d LEI16@24000 <temporary-dir>/request.aiff \
+  -o <temporary-dir>/request.wav
+env -u OPENAI_BASE_URL PROBE_AUDIO_PATH=<temporary-dir>/request.wav \
+  node --env-file=/Users/ivo.toby/workspace/talon/.env \
+  .wdd/epics/browservoice/evidence/TASK-01-live-probe.mjs
+```
+
+Open daarna `http://127.0.0.1:8787/?mode=synthetic` and click **Start
+synthetic probe**. Deze expliciete modus gebruikt
+`AudioContext.createMediaStreamDestination()` zonder verbinding met
+`AudioContext.destination`; de browser vraagt geen microfoon en maakt geen
+`audio.srcObject` voor provideroutput. De modus stuurt de directe
+`session.update`-mutatie één keer via het WebRTC-datachannel en sluit na een
+handmatige close of de harde 60-secondenlimiet. Een `session.closed`-event
+ruimt de synthetische track, datachannel en peerconnection op; bij ontbrekende
+finalisatie volgt de bestaande begrensde REST-hangup en browsercleanup.
+
+De poging maakte een sessie met HTTP 201, opende de sideband en kreeg
+`session.started`. Er kwamen 15 input-transcriptfragmenten en 15 provider
+voice-seconden binnen in ongeveer 11,7 seconden; output-transcriptfragmenten
+bleven op nul. Er was geen `session.delegation.created`, geen
+delegatie-offset en geen commentary-acknowledgement. De directe clientmutatie
+was verzonden; kort daarna meldde de sideband `immutable_field_update`, maar
+het bewaarde event bevatte geen client-event-ID waarmee deze fout in deze run
+veilig aan de mutatie kon worden gekoppeld. Daarom telt dit als
+`NEEDS_CONTEXT`, niet als bewezen mutatieafwijzing. De harness matcht voor
+volgende runs ook een geneste `error.event_id`, zonder deze run achteraf te
+herinterpreteren.
+
+De provider sloot netjes met `session.closed`, reden `close_requested`, en de
+server rapporteerde geen resterende cleanup. Er is geen Talon-daemon,
+backendmodel, tool, MCP-server of externe actie gebruikt. Provider-audio is
+alleen als inkomende WebRTC-track ontvangen en direct uitgeschakeld; er is
+geen hoorbare output beoordeeld. De status blijft `NEEDS_CONTEXT`: de
+synthetische WebRTC-transport- en transcriptieketen is aangetoond, maar de
+verplichte koppeling transcript → clientdelegatie → offset → acknowledgement
+is in deze ene poging niet waargenomen.
+
 ## Gemeten run
 
 De run op 11 oktober 2026 gebruikte één geldige sessiepoging. De browser kreeg
@@ -148,20 +196,20 @@ kwaliteitsmeting en vervangt geen gecontroleerd delegatie- of interruptiebewijs.
 
 Vul alleen met gemeten waarden in. `PENDING` betekent onbekend, niet geslaagd.
 
-| Controle                   | Verwacht bewijs                                                                     | Gemeten resultaat                                                   |
-| -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| Modeltoegang               | `GET /v1/models/gpt-live-1` bevestigt toegang                                       | `HTTP 200; model_access=yes`                                        |
-| Nederlandse beurt          | Transcriptvolgorde, offsets en eerste bruikbare respons                             | `PENDING`                                                           |
-| Correctie                  | Nieuwe contextfragmenten na eerdere fragmenten; geen gokken bij ontbrekende context | `PENDING`                                                           |
-| Clientdelegatie            | Delegatie-ID/offset/target; geen backendactie                                       | `NEEDS_CONTEXT; stille run geen event; gesproken koppeling pending` |
-| Sideband ownership         | Server-statusupdate geaccepteerd                                                    | `PASS; session.thinking.appended`                                   |
-| Clientmutatie              | Direct WebRTC-datachannel-commando wordt geweigerd of fout gemeld                   | `PENDING; oude sideband-afwijzing telt niet`                        |
-| Input mute                 | `session.input_audio.muted` en unmuted-ack                                          | `PASS; muted + unmuted`                                             |
-| Hoorbare output            | Handmatige bevestiging door Ivo                                                     | `PASS; gehoord en overtuigend gerapporteerd`                        |
-| Natuurlijke interruptie    | Alleen handmatig beoordeeld wanneer output tijdens nieuwe spraak liep               | `PENDING`                                                           |
-| Aanvullende handmatige run | Gebruikersrapport van gehoorde output en correctie                                  | `USER_REPORTED; "gedaan! Werkt mooi!"; geen delegatie-event`        |
-| Graceful close             | `session.closed`, reden, cumulatieve usage, cleanup                                 | `PASS provider; media-cleanup opnieuw te browseren`                 |
-| Mislukte setup             | Ongeldige auth geweigerd; geen bruikbare sessie                                     | `PASS; HTTP 401; rejected`                                          |
+| Controle                   | Verwacht bewijs                                                                     | Gemeten resultaat                                                                      |
+| -------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Modeltoegang               | `GET /v1/models/gpt-live-1` bevestigt toegang                                       | `HTTP 200; model_access=yes`                                                           |
+| Nederlandse beurt          | Transcriptvolgorde, offsets en eerste bruikbare respons                             | `PENDING`                                                                              |
+| Correctie                  | Nieuwe contextfragmenten na eerdere fragmenten; geen gokken bij ontbrekende context | `PENDING`                                                                              |
+| Clientdelegatie            | Delegatie-ID/offset/target; geen backendactie                                       | `NEEDS_CONTEXT; WebRTC-synthetische run had 15 inputfragmenten maar geen event of ack` |
+| Sideband ownership         | Server-statusupdate geaccepteerd                                                    | `PASS; session.thinking.appended`                                                      |
+| Clientmutatie              | Direct WebRTC-datachannel-commando wordt geweigerd of fout gemeld                   | `NEEDS_CONTEXT; immutable_field_update zonder behouden client-event-ID`                |
+| Input mute                 | `session.input_audio.muted` en unmuted-ack                                          | `PASS; muted + unmuted`                                                                |
+| Hoorbare output            | Handmatige bevestiging door Ivo                                                     | `PASS; gehoord en overtuigend gerapporteerd`                                           |
+| Natuurlijke interruptie    | Alleen handmatig beoordeeld wanneer output tijdens nieuwe spraak liep               | `PENDING`                                                                              |
+| Aanvullende handmatige run | Gebruikersrapport van gehoorde output en correctie                                  | `USER_REPORTED; "gedaan! Werkt mooi!"; geen delegatie-event`                           |
+| Graceful close             | `session.closed`, reden, cumulatieve usage, cleanup                                 | `PASS provider; synthetic run 15 seconden, geen server-cleanup nodig`                  |
+| Mislukte setup             | Ongeldige auth geweigerd; geen bruikbare sessie                                     | `PASS; HTTP 401; rejected`                                                             |
 
 ## Bronnen
 

@@ -1,5 +1,6 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import WebSocket from 'ws';
 
 const HOST = '127.0.0.1';
@@ -12,6 +13,9 @@ const REQUEST_TIMEOUT_MS = 15_000;
 const HANGUP_TIMEOUT_MS = 5_000;
 const CLOSE_GRACE_MS = 5_000;
 const MAX_EVENTS = 250;
+const SYNTHETIC_AUDIO_PATH = process.env.PROBE_AUDIO_PATH ?? null;
+const SYNTHETIC_REQUEST =
+  'For the silent browser probe, look up testcode731 and wait for the client result.';
 
 const apiKey = process.env.OPENAI_API_KEY;
 if (!apiKey) {
@@ -37,11 +41,12 @@ const page = `<!doctype html>
 <body>
   <h1>TASK-01 GPT-Live probe</h1>
   <p class="warn">Disposable probe. No Talon daemon, persona, queue, MCP, native tool, or external action is connected.</p>
-  <p>Click start, allow microphone access, and speak the two short Dutch turns below. The page records event types and timing only, not transcript text or audio.</p>
+  <p id="manual-instructions">Click start, allow microphone access, and speak the two short Dutch turns below. The page records event types and timing only, not transcript text or audio.</p>
+  <p id="synthetic-instructions" hidden>The synthetic mode writes a fixed request to a local audio file, streams it through a Web Audio media-stream destination, and never connects that destination or provider output to a speaker.</p>
   <ol>
-    <li>Zeg: “Vertel kort iets over Amsterdam.”</li>
-    <li>Onderbreek de hoorbare respons met: “Nee, ik bedoel Rotterdam.”</li>
-    <li>Gebruik <strong>mute input</strong> niet als vervanging voor deze hoorbare onderbreking.</li>
+    <li id="manual-step-one">Zeg: “Vertel kort iets over Amsterdam.”</li>
+    <li id="manual-step-two">Onderbreek de hoorbare respons met: “Nee, ik bedoel Rotterdam.”</li>
+    <li id="manual-step-three">Gebruik <strong>mute input</strong> niet als vervanging voor deze hoorbare onderbreking.</li>
     <li>Klik na de waarneming op <strong>Close session</strong>.</li>
   </ol>
   <p>
@@ -59,12 +64,19 @@ const page = `<!doctype html>
     let pc;
     let dc;
     let microphone;
+    let syntheticContext;
+    let syntheticSource;
+    let syntheticDestination;
     let sessionId;
     let closed = false;
+    let mutationSent = false;
     let renderedEventCount = 0;
+    const syntheticMode = new URLSearchParams(location.search).get("mode") === "synthetic";
     const state = document.querySelector("#state");
     const events = document.querySelector("#events");
     const audio = document.querySelector("#audio");
+    const manualInstructions = document.querySelector("#manual-instructions");
+    const syntheticInstructions = document.querySelector("#synthetic-instructions");
     const buttons = {
       start: document.querySelector("#start"),
       status: document.querySelector("#status"),
@@ -128,20 +140,82 @@ const page = `<!doctype html>
       }
     }
 
-    function cleanup(stopMicrophone = true) {
-      if (stopMicrophone) microphone?.getTracks().forEach((track) => track.stop());
+    function cleanup(stopInput = true) {
+      if (stopInput) microphone?.getTracks().forEach((track) => track.stop());
+      if (stopInput) {
+        if (syntheticSource) {
+          try {
+            syntheticSource.stop();
+          } catch {
+            // The source may already have ended.
+          }
+          syntheticSource.disconnect();
+          syntheticSource = undefined;
+        }
+        syntheticDestination?.stream.getTracks().forEach((track) => track.stop());
+        syntheticDestination = undefined;
+        void syntheticContext?.close();
+        syntheticContext = undefined;
+      }
       if (dc && dc.readyState !== "closed") dc.close();
       if (pc && pc.connectionState !== "closed") pc.close();
-      if (stopMicrophone) setActive(false);
+      if (stopInput) setActive(false);
+    }
+
+    async function createSyntheticInput() {
+      const response = await fetch("/synthetic-audio");
+      if (!response.ok) throw new Error("synthetic_audio_unavailable");
+      const encoded = await response.arrayBuffer();
+      const context = new AudioContext();
+      await context.resume();
+      const buffer = await context.decodeAudioData(encoded);
+      const destination = context.createMediaStreamDestination();
+      const source = context.createBufferSource();
+      source.buffer = buffer;
+      source.connect(destination);
+      source.onended = () => write("browser synthetic_audio=ended");
+      source.start();
+      syntheticContext = context;
+      syntheticDestination = destination;
+      syntheticSource = source;
+      write("browser synthetic_audio=media_stream_destination_only");
+      return destination.stream.getAudioTracks()[0];
+    }
+
+    function sendClientMutation() {
+      if (mutationSent) return;
+      if (!dc || dc.readyState !== "open") {
+        write("browser client_mutation=unavailable");
+        return;
+      }
+      mutationSent = true;
+      dc.send(JSON.stringify({
+        type: "session.update",
+        event_id: "probe_client_mutation",
+        session: {
+          delegation: {
+            type: "responses",
+            responses: { model: "gpt-6-luna" },
+          },
+        },
+      }));
+      write("browser client_mutation=data_channel_sent");
     }
 
     async function start() {
       buttons.start.disabled = true;
-      state.textContent = "state=requesting_microphone";
+      state.textContent = syntheticMode ? "state=requesting_synthetic_audio" : "state=requesting_microphone";
       try {
-        microphone = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const inputTrack = syntheticMode
+          ? await createSyntheticInput()
+          : (microphone = await navigator.mediaDevices.getUserMedia({ audio: true })).getAudioTracks()[0];
         pc = new RTCPeerConnection();
         pc.ontrack = (event) => {
+          if (syntheticMode) {
+            for (const track of event.streams[0]?.getAudioTracks() ?? []) track.enabled = false;
+            write("browser remote_audio=discarded");
+            return;
+          }
           audio.srcObject = event.streams[0];
           audio.play().catch(() => write("browser audio=autoplay_pending"));
         };
@@ -149,19 +223,25 @@ const page = `<!doctype html>
           state.textContent = "state=connection_" + pc.connectionState;
         };
         dc = pc.createDataChannel("oai-events");
-        dc.onopen = () => write("browser data_channel=open");
+        dc.onopen = () => {
+          write("browser data_channel=open");
+          if (syntheticMode) setTimeout(sendClientMutation, 500);
+        };
         dc.onclose = () => write("browser data_channel=closed");
         dc.onmessage = (event) => receive(event.data);
-        pc.addTrack(microphone.getAudioTracks()[0]);
+        pc.addTrack(inputTrack);
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        const created = await post("/session", { sdp: offer.sdp });
+        const created = await post("/session", {
+          sdp: offer.sdp,
+          mode: syntheticMode ? "synthetic" : "manual",
+        });
         sessionId = created.session.id;
         await pc.setRemoteDescription({ type: "answer", sdp: created.transport.sdp });
         await post("/attach", { sessionId });
         state.textContent = "state=connected session_id=" + sessionId;
         setActive(true);
-        write("probe session=created model=" + "${MODEL}");
+        write("probe session=created model=" + "${MODEL}" + " mode=" + (syntheticMode ? "synthetic" : "manual"));
       } catch (error) {
         state.textContent = "state=failed";
         write("probe start_error=" + (error?.message ?? "unknown"));
@@ -181,23 +261,7 @@ const page = `<!doctype html>
 
     buttons.start.onclick = start;
     buttons.status.onclick = () => command("status");
-    buttons.mutation.onclick = () => {
-      if (!dc || dc.readyState !== "open") {
-        write("browser client_mutation=unavailable");
-        return;
-      }
-      dc.send(JSON.stringify({
-        type: "session.update",
-        event_id: "probe_client_mutation",
-        session: {
-          delegation: {
-            type: "responses",
-            responses: { model: "gpt-6-luna" },
-          },
-        },
-      }));
-      write("browser client_mutation=data_channel_sent");
-    };
+    buttons.mutation.onclick = sendClientMutation;
     buttons.mute.onclick = () => command("mute");
     buttons.unmute.onclick = () => command("unmute");
     buttons.close.onclick = () => command("close");
@@ -225,6 +289,15 @@ const page = `<!doctype html>
       }
       renderedEventCount = result.events.length;
     }, 1000);
+
+    if (syntheticMode) {
+      manualInstructions.hidden = true;
+      syntheticInstructions.hidden = false;
+      for (const id of ["#manual-step-one", "#manual-step-two", "#manual-step-three"]) {
+        document.querySelector(id).hidden = true;
+      }
+      buttons.start.textContent = "Start synthetic probe";
+    }
   </script>
 </body>
 </html>`;
@@ -317,12 +390,14 @@ function providerEventSummary(event) {
   if (Number.isFinite(event?.end_ms)) summary.end_ms = event.end_ms;
   if (typeof event?.delta === 'string') summary.delta_chars = event.delta.length;
   if (event?.delegation?.id) summary.delegation_id = event.delegation.id;
+  if (event?.delegation_id) summary.delegation_id = event.delegation_id;
   if (event?.delegation?.target) summary.target = event.delegation.target;
   if (Number.isFinite(event?.usage?.seconds)) summary.voice_seconds = event.usage.seconds;
   if (event?.reason) summary.reason = event.reason;
   if (event?.client_event_id) summary.client_event_id = event.client_event_id;
   if (event?.error?.code) summary.error_code = event.error.code;
   if (event?.error?.type) summary.error_type = event.error.type;
+  if (event?.error?.event_id) summary.error_event_id = event.error.event_id;
   if (event?.type === 'response.event' && event.event?.type) {
     summary.nested_provider_type = event.event.type;
   }
@@ -406,26 +481,44 @@ function attachSideband(sessionId) {
       return;
     }
     record('provider_event', providerEventSummary(event));
+    if (event.type === 'session.input_transcript.delta') state.active.inputTranscriptFragments += 1;
+    if (event.type === 'session.output_transcript.delta')
+      state.active.outputTranscriptFragments += 1;
     if (event.type === 'session.usage.updated' && Number.isFinite(event.usage?.seconds)) {
       state.active.voiceSeconds = event.usage.seconds;
     }
     if (event.type === 'session.delegation.created' && event.delegation?.id) {
       state.active.delegationIds.push(event.delegation.id);
+      if (Number.isFinite(event.offset_ms)) state.active.delegationOffsetMs = event.offset_ms;
       if (!state.active.delegationReplySent) {
         state.active.delegationReplySent = true;
+        const eventId = `probe_delegation_observed_${randomUUID()}`;
+        state.active.commentaryEventId = eventId;
         sendSideband({
           type: 'session.commentary.append',
-          event_id: `probe_delegation_observed_${randomUUID()}`,
+          event_id: eventId,
           delegation_id: event.delegation.id,
           content: 'De proef heeft de aanvraag ontvangen. Er wordt geen backendactie uitgevoerd.',
         });
       }
     }
+    if (
+      event.type === 'session.commentary.appended' &&
+      event.client_event_id === state.active.commentaryEventId
+    ) {
+      state.active.commentaryAcknowledged = true;
+    }
     if (event.type === 'session.updated' && event.client_event_id === 'probe_client_mutation') {
       record('client_mutation_unexpectedly_accepted');
       void closeSession('unexpected_client_mutation_acceptance', true);
     }
-    if (event.type === 'error' && event.client_event_id === 'probe_client_mutation') {
+    if (
+      event.type === 'error' &&
+      (event.client_event_id === 'probe_client_mutation' ||
+        event.error?.event_id === 'probe_client_mutation' ||
+        event.event_id === 'probe_client_mutation')
+    ) {
+      state.active.clientMutationRejected = true;
       record('client_mutation_rejected', { error_code: event.error?.code ?? 'unknown' });
     }
     if (event.type === 'session.closed') {
@@ -445,7 +538,7 @@ function attachSideband(sessionId) {
   sideband.on('close', () => record('sideband_closed'));
 }
 
-async function createLiveSession(offerSdp) {
+async function createLiveSession(offerSdp, syntheticMode) {
   startBudget();
   if (remainingMs() <= 0) throw new Error('budget_exhausted');
   const body = {
@@ -454,10 +547,15 @@ async function createLiveSession(offerSdp) {
       store: false,
       delegation: { type: 'client' },
       audio: { output: { voice: OUTPUT_VOICE } },
-      instructions:
-        'Spreek kort Nederlands. Dit is een begrensde connectiviteitsproef. ' +
-        'Beantwoord de gebruiker direct. Gebruik clientdelegatie voor de eerste aanvraag ' +
-        'en wacht op een korte bevestiging; er is geen backendactie of externe actie beschikbaar.',
+      instructions: syntheticMode
+        ? 'This is a bounded silent technical probe. The user will speak this fixed request: ' +
+          SYNTHETIC_REQUEST +
+          ' ' +
+          'Use client delegation for that request, wait for the application commentary acknowledgement, ' +
+          'and do not perform any backend, tool, service, account, or external action.'
+        : 'Spreek kort Nederlands. Dit is een begrensde connectiviteitsproef. ' +
+          'Beantwoord de gebruiker direct. Gebruik clientdelegatie voor de eerste aanvraag ' +
+          'en wacht op een korte bevestiging; er is geen backendactie of externe actie beschikbaar.',
     },
     transport: { type: 'webrtc', sdp: offerSdp },
   };
@@ -481,8 +579,15 @@ async function createLiveSession(offerSdp) {
     closeRequested: false,
     finalized: false,
     finalizationTimedOut: false,
+    syntheticMode,
     delegationReplySent: false,
     delegationIds: [],
+    delegationOffsetMs: null,
+    inputTranscriptFragments: 0,
+    outputTranscriptFragments: 0,
+    commentaryEventId: null,
+    commentaryAcknowledged: false,
+    clientMutationRejected: false,
     hangupAttempted: false,
     voiceSeconds: null,
     closeReason: null,
@@ -559,6 +664,15 @@ async function route(request, response) {
   const url = new URL(request.url ?? '/', `http://${HOST}:${PORT}`);
   if (request.method === 'GET' && url.pathname === '/')
     return text(response, 200, page, 'text/html; charset=utf-8');
+  if (request.method === 'GET' && url.pathname === '/synthetic-audio') {
+    if (!SYNTHETIC_AUDIO_PATH) return json(response, 404, { error: 'synthetic_audio_unavailable' });
+    try {
+      const audio = await readFile(SYNTHETIC_AUDIO_PATH);
+      return text(response, 200, audio, 'audio/wav');
+    } catch {
+      return json(response, 404, { error: 'synthetic_audio_unavailable' });
+    }
+  }
   if (request.method === 'GET' && url.pathname === '/state') {
     const active = state.active;
     return json(response, 200, {
@@ -572,6 +686,13 @@ async function route(request, response) {
       budget_elapsed_ms: elapsedMs(),
       budget_remaining_ms: remainingMs(),
       voice_seconds: active?.voiceSeconds ?? null,
+      synthetic_mode: active?.syntheticMode ?? false,
+      input_transcript_fragments: active?.inputTranscriptFragments ?? 0,
+      output_transcript_fragments: active?.outputTranscriptFragments ?? 0,
+      delegation_count: active?.delegationIds.length ?? 0,
+      delegation_offset_ms: active?.delegationOffsetMs ?? null,
+      commentary_acknowledged: active?.commentaryAcknowledged ?? false,
+      client_mutation_rejected: active?.clientMutationRejected ?? false,
       finalized: active?.finalized ?? false,
       cleanup_required: active?.finalizationTimedOut ?? false,
       create_attempted: state.createAttempted,
@@ -594,8 +715,10 @@ async function route(request, response) {
     state.createAttempted = true;
     if (typeof body.sdp !== 'string' || body.sdp.length < 32)
       return json(response, 400, { error: 'invalid_sdp' });
+    if (body.mode !== undefined && body.mode !== 'manual' && body.mode !== 'synthetic')
+      return json(response, 400, { error: 'invalid_probe_mode' });
     try {
-      const created = await createLiveSession(body.sdp);
+      const created = await createLiveSession(body.sdp, body.mode === 'synthetic');
       return json(response, 201, {
         session: { id: created.session.id },
         transport: { type: 'webrtc', sdp: created.transport.sdp },
@@ -651,4 +774,5 @@ process.once('SIGTERM', () => void shutdown('SIGTERM'));
 server.listen(PORT, HOST, () => {
   console.log(`probe_url=http://${HOST}:${PORT}`);
   console.log(`probe_model=${MODEL} max_budget_seconds=${MAX_BUDGET_MS / 1000}`);
+  console.log(`synthetic_audio_available=${SYNTHETIC_AUDIO_PATH ? 'yes' : 'no'}`);
 });
