@@ -435,6 +435,7 @@ function providerEventSummary(event) {
   if (event?.error?.code) summary.error_code = event.error.code;
   if (event?.error?.type) summary.error_type = event.error.type;
   if (event?.error?.event_id) summary.error_event_id = event.error.event_id;
+  if (event?.error?.client_event_id) summary.error_client_event_id = event.error.client_event_id;
   if (event?.type === 'response.event' && event.event?.type) {
     summary.nested_provider_type = event.event.type;
   }
@@ -554,6 +555,7 @@ function attachSideband(sessionId) {
     }
     const mutationErrorHasId =
       event.client_event_id === 'probe_client_mutation' ||
+      event.error?.client_event_id === 'probe_client_mutation' ||
       event.error?.event_id === 'probe_client_mutation' ||
       event.event_id === 'probe_client_mutation';
     const mutationErrorIsTemporallyCorrelated =
