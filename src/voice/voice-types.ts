@@ -234,16 +234,28 @@ export interface VoicePolicyEvaluator {
 // ---------------------------------------------------------------------------
 
 /**
- * Opaque client configuration returned by a provider/transport handshake.
- * It may contain an SDP answer or an equivalent transport descriptor and is
- * sent only in the create-session response; it is never persisted or logged.
+ * Client configuration returned by a provider/transport handshake. It is sent
+ * only in the create-session response; it is never persisted or logged.
  */
 export interface VoiceClientSessionDescriptor {
   readonly transport: VoiceTransportKind;
   readonly sessionId: VoiceSessionId;
   readonly providerSessionId: LiveProviderSessionId;
-  readonly descriptor: string;
+  /** Server/provider answer for the browser's transport offer. */
+  readonly answer: VoiceTransportAnswer;
   readonly expiresAt: number;
+}
+
+/** Browser/client offer accepted by the selected transport adapter. */
+export interface VoiceTransportOffer {
+  readonly type: VoiceTransportKind;
+  readonly sdp: string;
+}
+
+/** Provider/transport answer returned after accepting a client offer. */
+export interface VoiceTransportAnswer {
+  readonly type: VoiceTransportKind;
+  readonly sdp: string;
 }
 
 /** Default selected by Talon's browservoice configuration. */
@@ -262,6 +274,7 @@ export interface LiveVoiceSessionRequest {
   readonly modelName: string;
   readonly instructions: string;
   readonly delegationMode: 'client';
+  readonly transport: VoiceTransportOffer;
   readonly audio: {
     readonly output: VoiceAudioOutputSettings;
   };
@@ -648,8 +661,8 @@ export interface VoiceBackendBridge {
 // ---------------------------------------------------------------------------
 
 export interface VoiceSessionCreateRequest {
-  /** Server-side configuration chooses the persona, provider, and tools. */
-  readonly transport: VoiceTransportKind;
+  /** Server-side configuration chooses the persona, provider, and tools; offer data only opens transport. */
+  readonly transport: VoiceTransportOffer;
 }
 
 export interface VoiceSessionCreateResult {
@@ -785,8 +798,8 @@ export interface VoiceLogoutResponse {
 }
 
 export interface VoiceCreateSessionHttpRequest {
-  /** Checked against the server's enabled transport set; never a provider selector. */
-  readonly transport: VoiceTransportKind;
+  /** `transport.type` is checked against enabled transports; it never selects a provider. */
+  readonly transport: VoiceTransportOffer;
 }
 
 export interface VoiceCreateSessionHttpResponse {

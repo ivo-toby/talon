@@ -9,6 +9,7 @@ const MODEL = 'gpt-live-1';
 const OUTPUT_VOICE = 'marin';
 const MAX_BUDGET_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 15_000;
+const HANGUP_TIMEOUT_MS = 5_000;
 const CLOSE_GRACE_MS = 5_000;
 const MAX_EVENTS = 250;
 
@@ -106,7 +107,7 @@ const page = `<!doctype html>
       if (event.type === "session.closed") {
         closed = true;
         buttons.close.disabled = true;
-        cleanup(false);
+        cleanup();
       }
     }
 
@@ -180,7 +181,23 @@ const page = `<!doctype html>
 
     buttons.start.onclick = start;
     buttons.status.onclick = () => command("status");
-    buttons.mutation.onclick = () => command("client-mutation");
+    buttons.mutation.onclick = () => {
+      if (!dc || dc.readyState !== "open") {
+        write("browser client_mutation=unavailable");
+        return;
+      }
+      dc.send(JSON.stringify({
+        type: "session.update",
+        event_id: "probe_client_mutation",
+        session: {
+          delegation: {
+            type: "responses",
+            responses: { model: "gpt-6-luna" },
+          },
+        },
+      }));
+      write("browser client_mutation=data_channel_sent");
+    };
     buttons.mute.onclick = () => command("mute");
     buttons.unmute.onclick = () => command("unmute");
     buttons.close.onclick = () => command("close");
@@ -188,6 +205,11 @@ const page = `<!doctype html>
     setInterval(async () => {
       const result = await fetch("/state").then((response) => response.json()).catch(() => null);
       if (!result) return;
+      if (result.cleanup_required && !closed) {
+        closed = true;
+        write("browser cleanup=forced_after_incomplete_finalization");
+        cleanup();
+      }
       state.textContent = "state=" + result.state
         + " budget_elapsed_ms=" + result.budget_elapsed_ms
         + " budget_remaining_ms=" + result.budget_remaining_ms
@@ -327,6 +349,21 @@ function startBudget() {
   }, MAX_BUDGET_MS);
 }
 
+async function requestHangup(active, reason) {
+  if (active.hangupAttempted || !active.sessionId) return;
+  active.hangupAttempted = true;
+  try {
+    const response = await openAi(
+      `/v1/live/sessions/${encodeURIComponent(active.sessionId)}/hangup`,
+      { method: 'POST' },
+      HANGUP_TIMEOUT_MS,
+    );
+    record('rest_hangup', { status: response.status, reason });
+  } catch {
+    record('rest_hangup', { status: 'network_or_timeout', reason });
+  }
+}
+
 async function closeSession(reason, force = false) {
   const active = state.active;
   if (!active || active.closeRequested) return;
@@ -337,23 +374,15 @@ async function closeSession(reason, force = false) {
     event_id: `probe_close_${randomUUID()}`,
   });
   if (!sent && active.sessionId) {
-    try {
-      const response = await openAi(
-        `/v1/live/sessions/${encodeURIComponent(active.sessionId)}/hangup`,
-        {
-          method: 'POST',
-        },
-      );
-      record('rest_hangup', { status: response.status });
-    } catch {
-      record('rest_hangup', { status: 'network_or_timeout' });
-    }
+    await requestHangup(active, 'sideband_unavailable');
   }
   setTimeout(
     () => {
       if (state.active?.sessionId === active.sessionId && !active.finalized) {
         record('finalization_timeout');
         active.finalized = false;
+        active.finalizationTimedOut = true;
+        void requestHangup(active, 'finalization_timeout');
         active.sideband?.close();
       }
     },
@@ -395,6 +424,9 @@ function attachSideband(sessionId) {
     if (event.type === 'session.updated' && event.client_event_id === 'probe_client_mutation') {
       record('client_mutation_unexpectedly_accepted');
       void closeSession('unexpected_client_mutation_acceptance', true);
+    }
+    if (event.type === 'error' && event.client_event_id === 'probe_client_mutation') {
+      record('client_mutation_rejected', { error_code: event.error?.code ?? 'unknown' });
     }
     if (event.type === 'session.closed') {
       state.active.finalized = true;
@@ -448,8 +480,10 @@ async function createLiveSession(offerSdp) {
     sideband: null,
     closeRequested: false,
     finalized: false,
+    finalizationTimedOut: false,
     delegationReplySent: false,
     delegationIds: [],
+    hangupAttempted: false,
     voiceSeconds: null,
     closeReason: null,
   };
@@ -508,18 +542,6 @@ async function command(name) {
       content: 'Probe status: no backend task or external action is running.',
     });
   }
-  if (name === 'client-mutation') {
-    return sendSideband({
-      type: 'session.update',
-      event_id: 'probe_client_mutation',
-      session: {
-        delegation: {
-          type: 'responses',
-          responses: { model: 'gpt-6-luna' },
-        },
-      },
-    });
-  }
   if (name === 'mute' || name === 'unmute') {
     return sendSideband({
       type: `session.input_audio.${name}`,
@@ -551,6 +573,7 @@ async function route(request, response) {
       budget_remaining_ms: remainingMs(),
       voice_seconds: active?.voiceSeconds ?? null,
       finalized: active?.finalized ?? false,
+      cleanup_required: active?.finalizationTimedOut ?? false,
       create_attempted: state.createAttempted,
       invalid_attempted: state.invalidAttempted,
     });

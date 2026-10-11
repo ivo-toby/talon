@@ -1,8 +1,8 @@
 # TASK-01 live haalbaarheidsproef
 
-Status: `NEEDS_CONTEXT` — de provider- en lifecycle-proef slaagde; de twee
-gecontroleerde Nederlandse spreekbeurten en natuurlijke interruptie zijn niet
-handmatig uitgevoerd en blijven onbewezen.
+Status: `NEEDS_CONTEXT` — de provider- en lifecycle-proef slaagden en Ivo
+rapporteerde hoorbare output; gecontroleerde clientdelegatie en natuurlijke
+interruptie blijven onbewezen.
 
 ## Preflight
 
@@ -21,6 +21,7 @@ De sleutel is uitsluitend als `OPENAI_API_KEY` in het probeproces geladen. De pr
 De bevroren TypeScript-grens staat in `src/voice/voice-types.ts`:
 
 - `VoiceTransport` opent/sluit een transport en rapporteert transport- en playbackstatus; een fake tweede transport kan dezelfde interface gebruiken.
+- `VoiceTransportOffer` en `VoiceTransportAnswer` maken de SDP-offer/answer expliciet in de HTTP-, service- en provider-creategrens; de browser krijgt alleen het server/providerantwoord terug.
 - `LiveVoiceProvider` maakt een provider-sessie, hecht een sideband en sluit de provider-sessie. Alleen de adapter ziet provider-eventnamen; de rest gebruikt genormaliseerde events.
 - `VoiceSessionService` bezit eigenaargebonden sessie/status/close, ontvangt uitsluitend server-side provider-events en verwerkt playbackrapporten.
 - `VoiceBackendBridge` laat alleen een servergemaakte `VoiceBackendRequest` toe. Persona, provider, tools, MCP en credentials komen uit de serverpolicy.
@@ -57,9 +58,49 @@ De budgettimer start vóór het eerste `POST /v1/live/sessions`-verzoek, zodat o
 1. Open `http://127.0.0.1:8787/` in een browser en klik **Start GPT-Live session**. Sta de microfoon toe. Controleer `session.started`, data-channel open en sideband open.
 2. Spreek in het Nederlands: `Vertel kort iets over Amsterdam.` Controleer `session.input_transcript.delta`, `session.output_transcript.delta` en hun `start_ms`/`end_ms`. Noteer alleen de handmatige hoorbare respons.
 3. Onderbreek de hoorbare respons met: `Nee, ik bedoel Rotterdam.` Controleer nieuwe input/output transcriptfragmenten en noteer natuurlijke onderbreking alleen als handmatige waarneming. Gebruik mute niet als vervanging voor deze test.
-4. Klik **Send sideband status**. Dit stuurt één vaste `session.thinking.append` met `delegation_id: null`. Klik daarna één keer **Attempt client backend mutation**. Dit probeert de delegatiemodus naar Responses te wijzigen; volgens het GPT-Live-contract moet een moduswissel tijdens de sessie worden geweigerd. Bij onverwachte acceptatie sluit het harnas direct en markeert het bewijs als zorg.
+4. Klik **Send sideband status**. Dit stuurt één vaste `session.thinking.append` met `delegation_id: null`. Klik daarna één keer **Attempt client backend mutation**. De browser stuurt nu rechtstreeks via het WebRTC-datachannel een `session.update` die de delegatiemodus naar Responses probeert te wijzigen; de server-side sideband registreert de providerafwijzing. Een oudere afwijzing van een sideband-commando telt niet als clientmutatiebewijs. Bij onverwachte acceptatie sluit het harnas direct en markeert het bewijs als zorg.
 5. Klik **Close session**. De server registreert de `session.closed`-listener al vóór het close-commando, houdt data channel, WebRTC en sideband open, en legt `reason` en laatste `usage.seconds` vast. Zonder `session.closed` blijft finalisatie `incomplete`.
-6. Stop de lokale server na het evidence-overzicht. Controleer dat er geen listener op poort 8787 overblijft.
+6. Stop de lokale server na het evidence-overzicht. Controleer dat er geen listener op poort 8787 overblijft. Bij ontbrekende `session.closed` probeert het harnas binnen vijf seconden de officiële hangup-route, markeert finalisatie als onvolledig en dwingt de browser tot transport-/microfooncleanup via `/state`.
+
+## Stille clientdelegatie-proef
+
+Omdat de gebruiker geen nieuwe microfoon- of playbackrun wilde, is één stille
+server-naar-server WebSocket-proef uitgevoerd. De procedure gebruikt de
+officiële `wss://api.openai.com/v1/live/sessions`-verbinding met een
+`session.start` waarin `gpt-live-1`, outputstem `marin`,
+`delegation: { type: "client" }` en één vaste `session.input`-gebruikersboodschap
+staan. De boodschap bevat de expliciete policytekst `Delegation policy: the
+probe backend confirms testcode731`, vraagt om één lookup van
+`BLUE-ORCHID-17` en verbiedt tools, services, accounts en externe acties. Na
+`session.started` stuurt het harnas één `session.instructions.append`, wacht op
+`session.delegation.created`, en zou het bij een echte delegatie precies één
+`session.commentary.append` met hetzelfde delegatie-ID terugsturen. Er worden
+geen microfoonbytes gestuurd en ontvangen audioframes worden genegeerd.
+
+Het commando laadt alleen de goedgekeurde sleutel in het proces en forceert
+`api.openai.com`:
+
+```text
+env -u OPENAI_BASE_URL node --env-file=/Users/ivo.toby/workspace/talon/.env \
+  .wdd/epics/browservoice/evidence/TASK-01-silent-delegation-probe.mjs
+```
+
+De timer start vóór de WebSocket-verbinding en stopt na maximaal 60 seconden;
+graceful close krijgt maximaal vijf seconden extra om `session.closed` te
+ontvangen. De enige poging startte de sessie na ongeveer 1,3 seconden en kreeg
+geen transcriptfragmenten, geen `session.delegation.created` en dus ook geen
+commentary-acknowledgement. Na ongeveer 31,2 seconden kwam
+`context_injection_incomplete`; het harnas vroeg `session.close` en ontving
+`session.closed` met reden `expired` en nul provider voice-seconden. Er is geen
+Talon-daemon, backendmodel, tool, MCP-server, microfoon of audioafspeling
+gebruikt. Resultaat: `NEEDS_CONTEXT`; seeded text history plus de instructie
+produceerden in deze ene poging geen delegatie-event.
+
+Voor het resterende bewijs is minimaal één expliciete gesproken beurt nodig,
+bijvoorbeeld: `Doe een backend lookup voor testcode731 en wacht op het
+resultaat.` Dat moet samen met input-transcriptfragmenten, de daaropvolgende
+delegatie-offset en een acknowledgement met hetzelfde delegatie-ID worden
+waargenomen. Deze tekst beschrijft een volgende proef; die is niet uitgevoerd.
 
 ## Gemeten run
 
@@ -79,10 +120,13 @@ beurt om aan de gevraagde zinnen toe te schrijven. Er kwamen wel output-
 transcriptfragmenten binnen terwijl de microfoon openstond; die tellen daarom
 niet als bewijs voor de Nederlandse beurt, correctie of antwoordkwaliteit.
 
-De server-side status werd bevestigd met `session.thinking.appended`. Een
-client-side poging om tijdens de sessie de delegatiemodus naar Responses te
-wijzigen werd geweigerd met `immutable_field_update`. Input mute en unmute
-werden beide bevestigd met de bijbehorende provider-acknowledgements.
+De server-side status werd bevestigd met `session.thinking.appended`. De in
+deze run vastgelegde `immutable_field_update` kwam uit een sideband-commando
+dat de server namens de pagina stuurde en telt daarom niet als bewijs tegen
+een onbetrouwbare WebRTC-clientmutatie. De probe-code stuurt die knop nu direct
+over het browser-datachannel; een nieuwe browserrun is nodig om de afwijzing te
+meten. Input mute en unmute werden beide bevestigd met de bijbehorende
+provider-acknowledgements.
 `session.closed` kwam binnen met reden `close_requested` en 35 usage-seconden.
 De ene opzettelijk ongeldige startup werd door het officiële endpoint met HTTP
 401 geweigerd. De harnasserver is na de run gestopt; de natuurlijke
@@ -104,20 +148,20 @@ kwaliteitsmeting en vervangt geen gecontroleerd delegatie- of interruptiebewijs.
 
 Vul alleen met gemeten waarden in. `PENDING` betekent onbekend, niet geslaagd.
 
-| Controle                   | Verwacht bewijs                                                                     | Gemeten resultaat                                            |
-| -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------ |
-| Modeltoegang               | `GET /v1/models/gpt-live-1` bevestigt toegang                                       | `HTTP 200; model_access=yes`                                 |
-| Nederlandse beurt          | Transcriptvolgorde, offsets en eerste bruikbare respons                             | `PENDING`                                                    |
-| Correctie                  | Nieuwe contextfragmenten na eerdere fragmenten; geen gokken bij ontbrekende context | `PENDING`                                                    |
-| Clientdelegatie            | Delegatie-ID/offset/target; geen backendactie                                       | `NEEDS_CONTEXT; geen gecontroleerde spraak, geen event`      |
-| Sideband ownership         | Server-statusupdate geaccepteerd                                                    | `PASS; session.thinking.appended`                            |
-| Clientmutatie              | Delegatiemoduswissel geweigerd of fout gemeld                                       | `PASS; immutable_field_update`                               |
-| Input mute                 | `session.input_audio.muted` en unmuted-ack                                          | `PASS; muted + unmuted`                                      |
-| Hoorbare output            | Handmatige bevestiging door Ivo                                                     | `PASS; gehoord en overtuigend gerapporteerd`                 |
-| Natuurlijke interruptie    | Alleen handmatig beoordeeld wanneer output tijdens nieuwe spraak liep               | `PENDING`                                                    |
-| Aanvullende handmatige run | Gebruikersrapport van gehoorde output en correctie                                  | `USER_REPORTED; "gedaan! Werkt mooi!"; geen delegatie-event` |
-| Graceful close             | `session.closed`, reden, cumulatieve usage, cleanup                                 | `PASS; close_requested; 35s; cleanup`                        |
-| Mislukte setup             | Ongeldige auth geweigerd; geen bruikbare sessie                                     | `PASS; HTTP 401; rejected`                                   |
+| Controle                   | Verwacht bewijs                                                                     | Gemeten resultaat                                                   |
+| -------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Modeltoegang               | `GET /v1/models/gpt-live-1` bevestigt toegang                                       | `HTTP 200; model_access=yes`                                        |
+| Nederlandse beurt          | Transcriptvolgorde, offsets en eerste bruikbare respons                             | `PENDING`                                                           |
+| Correctie                  | Nieuwe contextfragmenten na eerdere fragmenten; geen gokken bij ontbrekende context | `PENDING`                                                           |
+| Clientdelegatie            | Delegatie-ID/offset/target; geen backendactie                                       | `NEEDS_CONTEXT; stille run geen event; gesproken koppeling pending` |
+| Sideband ownership         | Server-statusupdate geaccepteerd                                                    | `PASS; session.thinking.appended`                                   |
+| Clientmutatie              | Direct WebRTC-datachannel-commando wordt geweigerd of fout gemeld                   | `PENDING; oude sideband-afwijzing telt niet`                        |
+| Input mute                 | `session.input_audio.muted` en unmuted-ack                                          | `PASS; muted + unmuted`                                             |
+| Hoorbare output            | Handmatige bevestiging door Ivo                                                     | `PASS; gehoord en overtuigend gerapporteerd`                        |
+| Natuurlijke interruptie    | Alleen handmatig beoordeeld wanneer output tijdens nieuwe spraak liep               | `PENDING`                                                           |
+| Aanvullende handmatige run | Gebruikersrapport van gehoorde output en correctie                                  | `USER_REPORTED; "gedaan! Werkt mooi!"; geen delegatie-event`        |
+| Graceful close             | `session.closed`, reden, cumulatieve usage, cleanup                                 | `PASS provider; media-cleanup opnieuw te browseren`                 |
+| Mislukte setup             | Ongeldige auth geweigerd; geen bruikbare sessie                                     | `PASS; HTTP 401; rejected`                                          |
 
 ## Bronnen
 
@@ -126,6 +170,7 @@ De actuele officiële documentatie is op 11 oktober 2026 opnieuw geraadpleegd:
 - [GPT-Live getting started](https://developers.openai.com/api/docs/guides/live)
 - [GPT-Live create session API reference](https://developers.openai.com/api/reference/python/resources/live/methods/create)
 - [GPT-Live client delegation](https://developers.openai.com/api/docs/guides/live-delegation)
+- [GPT-Live WebSockets](https://developers.openai.com/api/docs/guides/voice-websockets)
 - [GPT-Live session lifecycle](https://developers.openai.com/api/docs/guides/live-conversations)
 - [GPT-Live server-side controls and sideband](https://developers.openai.com/api/docs/guides/voice-server-controls)
 - [GPT-Live 1 model and pricing](https://developers.openai.com/api/docs/models/gpt-live-1)
