@@ -455,7 +455,7 @@ export class BrowserVoiceServer {
   ): Promise<void> {
     const authenticated = this.authenticate(request, response, requestId, true);
     if (!authenticated) return;
-    this.reconcileTerminalSessions();
+    this.reconcileTerminalSessions(authenticated.owner);
     const maxConcurrentSessions =
       this.config.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS;
     if (this.activeSessionIds.size + this.creatingSessions >= maxConcurrentSessions) {
@@ -942,12 +942,12 @@ export class BrowserVoiceServer {
     return true;
   }
 
-  private reconcileTerminalSessions(): void {
+  private reconcileTerminalSessions(currentOwner: VoiceOwnerContext): void {
     for (const sessionId of this.activeSessionIds) {
       const owner = this.sessionOwners.get(sessionId);
-      if (!owner) continue;
+      if (!owner || owner.ownerId !== currentOwner.ownerId) continue;
       try {
-        const result = this.sessionService.status(owner, sessionId);
+        const result = this.sessionService.status(currentOwner, sessionId);
         if (
           result.isOk() &&
           (result.value === null || TERMINAL_SESSION_STATUSES.has(result.value.status))
