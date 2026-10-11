@@ -256,10 +256,21 @@ describe('DurableVoiceBackendBridge', () => {
     await bridge.admit(request());
     const started = sink.executionStarted('delegation-1');
     const finished = sink.final('delegation-1', 'The service is healthy.');
+    const progress = setup.store
+      .readSession('session-1')
+      ._unsafeUnwrap()!
+      .outputs.find((output) => output.kind === 'progress');
+    expect(progress).toBeDefined();
+    const deliveryUpdate = setup.store.recordOutputLifecycle({
+      delegationId: 'delegation-1',
+      outputId: progress!.id,
+      lifecycle: { ...progress!.lifecycle, delivery: 'acknowledged' },
+    });
     const late = sink.unknown('delegation-1', 'LATE_UNKNOWN');
 
     expect(started.isOk()).toBe(true);
     expect(finished.isOk()).toBe(true);
+    expect(deliveryUpdate.isOk()).toBe(true);
     expect(late.isOk()).toBe(true);
     expect(late._unsafeUnwrap()).toMatchObject({ kind: 'final', text: 'The service is healthy.' });
     expect(events).toEqual(['progress', 'final', 'final']);

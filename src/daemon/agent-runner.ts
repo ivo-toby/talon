@@ -35,6 +35,7 @@ import type { VoiceOutputSink } from '../voice/voice-output-sink.js';
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const SUPPORTED_VOICE_PROVIDER_TYPES = new Set(['claude-code', 'gemini-cli', 'openai-compatible']);
+const VOICE_PROVIDER_ERROR_MESSAGE = 'Voice provider execution failed';
 const VOICE_NATIVE_TOOL_NAMES: Readonly<Record<string, readonly string[]>> = {
   'claude-code': ['WebSearch', 'WebFetch'],
   'gemini-cli': ['google_web_search', 'web_fetch'],
@@ -920,7 +921,7 @@ export class AgentRunner {
                               'agent-runner: run ended with provider error',
                             );
                             if (isVoiceTask) {
-                              throw new Error('Voice provider returned an error');
+                              throw new Error(VOICE_PROVIDER_ERROR_MESSAGE);
                             }
                           }
                         } else if (event.type === 'tool_event') {
@@ -1008,6 +1009,9 @@ export class AgentRunner {
                             'agent-sdk: streaming event',
                           );
                         } else {
+                          if (isVoiceTask) {
+                            throw new Error(VOICE_PROVIDER_ERROR_MESSAGE);
+                          }
                           throw new Error(event.message);
                         }
                       }
@@ -1031,7 +1035,7 @@ export class AgentRunner {
                     if (result.isError) {
                       throw new Error(
                         isVoiceTask
-                          ? 'Voice provider returned an error'
+                          ? VOICE_PROVIDER_ERROR_MESSAGE
                           : `CLI provider returned error: ${result.output || 'unknown error'}`,
                       );
                     }
@@ -1053,18 +1057,18 @@ export class AgentRunner {
                     if (activeIterator?.return) {
                       activeIterator.return(undefined).catch(() => {});
                     }
+                    const error = isVoiceTask ? this.toVoiceError(cause) : this.toError(cause);
                     this.finishProviderToolObservations(
                       activeProviderToolObservations,
                       pendingNoIdToolObservations,
                       {
                         level: 'ERROR',
-                        statusMessage: cause instanceof Error ? cause.message : String(cause),
+                        statusMessage: error.message,
                       },
                     );
                     ignoredProviderToolUseIds.clear();
                     await Promise.allSettled(pendingProviderToolTasks);
-                    const message = cause instanceof Error ? cause.message : String(cause);
-                    throw new AgentQueryAttemptError(message, resumeSessionId, sawEvents);
+                    throw new AgentQueryAttemptError(error.message, resumeSessionId, sawEvents);
                   } finally {
                     clearTimeout(timeoutId!);
                   }
@@ -1419,7 +1423,7 @@ export class AgentRunner {
             runFinalized = true;
           } catch (cause) {
             if (typingInterval) clearInterval(typingInterval);
-            const error = this.toError(cause);
+            const error = isVoiceTask ? this.toVoiceError(cause) : this.toError(cause);
             if (isVoiceTask && voiceSink) {
               const voiceResult = voiceProviderStarted
                 ? voiceSink.unknown(voiceRequest.delegationId, 'VOICE_EXECUTION_UNKNOWN')
@@ -1454,7 +1458,7 @@ export class AgentRunner {
 
       return ok(undefined);
     } catch (cause) {
-      const error = this.toError(cause);
+      const error = isVoiceTask ? this.toVoiceError(cause) : this.toError(cause);
       if (!runFinalized) {
         this.ctx.repos.run.updateStatus(runId, 'failed', {
           ended_at: Date.now(),
@@ -1469,6 +1473,17 @@ export class AgentRunner {
 
   private toError(cause: unknown): Error {
     return cause instanceof Error ? cause : new Error(String(cause));
+  }
+
+  private toVoiceError(cause: unknown): Error {
+    const error = this.toError(cause);
+    if (
+      error.message === 'Agent query timed out before provider start' ||
+      /^Agent query timed out after [0-9.]+s$/.test(error.message)
+    ) {
+      return error;
+    }
+    return new Error(VOICE_PROVIDER_ERROR_MESSAGE);
   }
 
   private handleProviderToolEvent(

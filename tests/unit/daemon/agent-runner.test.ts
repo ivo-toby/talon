@@ -298,7 +298,11 @@ async function* makeProviderStream(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function makeVoiceBackendRequest(id = 'voice-delegation-1'): VoiceBackendRequest {
+function makeVoiceBackendRequest(
+  id = 'voice-delegation-1',
+  providerName = 'claude-code',
+  modelName = 'claude-sonnet-4-20250514',
+): VoiceBackendRequest {
   return {
     sessionId: 'voice-session-1',
     delegationId: id,
@@ -317,8 +321,8 @@ function makeVoiceBackendRequest(id = 'voice-delegation-1'): VoiceBackendRequest
       generation: 9,
       ownerId: 'owner-1',
       personaId: 'persona-001',
-      providerName: 'claude-code',
-      modelName: 'claude-sonnet-4-20250514',
+      providerName,
+      modelName,
       voiceName: 'marin',
       capabilityNames: ['channel.send:*', 'memory.access', 'schedule.manage'],
       allowedToolNames: [
@@ -1906,7 +1910,7 @@ describe('AgentRunner', () => {
       );
 
       expect(result.isErr()).toBe(true);
-      expect(result._unsafeUnwrapErr().message).toBe('Voice provider returned an error');
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
       expect(ctx.logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({ result: '[voice provider error redacted]' }),
         'agent-runner: run ended with provider error',
@@ -1915,6 +1919,169 @@ describe('AgentRunner', () => {
         expect.any(String),
         'failed',
         expect.objectContaining({ error: expect.not.stringContaining('provider secret') }),
+      );
+    });
+
+    it('sanitizes a voice provider error event before queue propagation', async () => {
+      const request = makeVoiceBackendRequest(
+        'voice-delegation-error-event',
+        'openai-compatible',
+        'gpt-4o',
+      );
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gpt-4o',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      async function* providerErrorStream() {
+        yield { type: 'error' as const, message: 'PRIVATE provider payload' };
+      }
+      ctx.providerRegistry = {
+        get: vi.fn().mockReturnValue({
+          name: 'openai-compatible',
+          type: 'openai-compatible',
+          provider: {
+            name: 'openai-compatible',
+            skillLoaderTransport: 'stdio',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: false as const,
+              run: () => providerErrorStream(),
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 0,
+              metrics: { input_tokens: 0 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'openai-compatible',
+            contextWindowTokens: 1000,
+          }),
+        }),
+      } as any;
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: 'Voice provider execution failed' }),
+      );
+      expect(result._unsafeUnwrapErr().message).not.toContain('PRIVATE provider payload');
+    });
+
+    it('sanitizes a thrown voice provider exception before queue propagation', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-thrown-error');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      mockQuery.mockImplementation(() => {
+        throw new Error('PRIVATE provider exception');
+      });
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: 'Voice provider execution failed' }),
+      );
+    });
+
+    it('sanitizes a rejected voice provider stream before queue propagation', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-stream-error');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      async function* rejectedProviderStream() {
+        throw new Error('PRIVATE provider stream exception');
+      }
+      mockQuery.mockReturnValue(rejectedProviderStream());
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+      expect(result._unsafeUnwrapErr().message).not.toContain('PRIVATE provider stream exception');
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: 'Voice provider execution failed' }),
       );
     });
 

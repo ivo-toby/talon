@@ -51,11 +51,20 @@ export function authoritativeVoiceResult(
   const outputs = projectionResult.value.outputs
     .filter((output) => output.delegationId === persisted.id)
     .sort(compareOutputStatus);
-  const latest = outputs.at(-1);
-  if (
-    isTerminalExecution(persisted.execution) &&
-    (!latest || latest.lifecycle.execution !== persisted.execution)
-  ) {
+  if (persisted.execution === 'succeeded') {
+    const retainedFinal = outputs.find(
+      (output) => output.kind === 'final' && output.lifecycle.execution === 'succeeded',
+    );
+    if (!retainedFinal) {
+      return err(new DbError(`Voice delegation has no retained final output: ${persisted.id}`));
+    }
+    return ok(resultFromOutput(retainedFinal));
+  }
+
+  const retainedTerminal = outputs.find(
+    (output) => output.lifecycle.execution === persisted.execution,
+  );
+  if (isTerminalExecution(persisted.execution) && !retainedTerminal) {
     return ok({
       delegationId: persisted.id,
       outputId: `voice-terminal:${persisted.id}`,
@@ -65,10 +74,12 @@ export function authoritativeVoiceResult(
       occurredAt: persisted.completedAt ?? persisted.createdAt,
     });
   }
+
+  const latest = outputs.at(-1);
   if (!latest) {
     return err(new DbError(`Voice delegation has no retained output: ${persisted.id}`));
   }
-  return ok(resultFromOutput(latest));
+  return ok(resultFromOutput(retainedTerminal ?? latest));
 }
 
 /** Methods used by AgentRunner to persist execution and result transitions. */
@@ -231,7 +242,7 @@ function isTerminalExecution(execution: VoiceExecutionStatus): boolean {
 }
 
 function compareOutputStatus(left: VoiceOutputStatusDto, right: VoiceOutputStatusDto): number {
-  return left.createdAt - right.createdAt || left.updatedAt - right.updatedAt;
+  return left.createdAt - right.createdAt;
 }
 
 function resultFromOutput(output: VoiceOutputStatusDto): VoiceBackendResult {
@@ -242,6 +253,6 @@ function resultFromOutput(output: VoiceOutputStatusDto): VoiceBackendResult {
     ...(output.text !== undefined ? { text: output.text } : {}),
     execution: output.lifecycle.execution,
     output: output.lifecycle,
-    occurredAt: output.updatedAt,
+    occurredAt: output.createdAt,
   };
 }
