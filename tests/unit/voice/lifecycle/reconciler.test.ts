@@ -48,7 +48,11 @@ function createDb(): Database.Database {
   return db;
 }
 
-function session(id: string, status: VoiceSessionRecord['status'] = 'connected'): VoiceSessionRecord {
+function session(
+  id: string,
+  status: VoiceSessionRecord['status'] = 'connected',
+  overrides: Partial<Pick<VoiceSessionRecord, 'usage' | 'finalization'>> = {},
+): VoiceSessionRecord {
   return {
     id,
     revision: 0,
@@ -62,8 +66,8 @@ function session(id: string, status: VoiceSessionRecord['status'] = 'connected')
     startedAt: 2,
     deadlineAt: 10_000,
     policy,
-    usage: { voiceCostStatus: 'unavailable', backendCostStatus: 'unavailable' },
-    finalization: { status: 'pending' },
+    usage: overrides.usage ?? { voiceCostStatus: 'unavailable', backendCostStatus: 'unavailable' },
+    finalization: overrides.finalization ?? { status: 'pending' },
   };
 }
 
@@ -139,5 +143,56 @@ describe('voice startup reconciliation', () => {
     expect(restartReport.isOk()).toBe(true);
     expect(restartReport._unsafeUnwrap().skippedDelegations).toContain('delegation-pending-3');
     expect(store.findSession('session-4')._unsafeUnwrap()?.status).toBe('expired');
+  });
+
+  it('estimates usage on restart and marks the missing provider finalization incomplete', () => {
+    db = createDb();
+    const queue = new QueueRepository(db);
+    const store = new DurableVoiceStore(db, queue);
+    expect(
+      store.createSession(
+        session('session-usage', 'connected', {
+          usage: { voiceSeconds: 120, voiceCostStatus: 'unavailable', backendCostStatus: 'unavailable' },
+        }),
+      ).isOk(),
+    ).toBe(true);
+
+    const report = reconcileVoiceSessions(store, { now: () => 10, usdPerMinute: 0.05 });
+    expect(report.isOk()).toBe(true);
+    const recovered = store.findSession('session-usage')._unsafeUnwrap();
+    expect(recovered?.status).toBe('expired');
+    expect(recovered?.usage).toMatchObject({
+      voiceSeconds: 120,
+      voiceCostUsd: 0.1,
+      voiceCostStatus: 'incomplete',
+    });
+    expect(recovered?.finalization).toEqual({
+      status: 'incomplete',
+      providerReason: 'daemon_restart',
+    });
+  });
+
+  it('keeps cost unavailable without a rate while recording incomplete finalization', () => {
+    db = createDb();
+    const queue = new QueueRepository(db);
+    const store = new DurableVoiceStore(db, queue);
+    expect(
+      store.createSession(
+        session('session-no-rate', 'closed', {
+          usage: { voiceSeconds: 60, voiceCostStatus: 'unavailable', backendCostStatus: 'unavailable' },
+        }),
+      ).isOk(),
+    ).toBe(true);
+
+    const report = reconcileVoiceSessions(store, { now: () => 10 });
+    expect(report.isOk()).toBe(true);
+    const recovered = store.findSession('session-no-rate')._unsafeUnwrap();
+    expect(recovered?.status).toBe('closed');
+    expect(recovered?.usage).toMatchObject({
+      voiceSeconds: 60,
+      voiceCostStatus: 'unavailable',
+    });
+    expect(recovered?.usage.voiceCostUsd).toBeUndefined();
+    expect(recovered?.finalization).toEqual({ status: 'incomplete' });
   });
 });

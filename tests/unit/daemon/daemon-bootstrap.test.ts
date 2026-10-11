@@ -149,6 +149,18 @@ vi.mock('../../../src/daemon/lifecycle.js', () => ({
   recoverFromCrash: vi.fn(),
 }));
 
+vi.mock('../../../src/voice/voice-session-reconciler.js', () => ({
+  reconcileVoiceSessions: vi.fn().mockReturnValue({
+    isErr: () => false,
+    value: {
+      sessions: 0,
+      unknownDelegations: [],
+      skippedDelegations: [],
+      preservedFinalResults: [],
+    },
+  }),
+}));
+
 vi.mock('../../../src/a2a/index.js', () => ({
   buildAgentCardRegistry: vi.fn().mockReturnValue(new Map()),
   A2ATaskMapper: vi.fn().mockImplementation(() => ({})),
@@ -167,6 +179,7 @@ import { PersonaLoader } from '../../../src/personas/persona-loader.js';
 import { SkillLoader } from '../../../src/skills/skill-loader.js';
 import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
+import { reconcileVoiceSessions } from '../../../src/voice/voice-session-reconciler.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
 import { BackgroundTaskRepository } from '../../../src/core/database/repositories/index.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
@@ -695,6 +708,20 @@ describe('bootstrap', () => {
       await bootstrap('/config.yaml', logger);
 
       expect(recoverFromCrash).toHaveBeenCalledOnce();
+    });
+
+    it('passes the configured voice rate to startup reconciliation', async () => {
+      setupSuccessfulMocks();
+      const config = makeConfig({ voice: { usdPerMinute: 0.06 } });
+      vi.mocked(loadConfig).mockReturnValue(ok(config as any));
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(reconcileVoiceSessions).toHaveBeenCalledWith(
+        expect.anything(),
+        { usdPerMinute: 0.06 },
+      );
     });
 
     it('creates HostToolsBridge and attaches it to context', async () => {

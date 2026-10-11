@@ -90,6 +90,8 @@ export interface VoiceSessionServiceOptions {
   readonly maxSessionLifetimeMs?: number;
   readonly maxContextChars?: number;
   readonly shutdownTimeoutMs?: number;
+  /** Optional operator-provided live voice rate; absent means no new estimate. */
+  readonly usdPerMinute?: number;
   readonly logger?: pino.Logger;
 }
 
@@ -281,6 +283,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
   private readonly maxSessionLifetimeMs: number;
   private readonly maxContextChars: number;
   private readonly shutdownTimeoutMs: number;
+  private readonly usdPerMinute: number | undefined;
   private readonly generation: () => number;
   private readonly runtimes = new Map<VoiceSessionId, SessionRuntime>();
   private readonly activeSessionIds = new Set<VoiceSessionId>();
@@ -302,6 +305,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
       'shutdownTimeoutMs',
     );
+    this.usdPerMinute = optionalNonNegativeFinite(options.usdPerMinute, 'usdPerMinute');
     this.generation = options.generation ?? ((): number => this.lifecycleGeneration);
   }
 
@@ -536,13 +540,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (latest.isErr()) return err(latest.error);
     const finalCurrent = latest.value?.session ?? closing.value;
     const terminalStatus = input.reason === 'deadline' ? 'expired' : input.reason === 'transport_failure' ? 'failed' : 'closed';
+    const finalization = finalizationFromRuntime(runtime, latestSidebandUsage(runtime?.sideband));
     const terminal = this.options.store.updateSession({
       sessionId,
       expectedRevision: finalCurrent.revision,
       patch: {
         status: terminalStatus,
         closedAt: this.now(),
-        finalization: finalizationFromRuntime(runtime, latestSidebandUsage(runtime?.sideband)),
+        usage: applyVoiceCost(finalCurrent.usage, this.usdPerMinute, finalization.status),
+        finalization,
         ...(pendingDelegation ? {} : { activeDelegationId: undefined }),
       },
       updatedAt: this.now(),
@@ -1304,17 +1310,21 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const previousSeconds = projection.value.session.usage.voiceSeconds;
     if (
       update.voiceSeconds !== undefined &&
+      (!Number.isFinite(update.voiceSeconds) || update.voiceSeconds < 0)
+    ) {
+      return ok(undefined);
+    }
+    if (
+      update.voiceSeconds !== undefined &&
       previousSeconds !== undefined &&
       update.voiceSeconds < previousSeconds
     ) {
       return ok(undefined);
     }
-    const usage = {
+    const usage = applyVoiceCost({
       ...projection.value.session.usage,
       ...(update.voiceSeconds !== undefined ? { voiceSeconds: update.voiceSeconds } : {}),
-      voiceCostStatus: projection.value.session.usage.voiceCostStatus,
-      backendCostStatus: projection.value.session.usage.backendCostStatus,
-    };
+    }, this.usdPerMinute, projection.value.session.finalization.status);
     const saved = this.options.store.updateSession({
       sessionId,
       expectedRevision: projection.value.session.revision,
@@ -1467,6 +1477,41 @@ function positiveLimit(value: number, name: string): number {
   return value;
 }
 
+function optionalNonNegativeFinite(value: number | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a finite non-negative number`);
+  return value;
+}
+
+export function applyVoiceCost(
+  usage: VoiceSessionRecord['usage'],
+  usdPerMinute: number | undefined,
+  finalizationStatus: VoiceSessionRecord['finalization']['status'],
+): VoiceSessionRecord['usage'] {
+  const estimated = estimateVoiceCost(usage.voiceSeconds, usdPerMinute);
+  if (estimated === undefined) return usage;
+  return {
+    ...usage,
+    voiceCostUsd: estimated,
+    voiceCostStatus: finalizationStatus === 'incomplete' ? 'incomplete' : 'estimated',
+  };
+}
+
+function estimateVoiceCost(voiceSeconds: number | undefined, usdPerMinute: number | undefined): number | undefined {
+  if (
+    voiceSeconds === undefined ||
+    !Number.isFinite(voiceSeconds) ||
+    voiceSeconds < 0 ||
+    usdPerMinute === undefined ||
+    !Number.isFinite(usdPerMinute) ||
+    usdPerMinute < 0
+  ) {
+    return undefined;
+  }
+  const estimate = (voiceSeconds / 60) * usdPerMinute;
+  return Number.isFinite(estimate) && estimate >= 0 ? Math.max(0, estimate) : undefined;
+}
+
 function sameOwner(left: VoiceOwnerContext, right: VoiceOwnerContext): boolean {
   return left.ownerId === right.ownerId && left.loginRevision === right.loginRevision;
 }
@@ -1574,7 +1619,7 @@ function finalizationFromRuntime(
     | undefined;
   const status = candidate?.finalizationStatus === 'confirmed' || usage?.final
     ? 'confirmed'
-    : candidate?.finalizationStatus ?? 'incomplete';
+    : 'incomplete';
   return {
     status,
     ...(status === 'confirmed' ? { confirmedAt: usage?.receivedAt } : {}),

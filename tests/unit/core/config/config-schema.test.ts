@@ -14,6 +14,7 @@ import {
   QueueConfigSchema,
   SchedulerConfigSchema,
   AuthConfigSchema,
+  VoiceConfigSchema,
   AgentRunnerConfigSchema,
   BackgroundAgentConfigSchema,
   ProviderConfigSchema,
@@ -537,6 +538,29 @@ describe('AuthConfigSchema', () => {
   it('rejects an unknown auth mode', () => {
     const result = AuthConfigSchema.safeParse({ mode: 'oauth' });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VoiceConfigSchema
+// ---------------------------------------------------------------------------
+
+describe('VoiceConfigSchema', () => {
+  it('leaves the operator voice rate optional without a default', () => {
+    const result = VoiceConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.usdPerMinute).toBeUndefined();
+  });
+
+  it('accepts zero and finite non-negative rates', () => {
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: 0 }).success).toBe(true);
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: 0.06 }).success).toBe(true);
+  });
+
+  it('rejects negative and non-finite rates', () => {
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: -0.01 }).success).toBe(false);
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: Number.POSITIVE_INFINITY }).success).toBe(false);
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: Number.NaN }).success).toBe(false);
   });
 });
 
