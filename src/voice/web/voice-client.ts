@@ -3,6 +3,7 @@ import type {
   VoiceCreateSessionHttpResponse,
   VoiceDelegationStatusDto,
   VoiceErrorHttpResponse,
+  VoiceGetSessionHttpResponse,
   VoiceOutputStatusDto,
   VoiceSessionStatusDto,
   VoiceStatusEventDto,
@@ -26,7 +27,10 @@ export interface VoiceBrowserState {
   readonly phase: VoiceBrowserPhase;
   readonly message: string;
   readonly errorMessage: string | null;
-  readonly sessionId: string | null;
+  /** The session that still owns the live transport and can be closed. */
+  readonly activeSessionId: string | null;
+  /** The last session whose retained results can still be displayed. */
+  readonly retainedSessionId: string | null;
   readonly session: VoiceSessionStatusDto | null;
   readonly delegations: readonly VoiceDelegationStatusDto[];
   readonly outputs: readonly VoiceOutputStatusDto[];
@@ -50,10 +54,13 @@ export type VoiceEventSourceFactory = (
 
 export interface VoicePeerConnection {
   readonly connectionState: RTCPeerConnectionState;
+  readonly iceGatheringState: RTCIceGatheringState;
   readonly localDescription: RTCSessionDescription | null;
   onconnectionstatechange: ((event: Event) => void) | null;
+  onicegatheringstatechange: ((event: Event) => void) | null;
   ontrack: ((event: RTCTrackEvent) => void) | null;
   addTrack(track: MediaStreamTrack, stream: MediaStream): RTCRtpSender;
+  createDataChannel(label: string): RTCDataChannel;
   createOffer(): Promise<RTCSessionDescriptionInit>;
   setLocalDescription(description: RTCSessionDescriptionInit): Promise<void>;
   setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
@@ -62,6 +69,12 @@ export interface VoicePeerConnection {
 
 export interface VoiceMediaDevices {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
+}
+
+export interface VoiceSessionStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 export interface VoiceAudioElement {
@@ -77,6 +90,7 @@ export interface VoiceBrowserClientOptions {
   readonly peerConnectionFactory?: () => VoicePeerConnection;
   readonly mediaDevices?: VoiceMediaDevices;
   readonly audioElement?: VoiceAudioElement;
+  readonly sessionStorage?: VoiceSessionStorage;
   readonly csrfToken?: () => string | null;
   readonly onStateChange?: (state: VoiceBrowserState) => void;
 }
@@ -103,7 +117,8 @@ const INITIAL_STATE: VoiceBrowserState = {
   phase: 'logged_out',
   message: 'Log in om een gesprek te beginnen.',
   errorMessage: null,
-  sessionId: null,
+  activeSessionId: null,
+  retainedSessionId: null,
   session: null,
   delegations: [],
   outputs: [],
@@ -128,6 +143,16 @@ const PENDING_DELEGATION_STATUSES = new Set([
   'running',
 ]);
 
+const SESSION_STORAGE_KEY = 'talon.voice.session-id';
+const ICE_GATHERING_TIMEOUT_MS = 10_000;
+
+class VoiceAttemptCancelledError extends Error {
+  constructor() {
+    super('Voice-opstart is geannuleerd.');
+    this.name = 'VoiceAttemptCancelledError';
+  }
+}
+
 /**
  * Small browser-side boundary for the authenticated voice HTTP API and WebRTC
  * transport. Provider events stay on the server; this client only renders
@@ -140,16 +165,22 @@ export class VoiceBrowserClient {
   private readonly peerConnectionFactory: () => VoicePeerConnection;
   private readonly mediaDevices: VoiceMediaDevices;
   private readonly audioElement: VoiceAudioElement | undefined;
+  private readonly sessionStorage: VoiceSessionStorage | undefined;
   private readonly csrfToken: () => string | null;
   private readonly onStateChange: ((state: VoiceBrowserState) => void) | undefined;
 
   private stateValue: VoiceBrowserState = INITIAL_STATE;
-  private sessionId: string | null = null;
+  private activeSessionId: string | null = null;
+  private retainedSessionId: string | null = null;
   private peer: VoicePeerConnection | null = null;
   private localStream: MediaStream | null = null;
   private eventSource: VoiceEventSource | null = null;
-  private latestOutputId: string | null = null;
   private startPromise: Promise<void> | null = null;
+  private lifecycleGeneration = 0;
+  private transportConnected = false;
+  private providerReady = false;
+  private readonly stoppedStreams = new WeakSet<MediaStream>();
+  private readonly closedPeers = new WeakSet<VoicePeerConnection>();
 
   constructor(options: VoiceBrowserClientOptions = {}) {
     this.apiBase = normalizeApiBase(options.apiBase ?? '/voice');
@@ -158,6 +189,7 @@ export class VoiceBrowserClient {
     this.peerConnectionFactory = options.peerConnectionFactory ?? defaultPeerConnectionFactory;
     this.mediaDevices = options.mediaDevices ?? defaultMediaDevices();
     this.audioElement = options.audioElement;
+    this.sessionStorage = options.sessionStorage ?? defaultSessionStorage();
     this.csrfToken = options.csrfToken ?? readBrowserCsrfToken;
     this.onStateChange = options.onStateChange;
   }
@@ -171,16 +203,22 @@ export class VoiceBrowserClient {
       throw this.fail('Vul je toegangstoken in.', 'INVALID_REQUEST', false);
     }
 
+    const generation = this.invalidateLifecycle();
     await this.requestJson('/login', {
       method: 'POST',
       body: { accessToken },
     });
+    this.ensureCurrent(generation);
+    this.clearPersistedSession();
+    this.activeSessionId = null;
+    this.retainedSessionId = null;
     this.setState({
       authenticated: true,
       phase: 'ready',
       message: 'Klaar om te bellen.',
       errorMessage: null,
-      sessionId: null,
+      activeSessionId: null,
+      retainedSessionId: null,
       session: null,
       delegations: [],
       outputs: [],
@@ -189,6 +227,41 @@ export class VoiceBrowserClient {
       muted: false,
       audioBlocked: false,
     });
+  }
+
+  /** Restore one retained/live session after a page refresh using the cookie. */
+  async restore(): Promise<void> {
+    const sessionId = this.readPersistedSession();
+    if (!sessionId) return;
+
+    const generation = this.invalidateLifecycle();
+    try {
+      const response = await this.requestJson<VoiceGetSessionHttpResponse>(
+        `/sessions/${encodeURIComponent(sessionId)}`,
+        { method: 'GET' },
+      );
+      this.ensureCurrent(generation);
+      this.setState({ authenticated: true, errorMessage: null });
+      this.applySessionStatus(response.session);
+      if (!isTerminalSession(response.session.status)) {
+        this.transportConnected = false;
+        this.setState({
+          phase: 'network_lost',
+          message: 'Dit gesprek loopt nog. De audio moet opnieuw worden verbonden; je kunt ook ophangen.',
+        });
+        this.openEventStream(response.session.id);
+      } else if (this.stateValue.pendingDelegation) {
+        this.openEventStream(response.session.id);
+      }
+    } catch (cause) {
+      if (!this.isCurrent(generation)) return;
+      this.clearPersistedSession();
+      if (cause instanceof VoiceBrowserError && ['UNAUTHORIZED', 'NOT_FOUND', 'HTTP_404'].includes(cause.code)) {
+        this.setState({ authenticated: false, phase: 'logged_out', message: 'Log in om een gesprek te beginnen.' });
+        return;
+      }
+      throw cause;
+    }
   }
 
   startCall(): Promise<void> {
@@ -213,7 +286,8 @@ export class VoiceBrowserClient {
   }
 
   async hangup(reason: VoiceCloseReason = 'hangup'): Promise<void> {
-    const currentSessionId = this.sessionId;
+    const generation = this.invalidateLifecycle();
+    const currentSessionId = this.activeSessionId;
     if (!currentSessionId) {
       this.disposeTransport();
       if (this.stateValue.authenticated) {
@@ -223,7 +297,6 @@ export class VoiceBrowserClient {
     }
 
     this.setState({ phase: 'closing', message: 'Gesprek wordt afgesloten.', errorMessage: null });
-    await this.reportLatestPlayback('interrupted');
 
     let closeError: VoiceBrowserError | null = null;
     try {
@@ -235,8 +308,13 @@ export class VoiceBrowserClient {
         body: { reason },
         csrf: true,
       });
+      this.ensureCurrent(generation);
       this.applySessionStatus(response.session, response.pendingDelegation);
     } catch (cause) {
+      if (cause instanceof VoiceAttemptCancelledError) {
+        this.releaseAudioTransport();
+        return;
+      }
       closeError = asVoiceBrowserError(cause, 'Het gesprek kon niet volledig worden afgesloten.');
     } finally {
       this.releaseAudioTransport();
@@ -263,26 +341,31 @@ export class VoiceBrowserClient {
   }
 
   async logout(): Promise<void> {
-    if (ACTIVE_PHASES.has(this.stateValue.phase) || this.sessionId) {
+    let generation = this.invalidateLifecycle();
+    if (ACTIVE_PHASES.has(this.stateValue.phase) || this.activeSessionId) {
       try {
         await this.hangup('logout');
       } catch {
         // Revocation below remains the authority even if session cleanup failed.
       }
+      generation = this.invalidateLifecycle();
     }
 
     try {
       await this.requestJson('/logout', { method: 'POST', csrf: true });
+      this.ensureCurrent(generation);
     } finally {
       this.disposeTransport();
-      this.sessionId = null;
-      this.latestOutputId = null;
+      this.clearPersistedSession();
+      this.activeSessionId = null;
+      this.retainedSessionId = null;
       this.setState({
         authenticated: false,
         phase: 'logged_out',
         message: 'Log in om een gesprek te beginnen.',
         errorMessage: null,
-        sessionId: null,
+        activeSessionId: null,
+        retainedSessionId: null,
         session: null,
         delegations: [],
         outputs: [],
@@ -296,6 +379,7 @@ export class VoiceBrowserClient {
 
   /** Release browser resources when the page is hidden or discarded. */
   dispose(): void {
+    this.invalidateLifecycle();
     this.disposeTransport();
   }
 
@@ -303,11 +387,12 @@ export class VoiceBrowserClient {
     if (!this.stateValue.authenticated) {
       throw this.fail('Log eerst in.', 'UNAUTHORIZED', false);
     }
-    if (this.sessionId || ACTIVE_PHASES.has(this.stateValue.phase)) {
+    if (this.activeSessionId || ACTIVE_PHASES.has(this.stateValue.phase)) {
       throw this.fail('Er is al een gesprek actief.', 'SESSION_ACTIVE', false);
     }
 
     this.resetSessionState();
+    const generation = this.invalidateLifecycle();
     this.setState({
       phase: 'requesting_microphone',
       message: 'Geef Talon toegang tot je microfoon.',
@@ -315,23 +400,36 @@ export class VoiceBrowserClient {
     });
 
     let createdSessionId: string | null = null;
+    let stream: MediaStream | null = null;
+    let peer: VoicePeerConnection | null = null;
     try {
-      const stream = await this.mediaDevices.getUserMedia({ audio: true, video: false });
+      stream = await this.mediaDevices.getUserMedia({ audio: true, video: false });
+      this.ensureCurrent(generation);
       this.localStream = stream;
-      const peer = this.peerConnectionFactory();
+      peer = this.peerConnectionFactory();
+      this.ensureCurrent(generation);
       this.peer = peer;
-      peer.ontrack = (event: RTCTrackEvent): void => {
+      const currentPeer = peer;
+      currentPeer.ontrack = (event: RTCTrackEvent): void => {
         const remoteStream = event.streams[0];
         if (!remoteStream || !this.audioElement) return;
         this.audioElement.srcObject = remoteStream;
         void this.playAudio();
       };
-      peer.onconnectionstatechange = (): void => this.handleConnectionState(peer);
-      for (const track of stream.getAudioTracks()) peer.addTrack(track, stream);
+      currentPeer.onconnectionstatechange = (): void => this.handleConnectionState(currentPeer);
+      for (const track of stream.getAudioTracks()) currentPeer.addTrack(track, stream);
+      const events = currentPeer.createDataChannel('oai-events');
+      events.addEventListener('message', (event: MessageEvent): void => {
+        this.handleProviderEvent(currentPeer, event);
+      });
 
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      const localDescription = peer.localDescription ?? offer;
+      const offer = await currentPeer.createOffer();
+      this.ensureCurrent(generation);
+      await currentPeer.setLocalDescription(offer);
+      this.ensureCurrent(generation);
+      await waitForIceGathering(currentPeer, () => this.isCurrent(generation));
+      this.ensureCurrent(generation);
+      const localDescription = currentPeer.localDescription ?? offer;
       const sdp = localDescription.sdp ?? '';
       if (sdp.trim().length === 0) {
         throw this.fail('De browser gaf geen geldige audio-aanbieding terug.', 'INVALID_SDP');
@@ -346,20 +444,23 @@ export class VoiceBrowserClient {
         },
       });
       createdSessionId = response.session.id;
-      this.sessionId = response.session.id;
-      this.latestOutputId = latestOutputId(response.session);
+      this.ensureCurrent(generation);
+      this.activeSessionId = response.session.id;
       this.applySessionStatus(response.session);
       this.openEventStream(response.session.id);
-      await peer.setRemoteDescription(toRtcDescription(response.client.answer));
-      if (peer.connectionState === 'connected') {
-        this.handleConnectionState(peer);
+      await currentPeer.setRemoteDescription(toRtcDescription(response.client.answer));
+      this.ensureCurrent(generation);
+      if (currentPeer.connectionState === 'connected') {
+        this.handleConnectionState(currentPeer);
       } else {
         this.setState({ phase: 'connecting', message: 'Verbonden met Talon; wacht op audio.' });
       }
     } catch (cause) {
       if (createdSessionId) {
-        await this.closeCreatedSession(createdSessionId);
+        await this.closeCreatedSession(createdSessionId, this.isCurrent(generation));
       }
+      this.cleanupAttempt(stream, peer);
+      if (!this.isCurrent(generation) || cause instanceof VoiceAttemptCancelledError) return;
       this.disposeTransport();
       const error = asVoiceBrowserError(cause, 'Het gesprek kon niet worden gestart.');
       this.setState({
@@ -371,7 +472,7 @@ export class VoiceBrowserClient {
     }
   }
 
-  private async closeCreatedSession(sessionId: string): Promise<void> {
+  private async closeCreatedSession(sessionId: string, applyState: boolean): Promise<void> {
     try {
       const response = await this.requestJson<{
         readonly session: VoiceSessionStatusDto;
@@ -381,7 +482,7 @@ export class VoiceBrowserClient {
         body: { reason: 'transport_failure' satisfies VoiceCloseReason },
         csrf: true,
       });
-      this.applySessionStatus(response.session, response.pendingDelegation);
+      if (applyState) this.applySessionStatus(response.session, response.pendingDelegation);
     } catch {
       // The session deadline and server reconciler remain responsible for
       // cleanup when a transport setup failure races with an HTTP failure.
@@ -394,12 +495,12 @@ export class VoiceBrowserClient {
       { withCredentials: true },
     );
     this.eventSource = source;
-    source.addEventListener('session', (event) => this.handleStatusEvent(event));
-    source.addEventListener('delegation', (event) => this.handleStatusEvent(event));
+    source.addEventListener('session', (event) => this.handleStatusEvent(event, source));
+    source.addEventListener('delegation', (event) => this.handleStatusEvent(event, source));
     source.addEventListener('error', (event) => {
       const data = eventData(event);
       if (data !== null) {
-        this.handleStatusEvent(event);
+        this.handleStatusEvent(event, source);
         return;
       }
       if (this.eventSource !== source) return;
@@ -411,7 +512,8 @@ export class VoiceBrowserClient {
     });
   }
 
-  private handleStatusEvent(event: Event): void {
+  private handleStatusEvent(event: Event, source?: VoiceEventSource): void {
+    if (source && this.eventSource !== source) return;
     const data = eventData(event);
     if (data === null) return;
     let parsed: unknown;
@@ -434,21 +536,35 @@ export class VoiceBrowserClient {
   }
 
   private applySessionStatus(status: VoiceSessionStatusDto, pendingOverride?: boolean): void {
-    this.sessionId = status.id;
-    this.latestOutputId = latestOutputId(status) ?? this.latestOutputId;
+    const terminal = isTerminalSession(status.status);
+    if (terminal) {
+      this.activeSessionId = null;
+      this.retainedSessionId = status.id;
+    } else {
+      this.activeSessionId = status.id;
+      this.retainedSessionId = null;
+    }
+    this.persistSession(status.id);
     const outputs = outputsFromDelegations(status.delegations);
     const pending =
       pendingOverride ??
       status.delegations.some((delegation) => PENDING_DELEGATION_STATUSES.has(delegation.status));
-    const terminal = status.status === 'closed' || status.status === 'expired' || status.status === 'failed';
+    const phase = terminal
+      ? status.status === 'failed'
+        ? 'failed'
+        : 'closed'
+      : status.status === 'connected' && this.transportConnected && this.providerReady
+        ? 'connected'
+        : 'connecting';
     this.setState({
-      sessionId: status.id,
+      activeSessionId: this.activeSessionId,
+      retainedSessionId: this.retainedSessionId,
       session: status,
       delegations: status.delegations,
       outputs,
       usage: status.usage,
       pendingDelegation: pending,
-      ...(terminal ? { phase: status.status === 'failed' ? 'failed' : 'closed' } : {}),
+      phase,
     });
     if (terminal) {
       this.releaseAudioTransport();
@@ -460,7 +576,6 @@ export class VoiceBrowserClient {
     const current = this.stateValue.delegations.filter((item) => item.id !== delegation.id);
     const nextDelegations = [...current, delegation].sort((left, right) => left.createdAt - right.createdAt);
     const outputs = outputsFromDelegations(nextDelegations);
-    this.latestOutputId = latestOutputIdFromOutputs(outputs) ?? this.latestOutputId;
     const pending = nextDelegations.some((item) => PENDING_DELEGATION_STATUSES.has(item.status));
     this.setState({
       delegations: nextDelegations,
@@ -473,10 +588,12 @@ export class VoiceBrowserClient {
   private handleConnectionState(peer: VoicePeerConnection): void {
     if (this.peer !== peer) return;
     if (peer.connectionState === 'connected') {
-      this.setState({ phase: 'connected', message: 'Je bent verbonden met Talon.', errorMessage: null });
+      this.transportConnected = true;
+      this.updateConnectionPhase();
       return;
     }
     if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+      this.transportConnected = false;
       this.releaseAudioTransport();
       this.setState({
         phase: 'network_lost',
@@ -486,31 +603,39 @@ export class VoiceBrowserClient {
     }
   }
 
+  private handleProviderEvent(peer: VoicePeerConnection, event: MessageEvent): void {
+    if (this.peer !== peer) return;
+    const data = typeof event.data === 'string' ? event.data : null;
+    if (data === null) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data) as unknown;
+    } catch {
+      return;
+    }
+    if (!isRecord(parsed) || parsed.type !== 'session.started') return;
+    this.providerReady = true;
+    this.updateConnectionPhase();
+  }
+
+  private updateConnectionPhase(): void {
+    if (this.stateValue.session?.status === 'connected' && this.transportConnected && this.providerReady) {
+      this.setState({ phase: 'connected', message: 'Je bent verbonden met Talon.', errorMessage: null });
+      return;
+    }
+    this.setState({ phase: 'connecting', message: 'Audioverbinding klaar; Talon bevestigt de sessie.' });
+  }
+
   private async playAudio(): Promise<void> {
     if (!this.audioElement) return;
     try {
       await this.audioElement.play();
       this.setState({ audioBlocked: false });
-      await this.reportLatestPlayback('started');
     } catch {
       this.setState({
         audioBlocked: true,
         message: 'Audio staat klaar. Tik op “Audio afspelen” om Talon te horen.',
       });
-    }
-  }
-
-  private async reportLatestPlayback(status: 'started' | 'interrupted'): Promise<void> {
-    if (!this.latestOutputId || !this.sessionId) return;
-    try {
-      await this.requestJson<void>(`/sessions/${encodeURIComponent(this.sessionId)}/playback`, {
-        method: 'POST',
-        csrf: true,
-        body: { outputId: this.latestOutputId, status },
-        expectBody: false,
-      });
-    } catch {
-      // Playback reporting is advisory; it must never repeat backend work.
     }
   }
 
@@ -575,13 +700,17 @@ export class VoiceBrowserClient {
 
   private resetSessionState(): void {
     this.disposeTransport();
-    this.sessionId = null;
-    this.latestOutputId = null;
+    this.activeSessionId = null;
+    this.retainedSessionId = null;
+    this.clearPersistedSession();
+    this.transportConnected = false;
+    this.providerReady = false;
     this.setState({
       phase: 'ready',
       message: 'Klaar om te bellen.',
       errorMessage: null,
-      sessionId: null,
+      activeSessionId: null,
+      retainedSessionId: null,
       session: null,
       delegations: [],
       outputs: [],
@@ -603,17 +732,88 @@ export class VoiceBrowserClient {
   }
 
   private releaseAudioTransport(): void {
-    for (const track of this.localStream?.getTracks() ?? []) track.stop();
+    const stream = this.localStream;
     this.localStream = null;
-    if (this.peer) {
-      this.peer.ontrack = null;
-      this.peer.onconnectionstatechange = null;
-      this.peer.close();
-      this.peer = null;
+    this.stopStream(stream);
+    const peer = this.peer;
+    this.peer = null;
+    if (peer) {
+      peer.ontrack = null;
+      peer.onconnectionstatechange = null;
+      peer.onicegatheringstatechange = null;
+      this.closePeer(peer);
     }
+    this.transportConnected = false;
+    this.providerReady = false;
     if (this.audioElement) {
       this.audioElement.pause();
       this.audioElement.srcObject = null;
+    }
+  }
+
+  private invalidateLifecycle(): number {
+    this.lifecycleGeneration += 1;
+    return this.lifecycleGeneration;
+  }
+
+  private isCurrent(generation: number): boolean {
+    return generation === this.lifecycleGeneration;
+  }
+
+  private ensureCurrent(generation: number): void {
+    if (!this.isCurrent(generation)) throw new VoiceAttemptCancelledError();
+  }
+
+  private cleanupAttempt(stream: MediaStream | null, peer: VoicePeerConnection | null): void {
+    if (peer) {
+      peer.ontrack = null;
+      peer.onconnectionstatechange = null;
+      peer.onicegatheringstatechange = null;
+      this.closePeer(peer);
+    }
+    this.stopStream(stream);
+    if (this.peer === peer) this.peer = null;
+    if (this.localStream === stream) this.localStream = null;
+    if (this.peer === null && this.localStream === null) {
+      this.transportConnected = false;
+      this.providerReady = false;
+    }
+  }
+
+  private stopStream(stream: MediaStream | null): void {
+    if (!stream || this.stoppedStreams.has(stream)) return;
+    this.stoppedStreams.add(stream);
+    for (const track of stream.getTracks()) track.stop();
+  }
+
+  private closePeer(peer: VoicePeerConnection): void {
+    if (this.closedPeers.has(peer)) return;
+    this.closedPeers.add(peer);
+    peer.close();
+  }
+
+  private readPersistedSession(): string | null {
+    try {
+      const sessionId = this.sessionStorage?.getItem(SESSION_STORAGE_KEY)?.trim() ?? '';
+      return sessionId.length === 0 ? null : sessionId;
+    } catch {
+      return null;
+    }
+  }
+
+  private persistSession(sessionId: string): void {
+    try {
+      this.sessionStorage?.setItem(SESSION_STORAGE_KEY, sessionId);
+    } catch {
+      // Storage can be disabled by browser privacy settings; the cookie remains authoritative.
+    }
+  }
+
+  private clearPersistedSession(): void {
+    try {
+      this.sessionStorage?.removeItem(SESSION_STORAGE_KEY);
+    } catch {
+      // Storage can be disabled by browser privacy settings.
     }
   }
 }
@@ -654,6 +854,15 @@ function defaultMediaDevices(): VoiceMediaDevices {
   return navigator.mediaDevices;
 }
 
+function defaultSessionStorage(): VoiceSessionStorage | undefined {
+  if (typeof sessionStorage === 'undefined') return undefined;
+  try {
+    return sessionStorage;
+  } catch {
+    return undefined;
+  }
+}
+
 function readBrowserCsrfToken(): string | null {
   if (typeof document === 'undefined') return null;
   return readCookie(document.cookie, 'talon_voice_csrf');
@@ -682,20 +891,51 @@ function outputsFromDelegations(
   return [...byId.values()].sort((left, right) => left.createdAt - right.createdAt);
 }
 
-function latestOutputId(status: VoiceSessionStatusDto): string | null {
-  return latestOutputIdFromOutputs(outputsFromDelegations(status.delegations));
-}
-
-function latestOutputIdFromOutputs(outputs: readonly VoiceOutputStatusDto[]): string | null {
-  return outputs.length === 0 ? null : outputs[outputs.length - 1]?.id ?? null;
-}
-
 function toRtcDescription(answer: VoiceTransportAnswer): RTCSessionDescriptionInit {
-  const allowedTypes: readonly RTCSdpType[] = ['offer', 'answer', 'pranswer', 'rollback'];
-  if (!allowedTypes.includes(answer.type as RTCSdpType) || answer.sdp.trim().length === 0) {
+  if (answer.type !== 'webrtc' || answer.sdp.trim().length === 0) {
     throw new VoiceBrowserError('Talon gaf geen geldige audioverbinding terug.', 'INVALID_SDP');
   }
-  return { type: answer.type as RTCSdpType, sdp: answer.sdp };
+  return { type: 'answer', sdp: answer.sdp };
+}
+
+async function waitForIceGathering(
+  peer: VoicePeerConnection,
+  isCurrent: () => boolean,
+): Promise<void> {
+  if (peer.iceGatheringState === 'complete') return;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const previous = peer.onicegatheringstatechange;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      peer.onicegatheringstatechange = previous;
+    };
+    const onState = (): void => {
+      if (!isCurrent() || peer.iceGatheringState !== 'complete') return;
+      finish();
+      resolve();
+    };
+    const timeout = setTimeout(() => {
+      finish();
+      reject(new VoiceBrowserError('De browser kon de audioverbinding niet voorbereiden.', 'ICE_GATHERING_TIMEOUT'));
+    }, ICE_GATHERING_TIMEOUT_MS);
+    peer.onicegatheringstatechange = (event: Event): void => {
+      previous?.(event);
+      onState();
+    };
+    if (!isCurrent()) {
+      finish();
+      resolve();
+      return;
+    }
+    onState();
+  });
+}
+
+function isTerminalSession(status: VoiceSessionStatusDto['status']): boolean {
+  return status === 'closed' || status === 'expired' || status === 'failed';
 }
 
 function isVoiceStatusEvent(value: unknown): value is VoiceStatusEventDto {

@@ -78,6 +78,9 @@ query('[data-action="resume-audio"]')?.addEventListener('click', () => {
 });
 
 window.addEventListener('pagehide', () => client.dispose());
+void client.restore().catch((error) => {
+  show(loginError, errorMessage(error));
+});
 render(client.state);
 
 function render(state) {
@@ -181,7 +184,7 @@ function costStatusLabel(status) {
 function formatCost(value, status) {
   if (value === undefined || status === 'unavailable') return 'Nog geen schatting';
   const prefix = status === 'estimated' ? '≈ ' : '';
-  return `${prefix}€${value.toFixed(4)}`;
+  return `${prefix}USD $${value.toFixed(4)}`;
 }
 
 function formatDuration(seconds) {
@@ -192,7 +195,7 @@ function formatDuration(seconds) {
 }
 
 function hasOpenSession(state) {
-  return Boolean(state.sessionId && ['requesting_microphone', 'connecting', 'connected', 'network_lost', 'closing'].includes(state.phase));
+  return Boolean(state.activeSessionId && ['requesting_microphone', 'connecting', 'connected', 'network_lost', 'closing'].includes(state.phase));
 }
 
 function isActive(phase) {

@@ -4,6 +4,7 @@ import type {
   VoiceBrowserClient,
   VoiceBrowserClientOptions,
   VoiceEventSource,
+  VoiceSessionStorage,
   VoiceFetch,
   VoicePeerConnection,
 } from '../../../../src/voice/web/voice-client.js';
@@ -43,11 +44,16 @@ interface FakePeer {
   readonly addTrack: ReturnType<typeof vi.fn>;
   readonly close: ReturnType<typeof vi.fn>;
   readonly setRemoteDescription: ReturnType<typeof vi.fn>;
+  readonly createDataChannel: ReturnType<typeof vi.fn>;
+  emitProviderEvent(value: unknown): void;
+  setIceGatheringState(state: RTCIceGatheringState): void;
   setConnectionState(state: RTCPeerConnectionState): void;
 }
 
-function makePeer(): FakePeer {
+function makePeer(initialIceGatheringState: RTCIceGatheringState = 'complete'): FakePeer {
   let connectionState: RTCPeerConnectionState = 'new';
+  let iceGatheringState = initialIceGatheringState;
+  const dataChannelListeners = new Map<string, (event: MessageEvent) => void>();
   let localDescription: RTCSessionDescription | null = null;
   const peer = {
     get connectionState() {
@@ -56,9 +62,18 @@ function makePeer(): FakePeer {
     get localDescription() {
       return localDescription;
     },
+    get iceGatheringState() {
+      return iceGatheringState;
+    },
     onconnectionstatechange: null,
+    onicegatheringstatechange: null,
     ontrack: null,
     addTrack: vi.fn(),
+    createDataChannel: vi.fn(() => ({
+      addEventListener: (type: string, listener: (event: MessageEvent) => void): void => {
+        dataChannelListeners.set(type, listener);
+      },
+    }) as unknown as RTCDataChannel),
     createOffer: vi.fn(async () => ({ type: 'offer' as const, sdp: 'browser-offer-sdp' })),
     setLocalDescription: vi.fn(async (offer: RTCSessionDescriptionInit) => {
       localDescription = { type: 'offer', sdp: offer.sdp ?? '' } as RTCSessionDescription;
@@ -73,6 +88,14 @@ function makePeer(): FakePeer {
     peer,
     addTrack: (peer as unknown as { addTrack: ReturnType<typeof vi.fn> }).addTrack,
     close: (peer as unknown as { close: ReturnType<typeof vi.fn> }).close,
+    createDataChannel: (peer as unknown as { createDataChannel: ReturnType<typeof vi.fn> }).createDataChannel,
+    emitProviderEvent: (value: unknown): void => {
+      dataChannelListeners.get('message')?.(new MessageEvent('message', { data: JSON.stringify(value) }));
+    },
+    setIceGatheringState: (state: RTCIceGatheringState): void => {
+      iceGatheringState = state;
+      peer.onicegatheringstatechange?.(new Event('icegatheringstatechange'));
+    },
     setRemoteDescription: (peer as unknown as { setRemoteDescription: ReturnType<typeof vi.fn> })
       .setRemoteDescription,
     setConnectionState: (state: RTCPeerConnectionState): void => {
@@ -93,6 +116,35 @@ function makeStream(): { stream: MediaStream; track: MediaStreamTrack } {
     getTracks: () => [track],
   } as unknown as MediaStream;
   return { stream, track };
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(reason: unknown): void;
+} {
+  let resolvePromise!: (value: T) => void;
+  let rejectPromise!: (reason: unknown) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return { promise, resolve: resolvePromise, reject: rejectPromise };
+}
+
+function makeStorage(initial: string | null = null): VoiceSessionStorage & { readonly values: Map<string, string> } {
+  const values = new Map<string, string>();
+  if (initial) values.set('talon.voice.session-id', initial);
+  return {
+    values,
+    getItem: (key: string): string | null => values.get(key) ?? null,
+    setItem: (key: string, value: string): void => {
+      values.set(key, value);
+    },
+    removeItem: (key: string): void => {
+      values.delete(key);
+    },
+  };
 }
 
 function makeOutput(overrides: Partial<VoiceOutputStatusDto> = {}): VoiceOutputStatusDto {
@@ -164,7 +216,7 @@ function createResponse(session: VoiceSessionStatusDto = makeStatus()): Record<s
       transport: 'webrtc',
       sessionId: session.id,
       providerSessionId: 'provider-session-1',
-      answer: { type: 'answer', sdp: 'server-answer-sdp' },
+      answer: { type: 'webrtc', sdp: 'server-answer-sdp' },
       expiresAt: session.deadlineAt,
     },
   };
@@ -219,6 +271,16 @@ describe('VoiceBrowserClient', () => {
     expect(JSON.parse(String(createRequest?.init?.body))).toEqual({
       transport: { type: 'webrtc', sdp: 'browser-offer-sdp' },
     });
+    expect(peer.createDataChannel).toHaveBeenCalledWith('oai-events');
+    expect(client.state.phase).toBe('connecting');
+
+    source.emit('session', {
+      kind: 'session',
+      version: 1,
+      session: makeStatus({ status: 'connected' }),
+      occurredAt: 150,
+    });
+    peer.emitProviderEvent({ type: 'session.started', session: { id: 'provider-session-1' } });
     expect(client.state.phase).toBe('connected');
 
     peer.setConnectionState('connected');
@@ -237,6 +299,106 @@ describe('VoiceBrowserClient', () => {
     expect(client.state.outputs[0]?.text).toBe('De taak is afgerond.');
     expect(client.state.pendingDelegation).toBe(true);
   });
+
+  it('waits for complete ICE gathering before sending the offer', async () => {
+    const { stream } = makeStream();
+    const peer = makePeer('gathering');
+    const source = new FakeEventSource();
+    const requests: string[] = [];
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      requests.push(input);
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) return okResponse(createResponse());
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source,
+      peer,
+      mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+    });
+
+    await client.login('operator-token');
+    const start = client.startCall();
+    await vi.waitFor(() => expect(peer.peer.createOffer).toHaveBeenCalled());
+    expect(requests.some((input) => input.endsWith('/sessions'))).toBe(false);
+
+    peer.setIceGatheringState('complete');
+    await start;
+    expect(requests.some((input) => input.endsWith('/sessions'))).toBe(true);
+  });
+
+  it.each(['dispose', 'hangup', 'logout'] as const)(
+    'stops a microphone stream that arrives after %s',
+    async (action) => {
+      const { stream, track } = makeStream();
+      const peer = makePeer();
+      const source = new FakeEventSource();
+      const microphone = deferred<MediaStream>();
+      const fetcher: VoiceFetch = vi.fn(async (input) => {
+        if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+        return new Response(null, { status: 204 });
+      });
+      const client = makeClient({
+        fetcher,
+        source,
+        peer,
+        mediaDevices: { getUserMedia: vi.fn(() => microphone.promise) },
+      });
+
+      await client.login('operator-token');
+      const start = client.startCall();
+      await vi.waitFor(() => expect(client.state.phase).toBe('requesting_microphone'));
+      if (action === 'dispose') client.dispose();
+      else await client[action]();
+      microphone.resolve(stream);
+      await start;
+
+      expect(track.stop).toHaveBeenCalledOnce();
+      expect(peer.close).not.toHaveBeenCalled();
+      expect(client.state.activeSessionId).toBeNull();
+    },
+  );
+
+  it.each(['dispose', 'hangup', 'logout'] as const)(
+    'closes a session returned after %s invalidates startup',
+    async (action) => {
+      const { stream, track } = makeStream();
+      const peer = makePeer();
+      const source = new FakeEventSource();
+      const create = deferred<Response>();
+      const requests: string[] = [];
+      const fetcher: VoiceFetch = vi.fn(async (input) => {
+        requests.push(input);
+        if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+        if (input.endsWith('/sessions')) return create.promise;
+        if (input.endsWith('/close')) {
+          return okResponse({ session: makeStatus({ status: 'closed' }), pendingDelegation: false });
+        }
+        if (input.endsWith('/logout')) return okResponse({ loggedOut: true });
+        return new Response(null, { status: 204 });
+      });
+      const client = makeClient({
+        fetcher,
+        source,
+        peer,
+        mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+      });
+
+      await client.login('operator-token');
+      const start = client.startCall();
+      await vi.waitFor(() => expect(requests.some((input) => input.endsWith('/sessions'))).toBe(true));
+      if (action === 'dispose') client.dispose();
+      else await client[action]();
+      create.resolve(okResponse(createResponse()));
+      await start;
+
+      expect(requests.some((input) => input.endsWith('/sessions/session-1/close'))).toBe(true);
+      expect(track.stop).toHaveBeenCalledOnce();
+      expect(peer.close).toHaveBeenCalledOnce();
+      expect(client.state.activeSessionId).toBeNull();
+    },
+  );
 
   it('shows a microphone-denied error and releases the call without creating a session', async () => {
     const peer = makePeer();
@@ -317,6 +479,82 @@ describe('VoiceBrowserClient', () => {
     expect(source.close).toHaveBeenCalledOnce();
   });
 
+  it('keeps retained results separate so a new call can start', async () => {
+    const first = makeStream();
+    const second = makeStream();
+    const firstPeer = makePeer();
+    const secondPeer = makePeer();
+    const source = new FakeEventSource();
+    let createCount = 0;
+    const storage = makeStorage();
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) {
+        createCount += 1;
+        return okResponse(createResponse(makeStatus({ id: `session-${createCount}` })));
+      }
+      if (input.endsWith('/close')) {
+        return okResponse({
+          session: makeStatus({ id: 'session-1', status: 'closed', closedAt: 300 }),
+          pendingDelegation: false,
+        });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source,
+      peer: firstPeer,
+      sessionStorage: storage,
+      peerConnectionFactory: vi.fn(() => (createCount === 0 ? firstPeer.peer : secondPeer.peer)),
+      mediaDevices: {
+        getUserMedia: vi.fn(async () => (createCount === 0 ? first.stream : second.stream)),
+      },
+    });
+
+    await client.login('operator-token');
+    await client.startCall();
+    await client.hangup();
+    expect(client.state.activeSessionId).toBeNull();
+    expect(client.state.retainedSessionId).toBe('session-1');
+    expect(storage.values.get('talon.voice.session-id')).toBe('session-1');
+
+    await client.startCall();
+    expect(client.state.activeSessionId).toBe('session-2');
+    expect(client.state.retainedSessionId).toBeNull();
+    expect(client.state.outputs).toHaveLength(0);
+    expect(storage.values.get('talon.voice.session-id')).toBe('session-2');
+  });
+
+  it('restores retained results through the authenticated cookie without replaying a call', async () => {
+    const storage = makeStorage('session-1');
+    const status = makeStatus({
+      id: 'session-1',
+      status: 'closed',
+      delegations: [makeDelegation({ status: 'completed', execution: 'succeeded' })],
+    });
+    const requests: Array<{ input: string; init?: RequestInit }> = [];
+    const source = new FakeEventSource();
+    const peer = makePeer();
+    const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+      requests.push({ input, init });
+      if (input.endsWith('/sessions/session-1')) return okResponse({ session: status });
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({ fetcher, source, peer, sessionStorage: storage });
+
+    await client.restore();
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.input).toContain('/sessions/session-1');
+    expect(requests[0]?.init?.method).toBe('GET');
+    expect(requests[0]?.init?.credentials).toBe('include');
+    expect(client.state.authenticated).toBe(true);
+    expect(client.state.retainedSessionId).toBe('session-1');
+    expect(client.state.outputs[0]?.text).toBe('De taak is afgerond.');
+    expect(client.state.phase).toBe('closed');
+  });
+
   it('reports a status stream network loss while keeping the session available to hang up', async () => {
     const { stream } = makeStream();
     const peer = makePeer();
@@ -338,7 +576,7 @@ describe('VoiceBrowserClient', () => {
     source.emitConnectionError();
 
     expect(client.state.phase).toBe('network_lost');
-    expect(client.state.sessionId).toBe('session-1');
+    expect(client.state.activeSessionId).toBe('session-1');
     expect(client.state.message).toContain('statusverbinding');
   });
 
@@ -380,5 +618,10 @@ describe('VoiceBrowserClient', () => {
     await client.resumeAudio();
     expect(audio.play).toHaveBeenCalledTimes(2);
     expect(client.state.audioBlocked).toBe(false);
+    expect(requestsFor(fetcher).some((input) => input.endsWith('/playback'))).toBe(false);
   });
 });
+
+function requestsFor(fetcher: VoiceFetch): string[] {
+  return (fetcher as unknown as ReturnType<typeof vi.fn>).mock.calls.map(([input]) => String(input));
+}
