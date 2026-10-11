@@ -192,6 +192,25 @@ describe('DurableVoiceStore', () => {
     expect(db.prepare('SELECT COUNT(*) AS count FROM voice_delegations').get()).toEqual({ count: 0 });
   });
 
+  it('accepts a first admission with its preallocated matching queue id', () => {
+    db = createDb();
+    const store = new DurableVoiceStore(db);
+    store.createSession(makeSession());
+    const delegation = makeDelegation({ queueItemId: 'queue-preallocated' });
+
+    const result = store.admitDelegation(admission(delegation, 'queue-preallocated'));
+
+    expect(result.isOk()).toBe(true);
+    expect(result._unsafeUnwrap().queueItemId).toBe('queue-preallocated');
+    expect(store.findDelegation(delegation.id)._unsafeUnwrap()).toMatchObject({
+      status: 'queued',
+      queueItemId: 'queue-preallocated',
+    });
+    expect(db.prepare('SELECT status FROM queue_items WHERE id = ?').get('queue-preallocated')).toEqual({
+      status: 'pending',
+    });
+  });
+
   it('rolls back reserve-only transactions and expires their transaction view', () => {
     db = createDb();
     const store = new DurableVoiceStore(db);

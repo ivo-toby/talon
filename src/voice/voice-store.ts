@@ -793,7 +793,7 @@ export class DurableVoiceStore implements VoiceStoreContract {
       }
       queueRow = existing.value;
     } else {
-      if (delegation.status !== 'admitted' || delegation.queue_item_id !== null) {
+      if (delegation.status !== 'admitted') {
         return err(new DbError(`Voice delegation ${input.delegationId} has no retained queue binding`));
       }
       const inserted = this.queueRepository.enqueue({
