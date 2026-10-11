@@ -350,6 +350,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private readonly seenEventOrder: string[] = [];
   private readonly delegationContexts = new Map<string, TranscriptContextResult>();
   private readonly delegationOffsets = new Map<string, number>();
+  private readonly delegationTargets = new Map<string, string>();
   private sequence = 0;
   private connected = false;
   private opened = false;
@@ -725,6 +726,28 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       );
       return;
     }
+    const normalizedTarget = target ?? 'client';
+    if (this.delegationOffsets.has(providerDelegationId)) {
+      const previousOffset = this.delegationOffsets.get(providerDelegationId);
+      const previousTarget = this.delegationTargets.get(providerDelegationId) ?? 'client';
+      if (previousOffset !== offsetMs || previousTarget !== normalizedTarget) {
+        const previousContext = this.delegationContexts.get(providerDelegationId);
+        if (previousContext) {
+          this.delegationContexts.set(providerDelegationId, {
+            ...previousContext,
+            uncertain: true,
+            reason: 'delegation_replay_conflict',
+          });
+        }
+        this.publishError(
+          'INVALID_PROVIDER_EVENT',
+          'GPT-Live replay changed an existing delegation',
+          false,
+          eventId,
+        );
+      }
+      return;
+    }
     if (target && target !== 'client') {
       this.publishError(
         'UNSUPPORTED_DELEGATION_TARGET',
@@ -743,6 +766,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     const context = this.transcript.captureAt(offsetMs);
     this.rememberDelegationContext(providerDelegationId, context);
     this.delegationOffsets.set(providerDelegationId, offsetMs);
+    this.delegationTargets.set(providerDelegationId, normalizedTarget);
     this.publish({ kind: 'delegation', eventId, sequence, proposal });
   }
 
@@ -934,6 +958,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       if (typeof oldest !== 'string') break;
       this.delegationContexts.delete(oldest);
       this.delegationOffsets.delete(oldest);
+      this.delegationTargets.delete(oldest);
     }
   }
 

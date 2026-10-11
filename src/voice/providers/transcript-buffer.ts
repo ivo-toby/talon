@@ -26,7 +26,8 @@ export type TranscriptContextReason =
   | 'truncated'
   | 'boundary_fragment'
   | 'untimed_fragment'
-  | 'transcript_changed';
+  | 'transcript_changed'
+  | 'delegation_replay_conflict';
 
 export interface TranscriptContextResult {
   readonly snapshot: VoiceContextSnapshot | null;

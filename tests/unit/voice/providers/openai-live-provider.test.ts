@@ -202,6 +202,31 @@ describe('OpenAiLiveVoiceProvider', () => {
       'transcript_changed',
     );
     expect(sideband.contextForDelegation('provider-delegation-1')).toBeNull();
+
+    socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'delegation-replay',
+      delegation: { id: 'provider-delegation-1', target: 'client' },
+      offset_ms: 100,
+    });
+    expect(sideband.contextForDelegation('provider-delegation-1')).toBeNull();
+    expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+
+    socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'delegation-conflict',
+      delegation: { id: 'provider-delegation-1', target: 'client' },
+      offset_ms: 80,
+    });
+    expect(sideband.getContextForDelegation('provider-delegation-1')?.uncertain).toBe(true);
+    expect(sideband.getContextForDelegation('provider-delegation-1')?.reason).toBe(
+      'delegation_replay_conflict',
+    );
+    expect(sideband.contextForDelegation('provider-delegation-1')).toBeNull();
+    expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+    expect(
+      events.filter((event) => event.kind === 'error' && event.code === 'INVALID_PROVIDER_EVENT'),
+    ).toHaveLength(1);
     expect(events.some((event) => event.kind === 'delegation')).toBe(true);
     expect(events.some((event) => event.kind === 'provider_acknowledgement')).toBe(true);
     expect(
