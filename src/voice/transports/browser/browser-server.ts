@@ -606,6 +606,14 @@ export class BrowserVoiceServer {
       this.writeRequestFailure(response, requestId, cause);
       return;
     }
+    if (!this.auth.isActive(authenticated)) {
+      this.writeError(response, requestId, {
+        status: 401,
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      });
+      return;
+    }
     const reason = readStringProperty(body, 'reason');
     if (reason === null || !CLOSE_REASONS.includes(reason as VoiceCloseReason)) {
       this.writeError(response, requestId, {
@@ -672,6 +680,14 @@ export class BrowserVoiceServer {
       body = await readJsonBody(request, this.maxRequestBytes);
     } catch (cause) {
       this.writeRequestFailure(response, requestId, cause);
+      return;
+    }
+    if (!this.auth.isActive(authenticated)) {
+      this.writeError(response, requestId, {
+        status: 401,
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      });
       return;
     }
     const outputId = readStringProperty(body, 'outputId');
@@ -976,12 +992,15 @@ export class BrowserVoiceServer {
     if (!host) return false;
     let hostUrl: URL;
     try {
-      hostUrl = new URL(`http://${host}`);
+      hostUrl = new URL(`${this.requestProtocol(request)}//${host}`);
     } catch {
       return false;
     }
 
     const fetchSite = request.headers['sec-fetch-site'];
+    const trustedFetchSite =
+      typeof fetchSite === 'string' &&
+      (fetchSite.toLowerCase() === 'same-origin' || fetchSite.toLowerCase() === 'none');
     if (typeof fetchSite === 'string') {
       const normalizedFetchSite = fetchSite.toLowerCase();
       if (normalizedFetchSite !== 'same-origin' && normalizedFetchSite !== 'none') {
@@ -990,26 +1009,38 @@ export class BrowserVoiceServer {
     }
 
     const referer = request.headers.referer;
-    if (typeof referer !== 'string') return isLoopbackHostname(hostUrl.hostname);
+    if (typeof referer !== 'string') {
+      return (
+        isLoopbackHostname(hostUrl.hostname) ||
+        (trustedFetchSite &&
+          this.allowedOrigins?.some((origin) => origin === hostUrl.origin) === true)
+      );
+    }
     try {
       const refererUrl = new URL(referer);
-      if (this.allowedOrigins?.includes(refererUrl.origin)) return true;
-      return isLoopbackHostname(hostUrl.hostname) && refererUrl.host === hostUrl.host;
+      return (
+        refererUrl.origin === hostUrl.origin &&
+        (isLoopbackHostname(hostUrl.hostname) ||
+          this.allowedOrigins?.some((origin) => origin === hostUrl.origin) === true)
+      );
     } catch {
       return false;
     }
   }
 
-  private isSecureRequest(request: IncomingMessage): boolean {
-    if (this.config.secureCookies !== undefined) return this.config.secureCookies;
+  private requestProtocol(request: IncomingMessage): 'http:' | 'https:' {
     const forwarded = request.headers['x-forwarded-proto'];
     const protocol = Array.isArray(forwarded) ? forwarded[0] : forwarded;
+    if (protocol?.split(',')[0]?.trim().toLowerCase() === 'https') return 'https:';
     const socketWithTls = request.socket as typeof request.socket & {
       readonly encrypted?: boolean;
     };
-    return (
-      protocol?.split(',')[0]?.trim().toLowerCase() === 'https' || socketWithTls.encrypted === true
-    );
+    return socketWithTls.encrypted === true ? 'https:' : 'http:';
+  }
+
+  private isSecureRequest(request: IncomingMessage): boolean {
+    if (this.config.secureCookies !== undefined) return this.config.secureCookies;
+    return this.requestProtocol(request) === 'https:';
   }
 
   private async serveAsset(pathname: string, response: ServerResponse): Promise<void> {

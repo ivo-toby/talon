@@ -33,6 +33,7 @@ const ORIGIN = 'http://127.0.0.1';
 
 class FakeVoiceSessionService implements VoiceSessionService {
   readonly closedReasons: string[] = [];
+  readonly playbackReports: VoicePlaybackReport[] = [];
   private nextId = 1;
   private readonly sessions = new Map<string, { ownerId: string; record: VoiceSessionRecord }>();
   private handler: VoiceEventHandler<VoiceStatusEventDto> | undefined;
@@ -77,11 +78,12 @@ class FakeVoiceSessionService implements VoiceSessionService {
   async reportPlayback(
     owner: VoiceOwnerContext,
     sessionId: string,
-    _report: VoicePlaybackReport,
+    report: VoicePlaybackReport,
   ): VoiceAsyncResult<void> {
     const entry = this.sessions.get(sessionId);
     if (!entry || entry.ownerId !== owner.ownerId)
       return err(new PolicyError('session owner mismatch'));
+    this.playbackReports.push(report);
     return ok(undefined);
   }
 
@@ -233,6 +235,52 @@ describe('BrowserVoiceServer', () => {
     expect(service.closedReasons).toEqual([]);
   });
 
+  it('allows proxy same-origin reads without a referrer', async () => {
+    const service = new FakeVoiceSessionService();
+    const publicOrigin = 'https://voice.example';
+    const server = await startServer(service, { allowedOrigins: [publicOrigin] });
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await fetch(`${base}/voice/login`, {
+      method: 'POST',
+      headers: { origin: publicOrigin, 'content-type': 'application/json' },
+      body: JSON.stringify({ accessToken: 'secret' }),
+    });
+    expect(login.status).toBe(200);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    const cookieHeader = `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`;
+    const created = await fetch(`${base}/voice/sessions`, {
+      method: 'POST',
+      headers: {
+        cookie: cookieHeader,
+        origin: publicOrigin,
+        'content-type': 'application/json',
+        'x-csrf-token': csrf,
+      },
+      body: JSON.stringify({ transport: { type: 'webrtc', sdp: 'offer' } }),
+    });
+    expect(created.status).toBe(201);
+
+    const proxyHeaders = {
+      cookie: cookieHeader,
+      host: 'voice.example',
+      'sec-fetch-mode': 'cors',
+      'sec-fetch-site': 'same-origin',
+      'x-forwarded-proto': 'https',
+    };
+    const status = await fetch(`${base}/voice/sessions/session-1`, {
+      headers: proxyHeaders,
+    });
+    expect(status.status).toBe(200);
+
+    const stream = await fetch(`${base}/voice/sessions/session-1/events`, {
+      headers: { ...proxyHeaders, accept: 'text/event-stream' },
+    });
+    expect(stream.status).toBe(200);
+    await stream.body?.cancel();
+  });
+
   it('limits request payloads and does not expose domain error details', async () => {
     const service = new FakeVoiceSessionService();
     const server = await startServer(service, { maxRequestBytes: 64 });
@@ -371,6 +419,63 @@ describe('BrowserVoiceServer', () => {
     expect(service.closedReasons).toEqual([]);
   });
 
+  it('rejects a close whose body completes after logout', async () => {
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service);
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    const cookieHeader = `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`;
+    expect((await createAt(base, cookieHeader, csrf)).status).toBe(201);
+    const pending = requestWithHeldJsonBody(
+      base,
+      '/voice/sessions/session-1/close',
+      cookieHeader,
+      csrf,
+      { reason: 'hangup' },
+    );
+    await nextTurn();
+
+    const logout = await fetch(`${base}/voice/logout`, {
+      method: 'POST',
+      headers: { cookie: cookieHeader, origin: ORIGIN, 'x-csrf-token': csrf },
+    });
+    expect(logout.status).toBe(200);
+
+    pending.release();
+    expect((await pending.response).status).toBe(401);
+    expect(service.closedReasons).toEqual(['logout']);
+  });
+
+  it('rejects playback whose body completes after login expiry', async () => {
+    let now = 2_000_000;
+    const auth = new VoiceAuth({ accessToken: 'secret', sessionTtlMs: 1_000, now: () => now });
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service, {}, auth);
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    const cookieHeader = `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`;
+    expect((await createAt(base, cookieHeader, csrf)).status).toBe(201);
+    const pending = requestWithHeldJsonBody(
+      base,
+      '/voice/sessions/session-1/playback',
+      cookieHeader,
+      csrf,
+      { outputId: 'output-1', status: 'played' },
+    );
+    await nextTurn();
+
+    now += 1_001;
+    pending.release();
+    expect((await pending.response).status).toBe(401);
+    expect(service.playbackReports).toEqual([]);
+  });
+
   it('closes a session created after its login was revoked', async () => {
     const service = new FakeVoiceSessionService();
     const server = await startServer(service);
@@ -476,7 +581,19 @@ function createWithHeldBody(
   cookieHeader: string,
   csrf: string,
 ): { response: Promise<{ status: number; body: string }>; release: () => void } {
-  const payload = JSON.stringify({ transport: { type: 'webrtc', sdp: 'offer' } });
+  return requestWithHeldJsonBody(base, '/voice/sessions', cookieHeader, csrf, {
+    transport: { type: 'webrtc', sdp: 'offer' },
+  });
+}
+
+function requestWithHeldJsonBody(
+  base: string,
+  path: string,
+  cookieHeader: string,
+  csrf: string,
+  body: unknown,
+): { response: Promise<{ status: number; body: string }>; release: () => void } {
+  const payload = JSON.stringify(body);
   const prefixLength = Math.max(1, Math.floor(payload.length / 2));
   const prefix = payload.slice(0, prefixLength);
   const suffix = payload.slice(prefixLength);
@@ -487,7 +604,7 @@ function createWithHeldBody(
     rejectResponse = reject;
   });
   const request = httpRequest(
-    new URL(`${base}/voice/sessions`),
+    new URL(path, base),
     {
       method: 'POST',
       headers: {
