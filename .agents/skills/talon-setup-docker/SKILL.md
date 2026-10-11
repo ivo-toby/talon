@@ -337,12 +337,12 @@ voice:
 ```
 
 The starter bundle's published `127.0.0.1:8788` port is for OAuth callbacks;
-it does not publish browser voice. To serve voice outside the container, put an
-HTTPS reverse proxy in the same network namespace as `talond` (or use an
-equivalent deployment layout) and forward to the loopback voice listener.
-Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Do not change
-the voice listener to `0.0.0.0`; the server intentionally accepts loopback
-hosts only. Run `talonctl doctor` after the config change and open
+it does not publish browser voice. The voice listener defaults to loopback. To
+serve voice outside the container, put an HTTPS reverse proxy in the same
+network namespace as `talond`, or configure `voice.host` with a reachable
+container interface or `0.0.0.0` and restrict the published network path.
+Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Run
+`talonctl doctor` after the config change and open
 `https://<publicHost>/voice/`. SIP, physical-phone, and paid live-provider
 verification remain separate acceptance steps.
 

@@ -385,6 +385,8 @@ auth:
 # put literal secrets in this file.
 voice:
   enabled: false
+  # Defaults to loopback. For a proxy in another network namespace, set this
+  # to a reachable interface address or 0.0.0.0 and restrict network access.
   host: 127.0.0.1
   port: 0
   # publicHost: voice.example.com

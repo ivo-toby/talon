@@ -1,5 +1,6 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import { request as httpRequest } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { err, ok } from '../../../../src/core/types/result.js';
 import { PolicyError } from '../../../../src/core/errors/error-types.js';
 import {
@@ -154,6 +155,20 @@ afterEach(async () => {
 });
 
 describe('BrowserVoiceServer', () => {
+  it('honors a configured listener host while defaulting to loopback', async () => {
+    const defaultServer = await startServer(new FakeVoiceSessionService());
+    expect(boundHost(defaultServer)).toBe('127.0.0.1');
+
+    const configuredServer = await startServer(new FakeVoiceSessionService(), {
+      host: '0.0.0.0',
+    });
+    expect(boundHost(configuredServer)).toBe('0.0.0.0');
+
+    const response = await fetch(`http://127.0.0.1:${configuredServer.port}/voice/healthz`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true });
+  });
+
   it('enforces origin and csrf checks before creating an owned session', async () => {
     const service = new FakeVoiceSessionService();
     const server = await startServer(service, { maxRequestBytes: 1024 });
@@ -768,6 +783,16 @@ async function startServer(
   activeServers.push(server);
   await server.start();
   return server;
+}
+
+function boundHost(server: BrowserVoiceServer): string {
+  const internal = server as unknown as {
+    server: { address(): string | AddressInfo | null } | null;
+  };
+  const address = internal.server?.address();
+  if (!address || typeof address === 'string')
+    throw new Error('BrowserVoiceServer is not listening');
+  return address.address;
 }
 
 async function loginAt(base: string): Promise<Response> {

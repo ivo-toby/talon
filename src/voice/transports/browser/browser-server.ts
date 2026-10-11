@@ -1,5 +1,5 @@
 /**
- * Loopback HTTP adapter for the browser voice boundary.
+ * HTTP adapter for the browser voice boundary.
  *
  * The adapter owns HTTP authentication, request validation, redacted errors,
  * and the browser-facing status stream.  VoiceSessionService remains the
@@ -207,12 +207,11 @@ export class BrowserVoiceServer {
     return address && typeof address === 'object' ? address.port : 0;
   }
 
-  /** Start on a loopback interface and return the bound port. */
+  /** Start on the configured interface and return the bound port. */
   start(
     host = this.config.host ?? DEFAULT_HOST,
     port = this.config.port ?? DEFAULT_PORT,
   ): Promise<number> {
-    assertLoopbackHost(host);
     if (this.server) return Promise.resolve(this.port);
     if (this.startPromise) return this.startPromise;
 
@@ -1250,12 +1249,6 @@ function requireAccessToken(config: BrowserVoiceServerConfig): VoiceAuthConfig {
 function validatePositiveLimit(value: number | undefined, name: string): void {
   if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
     throw new Error(`BrowserVoiceServer ${name} must be a positive integer`);
-  }
-}
-
-function assertLoopbackHost(host: string): void {
-  if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
-    throw new Error('BrowserVoiceServer only binds to loopback hosts');
   }
 }
 

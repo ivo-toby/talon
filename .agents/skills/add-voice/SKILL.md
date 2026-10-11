@@ -55,8 +55,9 @@ provider or returned in session status.
 
 ## Add the voice block
 
-Edit the config with the selected persona and provider. Keep the listener on
-loopback and start with an explicit origin:
+Edit the config with the selected persona and provider. The listener defaults
+to loopback; use a reachable explicit bind address when a remote proxy needs to
+connect, and start with an explicit origin:
 
 ```yaml
 voice:
@@ -85,11 +86,12 @@ approval-gated or unproven MCP capabilities fail closed at the voice boundary.
 ## HTTPS and proxy
 
 For a browser outside the daemon host, terminate HTTPS in a reverse proxy and
-forward `/voice/` to the loopback listener. Preserve the public `Host` and
-`Origin` headers and send `X-Forwarded-Proto: https`; this is required for
-secure cookie and same-origin decisions. `publicHost` contributes the matching
-`https://` origin but does not expose the listener by itself. Do not bind voice
-to `0.0.0.0`.
+forward `/voice/` to the listener. Keep the default loopback bind when the
+proxy shares the daemon's network namespace; otherwise set `voice.host` to a
+reachable interface or `0.0.0.0` and restrict network access. Preserve the
+public `Host` and `Origin` headers and send `X-Forwarded-Proto: https`; this is
+required for secure cookie and same-origin decisions. `publicHost` contributes
+the matching `https://` origin but does not change the listener address.
 
 ## Validate
 

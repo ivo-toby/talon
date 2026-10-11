@@ -2373,8 +2373,9 @@ planned as an additional layer.
 
 ### Browser voice
 
-Browser voice is disabled by default. When enabled, Talon binds a loopback
-HTTP listener and a reverse proxy can publish it over HTTPS. The browser
+Browser voice is disabled by default. When enabled, Talon binds the configured
+`voice.host` HTTP listener (`127.0.0.1` by default) and a reverse proxy can
+publish it over HTTPS. The browser
 exchanges an operator-configured token for an expiring cookie session; the
 server then selects the persona, backend provider, live model, WebRTC transport,
 and capability policy. Only an enabled `openai-compatible` backend provider is
@@ -2404,10 +2405,14 @@ voice:
     - https://voice.example.com
 ```
 
-The reverse proxy must preserve the public `Host` and `Origin` and send
-`X-Forwarded-Proto: https`. Talon stores bounded session text, output, usage,
-and lifecycle state in local SQLite, not raw audio. Cloud provider retention is
-controlled by the provider account. See the [browser voice guide](docs/guides/voice.mdx)
+The default loopback bind is suitable when the proxy shares the daemon's
+network namespace. If the proxy is remote, set `voice.host` to a reachable
+interface or `0.0.0.0` and restrict network access; `allowedOrigins`,
+authentication, and CSRF checks still apply. The reverse proxy must preserve
+the public `Host` and `Origin` and send `X-Forwarded-Proto: https`. Talon
+stores bounded session text, output, usage, and lifecycle state in local
+SQLite, not raw audio. Cloud provider retention is controlled by the provider
+account. See the [browser voice guide](docs/guides/voice.mdx)
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.
 
