@@ -32,10 +32,12 @@ class FakeSideband implements LiveVoiceSideband {
   readonly providerSessionId = 'provider-session-1';
   readonly commands: string[] = [];
   readonly contexts = new Map<string, VoiceContextSnapshot>();
+  readonly invalidContexts = new Set<string>();
   latestUsage: VoiceUsageUpdate | undefined;
   private handler: VoiceEventHandler<import('../../../../src/voice/voice-types.js').LiveVoiceEvent> | undefined;
 
-  contextForDelegation(providerDelegationId: string): VoiceContextSnapshot {
+  contextForDelegation(providerDelegationId: string): VoiceContextSnapshot | null {
+    if (this.invalidContexts.has(providerDelegationId)) return null;
     return this.contexts.get(providerDelegationId) ?? {
       version: 1,
       digest: 'context-digest-1',
@@ -48,6 +50,11 @@ class FakeSideband implements LiveVoiceSideband {
 
   setContext(providerDelegationId: string, context: VoiceContextSnapshot): void {
     this.contexts.set(providerDelegationId, context);
+    this.invalidContexts.delete(providerDelegationId);
+  }
+
+  invalidateContext(providerDelegationId: string): void {
+    this.invalidContexts.add(providerDelegationId);
   }
 
   send(command: import('../../../../src/voice/voice-types.js').LiveVoiceCommand) {
@@ -405,9 +412,17 @@ describe('browser voice lifecycle composition', () => {
     const closed = await service.closeSession(owner, session.session.id, { reason: 'hangup' });
     expect(closed.isOk()).toBe(true);
     expect(closed._unsafeUnwrap().pendingDelegation).toBe(true);
+    const retainedEvents: string[] = [];
+    const subscription = service.subscribe(owner, session.session.id, (event) => {
+      retainedEvents.push(event.kind);
+    });
+    expect(subscription.isOk()).toBe(true);
+    await waitFor(() => retainedEvents.includes('session'));
     release();
     await waitFor(() => provider.sideband.commands.includes('The retained result is safe.'));
+    await waitFor(() => retainedEvents.includes('delegation'));
     expect(service.status(owner, session.session.id)._unsafeUnwrap()?.status).toBe('closed');
+    subscription._unsafeUnwrap()();
     queueManager.stopProcessing();
   });
 
@@ -494,6 +509,70 @@ describe('browser voice lifecycle composition', () => {
     });
     harness.queueManager.stopProcessing();
     expect(executedProviders).toEqual(['provider-correction']);
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+  });
+
+  it('skips queued work when a normalized transcript correction invalidates its context', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    harness.provider.sideband.setContext(
+      'provider-transcript-correction',
+      context(1, 'digest-before-correction', 'Book Friday.'),
+    );
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-transcript-correction',
+        sequence: 1,
+        proposal: {
+          providerDelegationId: 'provider-transcript-correction',
+          offsetMs: 0,
+          receivedAt: 30,
+        },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+
+    harness.provider.sideband.invalidateContext('provider-transcript-correction');
+    const corrected = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-transcript-correction-result',
+        sequence: 2,
+        fragment: {
+          id: 'utterance-1',
+          role: 'user',
+          kind: 'correction',
+          sequence: 2,
+          text: 'No Thursday.',
+          receivedAt: 40,
+        },
+      },
+    });
+    expect(corrected.isOk()).toBe(true);
+    expect(harness.provider.sideband.commands).toContain(
+      'The transcript changed before that request could start. Please repeat it.',
+    );
+
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.session.activeDelegationId).toBeUndefined();
+    expect(projection?.delegations).toHaveLength(1);
+    expect(projection?.delegations[0]).toMatchObject({
+      providerDelegationId: 'provider-transcript-correction',
+      status: 'skipped',
+      execution: 'skipped',
+      contextDigest: 'digest-before-correction',
+    });
+    expect(harness.db.prepare('SELECT status FROM queue_items').get()).toMatchObject({ status: 'completed' });
     await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
   });
 
@@ -602,13 +681,18 @@ describe('browser voice lifecycle composition', () => {
     });
     expect(created.isOk()).toBe(true);
     const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
     activeRevision = 2;
     const currentOwner = { ownerId: 'owner-1', loginRevision: 2 };
     expect(harness.service.status(currentOwner, sessionId).isOk()).toBe(true);
     expect((await harness.service.closeSession(currentOwner, sessionId, { reason: 'hangup' })).isErr()).toBe(true);
-    const subscription = harness.service.subscribe(currentOwner, sessionId, () => undefined);
+    const events: Array<{ kind: string; session?: { status: string } }> = [];
+    const subscription = harness.service.subscribe(currentOwner, sessionId, (event) => {
+      events.push({ kind: event.kind, ...(event.kind === 'session' ? { session: event.session } : {}) });
+    });
     expect(subscription.isOk()).toBe(true);
+    await waitFor(() => events.length === 1);
+    expect(events[0]).toEqual({ kind: 'session', session: expect.objectContaining({ status: 'closed' }) });
     subscription._unsafeUnwrap()();
-    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
   });
 });

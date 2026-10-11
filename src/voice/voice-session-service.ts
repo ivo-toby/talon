@@ -619,15 +619,23 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       return err(new PolicyError('Voice session owner does not match'));
     }
     const runtime = this.runtimes.get(sessionId);
-    if (!runtime) return err(new PolicyError('Voice session is no longer active'));
+    const event: VoiceStatusEventDto = {
+      kind: 'session',
+      version: projection.value.session.revision,
+      session: statusDto(projection.value),
+      occurredAt: this.now(),
+    };
+    if (!runtime) {
+      try {
+        void Promise.resolve(handler(event)).catch(() => undefined);
+      } catch {
+        // A retained snapshot listener cannot affect the session.
+      }
+      return ok(() => undefined);
+    }
     runtime.listeners.add(handler);
     try {
-      void Promise.resolve(handler({
-        kind: 'session',
-        version: projection.value.session.revision,
-        session: statusDto(projection.value),
-        occurredAt: this.now(),
-      })).catch(() => undefined);
+      void Promise.resolve(handler(event)).catch(() => undefined);
     } catch {
       // A status listener cannot affect the session.
     }
@@ -757,7 +765,9 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     ) {
       return ok(undefined);
     }
-    if (event.kind === 'transcript') return ok(undefined);
+    if (event.kind === 'transcript') {
+      return this.handleTranscriptEvent(sessionId, runtime, event);
+    }
     if (event.kind === 'usage') {
       return this.persistUsage(sessionId, event.update);
     }
@@ -782,6 +792,77 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       return ok(undefined);
     }
     return this.handleDelegation(sessionId, event.proposal);
+  }
+
+  private async handleTranscriptEvent(
+    sessionId: string,
+    runtime: SessionRuntime,
+    _event: Extract<LiveVoiceEvent, { readonly kind: 'transcript' }>,
+  ): Promise<VoiceResult<void>> {
+    const projection = this.options.store.readSession(sessionId);
+    if (projection.isErr()) return err(projection.error);
+    if (!projection.value) return err(new PolicyError('Voice session was not found'));
+
+    for (const delegation of projection.value.delegations) {
+      if (delegation.status !== 'admitted' && delegation.status !== 'queued') continue;
+      const context = this.contextForDelegation(runtime.sideband, delegation.providerDelegationId);
+      const invalidated =
+        !context ||
+        context.version !== delegation.contextVersion ||
+        context.digest !== delegation.contextDigest;
+      if (!invalidated) continue;
+
+      const skipped = this.skipInvalidatedDelegation(sessionId, delegation);
+      if (skipped.isErr()) return err(skipped.error);
+      if (!skipped.value) continue;
+      this.publishDelegation(sessionId, skipped.value.delegation.id);
+      if (skipped.value.clearedActive) this.publishSession(skipped.value.session);
+      await sendClarification(
+        runtime.sideband,
+        delegation.providerDelegationId,
+        'The transcript changed before that request could start. Please repeat it.',
+      );
+    }
+    return ok(undefined);
+  }
+
+  private skipInvalidatedDelegation(
+    sessionId: string,
+    delegation: VoiceDelegationRecord,
+  ): VoiceResult<{ readonly delegation: VoiceDelegationRecord; readonly session: VoiceSessionRecord; readonly clearedActive: boolean } | null> {
+    return this.options.store.runInTransaction((transaction) => {
+      const current = transaction.findDelegation(delegation.id);
+      if (current.isErr()) return err(current.error);
+      if (
+        !current.value ||
+        (current.value.status !== 'admitted' && current.value.status !== 'queued')
+      ) {
+        return ok(null);
+      }
+      const skipped = transaction.skipDelegation({
+        delegationId: current.value.id,
+        expectedRevision: current.value.revision,
+        // The frozen skip CAS has lifecycle reasons only; an invalidated
+        // provider context is a non-retryable shutdown-style skip.
+        reason: 'shutdown',
+        skippedAt: this.now(),
+      });
+      if (skipped.isErr()) return err(skipped.error);
+      const currentSession = transaction.findSession(sessionId);
+      if (currentSession.isErr()) return err(currentSession.error);
+      if (!currentSession.value) return err(new PolicyError('Voice session was not found'));
+      if (currentSession.value.activeDelegationId !== current.value.id) {
+        return ok({ delegation: skipped.value, session: currentSession.value, clearedActive: false });
+      }
+      const cleared = transaction.updateSession({
+        sessionId,
+        expectedRevision: currentSession.value.revision,
+        patch: { activeDelegationId: undefined },
+        updatedAt: this.now(),
+      });
+      if (cleared.isErr()) return err(cleared.error);
+      return ok({ delegation: skipped.value, session: cleared.value, clearedActive: true });
+    });
   }
 
   private async handleDelegation(
