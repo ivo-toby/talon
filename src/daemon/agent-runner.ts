@@ -7,7 +7,11 @@ import { z } from 'zod';
 import type { DaemonContext } from './daemon-context.js';
 import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
-import { filterAllowedMcpTools } from '../tools/tool-filter.js';
+import {
+  filterAllowedMcpTools,
+  filterVoiceMcpTools,
+  MCP_TO_INTERNAL,
+} from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
 import { hasOAuthMcpAuth, resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
@@ -31,16 +35,11 @@ import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-to
 import type { VoiceBackendRequest } from '../voice/voice-types.js';
 import type { VoiceExecutionGate, VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
 import type { VoiceOutputSink } from '../voice/voice-output-sink.js';
+import { getVoiceNativeToolNames } from '../voice/voice-policy.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-const SUPPORTED_VOICE_PROVIDER_TYPES = new Set(['claude-code', 'gemini-cli', 'openai-compatible']);
 const VOICE_PROVIDER_ERROR_MESSAGE = 'Voice provider execution failed';
-const VOICE_NATIVE_TOOL_NAMES: Readonly<Record<string, readonly string[]>> = {
-  'claude-code': ['WebSearch', 'WebFetch'],
-  'gemini-cli': ['google_web_search', 'web_fetch'],
-  'openai-compatible': [],
-};
 
 class AgentQueryAttemptError extends Error {
   constructor(
@@ -217,8 +216,7 @@ export class AgentRunner {
         providerEntry.provider.name !== voiceRequest.policy.providerName ||
         (loadedPersona.config.provider !== undefined &&
           loadedPersona.config.provider !== voiceRequest.policy.providerName) ||
-        loadedPersona.config.model !== voiceRequest.policy.modelName ||
-        !SUPPORTED_VOICE_PROVIDER_TYPES.has(providerEntry.type)
+        loadedPersona.config.model !== voiceRequest.policy.modelName
       ) {
         this.recordVoiceFailure(voiceSink, voiceRequest, 'VOICE_EXECUTION_FAILED');
         return err(new Error('Voice execution provider or model no longer matches admission'));
@@ -368,6 +366,11 @@ export class AgentRunner {
       : typeof item.payload.content === 'string'
         ? item.payload.content
         : '';
+    const resolvedCapabilities = loadedPersona.resolvedCapabilities ?? {
+      allow: [],
+      requireApproval: [],
+    };
+    const voiceToolAccess = isVoiceTask ? filterVoiceMcpTools(resolvedCapabilities) : undefined;
     let runFinalized = false;
     const bridgeSecret = generateBridgeSecret();
     this.ctx.hostToolsBridge.registerRunAuthentication?.({
@@ -375,6 +378,13 @@ export class AgentRunner {
       threadId: item.threadId,
       personaId,
       bridgeSecret,
+      ...(voiceToolAccess
+        ? {
+            deniedToolNames: voiceToolAccess.deniedMcpTools.map(
+              (toolName) => MCP_TO_INTERNAL.get(toolName) ?? toolName,
+            ),
+          }
+        : {}),
     });
 
     const runInput = {
@@ -463,23 +473,12 @@ export class AgentRunner {
               ? resolvedSessionId
               : undefined;
 
-            let baseMcpServers: Record<string, CanonicalMcpServer> = {
+            const baseMcpServers: Record<string, CanonicalMcpServer> = {
               ...personaRuntimeContext.mcpServers,
             };
             const actualMcpServerNames = Object.keys(baseMcpServers);
 
-            if (isVoiceTask) {
-              const admittedMcpServers = new Set(voiceRequest.policy.allowedMcpServerNames);
-              baseMcpServers = Object.fromEntries(
-                Object.entries(baseMcpServers).filter(([name]) => admittedMcpServers.has(name)),
-              );
-            }
-
             // Determine which host tools this persona may use based on capabilities.
-            const resolvedCapabilities = loadedPersona.resolvedCapabilities ?? {
-              allow: [],
-              requireApproval: [],
-            };
             let allowedMcpTools = filterAllowedMcpTools(resolvedCapabilities);
             if (!this.ctx.backgroundAgentManager) {
               allowedMcpTools = allowedMcpTools.filter(
@@ -488,7 +487,9 @@ export class AgentRunner {
             }
             if (isVoiceTask) {
               const admittedTools = new Set(voiceRequest.policy.allowedToolNames);
-              allowedMcpTools = allowedMcpTools.filter((toolName) => admittedTools.has(toolName));
+              allowedMcpTools = (voiceToolAccess?.allowedMcpTools ?? []).filter((toolName) =>
+                admittedTools.has(toolName),
+              );
             }
             const actualCapabilityNames = [
               ...new Set([...resolvedCapabilities.allow, ...resolvedCapabilities.requireApproval]),
@@ -663,7 +664,7 @@ export class AgentRunner {
                     ]
                   : []),
               ];
-              if (!isVoiceTask && !resumeSessionId && !isScheduleTask) {
+              if (!resumeSessionId && !isScheduleTask) {
                 const previous = await getPreviousContext();
                 if (previous.text) {
                   systemPromptParts.push(previous.text);
@@ -826,8 +827,7 @@ export class AgentRunner {
                   // strips the field and merges Authorization into headers.
                   // Failure here surfaces with a "run talonctl auth-mcp …"
                   // message so the operator can fix it without restarting.
-                  const disableNativeShellAndFilesystemTools =
-                    isVoiceTask || hasOAuthMcpAuth(mcpServers);
+                  const disableNativeShellAndFilesystemTools = hasOAuthMcpAuth(mcpServers);
                   const resolvedMcpServers = await resolveMcpServers(mcpServers, {
                     tokenStore: this.ctx.oauthTokenStore,
                   });
@@ -849,9 +849,12 @@ export class AgentRunner {
                       capabilityNames: actualCapabilityNames,
                       allowedToolNames: allowedMcpTools,
                       allowedMcpServerNames: actualMcpServerNames,
-                      nativeToolNames: VOICE_NATIVE_TOOL_NAMES[providerEntry.type] ?? [],
+                      nativeToolNames: getVoiceNativeToolNames(
+                        providerEntry.type,
+                        disableNativeShellAndFilesystemTools,
+                      ),
                       nativeToolsDisabled: disableNativeShellAndFilesystemTools,
-                      requireApproval: resolvedCapabilities.requireApproval.length > 0,
+                      requireApproval: false,
                     };
                     const gateResult = await this.voiceExecutionGate(gateInput);
                     if (gateResult.isErr()) throw gateResult.error;

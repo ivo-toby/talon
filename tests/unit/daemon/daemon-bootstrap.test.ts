@@ -867,6 +867,63 @@ describe('bootstrap', () => {
       expect(personaRepo.findByName).toHaveBeenCalledTimes(4);
     });
 
+    it('captures normal persona tools and instructions while ignoring the legacy voice provider override', async () => {
+      const fixture = makeVoicePersonaFixture();
+      const config = fixture.config as any;
+      const { loadedPersona } = fixture;
+      const personaConfig = config.personas[0] as Record<string, unknown>;
+      personaConfig.provider = 'claude-code';
+      loadedPersona.config.provider = 'claude-code';
+      loadedPersona.systemPromptContent = 'PRIVATE PERSONA SYSTEM PROMPT';
+      loadedPersona.resolvedCapabilities = {
+        allow: ['memory.access'],
+        requireApproval: ['db.query'],
+      };
+      config.agentRunner = {
+        defaultProvider: 'claude-code',
+        providers: {
+          'claude-code': makeAgentRunnerProviderConfig(),
+        },
+      };
+      config.voice.provider = 'unavailable-legacy-provider';
+      config.voice.allowedToolNames = ['legacy_tool'];
+      config.voice.allowedMcpServerNames = ['legacy_server'];
+      config.voice.instructions = 'Gebruik Nederlands in de stem.';
+      const { personaRepo } = setupVoiceBootstrapMocks(
+        config,
+        loadedPersona,
+        ok({ id: 'persona-uuid-1234', name: 'assistant', model: 'backend-model' }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const service = result._unsafeUnwrap().voiceSessionService as unknown as {
+        options: {
+          providerName: string;
+          instructions: string;
+          capturePolicy: (owner: { ownerId: string; loginRevision: number }) => ReturnType<typeof ok>;
+        };
+      };
+      expect(service.options.providerName).toBe('claude-code');
+      expect(service.options.instructions).toContain('Talon persona "assistant"');
+      expect(service.options.instructions).toContain('Speech role:');
+      expect(service.options.instructions).toContain('Delegation contract:');
+      expect(service.options.instructions).toContain('Gebruik Nederlands in de stem.');
+      expect(service.options.instructions).not.toContain('PRIVATE PERSONA SYSTEM PROMPT');
+
+      const captured = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(captured.isOk()).toBe(true);
+      expect(captured._unsafeUnwrap()).toMatchObject({
+        providerName: 'claude-code',
+        allowedToolNames: ['memory_access'],
+        allowedMcpServerNames: [],
+        nativeToolNames: ['WebFetch', 'WebSearch'],
+        requireApproval: false,
+      });
+      expect(personaRepo.findByName).toHaveBeenCalledWith('assistant');
+    });
+
     it.each([
       ['missing', ok(null), 'Voice persona not found'],
       ['lookup error', err(new Error('persona row lookup failed')), 'persona row lookup failed'],

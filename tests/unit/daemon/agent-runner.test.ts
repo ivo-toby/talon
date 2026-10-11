@@ -244,6 +244,8 @@ function makeMockContext(): DaemonContext {
     } as any,
     hostToolsBridge: {
       path: '/tmp/test-data/host-tools.sock',
+      registerRunAuthentication: vi.fn(),
+      unregisterRunAuthentication: vi.fn(),
     } as any,
     providerRegistry: new ProviderRegistry(
       {
@@ -1727,7 +1729,7 @@ describe('AgentRunner', () => {
             'schedule_manage',
           ],
           allowedMcpServerNames: [],
-          nativeToolNames: [],
+          nativeToolNames: ['WebFetch', 'WebSearch'],
           requireApproval: false,
           loginRevision: 3,
           capturedAt: 100,
@@ -1742,6 +1744,12 @@ describe('AgentRunner', () => {
         unknown: vi.fn(() => ok(undefined)),
       };
       const gate = vi.fn(() => ok(undefined));
+      vi.mocked(ctx.contextAssembler.assemble).mockReturnValue({
+        text: 'Previous backend context.',
+        summaryFound: true,
+        recentMessageCount: 1,
+        charCount: 24,
+      });
       runner = new AgentRunner(ctx, {
         voiceOutputSink: sink as any,
         voiceExecutionGate: gate as any,
@@ -1768,7 +1776,7 @@ describe('AgentRunner', () => {
           providerName: 'claude-code',
           providerType: 'claude-code',
           modelName: 'claude-sonnet-4-20250514',
-          nativeToolsDisabled: true,
+          nativeToolsDisabled: false,
           nativeToolNames: ['WebSearch', 'WebFetch'],
         }),
       );
@@ -1783,8 +1791,13 @@ describe('AgentRunner', () => {
       };
       expect(queryCall.prompt).toBe(request.context.text);
       expect(queryCall.options.systemPrompt).toContain(request.context.text);
-      expect(queryCall.options.tools).toEqual(['WebSearch', 'WebFetch']);
-      expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+      expect(queryCall.options.tools).toBeUndefined();
+      expect(queryCall.options.systemPrompt).toContain('Previous backend context.');
+      expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+        'thread-001',
+        10,
+        { excludeMessageId: undefined },
+      );
       expect(ctx.repos.message.insert).not.toHaveBeenCalled();
       expect(ctx.channelRegistry.get('test-channel')?.send).not.toHaveBeenCalled();
     });
@@ -1879,6 +1892,153 @@ describe('AgentRunner', () => {
       expect(toolObservation.update).toHaveBeenCalledWith(
         expect.objectContaining({ output: '[voice tool output redacted]' }),
       );
+    });
+
+    it('excludes approval families from provider tools and registers a trusted bridge deny list', async () => {
+      const baseRequest = makeVoiceBackendRequest('voice-delegation-approval');
+      const request: VoiceBackendRequest = {
+        ...baseRequest,
+        policy: {
+          ...baseRequest.policy,
+          capabilityNames: [...baseRequest.policy.capabilityNames, 'db.query'],
+        },
+      };
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: ['db.query'],
+          },
+        } as any),
+      );
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.objectContaining({ deniedToolNames: ['db.query'] }),
+      );
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any> };
+      };
+      expect(
+        queryCall.options.mcpServers.__talond_host_tools.env.TALOND_ALLOWED_TOOLS.split(',').filter(
+          Boolean,
+        ),
+      ).not.toContain('db_query');
+    });
+
+    it('retains the OAuth MCP native restriction for voice providers', async () => {
+      const baseRequest = makeVoiceBackendRequest('voice-delegation-oauth');
+      const request: VoiceBackendRequest = {
+        ...baseRequest,
+        policy: {
+          ...baseRequest.policy,
+          allowedMcpServerNames: ['privateSearch'],
+        },
+      };
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: ['oauth-search'],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      (ctx as any).loadedSkills = [
+        {
+          manifest: { name: 'oauth-search' },
+          format: 'yaml',
+          promptContents: ['Search the connected source.'],
+          resolvedToolManifests: [],
+          resolvedMcpServers: [
+            {
+              name: 'privateSearch',
+              config: {
+                transport: 'http',
+                url: 'https://mcp.example.test',
+                auth: { kind: 'oauth2', tokenStore: 'oauth-search/privateSearch' },
+              },
+            },
+          ],
+          migrationPaths: [],
+        },
+      ];
+      (ctx as any).oauthTokenStore = {
+        materializeBearer: vi.fn().mockResolvedValue('oauth-access-token'),
+      };
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(gate).toHaveBeenCalledWith(
+        expect.objectContaining({ nativeToolsDisabled: true, nativeToolNames: [] }),
+      );
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any>; tools?: string[] };
+      };
+      expect(queryCall.options.tools).toEqual(['WebSearch', 'WebFetch']);
+      expect(queryCall.options.mcpServers.privateSearch).toEqual({
+        type: 'http',
+        url: 'https://mcp.example.test',
+        headers: { Authorization: 'Bearer oauth-access-token' },
+      });
     });
 
     it('does not retain provider error text in voice telemetry or run status', async () => {

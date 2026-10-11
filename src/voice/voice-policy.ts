@@ -29,6 +29,21 @@ export interface VoicePolicyOptions {
 
 const INTERNAL_MCP_PREFIX = '__talond_';
 
+/** Native tools that remain available when a provider has no OAuth MCP restriction. */
+export const VOICE_NATIVE_TOOL_NAMES: Readonly<Record<string, readonly string[]>> = {
+  'claude-code': ['WebSearch', 'WebFetch'],
+  'gemini-cli': ['google_web_search', 'web_fetch'],
+  'openai-compatible': [],
+  'codex-cli': [],
+};
+
+export function getVoiceNativeToolNames(
+  providerType: string,
+  nativeToolsDisabled: boolean,
+): readonly string[] {
+  return nativeToolsDisabled ? [] : (VOICE_NATIVE_TOOL_NAMES[providerType] ?? []);
+}
+
 function uniqueSorted(values: readonly string[]): string[] {
   return [...new Set(values)].sort();
 }
@@ -98,20 +113,14 @@ export class VoicePolicy implements VoicePolicyEvaluator {
     if (!Number.isSafeInteger(input.loginRevision) || input.loginRevision <= 0) {
       return err(new PolicyError('Voice policy login revision must be positive'));
     }
-    if (input.requireApproval) {
-      return err(new PolicyError('Voice execution cannot use approval-gated capabilities'));
-    }
-    if (input.nativeToolNames.length > 0) {
-      return err(new PolicyError('Voice execution cannot use native provider tools'));
-    }
     if (input.allowedMcpServerNames.some((name) => name.startsWith(INTERNAL_MCP_PREFIX))) {
       return err(new PolicyError('Voice execution cannot use internal MCP servers'));
     }
     if (input.allowedMcpServerNames.some((name) => !this.provenMcpServers.has(name))) {
       return err(new PolicyError('Voice MCP access is not proven for the configured server'));
     }
-    if (this.providerTypes.get(input.providerName) !== 'openai-compatible') {
-      return err(new PolicyError('Voice backend execution requires an openai-compatible provider'));
+    if (!this.providerTypes.has(input.providerName)) {
+      return err(new PolicyError('Voice backend provider is not configured'));
     }
 
     return ok({
@@ -153,14 +162,8 @@ export class VoicePolicy implements VoicePolicyEvaluator {
     if (session.personaId !== admitted.personaId || session.personaId !== current.personaId) {
       return ineligible('persona_disabled', admitted, current, now);
     }
-    if (this.providerTypes.get(current.providerName) !== 'openai-compatible') {
+    if (!this.providerTypes.has(current.providerName)) {
       return ineligible('provider_disabled', admitted, current, now);
-    }
-    if (current.requireApproval) {
-      return ineligible('approval_required', admitted, current, now);
-    }
-    if (current.nativeToolNames.length > 0) {
-      return ineligible('native_tools_not_proven', admitted, current, now);
     }
     if (current.allowedMcpServerNames.some((name) => !this.provenMcpServers.has(name))) {
       return ineligible('mcp_access_not_proven', admitted, current, now);

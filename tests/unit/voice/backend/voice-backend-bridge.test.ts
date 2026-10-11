@@ -69,7 +69,11 @@ function session(): VoiceSessionRecord {
   };
 }
 
-function request(id = 'delegation-1', providerId = `provider-${id}`): VoiceBackendRequest {
+function request(
+  id = 'delegation-1',
+  providerId = `provider-${id}`,
+  requestPolicy: VoicePolicySnapshot = policy,
+): VoiceBackendRequest {
   return {
     sessionId: 'session-1',
     delegationId: id,
@@ -84,12 +88,12 @@ function request(id = 'delegation-1', providerId = `provider-${id}`): VoiceBacke
       fragments: [],
       truncated: false,
     },
-    policy,
+    policy: requestPolicy,
     requestedAt: 200,
   };
 }
 
-function makeSetup(): {
+function makeSetup(sessionPolicy: VoicePolicySnapshot = policy): {
   db: Database.Database;
   queue: QueueRepository;
   store: DurableVoiceStore;
@@ -98,7 +102,7 @@ function makeSetup(): {
   const db = createDb();
   const queue = new QueueRepository(db);
   const store = new DurableVoiceStore(db, queue);
-  const created = store.createSession(session());
+  const created = store.createSession({ ...session(), policy: sessionPolicy });
   if (created.isErr()) throw new Error(created.error.message);
   const bridge = new DurableVoiceBackendBridge(store, queue, { now: () => 300 });
   return { db, queue, store, bridge };
@@ -211,7 +215,7 @@ describe('DurableVoiceBackendBridge', () => {
     expect(admitted.delegationId).toBe('delegation-1');
   });
 
-  it('rejects retained provider web tools even when the disable flag is set', async () => {
+  it('rejects a changed native tool snapshot even when the disable flag is set', async () => {
     const callback = vi.fn(() => ok(undefined));
     const setup = makeSetup();
     db = setup.db;
@@ -236,6 +240,39 @@ describe('DurableVoiceBackendBridge', () => {
 
     expect(rejected.isErr()).toBe(true);
     expect(callback).not.toHaveBeenCalled();
+  });
+
+  it('accepts configured provider native tools when the admitted snapshot matches', async () => {
+    const callback = vi.fn(() => ok(undefined));
+    const nativePolicy: VoicePolicySnapshot = {
+      ...policy,
+      nativeToolNames: ['WebFetch', 'WebSearch'],
+    };
+    const setup = makeSetup(nativePolicy);
+    db = setup.db;
+    const bridge = new DurableVoiceBackendBridge(setup.store, setup.queue, {
+      executionGate: callback,
+    });
+    const req = request('native-tools', 'provider-native-tools', nativePolicy);
+    const admitted = await bridge.admit(req);
+    expect(admitted.isOk()).toBe(true);
+
+    const accepted = await bridge.beforeProvider({
+      request: req,
+      owner: { ownerId: req.policy.ownerId, loginRevision: req.policy.loginRevision },
+      providerName: req.policy.providerName,
+      providerType: 'claude-code',
+      modelName: req.policy.modelName,
+      capabilityNames: req.policy.capabilityNames,
+      allowedToolNames: req.policy.allowedToolNames,
+      allowedMcpServerNames: req.policy.allowedMcpServerNames,
+      nativeToolNames: ['WebSearch', 'WebFetch'],
+      nativeToolsDisabled: false,
+      requireApproval: false,
+    });
+
+    expect(accepted.isOk()).toBe(true);
+    expect(callback).toHaveBeenCalledOnce();
   });
 
   it('persists output before publishing and keeps delivery separate', async () => {

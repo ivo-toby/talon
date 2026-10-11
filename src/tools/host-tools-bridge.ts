@@ -60,6 +60,7 @@ interface RegisteredBridgeAuth {
   bridgeSecret: string;
   threadId: string;
   personaId: string;
+  deniedToolNames: ReadonlySet<string>;
 }
 
 export class HostToolsBridge {
@@ -208,11 +209,16 @@ export class HostToolsBridge {
     threadId: string;
     personaId: string;
     bridgeSecret: string;
+    /** Trusted server-side deny list for runs without an approval channel. */
+    deniedToolNames?: readonly string[];
   }): void {
     this.bridgeAuthByRunId.set(input.runId, {
       bridgeSecret: input.bridgeSecret,
       threadId: input.threadId,
       personaId: input.personaId,
+      deniedToolNames: new Set(
+        (input.deniedToolNames ?? []).map((toolName) => TOOL_NAME_MAP[toolName] ?? toolName),
+      ),
     });
   }
 
@@ -361,6 +367,26 @@ export class HostToolsBridge {
           },
         },
         async (toolObservation) => {
+          const registered = this.bridgeAuthByRunId.get(context.runId);
+          if (registered?.deniedToolNames.has(normalizedTool)) {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: `Tool "${normalizedTool}" requires approval and is unavailable for voice execution`,
+            };
+            toolObservation.update({
+              output: toolResult,
+              level: 'ERROR',
+              statusMessage: toolResult.error,
+            });
+            this.ctx.logger.warn(
+              { runId: context.runId, tool: normalizedTool },
+              'host-tools-bridge: rejected approval-gated voice tool call',
+            );
+            return toolResult;
+          }
+
           // Defense-in-depth: enforce persona capabilities at the bridge level.
           // Even if the MCP server somehow exposes a disallowed tool, the bridge
           // will reject it here. Uses fail-closed semantics — if the persona

@@ -433,6 +433,34 @@ describe('HostToolsBridge', () => {
       expect((response.result as any)?.status).toBe('success');
     });
 
+    it('denies trusted approval-gated voice tools even when persona capability allows them', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        deniedToolNames: ['memory.access'],
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-approval-001',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('error');
+      expect((response.result as any)?.error).toContain('requires approval');
+    });
+
     it('dispatches schedule.manage create and returns success', async () => {
       bridge = new HostToolsBridge(mockCtx);
       registerActiveRunAuth();

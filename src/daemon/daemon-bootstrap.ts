@@ -48,12 +48,15 @@ import { PolicyError } from '../core/errors/index.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
 import { PersonaLoader } from '../personas/persona-loader.js';
+import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import { SkillLoader } from '../skills/skill-loader.js';
 import { SkillResolver } from '../skills/skill-resolver.js';
 import { ThreadWorkspace } from '../memory/thread-workspace.js';
 import { SessionTracker } from '../sandbox/session-tracker.js';
 
 import { HostToolsBridge } from '../tools/host-tools-bridge.js';
+import { filterVoiceMcpTools } from '../tools/tool-filter.js';
+import { hasOAuthMcpAuth } from '../mcp/resolve-mcp-servers.js';
 import { BackgroundAgentManager } from '../subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import { SpritesClient } from '../execution-env/sprites-client.js';
@@ -82,7 +85,7 @@ import { VoiceRepository } from '../core/database/repositories/voice-repository.
 import { DurableVoiceStore } from '../voice/voice-store.js';
 import { DurableVoiceBackendBridge, type VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
 import { VoiceOutputSink } from '../voice/voice-output-sink.js';
-import { VoicePolicy } from '../voice/voice-policy.js';
+import { getVoiceNativeToolNames, VoicePolicy } from '../voice/voice-policy.js';
 import {
   BrowserVoiceTransport,
   IndexedVoiceAuth,
@@ -627,26 +630,13 @@ export async function bootstrap(
     const voicePersonaId = voicePersonaRow.value.id;
 
     const voiceProviderName =
-      config.voice.provider ??
-      loadedVoicePersona.value.config.provider ??
-      config.agentRunner.defaultProvider;
-    if (
-      loadedVoicePersona.value.config.provider !== undefined &&
-      loadedVoicePersona.value.config.provider !== voiceProviderName
-    ) {
-      await cleanupBootstrapFailure(db, observability, logger);
-      return err(
-        new DaemonError(
-          `voice.provider must match persona provider "${loadedVoicePersona.value.config.provider}" when it is configured`,
-        ),
-      );
-    }
+      loadedVoicePersona.value.config.provider ?? config.agentRunner.defaultProvider;
     const voiceProviderEntry = providerRegistry.get(voiceProviderName);
-    if (!voiceProviderEntry || voiceProviderEntry.type !== 'openai-compatible') {
+    if (!voiceProviderEntry) {
       await cleanupBootstrapFailure(db, observability, logger);
       return err(
         new DaemonError(
-          `Voice requires an enabled openai-compatible agent provider; "${voiceProviderName}" is unavailable or unsupported`,
+          `Voice provider "${voiceProviderName}" is not enabled`,
         ),
       );
     }
@@ -668,9 +658,10 @@ export async function bootstrap(
     for (const [name, providerConfig] of Object.entries(config.agentRunner.providers)) {
       providerTypes.set(name, providerConfig.type ?? name);
     }
+    const provenMcpServers = new Set<string>();
     voicePolicy = new VoicePolicy({
       providerTypes,
-      provenMcpServers: new Set(config.voice.allowedMcpServerNames),
+      provenMcpServers,
     });
     voiceAuth = new IndexedVoiceAuth({
       accessToken: voiceAccessToken,
@@ -679,33 +670,66 @@ export async function bootstrap(
     const voiceBackendModel = loadedVoicePersona.value.config.model;
     const voiceLiveModel = config.voice.model ?? 'gpt-live-1';
     const captureVoicePolicy = (owner: VoiceOwnerContext): VoiceResult<VoicePolicySnapshot> => {
-      const runtimeConfig = voiceRuntimeConfig.current.voice;
-      const personaName = runtimeConfig.persona ?? voicePersonaName;
+      const currentConfig = voiceRuntimeConfig.current;
+      const personaName = currentConfig.voice?.persona ?? voicePersonaName;
       const currentPersona = personaLoader.getByName(personaName);
       if (currentPersona.isErr()) return err(currentPersona.error);
       if (!currentPersona.value) return err(new DaemonError(`Voice persona not found: ${personaName}`));
+      const persona = currentPersona.value;
       const currentPersonaRow = repos.persona.findByName(personaName);
       if (currentPersonaRow.isErr()) return err(currentPersonaRow.error);
       if (!currentPersonaRow.value) {
         return err(new DaemonError(`Voice persona not found: ${personaName}`));
       }
-      const currentProvider = runtimeConfig.provider ?? currentPersona.value.config.provider ?? voiceProviderName;
-      const currentModel = currentPersona.value.config.model;
+      const currentProvider =
+        persona.config.provider ?? currentConfig.agentRunner.defaultProvider;
+      const currentModel = persona.config.model;
+      const currentProviderEntry = providerRegistry.get(currentProvider);
+      if (!currentProviderEntry) {
+        return err(new DaemonError(`Voice provider "${currentProvider}" is not enabled`));
+      }
+      const personaSkills = loadedSkills.value.filter((skill) =>
+        persona.config.skills.includes(skill.manifest.name),
+      );
+      let personaRuntimeContext;
+      try {
+        personaRuntimeContext = buildPersonaRuntimeContext({
+          loadedPersona: persona,
+          resolvedSkills: personaSkills,
+          skillResolver,
+          logger,
+        });
+      } catch (cause) {
+        return err(
+          new DaemonError(
+            `Failed to resolve voice persona runtime context: ${String(cause)}`,
+            cause instanceof Error ? cause : undefined,
+          ),
+        );
+      }
+      const allowedMcpServerNames = Object.keys(personaRuntimeContext.mcpServers);
+      provenMcpServers.clear();
+      for (const serverName of allowedMcpServerNames) provenMcpServers.add(serverName);
+      const voiceTools = filterVoiceMcpTools(persona.resolvedCapabilities);
+      const nativeToolsDisabled = hasOAuthMcpAuth(personaRuntimeContext.mcpServers);
       return voicePolicy!.capture({
         generation: voiceGeneration.value,
         ownerId: owner.ownerId,
         personaId: currentPersonaRow.value.id,
         providerName: currentProvider,
         modelName: currentModel,
-        voiceName: runtimeConfig.voice,
+        voiceName: currentConfig.voice?.voice ?? config.voice.voice,
         capabilityNames: [
-          ...currentPersona.value.resolvedCapabilities.allow,
-          ...currentPersona.value.resolvedCapabilities.requireApproval,
+          ...persona.resolvedCapabilities.allow,
+          ...persona.resolvedCapabilities.requireApproval,
         ],
-        allowedToolNames: runtimeConfig.allowedToolNames,
-        allowedMcpServerNames: runtimeConfig.allowedMcpServerNames,
-        nativeToolNames: [],
-        requireApproval: currentPersona.value.resolvedCapabilities.requireApproval.length > 0,
+        allowedToolNames: voiceTools.allowedMcpTools,
+        allowedMcpServerNames,
+        nativeToolNames: getVoiceNativeToolNames(
+          currentProviderEntry.type,
+          nativeToolsDisabled,
+        ),
+        requireApproval: false,
         loginRevision: owner.loginRevision,
       });
     };
@@ -714,6 +738,12 @@ export async function bootstrap(
       _session: VoiceSessionRecord,
     ): VoiceResult<VoicePolicySnapshot> =>
       captureVoicePolicy(owner);
+    const voiceInstructions = [
+      `You are the live speech interface for the Talon persona "${voicePersonaName}".`,
+      'Speech role: handle greetings and clarification locally. Delegate substantive tasks, questions, memory, and current data to the Talon backend. Wait for a verified backend result before claiming completion; an acknowledgement is not a completion. Respect backend refusals and uncertainty.',
+      'Delegation contract: send admitted transcript context to the selected persona backend, preserve its result, and report only verified outcomes to the speaker.',
+      config.voice.instructions,
+    ].join('\n\n');
     const liveAuth = config.auth.providers[config.voice.liveApiKeyRef];
     voiceProvider = new OpenAiLiveVoiceProvider({
       apiKey: liveAuth?.apiKey,
@@ -730,9 +760,6 @@ export async function bootstrap(
       return err(new DaemonError(`Failed to register browser voice channel: ${voiceChannel.error.message}`));
     }
     const voiceExecutionGate = (input: VoiceExecutionGateInput): VoiceResult<void> => {
-      if (input.providerType !== 'openai-compatible' || !input.nativeToolsDisabled) {
-        return err(new PolicyError('Voice execution requires the proven openai-compatible tool posture'));
-      }
       if (!voiceAuth!.resolve(input.owner)) {
         return err(new PolicyError('Voice login is no longer active'));
       }
@@ -772,7 +799,7 @@ export async function bootstrap(
       providerName: voiceProviderName,
       modelName: voiceBackendModel,
       liveModelName: voiceLiveModel,
-      instructions: config.voice.instructions,
+      instructions: voiceInstructions,
       voiceName: config.voice.voice,
       generation: (): number => voiceGeneration.value,
       capturePolicy: captureVoicePolicy,
