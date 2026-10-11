@@ -969,6 +969,8 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
 
   private readVoiceHistory(threadId: string): VoiceResult<string> {
     if (!this.options.messageRepository) return ok('');
+    const recovered = this.recoverBackendHistory(threadId);
+    if (recovered.isErr()) return err(recovered.error);
     const rows = this.options.messageRepository.findLatestByThread(
       threadId,
       DEFAULT_VOICE_HISTORY_ROWS,
@@ -979,6 +981,89 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         maxCharacters: Math.min(this.maxContextChars, DEFAULT_VOICE_HISTORY_CHARACTERS),
       }),
     );
+  }
+
+  private recoverBackendHistory(threadId: string): VoiceResult<void> {
+    const messageRepository = this.options.messageRepository;
+    if (!messageRepository?.insert) return ok(undefined);
+    const sessions = this.options.store.listSessions({ threadId });
+    if (sessions.isErr()) return err(sessions.error);
+
+    const candidates: Array<{
+      readonly delegation: VoiceDelegationRecord;
+      readonly result: VoiceBackendResult;
+      readonly content: string;
+    }> = [];
+    for (const projection of sessions.value) {
+      for (const delegation of projection.delegations) {
+        const result = this.recoverableBackendResult(projection, delegation);
+        if (!result) continue;
+        if (result.execution === 'succeeded' && result.output.delivery === 'not_requested') {
+          continue;
+        }
+        const content = this.backendResultContent(result);
+        if (!content) continue;
+        candidates.push({ delegation, result, content });
+      }
+    }
+
+    candidates.sort((left, right) => {
+      const occurredAt = left.result.occurredAt - right.result.occurredAt;
+      return occurredAt !== 0 ? occurredAt : left.result.outputId.localeCompare(right.result.outputId);
+    });
+    for (const candidate of candidates.slice(-DEFAULT_VOICE_HISTORY_ROWS)) {
+      const persisted = this.persistBackendResult(
+        candidate.delegation,
+        candidate.result,
+        candidate.content,
+      );
+      if (persisted.isErr()) return persisted;
+    }
+    return ok(undefined);
+  }
+
+  private recoverableBackendResult(
+    projection: VoiceSessionReadProjection,
+    delegation: VoiceDelegationRecord,
+  ): VoiceBackendResult | null {
+    if (
+      delegation.execution !== 'succeeded' &&
+      delegation.execution !== 'failed' &&
+      delegation.execution !== 'unknown'
+    ) {
+      return null;
+    }
+    const outputs = projection.outputs
+      .filter((output) => output.delegationId === delegation.id)
+      .sort((left, right) => left.createdAt - right.createdAt);
+    if (delegation.execution === 'succeeded') {
+      const final = outputs
+        .filter((output) => output.kind === 'final' && output.lifecycle.execution === 'succeeded')
+        .at(-1);
+      if (!final || !final.text?.trim()) return null;
+      return {
+        delegationId: delegation.id,
+        outputId: final.id,
+        kind: 'final',
+        text: final.text,
+        execution: 'succeeded',
+        output: final.lifecycle,
+        occurredAt: final.createdAt,
+      };
+    }
+
+    const latest = outputs
+      .filter((output) => output.lifecycle.execution === delegation.execution)
+      .at(-1);
+    return {
+      delegationId: delegation.id,
+      outputId: latest?.id ?? `voice-terminal:${delegation.id}:${delegation.execution}`,
+      kind: delegation.execution === 'failed' ? 'error' : 'unknown',
+      ...(latest?.text !== undefined ? { text: latest.text } : {}),
+      execution: delegation.execution,
+      output: latest?.lifecycle ?? delegation.output,
+      occurredAt: latest?.createdAt ?? delegation.completedAt ?? delegation.createdAt,
+    };
   }
 
   private async handleProviderEvent(sessionId: string, event: LiveVoiceEvent): Promise<VoiceResult<void>> {
@@ -1127,6 +1212,10 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         ? result.kind
         : undefined;
     if (!resultKind) return ok(undefined);
+    const historyOutputId =
+      resultKind === 'final'
+        ? result.outputId
+        : `voice-terminal:${delegation.id}:${result.execution}`;
     const persisted = messageRepository.insert({
       id: randomUUID(),
       thread_id: delegation.request.threadId,
@@ -1137,7 +1226,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
           kind: 'backend_result',
           sessionId: delegation.sessionId,
           delegationId: delegation.id,
-          outputId: result.outputId,
+          outputId: historyOutputId,
           execution: result.execution,
           resultKind,
           verified: true,
@@ -1146,9 +1235,9 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       idempotency_key: voiceBackendResultIdempotencyKey(
         delegation.sessionId,
         delegation.id,
-        result.outputId,
+        historyOutputId,
       ),
-      provider_id: result.outputId,
+      provider_id: historyOutputId,
       run_id: delegation.runId ?? null,
     });
     if (persisted.isErr()) return err(persisted.error);
@@ -1556,9 +1645,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (stale) runtime.staleDelegationIds.add(delegation.value.id);
     const outputId = result.outputId;
     const isSafeFailure = result.kind === 'error' || result.kind === 'unknown';
-    const content = isSafeFailure
-      ? 'The request could not be completed safely. Please try again.'
-      : result.text ?? '';
+    const content = this.backendResultContent(result);
     const command = isSafeFailure
       ? { kind: 'instruction' as const, delegationId: delegation.value.providerDelegationId, content, outputId }
       : { kind: 'commentary' as const, delegationId: delegation.value.providerDelegationId, content, outputId };
@@ -1610,6 +1697,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     ) {
       this.runtimes.delete(delegation.value.sessionId);
     }
+  }
+
+  private backendResultContent(result: VoiceBackendResult): string {
+    return result.kind === 'error' || result.kind === 'unknown'
+      ? 'The request could not be completed safely. Please try again.'
+      : result.text ?? '';
   }
 
   private persistUsage(sessionId: string, update: VoiceUsageUpdate): VoiceResult<void> {

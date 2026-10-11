@@ -742,6 +742,7 @@ export interface VoiceSessionReadProjection {
 
 export interface VoiceSessionListQuery {
   readonly ownerId?: string;
+  readonly threadId?: string;
   readonly statuses?: readonly VoiceSessionStatus[];
 }
 

@@ -379,7 +379,7 @@ describe('voice conversation memory integration', () => {
     db = undefined;
   });
 
-  it('carries nondelegated history into live creation and a fresh AgentRunner backend prompt', async () => {
+  it('carries conversation history through live, backend, and durable output recovery', async () => {
     db = createDatabase();
     const queueRepository = new QueueRepository(db);
     const threadRepository = new ThreadRepository(db);
@@ -581,5 +581,203 @@ describe('voice conversation memory integration', () => {
     await reconstructedService.closeSession(owner, third._unsafeUnwrap().session.id, {
       reason: 'hangup',
     });
+
+    const noCallbackSink = new VoiceOutputSink(store);
+    const noCallbackQueueManager = new QueueManager(
+      queueRepository,
+      threadRepository,
+      { maxAttempts: 1, backoffBaseMs: 1, backoffMaxMs: 1, concurrencyLimit: 1 },
+      pino({ level: 'silent' }),
+      bridge.claimQueueItem.bind(bridge),
+    );
+    const noCallbackContext = createDaemonContext(
+      db,
+      noCallbackQueueManager,
+      liveProvider,
+      bridge,
+      noCallbackSink,
+    );
+    const noCallbackRunner = new AgentRunner(noCallbackContext, {
+      voiceOutputSink: noCallbackSink,
+      voiceExecutionGate: bridge.beforeProvider.bind(bridge),
+    });
+    const fourth = await reconstructedService.createSession(owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(fourth.isOk()).toBe(true);
+    const fourthSession = fourth._unsafeUnwrap().session;
+    const fourthSideband = liveProvider.sidebands.get(
+      fourth._unsafeUnwrap().client.providerSessionId,
+    );
+    expect(fourthSideband).toBeDefined();
+    fourthSideband!.setContext(
+      'lost-callback-delegation',
+      context(1, 'lost-callback-digest', 'Lost callback request.'),
+    );
+    noCallbackQueueManager.startProcessing((item) => noCallbackRunner.run(item));
+    fourthSideband!.emit({
+      kind: 'delegation',
+      eventId: 'lost-callback-delegation-event',
+      sequence: 1,
+      proposal: {
+        providerDelegationId: 'lost-callback-delegation',
+        offsetMs: 0,
+        receivedAt: 40,
+      },
+    });
+    await waitFor(() => {
+      const projection = store.readSession(fourthSession.id);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    noCallbackQueueManager.stopProcessing();
+    expect(
+      messageRepository.findLatestByThread(fourthSession.threadId, 300)._unsafeUnwrap(),
+    ).toHaveLength(202);
+    await reconstructedService.closeSession(owner, fourthSession.id, { reason: 'hangup' });
+
+    const recoveredService = new DurableVoiceSessionService(serviceOptions);
+    const fifth = await recoveredService.createSession(owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(fifth.isOk()).toBe(true);
+    const recoveredInstructions = liveProvider.createInstructions.at(-1) ?? '';
+    expect(recoveredInstructions).toContain(
+      '[verified voice result, succeeded]: Backend result.',
+    );
+    expect(
+      recoveredInstructions.match(/\[verified voice result, succeeded\]: Backend result\./g),
+    ).toHaveLength(2);
+
+    const fifthSession = fifth._unsafeUnwrap().session;
+    const fifthSideband = liveProvider.sidebands.get(
+      fifth._unsafeUnwrap().client.providerSessionId,
+    );
+    expect(fifthSideband).toBeDefined();
+    fifthSideband!.setContext(
+      'recovered-context-delegation',
+      context(1, 'recovered-context-digest', 'Recovered backend request.'),
+    );
+    fifthSideband!.emit({
+      kind: 'transcript',
+      eventId: 'recovered-transcript-event',
+      sequence: 1,
+      fragment: {
+        id: 'recovered-fragment',
+        role: 'user',
+        kind: 'completed',
+        sequence: 1,
+        text: 'Recovered backend request.',
+        receivedAt: 41,
+      },
+    });
+    await waitFor(
+      () =>
+        messageRepository.findLatestByThread(fifthSession.threadId, 300)._unsafeUnwrap().length ===
+        204,
+    );
+    noCallbackQueueManager.startProcessing((item) => noCallbackRunner.run(item));
+    fifthSideband!.emit({
+      kind: 'delegation',
+      eventId: 'recovered-context-delegation-event',
+      sequence: 2,
+      proposal: {
+        providerDelegationId: 'recovered-context-delegation',
+        offsetMs: 0,
+        receivedAt: 42,
+      },
+    });
+    await waitFor(() => {
+      const projection = store.readSession(fifthSession.id);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    noCallbackQueueManager.stopProcessing();
+    const recoveredBackendInput = liveProvider.backendInputs.at(-1);
+    expect(recoveredBackendInput?.systemPrompt).toContain(
+      '[verified voice result, succeeded]: Backend result.',
+    );
+    expect(recoveredBackendInput?.prompt).toContain('Recovered backend request.');
+    await recoveredService.closeSession(owner, fifthSession.id, { reason: 'hangup' });
+
+    const recordTerminalWithoutCallback = async (
+      service: DurableVoiceSessionService,
+      execution: 'failed' | 'unknown',
+      providerDelegationId: string,
+    ): Promise<void> => {
+      const created = await service.createSession(owner, {
+        transport: { type: 'webrtc', sdp: 'offer' },
+      });
+      expect(created.isOk()).toBe(true);
+      const session = created._unsafeUnwrap().session;
+      const sideband = liveProvider.sidebands.get(
+        created._unsafeUnwrap().client.providerSessionId,
+      );
+      expect(sideband).toBeDefined();
+      sideband!.setContext(
+        providerDelegationId,
+        context(1, `${providerDelegationId}-digest`, `${execution} request.`),
+      );
+      sideband!.emit({
+        kind: 'delegation',
+        eventId: `${providerDelegationId}-event`,
+        sequence: 1,
+        proposal: {
+          providerDelegationId,
+          offsetMs: 0,
+          receivedAt: 50,
+        },
+      });
+      await waitFor(() => {
+        const projection = store.readSession(session.id);
+        return projection.isOk() && projection.value?.delegations[0]?.status === 'queued';
+      });
+      const projection = store.readSession(session.id);
+      expect(projection.isOk()).toBe(true);
+      const delegationId = projection._unsafeUnwrap()?.delegations[0]?.id;
+      expect(delegationId).toBeDefined();
+      const terminal =
+        execution === 'failed'
+          ? noCallbackSink.failure(delegationId!, 'VOICE_EXECUTION_FAILED')
+          : noCallbackSink.unknown(delegationId!, 'VOICE_EXECUTION_UNKNOWN');
+      expect(terminal.isOk()).toBe(true);
+      await waitFor(() => {
+        const current = store.readSession(session.id);
+        return current.isOk() && current.value?.delegations[0]?.execution === execution;
+      });
+      await service.closeSession(owner, session.id, { reason: 'hangup' });
+    };
+
+    await recordTerminalWithoutCallback(recoveredService, 'failed', 'failed-recovery-delegation');
+    const failureRecoveredService = new DurableVoiceSessionService(serviceOptions);
+    const afterFailure = await failureRecoveredService.createSession(owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(afterFailure.isOk()).toBe(true);
+    expect(liveProvider.createInstructions.at(-1)).toContain(
+      '[verified voice result, failed]: The request could not be completed safely. Please try again.',
+    );
+    await failureRecoveredService.closeSession(
+      owner,
+      afterFailure._unsafeUnwrap().session.id,
+      { reason: 'hangup' },
+    );
+
+    await recordTerminalWithoutCallback(
+      failureRecoveredService,
+      'unknown',
+      'unknown-recovery-delegation',
+    );
+    const unknownRecoveredService = new DurableVoiceSessionService(serviceOptions);
+    const afterUnknown = await unknownRecoveredService.createSession(owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(afterUnknown.isOk()).toBe(true);
+    expect(liveProvider.createInstructions.at(-1)).toContain(
+      '[verified voice result, unknown]: The request could not be completed safely. Please try again.',
+    );
+    await unknownRecoveredService.closeSession(
+      owner,
+      afterUnknown._unsafeUnwrap().session.id,
+      { reason: 'hangup' },
+    );
   });
 });
