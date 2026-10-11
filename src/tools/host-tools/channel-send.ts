@@ -194,6 +194,7 @@ export class ChannelSendHandler {
     const output = {
       body: content,
       messageId,
+      sourceRunId: context.runId,
       ...(replyTo ? { metadata: { replyTo } } : {}),
     };
 
