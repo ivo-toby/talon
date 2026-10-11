@@ -41,6 +41,15 @@ interface ContextSelection {
   readonly reason?: TranscriptContextReason;
 }
 
+interface SemanticTranscriptFragment {
+  readonly id: string;
+  readonly role: VoiceTranscriptRole;
+  readonly kind: 'transcript' | 'correction';
+  readonly text: string;
+  readonly startMs?: number;
+  readonly endMs?: number;
+}
+
 /**
  * Bounded, server-owned transcript storage for one live provider session.
  *
@@ -172,7 +181,7 @@ export class TranscriptBuffer {
     const text = snapshotFragments
       .map((fragment) => `${fragment.role}: ${fragment.text}`)
       .join('\n');
-    const digest = createHash('sha256').update(JSON.stringify(snapshotFragments)).digest('hex');
+    const digest = semanticDigest(snapshotFragments);
 
     return {
       snapshot: {
@@ -281,6 +290,23 @@ function sameFragment(left: VoiceTranscriptFragment, right: VoiceTranscriptFragm
 
 function deltaFingerprint(fragment: VoiceTranscriptFragment): string {
   return JSON.stringify([fragment.text, fragment.startMs, fragment.endMs]);
+}
+
+/**
+ * Provider sequence, receipt time, and delta/completion state are transport
+ * metadata. Keep correction as a semantic marker while hashing the context
+ * that can affect backend admission.
+ */
+function semanticDigest(fragments: readonly VoiceTranscriptFragment[]): string {
+  const semanticFragments: readonly SemanticTranscriptFragment[] = fragments.map((fragment) => ({
+    id: fragment.id,
+    role: fragment.role,
+    kind: fragment.kind === 'correction' ? 'correction' : 'transcript',
+    text: fragment.text,
+    ...(fragment.startMs !== undefined ? { startMs: fragment.startMs } : {}),
+    ...(fragment.endMs !== undefined ? { endMs: fragment.endMs } : {}),
+  }));
+  return createHash('sha256').update(JSON.stringify(semanticFragments)).digest('hex');
 }
 
 function compareFragments(left: VoiceTranscriptFragment, right: VoiceTranscriptFragment): number {
