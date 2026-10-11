@@ -48,7 +48,7 @@ describe('channel.send through browser voice', () => {
       const threadRepository = new ThreadRepository(db);
       const messageRepository = new MessageRepository(db);
       const registry = new ChannelRegistry(pino({ level: 'silent' }));
-      const notifications: Array<{ threadId: string; text: string }> = [];
+      const notifications: Array<{ threadId: string; text: string; messageId?: string }> = [];
       const registered = registerVoiceConnector({
         channelRegistry: registry,
         channelRepo: channelRepository,
@@ -77,11 +77,14 @@ describe('channel.send through browser voice', () => {
       );
 
       expect(sent.status).toBe('success');
-      expect(notifications).toEqual([
-        { threadId: 'session-1', text: 'A durable background update.' },
-      ]);
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]).toMatchObject({
+        threadId: 'session-1',
+        text: 'A durable background update.',
+      });
       const rows = messageRepository.findByThread('session-1', 10, 0)._unsafeUnwrap();
       expect(rows).toHaveLength(1);
+      expect(notifications[0]?.messageId).toBe(rows[0]?.id);
       expect(JSON.parse(rows[0].content)).toEqual({ body: 'A durable background update.' });
     } finally {
       db.close();
