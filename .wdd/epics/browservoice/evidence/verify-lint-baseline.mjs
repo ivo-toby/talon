@@ -7,9 +7,13 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  compareTouchedFileDiagnostics,
+  parseUnifiedDiff,
+} from './lint-baseline-comparison.mjs';
 
 const BASELINE_COMMIT = 'abab3f2a4694992e857a178f9209d4ae871db2c2';
 const EXPECTED_ERRORS = 75;
@@ -117,8 +121,24 @@ function changedSourceFiles() {
   );
 }
 
+function changedSourceDiff() {
+  const result = run('git', ['diff', '--no-ext-diff', '--unified=0', BASELINE_COMMIT, '--', 'src']);
+  if (result.status !== 0) throw new Error(`git diff failed: ${result.stderr.trim()}`);
+  return parseUnifiedDiff(result.stdout);
+}
+
 function byPath(entries) {
   return new Map(entries.map((entry) => [entry.filePath, entry]));
+}
+
+function sourceEntry(root, filePath, entry) {
+  if (typeof entry.source === 'string') return entry;
+  const rootPath = resolve(root);
+  const sourcePath = resolve(rootPath, filePath);
+  if (!sourcePath.startsWith(`${rootPath}${sep}`)) {
+    throw new Error(`lint entry path escapes checkout: ${filePath}`);
+  }
+  return { ...entry, source: readFileSync(sourcePath, 'utf8') };
 }
 
 const temporaryDirectory = mkdtempSync(join('/tmp', 'talon-lint-baseline-'));
@@ -148,14 +168,25 @@ try {
   }
 
   const changed = changedSourceFiles();
+  const changedDiff = changedSourceDiff();
   const baselineByPath = byPath(baseline);
   const currentByPath = byPath(current);
   for (const file of changed) {
     const entry = currentByPath.get(file);
     if (!entry) throw new Error(`changed source file was not linted: ${file}`);
-    if (entry.messages.length > 0 || entry.errorCount !== 0 || entry.warningCount !== 0) {
-      throw new Error(`changed source file has diagnostics: ${file}`);
+    const baselineEntry = baselineByPath.get(file);
+    if (!baselineEntry) {
+      compareTouchedFileDiagnostics({ filePath: file, baseline: null, current: entry, hunks: [] });
+      continue;
     }
+    const diff = changedDiff.get(file);
+    if (!diff) throw new Error(`changed source file has no diff metadata: ${file}`);
+    compareTouchedFileDiagnostics({
+      filePath: file,
+      baseline: sourceEntry(temporaryDirectory, file, baselineEntry),
+      current: sourceEntry(repoRoot, file, entry),
+      hunks: diff.hunks,
+    });
   }
 
   const paths = new Set([...baselineByPath.keys(), ...currentByPath.keys()]);
@@ -170,7 +201,7 @@ try {
 
   console.log(
     `verify-lint-baseline: PASS (${currentTotals.errors} errors, ${currentTotals.warnings} warnings; ` +
-      `${changed.size} changed source files clean)`,
+      `unchanged baseline diagnostics preserved and ${changed.size} changed source files checked; changed code clean)`,
   );
 } catch (cause) {
   fail(cause instanceof Error ? cause.message : String(cause));
