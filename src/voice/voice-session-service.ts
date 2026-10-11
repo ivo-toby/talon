@@ -90,6 +90,8 @@ export interface VoiceSessionServiceOptions {
   readonly maxSessionLifetimeMs?: number;
   readonly maxContextChars?: number;
   readonly shutdownTimeoutMs?: number;
+  /** Optional operator-provided live voice rate; absent means no new estimate. */
+  readonly usdPerMinute?: number;
   readonly logger?: pino.Logger;
 }
 
@@ -103,6 +105,8 @@ interface SessionRuntime {
   readonly listeners: Set<VoiceEventHandler<VoiceStatusEventDto>>;
   readonly resultUnsubscribes: Map<string, VoiceUnsubscribe>;
   readonly handledOutputIds: Set<string>;
+  readonly staleDelegationIds: Set<string>;
+  readonly staleNoticeSent: Set<string>;
 }
 
 interface IndexedOwnerSessions {
@@ -279,6 +283,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
   private readonly maxSessionLifetimeMs: number;
   private readonly maxContextChars: number;
   private readonly shutdownTimeoutMs: number;
+  private readonly usdPerMinute: number | undefined;
   private readonly generation: () => number;
   private readonly runtimes = new Map<VoiceSessionId, SessionRuntime>();
   private readonly activeSessionIds = new Set<VoiceSessionId>();
@@ -300,6 +305,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       options.shutdownTimeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS,
       'shutdownTimeoutMs',
     );
+    this.usdPerMinute = optionalNonNegativeFinite(options.usdPerMinute, 'usdPerMinute');
     this.generation = options.generation ?? ((): number => this.lifecycleGeneration);
   }
 
@@ -427,6 +433,8 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       listeners: new Set(),
       resultUnsubscribes: new Map(),
       handledOutputIds: new Set(),
+      staleDelegationIds: new Set(),
+      staleNoticeSent: new Set(),
     };
     runtime.unsubscribeProvider = sideband.value.onEvent((event) => {
       void this.receiveProviderEvent({
@@ -532,13 +540,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (latest.isErr()) return err(latest.error);
     const finalCurrent = latest.value?.session ?? closing.value;
     const terminalStatus = input.reason === 'deadline' ? 'expired' : input.reason === 'transport_failure' ? 'failed' : 'closed';
+    const finalization = finalizationFromRuntime(runtime, latestSidebandUsage(runtime?.sideband));
     const terminal = this.options.store.updateSession({
       sessionId,
       expectedRevision: finalCurrent.revision,
       patch: {
         status: terminalStatus,
         closedAt: this.now(),
-        finalization: finalizationFromRuntime(runtime, latestSidebandUsage(runtime?.sideband)),
+        usage: applyVoiceCost(finalCurrent.usage, this.usdPerMinute, finalization.status),
+        finalization,
         ...(pendingDelegation ? {} : { activeDelegationId: undefined }),
       },
       updatedAt: this.now(),
@@ -804,12 +814,32 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (!projection.value) return err(new PolicyError('Voice session was not found'));
 
     for (const delegation of projection.value.delegations) {
-      if (delegation.status !== 'admitted' && delegation.status !== 'queued') continue;
-      const context = this.contextForDelegation(runtime.sideband, delegation.providerDelegationId);
-      const invalidated =
-        !context ||
-        context.digest !== delegation.contextDigest;
+      const terminalWithPendingDelivery =
+        (delegation.status === 'completed' ||
+          delegation.status === 'failed' ||
+          delegation.status === 'unknown') &&
+        this.hasUndeliveredOutput(runtime, projection.value, delegation);
+      if (
+        delegation.status !== 'admitted' &&
+        delegation.status !== 'queued' &&
+        delegation.status !== 'claimed' &&
+        delegation.status !== 'running' &&
+        !terminalWithPendingDelivery
+      ) {
+        continue;
+      }
+      const invalidated = this.delegationContextInvalidated(runtime, delegation);
       if (!invalidated) continue;
+
+      if (
+        delegation.status === 'claimed' ||
+        delegation.status === 'running' ||
+        terminalWithPendingDelivery
+      ) {
+        runtime.staleDelegationIds.add(delegation.id);
+        await this.sendStaleNotice(runtime, delegation, terminalWithPendingDelivery);
+        continue;
+      }
 
       const skipped = this.skipInvalidatedDelegation(sessionId, delegation);
       if (skipped.isErr()) return err(skipped.error);
@@ -1139,21 +1169,21 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     });
   }
 
-  private async attachBackendResult(
+  private attachBackendResult(
     runtime: SessionRuntime,
     request: VoiceBackendRequest,
     activeSession: VoiceSessionRecord,
     ownsActiveDelegation: boolean,
-  ): Promise<VoiceResult<void>> {
+  ): VoiceAsyncResult<void> {
     const unsubscribe = this.options.backendBridge.onResult(request.delegationId, (result) => {
-      void this.handleBackendResult(result);
+      void this.enqueueBackendResult(runtime, result);
     });
     runtime.resultUnsubscribes.set(request.delegationId, unsubscribe);
     const existing = this.options.backendBridge.result(request.delegationId);
-    if (existing.isErr()) return err(existing.error);
-    if (existing.value) await this.handleBackendResult(existing.value);
+    if (existing.isErr()) return Promise.resolve(err(existing.error));
+    if (existing.value) void this.enqueueBackendResult(runtime, existing.value);
     if (ownsActiveDelegation) this.publishSession(activeSession);
-    return ok(undefined);
+    return Promise.resolve(ok(undefined));
   }
 
   private contextForDelegation(sideband: LiveVoiceSideband, providerDelegationId: string): VoiceContextSnapshot | null {
@@ -1165,6 +1195,54 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     return context;
   }
 
+  private delegationContextInvalidated(
+    runtime: SessionRuntime,
+    delegation: VoiceDelegationRecord,
+  ): boolean {
+    const context = this.contextForDelegation(runtime.sideband, delegation.providerDelegationId);
+    return !context || context.digest !== delegation.contextDigest;
+  }
+
+  private hasUndeliveredOutput(
+    runtime: SessionRuntime,
+    projection: VoiceSessionReadProjection,
+    delegation: VoiceDelegationRecord,
+  ): boolean {
+    if (delegation.output.delivery === 'pending') return true;
+    return projection.outputs.some(
+      (output) => output.delegationId === delegation.id && !runtime.handledOutputIds.has(output.id),
+    );
+  }
+
+  private enqueueBackendResult(runtime: SessionRuntime, result: VoiceBackendResult): Promise<void> {
+    const run = runtime.eventChain
+      .catch(() => undefined)
+      .then(() => this.handleBackendResult(result))
+      .catch((cause: unknown) => {
+        this.options.logger?.warn({ cause, delegationId: result.delegationId }, 'voice result delivery failed');
+      });
+    runtime.eventChain = run;
+    return run;
+  }
+
+  private async sendStaleNotice(
+    runtime: SessionRuntime,
+    delegation: VoiceDelegationRecord,
+    completed: boolean,
+  ): Promise<void> {
+    if (runtime.staleNoticeSent.has(delegation.id)) return;
+    const content = completed
+      ? 'The earlier request finished after your correction. Its result was retained, but it was not used as the answer. Please repeat the corrected request.'
+      : 'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.';
+    const sent = await runtime.sideband.send({
+      kind: 'instruction',
+      delegationId: delegation.providerDelegationId,
+      content,
+      outputId: randomUUID(),
+    });
+    if (sent.isOk()) runtime.staleNoticeSent.add(delegation.id);
+  }
+
   private async handleBackendResult(result: VoiceBackendResult): Promise<void> {
     const delegation = this.options.store.findDelegation(result.delegationId);
     if (delegation.isErr() || !delegation.value) return;
@@ -1172,6 +1250,10 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (!runtime) return;
     if (runtime.handledOutputIds.has(result.outputId)) return;
     runtime.handledOutputIds.add(result.outputId);
+    const stale =
+      runtime.staleDelegationIds.has(delegation.value.id) ||
+      this.delegationContextInvalidated(runtime, delegation.value);
+    if (stale) runtime.staleDelegationIds.add(delegation.value.id);
     const outputId = result.outputId;
     const isSafeFailure = result.kind === 'error' || result.kind === 'unknown';
     const content = isSafeFailure
@@ -1180,12 +1262,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const command = isSafeFailure
       ? { kind: 'instruction' as const, delegationId: delegation.value.providerDelegationId, content, outputId }
       : { kind: 'commentary' as const, delegationId: delegation.value.providerDelegationId, content, outputId };
-    const sent = content.length > 0
-      ? await runtime.sideband.send(command)
-      : err(new PolicyError('Voice result has no deliverable text'));
+    const sent = stale
+      ? ok(undefined)
+      : content.length > 0
+        ? await runtime.sideband.send(command)
+        : err(new PolicyError('Voice result has no deliverable text'));
+    if (stale) await this.sendStaleNotice(runtime, delegation.value, result.execution !== 'running');
     const lifecycle: VoiceOutputLifecycle = {
       ...result.output,
-      delivery: sent.isOk() ? 'sent' : 'failed',
+      delivery: stale ? 'not_requested' : sent.isOk() ? 'sent' : 'failed',
     };
     this.options.store.recordOutputLifecycle({
       delegationId: result.delegationId,
@@ -1225,17 +1310,21 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const previousSeconds = projection.value.session.usage.voiceSeconds;
     if (
       update.voiceSeconds !== undefined &&
+      (!Number.isFinite(update.voiceSeconds) || update.voiceSeconds < 0)
+    ) {
+      return ok(undefined);
+    }
+    if (
+      update.voiceSeconds !== undefined &&
       previousSeconds !== undefined &&
       update.voiceSeconds < previousSeconds
     ) {
       return ok(undefined);
     }
-    const usage = {
+    const usage = applyVoiceCost({
       ...projection.value.session.usage,
       ...(update.voiceSeconds !== undefined ? { voiceSeconds: update.voiceSeconds } : {}),
-      voiceCostStatus: projection.value.session.usage.voiceCostStatus,
-      backendCostStatus: projection.value.session.usage.backendCostStatus,
-    };
+    }, this.usdPerMinute, projection.value.session.finalization.status);
     const saved = this.options.store.updateSession({
       sessionId,
       expectedRevision: projection.value.session.revision,
@@ -1388,6 +1477,52 @@ function positiveLimit(value: number, name: string): number {
   return value;
 }
 
+function optionalNonNegativeFinite(value: number | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value) || value < 0) throw new Error(`${name} must be a finite non-negative number`);
+  return value;
+}
+
+export function applyVoiceCost(
+  usage: VoiceSessionRecord['usage'],
+  usdPerMinute: number | undefined,
+  finalizationStatus: VoiceSessionRecord['finalization']['status'],
+  preserveExisting = false,
+): VoiceSessionRecord['usage'] {
+  if (
+    preserveExisting &&
+    usage.voiceCostUsd !== undefined &&
+    Number.isFinite(usage.voiceCostUsd) &&
+    usage.voiceCostUsd >= 0
+  ) {
+    return finalizationStatus === 'incomplete' && usage.voiceCostStatus !== 'incomplete'
+      ? { ...usage, voiceCostStatus: 'incomplete' }
+      : usage;
+  }
+  const estimated = estimateVoiceCost(usage.voiceSeconds, usdPerMinute);
+  if (estimated === undefined) return usage;
+  return {
+    ...usage,
+    voiceCostUsd: estimated,
+    voiceCostStatus: finalizationStatus === 'incomplete' ? 'incomplete' : 'estimated',
+  };
+}
+
+function estimateVoiceCost(voiceSeconds: number | undefined, usdPerMinute: number | undefined): number | undefined {
+  if (
+    voiceSeconds === undefined ||
+    !Number.isFinite(voiceSeconds) ||
+    voiceSeconds < 0 ||
+    usdPerMinute === undefined ||
+    !Number.isFinite(usdPerMinute) ||
+    usdPerMinute < 0
+  ) {
+    return undefined;
+  }
+  const estimate = (voiceSeconds / 60) * usdPerMinute;
+  return Number.isFinite(estimate) && estimate >= 0 ? Math.max(0, estimate) : undefined;
+}
+
 function sameOwner(left: VoiceOwnerContext, right: VoiceOwnerContext): boolean {
   return left.ownerId === right.ownerId && left.loginRevision === right.loginRevision;
 }
@@ -1495,7 +1630,7 @@ function finalizationFromRuntime(
     | undefined;
   const status = candidate?.finalizationStatus === 'confirmed' || usage?.final
     ? 'confirmed'
-    : candidate?.finalizationStatus ?? 'incomplete';
+    : 'incomplete';
   return {
     status,
     ...(status === 'confirmed' ? { confirmedAt: usage?.receivedAt } : {}),

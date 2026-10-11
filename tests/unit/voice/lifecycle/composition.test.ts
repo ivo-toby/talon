@@ -165,6 +165,7 @@ function createHarness(options: {
   owner?: { ownerId: string; loginRevision: number };
   backendModel?: string;
   liveModel?: string;
+  usdPerMinute?: number;
   isOwnerActive?: (owner: { ownerId: string; loginRevision: number }) => boolean;
 } = {}) {
   const harnessDb = createDb();
@@ -210,6 +211,7 @@ function createHarness(options: {
     capturePolicy,
     currentPolicy: () => capturePolicy(),
     isOwnerActive: options.isOwnerActive,
+    usdPerMinute: options.usdPerMinute,
   });
   const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
   const queueManager = new QueueManager(
@@ -695,6 +697,356 @@ describe('browser voice lifecycle composition', () => {
     const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
     expect(projection?.session.usage.voiceSeconds).toBe(40);
     expect(projection?.session.finalization.status).toBe('confirmed');
+  });
+
+  it('estimates cumulative voice cost once and keeps finalization separate from billing status', async () => {
+    const harness = createHarness({ usdPerMinute: 0.06 });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    const usage = (voiceSeconds: number, final: boolean, eventId: string) =>
+      harness.service.receiveProviderEvent({
+        sessionId,
+        providerSessionId: 'provider-session-1',
+        event: {
+          kind: 'usage',
+          eventId,
+          sequence: voiceSeconds,
+          update: { voiceSeconds, receivedAt: voiceSeconds, final },
+        },
+      });
+
+    await usage(30, false, 'usage-30');
+    await usage(30, false, 'usage-30-duplicate');
+    const beforeClose = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(beforeClose?.session.usage).toMatchObject({
+      voiceSeconds: 30,
+      voiceCostUsd: 0.03,
+      voiceCostStatus: 'estimated',
+    });
+
+    harness.provider.sideband.latestUsage = { voiceSeconds: 60, receivedAt: 60, final: true };
+    const closed = await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+    expect(closed.isOk()).toBe(true);
+    const afterClose = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(afterClose?.session.usage).toMatchObject({
+      voiceSeconds: 60,
+      voiceCostUsd: 0.06,
+      voiceCostStatus: 'estimated',
+    });
+    expect(afterClose?.session.finalization.status).toBe('confirmed');
+  });
+
+  it('marks a known-rate estimate incomplete when provider finalization is missing', async () => {
+    const harness = createHarness({ usdPerMinute: 0.06 });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'usage',
+        eventId: 'usage-incomplete',
+        sequence: 1,
+        update: { voiceSeconds: 30, receivedAt: 30, final: false },
+      },
+    });
+
+    const closed = await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+    expect(closed.isOk()).toBe(true);
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.session.usage).toMatchObject({
+      voiceSeconds: 30,
+      voiceCostUsd: 0.03,
+      voiceCostStatus: 'incomplete',
+    });
+    expect(projection?.session.finalization).toEqual({ status: 'incomplete' });
+  });
+
+  it('keeps cost unavailable without a rate while retaining provider finalization', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'usage',
+        eventId: 'usage-no-rate',
+        sequence: 1,
+        update: { voiceSeconds: 60, receivedAt: 60, final: false },
+      },
+    });
+    harness.provider.sideband.latestUsage = { voiceSeconds: 60, receivedAt: 60, final: true };
+
+    const closed = await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+    expect(closed.isOk()).toBe(true);
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.session.usage).toMatchObject({
+      voiceSeconds: 60,
+      voiceCostStatus: 'unavailable',
+    });
+    expect(projection?.session.usage.voiceCostUsd).toBeUndefined();
+    expect(projection?.session.finalization.status).toBe('confirmed');
+  });
+
+  it('does not persist an infinite estimate when the rate-times-duration product overflows', async () => {
+    const harness = createHarness({ usdPerMinute: Number.MAX_VALUE });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'usage',
+        eventId: 'usage-overflow',
+        sequence: 1,
+        update: { voiceSeconds: Number.MAX_VALUE, receivedAt: 1, final: false },
+      },
+    });
+
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.session.usage.voiceSeconds).toBe(Number.MAX_VALUE);
+    expect(projection?.session.usage.voiceCostUsd).toBeUndefined();
+    expect(projection?.session.usage.voiceCostStatus).toBe('unavailable');
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+  });
+
+  it('retains but does not speak a running result after a transcript correction', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    const providerDelegationId = 'provider-running-correction';
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(1, 'digest-book-friday', 'Book Friday.'),
+    );
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-running-correction',
+        sequence: 1,
+        proposal: { providerDelegationId, offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+    const admittedProjection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const delegationId = admittedProjection?.delegations[0]?.id;
+    expect(delegationId).toBeDefined();
+
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let executionStartedResolve!: () => void;
+    const executionStarted = new Promise<void>((resolve) => {
+      executionStartedResolve = resolve;
+    });
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as { request?: { delegationId?: string } };
+      if (payload.request?.delegationId !== delegationId) return ok(undefined);
+      const started = harness.sink.executionStarted(delegationId, 40);
+      if (started.isErr()) throw started.error;
+      executionStartedResolve();
+      await running;
+      const final = harness.sink.final(delegationId, 'Booked Friday', 80);
+      if (final.isErr()) throw final.error;
+      return ok(undefined);
+    });
+    await executionStarted;
+    await waitFor(() => {
+      const projection = harness.store.readSession(sessionId);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'running';
+    });
+
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(2, 'digest-book-friday', 'Book Friday.'),
+    );
+    const laterFragment = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-running-later-fragment',
+        sequence: 2,
+        fragment: {
+          id: 'assistant-later',
+          role: 'assistant',
+          kind: 'completed',
+          sequence: 2,
+          text: 'A later response outside the captured request.',
+          startMs: 200,
+          endMs: 300,
+          receivedAt: 45,
+        },
+      },
+    });
+    expect(laterFragment.isOk()).toBe(true);
+    expect(harness.provider.sideband.commands).not.toContain(
+      'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+    );
+
+    harness.provider.sideband.invalidateContext(providerDelegationId);
+    const correction = harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-running-correction-result',
+        sequence: 3,
+        fragment: {
+          id: 'utterance-correction',
+          role: 'user',
+          kind: 'correction',
+          sequence: 3,
+          text: 'No Thursday.',
+          receivedAt: 50,
+        },
+      },
+    });
+    const correctionResult = await correction;
+    expect(correctionResult.isOk()).toBe(true);
+    expect(harness.provider.sideband.commands).toContain(
+      'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+    );
+    release();
+
+    await waitFor(() => {
+      const projection = harness.store.readSession(sessionId);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    await waitFor(() => harness.provider.sideband.commands.every((command) => command !== 'Booked Friday'));
+    const afterFinal = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const finalOutput = afterFinal?.outputs.find((output) => output.text === 'Booked Friday');
+    expect(afterFinal?.delegations[0]).toMatchObject({
+      status: 'completed',
+      execution: 'succeeded',
+    });
+    expect(finalOutput?.lifecycle).toMatchObject({
+      execution: 'succeeded',
+      delivery: 'not_requested',
+    });
+
+    const commandCount = harness.provider.sideband.commands.length;
+    const duplicate = harness.sink.final(delegationId, 'Booked Friday', 90);
+    expect(duplicate.isOk()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(harness.provider.sideband.commands).toHaveLength(commandCount);
+
+    harness.queueManager.stopProcessing();
+    const closed = await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+    expect(closed.isOk()).toBe(true);
+    expect(harness.service.status(harness.owner, sessionId)._unsafeUnwrap()?.delegations[0]?.outputs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: 'Booked Friday' })]),
+    );
+  });
+
+  it('speaks a result when later transcript leaves the captured digest unchanged while running', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    const providerDelegationId = 'provider-running-later-fragment';
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(1, 'digest-stable', 'Book Friday.'),
+    );
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-running-later-delegation',
+        sequence: 1,
+        proposal: { providerDelegationId, offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+    const admittedProjection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const delegationId = admittedProjection?.delegations[0]?.id;
+    expect(delegationId).toBeDefined();
+
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let executionStartedResolve!: () => void;
+    const executionStarted = new Promise<void>((resolve) => {
+      executionStartedResolve = resolve;
+    });
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as { request?: { delegationId?: string } };
+      if (payload.request?.delegationId !== delegationId) return ok(undefined);
+      const started = harness.sink.executionStarted(delegationId, 40);
+      if (started.isErr()) throw started.error;
+      executionStartedResolve();
+      await running;
+      const final = harness.sink.final(delegationId, 'Booked Friday', 80);
+      if (final.isErr()) throw final.error;
+      return ok(undefined);
+    });
+    await executionStarted;
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(2, 'digest-stable', 'Book Friday.'),
+    );
+    const laterFragment = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-running-later-fragment-only',
+        sequence: 2,
+        fragment: {
+          id: 'assistant-later-only',
+          role: 'assistant',
+          kind: 'completed',
+          sequence: 2,
+          text: 'A later response outside the captured request.',
+          startMs: 200,
+          endMs: 300,
+          receivedAt: 45,
+        },
+      },
+    });
+    expect(laterFragment.isOk()).toBe(true);
+    release();
+    await waitFor(() => harness.provider.sideband.commands.includes('Booked Friday'));
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.delegations[0]).toMatchObject({
+      status: 'completed',
+      execution: 'succeeded',
+    });
+    expect(harness.provider.sideband.commands).not.toContain(
+      'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+    );
+    harness.queueManager.stopProcessing();
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
   });
 
   it('allows a current login revision to read retained status while mutations stay exact-owner', async () => {

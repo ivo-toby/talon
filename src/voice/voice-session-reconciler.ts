@@ -7,6 +7,7 @@
  */
 
 import { err, ok } from '../core/types/result.js';
+import { applyVoiceCost } from './voice-session-service.js';
 import type {
   VoiceBackendResult,
   VoiceResult,
@@ -23,16 +24,19 @@ export interface VoiceReconciliationReport {
 
 export interface VoiceSessionReconcilerOptions {
   readonly now?: () => number;
+  readonly usdPerMinute?: number;
 }
 
 export class VoiceSessionReconciler {
   private readonly now: () => number;
+  private readonly usdPerMinute: number | undefined;
 
   constructor(
     private readonly store: VoiceStore,
     options: VoiceSessionReconcilerOptions = {},
   ) {
     this.now = options.now ?? Date.now;
+    this.usdPerMinute = options.usdPerMinute;
   }
 
   reconcile(): VoiceResult<VoiceReconciliationReport> {
@@ -112,18 +116,33 @@ export class VoiceSessionReconciler {
       }
     }
 
+    const finalization = terminalSession
+      ? projection.session.finalization.status === 'pending'
+        ? { status: 'incomplete' as const }
+        : projection.session.finalization
+      : { status: 'incomplete' as const, providerReason: 'daemon_restart' };
+    const usage = applyVoiceCost(
+      projection.session.usage,
+      this.usdPerMinute,
+      finalization.status,
+      true,
+    );
+    const usageChanged = JSON.stringify(usage) !== JSON.stringify(projection.session.usage);
+    const finalizationChanged =
+      JSON.stringify(finalization) !== JSON.stringify(projection.session.finalization);
+
     // A daemon restart cannot recreate the browser/provider transport. Close
     // any leftover non-terminal session after its work has been classified so
     // a pending queue row cannot become an orphaned execution.
-    if (!terminalSession) {
+    if (!terminalSession || usageChanged || finalizationChanged) {
       const closed = this.store.updateSession({
         sessionId: projection.session.id,
         expectedRevision: projection.session.revision,
         patch: {
-          status: 'expired',
-          closedAt: this.now(),
-          finalization: { status: 'incomplete', providerReason: 'daemon_restart' },
-          activeDelegationId: undefined,
+          ...(terminalSession ? {} : { status: 'expired' as const, closedAt: this.now() }),
+          usage,
+          finalization,
+          ...(terminalSession ? {} : { activeDelegationId: undefined }),
         },
         updatedAt: this.now(),
       });
