@@ -1086,6 +1086,29 @@ describe('TalondConfigSchema', () => {
     }
   });
 
+  it('rejects an ordinary browser-voice channel when voice is enabled', () => {
+    const result = TalondConfigSchema.safeParse({
+      voice: { enabled: true },
+      channels: [{ type: 'terminal', name: 'browser-voice' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({ path: ['channels', 0, 'name'] }),
+      );
+    }
+  });
+
+  it('allows an ordinary browser-voice channel while voice is disabled', () => {
+    const result = TalondConfigSchema.safeParse({
+      voice: { enabled: false },
+      channels: [{ type: 'terminal', name: 'browser-voice' }],
+    });
+
+    expect(result.success).toBe(true);
+  });
+
   it('accepts openai-compatible provider options for both main and background agents', () => {
     const result = TalondConfigSchema.safeParse({
       agentRunner: {
