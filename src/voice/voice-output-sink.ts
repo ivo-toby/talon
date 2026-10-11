@@ -61,10 +61,11 @@ export function authoritativeVoiceResult(
     return ok(resultFromOutput(retainedFinal));
   }
 
-  const retainedTerminal = outputs.find(
+  const retainedExecutionOutputs = outputs.filter(
     (output) => output.lifecycle.execution === persisted.execution,
   );
-  if (isTerminalExecution(persisted.execution) && !retainedTerminal) {
+  const retainedExecution = retainedExecutionOutputs.at(-1);
+  if (isTerminalExecution(persisted.execution) && !retainedExecution) {
     return ok({
       delegationId: persisted.id,
       outputId: `voice-terminal:${persisted.id}`,
@@ -79,7 +80,7 @@ export function authoritativeVoiceResult(
   if (!latest) {
     return err(new DbError(`Voice delegation has no retained output: ${persisted.id}`));
   }
-  return ok(resultFromOutput(retainedTerminal ?? latest));
+  return ok(resultFromOutput(retainedExecution ?? latest));
 }
 
 /** Methods used by AgentRunner to persist execution and result transitions. */

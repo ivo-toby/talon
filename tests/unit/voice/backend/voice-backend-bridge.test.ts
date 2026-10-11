@@ -281,6 +281,56 @@ describe('DurableVoiceBackendBridge', () => {
     });
   });
 
+  it('keeps the newest running output authoritative after a late delivery update', async () => {
+    const setup = makeSetup();
+    db = setup.db;
+    const published: Array<string | undefined> = [];
+    const sink = new VoiceOutputSink(
+      setup.store,
+      (result) => {
+        published.push(result.text);
+      },
+      { now: () => 301 },
+    );
+    await setup.bridge.admit(request());
+
+    const started = sink.executionStarted('delegation-1');
+    const firstProgress = sink.progress('delegation-1', 'Checking status.');
+    const secondProgress = sink.progress('delegation-1', 'Still checking.');
+    const outputs = setup.store
+      .readSession('session-1')
+      ._unsafeUnwrap()!
+      .outputs.filter((output) => output.delegationId === 'delegation-1');
+    const retainedFirstProgress = outputs.find((output) => output.text === 'Checking status.');
+
+    expect(started.isOk()).toBe(true);
+    expect(firstProgress.isOk()).toBe(true);
+    expect(secondProgress.isOk()).toBe(true);
+    expect(outputs.map((output) => output.createdAt)).toEqual([301, 301, 301]);
+    expect(retainedFirstProgress).toBeDefined();
+
+    const deliveryUpdate = setup.store.recordOutputLifecycle({
+      delegationId: 'delegation-1',
+      outputId: retainedFirstProgress!.id,
+      lifecycle: { ...retainedFirstProgress!.lifecycle, delivery: 'acknowledged' },
+    });
+    const duplicate = sink.record(secondProgress._unsafeUnwrap());
+
+    expect(deliveryUpdate.isOk()).toBe(true);
+    expect(duplicate.isOk()).toBe(true);
+    expect(duplicate._unsafeUnwrap()).toMatchObject({
+      kind: 'progress',
+      text: 'Still checking.',
+      execution: 'running',
+    });
+    expect(published).toEqual([
+      undefined,
+      'Checking status.',
+      'Still checking.',
+      'Still checking.',
+    ]);
+  });
+
   it('publishes the accepted final result when a later bridge write is stale', async () => {
     const setup = makeSetup();
     db = setup.db;
