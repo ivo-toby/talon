@@ -36,6 +36,7 @@ class FakeVoiceSessionService implements VoiceSessionService {
   readonly playbackReports: VoicePlaybackReport[] = [];
   private nextId = 1;
   private readonly sessions = new Map<string, { ownerId: string; record: VoiceSessionRecord }>();
+  private readonly rejectedStatusRevisions = new Set<string>();
   private handler: VoiceEventHandler<VoiceStatusEventDto> | undefined;
   private createStartedResolve: (() => void) | undefined;
   private createGate: Promise<void> | undefined;
@@ -58,6 +59,12 @@ class FakeVoiceSessionService implements VoiceSessionService {
   status(owner: VoiceOwnerContext, sessionId: string) {
     const entry = this.sessions.get(sessionId);
     if (!entry || entry.ownerId !== owner.ownerId) return ok(null);
+    if (
+      this.rejectedStatusRevisions.has(sessionId) &&
+      entry.record.owner.loginRevision === owner.loginRevision
+    ) {
+      return err(new PolicyError('voice login is no longer active'));
+    }
     return ok(toStatus(entry.record));
   }
 
@@ -133,6 +140,10 @@ class FakeVoiceSessionService implements VoiceSessionService {
         ...(status === 'closed' || status === 'expired' ? { closedAt: Date.now() } : {}),
       },
     });
+  }
+
+  rejectStoredStatusRevision(sessionId: string): void {
+    this.rejectedStatusRevisions.add(sessionId);
   }
 }
 
@@ -629,6 +640,115 @@ describe('BrowserVoiceServer', () => {
     expect(((await second.json()) as { session: VoiceSessionStatusDto }).session.id).toBe(
       'session-2',
     );
+  });
+
+  it('reconciles an expired session with the current login before a new call', async () => {
+    let now = 3_000_000;
+    const auth = new VoiceAuth({ accessToken: 'secret', sessionTtlMs: 1_000, now: () => now });
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service, { maxConcurrentSessions: 1 }, auth);
+    const base = `http://127.0.0.1:${server.port}`;
+    const firstLogin = await loginAt(base);
+    const firstCookies = getSetCookies(firstLogin);
+    const firstSessionCookie = cookieValue(firstCookies, VOICE_SESSION_COOKIE);
+    const firstCsrf = cookieValue(firstCookies, VOICE_CSRF_COOKIE);
+    const firstCookieHeader =
+      `${VOICE_SESSION_COOKIE}=${firstSessionCookie}; ` + `${VOICE_CSRF_COOKIE}=${firstCsrf}`;
+    expect((await createAt(base, firstCookieHeader, firstCsrf)).status).toBe(201);
+    service.markTerminal('session-1', 'expired');
+    service.rejectStoredStatusRevision('session-1');
+
+    now += 1_001;
+    const expiredStatus = await fetch(`${base}/voice/sessions/session-1`, {
+      headers: { cookie: firstCookieHeader, origin: ORIGIN },
+    });
+    expect(expiredStatus.status).toBe(401);
+
+    const secondLogin = await loginAt(base);
+    const secondCookies = getSetCookies(secondLogin);
+    const secondSessionCookie = cookieValue(secondCookies, VOICE_SESSION_COOKIE);
+    const secondCsrf = cookieValue(secondCookies, VOICE_CSRF_COOKIE);
+    const second = await createAt(
+      base,
+      `${VOICE_SESSION_COOKIE}=${secondSessionCookie}; ${VOICE_CSRF_COOKIE}=${secondCsrf}`,
+      secondCsrf,
+    );
+    expect(second.status).toBe(201);
+    expect(((await second.json()) as { session: VoiceSessionStatusDto }).session.id).toBe(
+      'session-2',
+    );
+  });
+
+  it('reconciles a terminal session after auth invalidation and relogin', async () => {
+    const auth = new VoiceAuth({ accessToken: 'secret' });
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service, { maxConcurrentSessions: 1 }, auth);
+    const base = `http://127.0.0.1:${server.port}`;
+    const firstLogin = await loginAt(base);
+    const firstCookies = getSetCookies(firstLogin);
+    const firstSessionCookie = cookieValue(firstCookies, VOICE_SESSION_COOKIE);
+    const firstCsrf = cookieValue(firstCookies, VOICE_CSRF_COOKIE);
+    const firstCookieHeader =
+      `${VOICE_SESSION_COOKIE}=${firstSessionCookie}; ` + `${VOICE_CSRF_COOKIE}=${firstCsrf}`;
+    expect((await createAt(base, firstCookieHeader, firstCsrf)).status).toBe(201);
+    service.markTerminal('session-1', 'closed');
+    service.rejectStoredStatusRevision('session-1');
+
+    const firstSession = auth
+      .authenticate({ headers: { cookie: firstCookieHeader } })
+      ._unsafeUnwrap();
+    auth.revoke(firstSession);
+    const revokedStatus = await fetch(`${base}/voice/sessions/session-1`, {
+      headers: { cookie: firstCookieHeader, origin: ORIGIN },
+    });
+    expect(revokedStatus.status).toBe(401);
+
+    const secondLogin = await loginAt(base);
+    const secondCookies = getSetCookies(secondLogin);
+    const secondSessionCookie = cookieValue(secondCookies, VOICE_SESSION_COOKIE);
+    const secondCsrf = cookieValue(secondCookies, VOICE_CSRF_COOKIE);
+    const second = await createAt(
+      base,
+      `${VOICE_SESSION_COOKIE}=${secondSessionCookie}; ${VOICE_CSRF_COOKIE}=${secondCsrf}`,
+      secondCsrf,
+    );
+    expect(second.status).toBe(201);
+    expect(((await second.json()) as { session: VoiceSessionStatusDto }).session.id).toBe(
+      'session-2',
+    );
+  });
+
+  it('keeps an active session reserved after a same-owner relogin', async () => {
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service, { maxConcurrentSessions: 1 });
+    const base = `http://127.0.0.1:${server.port}`;
+    const firstLogin = await loginAt(base);
+    const firstCookies = getSetCookies(firstLogin);
+    const firstSessionCookie = cookieValue(firstCookies, VOICE_SESSION_COOKIE);
+    const firstCsrf = cookieValue(firstCookies, VOICE_CSRF_COOKIE);
+    expect(
+      (
+        await createAt(
+          base,
+          `${VOICE_SESSION_COOKIE}=${firstSessionCookie}; ${VOICE_CSRF_COOKIE}=${firstCsrf}`,
+          firstCsrf,
+        )
+      ).status,
+    ).toBe(201);
+
+    const secondLogin = await loginAt(base);
+    const secondCookies = getSetCookies(secondLogin);
+    const secondSessionCookie = cookieValue(secondCookies, VOICE_SESSION_COOKIE);
+    const secondCsrf = cookieValue(secondCookies, VOICE_CSRF_COOKIE);
+    const second = await createAt(
+      base,
+      `${VOICE_SESSION_COOKIE}=${secondSessionCookie}; ${VOICE_CSRF_COOKIE}=${secondCsrf}`,
+      secondCsrf,
+    );
+    expect(second.status).toBe(429);
+    expect((await second.json()) as { error: { code: string } }).toMatchObject({
+      error: { code: 'SESSION_LIMIT' },
+    });
   });
 });
 
