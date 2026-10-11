@@ -499,10 +499,10 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     void this.send({ kind: 'close' }).then((result) => {
       if (result.isErr() && !this.finalized) {
         this.finalization = 'incomplete';
-        this.closeSocket();
         clearTimeout(this.closeTimer);
         this.resolveClose?.(err(result.error));
         this.resolveClose = undefined;
+        this.closeSocket(true);
       }
     });
     return this.closeResult;
@@ -943,9 +943,18 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       if (!previous) continue;
       const refreshed = this.transcript.captureAt(offsetMs);
       const changed = previous.snapshot?.digest !== refreshed.snapshot?.digest;
+      const uncertain = previous.uncertain || changed;
+      if (!uncertain) {
+        this.delegationContexts.set(delegationId, refreshed);
+        continue;
+      }
+      const reason =
+        changed || previous.reason === 'transcript_changed'
+          ? 'transcript_changed'
+          : (previous.reason ?? refreshed.reason);
       this.delegationContexts.set(
         delegationId,
-        changed ? { ...refreshed, uncertain: true, reason: 'transcript_changed' } : refreshed,
+        reason ? { ...refreshed, uncertain: true, reason } : { ...refreshed, uncertain: true },
       );
     }
   }

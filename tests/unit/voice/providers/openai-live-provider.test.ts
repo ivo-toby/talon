@@ -188,6 +188,20 @@ describe('OpenAiLiveVoiceProvider', () => {
     expect(delegationContext?.uncertain).toBe(true);
     expect(delegationContext?.reason).toBe('transcript_changed');
     expect(sideband.contextForDelegation('provider-delegation-1')).toBeNull();
+
+    socket.receive({
+      type: 'session.output_transcript.delta',
+      event_id: 'assistant-after-delegation',
+      item_id: 'assistant-1',
+      delta: 'The later answer is unrelated to the request.',
+      start_ms: 200,
+      end_ms: 300,
+    });
+    expect(sideband.getContextForDelegation('provider-delegation-1')?.uncertain).toBe(true);
+    expect(sideband.getContextForDelegation('provider-delegation-1')?.reason).toBe(
+      'transcript_changed',
+    );
+    expect(sideband.contextForDelegation('provider-delegation-1')).toBeNull();
     expect(events.some((event) => event.kind === 'delegation')).toBe(true);
     expect(events.some((event) => event.kind === 'provider_acknowledgement')).toBe(true);
     expect(
@@ -320,6 +334,34 @@ describe('OpenAiLiveVoiceProvider', () => {
     expect(result._unsafeUnwrapErr().reason).toBe('finalization_incomplete');
     expect(sideband.finalizationStatus).toBe('incomplete');
     expect(JSON.parse(socket.sent[0] ?? '{}')).toMatchObject({ type: 'session.close' });
+    expect(socket.terminated).toBe(true);
+  });
+
+  it('force closes when an expired session rejects the close command', async () => {
+    let now = 1_000;
+    const socket = new FakeSocket();
+    const sideband = new OpenAiLiveVoiceSideband(
+      socket as unknown as LiveWebSocket,
+      'provider-session-expired-close',
+      {
+        now: () => now,
+        expiresAt: 2_000,
+        closeTimeoutMs: 100,
+        maxProviderEventBytes: 1_000,
+        maxPendingCommands: 4,
+        transcriptOptions: { maxFragments: 4, maxCharacters: 100, now: () => now },
+      },
+    );
+    const opened = sideband.open();
+    socket.open();
+    expect((await opened).isOk()).toBe(true);
+    now = 2_000;
+
+    const result = await sideband.close(true);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().reason).toBe('session_expired');
+    expect(sideband.finalizationStatus).toBe('incomplete');
     expect(socket.terminated).toBe(true);
   });
 
