@@ -968,9 +968,18 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       if (!previous) continue;
       const refreshed = this.transcript.captureAt(offsetMs);
       const changed = previous.snapshot?.digest !== refreshed.snapshot?.digest;
-      const uncertain = previous.uncertain || changed;
-      if (!uncertain) {
-        this.delegationContexts.set(delegationId, refreshed);
+      const becameUncertain = !previous.uncertain && refreshed.uncertain;
+      if (!changed && !becameUncertain) {
+        // Keep the admitted snapshot stable across receipt and lifecycle
+        // metadata updates that do not change its semantic digest.
+        continue;
+      }
+      if (!changed) {
+        const reason = previous.reason ?? refreshed.reason;
+        this.delegationContexts.set(
+          delegationId,
+          reason ? { ...previous, uncertain: true, reason } : { ...previous, uncertain: true },
+        );
         continue;
       }
       const reason =
