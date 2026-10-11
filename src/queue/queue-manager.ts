@@ -14,7 +14,7 @@ import type { QueueRepository } from '../core/database/repositories/queue-reposi
 import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
 import { calculateBackoff } from './retry-strategy.js';
 import { DeadLetterHandler } from './dead-letter.js';
-import { QueueProcessor } from './queue-processor.js';
+import { QueueProcessor, type VoiceQueueClaimer } from './queue-processor.js';
 import { type QueueItem, QueueItemStatus } from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
 
@@ -67,6 +67,7 @@ export class QueueManager {
     private readonly threadRepo: ThreadRepository,
     private readonly config: QueueConfig,
     private readonly logger: pino.Logger,
+    voiceClaimer?: VoiceQueueClaimer,
   ) {
     this.deadLetterHandler = new DeadLetterHandler(queueRepo, logger);
     this.processor = new QueueProcessor(
@@ -76,6 +77,7 @@ export class QueueManager {
       logger,
       config.backoffBaseMs,
       config.backoffMaxMs,
+      voiceClaimer,
     );
   }
 
@@ -195,9 +197,7 @@ export class QueueManager {
   /**
    * Single processing loop tick: dispatches items up to the concurrency limit.
    */
-  private async tick(
-    handler: (item: QueueItem) => Promise<Result<void, Error>>,
-  ): Promise<void> {
+  private async tick(handler: (item: QueueItem) => Promise<Result<void, Error>>): Promise<void> {
     const slots = this.config.concurrencyLimit - this.activeCount;
     if (slots <= 0) {
       return;

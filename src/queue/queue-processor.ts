@@ -9,11 +9,21 @@
 import type pino from 'pino';
 import { ok, err, type Result } from 'neverthrow';
 import { QueueError } from '../core/errors/index.js';
-import type { QueueRepository } from '../core/database/repositories/queue-repository.js';
+import type {
+  QueueItemRow,
+  QueueRepository,
+} from '../core/database/repositories/queue-repository.js';
 import type { calculateBackoff } from './retry-strategy.js';
 import type { DeadLetterHandler } from './dead-letter.js';
-import { type QueueItem } from './queue-types.js';
+import { isVoiceQueuePayload, type QueueItem } from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
+
+/**
+ * Claims a voice queue row through VoiceStore's delegation CAS boundary.
+ * Returning null means another lifecycle transition won the race and the
+ * generic queue must not claim the row afterwards.
+ */
+export type VoiceQueueClaimer = (row: QueueItemRow) => Result<QueueItemRow | null, Error>;
 
 /**
  * Processes queue items with retry and dead-letter support.
@@ -34,6 +44,7 @@ export class QueueProcessor {
     private readonly logger: pino.Logger,
     private readonly backoffBaseMs: number = 1000,
     private readonly backoffMaxMs: number = 60_000,
+    private readonly voiceClaimer?: VoiceQueueClaimer,
   ) {}
 
   /**
@@ -73,7 +84,11 @@ export class QueueProcessor {
     const threadIds: string[] = [];
     const oldestPendingTypeByThread = new Map<string, string>();
     const threadsWithPendingCollaboration = new Set<string>();
+    const pendingRowsByThread = new Map<string, QueueItemRow[]>();
     for (const row of pending) {
+      const rows = pendingRowsByThread.get(row.thread_id) ?? [];
+      rows.push(row);
+      pendingRowsByThread.set(row.thread_id, rows);
       if (!seenThreads.has(row.thread_id)) {
         seenThreads.add(row.thread_id);
         threadIds.push(row.thread_id);
@@ -85,6 +100,12 @@ export class QueueProcessor {
     }
 
     for (const threadId of threadIds) {
+      const threadPendingRows = pendingRowsByThread.get(threadId) ?? [];
+      const oldestRow = threadPendingRows[0];
+      const oldestIsVoice = oldestRow !== undefined && isVoiceQueueRow(oldestRow);
+      const collaborationRow = threadPendingRows.find((row) => row.type === 'collaboration');
+      const collaborationIsVoice =
+        collaborationRow !== undefined && isVoiceQueueRow(collaborationRow);
       // Collaboration items are dispatched to a different persona and may be
       // submitted while the source thread's current run is in-flight (when a
       // persona calls persona_send with await_reply: true and waits for the
@@ -96,7 +117,7 @@ export class QueueProcessor {
       // when the thread is confirmed to be in-flight.
       let claimCollaborationOnly = false;
 
-      if (!oldestIsCollaboration) {
+      if (!oldestIsCollaboration || oldestIsVoice) {
         // Enforce the "no interleaved runs" invariant: skip threads that already
         // have a claimed or processing item in flight — unless we can bypass by
         // claiming a collaboration item specifically.
@@ -112,7 +133,7 @@ export class QueueProcessor {
           // Thread is busy. Check whether a collaboration item is pending
           // further back in the queue — if so we can bypass the block and claim
           // just the collaboration item to avoid deadlock.
-          if (!threadsWithPendingCollaboration.has(threadId)) {
+          if (!threadsWithPendingCollaboration.has(threadId) || collaborationIsVoice) {
             // No collaboration item waiting — skip the thread entirely.
             continue;
           }
@@ -144,9 +165,23 @@ export class QueueProcessor {
       // When the thread is in-flight and we must unblock a collaboration item,
       // use the type-filtered claim so we don't accidentally claim the regular
       // pending item that is blocked behind the in-flight one.
-      const claimResult = claimCollaborationOnly
-        ? this.queueRepo.claimNextCollaboration(threadId)
-        : this.queueRepo.claimNext(threadId);
+      const candidateRow = claimCollaborationOnly ? collaborationRow : oldestRow;
+      const candidateIsVoice = candidateRow !== undefined && isVoiceQueueRow(candidateRow);
+      let claimResult: Result<QueueItemRow | null, Error>;
+      if (candidateIsVoice) {
+        if (!this.voiceClaimer) {
+          this.logger.warn(
+            { itemId: candidateRow.id, threadId },
+            'processNext: voice queue item has no transactional claimer',
+          );
+          continue;
+        }
+        claimResult = this.voiceClaimer(candidateRow);
+      } else {
+        claimResult = claimCollaborationOnly
+          ? this.queueRepo.claimNextCollaboration(threadId)
+          : this.queueRepo.claimNext(threadId);
+      }
       if (claimResult.isErr()) {
         this.logger.error(
           { err: claimResult.error, threadId },
@@ -283,5 +318,13 @@ export class QueueProcessor {
       'queue item failed, scheduled for retry',
     );
     return ok(undefined);
+  }
+}
+
+function isVoiceQueueRow(row: QueueItemRow): boolean {
+  try {
+    return isVoiceQueuePayload(JSON.parse(row.payload) as unknown);
+  } catch {
+    return false;
   }
 }

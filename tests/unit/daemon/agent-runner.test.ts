@@ -54,6 +54,7 @@ import type {
   ObservationHandle,
   StartedObservationHandle,
 } from '../../../src/observability/langfuse/observability-types.js';
+import type { VoiceBackendRequest } from '../../../src/voice/voice-types.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -1647,6 +1648,101 @@ describe('AgentRunner', () => {
         expect(callOrder).toContain('rotate');
         expect(callOrder.indexOf('send')).toBeLessThan(callOrder.indexOf('rotate'));
       });
+    });
+  });
+
+  describe('voice backend path', () => {
+    it('uses the admitted context and gate without channel delivery or context rotation', async () => {
+      const request: VoiceBackendRequest = {
+        sessionId: 'voice-session-1',
+        delegationId: 'voice-delegation-1',
+        providerDelegationId: 'provider-delegation-1',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        context: {
+          version: 4,
+          digest: 'context-digest-4',
+          capturedAt: 100,
+          text: 'Current voice request: report service health.',
+          fragments: [],
+          truncated: false,
+        },
+        policy: {
+          generation: 9,
+          ownerId: 'owner-1',
+          personaId: 'persona-001',
+          providerName: 'claude-code',
+          modelName: 'claude-sonnet-4-20250514',
+          voiceName: 'marin',
+          capabilityNames: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          allowedToolNames: [
+            'channel_send',
+            'channel_list',
+            'channel_broadcast',
+            'memory_access',
+            'schedule_manage',
+          ],
+          allowedMcpServerNames: [],
+          nativeToolNames: [],
+          requireApproval: false,
+          loginRevision: 3,
+          capturedAt: 100,
+        },
+        requestedAt: 100,
+      };
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(mockQuery).toHaveBeenCalledOnce();
+      expect(gate).toHaveBeenCalledOnce();
+      expect(gate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request,
+          providerName: 'claude-code',
+          providerType: 'claude-code',
+          modelName: 'claude-sonnet-4-20250514',
+          nativeToolsDisabled: true,
+          nativeToolNames: [],
+        }),
+      );
+      expect(sink.executionStarted).toHaveBeenCalledWith(
+        request.delegationId,
+        expect.any(Number),
+      );
+      expect(sink.final).toHaveBeenCalledWith(request.delegationId, 'Hello from the agent!');
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        prompt: string;
+        options: { systemPrompt: string; tools?: string[] };
+      };
+      expect(queryCall.prompt).toBe(request.context.text);
+      expect(queryCall.options.systemPrompt).toContain(request.context.text);
+      expect(queryCall.options.tools).toEqual(['WebSearch', 'WebFetch']);
+      expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+      expect(ctx.repos.message.insert).not.toHaveBeenCalled();
+      expect(ctx.channelRegistry.get('test-channel')?.send).not.toHaveBeenCalled();
     });
   });
 
