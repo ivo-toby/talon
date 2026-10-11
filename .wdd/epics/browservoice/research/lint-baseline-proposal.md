@@ -1,6 +1,6 @@
 # Proposed browservoice verification exception
 
-Status: awaiting Ivo's explicit approval; not active.
+Status: explicitly approved by Ivo on 11 October 2026; recorded as a scoped constitution amendment.
 
 For SCOPE-browservoice only, a failing full-repository lint run may be treated as
 nonblocking when the task base and head produce exactly the same diagnostics

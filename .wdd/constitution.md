@@ -42,6 +42,17 @@ The existing EPIC-browservoice folder is an unactivated planning draft. After go
 - Documentation-only tasks use parse/reference/whitespace checks; mark runtime checks not applicable with a reason rather than fabricate success.
 - Record commands actually run, results/counts and limitations. A passing check is not human acceptance or authorization.
 
+### SCOPE-browservoice lint exception approved by Ivo
+
+For SCOPE-browservoice only, a failing full-repository lint run may be treated as
+nonblocking when the task base and head produce exactly the same diagnostics
+under the same dependencies and Node version. Any added or changed diagnostic
+blocks integration. Changed source files must pass scoped lint, and typecheck,
+targeted tests and build must pass. Record the full lint failure and baseline
+comparison explicitly; never report full lint as passed. Do not repair unrelated
+lint defects. This exception does not waive code review, live feasibility,
+acceptance criteria or final integration verification.
+
 ## Review policy
 
 - Default review policy: always.

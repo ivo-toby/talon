@@ -26,15 +26,18 @@
     "auto:24:2843183faef0f782",
     "auto:25:de93e790f760244c",
     "auto:26:ac48859b50d24b54",
-    "auto:27:4957e059e5cc0c2a"
+    "auto:27:4957e059e5cc0c2a",
+    "auto:28:9b0a81593c6505c1",
+    "auto:29:ac48859b50d24b54"
   ],
   "archiveBlocked": null,
   "archivePending": null,
   "constitution": {
     "ratification": {
-      "at": "2026-10-11T10:42:13Z",
+      "amendedFrom": "sha256:4e43696127e93bf0fc436614e4b168b92821c7b631b87111075d4c331f8dd6ea",
+      "at": "2026-10-11T11:35:05Z",
       "by": "Ivo",
-      "decisionFingerprint": "sha256:4e43696127e93bf0fc436614e4b168b92821c7b631b87111075d4c331f8dd6ea"
+      "decisionFingerprint": "sha256:7f5ca48691f1f691bf9ac7239a6aa6a3179312e35cc170d89d8e1c3ad8c2cbbb"
     },
     "status": "ratified"
   },
@@ -228,6 +231,20 @@
       "revision": 27,
       "task": "TASK-01-contracts",
       "type": "task.rebound"
+    },
+    {
+      "at": "2026-10-11T11:35:05Z",
+      "idempotencyKey": "auto:28:9b0a81593c6505c1",
+      "revision": 28,
+      "task": null,
+      "type": "constitution.amended"
+    },
+    {
+      "at": "2026-10-11T11:35:10Z",
+      "idempotencyKey": "auto:29:ac48859b50d24b54",
+      "revision": 29,
+      "task": null,
+      "type": "plan.approved"
     }
   ],
   "intake": {
@@ -291,11 +308,11 @@
       }
     ]
   },
-  "revision": 27,
+  "revision": 29,
   "schemaVersion": 7,
   "scope": {
     "approval": {
-      "at": "2026-10-11T11:33:03Z",
+      "at": "2026-10-11T11:35:10Z",
       "by": "Ivo",
       "sha256": "sha256:ca48571fca9cbd897b45dcebc6cd82191f7ab3b42bfd8cfc080562d0289b942e"
     },
@@ -683,7 +700,7 @@
     }
   },
   "telemetry": {
-    "eventApplications": 27,
+    "eventApplications": 29,
     "renderCount": 0
   }
 }
