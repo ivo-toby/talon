@@ -90,7 +90,7 @@ export interface VoiceSessionServiceOptions {
   readonly policy: VoicePolicyEvaluator;
   readonly threadRepository?: ThreadRepository;
   /** Existing message history is the durable notification projection. */
-  readonly messageRepository?: Pick<MessageRepository, 'findLatestByThread'> &
+  readonly messageRepository?: Pick<MessageRepository, 'findLatestByThread' | 'findLatestByThreadPage'> &
     Partial<Pick<MessageRepository, 'insert' | 'upsertVoiceTranscript'>>;
   readonly channelId?: string;
   readonly personaId: string;
@@ -1853,25 +1853,37 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
 
   private readNotifications(threadId: string): VoiceResult<readonly VoiceNotificationStatusDto[]> {
     if (!this.options.messageRepository) return ok([]);
-    const rows = this.options.messageRepository.findLatestByThread(
-      threadId,
-      MAX_RETAINED_VOICE_NOTIFICATIONS,
-    );
-    if (rows.isErr()) return err(rows.error);
     const notifications: VoiceNotificationStatusDto[] = [];
-    for (const row of rows.value) {
-      if (row.direction !== 'outbound') continue;
-      const parsed = parseVoiceMessageContent(row.content);
-      if (!parsed || parsed.voice) continue;
-      const text = parsed.body.trim();
-      if (!text) continue;
-      notifications.push({
-        id: row.id,
-        text: text.slice(0, MAX_VOICE_NOTIFICATION_CHARS),
-        createdAt: row.created_at,
+    let offset = 0;
+    while (notifications.length < MAX_RETAINED_VOICE_NOTIFICATIONS) {
+      const rows = this.options.messageRepository.findLatestByThreadPage(
+        threadId,
+        MAX_RETAINED_VOICE_NOTIFICATIONS,
+        offset,
+      );
+      if (rows.isErr()) return err(rows.error);
+      const eligible = rows.value.flatMap((row) => {
+        if (row.direction !== 'outbound') return [];
+        const parsed = parseVoiceMessageContent(row.content);
+        if (!parsed || parsed.voice) return [];
+        const text = parsed.body.trim();
+        if (!text) return [];
+        return [{
+          id: row.id,
+          text: text.slice(0, MAX_VOICE_NOTIFICATION_CHARS),
+          createdAt: row.created_at,
+        }];
       });
+      notifications.unshift(...eligible);
+      if (
+        rows.value.length < MAX_RETAINED_VOICE_NOTIFICATIONS ||
+        notifications.length >= MAX_RETAINED_VOICE_NOTIFICATIONS
+      ) {
+        break;
+      }
+      offset += rows.value.length;
     }
-    return ok(notifications);
+    return ok(notifications.slice(-MAX_RETAINED_VOICE_NOTIFICATIONS));
   }
 
   private publishDelegation(sessionId: string, delegationId: string): void {
