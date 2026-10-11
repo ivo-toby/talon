@@ -550,6 +550,10 @@ export class VoiceBrowserClient {
       this.applySessionStatus(parsed.session);
       return;
     }
+    if (parsed.kind === 'notification') {
+      this.setState({ message: parsed.notification.text, errorMessage: null });
+      return;
+    }
     this.applyDelegationStatus(parsed.delegation);
   }
 
@@ -985,6 +989,9 @@ function isVoiceStatusEvent(value: unknown): value is VoiceStatusEventDto {
   }
   if (value.kind === 'session') {
     return isRecord(value.session) && Array.isArray(value.session.delegations) && isRecord(value.session.usage);
+  }
+  if (value.kind === 'notification') {
+    return isRecord(value.notification) && typeof value.notification.text === 'string';
   }
   return value.kind === 'delegation' && isRecord(value.delegation) && Array.isArray(value.delegation.outputs);
 }

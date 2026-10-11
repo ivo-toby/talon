@@ -79,6 +79,10 @@ class FakeVoiceSessionService implements VoiceSessionService {
     return ok({ session: record, pendingDelegation: false });
   }
 
+  async notifyThread(input: { threadId: string; text: string }) {
+    return ok({ sessionId: input.threadId, speechRequested: false });
+  }
+
   async receiveProviderEvent(): Promise<ReturnType<typeof ok<void>>> {
     return ok(undefined);
   }

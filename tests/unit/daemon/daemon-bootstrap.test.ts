@@ -98,6 +98,11 @@ vi.mock('../../../src/channels/channel-setup.js', () => ({
     isOk: () => true,
     value: 'voice-channel-id',
   }),
+  registerVoiceConnector: vi.fn().mockReturnValue({
+    isErr: () => false,
+    isOk: () => true,
+    value: undefined,
+  }),
 }));
 
 vi.mock('../../../src/pipeline/message-pipeline.js', () => ({

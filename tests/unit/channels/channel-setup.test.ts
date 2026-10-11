@@ -167,4 +167,36 @@ describe('registerVoiceChannel()', () => {
     });
     db.close();
   });
+
+  it('binds the logical voice channel to the configured voice persona', () => {
+    const db = createTestDb();
+    const channelRepo = new ChannelRepository(db);
+    const bindingRepo = new BindingRepository(db);
+    const personaRepo = new PersonaRepository(db);
+    const personaId = uuid();
+    personaRepo.insert({
+      id: personaId,
+      name: 'voice-persona',
+      model: 'model',
+      system_prompt_file: null,
+      skills: '[]',
+      capabilities: '{}',
+      mounts: '[]',
+      max_concurrent: null,
+    });
+
+    const registered = registerVoiceChannel({
+      channelRepo,
+      bindingRepo,
+      personaId,
+      logger,
+    });
+
+    expect(registered.isOk()).toBe(true);
+    expect(bindingRepo.findDefaultForChannel(registered._unsafeUnwrap())._unsafeUnwrap()).toMatchObject({
+      persona_id: personaId,
+      is_default: 1,
+    });
+    db.close();
+  });
 });

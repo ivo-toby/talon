@@ -23,7 +23,12 @@ import { bootstrap } from './daemon-bootstrap.js';
 import { AgentRunner } from './agent-runner.js';
 import { writePidFile, removePidFile } from './lifecycle.js';
 import { WatchdogNotifier } from './watchdog.js';
-import { registerChannels, injectSiblingBotIds } from '../channels/channel-setup.js';
+import {
+  registerChannels,
+  registerVoiceConnector,
+  injectSiblingBotIds,
+  BROWSER_VOICE_CHANNEL_NAME,
+} from '../channels/channel-setup.js';
 
 import type { DaemonContext } from './daemon-context.js';
 import type { DaemonState, DaemonHealth } from './daemon-types.js';
@@ -511,6 +516,21 @@ export class TalondDaemon {
       messagePipeline: this.ctx.messagePipeline,
       logger: this.logger,
     });
+    if (newConfig.voice?.enabled && this.ctx.voiceSessionService) {
+      const voiceConnector = registerVoiceConnector({
+        channelRegistry: this.ctx.channelRegistry,
+        channelRepo: this.ctx.repos.channel,
+        threadRepository: this.ctx.repos.thread,
+        sessionService: this.ctx.voiceSessionService,
+        logger: this.logger,
+      }, BROWSER_VOICE_CHANNEL_NAME);
+      if (voiceConnector.isErr()) {
+        this.logger.error(
+          { cause: voiceConnector.error },
+          'daemon: reload — failed to register browser voice connector',
+        );
+      }
+    }
     try {
       await this.ctx.channelRegistry.startAll();
       this.logger.info('daemon: all channel connectors started');

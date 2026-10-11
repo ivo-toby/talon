@@ -38,7 +38,12 @@ import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.j
 
 import { ChannelRegistry } from '../channels/channel-registry.js';
 import { ChannelRouter } from '../channels/channel-router.js';
-import { registerChannels, registerVoiceChannel, BROWSER_VOICE_CHANNEL_NAME } from '../channels/channel-setup.js';
+import {
+  registerChannels,
+  registerVoiceChannel,
+  registerVoiceConnector,
+  BROWSER_VOICE_CHANNEL_NAME,
+} from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
@@ -599,6 +604,7 @@ export async function bootstrap(
   let voiceProvider: OpenAiLiveVoiceProvider | null = null;
   let voiceTransport: BrowserVoiceTransport | null = null;
   let voiceServer: BrowserVoiceServer | null = null;
+  let voiceChannelId: string | null = null;
   const voiceRuntimeConfig = { current: config };
   const voiceGeneration = { value: 0 };
   const daemonContextRef: {
@@ -755,13 +761,19 @@ export async function bootstrap(
     });
     voiceTransport = new BrowserVoiceTransport();
     const voiceChannel = registerVoiceChannel(
-      { channelRepo: repos.channel, logger },
+      {
+        channelRepo: repos.channel,
+        bindingRepo: repos.binding,
+        personaId: voicePersonaId,
+        logger,
+      },
       BROWSER_VOICE_CHANNEL_NAME,
     );
     if (voiceChannel.isErr()) {
       await cleanupBootstrapFailure(db, observability, logger);
       return err(new DaemonError(`Failed to register browser voice channel: ${voiceChannel.error.message}`));
     }
+    voiceChannelId = voiceChannel.value;
     const voiceExecutionGate = (input: VoiceExecutionGateInput): VoiceResult<void> => {
       if (!voiceAuth!.resolve(input.owner)) {
         return err(new PolicyError('Voice login is no longer active'));
@@ -797,6 +809,7 @@ export async function bootstrap(
       backendBridge: voiceBackendBridge,
       policy: voicePolicy,
       threadRepository: repos.thread,
+      messageRepository: repos.message,
       channelId: voiceChannel.value,
       personaId: voicePersonaId,
       providerName: voiceProviderName,
@@ -928,6 +941,21 @@ export async function bootstrap(
     messagePipeline,
     logger,
   });
+  if (voiceSessionService && voiceChannelId) {
+    const voiceConnector = registerVoiceConnector({
+      channelRegistry,
+      channelRepo: repos.channel,
+      threadRepository: repos.thread,
+      sessionService: voiceSessionService,
+      logger,
+    });
+    if (voiceConnector.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to register browser voice connector: ${voiceConnector.error.message}`),
+      );
+    }
+  }
 
   // 16. A2A server (internal-only, no port binding in M1)
   const loadedPersonaList = personaLoadResult.value;
