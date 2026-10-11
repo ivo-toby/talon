@@ -27,10 +27,10 @@ npx talonctl list-providers
 npx talonctl config-show
 ```
 
-Choose the persona first. Its configured provider must be enabled and must use
-the `openai-compatible` implementation (`type: openai-compatible` when the
-provider name is an alias). Voice currently accepts WebRTC only. SIP and
-physical phone access are not supported by this skill.
+Choose the persona first. Its configured provider must be enabled; the
+provider's normal OAuth and native-tool restrictions remain in force. Voice
+currently accepts WebRTC only. SIP and physical phone access are not supported
+by this skill.
 
 Ask: **"Which existing persona should browser voice use?"**
 
@@ -67,7 +67,7 @@ voice:
   publicHost: voice.example.com
   accessTokenRef: voice
   liveApiKeyRef: openai
-  provider: openai-compatible
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
   model: gpt-live-1
   persona: assistant
   voice: marin
@@ -75,13 +75,24 @@ voice:
   allowedTransportTypes: [webrtc]
   allowedOrigins:
     - https://voice.example.com
+  # Deprecated compatibility fields; voice inherits the selected persona's
+  # capabilities, skills, and configured MCP servers.
   allowedToolNames: []
   allowedMcpServerNames: []
 ```
 
-`voice.model` is the live voice model. The selected persona's `model` is the
-backend `AgentRunner` model. Native provider tools remain disabled, and
-approval-gated or unproven MCP capabilities fail closed at the voice boundary.
+`voice.persona` selects the existing normal persona, including its backend
+`AgentRunner` model, ordinary tools, skills, and configured MCP servers.
+`voice.model` is the separate live voice model. The persona provider's normal
+OAuth and native-tool restrictions remain in force. Approval-gated capabilities
+are unavailable because voice has no interactive approval channel, and unproven MCP capabilities fail closed. The
+old `voice.allowedToolNames` and `voice.allowedMcpServerNames` fields are
+ignored; leave them empty for compatibility.
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. A conflicting ordinary channel configuration is rejected at
+startup, and an existing non-voice `browser-voice` database row is not
+overwritten.
 
 ## HTTPS and proxy
 
@@ -111,9 +122,12 @@ provider call; record those separately.
 ## Limits, storage, and cost
 
 Voice session creation and concurrency are bounded by the `voice` settings.
-Talon stores bounded text, output, usage, and lifecycle state in SQLite and no
-raw audio. Local voice rows have no automatic TTL cleanup, so include them in
-the operator's retention policy. Provider-side audio/transcript retention is
+Talon stores bounded prompt fragments, output, usage, and lifecycle state in
+SQLite and no raw audio. One owner/persona thread is reused across calls;
+prompt history is bounded by the voice history row and character limits. Old
+calls and other-channel messages are not imported automatically. Local voice
+rows have no automatic TTL cleanup, so include them in the operator's
+retention policy. Provider-side audio/transcript retention is
 controlled by the provider account. Voice cost is reported only when provider
 usage supports it and may be unavailable; set `voice.usdPerMinute` only with a
 current operator-supplied provider rate. The value produces a duration

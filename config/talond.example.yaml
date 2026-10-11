@@ -384,6 +384,9 @@ auth:
 # provider key in environment variables referenced by auth.providers; do not
 # put literal secrets in this file.
 voice:
+  # When enabled, browser-voice is reserved for the internal voice channel;
+  # conflicting ordinary channel config is rejected and an existing non-voice
+  # database row is not overwritten.
   enabled: false
   # Defaults to loopback. For a proxy in another network namespace, set this
   # to a reachable interface address or 0.0.0.0 and restrict network access.
@@ -392,7 +395,7 @@ voice:
   # publicHost: voice.example.com
   accessTokenRef: voice
   liveApiKeyRef: openai
-  # provider: openai-compatible
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
   # model: gpt-live-1
   # persona: assistant
   voice: marin
@@ -400,6 +403,8 @@ voice:
   allowedTransportTypes:
     - webrtc
   allowedOrigins: []
+  # Deprecated compatibility fields. Voice inherits the selected persona's
+  # capabilities, skills, and configured MCP servers; these lists are ignored.
   allowedToolNames: []
   allowedMcpServerNames: []
 
