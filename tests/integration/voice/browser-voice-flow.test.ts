@@ -41,7 +41,10 @@ import type {
   ProviderSpawnInput,
 } from '../../../src/providers/provider-types.js';
 import { ProviderRegistry } from '../../../src/providers/provider-registry.js';
-import { DurableVoiceBackendBridge } from '../../../src/voice/voice-backend-bridge.js';
+import {
+  DurableVoiceBackendBridge,
+  type VoiceExecutionGateInput,
+} from '../../../src/voice/voice-backend-bridge.js';
 import { VoiceOutputSink } from '../../../src/voice/voice-output-sink.js';
 import { VoicePolicy } from '../../../src/voice/voice-policy.js';
 import {
@@ -1006,13 +1009,23 @@ describe('browser voice offline integration', () => {
     const provider = new FakeLiveProvider();
     const policyParts = makePolicy(() => 1, { ownerId: 'sip-owner', loginRevision: 1 });
     const transport = new FakeSipTransport();
+    let gateInput: VoiceExecutionGateInput | undefined;
     const bridge = new DurableVoiceBackendBridge(store, queueRepository, {
-      executionGate: (input) =>
-        input.providerType === 'openai-compatible' &&
-        input.nativeToolsDisabled &&
-        !input.requireApproval
+      executionGate: (input) => {
+        gateInput = input;
+        return input.providerName === BACKEND_PROVIDER &&
+          input.providerType === 'openai-compatible' &&
+          input.modelName === BACKEND_MODEL &&
+          input.owner.ownerId === 'sip-owner' &&
+          input.owner.loginRevision === 1 &&
+          input.request.policy.providerName === BACKEND_PROVIDER &&
+          input.request.policy.modelName === BACKEND_MODEL &&
+          input.request.policy.ownerId === 'sip-owner' &&
+          input.request.policy.loginRevision === 1 &&
+          !input.requireApproval
           ? ok(undefined)
-          : err(new Error('fake SIP voice execution posture mismatch')),
+          : err(new Error('fake SIP voice execution routing mismatch'));
+      },
     });
     const service = new DurableVoiceSessionService({
       store,
@@ -1077,6 +1090,25 @@ describe('browser voice offline integration', () => {
         const projection = store.readSession(session.id);
         return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
       });
+
+      expect(gateInput).toBeDefined();
+      const observedGateInput = gateInput!;
+      expect(observedGateInput).toMatchObject({
+        providerName: BACKEND_PROVIDER,
+        providerType: 'openai-compatible',
+        modelName: BACKEND_MODEL,
+        owner: { ownerId: 'sip-owner', loginRevision: 1 },
+        request: {
+          policy: {
+            providerName: BACKEND_PROVIDER,
+            modelName: BACKEND_MODEL,
+            ownerId: 'sip-owner',
+            loginRevision: 1,
+          },
+        },
+        requireApproval: false,
+      });
+      expect(typeof observedGateInput.nativeToolsDisabled).toBe('boolean');
 
       const retained = store.readSession(session.id)._unsafeUnwrap();
       const delegation = retained.delegations[0];
