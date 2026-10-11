@@ -25,6 +25,7 @@ import {
   firstString,
   TranscriptBuffer,
   transcriptRoleForEvent,
+  userContextSignature,
   type TranscriptBufferOptions,
   type TranscriptContextResult,
 } from './transcript-buffer.js';
@@ -38,6 +39,7 @@ export const DEFAULT_LIVE_CLOSE_TIMEOUT_MS = 5_000;
 export const DEFAULT_LIVE_SESSION_LIFETIME_MS = 15 * 60_000;
 export const DEFAULT_MAX_PROVIDER_EVENT_BYTES = 1_000_000;
 export const DEFAULT_MAX_PENDING_COMMANDS = 128;
+export const DEFAULT_DELEGATION_CONTEXT_WAIT_MS = 1_000;
 
 export const LIVE_WEBSOCKET_OPEN = 1;
 
@@ -89,6 +91,16 @@ interface EncodedCommand {
   readonly eventId: string;
   readonly body: ProviderPayload;
   readonly pending?: PendingCommand;
+}
+
+interface PendingDelegation {
+  readonly eventId: string;
+  readonly sequence: number;
+  readonly proposal: VoiceDelegationProposal;
+  readonly requiresFreshUserTurn?: boolean;
+  readonly baselineUserSignature?: string;
+  readonly baselineUserIds?: readonly string[];
+  readonly timer: ReturnType<typeof setTimeout>;
 }
 
 interface ProviderPayload {
@@ -351,7 +363,15 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private readonly delegationContexts = new Map<string, TranscriptContextResult>();
   private readonly delegationOffsets = new Map<string, number>();
   private readonly delegationTargets = new Map<string, string>();
+  private readonly pendingDelegations = new Map<string, PendingDelegation>();
+  private readonly publishedDelegations = new Set<string>();
+  private readonly publishedDelegationOrder: string[] = [];
+  private readonly publishedUserSignatures = new Set<string>();
+  private readonly publishedUserSignatureOrder: string[] = [];
+  private readonly blockedUserSignatures = new Set<string>();
+  private readonly blockedUserSignatureOrder: string[] = [];
   private sequence = 0;
+  private hasPublishedDelegation = false;
   private connected = false;
   private opened = false;
   private finalized = false;
@@ -361,7 +381,6 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private resolveClose?: (result: VoiceResult<void>) => void;
   private closeTimer?: ReturnType<typeof setTimeout>;
   private lastUsage?: VoiceUsageUpdate;
-
   constructor(
     socket: LiveWebSocket,
     providerSessionId: string,
@@ -473,17 +492,20 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   close(graceful: boolean): VoiceAsyncResult<void> {
     if (this.closeResult) return this.closeResult;
     if (this.finalized) {
+      this.retirePendingDelegations();
       this.closeSocket();
       return Promise.resolve(ok(undefined));
     }
     if (!graceful) {
       this.closeRequested = true;
       this.finalization = 'incomplete';
+      this.retirePendingDelegations();
       this.closeSocket();
       return Promise.resolve(ok(undefined));
     }
 
     this.closeRequested = true;
+    this.retirePendingDelegations();
     this.closeResult = new Promise((resolve) => {
       this.resolveClose = resolve;
     });
@@ -514,11 +536,13 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       this.handleMessage(data, isBinary === true);
     });
     this.socket.on('error', () => {
+      this.retirePendingDelegations();
       if (this.opened)
         this.publishError('TRANSPORT_ERROR', 'GPT-Live sideband transport failed', true);
     });
     this.socket.on('close', () => {
       this.connected = false;
+      this.retirePendingDelegations();
       if (!this.finalized && this.closeRequested) {
         this.finalization = 'incomplete';
         clearTimeout(this.closeTimer);
@@ -710,6 +734,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       sequence,
       fragment: appended.fragment,
     });
+    this.resolvePendingDelegations();
   }
 
   private handleDelegation(payload: ProviderPayload, eventId: string, sequence: number): void {
@@ -731,6 +756,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       const previousOffset = this.delegationOffsets.get(providerDelegationId);
       const previousTarget = this.delegationTargets.get(providerDelegationId) ?? 'client';
       if (previousOffset !== offsetMs || previousTarget !== normalizedTarget) {
+        this.retirePendingDelegation(providerDelegationId);
         const previousContext = this.delegationContexts.get(providerDelegationId);
         if (previousContext) {
           this.delegationContexts.set(providerDelegationId, {
@@ -764,10 +790,31 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       receivedAt: this.now(),
     };
     const context = this.transcript.captureAt(offsetMs);
-    this.rememberDelegationContext(providerDelegationId, context);
     this.delegationOffsets.set(providerDelegationId, offsetMs);
     this.delegationTargets.set(providerDelegationId, normalizedTarget);
-    this.publish({ kind: 'delegation', eventId, sequence, proposal });
+    // Live can announce the first delegation before the corresponding user
+    // transcript finishes; keep that first snapshot provisional until the
+    // bounded timer freezes it for the service event chain.
+    const requiresFreshUserTurn = this.hasPublishedDelegation;
+    const waitsForContext = requiresFreshUserTurn ? this.waitsForContext(context) : true;
+    const storedContext =
+      waitsForContext && requiresFreshUserTurn && context.snapshot && !context.uncertain
+        ? { ...context, uncertain: true, reason: 'missing_transcript' as const }
+        : context;
+    this.rememberDelegationContext(providerDelegationId, storedContext);
+    if (waitsForContext) {
+      this.schedulePendingDelegation(
+        providerDelegationId,
+        eventId,
+        sequence,
+        proposal,
+        userContextSignature(context.snapshot),
+        userFragmentIds(context.snapshot),
+        requiresFreshUserTurn,
+      );
+      return;
+    }
+    this.publishDelegation({ eventId, sequence, proposal });
   }
 
   private handleUsage(
@@ -807,6 +854,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     } else if (finalUsage) {
       this.lastUsage = finalUsage;
     }
+    this.retirePendingDelegations();
     this.finalized = true;
     this.finalization = 'confirmed';
     clearTimeout(this.closeTimer);
@@ -867,6 +915,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   }
 
   private handleProviderError(payload: ProviderPayload, eventId: string): void {
+    this.retirePendingDelegations();
     const details = asRecord(payload.error);
     const code = (details ? firstString(details, ['code', 'type']) : undefined) ?? 'PROVIDER_ERROR';
     const clientEventId = details
@@ -956,6 +1005,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     while (this.delegationContexts.size > this.maxPendingCommands) {
       const oldest = this.delegationContexts.keys().next().value;
       if (typeof oldest !== 'string') break;
+      this.retirePendingDelegation(oldest);
       this.delegationContexts.delete(oldest);
       this.delegationOffsets.delete(oldest);
       this.delegationTargets.delete(oldest);
@@ -966,30 +1016,255 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     for (const [delegationId, offsetMs] of this.delegationOffsets) {
       const previous = this.delegationContexts.get(delegationId);
       if (!previous) continue;
+      if (previous.reason === 'delegation_replay_conflict') continue;
       const refreshed = this.transcript.captureAt(offsetMs);
-      const changed = previous.snapshot?.digest !== refreshed.snapshot?.digest;
-      const becameUncertain = !previous.uncertain && refreshed.uncertain;
-      if (!changed && !becameUncertain) {
-        // Keep the admitted snapshot stable across receipt and lifecycle
-        // metadata updates that do not change its semantic digest.
+      const pending = this.pendingDelegations.get(delegationId);
+      if (
+        pending &&
+        pending.requiresFreshUserTurn !== true &&
+        !this.publishedDelegations.has(delegationId)
+      ) {
+        this.delegationContexts.set(delegationId, refreshed);
         continue;
       }
-      if (!changed) {
-        const reason = previous.reason ?? refreshed.reason;
+      if (previous.uncertain) {
+        if (previous.reason !== 'missing_transcript') continue;
+        if (refreshed.uncertain) {
+          if (this.publishedDelegations.has(delegationId)) {
+            const signature = userContextSignature(refreshed.snapshot);
+            if (signature) this.rememberBlockedUserSignature(signature);
+          }
+          this.delegationContexts.set(
+            delegationId,
+            refreshed.reason
+              ? { ...refreshed, uncertain: true, reason: refreshed.reason }
+              : { ...refreshed, uncertain: true },
+          );
+        } else {
+          const signature = userContextSignature(refreshed.snapshot);
+          if (this.publishedDelegations.has(delegationId)) {
+            if (signature) this.rememberBlockedUserSignature(signature);
+            this.delegationContexts.set(delegationId, {
+              ...refreshed,
+              uncertain: true,
+              reason: 'missing_transcript',
+            });
+            continue;
+          }
+          const reusedPendingContext =
+            pending?.requiresFreshUserTurn === true &&
+            !hasFreshUserTurn(pending, refreshed.snapshot);
+          const reusedAdmittedContext =
+            pending?.requiresFreshUserTurn === true &&
+            signature !== undefined &&
+            this.publishedUserSignatures.has(signature);
+          const blocked = signature !== undefined && this.blockedUserSignatures.has(signature);
+          if (reusedPendingContext || reusedAdmittedContext || blocked) {
+            this.delegationContexts.set(delegationId, {
+              ...refreshed,
+              uncertain: true,
+              reason: 'missing_transcript',
+            });
+            if (this.publishedDelegations.has(delegationId) && signature) {
+              this.rememberBlockedUserSignature(signature);
+            }
+          } else {
+            this.delegationContexts.set(delegationId, refreshed);
+          }
+        }
+        continue;
+      }
+      if (refreshed.uncertain) {
         this.delegationContexts.set(
           delegationId,
-          reason ? { ...previous, uncertain: true, reason } : { ...previous, uncertain: true },
+          refreshed.reason
+            ? { ...refreshed, uncertain: true, reason: refreshed.reason }
+            : { ...refreshed, uncertain: true },
         );
         continue;
       }
-      const reason =
-        changed || previous.reason === 'transcript_changed'
-          ? 'transcript_changed'
-          : (previous.reason ?? refreshed.reason);
-      this.delegationContexts.set(
-        delegationId,
-        reason ? { ...refreshed, uncertain: true, reason } : { ...refreshed, uncertain: true },
-      );
+      if (userContextSignature(previous.snapshot) === userContextSignature(refreshed.snapshot)) {
+        // Keep the admitted full snapshot stable across assistant speech and
+        // timing metadata that leaves the captured user turn unchanged.
+        continue;
+      }
+      this.delegationContexts.set(delegationId, {
+        ...refreshed,
+        uncertain: true,
+        reason: 'transcript_changed',
+      });
+    }
+  }
+
+  private waitsForContext(context: TranscriptContextResult): boolean {
+    if (context.uncertain || !context.snapshot) return true;
+    const signature = userContextSignature(context.snapshot);
+    return (
+      signature === undefined ||
+      this.publishedUserSignatures.has(signature) ||
+      (signature !== undefined && this.blockedUserSignatures.has(signature))
+    );
+  }
+
+  private schedulePendingDelegation(
+    providerDelegationId: string,
+    eventId: string,
+    sequence: number,
+    proposal: VoiceDelegationProposal,
+    baselineUserSignature: string | undefined,
+    baselineUserIds: readonly string[],
+    requiresFreshUserTurn: boolean,
+  ): void {
+    this.retirePendingDelegation(providerDelegationId);
+    const timer = setTimeout(() => {
+      const pending = this.pendingDelegations.get(providerDelegationId);
+      if (!pending) return;
+      this.pendingDelegations.delete(providerDelegationId);
+      if (
+        this.finalized ||
+        this.closeRequested ||
+        !this.connected ||
+        this.now() >= this.expiresAt
+      ) {
+        return;
+      }
+      this.publishDelegation(pending);
+    }, DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+    this.pendingDelegations.set(providerDelegationId, {
+      eventId,
+      sequence,
+      proposal,
+      timer,
+      requiresFreshUserTurn,
+      baselineUserIds,
+      ...(baselineUserSignature ? { baselineUserSignature } : {}),
+    });
+  }
+
+  private resolvePendingDelegations(): void {
+    if (this.pendingDelegations.size === 0) return;
+    for (const [providerDelegationId, pending] of this.pendingDelegations) {
+      if (pending.requiresFreshUserTurn !== true) continue;
+      if (
+        this.finalized ||
+        this.closeRequested ||
+        !this.connected ||
+        this.now() >= this.expiresAt
+      ) {
+        this.retirePendingDelegation(providerDelegationId);
+        continue;
+      }
+      const context = this.delegationContexts.get(providerDelegationId);
+      if (!context || context.uncertain || context.reason !== undefined) continue;
+      const signature = userContextSignature(context.snapshot);
+      if (
+        !signature ||
+        !hasFreshUserTurn(pending, context.snapshot) ||
+        signature === pending.baselineUserSignature ||
+        this.publishedUserSignatures.has(signature) ||
+        this.blockedUserSignatures.has(signature)
+      )
+        continue;
+      this.publishDelegation(pending);
+    }
+  }
+
+  private publishDelegation(pending: Omit<PendingDelegation, 'timer'>): void {
+    const providerDelegationId = pending.proposal.providerDelegationId;
+    if (
+      this.publishedDelegations.has(providerDelegationId) ||
+      this.finalized ||
+      this.closeRequested
+    ) {
+      return;
+    }
+    const context = this.delegationContexts.get(providerDelegationId);
+    const signature = userContextSignature(context?.snapshot ?? null);
+    const reusesPublishedContext =
+      signature !== undefined && this.publishedUserSignatures.has(signature);
+    this.hasPublishedDelegation = true;
+    if (
+      reusesPublishedContext ||
+      (pending.requiresFreshUserTurn === true &&
+        (!context ||
+          context.uncertain ||
+          context.reason !== undefined ||
+          !signature ||
+          !hasFreshUserTurn(pending, context.snapshot) ||
+          signature === pending.baselineUserSignature ||
+          this.blockedUserSignatures.has(signature)))
+    ) {
+      this.terminalizeUnsafeDelegationContext(providerDelegationId, context);
+    }
+    this.rememberPublishedDelegation(providerDelegationId);
+    this.retirePendingDelegation(providerDelegationId);
+    const publishedContext = this.delegationContexts.get(providerDelegationId);
+    if (publishedContext && !publishedContext.uncertain) {
+      const signature = userContextSignature(publishedContext.snapshot);
+      if (signature) this.rememberPublishedUserSignature(signature);
+    }
+    this.publish({
+      kind: 'delegation',
+      eventId: pending.eventId,
+      sequence: pending.sequence,
+      proposal: pending.proposal,
+    });
+  }
+
+  private retirePendingDelegation(providerDelegationId: string): void {
+    const pending = this.pendingDelegations.get(providerDelegationId);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingDelegations.delete(providerDelegationId);
+  }
+
+  private rememberPublishedDelegation(providerDelegationId: string): void {
+    if (this.publishedDelegations.has(providerDelegationId)) return;
+    this.publishedDelegations.add(providerDelegationId);
+    this.publishedDelegationOrder.push(providerDelegationId);
+    while (this.publishedDelegationOrder.length > this.maxPendingCommands) {
+      const oldest = this.publishedDelegationOrder.shift();
+      if (oldest) this.publishedDelegations.delete(oldest);
+    }
+  }
+
+  private rememberPublishedUserSignature(signature: string): void {
+    if (this.publishedUserSignatures.has(signature)) return;
+    this.publishedUserSignatures.add(signature);
+    this.publishedUserSignatureOrder.push(signature);
+    while (this.publishedUserSignatureOrder.length > this.maxPendingCommands) {
+      const oldest = this.publishedUserSignatureOrder.shift();
+      if (oldest) this.publishedUserSignatures.delete(oldest);
+    }
+  }
+
+  private terminalizeUnsafeDelegationContext(
+    providerDelegationId: string,
+    context: TranscriptContextResult | undefined,
+  ): void {
+    const signature = userContextSignature(context?.snapshot ?? null);
+    if (signature) this.rememberBlockedUserSignature(signature);
+    if (!context || context.uncertain) return;
+    this.delegationContexts.set(providerDelegationId, {
+      ...context,
+      uncertain: true,
+      reason: 'missing_transcript',
+    });
+  }
+
+  private rememberBlockedUserSignature(signature: string): void {
+    if (this.blockedUserSignatures.has(signature)) return;
+    this.blockedUserSignatures.add(signature);
+    this.blockedUserSignatureOrder.push(signature);
+    while (this.blockedUserSignatureOrder.length > this.maxPendingCommands) {
+      const oldest = this.blockedUserSignatureOrder.shift();
+      if (oldest) this.blockedUserSignatures.delete(oldest);
+    }
+  }
+
+  private retirePendingDelegations(): void {
+    for (const providerDelegationId of this.pendingDelegations.keys()) {
+      this.retirePendingDelegation(providerDelegationId);
     }
   }
 
@@ -1000,6 +1275,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
 
   private closeSocket(force = false): void {
     this.connected = false;
+    this.retirePendingDelegations();
     clearTimeout(this.closeTimer);
     if (force) {
       try {
@@ -1174,6 +1450,27 @@ function isRetryableProviderCode(code: string): boolean {
     normalized.includes('server') ||
     normalized.includes('overload') ||
     normalized.includes('unavailable')
+  );
+}
+
+function userFragmentIds(snapshot: VoiceContextSnapshot | null): readonly string[] {
+  return (
+    snapshot?.fragments
+      .filter((fragment) => fragment.role === 'user')
+      .map((fragment) => fragment.id) ?? []
+  );
+}
+
+function hasFreshUserTurn(
+  pending: Pick<PendingDelegation, 'baselineUserIds'>,
+  snapshot: VoiceContextSnapshot | null,
+): boolean {
+  const baselineIds = new Set(pending.baselineUserIds ?? []);
+  return (
+    snapshot?.fragments.some(
+      (fragment) =>
+        fragment.role === 'user' && fragment.kind !== 'correction' && !baselineIds.has(fragment.id),
+    ) ?? false
   );
 }
 

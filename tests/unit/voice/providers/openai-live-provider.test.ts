@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LiveWebSocket } from '../../../../src/voice/providers/openai-live-provider.js';
 import {
+  DEFAULT_DELEGATION_CONTEXT_WAIT_MS,
   OpenAiLiveVoiceProvider,
   OpenAiLiveVoiceSideband,
 } from '../../../../src/voice/providers/openai-live-provider.js';
@@ -100,6 +101,7 @@ describe('OpenAiLiveVoiceProvider', () => {
   });
 
   it('normalizes transcript, correction, delegation, cumulative usage, and acknowledgements', async () => {
+    vi.useFakeTimers();
     const socket = new FakeSocket();
     let sidebandUrl = '';
     const fetch = vi.fn(async () =>
@@ -138,6 +140,7 @@ describe('OpenAiLiveVoiceProvider', () => {
       delegation: { id: 'provider-delegation-1', target: 'client' },
       offset_ms: 100,
     });
+    vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
     socket.receive({
       type: 'session.input_transcript.delta',
       event_id: 'transcript-1',
@@ -233,6 +236,7 @@ describe('OpenAiLiveVoiceProvider', () => {
       events.some((event) => event.kind === 'error' && event.code === 'NON_MONOTONIC_USAGE'),
     ).toBe(true);
     expect(sideband.usage?.voiceSeconds).toBe(4);
+    vi.useRealTimers();
   });
 
   it('does not guess when delegation context is missing and reports unknown acknowledgements', async () => {
@@ -267,6 +271,7 @@ describe('OpenAiLiveVoiceProvider', () => {
       delegation_id: null,
     });
 
+    vi.useFakeTimers();
     socket.receive({
       type: 'session.delegation.created',
       event_id: 'delegation-missing-context',
@@ -281,13 +286,356 @@ describe('OpenAiLiveVoiceProvider', () => {
     socket.receive({ type: 'session.input_audio.append', audio: 'reflected-audio' });
 
     expect(sideband.contextForDelegation('provider-delegation-missing')).toBeNull();
-    expect(events.some((event) => event.kind === 'delegation')).toBe(true);
+    expect(events.some((event) => event.kind === 'delegation')).toBe(false);
     expect(
       events.some((event) => event.kind === 'error' && event.code === 'UNKNOWN_ACKNOWLEDGEMENT'),
     ).toBe(true);
     expect(
       events.some((event) => event.kind === 'error' && event.code === 'UNSUPPORTED_PROVIDER_EVENT'),
     ).toBe(false);
+
+    try {
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+      socket.receive({
+        type: 'session.input_transcript.completed',
+        event_id: 'late-transcript',
+        item_id: 'late-user',
+        text: 'Too late',
+        start_ms: 0,
+        end_ms: 100,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+      expect(sideband.contextForDelegation('provider-delegation-missing')).toBeNull();
+
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'delegation-reused-after-timeout',
+        delegation: { id: 'provider-delegation-reused', target: 'client' },
+        offset_ms: 100,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(2);
+      expect(sideband.contextForDelegation('provider-delegation-reused')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('holds an early delegation until a fresh timed user transcript arrives and admits once', async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const sideband = new OpenAiLiveVoiceSideband(
+        socket as unknown as LiveWebSocket,
+        'provider-session-early-delegation',
+        {
+          now: () => 1_000,
+          expiresAt: 2_000,
+          closeTimeoutMs: 20,
+          maxProviderEventBytes: 1_000,
+          maxPendingCommands: 4,
+          transcriptOptions: { maxFragments: 4, maxCharacters: 100, now: () => 1_000 },
+        },
+      );
+      const events: Array<Record<string, unknown>> = [];
+      sideband.onEvent((event) => events.push(event as unknown as Record<string, unknown>));
+      const opened = sideband.open();
+      socket.open();
+      expect((await opened).isOk()).toBe(true);
+
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'delegation-before-transcript',
+        delegation: { id: 'provider-delegation-early', target: 'client' },
+        offset_ms: 100,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+
+      vi.advanceTimersByTime(500);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'user-first-delta',
+        item_id: 'user-first',
+        delta: 'Book',
+        start_ms: 0,
+        end_ms: 30,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'user-second-delta',
+        item_id: 'user-first',
+        delta: ' Friday',
+        start_ms: 0,
+        end_ms: 100,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS - 500);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+      expect(
+        (
+          events.find((event) => event.kind === 'delegation')?.proposal as {
+            providerDelegationId: string;
+          }
+        ).providerDelegationId,
+      ).toBe('provider-delegation-early');
+      expect(sideband.contextForDelegation('provider-delegation-early')?.text).toContain(
+        'Book Friday',
+      );
+
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'delegation-duplicate',
+        delegation: { id: 'provider-delegation-early', target: 'client' },
+        offset_ms: 100,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('settles a first notice until a timed new user turn replaces historical context', async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const sideband = new OpenAiLiveVoiceSideband(
+        socket as unknown as LiveWebSocket,
+        'provider-session-historical-context',
+        {
+          now: () => 1_000,
+          expiresAt: 2_000,
+          closeTimeoutMs: 20,
+          maxProviderEventBytes: 1_000,
+          maxPendingCommands: 4,
+          transcriptOptions: { maxFragments: 8, maxCharacters: 200, now: () => 1_000 },
+        },
+      );
+      const events: Array<Record<string, unknown>> = [];
+      sideband.onEvent((event) => events.push(event as unknown as Record<string, unknown>));
+      const opened = sideband.open();
+      socket.open();
+      expect((await opened).isOk()).toBe(true);
+
+      socket.receive({
+        type: 'session.input_transcript.completed',
+        event_id: 'historical-user',
+        item_id: 'historical-user',
+        text: 'Hello there',
+        start_ms: 0,
+        end_ms: 100,
+      });
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'historical-delegation',
+        delegation: { id: 'provider-delegation-historical', target: 'client' },
+        offset_ms: 5_000,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+
+      vi.advanceTimersByTime(500);
+      socket.receive({
+        type: 'session.input_transcript.completed',
+        event_id: 'current-user',
+        item_id: 'current-user',
+        text: 'Read the current status.',
+        start_ms: 4_500,
+        end_ms: 5_000,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+
+      vi.advanceTimersByTime(500);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+      expect(sideband.contextForDelegation('provider-delegation-historical')?.text).toContain(
+        'Read the current status.',
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not reuse a published user turn for a later delegation', async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const sideband = new OpenAiLiveVoiceSideband(
+        socket as unknown as LiveWebSocket,
+        'provider-session-later-delegation',
+        {
+          now: () => 1_000,
+          expiresAt: 2_000,
+          closeTimeoutMs: 20,
+          maxProviderEventBytes: 1_000,
+          maxPendingCommands: 4,
+          transcriptOptions: { maxFragments: 4, maxCharacters: 100, now: () => 1_000 },
+        },
+      );
+      const events: Array<Record<string, unknown>> = [];
+      sideband.onEvent((event) => events.push(event as unknown as Record<string, unknown>));
+      const opened = sideband.open();
+      socket.open();
+      expect((await opened).isOk()).toBe(true);
+      socket.receive({
+        type: 'session.input_transcript.completed',
+        event_id: 'user-1',
+        item_id: 'user-1',
+        text: 'First request',
+        start_ms: 0,
+        end_ms: 100,
+      });
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'delegation-1',
+        delegation: { id: 'provider-delegation-1', target: 'client' },
+        offset_ms: 100,
+      });
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+
+      socket.receive({
+        type: 'session.input_transcript.completed',
+        event_id: 'user-2',
+        item_id: 'user-2',
+        text: 'Second request',
+        start_ms: 100,
+        end_ms: 200,
+      });
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'delegation-2',
+        delegation: { id: 'provider-delegation-2', target: 'client' },
+        offset_ms: 200,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(2);
+
+      socket.receive({
+        type: 'session.output_transcript.delta',
+        event_id: 'assistant-only-after-reuse',
+        item_id: 'assistant-only-after-reuse',
+        delta: 'I am still working.',
+        start_ms: 110,
+        end_ms: 150,
+      });
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'delegation-3',
+        delegation: { id: 'provider-delegation-3', target: 'client' },
+        offset_ms: 100,
+      });
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(2);
+
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(3);
+      expect(sideband.contextForDelegation('provider-delegation-3')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps an admitted request stable across late assistant speech and timing metadata', async () => {
+    vi.useFakeTimers();
+    const socket = new FakeSocket();
+    const sideband = new OpenAiLiveVoiceSideband(
+      socket as unknown as LiveWebSocket,
+      'provider-session-assistant-late',
+      {
+        now: () => 1_000,
+        expiresAt: 2_000,
+        closeTimeoutMs: 20,
+        maxProviderEventBytes: 1_000,
+        maxPendingCommands: 4,
+        transcriptOptions: { maxFragments: 4, maxCharacters: 100, now: () => 1_000 },
+      },
+    );
+    const opened = sideband.open();
+    socket.open();
+    expect((await opened).isOk()).toBe(true);
+    socket.receive({
+      type: 'session.input_transcript.delta',
+      event_id: 'user-stable',
+      item_id: 'user-stable',
+      delta: 'Stable request',
+      start_ms: 0,
+      end_ms: 50,
+    });
+    socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'delegation-stable',
+      delegation: { id: 'provider-delegation-stable', target: 'client' },
+      offset_ms: 100,
+    });
+    vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+    const before = sideband.getContextForDelegation('provider-delegation-stable');
+    expect(before?.uncertain).toBe(false);
+
+    socket.receive({
+      type: 'session.input_transcript.completed',
+      event_id: 'user-stable-complete',
+      item_id: 'user-stable',
+      text: 'Stable request',
+      start_ms: 0,
+      end_ms: 100,
+    });
+
+    socket.receive({
+      type: 'session.output_transcript.delta',
+      event_id: 'assistant-progress',
+      item_id: 'assistant-progress',
+      delta: 'I am checking the request.',
+    });
+    socket.receive({
+      type: 'session.output_transcript.completed',
+      event_id: 'assistant-progress-complete',
+      item_id: 'assistant-progress',
+      text: 'I am checking the request.',
+    });
+
+    const after = sideband.getContextForDelegation('provider-delegation-stable');
+    expect(after?.uncertain).toBe(false);
+    expect(after?.snapshot).toBe(before?.snapshot);
+    expect(sideband.contextForDelegation('provider-delegation-stable')).toBe(before?.snapshot);
+    vi.useRealTimers();
+  });
+
+  it('retires a pending delegation when the sideband closes before the grace period', async () => {
+    vi.useFakeTimers();
+    try {
+      const socket = new FakeSocket();
+      const sideband = new OpenAiLiveVoiceSideband(
+        socket as unknown as LiveWebSocket,
+        'provider-session-close-pending',
+        {
+          now: () => 1_000,
+          expiresAt: 2_000,
+          closeTimeoutMs: 20,
+          maxProviderEventBytes: 1_000,
+          maxPendingCommands: 4,
+          transcriptOptions: { maxFragments: 4, maxCharacters: 100, now: () => 1_000 },
+        },
+      );
+      const events: Array<Record<string, unknown>> = [];
+      sideband.onEvent((event) => events.push(event as unknown as Record<string, unknown>));
+      const opened = sideband.open();
+      socket.open();
+      expect((await opened).isOk()).toBe(true);
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'delegation-close-pending',
+        delegation: { id: 'provider-delegation-close-pending', target: 'client' },
+        offset_ms: 100,
+      });
+      socket.fail();
+      await sideband.close(false);
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects sideband attachment after the provider session deadline', async () => {

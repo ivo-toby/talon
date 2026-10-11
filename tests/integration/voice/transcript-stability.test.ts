@@ -1,6 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LiveWebSocket } from '../../../src/voice/providers/openai-live-provider.js';
-import { OpenAiLiveVoiceSideband } from '../../../src/voice/providers/openai-live-provider.js';
+import {
+  DEFAULT_DELEGATION_CONTEXT_WAIT_MS,
+  OpenAiLiveVoiceSideband,
+} from '../../../src/voice/providers/openai-live-provider.js';
 import { DurableVoiceSessionService } from '../../../src/voice/voice-session-service.js';
 
 class FakeSocket {
@@ -129,6 +132,9 @@ function receiveUserRequest(socket: FakeSocket): void {
 }
 
 describe('voice transcript stability', () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
   it('does not interrupt an admitted request for equivalent assistant completion metadata', async () => {
     const socket = new FakeSocket();
     const sideband = createSideband(socket);
@@ -148,6 +154,7 @@ describe('voice transcript stability', () => {
       delegation: { id: 'provider-delegation', target: 'client' },
       offset_ms: 500,
     });
+    vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
 
     const before = sideband.getContextForDelegation('provider-delegation');
     expect(before?.uncertain).toBe(false);
@@ -195,6 +202,7 @@ describe('voice transcript stability', () => {
       delegation: { id: 'provider-delegation', target: 'client' },
       offset_ms: 500,
     });
+    vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
     const before = sideband.getContextForDelegation('provider-delegation');
     const serviceState = createService(sideband, before?.snapshot?.digest ?? '');
 
@@ -219,7 +227,7 @@ describe('voice transcript stability', () => {
     expect(socket.sent[0]?.content).toContain('corrected request');
   });
 
-  it('treats untimed post-delegation output as uncertain context', async () => {
+  it('does not treat late assistant progress or notification speech as a user correction', async () => {
     const socket = new FakeSocket();
     const sideband = createSideband(socket);
     expect((await sideband.open()).isOk()).toBe(true);
@@ -230,21 +238,35 @@ describe('voice transcript stability', () => {
       delegation: { id: 'provider-delegation', target: 'client' },
       offset_ms: 500,
     });
+    vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
     const before = sideband.getContextForDelegation('provider-delegation');
     const serviceState = createService(sideband, before?.snapshot?.digest ?? '');
 
     socket.receive({
       type: 'session.output_transcript.delta',
-      event_id: 'assistant-untimed',
-      item_id: 'assistant-output',
-      delta: 'Hier is het antwoord',
+      event_id: 'assistant-progress',
+      item_id: 'assistant-progress',
+      delta: 'Ik kijk het na',
+    });
+    socket.receive({
+      type: 'session.output_transcript.completed',
+      event_id: 'assistant-progress-complete',
+      item_id: 'assistant-progress',
+      text: 'Ik kijk het na',
+    });
+    socket.receive({
+      type: 'session.output_transcript.delta',
+      event_id: 'assistant-notification',
+      item_id: 'assistant-notification',
+      delta: 'De achtergrondtaak is klaar.',
+      start_ms: 700,
+      end_ms: 800,
     });
 
-    expect(sideband.contextForDelegation('provider-delegation')).toBeNull();
+    expect(sideband.contextForDelegation('provider-delegation')).toBe(before?.snapshot);
     await handleTranscript(serviceState.service, serviceState.runtime);
 
-    expect(serviceState.runtime.staleDelegationIds).toEqual(new Set(['internal-delegation']));
-    expect(socket.sent).toHaveLength(1);
-    expect(socket.sent[0]).toMatchObject({ type: 'session.instructions.append' });
+    expect(serviceState.runtime.staleDelegationIds).toHaveLength(0);
+    expect(socket.sent).toHaveLength(0);
   });
 });

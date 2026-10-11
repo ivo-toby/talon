@@ -120,6 +120,19 @@ restart recovers that history without replaying completed queue work. A
 transcript correction supersedes the earlier context before queue claim; it
 must not replay an already claimed delegation. Older calls and messages from
 other channels are not imported automatically.
+When the live provider reports a delegation, Talon keeps the first notice in a
+bounded one-second settling window, even when the current snapshot appears
+complete. Transcript deltas that arrive during that window can complete or
+replace the provisional snapshot; Talon publishes the latest safe snapshot at
+most once. A missing or unsafe snapshot uses the normal clarification path.
+Later notices require a fresh user turn and cannot reuse an earlier utterance
+after the bounded wait. Late assistant transcript deltas, completion timing,
+progress speech, and notification speech do not rewrite an admitted request;
+user corrections, ambiguous timing, truncation, and provider replay conflicts
+remain unsafe. A transcript that arrives after first publication is treated as
+a late change and fails closed rather than thawing that request. These rules do
+not treat the provider offset as proof that a user turn was complete and do not
+claim provider-specific live audio timing or causal attribution.
 Policy is checked again before execution, so a revoked login or changed
 generation/policy prevents new backend work. A hangup skips unclaimed work and
 retains the result of work that was already claimed or running. Output state
@@ -168,6 +181,7 @@ checks cover login, denied microphone handling, mute/hangup/restart, retained
 closed sessions, a 390px viewport, and console errors against integrated build
 assets.
 
-Those checks do not establish a physical iPhone/Safari call or a paid live
-provider call. Run those separately before treating external-provider or
-mobile acceptance as complete.
+Those checks do not establish a physical iPhone/Safari call, a paid live
+provider call, or provider-specific transcript timing in a live audio session.
+Run those separately before treating external-provider or mobile acceptance as
+complete.

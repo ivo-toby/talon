@@ -14,6 +14,10 @@ import { VoiceOutputSink } from '../../../../src/voice/voice-output-sink.js';
 import { DurableVoiceStore } from '../../../../src/voice/voice-store.js';
 import { VoicePolicy } from '../../../../src/voice/voice-policy.js';
 import {
+  OpenAiLiveVoiceSideband,
+  type LiveWebSocket,
+} from '../../../../src/voice/providers/openai-live-provider.js';
+import {
   BrowserVoiceTransport,
   DurableVoiceSessionService,
 } from '../../../../src/voice/voice-session-service.js';
@@ -127,6 +131,74 @@ class FakeProvider implements LiveVoiceProvider {
   }
 }
 
+class SocketSideband {
+  readonly readyState = 1;
+  readonly sent: Array<Record<string, unknown>> = [];
+  private readonly listeners = new Map<string, Array<(...args: unknown[]) => void>>();
+
+  on(event: string, handler: (...args: unknown[]) => void): this {
+    const handlers = this.listeners.get(event) ?? [];
+    handlers.push(handler);
+    this.listeners.set(event, handlers);
+    return this;
+  }
+
+  send(data: string): void {
+    this.sent.push(JSON.parse(data) as Record<string, unknown>);
+  }
+
+  close(): void {
+    for (const handler of this.listeners.get('close') ?? []) handler(1000, Buffer.from('closed'));
+  }
+
+  receive(event: Record<string, unknown>): void {
+    for (const handler of this.listeners.get('message') ?? []) {
+      handler(Buffer.from(JSON.stringify(event)), false);
+    }
+  }
+}
+
+class SocketProvider implements LiveVoiceProvider {
+  readonly name = 'openai-live';
+  readonly socket = new SocketSideband();
+  readonly sideband = new OpenAiLiveVoiceSideband(
+    this.socket as unknown as LiveWebSocket,
+    'provider-session-socket',
+    {
+      now: () => Date.now(),
+      expiresAt: Date.now() + 60_000,
+      closeTimeoutMs: 50,
+      maxProviderEventBytes: 1_000_000,
+      maxPendingCommands: 128,
+      transcriptOptions: { maxFragments: 32, maxCharacters: 2_000, now: () => Date.now() },
+    },
+  );
+
+  createSession(input: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
+    return Promise.resolve(
+      ok({
+        providerSessionId: this.sideband.providerSessionId,
+        client: {
+          transport: input.transport.type,
+          sessionId: input.sessionId,
+          providerSessionId: this.sideband.providerSessionId,
+          answer: { type: input.transport.type, sdp: 'answer' },
+          expiresAt: Date.now() + 60_000,
+        },
+      } satisfies LiveVoiceSession),
+    );
+  }
+
+  async attachSideband(_session: LiveVoiceSession) {
+    const opened = await this.sideband.open();
+    return opened.isErr() ? opened : ok(this.sideband);
+  }
+
+  closeSession(_providerSessionId: string) {
+    return Promise.resolve(ok(undefined));
+  }
+}
+
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
@@ -171,22 +243,46 @@ function context(version: number, digest: string, text: string): VoiceContextSna
   };
 }
 
-function createHarness(options: {
+interface HarnessOptions {
   database?: Database.Database;
   providerSessionId?: string;
+  provider?: LiveVoiceProvider;
   owner?: { ownerId: string; loginRevision: number };
   backendModel?: string;
   liveModel?: string;
   usdPerMinute?: number;
   isOwnerActive?: (owner: { ownerId: string; loginRevision: number }) => boolean;
-} = {}) {
+}
+
+interface VoiceHarnessBase {
+  readonly db: Database.Database;
+  readonly messages: MessageRepository;
+  readonly store: DurableVoiceStore;
+  readonly bridge: DurableVoiceBackendBridge;
+  readonly service: DurableVoiceSessionService;
+  readonly sink: VoiceOutputSink;
+  readonly queueManager: QueueManager;
+  readonly owner: { ownerId: string; loginRevision: number };
+}
+
+interface FakeVoiceHarness extends VoiceHarnessBase {
+  readonly provider: FakeProvider;
+}
+
+interface ProviderVoiceHarness extends VoiceHarnessBase {
+  readonly provider: LiveVoiceProvider;
+}
+
+function createHarness(options?: Omit<HarnessOptions, 'provider'>): FakeVoiceHarness;
+function createHarness(options: HarnessOptions & { provider: LiveVoiceProvider }): ProviderVoiceHarness;
+function createHarness(options: HarnessOptions = {}): FakeVoiceHarness | ProviderVoiceHarness {
   const harnessDb = options.database ?? createDb();
   const queueRepository = new QueueRepository(harnessDb);
   const threadRepository = new ThreadRepository(harnessDb);
   const messageRepository = new MessageRepository(harnessDb);
   const store = new DurableVoiceStore(harnessDb, queueRepository);
   const bridge = new DurableVoiceBackendBridge(store, queueRepository, { now: () => 20 });
-  const provider = new FakeProvider(options.providerSessionId);
+  const provider = options.provider ?? new FakeProvider(options.providerSessionId);
   const transport: VoiceTransport = new BrowserVoiceTransport({ now: () => 20 });
   const policy = new VoicePolicy({
     providerTypes: new Map([['agent-provider', 'openai-compatible']]),
@@ -245,7 +341,7 @@ function createHarness(options: {
     sink,
     queueManager,
     owner,
-  };
+  } as FakeVoiceHarness | ProviderVoiceHarness;
 }
 
 describe('browser voice lifecycle composition', () => {
@@ -344,6 +440,170 @@ describe('browser voice lifecycle composition', () => {
     const closed = await service.closeSession(owner, session.session.id, { reason: 'hangup' });
     expect(closed.isOk()).toBe(true);
     expect(service.status(owner, session.session.id)._unsafeUnwrap()?.status).toBe('closed');
+  });
+
+  it('queues one real sideband delegation when it arrives before the first transcript', async () => {
+    db = createDb();
+    const provider = new SocketProvider();
+    const harness = createHarness({ provider });
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap();
+
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as { request?: { delegationId?: string } };
+      const delegationId = payload.request?.delegationId;
+      if (!delegationId) return ok(undefined);
+      const result = harness.sink.final(delegationId, 'The real queued result is safe.', 40);
+      if (result.isErr()) throw result.error;
+      return ok(undefined);
+    });
+    provider.socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'socket-delegation-before-transcript',
+      delegation: { id: 'socket-provider-delegation', target: 'client' },
+      offset_ms: 100,
+    });
+    provider.socket.receive({
+      type: 'session.input_transcript.delta',
+      event_id: 'socket-user-first',
+      item_id: 'socket-user-first',
+      delta: 'Read the current status.',
+      start_ms: 0,
+      end_ms: 100,
+    });
+    provider.socket.receive({
+      type: 'session.output_transcript.delta',
+      event_id: 'socket-progress',
+      item_id: 'socket-progress',
+      delta: 'I am checking the current status.',
+      start_ms: 110,
+      end_ms: 140,
+    });
+    provider.socket.receive({
+      type: 'session.output_transcript.completed',
+      event_id: 'socket-progress-complete',
+      item_id: 'socket-progress',
+      text: 'I am checking the current status.',
+      start_ms: 110,
+      end_ms: 140,
+    });
+
+    await waitFor(() => {
+      const projection = harness.store.readSession(session.session.id);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    harness.queueManager.stopProcessing();
+
+    const projection = harness.store.readSession(session.session.id)._unsafeUnwrap();
+    expect(projection?.delegations).toHaveLength(1);
+    expect(projection?.delegations[0]).toMatchObject({
+      providerDelegationId: 'socket-provider-delegation',
+      execution: 'succeeded',
+    });
+    expect(provider.socket.sent).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: 'session.commentary.append',
+          content: 'The real queued result is safe.',
+        }),
+      ]),
+    );
+    provider.socket.receive({
+      type: 'session.output_transcript.delta',
+      event_id: 'socket-notification',
+      item_id: 'socket-notification',
+      delta: 'The background result is ready.',
+      start_ms: 150,
+      end_ms: 180,
+    });
+    provider.socket.receive({
+      type: 'session.output_transcript.completed',
+      event_id: 'socket-notification-complete',
+      item_id: 'socket-notification',
+      text: 'The background result is ready.',
+      start_ms: 150,
+      end_ms: 180,
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(
+      provider.socket.sent.some((command) => command.type === 'session.instructions.append'),
+    ).toBe(false);
+
+    const closed = await harness.service.closeSession(harness.owner, session.session.id, {
+      reason: 'transport_failure',
+    });
+    expect(closed.isOk()).toBe(true);
+  });
+
+  it('clarifies an overlapping first notice that reuses the admitted user turn', async () => {
+    db = createDb();
+    const provider = new SocketProvider();
+    const harness = createHarness({ provider });
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap();
+    const handledDelegations: string[] = [];
+
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as { request?: { delegationId?: string } };
+      const delegationId = payload.request?.delegationId;
+      if (!delegationId) return ok(undefined);
+      handledDelegations.push(delegationId);
+      const result = harness.sink.final(delegationId, 'The overlapping result is safe.', 40);
+      if (result.isErr()) throw result.error;
+      return ok(undefined);
+    });
+    provider.socket.receive({
+      type: 'session.input_transcript.completed',
+      event_id: 'socket-overlap-user',
+      item_id: 'socket-overlap-user',
+      text: 'Perform one action.',
+      start_ms: 0,
+      end_ms: 100,
+    });
+    provider.socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'socket-overlap-delegation-1',
+      delegation: { id: 'socket-overlap-provider-1', target: 'client' },
+      offset_ms: 100,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    provider.socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'socket-overlap-delegation-2',
+      delegation: { id: 'socket-overlap-provider-2', target: 'client' },
+      offset_ms: 100,
+    });
+
+    await waitFor(() => {
+      const projection = harness.store.readSession(session.session.id);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    await waitFor(() =>
+      provider.socket.sent.some((command) => command.type === 'session.instructions.append'),
+    );
+    harness.queueManager.stopProcessing();
+
+    const projection = harness.store.readSession(session.session.id)._unsafeUnwrap();
+    expect(handledDelegations).toHaveLength(1);
+    expect(projection?.delegations).toHaveLength(1);
+    expect(projection?.delegations[0]).toMatchObject({
+      providerDelegationId: 'socket-overlap-provider-1',
+      execution: 'succeeded',
+    });
+    expect(
+      provider.socket.sent.filter((command) => command.type === 'session.instructions.append'),
+    ).toHaveLength(1);
+
+    const closed = await harness.service.closeSession(harness.owner, session.session.id, {
+      reason: 'transport_failure',
+    });
+    expect(closed.isOk()).toBe(true);
   });
 
   it('keeps a claimed result listener alive after hangup', async () => {
