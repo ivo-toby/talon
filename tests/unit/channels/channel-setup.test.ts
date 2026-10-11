@@ -4,7 +4,11 @@ import pino from 'pino';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { BindingRepository } from '../../../src/core/database/repositories/binding-repository.js';
-import { reconcileBindings } from '../../../src/channels/channel-setup.js';
+import {
+  BROWSER_VOICE_CHANNEL_NAME,
+  registerVoiceChannel,
+  reconcileBindings,
+} from '../../../src/channels/channel-setup.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
 import type { BindingConfig } from '../../../src/core/config/config-types.js';
 
@@ -131,5 +135,36 @@ describe('reconcileBindings()', () => {
 
     const result = bindingRepo.findDefaultForChannel(channelId);
     expect(result._unsafeUnwrap()).toBeNull();
+  });
+});
+
+describe('registerVoiceChannel()', () => {
+  it('persists only sanitized logical metadata and is idempotent', () => {
+    const db = createTestDb();
+    const channelRepo = new ChannelRepository(db);
+
+    const first = registerVoiceChannel({ channelRepo, logger });
+    const second = registerVoiceChannel({ channelRepo, logger });
+
+    expect(first.isOk()).toBe(true);
+    expect(second.isOk()).toBe(true);
+    expect(second._unsafeUnwrap()).toBe(first._unsafeUnwrap());
+    const row = db
+      .prepare('SELECT type, name, config, credentials_ref, enabled FROM channels WHERE name = ?')
+      .get(BROWSER_VOICE_CHANNEL_NAME) as {
+      type: string;
+      name: string;
+      config: string;
+      credentials_ref: string | null;
+      enabled: number;
+    };
+    expect(row).toEqual({
+      type: 'voice',
+      name: BROWSER_VOICE_CHANNEL_NAME,
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+    });
+    db.close();
   });
 });

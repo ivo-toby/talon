@@ -10,6 +10,8 @@ import { v4 as uuidv4 } from 'uuid';
 import type pino from 'pino';
 import type { TalondConfig, BindingConfig } from '../core/config/config-types.js';
 import type { ChannelRepository } from '../core/database/repositories/channel-repository.js';
+import { err, ok, type Result } from 'neverthrow';
+import type { DbError } from '../core/errors/error-types.js';
 import type { BindingRepository } from '../core/database/repositories/binding-repository.js';
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
 import type { ChannelRegistry } from './channel-registry.js';
@@ -24,6 +26,54 @@ export interface ChannelSetupDeps {
   readonly personaRepo: PersonaRepository;
   readonly messagePipeline: MessagePipeline;
   readonly logger: pino.Logger;
+}
+
+/** Durable logical channel identity used by browservoice threads. */
+export const BROWSER_VOICE_CHANNEL_NAME = 'browser-voice';
+export const BROWSER_VOICE_CHANNEL_TYPE = 'voice';
+
+export interface VoiceChannelSetupDeps {
+  readonly channelRepo: ChannelRepository;
+  readonly logger: pino.Logger;
+}
+
+/**
+ * Registers the browservoice logical channel without creating a connector.
+ * Only sanitized metadata is persisted; access tokens stay in config/auth.
+ */
+export function registerVoiceChannel(
+  deps: VoiceChannelSetupDeps,
+  name = BROWSER_VOICE_CHANNEL_NAME,
+): Result<string, DbError> {
+  const existing = deps.channelRepo.findByName(name);
+  if (existing.isErr()) return err(existing.error);
+  if (existing.value) {
+    const updated = deps.channelRepo.update(existing.value.id, {
+      type: BROWSER_VOICE_CHANNEL_TYPE,
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+    });
+    if (updated.isErr()) return err(updated.error);
+    deps.logger.info({ channelName: name }, 'channel-setup: browser voice channel reconciled');
+    return okChannelId(updated.value?.id ?? existing.value.id);
+  }
+
+  const inserted = deps.channelRepo.insert({
+    id: uuidv4(),
+    type: BROWSER_VOICE_CHANNEL_TYPE,
+    name,
+    config: '{}',
+    credentials_ref: null,
+    enabled: 1,
+  });
+  if (inserted.isErr()) return err(inserted.error);
+  deps.logger.info({ channelName: name }, 'channel-setup: browser voice channel registered');
+  return okChannelId(inserted.value.id);
+}
+
+function okChannelId(id: string): Result<string, DbError> {
+  return ok(id);
 }
 
 /**

@@ -22,6 +22,7 @@ import type {
   QueueConfigSchema,
   SchedulerConfigSchema,
   AuthConfigSchema,
+  VoiceConfigSchema,
   AgentRunnerConfigSchema,
   BackgroundAgentConfigSchema,
   LangfuseConfigSchema,
@@ -81,6 +82,9 @@ export type SchedulerConfig = z.infer<typeof SchedulerConfigSchema>;
 
 /** Authentication mode and credentials. */
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
+
+/** Opt-in browservoice runtime settings. */
+export type VoiceConfig = z.infer<typeof VoiceConfigSchema>;
 
 /** Provider execution settings shared by agent runners and background agents. */
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
