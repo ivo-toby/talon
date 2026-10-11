@@ -241,6 +241,109 @@ describe('voice channel notifications', () => {
     expect(harness.service.status({ ownerId: 'other-owner', loginRevision: 1 }, session.id)._unsafeUnwrap()).toBeNull();
   });
 
+  it('finds retained notifications beyond mixed voice history and caps them chronologically', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+
+    const retained = harness.messages.insert({
+      id: 'notification-before-voice-history',
+      thread_id: session.threadId,
+      direction: 'outbound',
+      content: JSON.stringify({ body: 'Retained before voice history.' }),
+      idempotency_key: 'notification:before-voice-history',
+      provider_id: null,
+      run_id: null,
+    });
+    expect(retained.isOk()).toBe(true);
+
+    for (let index = 0; index < 101; index += 1) {
+      const transcript = harness.messages.insert({
+        id: `history-transcript-${index}`,
+        thread_id: session.threadId,
+        direction: 'inbound',
+        content: JSON.stringify({
+          body: `Transcript ${index}.`,
+          voice: {
+            kind: 'transcript',
+            sessionId: session.id,
+            fragmentId: `history-transcript-fragment-${index}`,
+            role: 'user',
+            state: 'completed',
+            sequence: index,
+          },
+        }),
+        idempotency_key: `history:transcript:${index}`,
+        provider_id: `history-transcript-fragment-${index}`,
+        run_id: null,
+      });
+      expect(transcript.isOk()).toBe(true);
+
+      const backendResult = harness.messages.insert({
+        id: `history-backend-result-${index}`,
+        thread_id: session.threadId,
+        direction: 'outbound',
+        content: JSON.stringify({
+          body: `Backend result ${index}.`,
+          voice: {
+            kind: 'backend_result',
+            sessionId: session.id,
+            delegationId: `history-delegation-${index}`,
+            outputId: `history-output-${index}`,
+            execution: 'succeeded',
+            resultKind: 'final',
+            verified: true,
+          },
+        }),
+        idempotency_key: `history:backend-result:${index}`,
+        provider_id: `history-output-${index}`,
+        run_id: null,
+      });
+      expect(backendResult.isOk()).toBe(true);
+    }
+
+    const commandCount = harness.provider.sideband.commands.length;
+    const providerCreates = harness.provider.createCount;
+    const status = harness.service.status(harness.owner, session.id)._unsafeUnwrap();
+    expect(status?.notifications).toEqual([
+      expect.objectContaining({
+        id: 'notification-before-voice-history',
+        text: 'Retained before voice history.',
+      }),
+    ]);
+    expect(harness.provider.sideband.commands).toHaveLength(commandCount);
+    expect(harness.provider.createCount).toBe(providerCreates);
+    expect(harness.service.status({ ownerId: 'other-owner', loginRevision: 1 }, session.id)._unsafeUnwrap()).toBeNull();
+
+    for (let index = 0; index < 101; index += 1) {
+      const notification = harness.messages.insert({
+        id: `retained-notification-${index}`,
+        thread_id: session.threadId,
+        direction: 'outbound',
+        content: JSON.stringify({ body: `Retained notification ${index}.` }),
+        idempotency_key: `notification:retained:${index}`,
+        provider_id: null,
+        run_id: null,
+      });
+      expect(notification.isOk()).toBe(true);
+    }
+
+    const capped = harness.service.status(harness.owner, session.id)._unsafeUnwrap();
+    const notifications = capped?.notifications ?? [];
+    expect(notifications).toHaveLength(100);
+    expect(notifications.map((notification) => notification.id)).toEqual(
+      Array.from({ length: 100 }, (_, index) => `retained-notification-${index + 1}`),
+    );
+    expect(notifications.map((notification) => notification.createdAt)).toEqual(
+      [...notifications.map((notification) => notification.createdAt)].sort((left, right) => left - right),
+    );
+    expect(harness.provider.sideband.commands).toHaveLength(commandCount);
+    expect(harness.provider.createCount).toBe(providerCreates);
+  });
+
   it('persists a background notification after login expiry without requesting speech', async () => {
     let ownerActive = true;
     const harness = createHarness({ ownerActive: () => ownerActive });
