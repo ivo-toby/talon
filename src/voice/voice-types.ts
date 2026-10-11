@@ -173,9 +173,19 @@ export interface VoiceTranscriptMetadata {
   readonly sequence: number;
 }
 
+export interface VoiceBackendResultMetadata {
+  readonly kind: 'backend_result';
+  readonly sessionId: string;
+  readonly delegationId: string;
+  readonly outputId: string;
+  readonly execution: 'succeeded' | 'failed' | 'unknown';
+  readonly resultKind: 'final' | 'error' | 'unknown';
+  readonly verified: true;
+}
+
 export interface VoiceMessageContent {
   readonly body: string;
-  readonly voice?: VoiceTranscriptMetadata;
+  readonly voice?: VoiceTranscriptMetadata | VoiceBackendResultMetadata;
 }
 
 export interface VoiceHistoryMessage {
@@ -230,7 +240,26 @@ export function parseVoiceMessageContent(content: string): VoiceMessageContent |
     const parsed = JSON.parse(content) as Partial<VoiceMessageContent>;
     if (typeof parsed.body !== 'string') return null;
     if (parsed.voice === undefined) return { body: parsed.body };
-    const voice = parsed.voice as Partial<VoiceTranscriptMetadata>;
+    const voice = parsed.voice as
+      | Partial<VoiceTranscriptMetadata>
+      | Partial<VoiceBackendResultMetadata>;
+    if (voice.kind === 'backend_result') {
+      if (
+        typeof voice.sessionId !== 'string' ||
+        typeof voice.delegationId !== 'string' ||
+        typeof voice.outputId !== 'string' ||
+        (voice.execution !== 'succeeded' &&
+          voice.execution !== 'failed' &&
+          voice.execution !== 'unknown') ||
+        (voice.resultKind !== 'final' &&
+          voice.resultKind !== 'error' &&
+          voice.resultKind !== 'unknown') ||
+        voice.verified !== true
+      ) {
+        return { body: parsed.body };
+      }
+      return { body: parsed.body, voice: voice as VoiceBackendResultMetadata };
+    }
     if (
       voice.kind !== 'transcript' ||
       typeof voice.sessionId !== 'string' ||
@@ -258,19 +287,56 @@ export function formatVoiceHistory(
   options: VoiceHistoryOptions = {},
 ): string {
   const maxCharacters = Math.max(0, options.maxCharacters ?? DEFAULT_VOICE_HISTORY_CHARACTERS);
-  const lines: string[] = [];
+  const entries: Array<{
+    readonly body: string;
+    readonly content: VoiceMessageContent;
+    readonly role: 'user' | 'agent';
+  }> = [];
   for (const row of rows) {
     const content = parseVoiceMessageContent(row.content);
     if (!content) continue;
     const body = content.body.trim();
     if (!body) continue;
-    if (options.excludeSessionId && content.voice?.sessionId === options.excludeSessionId) {
+    if (
+      options.excludeSessionId &&
+      content.voice?.kind === 'transcript' &&
+      content.voice.sessionId === options.excludeSessionId
+    ) {
       continue;
     }
-    const role = row.direction === 'inbound' ? 'user' : 'agent';
-    const state = content.voice?.state === 'incomplete' ? ', incomplete' : '';
-    lines.push(`[previous voice turn, ${role}${state}]: ${body}`);
+    entries.push({
+      body,
+      content,
+      role: row.direction === 'inbound' ? 'user' : 'agent',
+    });
   }
+
+  const assistantTranscriptBodies = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.content.voice?.kind !== 'transcript' || entry.content.voice.role !== 'assistant') {
+      continue;
+    }
+    const key = `${entry.content.voice.sessionId}\u0000${entry.body}`;
+    assistantTranscriptBodies.set(key, (assistantTranscriptBodies.get(key) ?? 0) + 1);
+  }
+  const lines = entries.flatMap((entry) => {
+    const voice = entry.content.voice;
+    if (voice?.kind === 'backend_result') {
+      const key = `${voice.sessionId}\u0000${entry.body}`;
+      const transcriptCount = assistantTranscriptBodies.get(key) ?? 0;
+      if (transcriptCount > 0) {
+        assistantTranscriptBodies.set(key, transcriptCount - 1);
+        return [];
+      }
+    }
+    if (voice?.kind === 'backend_result') {
+      return [`[verified voice result, ${voice.execution}]: ${entry.body}`];
+    }
+    const state = voice?.kind === 'transcript' && voice.state === 'incomplete'
+      ? ', incomplete'
+      : '';
+    return [`[previous voice turn, ${entry.role}${state}]: ${entry.body}`];
+  });
 
   const selected: string[] = [];
   let usedCharacters = 0;
@@ -309,6 +375,14 @@ export function voiceTranscriptIdempotencyKey(
   fragmentId: string,
 ): string {
   return `voice-transcript:${encodeVoiceIdentity(sessionId)}:${role}:${encodeVoiceIdentity(fragmentId)}`;
+}
+
+export function voiceBackendResultIdempotencyKey(
+  sessionId: string,
+  delegationId: string,
+  outputId: string,
+): string {
+  return `voice-backend-result:${encodeVoiceIdentity(sessionId)}:${encodeVoiceIdentity(delegationId)}:${encodeVoiceIdentity(outputId)}`;
 }
 
 function encodeVoiceIdentity(value: string): string {

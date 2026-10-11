@@ -33,6 +33,8 @@ export class MessageRepository extends BaseRepository {
   private readonly findByThreadStmt: Database.Statement;
   private readonly findLatestByThreadStmt: Database.Statement;
   private readonly findLatestByThreadSinceStmt: Database.Statement;
+  private readonly findLatestByThreadPageStmt: Database.Statement;
+  private readonly findLatestByThreadSincePageStmt: Database.Statement;
   private readonly findByIdempotencyKeyStmt: Database.Statement;
   private readonly updateVoiceTranscriptStmt: Database.Statement;
 
@@ -72,6 +74,24 @@ export class MessageRepository extends BaseRepository {
         WHERE thread_id = ? AND created_at > ?
         ORDER BY created_at DESC, id DESC
         LIMIT ?
+      ) sub ORDER BY created_at ASC, id ASC
+    `);
+
+    this.findLatestByThreadPageStmt = db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM messages
+        WHERE thread_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?
+      ) sub ORDER BY created_at ASC, id ASC
+    `);
+
+    this.findLatestByThreadSincePageStmt = db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM messages
+        WHERE thread_id = ? AND created_at > ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?
       ) sub ORDER BY created_at ASC, id ASC
     `);
 
@@ -220,6 +240,50 @@ export class MessageRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to find latest messages by thread since timestamp: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /** Returns one newest-first page, rendered in chronological order. */
+  findLatestByThreadPage(
+    threadId: string,
+    limit: number,
+    offset: number,
+  ): Result<MessageRow[], DbError> {
+    try {
+      const rows = this.findLatestByThreadPageStmt.all(threadId, limit, offset) as MessageRow[];
+      return ok(rows);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find latest message page by thread: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /** Returns one newest-first page after a boundary, rendered chronologically. */
+  findLatestByThreadSincePage(
+    threadId: string,
+    sinceTimestamp: number,
+    limit: number,
+    offset: number,
+  ): Result<MessageRow[], DbError> {
+    try {
+      const rows = this.findLatestByThreadSincePageStmt.all(
+        threadId,
+        sinceTimestamp,
+        limit,
+        offset,
+      ) as MessageRow[];
+      return ok(rows);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find latest message page by thread since timestamp: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );

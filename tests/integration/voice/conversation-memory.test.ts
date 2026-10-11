@@ -41,6 +41,7 @@ import {
   DurableVoiceSessionService,
 } from '../../../src/voice/voice-session-service.js';
 import { DurableVoiceStore } from '../../../src/voice/voice-store.js';
+import { voiceTranscriptIdempotencyKey } from '../../../src/voice/voice-types.js';
 import type {
   LiveVoiceEvent,
   LiveVoiceProvider,
@@ -408,7 +409,7 @@ describe('voice conversation memory integration', () => {
       executionGate: () => ok(undefined),
       now: () => 20,
     });
-    const service = new DurableVoiceSessionService({
+    const serviceOptions = {
       store,
       provider: liveProvider,
       transport: new BrowserVoiceTransport({ now: () => 20 }),
@@ -424,7 +425,8 @@ describe('voice conversation memory integration', () => {
       voiceName: 'marin',
       capturePolicy,
       currentPolicy: capturePolicy,
-    });
+    };
+    const service = new DurableVoiceSessionService(serviceOptions);
     const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
     const queueManager = new QueueManager(
       queueRepository,
@@ -499,6 +501,34 @@ describe('voice conversation memory integration', () => {
         messageRepository.findLatestByThread(secondSession.threadId, 10)._unsafeUnwrap().length ===
         2,
     );
+    for (let index = 0; index < 199; index += 1) {
+      const fragmentId = `current-history-${index}`;
+      const persisted = messageRepository.upsertVoiceTranscript({
+        id: fragmentId,
+        thread_id: secondSession.threadId,
+        direction: 'inbound',
+        content: JSON.stringify({
+          body: `Current history row ${index}.`,
+          voice: {
+            kind: 'transcript',
+            sessionId: secondSession.id,
+            fragmentId,
+            role: 'user',
+            state: 'completed',
+            sequence: index + 3,
+          },
+        }),
+        idempotency_key: voiceTranscriptIdempotencyKey(secondSession.id, 'user', fragmentId),
+        provider_id: fragmentId,
+        run_id: null,
+      });
+      expect(persisted.isOk()).toBe(true);
+    }
+    await waitFor(
+      () =>
+        messageRepository.findLatestByThread(secondSession.threadId, 300)._unsafeUnwrap().length ===
+        201,
+    );
 
     const runnerContext = createDaemonContext(db, queueManager, liveProvider, bridge, sink);
     const runner = new AgentRunner(runnerContext, {
@@ -532,6 +562,24 @@ describe('voice conversation memory integration', () => {
       '[previous voice turn, user]: Current request only.',
     );
     expect(backendInput?.prompt).toContain('Current request only.');
+    await waitFor(
+      () =>
+        messageRepository.findLatestByThread(secondSession.threadId, 300)._unsafeUnwrap().length ===
+        202,
+    );
     await service.closeSession(owner, secondSession.id, { reason: 'hangup' });
+
+    const reconstructedService = new DurableVoiceSessionService(serviceOptions);
+    const third = await reconstructedService.createSession(owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(third.isOk()).toBe(true);
+    expect(liveProvider.createInstructions.at(-1)).toContain('Backend result.');
+    expect(liveProvider.createInstructions.at(-1)).toContain(
+      '[verified voice result, succeeded]: Backend result.',
+    );
+    await reconstructedService.closeSession(owner, third._unsafeUnwrap().session.id, {
+      reason: 'hangup',
+    });
   });
 });

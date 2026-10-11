@@ -22,6 +22,7 @@ import {
   formatVoiceHistory,
   parseSharedVoiceThreadMetadata,
   parseVoiceMessageContent,
+  voiceBackendResultIdempotencyKey,
   voiceTranscriptIdempotencyKey,
 } from './voice-types.js';
 import {
@@ -90,7 +91,7 @@ export interface VoiceSessionServiceOptions {
   readonly threadRepository?: ThreadRepository;
   /** Existing message history is the durable notification projection. */
   readonly messageRepository?: Pick<MessageRepository, 'findLatestByThread'> &
-    Partial<Pick<MessageRepository, 'upsertVoiceTranscript'>>;
+    Partial<Pick<MessageRepository, 'insert' | 'upsertVoiceTranscript'>>;
   readonly channelId?: string;
   readonly personaId: string;
   readonly providerName?: string;
@@ -1106,6 +1107,54 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     return ok(undefined);
   }
 
+  private persistBackendResult(
+    delegation: VoiceDelegationRecord,
+    result: VoiceBackendResult,
+    content: string,
+  ): VoiceResult<void> {
+    const messageRepository = this.options.messageRepository;
+    if (!messageRepository?.insert) return ok(undefined);
+    if (
+      result.execution !== 'succeeded' &&
+      result.execution !== 'failed' &&
+      result.execution !== 'unknown'
+    ) {
+      return ok(undefined);
+    }
+    if (content.trim().length === 0) return ok(undefined);
+    const resultKind =
+      result.kind === 'final' || result.kind === 'error' || result.kind === 'unknown'
+        ? result.kind
+        : undefined;
+    if (!resultKind) return ok(undefined);
+    const persisted = messageRepository.insert({
+      id: randomUUID(),
+      thread_id: delegation.request.threadId,
+      direction: 'outbound',
+      content: JSON.stringify({
+        body: content,
+        voice: {
+          kind: 'backend_result',
+          sessionId: delegation.sessionId,
+          delegationId: delegation.id,
+          outputId: result.outputId,
+          execution: result.execution,
+          resultKind,
+          verified: true,
+        },
+      }),
+      idempotency_key: voiceBackendResultIdempotencyKey(
+        delegation.sessionId,
+        delegation.id,
+        result.outputId,
+      ),
+      provider_id: result.outputId,
+      run_id: delegation.runId ?? null,
+    });
+    if (persisted.isErr()) return err(persisted.error);
+    return ok(undefined);
+  }
+
   private skipInvalidatedDelegation(
     sessionId: string,
     delegation: VoiceDelegationRecord,
@@ -1519,6 +1568,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         ? await runtime.sideband.send(command)
         : err(new PolicyError('Voice result has no deliverable text'));
     if (stale) await this.sendStaleNotice(runtime, delegation.value, result.execution !== 'running');
+    if (!stale) {
+      const retained = this.persistBackendResult(delegation.value, result, content);
+      if (retained.isErr()) {
+        this.options.logger?.warn(
+          { delegationId: result.delegationId, outputId: result.outputId, cause: retained.error },
+          'voice backend result history persistence failed',
+        );
+      }
+    }
     const lifecycle: VoiceOutputLifecycle = {
       ...result.output,
       delivery: stale ? 'not_requested' : sent.isOk() ? 'sent' : 'failed',
