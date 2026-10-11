@@ -540,6 +540,33 @@ describe('browser voice lifecycle composition', () => {
     });
     expect(admitted.isOk()).toBe(true);
 
+    harness.provider.sideband.setContext(
+      'provider-transcript-correction',
+      context(2, 'digest-before-correction', 'Book Friday.'),
+    );
+    const laterFragment = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-later-fragment',
+        sequence: 2,
+        fragment: {
+          id: 'assistant-1',
+          role: 'assistant',
+          kind: 'completed',
+          sequence: 2,
+          text: 'A later response outside the captured request.',
+          startMs: 200,
+          endMs: 300,
+          receivedAt: 35,
+        },
+      },
+    });
+    expect(laterFragment.isOk()).toBe(true);
+    const retainedBeforeCorrection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(retainedBeforeCorrection?.delegations[0]?.status).toBe('queued');
+
     harness.provider.sideband.invalidateContext('provider-transcript-correction');
     const corrected = await harness.service.receiveProviderEvent({
       sessionId,
@@ -547,12 +574,12 @@ describe('browser voice lifecycle composition', () => {
       event: {
         kind: 'transcript',
         eventId: 'event-transcript-correction-result',
-        sequence: 2,
+        sequence: 3,
         fragment: {
           id: 'utterance-1',
           role: 'user',
           kind: 'correction',
-          sequence: 2,
+          sequence: 3,
           text: 'No Thursday.',
           receivedAt: 40,
         },

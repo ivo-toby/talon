@@ -808,7 +808,6 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       const context = this.contextForDelegation(runtime.sideband, delegation.providerDelegationId);
       const invalidated =
         !context ||
-        context.version !== delegation.contextVersion ||
         context.digest !== delegation.contextDigest;
       if (!invalidated) continue;
 
