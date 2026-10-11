@@ -614,6 +614,17 @@ export async function bootstrap(
         ),
       );
     }
+    const voicePersonaRow = repos.persona.findByName(voicePersonaName);
+    if (voicePersonaRow.isErr() || !voicePersonaRow.value) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Voice persona not found: ${voicePersonaName}`,
+          voicePersonaRow.isErr() ? voicePersonaRow.error : undefined,
+        ),
+      );
+    }
+    const voicePersonaId = voicePersonaRow.value.id;
 
     const voiceProviderName =
       config.voice.provider ??
@@ -673,12 +684,17 @@ export async function bootstrap(
       const currentPersona = personaLoader.getByName(personaName);
       if (currentPersona.isErr()) return err(currentPersona.error);
       if (!currentPersona.value) return err(new DaemonError(`Voice persona not found: ${personaName}`));
+      const currentPersonaRow = repos.persona.findByName(personaName);
+      if (currentPersonaRow.isErr()) return err(currentPersonaRow.error);
+      if (!currentPersonaRow.value) {
+        return err(new DaemonError(`Voice persona not found: ${personaName}`));
+      }
       const currentProvider = runtimeConfig.provider ?? currentPersona.value.config.provider ?? voiceProviderName;
       const currentModel = currentPersona.value.config.model;
       return voicePolicy!.capture({
         generation: voiceGeneration.value,
         ownerId: owner.ownerId,
-        personaId: currentPersona.value.config.name,
+        personaId: currentPersonaRow.value.id,
         providerName: currentProvider,
         modelName: currentModel,
         voiceName: runtimeConfig.voice,
@@ -752,7 +768,7 @@ export async function bootstrap(
       policy: voicePolicy,
       threadRepository: repos.thread,
       channelId: voiceChannel.value,
-      personaId: loadedVoicePersona.value.config.name,
+      personaId: voicePersonaId,
       providerName: voiceProviderName,
       modelName: voiceBackendModel,
       liveModelName: voiceLiveModel,
