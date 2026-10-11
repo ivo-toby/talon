@@ -69,6 +69,24 @@ test('maps an unchanged diagnostic across an insertion and a deletion', () => {
   );
 });
 
+test('maps diagnostics after middle and end-of-file deletions', () => {
+  const middleBefore = 'one\nremoved\nthree\nfour';
+  const middleAfter = 'one\nthree\nfour';
+  const middleDeletion = [{ oldStart: 2, oldCount: 1, newStart: 1, newCount: 0 }];
+  assert.deepEqual(
+    compare(middleBefore, middleAfter, [diagnostic(4)], [diagnostic(3)], middleDeletion),
+    { matched: 1, ignoredChangedBaseline: 0 },
+  );
+
+  const endBefore = 'one\ntwo\nthree\nremoved';
+  const endAfter = 'one\ntwo\nthree';
+  const endDeletion = [{ oldStart: 4, oldCount: 1, newStart: 3, newCount: 0 }];
+  assert.deepEqual(
+    compare(endBefore, endAfter, [diagnostic(3)], [diagnostic(3)], endDeletion),
+    { matched: 1, ignoredChangedBaseline: 0 },
+  );
+});
+
 test('rejects a current diagnostic whose primary range touches changed code', () => {
   const source = 'one\ntwo\nthree';
   const replacement = [{ oldStart: 2, oldCount: 1, newStart: 2, newCount: 1 }];

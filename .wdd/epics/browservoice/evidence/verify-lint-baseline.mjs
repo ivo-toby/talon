@@ -201,7 +201,7 @@ try {
 
   console.log(
     `verify-lint-baseline: PASS (${currentTotals.errors} errors, ${currentTotals.warnings} warnings; ` +
-      `unchanged baseline diagnostics preserved and ${changed.size} changed source files clean)`,
+      `unchanged baseline diagnostics preserved and ${changed.size} changed source files checked; changed code clean)`,
   );
 } catch (cause) {
   fail(cause instanceof Error ? cause.message : String(cause));

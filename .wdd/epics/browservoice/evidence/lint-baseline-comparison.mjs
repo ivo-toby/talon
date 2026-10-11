@@ -143,7 +143,7 @@ function mapNewLine(newLine, hunks) {
     if (hunk.newCount > 0 && lineInHunk(newLine, hunk.newStart, hunk.newCount)) {
       return undefined;
     }
-    if (hunk.newCount === 0 ? newLine >= hunk.newStart : newLine > hunk.newStart + hunk.newCount - 1) {
+    if (hunk.newCount === 0 ? newLine > hunk.newStart : newLine > hunk.newStart + hunk.newCount - 1) {
       delta += hunk.oldCount - hunk.newCount;
     }
   }
