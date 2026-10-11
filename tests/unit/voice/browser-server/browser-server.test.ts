@@ -225,14 +225,123 @@ describe('BrowserVoiceServer', () => {
     const secondLogin = await loginAt(base);
     const secondCookies = getSetCookies(secondLogin);
     const secondSessionCookie = cookieValue(secondCookies, VOICE_SESSION_COOKIE);
-    const swappedOwner = await fetch(`${base}/voice/sessions/session-1`, {
+    const sameOwnerRead = await fetch(`${base}/voice/sessions/session-1`, {
       headers: {
         cookie: `${VOICE_SESSION_COOKIE}=${secondSessionCookie}`,
         origin: ORIGIN,
       },
     });
-    expect(swappedOwner.status).toBe(404);
+    expect(sameOwnerRead.status).toBe(200);
     expect(service.closedReasons).toEqual([]);
+  });
+
+  it('denies retained reads to a different stable owner', async () => {
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service);
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    expect(
+      (
+        await createAt(
+          base,
+          `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`,
+          csrf,
+        )
+      ).status,
+    ).toBe(201);
+
+    const otherAuth = new VoiceAuth({ accessToken: 'secret', ownerId: 'other-owner' });
+    const otherServer = await startServer(service, {}, otherAuth);
+    const otherBase = `http://127.0.0.1:${otherServer.port}`;
+    const otherLogin = await loginAt(otherBase);
+    const otherCookie = cookieValue(getSetCookies(otherLogin), VOICE_SESSION_COOKIE);
+    const denied = await fetch(`${otherBase}/voice/sessions/session-1`, {
+      headers: { cookie: `${VOICE_SESSION_COOKIE}=${otherCookie}`, origin: ORIGIN },
+    });
+    expect(denied.status).toBe(404);
+  });
+
+  it('lets a new login revision read closed retained status and stream', async () => {
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service);
+    const base = `http://127.0.0.1:${server.port}`;
+    const firstLogin = await loginAt(base);
+    const firstCookies = getSetCookies(firstLogin);
+    const firstSessionCookie = cookieValue(firstCookies, VOICE_SESSION_COOKIE);
+    const firstCsrf = cookieValue(firstCookies, VOICE_CSRF_COOKIE);
+    const firstCookieHeader =
+      `${VOICE_SESSION_COOKIE}=${firstSessionCookie}; ` + `${VOICE_CSRF_COOKIE}=${firstCsrf}`;
+    expect((await createAt(base, firstCookieHeader, firstCsrf)).status).toBe(201);
+    service.markTerminal('session-1', 'closed');
+
+    const secondLogin = await loginAt(base);
+    const secondSessionCookie = cookieValue(getSetCookies(secondLogin), VOICE_SESSION_COOKIE);
+    const secondCookieHeader = `${VOICE_SESSION_COOKIE}=${secondSessionCookie}`;
+    const status = await fetch(`${base}/voice/sessions/session-1`, {
+      headers: { cookie: secondCookieHeader, origin: ORIGIN },
+    });
+    expect(status.status).toBe(200);
+    expect(((await status.json()) as { session: VoiceSessionStatusDto }).session.status).toBe(
+      'closed',
+    );
+
+    const stream = await fetch(`${base}/voice/sessions/session-1/events`, {
+      headers: { cookie: secondCookieHeader, origin: ORIGIN },
+    });
+    expect(stream.status).toBe(200);
+    const reader = stream.body?.getReader();
+    if (!reader) throw new Error('stream body missing');
+    const firstEvent = await reader.read();
+    expect(new TextDecoder().decode(firstEvent.value)).toContain('"status":"closed"');
+    await reader.cancel();
+  });
+
+  it('keeps close and playback bound to the original login revision', async () => {
+    const service = new FakeVoiceSessionService();
+    const server = await startServer(service);
+    const base = `http://127.0.0.1:${server.port}`;
+    const firstLogin = await loginAt(base);
+    const firstCookies = getSetCookies(firstLogin);
+    const firstSessionCookie = cookieValue(firstCookies, VOICE_SESSION_COOKIE);
+    const firstCsrf = cookieValue(firstCookies, VOICE_CSRF_COOKIE);
+    const firstCookieHeader =
+      `${VOICE_SESSION_COOKIE}=${firstSessionCookie}; ` + `${VOICE_CSRF_COOKIE}=${firstCsrf}`;
+    expect((await createAt(base, firstCookieHeader, firstCsrf)).status).toBe(201);
+
+    const secondLogin = await loginAt(base);
+    const secondCookies = getSetCookies(secondLogin);
+    const secondSessionCookie = cookieValue(secondCookies, VOICE_SESSION_COOKIE);
+    const secondCsrf = cookieValue(secondCookies, VOICE_CSRF_COOKIE);
+    const secondCookieHeader =
+      `${VOICE_SESSION_COOKIE}=${secondSessionCookie}; ` + `${VOICE_CSRF_COOKIE}=${secondCsrf}`;
+    const close = await fetch(`${base}/voice/sessions/session-1/close`, {
+      method: 'POST',
+      headers: {
+        cookie: secondCookieHeader,
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-csrf-token': secondCsrf,
+      },
+      body: JSON.stringify({ reason: 'hangup' }),
+    });
+    expect(close.status).toBe(404);
+
+    const playback = await fetch(`${base}/voice/sessions/session-1/playback`, {
+      method: 'POST',
+      headers: {
+        cookie: secondCookieHeader,
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-csrf-token': secondCsrf,
+      },
+      body: JSON.stringify({ outputId: 'output-1', status: 'played' }),
+    });
+    expect(playback.status).toBe(404);
+    expect(service.closedReasons).toEqual([]);
+    expect(service.playbackReports).toEqual([]);
   });
 
   it('allows proxy same-origin reads without a referrer', async () => {

@@ -746,7 +746,7 @@ export class BrowserVoiceServer {
       });
       return;
     }
-    if (!this.ownerMatches(sessionId, authenticated.owner)) {
+    if (!this.ownerCanRead(sessionId, authenticated.owner)) {
       this.writeError(response, requestId, {
         status: 404,
         code: 'NOT_FOUND',
@@ -847,7 +847,7 @@ export class BrowserVoiceServer {
     sessionId: string,
   ): VoiceSessionStatusDto | RequestFailure | null {
     if (!isPlausibleSessionId(sessionId)) return null;
-    if (!this.ownerMatches(sessionId, owner.owner)) return null;
+    if (!this.ownerCanRead(sessionId, owner.owner)) return null;
     try {
       const result = this.sessionService.status(owner.owner, sessionId);
       if (result.isErr()) {
@@ -869,6 +869,11 @@ export class BrowserVoiceServer {
       boundOwner === undefined ||
       (boundOwner.ownerId === owner.ownerId && boundOwner.loginRevision === owner.loginRevision)
     );
+  }
+
+  private ownerCanRead(sessionId: string, owner: VoiceOwnerContext): boolean {
+    const boundOwner = this.sessionOwners.get(sessionId);
+    return boundOwner === undefined || boundOwner.ownerId === owner.ownerId;
   }
 
   private statusAfterMutation(
