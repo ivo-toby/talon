@@ -697,6 +697,228 @@ describe('browser voice lifecycle composition', () => {
     expect(projection?.session.finalization.status).toBe('confirmed');
   });
 
+  it('retains but does not speak a running result after a transcript correction', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    const providerDelegationId = 'provider-running-correction';
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(1, 'digest-book-friday', 'Book Friday.'),
+    );
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-running-correction',
+        sequence: 1,
+        proposal: { providerDelegationId, offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+    const admittedProjection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const delegationId = admittedProjection?.delegations[0]?.id;
+    expect(delegationId).toBeDefined();
+
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let executionStartedResolve!: () => void;
+    const executionStarted = new Promise<void>((resolve) => {
+      executionStartedResolve = resolve;
+    });
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as { request?: { delegationId?: string } };
+      if (payload.request?.delegationId !== delegationId) return ok(undefined);
+      const started = harness.sink.executionStarted(delegationId, 40);
+      if (started.isErr()) throw started.error;
+      executionStartedResolve();
+      await running;
+      const final = harness.sink.final(delegationId, 'Booked Friday', 80);
+      if (final.isErr()) throw final.error;
+      return ok(undefined);
+    });
+    await executionStarted;
+    await waitFor(() => {
+      const projection = harness.store.readSession(sessionId);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'running';
+    });
+
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(2, 'digest-book-friday', 'Book Friday.'),
+    );
+    const laterFragment = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-running-later-fragment',
+        sequence: 2,
+        fragment: {
+          id: 'assistant-later',
+          role: 'assistant',
+          kind: 'completed',
+          sequence: 2,
+          text: 'A later response outside the captured request.',
+          startMs: 200,
+          endMs: 300,
+          receivedAt: 45,
+        },
+      },
+    });
+    expect(laterFragment.isOk()).toBe(true);
+    expect(harness.provider.sideband.commands).not.toContain(
+      'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+    );
+
+    harness.provider.sideband.invalidateContext(providerDelegationId);
+    const correction = harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-running-correction-result',
+        sequence: 3,
+        fragment: {
+          id: 'utterance-correction',
+          role: 'user',
+          kind: 'correction',
+          sequence: 3,
+          text: 'No Thursday.',
+          receivedAt: 50,
+        },
+      },
+    });
+    const correctionResult = await correction;
+    expect(correctionResult.isOk()).toBe(true);
+    expect(harness.provider.sideband.commands).toContain(
+      'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+    );
+    release();
+
+    await waitFor(() => {
+      const projection = harness.store.readSession(sessionId);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    await waitFor(() => harness.provider.sideband.commands.every((command) => command !== 'Booked Friday'));
+    const afterFinal = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const finalOutput = afterFinal?.outputs.find((output) => output.text === 'Booked Friday');
+    expect(afterFinal?.delegations[0]).toMatchObject({
+      status: 'completed',
+      execution: 'succeeded',
+    });
+    expect(finalOutput?.lifecycle).toMatchObject({
+      execution: 'succeeded',
+      delivery: 'not_requested',
+    });
+
+    const commandCount = harness.provider.sideband.commands.length;
+    const duplicate = harness.sink.final(delegationId, 'Booked Friday', 90);
+    expect(duplicate.isOk()).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(harness.provider.sideband.commands).toHaveLength(commandCount);
+
+    harness.queueManager.stopProcessing();
+    const closed = await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+    expect(closed.isOk()).toBe(true);
+    expect(harness.service.status(harness.owner, sessionId)._unsafeUnwrap()?.delegations[0]?.outputs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ text: 'Booked Friday' })]),
+    );
+  });
+
+  it('speaks a result when later transcript leaves the captured digest unchanged while running', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    const providerDelegationId = 'provider-running-later-fragment';
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(1, 'digest-stable', 'Book Friday.'),
+    );
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-running-later-delegation',
+        sequence: 1,
+        proposal: { providerDelegationId, offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+    const admittedProjection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const delegationId = admittedProjection?.delegations[0]?.id;
+    expect(delegationId).toBeDefined();
+
+    let release!: () => void;
+    const running = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let executionStartedResolve!: () => void;
+    const executionStarted = new Promise<void>((resolve) => {
+      executionStartedResolve = resolve;
+    });
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as { request?: { delegationId?: string } };
+      if (payload.request?.delegationId !== delegationId) return ok(undefined);
+      const started = harness.sink.executionStarted(delegationId, 40);
+      if (started.isErr()) throw started.error;
+      executionStartedResolve();
+      await running;
+      const final = harness.sink.final(delegationId, 'Booked Friday', 80);
+      if (final.isErr()) throw final.error;
+      return ok(undefined);
+    });
+    await executionStarted;
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(2, 'digest-stable', 'Book Friday.'),
+    );
+    const laterFragment = await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-running-later-fragment-only',
+        sequence: 2,
+        fragment: {
+          id: 'assistant-later-only',
+          role: 'assistant',
+          kind: 'completed',
+          sequence: 2,
+          text: 'A later response outside the captured request.',
+          startMs: 200,
+          endMs: 300,
+          receivedAt: 45,
+        },
+      },
+    });
+    expect(laterFragment.isOk()).toBe(true);
+    release();
+    await waitFor(() => harness.provider.sideband.commands.includes('Booked Friday'));
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.delegations[0]).toMatchObject({
+      status: 'completed',
+      execution: 'succeeded',
+    });
+    expect(harness.provider.sideband.commands).not.toContain(
+      'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+    );
+    harness.queueManager.stopProcessing();
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+  });
+
   it('allows a current login revision to read retained status while mutations stay exact-owner', async () => {
     let activeRevision = 1;
     const harness = createHarness({
