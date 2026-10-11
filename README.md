@@ -2429,6 +2429,20 @@ retention is controlled by the provider account. See the [browser voice guide](d
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.
 
+When a live delegation arrives, the provider adapter keeps the first notice in
+a bounded one-second settling window, even when the current snapshot appears
+complete. Transcript deltas that arrive during that window can complete or
+replace the provisional snapshot; the latest safe snapshot is then published at
+most once. A missing or unsafe snapshot uses the existing clarification path.
+Later notices require a fresh user turn and never reuse an earlier utterance
+after the bounded wait. Late assistant progress, completion timing, and
+notification speech do not rewrite an admitted request; user corrections,
+ambiguous timing, truncation, and provider replay conflicts remain unsafe.
+If the provider's missing transcript arrives after first publication, it is
+treated as a late change and fails closed. The provider offset is not treated
+as proof that a user turn was complete. Offline checks cover transcript
+ordering, not provider-specific live audio timing or causal attribution.
+
 ### Host-Tools MCP Bridge
 
 Agents interact with the host through a small set of MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.

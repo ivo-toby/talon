@@ -136,6 +136,19 @@ configured rate with known usage and an incomplete close is `incomplete`, and
 no rate is `unavailable`. Backend cost comes only from AgentRunner run
 accounting.
 
+The first live delegation remains provisional for one bounded second, even if
+the current snapshot appears complete, because transcript deltas can arrive
+after the provider notice. The adapter publishes the latest safe snapshot at
+most once; missing or unsafe context follows the clarification path. Later
+delegations require a fresh user turn and cannot reuse an earlier utterance
+after the wait expires. Assistant progress, completion timing, or notification
+speech does not change an admitted request. User corrections, ambiguous
+timing, truncation, and provider replay conflicts remain fail-closed. Offline
+checks cover this ordering behavior. A provider offset does not prove that a
+user turn was complete; a transcript arriving after publication is a late
+change and fails closed. These checks do not confirm provider-specific live
+audio timing or causal attribution.
+
 See [the browser voice guide](../../../docs/guides/voice.mdx) and [the config
 reference](../../../docs/reference/config-schema.mdx) for the route list and
 validation boundaries.

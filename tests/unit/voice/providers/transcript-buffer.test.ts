@@ -84,4 +84,33 @@ describe('TranscriptBuffer', () => {
     expect(context.uncertain).toBe(true);
     expect(context.reason).toBe('untimed_fragment');
   });
+
+  it('does not make user context uncertain for late assistant speech', () => {
+    const buffer = new TranscriptBuffer({ maxFragments: 8, maxCharacters: 100 });
+    buffer.append(fragment({ id: 'user', text: 'stable request', startMs: 0, endMs: 100 }));
+    buffer.append(
+      fragment({
+        id: 'assistant-untimed',
+        role: 'assistant',
+        text: 'progress update',
+        sequence: 2,
+      }),
+    );
+    buffer.append(
+      fragment({
+        id: 'assistant-boundary',
+        role: 'assistant',
+        text: 'notification speech',
+        sequence: 3,
+        startMs: 150,
+        endMs: 250,
+      }),
+    );
+
+    const context = buffer.captureAt(100);
+
+    expect(context.uncertain).toBe(false);
+    expect(context.snapshot?.text).toContain('progress update');
+    expect(context.snapshot?.text).not.toContain('notification speech');
+  });
 });

@@ -217,14 +217,18 @@ export class TranscriptBuffer {
       const end = fragment.endMs ?? start;
       if (start === undefined && end === undefined) {
         fragments.push(fragment);
-        uncertain = true;
-        reason ??= 'untimed_fragment';
+        if (fragment.role === 'user') {
+          uncertain = true;
+          reason ??= 'untimed_fragment';
+        }
         continue;
       }
       if (start !== undefined && start > offsetMs) continue;
       if (end !== undefined && end > offsetMs) {
-        uncertain = true;
-        reason ??= 'boundary_fragment';
+        if (fragment.role === 'user') {
+          uncertain = true;
+          reason ??= 'boundary_fragment';
+        }
         continue;
       }
       fragments.push(fragment);
@@ -269,6 +273,25 @@ export class TranscriptBuffer {
     while (fingerprints.length > this.maxFragments) fingerprints.shift();
     this.deltaFingerprints.set(id, fingerprints);
   }
+}
+
+/**
+ * Identifies the user request represented by a captured context. Timing is
+ * intentionally omitted so completion metadata cannot change the request;
+ * item identity, order, kind, and text still make corrections and new turns
+ * visible to the caller.
+ */
+export function userContextSignature(snapshot: VoiceContextSnapshot | null): string | undefined {
+  if (!snapshot) return undefined;
+  const userFragments = snapshot.fragments
+    .filter((fragment) => fragment.role === 'user')
+    .map((fragment) => ({
+      id: fragment.id,
+      kind: fragment.kind === 'correction' ? 'correction' : 'transcript',
+      text: fragment.text,
+    }));
+  if (userFragments.length === 0) return undefined;
+  return JSON.stringify(userFragments);
 }
 
 function positiveLimit(value: number, name: string): number {
