@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { err, ok } from '../../../src/core/types/result.js';
 import { ChannelError } from '../../../src/core/errors/error-types.js';
 import { BrowserVoiceConnector } from '../../../src/channels/connectors/browser-voice.js';
+import {
+  createSharedVoiceThreadMetadata,
+  createVoiceThreadExternalId,
+} from '../../../src/voice/voice-types.js';
 
 function voiceThread(sessionId = 'session-1') {
   return {
@@ -63,6 +67,61 @@ describe('BrowserVoiceConnector', () => {
       { threadId: 'session-1', text: 'A stable background result.', messageId: 'message-42' },
     ]);
     expect(output.messageId).toBe('message-42');
+  });
+
+  it('accepts the shared owner and persona voice thread metadata', async () => {
+    const externalId = createVoiceThreadExternalId('owner-1', 'persona-1');
+    const stableThread = {
+      ...voiceThread('durable-thread'),
+      id: 'durable-thread',
+      external_id: externalId,
+      metadata: JSON.stringify(createSharedVoiceThreadMetadata('owner-1', 'persona-1')),
+    };
+    const notified: string[] = [];
+    const connector = new BrowserVoiceConnector({
+      channelId: 'voice-channel',
+      threadRepository: { findByExternalId: () => ok(stableThread) },
+      sessionService: {
+        notifyThread: async (input) => {
+          notified.push(input.threadId);
+          return ok({
+            sessionId: 'session-1',
+            notificationId: 'message-1',
+            speechRequested: false,
+          });
+        },
+      },
+    });
+
+    const sent = await connector.send(externalId, { body: 'Retain this for the next call.' });
+
+    expect(sent.isOk()).toBe(true);
+    expect(notified).toEqual(['durable-thread']);
+  });
+
+  it('rejects stable external IDs with mismatched ownership metadata', async () => {
+    const externalId = createVoiceThreadExternalId('owner-1', 'persona-1');
+    const connector = new BrowserVoiceConnector({
+      channelId: 'voice-channel',
+      threadRepository: {
+        findByExternalId: () =>
+          ok({
+            ...voiceThread('durable-thread'),
+            id: 'durable-thread',
+            external_id: externalId,
+            metadata: JSON.stringify(createSharedVoiceThreadMetadata('owner-2', 'persona-1')),
+          }),
+      },
+      sessionService: {
+        notifyThread: async () =>
+          ok({ sessionId: 'session-1', notificationId: 'message-1', speechRequested: false }),
+      },
+    });
+
+    const sent = await connector.send(externalId, { body: 'Do not forward this.' });
+
+    expect(sent.isErr()).toBe(true);
+    expect(sent._unsafeUnwrapErr().message).toContain('authorized voice thread');
   });
 
   it('rejects arbitrary recipients and unsupported payloads', async () => {

@@ -33,7 +33,10 @@ export class MessageRepository extends BaseRepository {
   private readonly findByThreadStmt: Database.Statement;
   private readonly findLatestByThreadStmt: Database.Statement;
   private readonly findLatestByThreadSinceStmt: Database.Statement;
+  private readonly findLatestByThreadPageStmt: Database.Statement;
+  private readonly findLatestByThreadSincePageStmt: Database.Statement;
   private readonly findByIdempotencyKeyStmt: Database.Statement;
+  private readonly updateVoiceTranscriptStmt: Database.Statement;
 
   constructor(db: Database.Database) {
     super(db);
@@ -74,8 +77,34 @@ export class MessageRepository extends BaseRepository {
       ) sub ORDER BY created_at ASC, id ASC
     `);
 
+    this.findLatestByThreadPageStmt = db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM messages
+        WHERE thread_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?
+      ) sub ORDER BY created_at ASC, id ASC
+    `);
+
+    this.findLatestByThreadSincePageStmt = db.prepare(`
+      SELECT * FROM (
+        SELECT * FROM messages
+        WHERE thread_id = ? AND created_at > ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ? OFFSET ?
+      ) sub ORDER BY created_at ASC, id ASC
+    `);
+
     this.findByIdempotencyKeyStmt = db.prepare(`
       SELECT * FROM messages WHERE idempotency_key = ?
+    `);
+
+    this.updateVoiceTranscriptStmt = db.prepare(`
+      UPDATE messages
+      SET content = @content, provider_id = @provider_id, run_id = @run_id
+      WHERE idempotency_key = @idempotency_key
+        AND thread_id = @thread_id
+        AND direction = @direction
     `);
   }
 
@@ -96,6 +125,38 @@ export class MessageRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to insert message: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /**
+   * Inserts or corrects a voice transcript row. A correction uses the same
+   * idempotency key, so UPDATE preserves the original row identity and order.
+   */
+  upsertVoiceTranscript(input: InsertMessageInput): Result<MessageRow, DbError> {
+    try {
+      const existing = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as
+        | MessageRow
+        | undefined;
+      if (existing) {
+        if (existing.thread_id !== input.thread_id || existing.direction !== input.direction) {
+          return err(new DbError('Voice transcript idempotency key belongs to another message'));
+        }
+        this.updateVoiceTranscriptStmt.run(input);
+        const persisted = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as MessageRow;
+        return ok(persisted);
+      }
+
+      const row: MessageRow = { ...input, created_at: this.now() };
+      this.insertStmt.run(row);
+      const persisted = this.findByIdempotencyKeyStmt.get(input.idempotency_key) as MessageRow;
+      return ok(persisted);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to upsert voice transcript: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );
@@ -179,6 +240,50 @@ export class MessageRepository extends BaseRepository {
       return err(
         new DbError(
           `Failed to find latest messages by thread since timestamp: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /** Returns one newest-first page, rendered in chronological order. */
+  findLatestByThreadPage(
+    threadId: string,
+    limit: number,
+    offset: number,
+  ): Result<MessageRow[], DbError> {
+    try {
+      const rows = this.findLatestByThreadPageStmt.all(threadId, limit, offset) as MessageRow[];
+      return ok(rows);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find latest message page by thread: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  /** Returns one newest-first page after a boundary, rendered chronologically. */
+  findLatestByThreadSincePage(
+    threadId: string,
+    sinceTimestamp: number,
+    limit: number,
+    offset: number,
+  ): Result<MessageRow[], DbError> {
+    try {
+      const rows = this.findLatestByThreadSincePageStmt.all(
+        threadId,
+        sinceTimestamp,
+        limit,
+        offset,
+      ) as MessageRow[];
+      return ok(rows);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to find latest message page by thread since timestamp: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );

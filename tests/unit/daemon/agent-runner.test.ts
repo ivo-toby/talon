@@ -1796,7 +1796,7 @@ describe('AgentRunner', () => {
       expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
         'thread-001',
         10,
-        { excludeMessageId: undefined },
+        { excludeMessageId: undefined, excludeVoiceSessionId: request.sessionId },
       );
       expect(ctx.repos.message.insert).not.toHaveBeenCalled();
       expect(ctx.channelRegistry.get('test-channel')?.send).not.toHaveBeenCalled();

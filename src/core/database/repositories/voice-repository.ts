@@ -83,6 +83,7 @@ export interface VoiceOutputRow {
 
 export interface VoiceSessionLookup {
   ownerId?: string;
+  threadId?: string;
   statuses?: readonly VoiceSessionStatus[];
   before?: number;
 }
@@ -145,6 +146,10 @@ export class VoiceRepository extends BaseRepository {
       if (input.ownerId !== undefined) {
         clauses.push('owner_id = ?');
         params.push(input.ownerId);
+      }
+      if (input.threadId !== undefined) {
+        clauses.push('thread_id = ?');
+        params.push(input.threadId);
       }
       if (input.statuses !== undefined) {
         if (input.statuses.length === 0) return ok([]);

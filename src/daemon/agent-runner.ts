@@ -231,11 +231,11 @@ export class AgentRunner {
     // to avoid stranding a thread on a stale/expired session ID.
     //
     // A2A tasks run on the *source* thread but execute under the *target* persona.
-    // Restoring a session keyed by the source thread would attach the wrong
-    // persona's session history. Skip session restoration for A2A items entirely
-    // so each delegation starts a fresh context.
+    // Voice tasks share a thread across calls but each call must start with a
+    // fresh provider session and reconstructed history. Restoring a session
+    // would attach the wrong persona or replay the prior live call.
     let resolvedSessionId: string | undefined;
-    if (strategy.supportsSessionResumption && !isA2ATask && !isScheduleTask) {
+    if (strategy.supportsSessionResumption && !isA2ATask && !isScheduleTask && !isVoiceTask) {
       const sessionLookupOptions = {
         excludeCollaboration: true,
         modelName: model,
@@ -470,7 +470,9 @@ export class AgentRunner {
             // Generate a cache-friendly time context (10-min window instead of exact timestamp).
             const timeContext = buildTimeContext();
             const existingSessionId = strategy.supportsSessionResumption
-              ? resolvedSessionId
+              ? isVoiceTask
+                ? undefined
+                : resolvedSessionId
               : undefined;
 
             const baseMcpServers: Record<string, CanonicalMcpServer> = {
@@ -592,7 +594,10 @@ export class AgentRunner {
                     const assembled = this.ctx.contextAssembler.assemble(
                       item.threadId,
                       freshSessionRecentMessageCount,
-                      { excludeMessageId: item.messageId },
+                      {
+                        excludeMessageId: item.messageId,
+                        ...(isVoiceTask ? { excludeVoiceSessionId: voiceRequest.sessionId } : {}),
+                      },
                     );
                     retrieverObservation.update({
                       output: assembled.text,
@@ -1155,7 +1160,7 @@ export class AgentRunner {
             // Store session ID for future conversation resumption (memory + DB).
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
-            if (resultSessionId && !isA2ATask && !isScheduleTask) {
+            if (resultSessionId && !isA2ATask && !isScheduleTask && !isVoiceTask) {
               if (reasoningEffort !== undefined) {
                 this.ctx.sessionTracker.setSessionId(
                   item.threadId,

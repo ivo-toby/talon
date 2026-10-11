@@ -211,6 +211,7 @@ export class DurableVoiceStore implements VoiceStoreContract {
   listSessions(input: VoiceSessionListQuery): VoiceResult<readonly VoiceSessionReadProjection[]> {
     const rows = this.repository.findSessions({
       ownerId: input.ownerId,
+      threadId: input.threadId,
       statuses: input.statuses,
     });
     if (rows.isErr()) return err(rows.error);

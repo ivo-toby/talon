@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ok } from 'neverthrow';
 
 import { runMigrations } from '../../../../src/core/database/migrations/runner.js';
+import { MessageRepository } from '../../../../src/core/database/repositories/message-repository.js';
 import { QueueRepository } from '../../../../src/core/database/repositories/queue-repository.js';
 import { ThreadRepository } from '../../../../src/core/database/repositories/thread-repository.js';
 import { QueueManager } from '../../../../src/queue/queue-manager.js';
@@ -17,6 +18,8 @@ import {
   DurableVoiceSessionService,
 } from '../../../../src/voice/voice-session-service.js';
 import type {
+  VoiceBackendRequest,
+  VoiceDelegationRecord,
   LiveVoiceProvider,
   LiveVoiceSession,
   LiveVoiceSideband,
@@ -29,12 +32,13 @@ import type {
 } from '../../../../src/voice/voice-types.js';
 
 class FakeSideband implements LiveVoiceSideband {
-  readonly providerSessionId = 'provider-session-1';
   readonly commands: string[] = [];
   readonly contexts = new Map<string, VoiceContextSnapshot>();
   readonly invalidContexts = new Set<string>();
   latestUsage: VoiceUsageUpdate | undefined;
   private handler: VoiceEventHandler<import('../../../../src/voice/voice-types.js').LiveVoiceEvent> | undefined;
+
+  constructor(readonly providerSessionId = 'provider-session-1') {}
 
   contextForDelegation(providerDelegationId: string): VoiceContextSnapshot | null {
     if (this.invalidContexts.has(providerDelegationId)) return null;
@@ -90,17 +94,23 @@ class FakeSideband implements LiveVoiceSideband {
 
 class FakeProvider implements LiveVoiceProvider {
   readonly name = 'openai-live';
-  readonly sideband = new FakeSideband();
+  readonly sideband: FakeSideband;
   lastModelName: string | undefined;
+  lastInstructions: string | undefined;
+
+  constructor(providerSessionId = 'provider-session-1') {
+    this.sideband = new FakeSideband(providerSessionId);
+  }
 
   createSession(input: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
     this.lastModelName = input.modelName;
+    this.lastInstructions = input.instructions;
     const session: LiveVoiceSession = {
-      providerSessionId: 'provider-session-1',
+      providerSessionId: this.sideband.providerSessionId,
       client: {
         transport: input.transport.type,
         sessionId: input.sessionId,
-        providerSessionId: 'provider-session-1',
+        providerSessionId: this.sideband.providerSessionId,
         answer: { type: input.transport.type, sdp: 'answer' },
         expiresAt: Date.now() + 60_000,
       },
@@ -162,18 +172,21 @@ function context(version: number, digest: string, text: string): VoiceContextSna
 }
 
 function createHarness(options: {
+  database?: Database.Database;
+  providerSessionId?: string;
   owner?: { ownerId: string; loginRevision: number };
   backendModel?: string;
   liveModel?: string;
   usdPerMinute?: number;
   isOwnerActive?: (owner: { ownerId: string; loginRevision: number }) => boolean;
 } = {}) {
-  const harnessDb = createDb();
+  const harnessDb = options.database ?? createDb();
   const queueRepository = new QueueRepository(harnessDb);
   const threadRepository = new ThreadRepository(harnessDb);
+  const messageRepository = new MessageRepository(harnessDb);
   const store = new DurableVoiceStore(harnessDb, queueRepository);
   const bridge = new DurableVoiceBackendBridge(store, queueRepository, { now: () => 20 });
-  const provider = new FakeProvider();
+  const provider = new FakeProvider(options.providerSessionId);
   const transport: VoiceTransport = new BrowserVoiceTransport({ now: () => 20 });
   const policy = new VoicePolicy({
     providerTypes: new Map([['agent-provider', 'openai-compatible']]),
@@ -202,6 +215,7 @@ function createHarness(options: {
     backendBridge: bridge,
     policy,
     threadRepository,
+    messageRepository,
     channelId: 'voice-channel',
     personaId: 'persona-1',
     modelName: backendModel,
@@ -223,6 +237,7 @@ function createHarness(options: {
   );
   return {
     db: harnessDb,
+    messages: messageRepository,
     store,
     bridge,
     provider,
@@ -438,6 +453,238 @@ describe('browser voice lifecycle composition', () => {
     expect(harness.provider.lastModelName).toBe('gpt-live-1');
     expect(created._unsafeUnwrap().session.policy.modelName).toBe('gpt-5.4');
     await harness.service.closeSession(harness.owner, created._unsafeUnwrap().session.id, { reason: 'hangup' });
+  });
+
+  it('reuses owner and persona history after service reconstruction while isolating another owner', async () => {
+    const first = createHarness();
+    db = first.db;
+    const firstCreated = await first.service.createSession(first.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(firstCreated.isOk()).toBe(true);
+    const firstSession = firstCreated._unsafeUnwrap().session;
+
+    first.provider.sideband.emit({
+      kind: 'transcript',
+      eventId: 'transcript-fact-user',
+      sequence: 1,
+      fragment: {
+        id: 'fact-user',
+        role: 'user',
+        kind: 'completed',
+        sequence: 1,
+        text: 'My cat is called Nori.',
+        receivedAt: 30,
+      },
+    });
+    first.provider.sideband.emit({
+      kind: 'transcript',
+      eventId: 'transcript-fact-assistant',
+      sequence: 2,
+      fragment: {
+        id: 'fact-assistant',
+        role: 'assistant',
+        kind: 'completed',
+        sequence: 2,
+        text: 'I will remember that.',
+        receivedAt: 31,
+      },
+    });
+    await waitFor(
+      () =>
+        first.messages.findLatestByThread(firstSession.threadId, 10)._unsafeUnwrap().length === 2,
+    );
+    const firstRows = first.messages.findLatestByThread(firstSession.threadId, 10)._unsafeUnwrap();
+    expect(firstRows.map((row) => JSON.parse(row.content).body)).toEqual([
+      'My cat is called Nori.',
+      'I will remember that.',
+    ]);
+    const originalUserRow = firstRows[0];
+    first.provider.sideband.emit({
+      kind: 'transcript',
+      eventId: 'transcript-fact-correction',
+      sequence: 3,
+      fragment: {
+        id: 'fact-user',
+        role: 'user',
+        kind: 'correction',
+        sequence: 3,
+        text: 'My cat is called Nori and likes naps.',
+        receivedAt: 32,
+      },
+    });
+    await waitFor(() => {
+      const rows = first.messages.findLatestByThread(firstSession.threadId, 10)._unsafeUnwrap();
+      return (
+        rows[0]?.id === originalUserRow?.id &&
+        JSON.parse(rows[0].content).body === 'My cat is called Nori and likes naps.'
+      );
+    });
+    const correctedRows = first.messages
+      .findLatestByThread(firstSession.threadId, 10)
+      ._unsafeUnwrap();
+    expect(correctedRows).toHaveLength(2);
+    expect(correctedRows.map((row) => row.id)).toEqual(firstRows.map((row) => row.id));
+
+    const closed = await first.service.closeSession(first.owner, firstSession.id, {
+      reason: 'hangup',
+    });
+    expect(closed.isOk()).toBe(true);
+
+    const reconstructed = createHarness({
+      database: first.db,
+      providerSessionId: 'provider-session-2',
+    });
+    const secondCreated = await reconstructed.service.createSession(reconstructed.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(secondCreated.isOk()).toBe(true);
+    const secondSession = secondCreated._unsafeUnwrap().session;
+    expect(secondSession.threadId).toBe(firstSession.threadId);
+    expect(secondSession.id).not.toBe(firstSession.id);
+    expect(reconstructed.provider.lastInstructions).toContain(
+      'My cat is called Nori and likes naps.',
+    );
+    expect(reconstructed.provider.lastInstructions).toContain('I will remember that.');
+    expect(reconstructed.provider.lastInstructions).toContain('<voice-history>');
+
+    const secondClosed = await reconstructed.service.closeSession(
+      reconstructed.owner,
+      secondSession.id,
+      { reason: 'hangup' },
+    );
+    expect(secondClosed.isOk()).toBe(true);
+
+    const otherOwner = createHarness({
+      database: first.db,
+      providerSessionId: 'provider-session-3',
+      owner: { ownerId: 'owner-2', loginRevision: 1 },
+    });
+    const isolatedCreated = await otherOwner.service.createSession(otherOwner.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(isolatedCreated.isOk()).toBe(true);
+    expect(isolatedCreated._unsafeUnwrap().session.threadId).not.toBe(firstSession.threadId);
+    expect(otherOwner.provider.lastInstructions).not.toContain('My cat is called Nori.');
+    await otherOwner.service.closeSession(
+      otherOwner.owner,
+      isolatedCreated._unsafeUnwrap().session.id,
+      { reason: 'hangup' },
+    );
+  });
+
+  it('scopes durable history recovery to the requested thread before the result bound', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const targetSession = created._unsafeUnwrap().session;
+    expect((await harness.service.closeSession(harness.owner, targetSession.id, { reason: 'hangup' })).isOk()).toBe(true);
+
+    const recordResult = (session: VoiceSessionRecord, index: number, occurredAt: number) => {
+      const delegationId = `history-delegation-${index}`;
+      const providerDelegationId = `history-provider-delegation-${index}`;
+      const queueItemId = `history-queue-${index}`;
+      const request: VoiceBackendRequest = {
+        sessionId: session.id,
+        delegationId,
+        providerDelegationId,
+        threadId: session.threadId,
+        personaId: session.personaId,
+        context: context(index + 1, `history-digest-${index}`, `History request ${index}.`),
+        policy: session.policy,
+        requestedAt: occurredAt,
+      };
+      const delegation: VoiceDelegationRecord = {
+        id: delegationId,
+        sessionId: session.id,
+        providerDelegationId,
+        revision: 0,
+        contextVersion: request.context.version,
+        contextDigest: request.context.digest,
+        request,
+        status: 'admitted',
+        execution: 'not_started',
+        output: {
+          execution: 'not_started',
+          delivery: 'not_requested',
+          providerAcknowledgement: 'not_sent',
+          playback: 'not_started',
+        },
+        queueItemId,
+        createdAt: occurredAt,
+      };
+      const admitted = harness.store.admitDelegation({
+        delegation,
+        queue: { queueItemId, threadId: session.threadId, delegationId, request, maxAttempts: 1 },
+      });
+      expect(admitted.isOk()).toBe(true);
+      const recorded = harness.store.recordBackendResult({
+        delegationId,
+        outputId: `history-output-${index}`,
+        kind: 'final',
+        text: `Durable history result ${index}.`,
+        execution: 'succeeded',
+        output: {
+          execution: 'succeeded',
+          delivery: 'sent',
+          providerAcknowledgement: 'acknowledged',
+          playback: 'played',
+        },
+        occurredAt,
+      });
+      expect(recorded.isOk()).toBe(true);
+    };
+
+    recordResult(targetSession, 0, 10);
+    const threadRepository = new ThreadRepository(harness.db);
+    for (let index = 1; index <= 201; index += 1) {
+      const threadId = `history-unrelated-thread-${index}`;
+      const insertedThread = threadRepository.insert({
+        id: threadId,
+        channel_id: 'voice-channel',
+        external_id: `history-unrelated-external-${index}`,
+        metadata: '{}',
+      });
+      expect(insertedThread.isOk()).toBe(true);
+      const unrelatedSession: VoiceSessionRecord = {
+        ...targetSession,
+        id: `history-unrelated-session-${index}`,
+        owner: { ownerId: `history-unrelated-owner-${index}`, loginRevision: 1 },
+        threadId,
+        providerSessionId: undefined,
+        createdAt: targetSession.createdAt + index,
+        closedAt: (targetSession.closedAt ?? targetSession.createdAt) + index,
+        policy: { ...targetSession.policy, ownerId: `history-unrelated-owner-${index}` },
+      };
+      const insertedSession = harness.store.createSession(unrelatedSession);
+      expect(insertedSession.isOk()).toBe(true);
+      recordResult(unrelatedSession, index, 10 + index);
+    }
+
+    const filtered = harness.store.listSessions({ threadId: targetSession.threadId });
+    expect(filtered.isOk()).toBe(true);
+    expect(filtered._unsafeUnwrap().map((projection) => projection.session.id)).toEqual([
+      targetSession.id,
+    ]);
+
+    const reconstructed = createHarness({
+      database: harness.db,
+      providerSessionId: 'provider-session-reconstructed',
+    });
+    const reopened = await reconstructed.service.createSession(reconstructed.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(reopened.isOk()).toBe(true);
+    expect(reconstructed.provider.lastInstructions).toContain('Durable history result 0.');
+    expect(reconstructed.provider.lastInstructions).not.toContain('Durable history result 1.');
+    await reconstructed.service.closeSession(
+      reconstructed.owner,
+      reopened._unsafeUnwrap().session.id,
+      { reason: 'hangup' },
+    );
   });
 
   it('supersedes stale queued context before claim and executes only the replacement', async () => {

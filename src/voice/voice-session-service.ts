@@ -14,6 +14,18 @@ import { PolicyError, TalonError } from '../core/errors/index.js';
 import type { MessageRepository } from '../core/database/repositories/message-repository.js';
 import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
 import {
+  DEFAULT_VOICE_HISTORY_CHARACTERS,
+  DEFAULT_VOICE_HISTORY_ROWS,
+  composeVoiceInstructions,
+  createSharedVoiceThreadMetadata,
+  createVoiceThreadExternalId,
+  formatVoiceHistory,
+  parseSharedVoiceThreadMetadata,
+  parseVoiceMessageContent,
+  voiceBackendResultIdempotencyKey,
+  voiceTranscriptIdempotencyKey,
+} from './voice-types.js';
+import {
   VoiceAuth,
   type VoiceAuthConfig,
   type VoiceAuthLoginOptions,
@@ -58,6 +70,7 @@ import type {
   VoiceTransportHandle,
   VoiceTransportOpenRequest,
   VoiceTransportStatus,
+  VoiceTranscriptFragment,
   VoiceUnsubscribe,
   VoiceUsageUpdate,
 } from './voice-types.js';
@@ -77,7 +90,8 @@ export interface VoiceSessionServiceOptions {
   readonly policy: VoicePolicyEvaluator;
   readonly threadRepository?: ThreadRepository;
   /** Existing message history is the durable notification projection. */
-  readonly messageRepository?: Pick<MessageRepository, 'findLatestByThread'>;
+  readonly messageRepository?: Pick<MessageRepository, 'findLatestByThread'> &
+    Partial<Pick<MessageRepository, 'insert' | 'upsertVoiceTranscript'>>;
   readonly channelId?: string;
   readonly personaId: string;
   readonly providerName?: string;
@@ -347,8 +361,10 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const beforePersist = this.ensureSetupActive(owner, setupGeneration);
     if (beforePersist) return err(beforePersist);
     const sessionId = uuidv4();
-    const threadId = this.createThread(sessionId);
+    const threadId = this.createThread(owner.ownerId, policy.value.personaId, sessionId);
     if (threadId.isErr()) return err(threadId.error);
+    const history = this.readVoiceHistory(threadId.value);
+    if (history.isErr()) return err(history.error);
     const now = this.now();
     const session: VoiceSessionRecord = {
       id: sessionId,
@@ -377,7 +393,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       sessionId,
       ownerId: owner.ownerId,
       modelName: this.options.liveModelName ?? policy.value.modelName,
-      instructions: this.options.instructions,
+      instructions: composeVoiceInstructions(this.options.instructions, history.value),
       delegationMode: 'client',
       transport: input.transport,
       audio: { output: { voice: policy.value.voiceName } },
@@ -585,9 +601,23 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
 
     const sessions = this.options.store.listSessions({});
     if (sessions.isErr()) return err(sessions.error);
-    const projection = sessions.value.find((candidate) => candidate.session.threadId === input.threadId);
-    if (!projection) return err(new PolicyError('Voice thread was not found'));
-    const session = projection.session;
+    const matching = sessions.value
+      .filter((candidate) => candidate.session.threadId === input.threadId)
+      .sort((left, right) => {
+        const createdAt = right.session.createdAt - left.session.createdAt;
+        return createdAt !== 0 ? createdAt : right.session.id.localeCompare(left.session.id);
+      });
+    if (matching.length === 0) return err(new PolicyError('Voice thread was not found'));
+    const projection = matching.find(
+      (candidate) =>
+        candidate.session.status === 'connected' &&
+        candidate.session.deadlineAt > this.now() &&
+        this.runtimes.has(candidate.session.id) &&
+        this.ensureOwnerActive(candidate.session.owner) === undefined,
+    );
+    const selectedProjection = projection ?? matching[0];
+    if (!selectedProjection) return err(new PolicyError('Voice thread was not found'));
+    const session = selectedProjection.session;
     const sourceRunId = input.sourceRunId?.trim() || undefined;
     let sourceDelegation: VoiceDelegationRecord | undefined;
     let sourceLookupFailed = false;
@@ -877,16 +907,163 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     return this.ensureOwnerActive(owner);
   }
 
-  private createThread(sessionId: string): VoiceResult<string> {
+  private createThread(ownerId: string, personaId: string, sessionId: string): VoiceResult<string> {
     if (!this.options.threadRepository || !this.options.channelId) return ok(sessionId);
+    const externalId = createVoiceThreadExternalId(ownerId, personaId);
+    const metadata = createSharedVoiceThreadMetadata(ownerId, personaId);
+    const existing = this.options.threadRepository.findByExternalId(
+      this.options.channelId,
+      externalId,
+    );
+    if (existing.isErr()) return err(existing.error);
+    if (existing.value)
+      return this.validateSharedThread(
+        existing.value.id,
+        existing.value.metadata,
+        externalId,
+        ownerId,
+        personaId,
+      );
+
     const inserted = this.options.threadRepository.insert({
-      id: sessionId,
+      id: uuidv4(),
       channel_id: this.options.channelId,
-      external_id: `voice:${sessionId}`,
-      metadata: JSON.stringify({ kind: 'voice', sessionId }),
+      external_id: externalId,
+      metadata: JSON.stringify(metadata),
     });
-    if (inserted.isErr()) return err(inserted.error);
-    return ok(inserted.value.id);
+    if (inserted.isOk()) return ok(inserted.value.id);
+
+    // Another creator may have won the UNIQUE(channel_id, external_id) race.
+    // Re-read and validate the winner before reusing it.
+    const raced = this.options.threadRepository.findByExternalId(
+      this.options.channelId,
+      externalId,
+    );
+    if (raced.isOk() && raced.value) {
+      return this.validateSharedThread(
+        raced.value.id,
+        raced.value.metadata,
+        externalId,
+        ownerId,
+        personaId,
+      );
+    }
+    return err(inserted.error);
+  }
+
+  private validateSharedThread(
+    threadId: string,
+    metadata: string,
+    externalId: string,
+    ownerId: string,
+    personaId: string,
+  ): VoiceResult<string> {
+    const parsed = parseSharedVoiceThreadMetadata(metadata, externalId);
+    if (!parsed || parsed.ownerId !== ownerId || parsed.personaId !== personaId) {
+      return err(
+        new PolicyError('Voice thread ownership metadata does not match the authenticated call'),
+      );
+    }
+    return ok(threadId);
+  }
+
+  private readVoiceHistory(threadId: string): VoiceResult<string> {
+    if (!this.options.messageRepository) return ok('');
+    const recovered = this.recoverBackendHistory(threadId);
+    if (recovered.isErr()) return err(recovered.error);
+    const rows = this.options.messageRepository.findLatestByThread(
+      threadId,
+      DEFAULT_VOICE_HISTORY_ROWS,
+    );
+    if (rows.isErr()) return err(rows.error);
+    return ok(
+      formatVoiceHistory(rows.value, {
+        maxCharacters: Math.min(this.maxContextChars, DEFAULT_VOICE_HISTORY_CHARACTERS),
+      }),
+    );
+  }
+
+  private recoverBackendHistory(threadId: string): VoiceResult<void> {
+    const messageRepository = this.options.messageRepository;
+    if (!messageRepository?.insert) return ok(undefined);
+    const sessions = this.options.store.listSessions({ threadId });
+    if (sessions.isErr()) return err(sessions.error);
+
+    const candidates: Array<{
+      readonly delegation: VoiceDelegationRecord;
+      readonly result: VoiceBackendResult;
+      readonly content: string;
+    }> = [];
+    for (const projection of sessions.value) {
+      for (const delegation of projection.delegations) {
+        const result = this.recoverableBackendResult(projection, delegation);
+        if (!result) continue;
+        if (result.execution === 'succeeded' && result.output.delivery === 'not_requested') {
+          continue;
+        }
+        const content = this.backendResultContent(result);
+        if (!content) continue;
+        candidates.push({ delegation, result, content });
+      }
+    }
+
+    candidates.sort((left, right) => {
+      const occurredAt = left.result.occurredAt - right.result.occurredAt;
+      return occurredAt !== 0 ? occurredAt : left.result.outputId.localeCompare(right.result.outputId);
+    });
+    for (const candidate of candidates.slice(-DEFAULT_VOICE_HISTORY_ROWS)) {
+      const persisted = this.persistBackendResult(
+        candidate.delegation,
+        candidate.result,
+        candidate.content,
+      );
+      if (persisted.isErr()) return persisted;
+    }
+    return ok(undefined);
+  }
+
+  private recoverableBackendResult(
+    projection: VoiceSessionReadProjection,
+    delegation: VoiceDelegationRecord,
+  ): VoiceBackendResult | null {
+    if (
+      delegation.execution !== 'succeeded' &&
+      delegation.execution !== 'failed' &&
+      delegation.execution !== 'unknown'
+    ) {
+      return null;
+    }
+    const outputs = projection.outputs
+      .filter((output) => output.delegationId === delegation.id)
+      .sort((left, right) => left.createdAt - right.createdAt);
+    if (delegation.execution === 'succeeded') {
+      const final = outputs
+        .filter((output) => output.kind === 'final' && output.lifecycle.execution === 'succeeded')
+        .at(-1);
+      if (!final || !final.text?.trim()) return null;
+      return {
+        delegationId: delegation.id,
+        outputId: final.id,
+        kind: 'final',
+        text: final.text,
+        execution: 'succeeded',
+        output: final.lifecycle,
+        occurredAt: final.createdAt,
+      };
+    }
+
+    const latest = outputs
+      .filter((output) => output.lifecycle.execution === delegation.execution)
+      .at(-1);
+    return {
+      delegationId: delegation.id,
+      outputId: latest?.id ?? `voice-terminal:${delegation.id}:${delegation.execution}`,
+      kind: delegation.execution === 'failed' ? 'error' : 'unknown',
+      ...(latest?.text !== undefined ? { text: latest.text } : {}),
+      execution: delegation.execution,
+      output: latest?.lifecycle ?? delegation.output,
+      occurredAt: latest?.createdAt ?? delegation.completedAt ?? delegation.createdAt,
+    };
   }
 
   private async handleProviderEvent(sessionId: string, event: LiveVoiceEvent): Promise<VoiceResult<void>> {
@@ -934,11 +1111,13 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
   private async handleTranscriptEvent(
     sessionId: string,
     runtime: SessionRuntime,
-    _event: Extract<LiveVoiceEvent, { readonly kind: 'transcript' }>,
+    event: Extract<LiveVoiceEvent, { readonly kind: 'transcript' }>,
   ): Promise<VoiceResult<void>> {
     const projection = this.options.store.readSession(sessionId);
     if (projection.isErr()) return err(projection.error);
     if (!projection.value) return err(new PolicyError('Voice session was not found'));
+    const persisted = this.persistTranscript(projection.value.session, event.fragment);
+    if (persisted.isErr()) return err(persisted.error);
 
     for (const delegation of projection.value.delegations) {
       const terminalWithPendingDelivery =
@@ -979,6 +1158,89 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         'The transcript changed before that request could start. Please repeat it.',
       );
     }
+    return ok(undefined);
+  }
+
+  private persistTranscript(
+    session: VoiceSessionRecord,
+    fragment: VoiceTranscriptFragment,
+  ): VoiceResult<void> {
+    const messageRepository = this.options.messageRepository;
+    if (!messageRepository?.upsertVoiceTranscript) return ok(undefined);
+    const state = fragment.kind === 'delta' ? 'incomplete' : 'completed';
+    const content = JSON.stringify({
+      body: fragment.text,
+      voice: {
+        kind: 'transcript',
+        sessionId: session.id,
+        fragmentId: fragment.id,
+        role: fragment.role,
+        state,
+        sequence: fragment.sequence,
+      },
+    });
+    const persisted = messageRepository.upsertVoiceTranscript({
+      id: randomUUID(),
+      thread_id: session.threadId,
+      direction: fragment.role === 'user' ? 'inbound' : 'outbound',
+      content,
+      idempotency_key: voiceTranscriptIdempotencyKey(session.id, fragment.role, fragment.id),
+      provider_id: fragment.id,
+      run_id: null,
+    });
+    if (persisted.isErr()) return err(persisted.error);
+    return ok(undefined);
+  }
+
+  private persistBackendResult(
+    delegation: VoiceDelegationRecord,
+    result: VoiceBackendResult,
+    content: string,
+  ): VoiceResult<void> {
+    const messageRepository = this.options.messageRepository;
+    if (!messageRepository?.insert) return ok(undefined);
+    if (
+      result.execution !== 'succeeded' &&
+      result.execution !== 'failed' &&
+      result.execution !== 'unknown'
+    ) {
+      return ok(undefined);
+    }
+    if (content.trim().length === 0) return ok(undefined);
+    const resultKind =
+      result.kind === 'final' || result.kind === 'error' || result.kind === 'unknown'
+        ? result.kind
+        : undefined;
+    if (!resultKind) return ok(undefined);
+    const historyOutputId =
+      resultKind === 'final'
+        ? result.outputId
+        : `voice-terminal:${delegation.id}:${result.execution}`;
+    const persisted = messageRepository.insert({
+      id: randomUUID(),
+      thread_id: delegation.request.threadId,
+      direction: 'outbound',
+      content: JSON.stringify({
+        body: content,
+        voice: {
+          kind: 'backend_result',
+          sessionId: delegation.sessionId,
+          delegationId: delegation.id,
+          outputId: historyOutputId,
+          execution: result.execution,
+          resultKind,
+          verified: true,
+        },
+      }),
+      idempotency_key: voiceBackendResultIdempotencyKey(
+        delegation.sessionId,
+        delegation.id,
+        historyOutputId,
+      ),
+      provider_id: historyOutputId,
+      run_id: delegation.runId ?? null,
+    });
+    if (persisted.isErr()) return err(persisted.error);
     return ok(undefined);
   }
 
@@ -1383,9 +1645,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (stale) runtime.staleDelegationIds.add(delegation.value.id);
     const outputId = result.outputId;
     const isSafeFailure = result.kind === 'error' || result.kind === 'unknown';
-    const content = isSafeFailure
-      ? 'The request could not be completed safely. Please try again.'
-      : result.text ?? '';
+    const content = this.backendResultContent(result);
     const command = isSafeFailure
       ? { kind: 'instruction' as const, delegationId: delegation.value.providerDelegationId, content, outputId }
       : { kind: 'commentary' as const, delegationId: delegation.value.providerDelegationId, content, outputId };
@@ -1395,6 +1655,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         ? await runtime.sideband.send(command)
         : err(new PolicyError('Voice result has no deliverable text'));
     if (stale) await this.sendStaleNotice(runtime, delegation.value, result.execution !== 'running');
+    if (!stale) {
+      const retained = this.persistBackendResult(delegation.value, result, content);
+      if (retained.isErr()) {
+        this.options.logger?.warn(
+          { delegationId: result.delegationId, outputId: result.outputId, cause: retained.error },
+          'voice backend result history persistence failed',
+        );
+      }
+    }
     const lifecycle: VoiceOutputLifecycle = {
       ...result.output,
       delivery: stale ? 'not_requested' : sent.isOk() ? 'sent' : 'failed',
@@ -1428,6 +1697,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     ) {
       this.runtimes.delete(delegation.value.sessionId);
     }
+  }
+
+  private backendResultContent(result: VoiceBackendResult): string {
+    return result.kind === 'error' || result.kind === 'unknown'
+      ? 'The request could not be completed safely. Please try again.'
+      : result.text ?? '';
   }
 
   private persistUsage(sessionId: string, update: VoiceUsageUpdate): VoiceResult<void> {
@@ -1586,19 +1861,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const notifications: VoiceNotificationStatusDto[] = [];
     for (const row of rows.value) {
       if (row.direction !== 'outbound') continue;
-      try {
-        const parsed = JSON.parse(row.content) as unknown;
-        if (!isRecord(parsed) || typeof parsed.body !== 'string') continue;
-        const text = parsed.body.trim();
-        if (!text) continue;
-        notifications.push({
-          id: row.id,
-          text: text.slice(0, MAX_VOICE_NOTIFICATION_CHARS),
-          createdAt: row.created_at,
-        });
-      } catch {
-        // Malformed message rows are not voice notifications.
-      }
+      const parsed = parseVoiceMessageContent(row.content);
+      if (!parsed || parsed.voice) continue;
+      const text = parsed.body.trim();
+      if (!text) continue;
+      notifications.push({
+        id: row.id,
+        text: text.slice(0, MAX_VOICE_NOTIFICATION_CHARS),
+        createdAt: row.created_at,
+      });
     }
     return ok(notifications);
   }
@@ -1719,10 +1990,6 @@ function statusDto(
     usage: projection.session.usage,
     finalization: projection.session.finalization,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function delegationDto(
