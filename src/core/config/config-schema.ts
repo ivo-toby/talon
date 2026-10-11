@@ -221,6 +221,8 @@ export const AuthConfigSchema = z.object({
 // Browser voice
 // ---------------------------------------------------------------------------
 
+const BROWSER_VOICE_CHANNEL_NAME = 'browser-voice';
+
 /** Opt-in browservoice runtime. Secrets are resolved here, never copied into channels. */
 export const VoiceConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -562,6 +564,18 @@ export const TalondConfigSchema = z
     dataDir: z.string().default('data'),
   })
   .superRefine((value, ctx) => {
+    if (value.voice.enabled) {
+      value.channels.forEach((channel, index) => {
+        if (channel.name === BROWSER_VOICE_CHANNEL_NAME) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['channels', index, 'name'],
+            message: `channel name "${BROWSER_VOICE_CHANNEL_NAME}" is reserved for browser voice`,
+          });
+        }
+      });
+    }
+
     for (const [subAgentName, override] of Object.entries(value.subagents)) {
       if (
         !value.subagentSandbox.codex.enabled &&
