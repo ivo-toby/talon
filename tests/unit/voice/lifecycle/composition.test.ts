@@ -18,6 +18,8 @@ import {
   DurableVoiceSessionService,
 } from '../../../../src/voice/voice-session-service.js';
 import type {
+  VoiceBackendRequest,
+  VoiceDelegationRecord,
   LiveVoiceProvider,
   LiveVoiceSession,
   LiveVoiceSideband,
@@ -567,6 +569,120 @@ describe('browser voice lifecycle composition', () => {
     await otherOwner.service.closeSession(
       otherOwner.owner,
       isolatedCreated._unsafeUnwrap().session.id,
+      { reason: 'hangup' },
+    );
+  });
+
+  it('scopes durable history recovery to the requested thread before the result bound', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const targetSession = created._unsafeUnwrap().session;
+    expect((await harness.service.closeSession(harness.owner, targetSession.id, { reason: 'hangup' })).isOk()).toBe(true);
+
+    const recordResult = (session: VoiceSessionRecord, index: number, occurredAt: number) => {
+      const delegationId = `history-delegation-${index}`;
+      const providerDelegationId = `history-provider-delegation-${index}`;
+      const queueItemId = `history-queue-${index}`;
+      const request: VoiceBackendRequest = {
+        sessionId: session.id,
+        delegationId,
+        providerDelegationId,
+        threadId: session.threadId,
+        personaId: session.personaId,
+        context: context(index + 1, `history-digest-${index}`, `History request ${index}.`),
+        policy: session.policy,
+        requestedAt: occurredAt,
+      };
+      const delegation: VoiceDelegationRecord = {
+        id: delegationId,
+        sessionId: session.id,
+        providerDelegationId,
+        revision: 0,
+        contextVersion: request.context.version,
+        contextDigest: request.context.digest,
+        request,
+        status: 'admitted',
+        execution: 'not_started',
+        output: {
+          execution: 'not_started',
+          delivery: 'not_requested',
+          providerAcknowledgement: 'not_sent',
+          playback: 'not_started',
+        },
+        queueItemId,
+        createdAt: occurredAt,
+      };
+      const admitted = harness.store.admitDelegation({
+        delegation,
+        queue: { queueItemId, threadId: session.threadId, delegationId, request, maxAttempts: 1 },
+      });
+      expect(admitted.isOk()).toBe(true);
+      const recorded = harness.store.recordBackendResult({
+        delegationId,
+        outputId: `history-output-${index}`,
+        kind: 'final',
+        text: `Durable history result ${index}.`,
+        execution: 'succeeded',
+        output: {
+          execution: 'succeeded',
+          delivery: 'sent',
+          providerAcknowledgement: 'acknowledged',
+          playback: 'played',
+        },
+        occurredAt,
+      });
+      expect(recorded.isOk()).toBe(true);
+    };
+
+    recordResult(targetSession, 0, 10);
+    const threadRepository = new ThreadRepository(harness.db);
+    for (let index = 1; index <= 201; index += 1) {
+      const threadId = `history-unrelated-thread-${index}`;
+      const insertedThread = threadRepository.insert({
+        id: threadId,
+        channel_id: 'voice-channel',
+        external_id: `history-unrelated-external-${index}`,
+        metadata: '{}',
+      });
+      expect(insertedThread.isOk()).toBe(true);
+      const unrelatedSession: VoiceSessionRecord = {
+        ...targetSession,
+        id: `history-unrelated-session-${index}`,
+        owner: { ownerId: `history-unrelated-owner-${index}`, loginRevision: 1 },
+        threadId,
+        providerSessionId: undefined,
+        createdAt: targetSession.createdAt + index,
+        closedAt: (targetSession.closedAt ?? targetSession.createdAt) + index,
+        policy: { ...targetSession.policy, ownerId: `history-unrelated-owner-${index}` },
+      };
+      const insertedSession = harness.store.createSession(unrelatedSession);
+      expect(insertedSession.isOk()).toBe(true);
+      recordResult(unrelatedSession, index, 10 + index);
+    }
+
+    const filtered = harness.store.listSessions({ threadId: targetSession.threadId });
+    expect(filtered.isOk()).toBe(true);
+    expect(filtered._unsafeUnwrap().map((projection) => projection.session.id)).toEqual([
+      targetSession.id,
+    ]);
+
+    const reconstructed = createHarness({
+      database: harness.db,
+      providerSessionId: 'provider-session-reconstructed',
+    });
+    const reopened = await reconstructed.service.createSession(reconstructed.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(reopened.isOk()).toBe(true);
+    expect(reconstructed.provider.lastInstructions).toContain('Durable history result 0.');
+    expect(reconstructed.provider.lastInstructions).not.toContain('Durable history result 1.');
+    await reconstructed.service.closeSession(
+      reconstructed.owner,
+      reopened._unsafeUnwrap().session.id,
       { reason: 'hangup' },
     );
   });
