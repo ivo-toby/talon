@@ -306,6 +306,45 @@ channels:
 
 For other channels, refer to the matching `add-*` skill.
 
+#### Optional browser voice
+
+Ask one question: **"Do you want to enable the opt-in browser voice UI?"**
+Leave it disabled unless the user explicitly opts in. Voice currently accepts
+authenticated WebRTC only and requires the selected persona's provider to use
+the `openai-compatible` implementation. Use env references, never literal
+tokens, in `config/talond.yaml`:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  provider: openai-compatible
+  persona: assistant
+  allowedTransportTypes: [webrtc]
+  allowedOrigins: [https://voice.example.com]
+```
+
+The starter bundle's published `127.0.0.1:8788` port is for OAuth callbacks;
+it does not publish browser voice. To serve voice outside the container, put an
+HTTPS reverse proxy in the same network namespace as `talond` (or use an
+equivalent deployment layout) and forward to the loopback voice listener.
+Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Do not change
+the voice listener to `0.0.0.0`; the server intentionally accepts loopback
+hosts only. Run `talonctl doctor` after the config change and open
+`https://<publicHost>/voice/`. SIP, physical-phone, and paid live-provider
+verification remain separate acceptance steps.
+
 ### Step 4: Boot the daemon
 
 ```bash

@@ -1,0 +1,142 @@
+---
+title: Browser voice
+description: Configure and operate Talon's opt-in browser voice session
+---
+
+# Browser voice
+
+Talon can expose an opt-in browser voice session at `/voice/`. The browser
+uses WebRTC for the live audio path. Talon keeps authentication, policy, the
+session lifecycle, and any delegated backend work on the daemon; SIP and
+other transports are not currently supported.
+
+## Requirements
+
+- A persona whose configured provider is an enabled `openai-compatible`
+  provider. Voice backend work uses that persona's normal model and queue.
+- A voice access token and, when the live provider requires one, a live API
+  key. Keep both in environment variables referenced by `auth.providers`.
+- HTTPS for a browser reached through a network. Local loopback testing can
+  use HTTP. The daemon itself binds to loopback; a reverse proxy is required
+  for a public hostname.
+- A reverse proxy that preserves the public `Host` and `Origin` headers and
+  sends `X-Forwarded-Proto: https`. Talon uses that header when deciding
+  whether to mark the authentication cookies `Secure` and when checking the
+  same-origin read path.
+
+## Configuration
+
+The feature is disabled by default. This example contains no secret values:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  provider: openai-compatible
+  model: gpt-live-1
+  persona: assistant
+  voice: marin
+  allowedOrigins:
+    - https://voice.example.com
+  allowedTransportTypes:
+    - webrtc
+  allowedToolNames: []
+  allowedMcpServerNames: []
+```
+
+`voice.provider` selects the agent provider entry used for backend work. That
+entry must have `type: openai-compatible`, even when its config key has a
+different name. The persona's `model` is the backend model. `voice.model` is
+the separate live voice model sent to the live provider. Talon rejects native
+provider tools for this boundary; approval-gated capabilities and unproven
+MCP servers do not become silently available in a voice call.
+
+`publicHost` adds `https://<publicHost>` to the allowed origins and documents
+the external URL. It does not make the daemon listen publicly. Keep `host`
+loopback and configure the proxy to forward `/voice/` to that listener.
+
+## Login and session flow
+
+Open `https://voice.example.com/voice/` after the daemon and proxy are ready.
+The browser submits the access token once to `POST /voice/login`. Talon
+exchanges it for an expiring, opaque `HttpOnly` session cookie and a CSRF
+cookie. The access token is not returned to the browser API, included in
+session status, or written to logs. Mutating requests use the CSRF cookie and
+`X-CSRF-Token` header; an unauthenticated request cannot create a session or
+reach the queue/provider path.
+
+The HTTP boundary exposes these routes:
+
+| Route                               | Purpose                                                    |
+| ----------------------------------- | ---------------------------------------------------------- |
+| `GET /voice/healthz`                | Unauthenticated health check                               |
+| `POST /voice/login`                 | Exchange the configured token for browser cookies          |
+| `POST /voice/logout`                | Revoke the browser login and close its active sessions     |
+| `POST /voice/sessions`              | Create an authenticated WebRTC session                     |
+| `GET /voice/sessions/:id`           | Read retained session, delegation, output, and usage state |
+| `GET /voice/sessions/:id/events`    | Subscribe to authenticated status events with SSE          |
+| `POST /voice/sessions/:id/close`    | Hang up or close a session                                 |
+| `POST /voice/sessions/:id/playback` | Report output playback state                               |
+
+The browser sends a transport offer. The server chooses the persona, provider,
+live model, output voice, tools, and MCP policy from configuration and the
+current login. Provider events become bounded context snapshots, then durable
+voice delegations on the ordinary queue and `AgentRunner` path.
+
+## Lifecycle and limits
+
+Talon stores session, delegation, bounded text output, policy, usage, and
+finalization state in SQLite. A transcript correction supersedes the earlier
+context before queue claim; it must not replay an already claimed delegation.
+Policy is checked again before execution, so a revoked login or changed
+generation/policy prevents new backend work. A hangup skips unclaimed work and
+retains the result of work that was already claimed or running. Output state
+records execution, delivery, provider acknowledgement, and browser playback
+separately, so a late result remains inspectable after the call is closed.
+
+The configured session lifetime, concurrent-session limit, and session-creation
+rate limit are bounded by the `voice` settings. Retained voice rows do not
+contain raw audio. The current runtime has no automatic voice-row TTL cleanup;
+operators should include the SQLite voice tables in their local data retention
+and backup policy.
+
+## Cost and privacy
+
+The live provider receives the audio and live transcript data required for the
+call. Provider-side cloud retention and deletion are controlled by that
+provider's account and API settings, not by Talon. Talon does not claim to
+delete or control provider-side retention.
+
+Local SQLite stores bounded text snapshots and output text needed for session
+recovery and audit. Raw audio is not persisted in the voice schema. Voice
+usage reports provider-reported duration when available and marks voice cost
+as estimated, confirmed, incomplete, or unavailable; Talon never fabricates a
+voice dollar amount from token totals. Backend run accounting is kept as a
+separate snapshot. Voice prompt and output content is redacted from the
+Langfuse voice observation path, while local database and operational logs may
+still contain sensitive bounded text.
+
+## Validation boundaries
+
+The repository includes an offline integration harness using an actual
+`BrowserVoiceServer`, cookie/CSRF authentication, SQLite voice migrations,
+`VoiceSessionService`, the durable bridge, queue, and `AgentRunner` with fake
+live/provider transports. It also exercises a second fake transport directly
+through the transport seam. Browser UI checks cover login, denied microphone
+handling, mute/hangup/restart, retained closed sessions, a 390px viewport, and
+console errors against integrated build assets.
+
+Those checks do not establish a physical iPhone/Safari call or a paid live
+provider call. Run those separately before treating external-provider or
+mobile acceptance as complete.

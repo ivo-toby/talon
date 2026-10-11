@@ -83,6 +83,7 @@ integration, or automation is safe without your configuration and review.
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
+- **Browser voice** — Opt-in authenticated WebRTC sessions at `/voice/`, backed by the durable queue and configured persona policy
 
 ### Agent System
 
@@ -481,6 +482,7 @@ dataDir: data
 | `schedules`            | Agent-managed schedule entries (cron, interval, one-shot)                     |
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
+| `voice`                | Optional browser voice listener, authentication, live model, and lifecycle limits |
 | `subagentCli`          | Opt-in direct Claude Code adapter for bounded sub-agent generations             |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
@@ -2368,6 +2370,45 @@ side effects in its audit log. That limits what Talon exposes through its MCP
 bridge; it does not sandbox a provider runtime or make an external model or
 MCP server safe by itself. Docker container isolation for agent sandboxing is
 planned as an additional layer.
+
+### Browser voice
+
+Browser voice is disabled by default. When enabled, Talon binds a loopback
+HTTP listener and a reverse proxy can publish it over HTTPS. The browser
+exchanges an operator-configured token for an expiring cookie session; the
+server then selects the persona, backend provider, live model, WebRTC transport,
+and capability policy. Only an enabled `openai-compatible` backend provider is
+accepted, and native provider tools remain disabled.
+
+Use environment references for both the browser token and live provider key:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  provider: openai-compatible
+  persona: assistant
+  allowedOrigins:
+    - https://voice.example.com
+```
+
+The reverse proxy must preserve the public `Host` and `Origin` and send
+`X-Forwarded-Proto: https`. Talon stores bounded session text, output, usage,
+and lifecycle state in local SQLite, not raw audio. Cloud provider retention is
+controlled by the provider account. See the [browser voice guide](docs/guides/voice.mdx)
+and [voice config reference](docs/reference/config-schema.mdx) for limits,
+cost status, and validation boundaries.
 
 ### Host-Tools MCP Bridge
 

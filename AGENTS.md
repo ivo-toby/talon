@@ -31,6 +31,11 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
   → AgentRunner (provider runtime with provider-specific session handling)
   → Host-Tools Bridge (Unix socket MCP server, capability-filtered)
   → Channel Connector (format + send response)
+
+Optional browser voice follows a separate authenticated boundary:
+
+BrowserVoiceServer → VoiceSessionService (WebRTC/auth/policy)
+  → Durable Voice Bridge → the same durable Queue/AgentRunner path
 ```
 
 ### Source Layout
@@ -42,6 +47,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                                                                         |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter                                                          |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                                                                                      |
+| Voice     | `src/voice/`              | Optional browser voice authentication, WebRTC transport, live provider, durable lifecycle, and queue bridge               |
 | Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly                                                                    |
 | Tools     | `src/tools/`               | 11 host-tools + capability-based filtering via `tool-filter.ts`                                                            |
 | MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                                                                          |
@@ -62,6 +68,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 - **Scheduled runs are one-shot** — scheduled queue items do not use thread provider affinity, do not restore or persist provider session IDs, do not inject schedule-thread transcript via ContextAssembler, do not run context rotation / observational memory, and do not persist skipped final assistant wrap-up text as outbound messages. Agents must call `channel_send` explicitly to notify users; successful `channel_send` deliveries are stored on the live recipient thread so replies have context. For schedules without an `originExternalId` (CLI-created via `talonctl add-schedule`), the agent must pass `externalChatId` explicitly, call `channel_list` to discover targets, or call `channel_broadcast` to fan out to every bound chat; broadcasts skip channel-default bindings (no `thread_id`) with a warning included in the `{ delivered, skipped, failed }` result.
 - **Provider names can alias implementation types** — provider config keys remain the names personas select and the names persisted in run history. Optional `providers.<name>.type` selects the implementation factory (for example `ollama-mac` with `type: openai-compatible`) so multiple OpenAI-compatible endpoints can coexist.
 - **Capability-based security** — default-deny. Persona `capabilities.allow` lists what tools/channels are accessible. `requireApproval` triggers human confirmation.
+- **Browser voice is a restricted opt-in boundary** — `BrowserVoiceServer` binds to loopback and authenticates an expiring cookie session before `VoiceSessionService` accepts WebRTC work. The server captures persona/provider/model/tool policy, requires an enabled `openai-compatible` backend with native tools disabled, and fails closed for approval-gated or unproven MCP use. `voice.model` selects the live voice model while the persona model selects backend execution. Session, bounded text output, usage, and lifecycle state are durable in SQLite; raw audio is not. A configured `publicHost` contributes an HTTPS origin, while a reverse proxy must preserve `Host`/`Origin` and send `X-Forwarded-Proto: https`.
 - **Skills are declarative** — two formats: `skill.yaml` + `prompts/*.md` (legacy) or single `SKILL.md` with YAML frontmatter (preferred). No executable code in skills.
 - **Lazy skill loading** — only skill name + description injected into system prompts. Full content loaded on demand via `skill_load` tool (in-process MCP server for Codex SDK, external MCP server for Gemini CLI, Codex CLI, and openai-compatible). Per-skill `eager: true` opt-in in frontmatter forces the body into the system prompt at startup (use for reflexive skills on small models). Background agents use eager loading.
 - **Internal MCP server prefix** — `__talond_` prefix is reserved for internal MCP servers (`__talond_host_tools`, `__talond_skill_loader`). User-defined servers with this prefix are rejected.
@@ -73,11 +80,11 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`.
 
-Table names to know: `memory_items` (not `memory`), `schedules` (column `expression` not `cron_expression`).
+Table names to know: `memory_items` (not `memory`), `schedules` (column `expression` not `cron_expression`), and browser voice lifecycle tables `voice_sessions`, `voice_delegations`, and `voice_outputs`.
 
 ### Config
 
-YAML config validated by Zod schema in `config-schema.ts`. Supports `${ENV_VAR}` substitution. Example at `config/talond.example.yaml`.
+YAML config validated by Zod schema in `config-schema.ts`. Supports `${ENV_VAR}` substitution. Browser voice is configured under the opt-in `voice` section; see `docs/guides/voice.mdx` and `docs/reference/config-schema.mdx`. Example at `config/talond.example.yaml`.
 
 ## Code Conventions
 
@@ -160,6 +167,8 @@ rtk lsof -nP -iTCP:17701 -sTCP:LISTEN
 - `selfdoc.md` — Architecture overview written as self-documentation
 - `BOARD.md` — Project task tracking
 - `config/talond.example.yaml` — Full config reference
+- `docs/guides/voice.mdx` — Browser voice setup, lifecycle, privacy, and validation boundaries
+- `docs/reference/config-schema.mdx` — Complete schema reference, including `voice`
 - `templates/assistant/system.md` — Default persona system prompt template
 
 ## Workflow

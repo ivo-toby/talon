@@ -240,6 +240,71 @@ auth:
 
 ---
 
+## `voice`
+
+Browser voice is opt-in and disabled by default. It starts a loopback HTTP
+listener for the authenticated WebRTC UI and uses the ordinary durable queue
+and `AgentRunner` path for backend work.
+
+```yaml
+voice:
+  enabled: false
+  host: 127.0.0.1
+  port: 0
+  # publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible
+  # model: gpt-live-1
+  # persona: assistant
+  voice: marin
+  allowedTransportTypes:
+    - webrtc
+  allowedOrigins: []
+  allowedToolNames: []
+  allowedMcpServerNames: []
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Start the browser voice runtime |
+| `host` | string | `127.0.0.1` | Listener host; the runtime accepts loopback hosts only |
+| `port` | integer `0..65535` | `0` | Listener port; `0` selects an available port |
+| `publicHost` | non-empty string | — | Public HTTPS host; adds `https://<publicHost>` to allowed origins |
+| `accessToken` | string | — | Direct access token; prefer `accessTokenRef` and an environment-backed auth provider |
+| `accessTokenRef` | non-empty string | `voice` | `auth.providers.<name>.apiKey` slot used for browser login |
+| `liveApiKeyRef` | non-empty string | `openai` | `auth.providers.<name>` slot used by the live voice provider |
+| `provider` | non-empty string | selected persona provider | Backend provider name; when enabled its implementation type must be `openai-compatible` |
+| `model` | non-empty string | `gpt-live-1` at bootstrap | Live voice model; the persona's `model` remains the backend model |
+| `persona` | non-empty string | first configured persona | Persona used for backend policy and execution |
+| `voice` | non-empty string | `marin` | Server-selected live output voice |
+| `instructions` | string | `You are Talon, a helpful voice assistant.` | Live provider instructions |
+| `allowedTransportTypes` | non-empty string[] | `['webrtc']` | Transport allowlist; current runtime accepts only `webrtc` |
+| `allowedOrigins` | URL[] | `[]` | Explicit browser origins; `publicHost` contributes an HTTPS origin |
+| `allowedToolNames` | non-empty string[] | `[]` | Voice tool allowlist, still subject to persona policy |
+| `allowedMcpServerNames` | non-empty string[] | `[]` | MCP allowlist; only proven/configured servers can be used |
+| `maxSessionLifetimeMs` | integer ≥ 1000 | `900000` | Maximum voice session lifetime |
+| `maxContextChars` | integer `256..256000` | `32000` | Bound for voice context passed to the live provider |
+| `maxConcurrentSessions` | integer ≥ 1 | `1` | Active browser session limit |
+| `maxSessionCreations` | integer ≥ 1 | `5` | Session creations allowed per window |
+| `sessionCreationWindowMs` | integer ≥ 1000 | `60000` | Session creation rate-limit window |
+| `heartbeatIntervalMs` | integer ≥ 1000 | `15000` | SSE heartbeat interval |
+
+When `voice.enabled` is true, Talon requires a configured persona and an
+enabled provider whose implementation type is `openai-compatible`. The
+configured access token is resolved from `voice.accessToken`, then the
+`accessTokenRef` provider, then the global `auth.apiKey`. Use HTTPS through a
+reverse proxy for non-local browsers, preserve `Host` and `Origin`, and send
+`X-Forwarded-Proto: https` so secure cookies and origin checks reflect the
+public connection. `voice.model` controls the live voice provider only; it does
+not change the persona backend model.
+
+Voice stores bounded session text, outputs, usage, and lifecycle state in
+SQLite. Raw audio is not represented in the voice schema, and provider-side
+cloud retention remains governed by the provider account and API settings.
+
+---
+
 ## `agentRunner`
 
 ```yaml
