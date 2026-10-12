@@ -152,11 +152,14 @@ not change an admitted request. User corrections, ambiguous timing, truncation,
 and provider replay conflicts remain fail-closed. A transcript that arrives
 after first publication or expiry is treated as a late change and fails
 closed. Optional diagnostics contain only local opaque correlation IDs, fixed
-event/reason values, bounded durations, counts, and an observation-scope marker;
-they exclude transcript, prompt, provider ID, payload, error, hash, and
-credential data. The provider offset is not proof that a user turn was complete;
-offline checks do not establish provider-specific live audio timing or causal
-attribution.
+event/reason values, bounded durations, counts, and an observation-scope marker.
+Close summaries add fixed availability, opened, finalized, close-requested, and
+observation-duration fields. They exclude transcript, prompt, provider ID,
+payload, error, hash, and credential data; a zero observed-delegation count
+describes only the observed window and does not prove that no provider event
+occurred before observation began. The provider offset is not proof that a user
+turn was complete; offline checks do not establish provider-specific live audio
+timing or causal attribution.
 
 See [the browser voice guide](../../../docs/guides/voice.mdx) and [the config
 reference](../../../docs/reference/config-schema.mdx) for the route list and

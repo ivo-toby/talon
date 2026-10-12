@@ -138,10 +138,14 @@ ambiguous timing, truncation, and provider replay conflicts remain unsafe. A
 transcript that arrives after first publication or expiry is treated as a late
 change and fails closed rather than thawing that request. Optional diagnostics
 contain only local opaque correlation IDs, fixed event/reason values, bounded
-durations, counts, and an observation-scope marker; they exclude transcript,
-prompt, provider ID, payload, error, hash, and credential data. These rules do
-not treat the provider offset as proof that a user turn was complete and do not
-claim provider-specific live audio timing or causal attribution.
+durations, counts, and an observation-scope marker. Close summaries add fixed
+availability, opened, finalized, close-requested, and observation-duration
+fields. They exclude transcript, prompt, provider ID, payload, error, hash, and
+credential data; a zero observed-delegation count describes only the observed
+window and does not prove that no provider event occurred before observation
+began. These rules do not treat the provider offset as proof that a user turn
+was complete and do not claim provider-specific live audio timing or causal
+attribution.
 Policy is checked again before execution, so a revoked login or changed
 generation/policy prevents new backend work. A hangup skips unclaimed work and
 retains the result of work that was already claimed or running. Output state

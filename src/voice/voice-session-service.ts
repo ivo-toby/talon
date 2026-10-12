@@ -467,7 +467,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const runtime: SessionRuntime = {
       sideband: sideband.value,
       providerSessionId: providerSession.value.providerSessionId,
-      contextDiagnosticCorrelationId: randomUUID(),
+      contextDiagnosticCorrelationId: diagnosticCorrelationIdForSideband(sideband.value),
       unsubscribeProvider: () => undefined,
       unsubscribeTransport: () => undefined,
       eventChain: Promise.resolve(),
@@ -2195,6 +2195,19 @@ function contextRejectionReason(reason: string | undefined): VoiceContextRejecti
     default:
       return 'missing_transcript';
   }
+}
+
+function diagnosticCorrelationIdForSideband(sideband: LiveVoiceSideband): string {
+  const candidate = sideband as LiveVoiceSideband & {
+    getDiagnosticCorrelationId?: () => unknown;
+  };
+  try {
+    const correlationId = candidate.getDiagnosticCorrelationId?.();
+    if (typeof correlationId === 'string' && correlationId.length > 0) return correlationId;
+  } catch {
+    // Diagnostic correlation is optional and cannot affect admission.
+  }
+  return randomUUID();
 }
 
 export { DurableVoiceSessionService as VoiceSessionService };

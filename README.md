@@ -2446,10 +2446,14 @@ and provider replay conflicts remain unsafe. If the provider's missing
 transcript arrives after first publication or expiry, it is treated as a late
 change and fails closed. Optional diagnostics contain only local opaque
 correlation IDs, fixed event/reason values, bounded durations, counts, and an
-observation-scope marker; they exclude transcript, prompt, provider ID,
-payload, error, hash, and credential data. The provider offset is not treated
-as proof that a user turn was complete. Offline checks cover transcript
-ordering, not provider-specific live audio timing or causal attribution.
+observation-scope marker; close summaries also report fixed availability,
+opened, finalized, close-requested, and observation-duration fields. They
+exclude transcript, prompt, provider ID, payload, error, hash, and credential
+data. A zero observed-delegation count only describes the observed window and
+does not prove that no provider event happened before observation began. The
+provider offset is not treated as proof that a user turn was complete. Offline
+checks cover transcript ordering, not provider-specific live audio timing or
+causal attribution.
 
 ### Host-Tools MCP Bridge
 

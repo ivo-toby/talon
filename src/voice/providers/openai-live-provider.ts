@@ -113,7 +113,6 @@ interface PendingDelegation extends DelegationPublication {
   quietDeadline: number;
   quietTimer: ReturnType<typeof setTimeout>;
   absoluteTimer?: ReturnType<typeof setTimeout>;
-  readonly diagnosticCorrelationId: string;
 }
 
 interface ProviderPayload {
@@ -151,7 +150,12 @@ function canPreserveSettledFirstContext(
   refreshed: TranscriptContextResult,
   now: number,
 ): boolean {
-  if (now < pending.quietDeadline) return false;
+  if (
+    pending.absoluteDeadline === undefined ||
+    pending.quietDeadline > pending.absoluteDeadline ||
+    now < pending.quietDeadline
+  )
+    return false;
   if (
     previous.uncertain ||
     previous.reason !== undefined ||
@@ -458,6 +462,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private closeTimer?: ReturnType<typeof setTimeout>;
   private lastUsage?: VoiceUsageUpdate;
   private readonly diagnosticCorrelationId = randomUUID();
+  private readonly diagnosticStartedAt: number;
   private diagnosticsClosed = false;
   private observedDelegationCount = 0;
   constructor(
@@ -477,6 +482,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     this.maxProviderEventBytes = options.maxProviderEventBytes;
     this.maxPendingCommands = options.maxPendingCommands;
     this.logger = options.logger;
+    this.diagnosticStartedAt = this.now();
     this.transcript = new TranscriptBuffer(options.transcriptOptions);
     this.bindSocket();
   }
@@ -491,6 +497,11 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
 
   get transcriptBuffer(): TranscriptBuffer {
     return this.transcript;
+  }
+
+  /** Internal diagnostic correlation only; it is not part of the voice contract. */
+  private getDiagnosticCorrelationId(): string {
+    return this.diagnosticCorrelationId;
   }
 
   getContextForDelegation(providerDelegationId: string): TranscriptContextResult | undefined {
@@ -1224,7 +1235,6 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
         : {}),
       quietDeadline: receiptAt + DEFAULT_DELEGATION_CONTEXT_QUIET_MS,
       quietTimer: setTimeout(() => undefined, 0),
-      diagnosticCorrelationId: randomUUID(),
       requiresFreshUserTurn,
       baselineUserIds,
       ...(baselineUserSignature ? { baselineUserSignature } : {}),
@@ -1316,6 +1326,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       context !== undefined &&
       !context.uncertain &&
       context.reason === undefined &&
+      pending.quietDeadline <= pending.absoluteDeadline &&
       now >= pending.quietDeadline;
     if (!settled) {
       this.terminalizeUnsafeDelegationContext(providerDelegationId, context);
@@ -1413,7 +1424,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     reason: VoiceContextDiagnosticReason | undefined,
   ): void {
     this.logDiagnostic({
-      correlationId: pending.diagnosticCorrelationId,
+      correlationId: this.diagnosticCorrelationId,
       event,
       reason,
       elapsedMs: boundedDuration(this.now() - pending.receiptAt),
@@ -1446,22 +1457,38 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     readonly elapsedMs?: number;
     readonly observedDelegations?: number;
     readonly observation?: VoiceContextDiagnosticObservation;
+    readonly availability?: 'available' | 'unavailable';
+    readonly available?: boolean;
+    readonly opened?: boolean;
+    readonly finalized?: boolean;
+    readonly closeRequested?: boolean;
+    readonly observationDurationMs?: number;
   }): void {
     if (!this.logger) return;
     try {
-      this.logger.debug(
-        {
-          voiceCorrelationId: input.correlationId,
-          event: input.event,
-          ...(input.reason ? { reason: input.reason } : {}),
-          ...(input.elapsedMs !== undefined ? { elapsedMs: input.elapsedMs } : {}),
-          ...(input.observedDelegations !== undefined
-            ? { observedDelegations: input.observedDelegations }
-            : {}),
-          ...(input.observation ? { observation: input.observation } : {}),
-        },
-        'voice context diagnostic',
-      );
+      const fields = {
+        voiceCorrelationId: input.correlationId,
+        event: input.event,
+        ...(input.reason ? { reason: input.reason } : {}),
+        ...(input.elapsedMs !== undefined ? { elapsedMs: input.elapsedMs } : {}),
+        ...(input.observedDelegations !== undefined
+          ? { observedDelegations: input.observedDelegations }
+          : {}),
+        ...(input.observation ? { observation: input.observation } : {}),
+        ...(input.availability ? { availability: input.availability } : {}),
+        ...(input.available !== undefined ? { available: input.available } : {}),
+        ...(input.opened !== undefined ? { opened: input.opened } : {}),
+        ...(input.finalized !== undefined ? { finalized: input.finalized } : {}),
+        ...(input.closeRequested !== undefined ? { closeRequested: input.closeRequested } : {}),
+        ...(input.observationDurationMs !== undefined
+          ? { observationDurationMs: input.observationDurationMs }
+          : {}),
+      };
+      if (input.event === 'invalidated') {
+        this.logger.warn(fields, 'voice context diagnostic');
+      } else {
+        this.logger.info(fields, 'voice context diagnostic');
+      }
     } catch {
       // Diagnostics are observational and must never affect admission.
     }
@@ -1475,6 +1502,12 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       event: 'closed',
       observation: 'sideband_lifetime',
       observedDelegations: this.observedDelegationCount,
+      availability: this.opened ? 'available' : 'unavailable',
+      available: this.opened,
+      opened: this.opened,
+      finalized: this.finalized,
+      closeRequested: this.closeRequested,
+      observationDurationMs: boundedDuration(this.now() - this.diagnosticStartedAt),
     });
   }
 
