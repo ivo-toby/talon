@@ -2429,19 +2429,31 @@ retention is controlled by the provider account. See the [browser voice guide](d
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.
 
-When a live delegation arrives, the provider adapter keeps the first notice in
-a bounded one-second settling window, even when the current snapshot appears
-complete. Transcript deltas that arrive during that window can complete or
-replace the provisional snapshot; the latest safe snapshot is then published at
-most once. A missing or unsafe snapshot uses the existing clarification path.
-Later notices require a fresh user turn and never reuse an earlier utterance
-after the bounded wait. Late assistant progress, completion timing, and
-notification speech do not rewrite an admitted request; user corrections,
-ambiguous timing, truncation, and provider replay conflicts remain unsafe.
-If the provider's missing transcript arrives after first publication, it is
-treated as a late change and fails closed. The provider offset is not treated
-as proof that a user turn was complete. Offline checks cover transcript
-ordering, not provider-specific live audio timing or causal attribution.
+When a live delegation arrives, the first notice remains provisional until a
+1,000 ms quiet interval has passed after the latest meaningful captured USER
+signature or safety classification change. A fixed 5,000 ms collection
+deadline starts when that notice is received and never extends. An initial safe
+snapshot still waits for quiet; an unsafe snapshot remains pending at quiet
+expiry so a valid late transcript can settle before the absolute deadline. At
+absolute expiry, a safe but unsettled snapshot is invalidated and follows the
+clarification path. These timers are local policy, not a completeness proof,
+and do not depend on an undocumented response-completion event.
+
+Later notices require a fresh user turn and never reuse an earlier utterance.
+Late assistant progress, completion timing, and notification speech do not
+rewrite an admitted request; user corrections, ambiguous timing, truncation,
+and provider replay conflicts remain unsafe. If the provider's missing
+transcript arrives after first publication or expiry, it is treated as a late
+change and fails closed. Optional diagnostics contain only local opaque
+correlation IDs, fixed event/reason values, bounded durations, counts, and an
+observation-scope marker; close summaries also report fixed availability,
+opened, finalized, close-requested, and observation-duration fields. They
+exclude transcript, prompt, provider ID, payload, error, hash, and credential
+data. A zero observed-delegation count only describes the observed window and
+does not prove that no provider event happened before observation began. The
+provider offset is not treated as proof that a user turn was complete. Offline
+checks cover transcript ordering, not provider-specific live audio timing or
+causal attribution.
 
 ### Host-Tools MCP Bridge
 

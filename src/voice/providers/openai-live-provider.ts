@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
+import type pino from 'pino';
 import { err, ok } from '../../core/types/result.js';
 import type { TalonError } from '../../core/errors/error-types.js';
 import type {
@@ -39,7 +40,10 @@ export const DEFAULT_LIVE_CLOSE_TIMEOUT_MS = 5_000;
 export const DEFAULT_LIVE_SESSION_LIFETIME_MS = 15 * 60_000;
 export const DEFAULT_MAX_PROVIDER_EVENT_BYTES = 1_000_000;
 export const DEFAULT_MAX_PENDING_COMMANDS = 128;
-export const DEFAULT_DELEGATION_CONTEXT_WAIT_MS = 1_000;
+export const DEFAULT_DELEGATION_CONTEXT_QUIET_MS = 1_000;
+export const DEFAULT_DELEGATION_CONTEXT_DEADLINE_MS = 5_000;
+/** Backwards-compatible name for the first-notice quiet interval. */
+export const DEFAULT_DELEGATION_CONTEXT_WAIT_MS = DEFAULT_DELEGATION_CONTEXT_QUIET_MS;
 
 export const LIVE_WEBSOCKET_OPEN = 1;
 
@@ -72,6 +76,7 @@ export interface OpenAiLiveVoiceProviderOptions extends TranscriptBufferOptions 
   readonly defaultSessionLifetimeMs?: number;
   readonly maxProviderEventBytes?: number;
   readonly maxPendingCommands?: number;
+  readonly logger?: pino.Logger;
 }
 
 export type LiveSidebandFinalization = 'pending' | 'confirmed' | 'incomplete';
@@ -93,18 +98,88 @@ interface EncodedCommand {
   readonly pending?: PendingCommand;
 }
 
-interface PendingDelegation {
+interface DelegationPublication {
   readonly eventId: string;
   readonly sequence: number;
   readonly proposal: VoiceDelegationProposal;
   readonly requiresFreshUserTurn?: boolean;
   readonly baselineUserSignature?: string;
   readonly baselineUserIds?: readonly string[];
-  readonly timer: ReturnType<typeof setTimeout>;
+}
+
+interface PendingDelegation extends DelegationPublication {
+  readonly receiptAt: number;
+  readonly absoluteDeadline?: number;
+  quietDeadline: number;
+  quietTimer: ReturnType<typeof setTimeout>;
+  absoluteTimer?: ReturnType<typeof setTimeout>;
 }
 
 interface ProviderPayload {
   readonly [key: string]: unknown;
+}
+
+type VoiceContextDiagnosticReason =
+  | 'missing_transcript'
+  | 'truncated'
+  | 'boundary_fragment'
+  | 'untimed_fragment'
+  | 'transcript_changed'
+  | 'delegation_replay_conflict'
+  | 'published_context_reuse'
+  | 'quiet_pending'
+  | 'absolute_expiry';
+
+type VoiceContextDiagnosticEvent =
+  | 'pending'
+  | 'quiet_wait'
+  | 'published'
+  | 'invalidated'
+  | 'retired'
+  | 'closed';
+
+type VoiceContextDiagnosticObservation = 'sideband_lifetime';
+
+function contextSafetyKey(context: TranscriptContextResult): string {
+  return `${context.uncertain ? 'unsafe' : 'safe'}:${context.reason ?? 'none'}`;
+}
+
+function canPreserveSettledFirstContext(
+  pending: PendingDelegation,
+  previous: TranscriptContextResult,
+  refreshed: TranscriptContextResult,
+  now: number,
+): boolean {
+  if (
+    pending.absoluteDeadline === undefined ||
+    pending.quietDeadline > pending.absoluteDeadline ||
+    now < pending.quietDeadline
+  )
+    return false;
+  if (
+    previous.uncertain ||
+    previous.reason !== undefined ||
+    refreshed.uncertain ||
+    refreshed.reason !== undefined
+  ) {
+    return false;
+  }
+  const previousSignature = userContextSignature(previous.snapshot);
+  return (
+    previousSignature !== undefined &&
+    previousSignature === userContextSignature(refreshed.snapshot) &&
+    contextSafetyKey(previous) === contextSafetyKey(refreshed)
+  );
+}
+
+function contextChangedMeaningfully(
+  previous: TranscriptContextResult,
+  next: TranscriptContextResult,
+): boolean {
+  return (
+    userContextSignature(previous.snapshot) !== userContextSignature(next.snapshot) ||
+    contextSafetyKey(previous) !== contextSafetyKey(next)
+  );
 }
 
 /** GPT-Live adapter using the documented Live API, never the Realtime API. */
@@ -122,6 +197,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
   private readonly defaultSessionLifetimeMs: number;
   private readonly maxProviderEventBytes: number;
   private readonly maxPendingCommands: number;
+  private readonly logger: pino.Logger | undefined;
   private readonly transcriptOptions: TranscriptBufferOptions;
   private readonly sessions = new Map<string, ProviderSessionState>();
 
@@ -158,6 +234,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
       options.maxPendingCommands ?? DEFAULT_MAX_PENDING_COMMANDS,
       'maxPendingCommands',
     );
+    this.logger = options.logger;
     this.transcriptOptions = {
       maxFragments: options.maxFragments,
       maxCharacters: options.maxCharacters,
@@ -251,6 +328,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
       closeTimeoutMs: this.closeTimeoutMs,
       maxProviderEventBytes: this.maxProviderEventBytes,
       maxPendingCommands: this.maxPendingCommands,
+      logger: this.logger,
       transcriptOptions: this.transcriptOptions,
     });
     const opened = await sideband.open();
@@ -341,6 +419,7 @@ export interface OpenAiLiveVoiceSidebandOptions {
   readonly closeTimeoutMs: number;
   readonly maxProviderEventBytes: number;
   readonly maxPendingCommands: number;
+  readonly logger?: pino.Logger;
   readonly transcriptOptions: TranscriptBufferOptions;
 }
 
@@ -355,6 +434,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private readonly closeTimeoutMs: number;
   private readonly maxProviderEventBytes: number;
   private readonly maxPendingCommands: number;
+  private readonly logger: pino.Logger | undefined;
   private readonly transcript: TranscriptBuffer;
   private readonly handlers = new Set<VoiceEventHandler<LiveVoiceEvent>>();
   private readonly pendingCommands = new Map<string, PendingCommand>();
@@ -381,6 +461,10 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private resolveClose?: (result: VoiceResult<void>) => void;
   private closeTimer?: ReturnType<typeof setTimeout>;
   private lastUsage?: VoiceUsageUpdate;
+  private readonly diagnosticCorrelationId = randomUUID();
+  private readonly diagnosticStartedAt: number;
+  private diagnosticsClosed = false;
+  private observedDelegationCount = 0;
   constructor(
     socket: LiveWebSocket,
     providerSessionId: string,
@@ -397,6 +481,8 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     this.closeTimeoutMs = options.closeTimeoutMs;
     this.maxProviderEventBytes = options.maxProviderEventBytes;
     this.maxPendingCommands = options.maxPendingCommands;
+    this.logger = options.logger;
+    this.diagnosticStartedAt = this.now();
     this.transcript = new TranscriptBuffer(options.transcriptOptions);
     this.bindSocket();
   }
@@ -411,6 +497,11 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
 
   get transcriptBuffer(): TranscriptBuffer {
     return this.transcript;
+  }
+
+  /** Internal diagnostic correlation only; it is not part of the voice contract. */
+  private getDiagnosticCorrelationId(): string {
+    return this.diagnosticCorrelationId;
   }
 
   getContextForDelegation(providerDelegationId: string): TranscriptContextResult | undefined {
@@ -790,6 +881,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       receivedAt: this.now(),
     };
     const context = this.transcript.captureAt(offsetMs);
+    this.observedDelegationCount += 1;
     this.delegationOffsets.set(providerDelegationId, offsetMs);
     this.delegationTargets.set(providerDelegationId, normalizedTarget);
     // Live can announce the first delegation before the corresponding user
@@ -1024,7 +1116,22 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
         pending.requiresFreshUserTurn !== true &&
         !this.publishedDelegations.has(delegationId)
       ) {
+        if (pending.absoluteDeadline !== undefined && this.now() >= pending.absoluteDeadline) {
+          const now = this.now();
+          if (canPreserveSettledFirstContext(pending, previous, refreshed, now)) {
+            // A delayed assistant or timing callback can arrive at the hard
+            // cutoff without changing the captured user request. Preserve the
+            // settled candidate and let the absolute timer publish it.
+            this.delegationContexts.set(delegationId, refreshed);
+          } else {
+            this.terminalizeUnsafeDelegationContext(delegationId, previous);
+          }
+          continue;
+        }
         this.delegationContexts.set(delegationId, refreshed);
+        if (contextChangedMeaningfully(previous, refreshed)) {
+          this.resetFirstPendingQuiet(delegationId);
+        }
         continue;
       }
       if (previous.uncertain) {
@@ -1116,29 +1223,116 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     requiresFreshUserTurn: boolean,
   ): void {
     this.retirePendingDelegation(providerDelegationId);
-    const timer = setTimeout(() => {
-      const pending = this.pendingDelegations.get(providerDelegationId);
-      if (!pending) return;
-      this.pendingDelegations.delete(providerDelegationId);
-      if (
-        this.finalized ||
-        this.closeRequested ||
-        !this.connected ||
-        this.now() >= this.expiresAt
-      ) {
-        return;
-      }
-      this.publishDelegation(pending);
-    }, DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
-    this.pendingDelegations.set(providerDelegationId, {
+    const receiptAt = proposal.receivedAt;
+    const firstNotice = requiresFreshUserTurn !== true;
+    const pending: PendingDelegation = {
       eventId,
       sequence,
       proposal,
-      timer,
+      receiptAt,
+      ...(firstNotice
+        ? { absoluteDeadline: receiptAt + DEFAULT_DELEGATION_CONTEXT_DEADLINE_MS }
+        : {}),
+      quietDeadline: receiptAt + DEFAULT_DELEGATION_CONTEXT_QUIET_MS,
+      quietTimer: setTimeout(() => undefined, 0),
       requiresFreshUserTurn,
       baselineUserIds,
       ...(baselineUserSignature ? { baselineUserSignature } : {}),
-    });
+    };
+    this.pendingDelegations.set(providerDelegationId, pending);
+    this.armPendingQuietTimer(providerDelegationId, pending);
+    if (firstNotice) this.armPendingAbsoluteTimer(providerDelegationId, pending);
+    const context = this.delegationContexts.get(providerDelegationId);
+    this.logPendingDiagnostic(
+      pending,
+      'pending',
+      context?.reason ?? (context?.uncertain ? 'missing_transcript' : 'quiet_pending'),
+    );
+  }
+
+  private resetFirstPendingQuiet(providerDelegationId: string): void {
+    const pending = this.pendingDelegations.get(providerDelegationId);
+    if (
+      !pending ||
+      pending.requiresFreshUserTurn === true ||
+      this.publishedDelegations.has(providerDelegationId)
+    )
+      return;
+    const now = this.now();
+    if (pending.absoluteDeadline !== undefined && now >= pending.absoluteDeadline) return;
+    pending.quietDeadline = now + DEFAULT_DELEGATION_CONTEXT_QUIET_MS;
+    this.armPendingQuietTimer(providerDelegationId, pending);
+  }
+
+  private armPendingQuietTimer(providerDelegationId: string, pending: PendingDelegation): void {
+    clearTimeout(pending.quietTimer);
+    const delay = Math.max(0, pending.quietDeadline - this.now());
+    pending.quietTimer = setTimeout(() => {
+      this.handlePendingQuietExpiry(providerDelegationId);
+    }, delay);
+  }
+
+  private armPendingAbsoluteTimer(providerDelegationId: string, pending: PendingDelegation): void {
+    if (pending.absoluteDeadline === undefined) return;
+    clearTimeout(pending.absoluteTimer);
+    const delay = Math.max(0, pending.absoluteDeadline - this.now());
+    pending.absoluteTimer = setTimeout(() => {
+      this.handlePendingAbsoluteExpiry(providerDelegationId);
+    }, delay);
+  }
+
+  private handlePendingQuietExpiry(providerDelegationId: string): void {
+    const pending = this.pendingDelegations.get(providerDelegationId);
+    if (!pending) return;
+    const now = this.now();
+    if (now < pending.quietDeadline) {
+      this.armPendingQuietTimer(providerDelegationId, pending);
+      return;
+    }
+    if (this.finalized || this.closeRequested || !this.connected || now >= this.expiresAt) {
+      this.retirePendingDelegation(providerDelegationId);
+      return;
+    }
+    if (pending.requiresFreshUserTurn === true) {
+      this.publishDelegation(pending);
+      return;
+    }
+    const context = this.delegationContexts.get(providerDelegationId);
+    if (!context || context.uncertain || context.reason !== undefined) {
+      this.logPendingDiagnostic(pending, 'quiet_wait', context?.reason ?? 'missing_transcript');
+      return;
+    }
+    if (pending.absoluteDeadline !== undefined && now >= pending.absoluteDeadline) {
+      this.handlePendingAbsoluteExpiry(providerDelegationId);
+      return;
+    }
+    this.publishDelegation(pending);
+  }
+
+  private handlePendingAbsoluteExpiry(providerDelegationId: string): void {
+    const pending = this.pendingDelegations.get(providerDelegationId);
+    if (!pending || pending.absoluteDeadline === undefined) return;
+    const now = this.now();
+    if (now < pending.absoluteDeadline) {
+      this.armPendingAbsoluteTimer(providerDelegationId, pending);
+      return;
+    }
+    if (this.finalized || this.closeRequested || !this.connected || now >= this.expiresAt) {
+      this.retirePendingDelegation(providerDelegationId);
+      return;
+    }
+    const context = this.delegationContexts.get(providerDelegationId);
+    const settled =
+      context !== undefined &&
+      !context.uncertain &&
+      context.reason === undefined &&
+      pending.quietDeadline <= pending.absoluteDeadline &&
+      now >= pending.quietDeadline;
+    if (!settled) {
+      this.terminalizeUnsafeDelegationContext(providerDelegationId, context);
+      this.logPendingDiagnostic(pending, 'invalidated', 'absolute_expiry');
+    }
+    this.publishDelegation(pending);
   }
 
   private resolvePendingDelegations(): void {
@@ -1169,7 +1363,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     }
   }
 
-  private publishDelegation(pending: Omit<PendingDelegation, 'timer'>): void {
+  private publishDelegation(pending: DelegationPublication): void {
     const providerDelegationId = pending.proposal.providerDelegationId;
     if (
       this.publishedDelegations.has(providerDelegationId) ||
@@ -1183,18 +1377,22 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     const reusesPublishedContext =
       signature !== undefined && this.publishedUserSignatures.has(signature);
     this.hasPublishedDelegation = true;
-    if (
-      reusesPublishedContext ||
-      (pending.requiresFreshUserTurn === true &&
-        (!context ||
-          context.uncertain ||
-          context.reason !== undefined ||
-          !signature ||
-          !hasFreshUserTurn(pending, context.snapshot) ||
-          signature === pending.baselineUserSignature ||
-          this.blockedUserSignatures.has(signature)))
-    ) {
+    const unsafeContext =
+      !context || context.uncertain || context.reason !== undefined || !signature;
+    const unsafeFreshTurn =
+      pending.requiresFreshUserTurn === true &&
+      (!hasFreshUserTurn(pending, context?.snapshot ?? null) ||
+        signature === pending.baselineUserSignature ||
+        (signature !== undefined && this.blockedUserSignatures.has(signature)));
+    if (reusesPublishedContext || unsafeContext || unsafeFreshTurn) {
       this.terminalizeUnsafeDelegationContext(providerDelegationId, context);
+      this.logPublicationDiagnostic(
+        providerDelegationId,
+        'invalidated',
+        reusesPublishedContext
+          ? 'published_context_reuse'
+          : (context?.reason ?? 'missing_transcript'),
+      );
     }
     this.rememberPublishedDelegation(providerDelegationId);
     this.retirePendingDelegation(providerDelegationId);
@@ -1203,6 +1401,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       const signature = userContextSignature(publishedContext.snapshot);
       if (signature) this.rememberPublishedUserSignature(signature);
     }
+    this.logPublicationDiagnostic(providerDelegationId, 'published', undefined);
     this.publish({
       kind: 'delegation',
       eventId: pending.eventId,
@@ -1214,8 +1413,102 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private retirePendingDelegation(providerDelegationId: string): void {
     const pending = this.pendingDelegations.get(providerDelegationId);
     if (!pending) return;
-    clearTimeout(pending.timer);
+    clearTimeout(pending.quietTimer);
+    clearTimeout(pending.absoluteTimer);
     this.pendingDelegations.delete(providerDelegationId);
+  }
+
+  private logPendingDiagnostic(
+    pending: PendingDelegation,
+    event: Exclude<VoiceContextDiagnosticEvent, 'closed'>,
+    reason: VoiceContextDiagnosticReason | undefined,
+  ): void {
+    this.logDiagnostic({
+      correlationId: this.diagnosticCorrelationId,
+      event,
+      reason,
+      elapsedMs: boundedDuration(this.now() - pending.receiptAt),
+      observedDelegations: this.observedDelegationCount,
+    });
+  }
+
+  private logPublicationDiagnostic(
+    providerDelegationId: string,
+    event: Exclude<VoiceContextDiagnosticEvent, 'closed'>,
+    reason: VoiceContextDiagnosticReason | undefined,
+  ): void {
+    const pending = this.pendingDelegations.get(providerDelegationId);
+    if (pending) {
+      this.logPendingDiagnostic(pending, event, reason);
+      return;
+    }
+    this.logDiagnostic({
+      correlationId: this.diagnosticCorrelationId,
+      event,
+      reason,
+      observedDelegations: this.observedDelegationCount,
+    });
+  }
+
+  private logDiagnostic(input: {
+    readonly correlationId: string;
+    readonly event: VoiceContextDiagnosticEvent;
+    readonly reason?: VoiceContextDiagnosticReason;
+    readonly elapsedMs?: number;
+    readonly observedDelegations?: number;
+    readonly observation?: VoiceContextDiagnosticObservation;
+    readonly availability?: 'available' | 'unavailable';
+    readonly available?: boolean;
+    readonly opened?: boolean;
+    readonly finalized?: boolean;
+    readonly closeRequested?: boolean;
+    readonly observationDurationMs?: number;
+  }): void {
+    if (!this.logger) return;
+    try {
+      const fields = {
+        voiceCorrelationId: input.correlationId,
+        event: input.event,
+        ...(input.reason ? { reason: input.reason } : {}),
+        ...(input.elapsedMs !== undefined ? { elapsedMs: input.elapsedMs } : {}),
+        ...(input.observedDelegations !== undefined
+          ? { observedDelegations: input.observedDelegations }
+          : {}),
+        ...(input.observation ? { observation: input.observation } : {}),
+        ...(input.availability ? { availability: input.availability } : {}),
+        ...(input.available !== undefined ? { available: input.available } : {}),
+        ...(input.opened !== undefined ? { opened: input.opened } : {}),
+        ...(input.finalized !== undefined ? { finalized: input.finalized } : {}),
+        ...(input.closeRequested !== undefined ? { closeRequested: input.closeRequested } : {}),
+        ...(input.observationDurationMs !== undefined
+          ? { observationDurationMs: input.observationDurationMs }
+          : {}),
+      };
+      if (input.event === 'invalidated') {
+        this.logger.warn(fields, 'voice context diagnostic');
+      } else {
+        this.logger.info(fields, 'voice context diagnostic');
+      }
+    } catch {
+      // Diagnostics are observational and must never affect admission.
+    }
+  }
+
+  private logCloseSummary(): void {
+    if (this.diagnosticsClosed) return;
+    this.diagnosticsClosed = true;
+    this.logDiagnostic({
+      correlationId: this.diagnosticCorrelationId,
+      event: 'closed',
+      observation: 'sideband_lifetime',
+      observedDelegations: this.observedDelegationCount,
+      availability: this.opened ? 'available' : 'unavailable',
+      available: this.opened,
+      opened: this.opened,
+      finalized: this.finalized,
+      closeRequested: this.closeRequested,
+      observationDurationMs: boundedDuration(this.now() - this.diagnosticStartedAt),
+    });
   }
 
   private rememberPublishedDelegation(providerDelegationId: string): void {
@@ -1276,6 +1569,7 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private closeSocket(force = false): void {
     this.connected = false;
     this.retirePendingDelegations();
+    this.logCloseSummary();
     clearTimeout(this.closeTimer);
     if (force) {
       try {
@@ -1374,6 +1668,11 @@ function positiveLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1)
     throw new TypeError(`${name} must be a positive safe integer`);
   return value;
+}
+
+function boundedDuration(value: number): number {
+  if (!Number.isFinite(value) || value < 0) return 0;
+  return Math.min(Math.floor(value), Number.MAX_SAFE_INTEGER);
 }
 
 function asRecord(value: unknown): ProviderPayload | undefined {

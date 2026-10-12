@@ -39,6 +39,13 @@ class FakeSideband implements LiveVoiceSideband {
   readonly commands: string[] = [];
   readonly contexts = new Map<string, VoiceContextSnapshot>();
   readonly invalidContexts = new Set<string>();
+  diagnosticContext:
+    | {
+        readonly snapshot: VoiceContextSnapshot | null;
+        readonly uncertain: boolean;
+        readonly reason?: string;
+      }
+    | undefined;
   latestUsage: VoiceUsageUpdate | undefined;
   private handler: VoiceEventHandler<import('../../../../src/voice/voice-types.js').LiveVoiceEvent> | undefined;
 
@@ -54,6 +61,18 @@ class FakeSideband implements LiveVoiceSideband {
       fragments: [],
       truncated: false,
     };
+  }
+
+  getContextForDelegation(
+    _providerDelegationId: string,
+  ):
+    | {
+        readonly snapshot: VoiceContextSnapshot | null;
+        readonly uncertain: boolean;
+        readonly reason?: string;
+      }
+    | undefined {
+    return this.diagnosticContext;
   }
 
   setContext(providerDelegationId: string, context: VoiceContextSnapshot): void {
@@ -160,19 +179,25 @@ class SocketSideband {
 
 class SocketProvider implements LiveVoiceProvider {
   readonly name = 'openai-live';
-  readonly socket = new SocketSideband();
-  readonly sideband = new OpenAiLiveVoiceSideband(
-    this.socket as unknown as LiveWebSocket,
-    'provider-session-socket',
-    {
-      now: () => Date.now(),
-      expiresAt: Date.now() + 60_000,
-      closeTimeoutMs: 50,
-      maxProviderEventBytes: 1_000_000,
-      maxPendingCommands: 128,
-      transcriptOptions: { maxFragments: 32, maxCharacters: 2_000, now: () => Date.now() },
-    },
-  );
+  readonly socket: SocketSideband;
+  readonly sideband: OpenAiLiveVoiceSideband;
+
+  constructor(logger?: pino.Logger) {
+    this.socket = new SocketSideband();
+    this.sideband = new OpenAiLiveVoiceSideband(
+      this.socket as unknown as LiveWebSocket,
+      'provider-session-socket',
+      {
+        now: () => Date.now(),
+        expiresAt: Date.now() + 60_000,
+        closeTimeoutMs: 50,
+        maxProviderEventBytes: 1_000_000,
+        maxPendingCommands: 128,
+        logger,
+        transcriptOptions: { maxFragments: 32, maxCharacters: 2_000, now: () => Date.now() },
+      },
+    );
+  }
 
   createSession(input: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
     return Promise.resolve(
@@ -252,6 +277,7 @@ interface HarnessOptions {
   liveModel?: string;
   usdPerMinute?: number;
   isOwnerActive?: (owner: { ownerId: string; loginRevision: number }) => boolean;
+  logger?: pino.Logger;
 }
 
 interface VoiceHarnessBase {
@@ -322,6 +348,7 @@ function createHarness(options: HarnessOptions = {}): FakeVoiceHarness | Provide
     currentPolicy: () => capturePolicy(),
     isOwnerActive: options.isOwnerActive,
     usdPerMinute: options.usdPerMinute,
+    logger: options.logger,
   });
   const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
   const queueManager = new QueueManager(
@@ -536,6 +563,192 @@ describe('browser voice lifecycle composition', () => {
       reason: 'transport_failure',
     });
     expect(closed.isOk()).toBe(true);
+  });
+
+  it('queues one real sideband delegation when the first transcript arrives after quiet expiry', async () => {
+    db = createDb();
+    const provider = new SocketProvider();
+    const harness = createHarness({ provider });
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap();
+    const handledDelegations: string[] = [];
+    const contexts: string[] = [];
+
+    harness.queueManager.startProcessing(async (item) => {
+      const payload = item.payload as {
+        request?: { delegationId?: string; context?: { text?: string } };
+      };
+      const delegationId = payload.request?.delegationId;
+      if (!delegationId) return ok(undefined);
+      handledDelegations.push(delegationId);
+      if (payload.request?.context?.text) contexts.push(payload.request.context.text);
+      const result = harness.sink.final(delegationId, 'The late queued result is safe.', 40);
+      if (result.isErr()) throw result.error;
+      return ok(undefined);
+    });
+    provider.socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'socket-late-delegation',
+      delegation: { id: 'socket-late-provider-delegation', target: 'client' },
+      offset_ms: 100,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    provider.socket.receive({
+      type: 'session.input_transcript.completed',
+      event_id: 'socket-late-user',
+      item_id: 'socket-late-user',
+      text: 'Read the current status after the quiet interval.',
+      start_ms: 0,
+      end_ms: 100,
+    });
+
+    await waitFor(() => {
+      const projection = harness.store.readSession(session.session.id);
+      return projection.isOk() && projection.value?.delegations[0]?.execution === 'succeeded';
+    });
+    harness.queueManager.stopProcessing();
+
+    const projection = harness.store.readSession(session.session.id)._unsafeUnwrap();
+    expect(handledDelegations).toHaveLength(1);
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0]).toContain('Read the current status after the quiet interval.');
+    expect(projection?.delegations).toHaveLength(1);
+    expect(projection?.delegations[0]).toMatchObject({
+      providerDelegationId: 'socket-late-provider-delegation',
+      execution: 'succeeded',
+    });
+
+    const closed = await harness.service.closeSession(harness.owner, session.session.id, {
+      reason: 'transport_failure',
+    });
+    expect(closed.isOk()).toBe(true);
+  });
+
+  it('keeps diagnostic context advisory when the authoritative snapshot is unavailable', async () => {
+    db = createDb();
+    const harness = createHarness();
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap();
+    const providerDelegationId = 'diagnostic-only-provider-delegation';
+    harness.provider.sideband.invalidateContext(providerDelegationId);
+    harness.provider.sideband.diagnosticContext = {
+      snapshot: context(2, 'diagnostic-only-digest', 'A snapshot that must not be admitted.'),
+      uncertain: false,
+    };
+
+    harness.provider.sideband.emit({
+      kind: 'delegation',
+      eventId: 'diagnostic-only-event',
+      sequence: 1,
+      proposal: { providerDelegationId, offsetMs: 100, receivedAt: 30 },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const projection = harness.store.readSession(session.session.id)._unsafeUnwrap();
+    expect(projection?.delegations).toHaveLength(0);
+    expect(harness.provider.sideband.commands).toContain(
+      'I could not capture a reliable transcript for that request. Please repeat it briefly.',
+    );
+
+    const closed = await harness.service.closeSession(harness.owner, session.session.id, {
+      reason: 'transport_failure',
+    });
+    expect(closed.isOk()).toBe(true);
+  });
+
+  it('does not let an uncertain diagnostic snapshot veto authoritative context admission', async () => {
+    db = createDb();
+    const harness = createHarness();
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap().session;
+    const providerDelegationId = 'diagnostic-veto-provider-delegation';
+    harness.provider.sideband.setContext(
+      providerDelegationId,
+      context(1, 'authoritative-context-digest', 'Admit this authoritative request.'),
+    );
+    harness.provider.sideband.diagnosticContext = {
+      snapshot: null,
+      uncertain: true,
+      reason: 'missing_transcript',
+    };
+
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId: session.id,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'diagnostic-veto-event',
+        sequence: 1,
+        proposal: { providerDelegationId, offsetMs: 100, receivedAt: 30 },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+    expect(harness.store.readSession(session.id)._unsafeUnwrap()?.delegations).toHaveLength(1);
+
+    const closed = await harness.service.closeSession(harness.owner, session.id, {
+      reason: 'transport_failure',
+    });
+    expect(closed.isOk()).toBe(true);
+  });
+
+  it('links adapter and service context diagnostics with one opaque call alias', async () => {
+    db = createDb();
+    const lines: string[] = [];
+    const logger = pino({}, { write: (line: string): void => lines.push(line) });
+    const provider = new SocketProvider(logger);
+    const harness = createHarness({ provider, logger });
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap().session;
+    provider.socket.receive({
+      type: 'session.delegation.created',
+      event_id: 'diagnostic-alias-event',
+      delegation: { id: 'provider-delegation-alias', target: 'client' },
+      offset_ms: 100,
+    });
+
+    const rejected = await harness.service.receiveProviderEvent({
+      sessionId: session.id,
+      providerSessionId: 'provider-session-socket',
+      event: {
+        kind: 'delegation',
+        eventId: 'diagnostic-alias-event',
+        sequence: 1,
+        proposal: {
+          providerDelegationId: 'provider-delegation-alias',
+          offsetMs: 100,
+          receivedAt: Date.now(),
+        },
+      },
+    });
+    expect(rejected.isOk()).toBe(true);
+
+    const closed = await harness.service.closeSession(harness.owner, session.id, {
+      reason: 'transport_failure',
+    });
+    expect(closed.isOk()).toBe(true);
+
+    const records = lines.map((line) => JSON.parse(line) as Record<string, unknown>);
+    const contextRecords = records.filter((record) => record.voiceCorrelationId !== undefined);
+    expect(contextRecords.map((record) => record.event)).toEqual(
+      expect.arrayContaining(['pending', 'pre_admission_rejection', 'closed']),
+    );
+    expect(new Set(contextRecords.map((record) => record.voiceCorrelationId))).toHaveLength(1);
+    const serialized = JSON.stringify(contextRecords);
+    expect(serialized).not.toContain('provider-session-socket');
+    expect(serialized).not.toContain('provider-delegation-alias');
+    expect(serialized).not.toContain('diagnostic-alias-event');
   });
 
   it('clarifies an overlapping first notice that reuses the admitted user turn', async () => {
