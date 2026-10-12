@@ -33,12 +33,12 @@ class FakeSocket {
 
 function createSideband(socket: FakeSocket): OpenAiLiveVoiceSideband {
   return new OpenAiLiveVoiceSideband(socket as unknown as LiveWebSocket, 'provider-session', {
-    now: () => 12_345,
+    now: () => Date.now(),
     expiresAt: 999_999,
     closeTimeoutMs: 50,
     maxProviderEventBytes: 1_000_000,
     maxPendingCommands: 128,
-    transcriptOptions: { maxFragments: 32, maxCharacters: 2_000, now: () => 12_345 },
+    transcriptOptions: { maxFragments: 32, maxCharacters: 2_000, now: () => Date.now() },
   });
 }
 
@@ -132,7 +132,7 @@ function receiveUserRequest(socket: FakeSocket): void {
 }
 
 describe('voice transcript stability', () => {
-  beforeEach(() => vi.useFakeTimers());
+  beforeEach(() => vi.useFakeTimers({ now: 12_345 }));
   afterEach(() => vi.useRealTimers());
 
   it('does not interrupt an admitted request for equivalent assistant completion metadata', async () => {

@@ -120,17 +120,26 @@ restart recovers that history without replaying completed queue work. A
 transcript correction supersedes the earlier context before queue claim; it
 must not replay an already claimed delegation. Older calls and messages from
 other channels are not imported automatically.
-When the live provider reports a delegation, Talon keeps the first notice in a
-bounded one-second settling window, even when the current snapshot appears
-complete. Transcript deltas that arrive during that window can complete or
-replace the provisional snapshot; Talon publishes the latest safe snapshot at
-most once. A missing or unsafe snapshot uses the normal clarification path.
-Later notices require a fresh user turn and cannot reuse an earlier utterance
-after the bounded wait. Late assistant transcript deltas, completion timing,
-progress speech, and notification speech do not rewrite an admitted request;
-user corrections, ambiguous timing, truncation, and provider replay conflicts
-remain unsafe. A transcript that arrives after first publication is treated as
-a late change and fails closed rather than thawing that request. These rules do
+When the live provider reports a delegation, the first notice remains
+provisional until a 1,000 ms quiet interval has passed after the latest
+meaningful captured USER signature or safety classification change. A fixed
+5,000 ms collection deadline starts when that notice is received and never
+extends. An initial safe snapshot still waits for quiet; an unsafe snapshot
+remains pending at quiet expiry so a valid late transcript can settle before
+the absolute deadline. At absolute expiry, a safe but unsettled snapshot is
+invalidated and uses the normal clarification path. This is local policy, not a
+completeness proof, and it does not depend on an undocumented response-
+completion event.
+
+Later notices require a fresh user turn and cannot reuse an earlier utterance.
+Late assistant transcript deltas, completion timing, progress speech, and
+notification speech do not rewrite an admitted request; user corrections,
+ambiguous timing, truncation, and provider replay conflicts remain unsafe. A
+transcript that arrives after first publication or expiry is treated as a late
+change and fails closed rather than thawing that request. Optional diagnostics
+contain only local opaque correlation IDs, fixed event/reason values, bounded
+durations, counts, and an observation-scope marker; they exclude transcript,
+prompt, provider ID, payload, error, hash, and credential data. These rules do
 not treat the provider offset as proof that a user turn was complete and do not
 claim provider-specific live audio timing or causal attribution.
 Policy is checked again before execution, so a revoked login or changed

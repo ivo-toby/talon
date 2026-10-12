@@ -136,18 +136,27 @@ configured rate with known usage and an incomplete close is `incomplete`, and
 no rate is `unavailable`. Backend cost comes only from AgentRunner run
 accounting.
 
-The first live delegation remains provisional for one bounded second, even if
-the current snapshot appears complete, because transcript deltas can arrive
-after the provider notice. The adapter publishes the latest safe snapshot at
-most once; missing or unsafe context follows the clarification path. Later
-delegations require a fresh user turn and cannot reuse an earlier utterance
-after the wait expires. Assistant progress, completion timing, or notification
-speech does not change an admitted request. User corrections, ambiguous
-timing, truncation, and provider replay conflicts remain fail-closed. Offline
-checks cover this ordering behavior. A provider offset does not prove that a
-user turn was complete; a transcript arriving after publication is a late
-change and fails closed. These checks do not confirm provider-specific live
-audio timing or causal attribution.
+The first live delegation remains provisional until a 1,000 ms quiet interval
+has passed after the latest meaningful captured USER signature or safety
+classification change. A fixed 5,000 ms collection deadline starts when that
+notice is received and never extends. An initial safe snapshot still waits for
+quiet; an unsafe snapshot remains pending at quiet expiry so a valid late
+transcript can settle before the absolute deadline. At absolute expiry, a safe
+but unsettled snapshot is invalidated and follows the clarification path. This
+is local policy, not a completeness proof, and it does not depend on an
+undocumented response-completion event.
+
+Later delegations require a fresh user turn and cannot reuse an earlier
+utterance. Assistant progress, completion timing, or notification speech does
+not change an admitted request. User corrections, ambiguous timing, truncation,
+and provider replay conflicts remain fail-closed. A transcript that arrives
+after first publication or expiry is treated as a late change and fails
+closed. Optional diagnostics contain only local opaque correlation IDs, fixed
+event/reason values, bounded durations, counts, and an observation-scope marker;
+they exclude transcript, prompt, provider ID, payload, error, hash, and
+credential data. The provider offset is not proof that a user turn was complete;
+offline checks do not establish provider-specific live audio timing or causal
+attribution.
 
 See [the browser voice guide](../../../docs/guides/voice.mdx) and [the config
 reference](../../../docs/reference/config-schema.mdx) for the route list and

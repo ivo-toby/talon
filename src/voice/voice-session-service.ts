@@ -82,6 +82,20 @@ const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 const MAX_VOICE_NOTIFICATION_CHARS = 16_000;
 const MAX_RETAINED_VOICE_NOTIFICATIONS = 100;
 
+type VoiceContextRejectionReason =
+  | 'missing_transcript'
+  | 'truncated'
+  | 'boundary_fragment'
+  | 'untimed_fragment'
+  | 'transcript_changed'
+  | 'delegation_replay_conflict'
+  | 'context_too_large';
+
+interface VoiceContextInspection {
+  readonly context: VoiceContextSnapshot | null;
+  readonly reason: VoiceContextRejectionReason;
+}
+
 export interface VoiceSessionServiceOptions {
   readonly store: VoiceStore;
   readonly provider: LiveVoiceProvider;
@@ -120,6 +134,7 @@ export interface VoiceSessionServiceOptions {
 interface SessionRuntime {
   readonly sideband: LiveVoiceSideband;
   readonly providerSessionId: string;
+  readonly contextDiagnosticCorrelationId: string;
   unsubscribeProvider: VoiceUnsubscribe;
   unsubscribeTransport: VoiceUnsubscribe;
   deadlineTimer?: ReturnType<typeof setTimeout>;
@@ -452,6 +467,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const runtime: SessionRuntime = {
       sideband: sideband.value,
       providerSessionId: providerSession.value.providerSessionId,
+      contextDiagnosticCorrelationId: randomUUID(),
       unsubscribeProvider: () => undefined,
       unsubscribeTransport: () => undefined,
       eventChain: Promise.resolve(),
@@ -1310,9 +1326,18 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       await this.closeSession(session.owner, sessionId, { reason: 'logout' });
       return ok(undefined);
     }
-    const contextResult = this.contextForDelegation(runtime.sideband, proposal.providerDelegationId);
+    const contextInspection = this.inspectContextForDelegation(
+      runtime.sideband,
+      proposal.providerDelegationId,
+    );
+    const contextResult = contextInspection.context;
     if (!contextResult) {
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I could not establish the request context safely. Please repeat that.');
+      this.logContextRejection(runtime, contextInspection.reason);
+      await sendClarification(
+        runtime.sideband,
+        proposal.providerDelegationId,
+        'I could not capture a reliable transcript for that request. Please repeat it briefly.',
+      );
       return ok(undefined);
     }
     const boundedContext = contextResult;
@@ -1576,12 +1601,52 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
   }
 
   private contextForDelegation(sideband: LiveVoiceSideband, providerDelegationId: string): VoiceContextSnapshot | null {
+    return this.inspectContextForDelegation(sideband, providerDelegationId).context;
+  }
+
+  private inspectContextForDelegation(
+    sideband: LiveVoiceSideband,
+    providerDelegationId: string,
+  ): VoiceContextInspection {
     const candidate = sideband as LiveVoiceSideband & {
       contextForDelegation?: (id: string) => VoiceContextSnapshot | null;
+      getContextForDelegation?: (id: string) => {
+        readonly snapshot: VoiceContextSnapshot | null;
+        readonly uncertain: boolean;
+        readonly reason?: string;
+      };
     };
-    const context = candidate.contextForDelegation?.(providerDelegationId);
-    if (!context || context.truncated || context.text.trim().length === 0 || context.text.length > this.maxContextChars) return null;
-    return context;
+    const context = candidate.contextForDelegation?.(providerDelegationId) ?? null;
+    let diagnosticReason: VoiceContextRejectionReason | undefined;
+    try {
+      const diagnostic = candidate.getContextForDelegation?.(providerDelegationId);
+      if (diagnostic) diagnosticReason = contextRejectionReason(diagnostic.reason);
+    } catch {
+      // Diagnostics are optional and cannot change authoritative admission.
+    }
+    if (!context) return { context: null, reason: diagnosticReason ?? 'missing_transcript' };
+    if (context.truncated) return { context: null, reason: 'truncated' };
+    if (context.text.trim().length === 0) return { context: null, reason: 'missing_transcript' };
+    if (context.text.length > this.maxContextChars) {
+      return { context: null, reason: 'context_too_large' };
+    }
+    return { context, reason: 'missing_transcript' };
+  }
+
+  private logContextRejection(runtime: SessionRuntime, reason: VoiceContextRejectionReason): void {
+    if (!this.options.logger) return;
+    try {
+      this.options.logger.warn(
+        {
+          voiceCorrelationId: runtime.contextDiagnosticCorrelationId,
+          event: 'pre_admission_rejection',
+          reason,
+        },
+        'voice context was not admitted',
+      );
+    } catch {
+      // Diagnostics are observational and must never affect admission.
+    }
   }
 
   private delegationContextInvalidated(
@@ -2116,6 +2181,20 @@ async function sendClarification(
     content,
     outputId: randomUUID(),
   });
+}
+
+function contextRejectionReason(reason: string | undefined): VoiceContextRejectionReason {
+  switch (reason) {
+    case 'truncated':
+    case 'boundary_fragment':
+    case 'untimed_fragment':
+    case 'transcript_changed':
+    case 'delegation_replay_conflict':
+    case 'missing_transcript':
+      return reason;
+    default:
+      return 'missing_transcript';
+  }
 }
 
 export { DurableVoiceSessionService as VoiceSessionService };

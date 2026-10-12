@@ -758,6 +758,7 @@ export async function bootstrap(
       apiKey: liveAuth?.apiKey,
       baseUrl: liveAuth?.baseURL,
       maxCharacters: config.voice.maxContextChars,
+      logger,
     });
     voiceTransport = new BrowserVoiceTransport();
     const voiceChannel = registerVoiceChannel(
