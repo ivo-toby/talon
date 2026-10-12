@@ -452,7 +452,7 @@ describe('VoiceBrowserClient', () => {
     await client.login('operator-token');
     await expect(client.startCall()).rejects.toMatchObject({ code: 'MICROPHONE_DENIED' });
     expect(client.state.phase).toBe('failed');
-    expect(client.state.message).toContain('Microfoontoegang is geweigerd');
+    expect(client.state.message).toContain('Microphone access was denied');
     expect(peer.close).not.toHaveBeenCalled();
   });
 
@@ -709,7 +709,7 @@ describe('VoiceBrowserClient', () => {
     expect(client.state.outputs[0]?.text).toBe('De taak is afgerond.');
     expect(client.state.notifications).toEqual([makeNotification()]);
     expect(client.state.phase).toBe('closed');
-    expect(client.state.message).toBe('Gesprek beëindigd.');
+    expect(client.state.message).toBe('Call ended.');
   });
 
   it.each(['network', 'server'] as const)('keeps the saved session ID after a %s restore failure', async (failure) => {
@@ -754,7 +754,7 @@ describe('VoiceBrowserClient', () => {
 
     expect(client.state.phase).toBe('network_lost');
     expect(client.state.activeSessionId).toBe('session-1');
-    expect(client.state.message).toContain('statusverbinding');
+    expect(client.state.message).toContain('status connection');
   });
 
   it('surfaces autoplay blocking and retries audio after an explicit user action', async () => {
@@ -790,7 +790,7 @@ describe('VoiceBrowserClient', () => {
     await client.startCall();
     peer.peer.ontrack?.({ streams: [{} as MediaStream] } as RTCTrackEvent);
     await vi.waitFor(() => expect(client.state.audioBlocked).toBe(true));
-    expect(client.state.message).toContain('Audio staat klaar');
+    expect(client.state.message).toContain('Audio is ready');
 
     await client.resumeAudio();
     expect(audio.play).toHaveBeenCalledTimes(2);

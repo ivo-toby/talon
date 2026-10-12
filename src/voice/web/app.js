@@ -11,14 +11,14 @@ const callMessage = query('[data-role="call-message"]');
 const callHint = query('[data-role="call-hint"]');
 const phaseLabel = query('[data-role="phase-label"]');
 const connectionPill = query('[data-role="connection-pill"]');
-const voiceOrb = query('[data-role="voice-orb"]');
+const lensControl = query('[data-action="start"]');
 const sessionClock = query('[data-role="session-clock"]');
-const startButton = query('[data-action="start"]');
 const startLabel = query('[data-role="start-label"]');
 const muteButton = query('[data-action="mute"]');
 const muteLabel = query('[data-role="mute-label"]');
 const hangupButton = query('[data-action="hangup"]');
 const logoutButton = query('[data-action="logout"]');
+const resumeAudioButton = query('[data-action="resume-audio"]');
 const audioNotice = query('[data-role="audio-notice"]');
 const resultsList = query('[data-role="results"]');
 const emptyTasks = query('[data-role="empty-tasks"]');
@@ -50,8 +50,9 @@ loginForm?.addEventListener('submit', (event) => {
   }).finally(() => setBusy(loginForm, false));
 });
 
-startButton?.addEventListener('click', () => {
-  setBusy(startButton, true);
+lensControl?.addEventListener('click', () => {
+  if (lensControl.disabled || !canStartCall(client.state)) return;
+  setBusy(lensControl, true);
   hide(callError);
   void client.startCall().catch((error) => {
     show(callError, errorMessage(error));
@@ -59,24 +60,28 @@ startButton?.addEventListener('click', () => {
 });
 
 muteButton?.addEventListener('click', () => {
+  if (muteButton.disabled) return;
   client.toggleMute();
 });
 
 hangupButton?.addEventListener('click', () => {
+  if (hangupButton.disabled || !hasOpenSession(client.state)) return;
   setBusy(hangupButton, true);
   void client.hangup().catch((error) => {
     show(callError, errorMessage(error));
-  }).finally(() => setBusy(hangupButton, false));
+  }).finally(() => render(client.state));
 });
 
 logoutButton?.addEventListener('click', () => {
+  if (logoutButton.disabled) return;
   setBusy(logoutButton, true);
   void client.logout().catch((error) => {
     show(callError, errorMessage(error));
-  }).finally(() => setBusy(logoutButton, false));
+  }).finally(() => render(client.state));
 });
 
-query('[data-action="resume-audio"]')?.addEventListener('click', () => {
+resumeAudioButton?.addEventListener('click', () => {
+  if (resumeAudioButton.disabled) return;
   void client.resumeAudio().catch((error) => show(callError, errorMessage(error)));
 });
 
@@ -97,21 +102,21 @@ function render(state) {
   text(callMessage, state.message);
   text(callHint, phase.hint);
   text(startLabel, phase.startLabel);
-  text(muteLabel, state.muted ? 'Geluid aan' : 'Dempen');
+  text(muteLabel, state.muted ? 'Unmute' : 'Mute');
   text(taskCount, String(state.outputs.length));
   text(notificationCount, String(state.notifications.length));
-  text(sessionClock, state.session ? sessionLabel(state.session.status) : 'Privé');
+  text(sessionClock, state.session ? sessionLabel(state.session.status) : 'Private');
   connectionPill?.classList.toggle('is-live', state.phase === 'connected');
   connectionPill?.classList.toggle('is-warn', state.phase === 'network_lost' || state.phase === 'failed');
-  voiceOrb?.classList.toggle('is-active', state.phase === 'connected');
-  voiceOrb?.classList.toggle('is-busy', state.phase === 'connecting' || state.phase === 'requesting_microphone');
-  startButton?.classList.toggle('is-loading', state.phase === 'requesting_microphone' || state.phase === 'connecting');
-  startButton?.toggleAttribute('disabled', isActive(state.phase));
-  if (state.phase === 'closed' || state.phase === 'failed') {
-    startButton?.toggleAttribute('disabled', false);
-  }
-  muteButton?.toggleAttribute('disabled', !['connected', 'network_lost'].includes(state.phase));
+  lensControl?.classList.toggle('is-loading', state.phase === 'requesting_microphone' || state.phase === 'connecting');
+  lensControl?.toggleAttribute('disabled', !canStartCall(state));
+  lensControl?.setAttribute('aria-label', phase.startLabel);
+  lensControl?.setAttribute('aria-busy', String(state.phase === 'requesting_microphone' || state.phase === 'connecting'));
+  muteButton?.toggleAttribute('disabled', state.phase !== 'connected');
+  muteButton?.setAttribute('aria-pressed', String(state.muted));
+  muteButton?.setAttribute('aria-label', state.muted ? 'Unmute microphone' : 'Mute microphone');
   setHidden(hangupButton, !hasOpenSession(state));
+  hangupButton?.toggleAttribute('disabled', state.phase === 'closing' || !hasOpenSession(state));
   setHidden(audioNotice, !state.audioBlocked);
   setHidden(pendingBanner, !state.pendingDelegation);
   if (state.errorMessage) show(callError, state.errorMessage);
@@ -124,7 +129,7 @@ function render(state) {
 function renderUsage(state) {
   const usage = state.usage;
   text(voiceCost, formatCost(usage.voiceCostUsd, usage.voiceCostStatus));
-  text(voiceDuration, `${formatDuration(usage.voiceSeconds)} gesprekstijd`);
+  text(voiceDuration, `${formatDuration(usage.voiceSeconds)} call time`);
   text(voiceCostStatus, costStatusLabel(usage.voiceCostStatus));
   text(backendCost, formatCost(usage.backendCostUsd, usage.backendCostStatus));
 }
@@ -140,16 +145,16 @@ function renderResults(outputs) {
     top.className = 'result-top';
     const kind = document.createElement('span');
     kind.className = 'result-kind';
-    kind.textContent = output.kind === 'final' ? 'Eindresultaat' : 'Voortgang';
+    kind.textContent = output.kind === 'final' ? 'Final result' : 'Progress';
     const execution = document.createElement('span');
     execution.className = `result-status status-${output.lifecycle.execution}`;
     execution.textContent = executionLabel(output.lifecycle.execution);
     top.append(kind, execution);
     const body = document.createElement('p');
-    body.textContent = output.text ?? 'Talon heeft nog geen tekstueel resultaat opgeslagen.';
+    body.textContent = output.text ?? 'No textual result has been stored yet.';
     const playback = document.createElement('span');
     playback.className = 'result-playback';
-    playback.textContent = `Uitspraak: ${playbackLabel(output.lifecycle.playback)}`;
+    playback.textContent = `Speech: ${playbackLabel(output.lifecycle.playback)}`;
     item.append(top, body, playback);
     resultsList.append(item);
   }
@@ -171,37 +176,37 @@ function renderNotifications(notifications) {
 
 function phaseDetails(phase) {
   const details = {
-    ready: { label: 'Klaar om te bellen', hint: 'Geef Talon een opdracht in je eigen woorden.', startLabel: 'Gesprek starten' },
-    requesting_microphone: { label: 'Microfoon nodig', hint: 'Sta microfoontoegang toe in je browser.', startLabel: 'Microfoon toestaan' },
-    connecting: { label: 'Verbinden…', hint: 'De beveiligde audioverbinding wordt opgezet.', startLabel: 'Verbinden…' },
-    connected: { label: 'Verbonden', hint: 'Je kunt nu spreken. Talon luistert.', startLabel: 'Verbonden' },
-    network_lost: { label: 'Audio onderbroken', hint: 'Je taak kan nog doorlopen. Hang op als je klaar bent.', startLabel: 'Opnieuw bellen' },
-    closing: { label: 'Afsluiten…', hint: 'Talon bewaart het resultaat van lopend werk.', startLabel: 'Afsluiten…' },
-    closed: { label: 'Gesprek beëindigd', hint: 'Je kunt een nieuw gesprek starten.', startLabel: 'Nieuw gesprek' },
-    failed: { label: 'Niet verbonden', hint: 'Controleer je verbinding of probeer opnieuw.', startLabel: 'Opnieuw proberen' },
-    logged_out: { label: 'Uitgelogd', hint: 'Log opnieuw in om te bellen.', startLabel: 'Gesprek starten' },
+    ready: { label: 'Ready to call', hint: 'Speak to Talon in your own words.', startLabel: 'Call Talon' },
+    requesting_microphone: { label: 'Microphone needed', hint: 'Allow microphone access in your browser.', startLabel: 'Allow microphone' },
+    connecting: { label: 'Connecting…', hint: 'Setting up the secure audio connection.', startLabel: 'Connecting…' },
+    connected: { label: 'Connected', hint: 'You can speak. Talon is connected.', startLabel: 'Connected' },
+    network_lost: { label: 'Audio interrupted', hint: 'Your task may continue. End the call when you are ready.', startLabel: 'End call first' },
+    closing: { label: 'Ending…', hint: 'Talon is keeping the result of active work.', startLabel: 'Ending…' },
+    closed: { label: 'Call ended', hint: 'You can start a new call.', startLabel: 'Call Talon' },
+    failed: { label: 'Not connected', hint: 'Check your connection or try again.', startLabel: 'Try again' },
+    logged_out: { label: 'Signed out', hint: 'Sign in again to call.', startLabel: 'Call Talon' },
   };
   return details[phase] ?? details.failed;
 }
 
 function sessionLabel(status) {
-  return { created: 'Nieuw', connecting: 'Verbinden', connected: 'Actief', closing: 'Afsluiten', closed: 'Afgesloten', expired: 'Verlopen', failed: 'Mislukt' }[status] ?? 'Privé';
+  return { created: 'New', connecting: 'Connecting', connected: 'Active', closing: 'Ending', closed: 'Ended', expired: 'Expired', failed: 'Failed' }[status] ?? 'Private';
 }
 
 function executionLabel(status) {
-  return { not_started: 'Wacht', running: 'Bezig', succeeded: 'Afgerond', failed: 'Mislukt', unknown: 'Onbekend', skipped: 'Overgeslagen' }[status] ?? 'Onbekend';
+  return { not_started: 'Waiting', running: 'Running', succeeded: 'Completed', failed: 'Failed', unknown: 'Unknown', skipped: 'Skipped' }[status] ?? 'Unknown';
 }
 
 function playbackLabel(status) {
-  return { not_started: 'nog niet afgespeeld', playing: 'wordt afgespeeld', played: 'afgespeeld', interrupted: 'onderbroken', unknown: 'onbekend' }[status] ?? 'onbekend';
+  return { not_started: 'not played', playing: 'playing', played: 'played', interrupted: 'interrupted', unknown: 'unknown' }[status] ?? 'unknown';
 }
 
 function costStatusLabel(status) {
-  return { estimated: 'Schatting', confirmed: 'Bevestigd', incomplete: 'Onvolledig', unavailable: 'Nog niet gestart' }[status] ?? 'Onbekend';
+  return { estimated: 'Estimate', confirmed: 'Confirmed', incomplete: 'Incomplete', unavailable: 'Unavailable' }[status] ?? 'Unknown';
 }
 
 function formatCost(value, status) {
-  if (value === undefined || status === 'unavailable') return 'Nog geen schatting';
+  if (value === undefined || status === 'unavailable') return 'No estimate yet';
   const prefix = status === 'estimated' ? '≈ ' : '';
   return `${prefix}USD $${value.toFixed(4)}`;
 }
@@ -217,12 +222,12 @@ function hasOpenSession(state) {
   return Boolean(state.activeSessionId && ['requesting_microphone', 'connecting', 'connected', 'network_lost', 'closing'].includes(state.phase));
 }
 
-function isActive(phase) {
-  return ['requesting_microphone', 'connecting', 'connected', 'closing'].includes(phase);
+function canStartCall(state) {
+  return state.authenticated && !state.activeSessionId && ['ready', 'closed', 'failed'].includes(state.phase);
 }
 
 function errorMessage(error) {
-  return error instanceof Error ? error.message : 'Er ging iets mis. Probeer het opnieuw.';
+  return error instanceof Error ? error.message : 'Something went wrong. Try again.';
 }
 
 function setBusy(element, busy) {

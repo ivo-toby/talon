@@ -117,7 +117,7 @@ const INITIAL_USAGE: VoiceUsageSummary = {
 const INITIAL_STATE: VoiceBrowserState = {
   authenticated: false,
   phase: 'logged_out',
-  message: 'Log in om een gesprek te beginnen.',
+  message: 'Sign in to start a call.',
   errorMessage: null,
   activeSessionId: null,
   retainedSessionId: null,
@@ -203,7 +203,7 @@ export class VoiceBrowserClient {
 
   async login(accessToken: string): Promise<void> {
     if (accessToken.trim().length === 0) {
-      throw this.fail('Vul je toegangstoken in.', 'INVALID_REQUEST', false);
+      throw this.fail('Enter your access token.', 'INVALID_REQUEST', false);
     }
 
     const generation = this.invalidateLifecycle();
@@ -218,7 +218,7 @@ export class VoiceBrowserClient {
     this.setState({
       authenticated: true,
       phase: 'ready',
-      message: 'Klaar om te bellen.',
+      message: 'Ready to call.',
       errorMessage: null,
       activeSessionId: null,
       retainedSessionId: null,
@@ -251,20 +251,20 @@ export class VoiceBrowserClient {
         this.transportConnected = false;
         this.setState({
           phase: 'network_lost',
-          message: 'Dit gesprek loopt nog. De audio moet opnieuw worden verbonden; je kunt ook ophangen.',
+          message: 'This call is still active. Reconnect audio or end the call.',
         });
         this.openEventStream(response.session.id);
       } else if (this.stateValue.pendingDelegation) {
         this.openEventStream(response.session.id);
-        this.setState({ message: 'Gesprek beëindigd. Een taak wordt nog afgerond.' });
+        this.setState({ message: 'Call ended. A task is still completing.' });
       } else {
-        this.setState({ message: 'Gesprek beëindigd.' });
+        this.setState({ message: 'Call ended.' });
       }
     } catch (cause) {
       if (!this.isCurrent(generation)) return;
       if (cause instanceof VoiceBrowserError && ['UNAUTHORIZED', 'HTTP_401', 'NOT_FOUND', 'HTTP_404'].includes(cause.code)) {
         this.clearPersistedSession();
-        this.setState({ authenticated: false, phase: 'logged_out', message: 'Log in om een gesprek te beginnen.' });
+        this.setState({ authenticated: false, phase: 'logged_out', message: 'Sign in to start a call.' });
         return;
       }
       throw cause;
@@ -301,12 +301,12 @@ export class VoiceBrowserClient {
     if (!currentSessionId) {
       this.disposeTransport();
       if (this.stateValue.authenticated) {
-        this.setState({ phase: 'ready', message: 'Klaar om te bellen.' });
+        this.setState({ phase: 'ready', message: 'Ready to call.' });
       }
       return;
     }
 
-    this.setState({ phase: 'closing', message: 'Gesprek wordt afgesloten.', errorMessage: null });
+    this.setState({ phase: 'closing', message: 'Ending the call.', errorMessage: null });
 
     let closeError: VoiceBrowserError | null = null;
     try {
@@ -324,7 +324,7 @@ export class VoiceBrowserClient {
       if (cause instanceof VoiceAttemptCancelledError) {
         return;
       }
-      closeError = asVoiceBrowserError(cause, 'Het gesprek kon niet volledig worden afgesloten.');
+      closeError = asVoiceBrowserError(cause, 'The call could not be fully ended.');
     } finally {
       if (this.isCurrent(generation)) {
         this.releaseCapturedTransport(generation, capturedPeer, capturedStream);
@@ -349,8 +349,8 @@ export class VoiceBrowserClient {
     this.setState({
       phase: 'closed',
       message: pending
-        ? 'Gesprek beëindigd. Een taak wordt nog afgerond.'
-        : 'Gesprek beëindigd.',
+        ? 'Call ended. A task is still completing.'
+        : 'Call ended.',
       errorMessage: null,
     });
   }
@@ -371,7 +371,7 @@ export class VoiceBrowserClient {
       await this.requestJson('/logout', { method: 'POST', csrf: true });
       this.ensureCurrent(generation);
     } catch (cause) {
-      logoutError = asVoiceBrowserError(cause, 'Uitloggen is niet voltooid.');
+      logoutError = asVoiceBrowserError(cause, 'Sign out was not completed.');
     }
     if (!this.isCurrent(generation)) return;
 
@@ -382,7 +382,7 @@ export class VoiceBrowserClient {
     this.setState({
       authenticated: false,
       phase: 'logged_out',
-      message: 'Log in om een gesprek te beginnen.',
+      message: 'Sign in to start a call.',
       errorMessage: null,
       activeSessionId: null,
       retainedSessionId: null,
@@ -405,17 +405,17 @@ export class VoiceBrowserClient {
 
   private async startCallInternal(): Promise<void> {
     if (!this.stateValue.authenticated) {
-      throw this.fail('Log eerst in.', 'UNAUTHORIZED', false);
+      throw this.fail('Sign in first.', 'UNAUTHORIZED', false);
     }
     if (this.activeSessionId || ACTIVE_PHASES.has(this.stateValue.phase)) {
-      throw this.fail('Er is al een gesprek actief.', 'SESSION_ACTIVE', false);
+      throw this.fail('A call is already active.', 'SESSION_ACTIVE', false);
     }
 
     this.resetSessionState();
     const generation = this.invalidateLifecycle();
     this.setState({
       phase: 'requesting_microphone',
-      message: 'Geef Talon toegang tot je microfoon.',
+      message: 'Allow microphone access.',
       errorMessage: null,
     });
 
@@ -452,10 +452,10 @@ export class VoiceBrowserClient {
       const localDescription = currentPeer.localDescription ?? offer;
       const sdp = localDescription.sdp ?? '';
       if (sdp.trim().length === 0) {
-        throw this.fail('De browser gaf geen geldige audio-aanbieding terug.', 'INVALID_SDP');
+        throw this.fail('The browser did not return a valid audio offer.', 'INVALID_SDP');
       }
 
-      this.setState({ phase: 'connecting', message: 'Beveiligde verbinding wordt opgezet.' });
+      this.setState({ phase: 'connecting', message: 'Setting up a secure connection.' });
       const response = await this.requestJson<VoiceCreateSessionHttpResponse>('/sessions', {
         method: 'POST',
         csrf: true,
@@ -473,7 +473,7 @@ export class VoiceBrowserClient {
       if (currentPeer.connectionState === 'connected') {
         this.handleConnectionState(currentPeer);
       } else {
-        this.setState({ phase: 'connecting', message: 'Verbonden met Talon; wacht op audio.' });
+        this.setState({ phase: 'connecting', message: 'Connected to Talon; waiting for audio.' });
       }
     } catch (cause) {
       if (createdSessionId) {
@@ -482,7 +482,7 @@ export class VoiceBrowserClient {
       this.cleanupAttempt(generation, stream, peer);
       if (!this.isCurrent(generation) || cause instanceof VoiceAttemptCancelledError) return;
       this.disposeTransport();
-      const error = asVoiceBrowserError(cause, 'Het gesprek kon niet worden gestart.');
+      const error = asVoiceBrowserError(cause, 'The call could not be started.');
       this.setState({
         phase: 'failed',
         message: error.message,
@@ -529,7 +529,7 @@ export class VoiceBrowserClient {
       if (this.eventSource !== source) return;
       this.setState({
         phase: 'network_lost',
-        message: 'De statusverbinding is onderbroken. Talon bewaart je taak; probeer opnieuw of hang op.',
+        message: 'The status connection was interrupted. Talon is keeping your task; try again or end the call.',
         errorMessage: null,
       });
     });
@@ -637,7 +637,7 @@ export class VoiceBrowserClient {
       this.releaseAudioTransport();
       this.setState({
         phase: 'network_lost',
-        message: 'De audioverbinding is verbroken. Je taak kan nog doorlopen; hang op wanneer je klaar bent.',
+        message: 'The audio connection was interrupted. Your task may continue; end the call when you are ready.',
         errorMessage: null,
       });
     }
@@ -660,10 +660,10 @@ export class VoiceBrowserClient {
 
   private updateConnectionPhase(): void {
     if (this.stateValue.session?.status === 'connected' && this.transportConnected && this.providerReady) {
-      this.setState({ phase: 'connected', message: 'Je bent verbonden met Talon.', errorMessage: null });
+      this.setState({ phase: 'connected', message: 'You are connected to Talon.', errorMessage: null });
       return;
     }
-    this.setState({ phase: 'connecting', message: 'Audioverbinding klaar; Talon bevestigt de sessie.' });
+    this.setState({ phase: 'connecting', message: 'Audio connection ready; Talon is confirming the session.' });
   }
 
   private async playAudio(): Promise<void> {
@@ -677,7 +677,7 @@ export class VoiceBrowserClient {
       if (!this.isCurrent(generation)) return;
       this.setState({
         audioBlocked: true,
-        message: 'Audio staat klaar. Tik op “Audio afspelen” om Talon te horen.',
+        message: 'Audio is ready. Tap “Play audio” to hear Talon.',
       });
     }
   }
@@ -695,7 +695,7 @@ export class VoiceBrowserClient {
     if (options.body !== undefined) headers['content-type'] = 'application/json';
     if (options.csrf) {
       const token = this.csrfToken();
-      if (!token) throw this.fail('Je browsersessie mist de CSRF-beveiliging. Log opnieuw in.', 'CSRF_DENIED');
+      if (!token) throw this.fail('Your browser session is missing CSRF protection. Sign in again.', 'CSRF_DENIED');
       headers['x-csrf-token'] = token;
     }
 
@@ -708,7 +708,7 @@ export class VoiceBrowserClient {
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       });
     } catch {
-      throw this.fail('De server is niet bereikbaar. Controleer je verbinding.', 'NETWORK_ERROR');
+      throw this.fail('The server is unreachable. Check your connection.', 'NETWORK_ERROR');
     }
 
     let payload: unknown;
@@ -750,7 +750,7 @@ export class VoiceBrowserClient {
     this.providerReady = false;
     this.setState({
       phase: 'ready',
-      message: 'Klaar om te bellen.',
+      message: 'Ready to call.',
       errorMessage: null,
       activeSessionId: null,
       retainedSessionId: null,
@@ -893,14 +893,14 @@ function defaultFetch(input: string, init?: RequestInit): Promise<Response> {
 
 function defaultEventSourceFactory(url: string, init?: EventSourceInit): VoiceEventSource {
   if (typeof EventSource === 'undefined') {
-    throw new VoiceBrowserError('Deze browser ondersteunt geen statusverbinding.', 'UNSUPPORTED_BROWSER', false);
+    throw new VoiceBrowserError('This browser does not support status updates.', 'UNSUPPORTED_BROWSER', false);
   }
   return new EventSource(url, init);
 }
 
 function defaultPeerConnectionFactory(): VoicePeerConnection {
   if (typeof RTCPeerConnection === 'undefined') {
-    throw new VoiceBrowserError('Deze browser ondersteunt geen WebRTC-audio.', 'UNSUPPORTED_BROWSER', false);
+    throw new VoiceBrowserError('This browser does not support WebRTC audio.', 'UNSUPPORTED_BROWSER', false);
   }
   return new RTCPeerConnection();
 }
@@ -910,7 +910,7 @@ function defaultMediaDevices(): VoiceMediaDevices {
     return {
       getUserMedia: (_constraints: MediaStreamConstraints): Promise<MediaStream> =>
         Promise.reject(
-          new VoiceBrowserError('Deze browser heeft geen microfooninterface.', 'UNSUPPORTED_BROWSER', false),
+          new VoiceBrowserError('This browser has no microphone interface.', 'UNSUPPORTED_BROWSER', false),
         ),
     };
   }
@@ -965,7 +965,7 @@ function mergeNotifications(
 
 function toRtcDescription(answer: VoiceTransportAnswer): RTCSessionDescriptionInit {
   if (answer.type !== 'webrtc' || answer.sdp.trim().length === 0) {
-    throw new VoiceBrowserError('Talon gaf geen geldige audioverbinding terug.', 'INVALID_SDP');
+    throw new VoiceBrowserError('Talon did not return a valid audio connection.', 'INVALID_SDP');
   }
   return { type: 'answer', sdp: answer.sdp };
 }
@@ -991,7 +991,7 @@ async function waitForIceGathering(
     };
     const timeout = setTimeout(() => {
       finish();
-      reject(new VoiceBrowserError('De browser kon de audioverbinding niet voorbereiden.', 'ICE_GATHERING_TIMEOUT'));
+      reject(new VoiceBrowserError('The browser could not prepare the audio connection.', 'ICE_GATHERING_TIMEOUT'));
     }, ICE_GATHERING_TIMEOUT_MS);
     peer.onicegatheringstatechange = (event: Event): void => {
       previous?.(event);
@@ -1045,19 +1045,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function userMessageForError(code: string, fallback?: string): string {
   switch (code) {
     case 'UNAUTHORIZED':
-      return 'Je sessie is verlopen. Log opnieuw in.';
+      return 'Your session has expired. Sign in again.';
     case 'CSRF_DENIED':
-      return 'Je browsersessie is ongeldig. Log opnieuw in.';
+      return 'Your browser session is invalid. Sign in again.';
     case 'SESSION_LIMIT':
-      return 'Er is al een Talon-gesprek actief.';
+      return 'A Talon call is already active.';
     case 'RATE_LIMITED':
-      return 'Probeer het zo opnieuw; er zijn tijdelijk te veel aanvragen.';
+      return 'Try again shortly; there are temporarily too many requests.';
     case 'ORIGIN_DENIED':
-      return 'Deze pagina mag geen verbinding maken met Talon.';
+      return 'This page is not allowed to connect to Talon.';
     case 'VOICE_ERROR':
-      return 'Talon kon het voicegesprek niet verwerken.';
+      return 'Talon could not process the voice call.';
     default:
-      return fallback ?? 'Er ging iets mis. Probeer het opnieuw.';
+      return fallback ?? 'Something went wrong. Try again.';
   }
 }
 
@@ -1065,10 +1065,10 @@ function asVoiceBrowserError(cause: unknown, fallback: string): VoiceBrowserErro
   if (cause instanceof VoiceBrowserError) return cause;
   if (typeof DOMException !== 'undefined' && cause instanceof DOMException) {
     if (cause.name === 'NotAllowedError' || cause.name === 'PermissionDeniedError') {
-      return new VoiceBrowserError('Microfoontoegang is geweigerd. Geef toestemming en probeer opnieuw.', 'MICROPHONE_DENIED', false);
+      return new VoiceBrowserError('Microphone access was denied. Allow access and try again.', 'MICROPHONE_DENIED', false);
     }
     if (cause.name === 'NotFoundError') {
-      return new VoiceBrowserError('Er is geen microfoon gevonden.', 'MICROPHONE_MISSING', false);
+      return new VoiceBrowserError('No microphone was found.', 'MICROPHONE_MISSING', false);
     }
   }
   if (cause instanceof Error && cause.message.length > 0) {
