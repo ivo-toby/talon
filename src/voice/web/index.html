@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="nl">
+<html lang="en">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#0c1424">
-    <meta name="description" content="Een privé voicegesprek met Talon">
+    <meta name="theme-color" content="#0d0c0b">
+    <meta name="description" content="A private voice conversation with Talon">
     <title>Talon Voice</title>
     <link rel="stylesheet" href="/voice/styles.css">
   </head>
@@ -12,100 +12,101 @@
     <div class="app-shell">
       <header class="topbar">
         <a class="brand" href="/voice/" aria-label="Talon Voice home">
-          <span class="brand-mark" aria-hidden="true">◒</span>
-          <span>Talon <em>Voice</em></span>
+          <img class="brand-logo" src="/voice/assets/talon-logo.png" alt="Talon">
+          <span>Talon Voice</span>
         </a>
-        <div class="privacy-badge"><span class="status-dot" aria-hidden="true"></span> Privé sessie</div>
+        <button class="button button-quiet" data-action="logout" type="button" hidden>Sign out</button>
       </header>
 
       <main>
         <section class="screen login-screen" data-screen="login" aria-labelledby="login-title">
-          <div class="eyebrow">PERSOONLIJKE ASSISTENT</div>
-          <h1 id="login-title">Een rustig gesprek<br><span>met Talon.</span></h1>
-          <p class="lead">Spreek een opdracht in en laat Talon het werk afmaken. Je microfoon blijft alleen actief tijdens dit gesprek.</p>
-          <form class="login-card card" data-form="login">
-            <label for="access-token">Toegangstoken</label>
+          <div class="login-lens lens-frame" aria-hidden="true">
+            <img class="lens-art" src="/voice/assets/hal-lens.png" alt="">
+            <img class="lens-logo" src="/voice/assets/talon-logo.png" alt="">
+          </div>
+          <h1 id="login-title">Sign in to Talon</h1>
+          <p class="lead">Enter your access token to start a call.</p>
+          <form class="login-card" data-form="login">
+            <label for="access-token">Access token</label>
             <div class="input-wrap">
-              <input id="access-token" name="accessToken" type="password" autocomplete="current-password" required placeholder="Plak je token hier">
-              <span class="input-lock" aria-hidden="true">⌑</span>
+              <input id="access-token" name="accessToken" type="password" autocomplete="current-password" required placeholder="Your access token">
             </div>
-            <button class="button button-primary button-wide" type="submit">
-              <span>Veilig inloggen</span><span aria-hidden="true">↗</span>
-            </button>
-            <p class="form-note"><span aria-hidden="true">✦</span> Je token wordt alleen voor deze login gebruikt.</p>
+            <button class="button button-primary button-wide" type="submit">Sign in</button>
+            <p class="form-note">Your microphone stays off until you start a call.</p>
             <p class="feedback feedback-error" data-role="login-error" role="alert" hidden></p>
           </form>
-          <p class="microcopy">Voice staat op deze Talon-installatie aan. Gebruik een beveiligde verbinding.</p>
+          <p class="microcopy">Audio is processed by OpenAI.</p>
         </section>
 
         <section class="screen call-screen" data-screen="call" aria-labelledby="call-title" hidden>
-          <div class="call-header">
-            <div>
-              <div class="eyebrow">TALON VOICE</div>
-              <h1 id="call-title">Jouw gesprek</h1>
-            </div>
-            <button class="button button-quiet" data-action="logout" type="button">Uitloggen</button>
-          </div>
+          <h1 class="sr-only" id="call-title">Voice call</h1>
 
           <div class="call-layout">
-            <section class="call-card card" aria-live="polite">
+            <section class="call-card" aria-live="polite">
               <div class="call-card-top">
-                <span class="connection-pill" data-role="connection-pill"><span class="status-dot" aria-hidden="true"></span><span data-role="phase-label">Klaar om te bellen</span></span>
-                <span class="session-clock" data-role="session-clock">Privé</span>
+                <span class="connection-pill" data-role="connection-pill"><span class="status-dot" aria-hidden="true"></span><span data-role="phase-label">Ready to call</span></span>
+                <span class="session-clock" data-role="session-clock" hidden></span>
               </div>
-              <div class="voice-orb" data-role="voice-orb" aria-hidden="true">
-                <div class="orb-ring orb-ring-one"></div>
-                <div class="orb-ring orb-ring-two"></div>
-                <div class="orb-core"><span>t</span></div>
-              </div>
-              <p class="call-message" data-role="call-message">Klaar om te bellen.</p>
-              <p class="call-hint" data-role="call-hint">Geef Talon een opdracht in je eigen woorden.</p>
+
+              <button class="lens-control voice-orb" data-role="voice-orb" data-action="start" type="button" aria-describedby="call-message call-hint">
+                <span class="lens-frame" aria-hidden="true">
+                  <img class="lens-art" src="/voice/assets/hal-lens.png" alt="">
+                  <img class="lens-logo" src="/voice/assets/talon-logo.png" alt="">
+                </span>
+                <span class="lens-control-label" data-role="start-label">Call Talon</span>
+              </button>
+              <p class="call-message" data-role="call-message" id="call-message">Ready to call.</p>
+              <p class="call-hint" data-role="call-hint" id="call-hint">Speak to Talon in your own words.</p>
 
               <div class="audio-notice" data-role="audio-notice" hidden>
-                <span aria-hidden="true">◖</span>
-                <span>Audio staat klaar.</span>
-                <button class="text-button" data-action="resume-audio" type="button">Audio afspelen</button>
+                <span>Audio is ready.</span>
+                <button class="text-button" data-action="resume-audio" type="button">Play audio</button>
               </div>
 
               <div class="call-actions">
-                <button class="button button-primary call-main-button" data-action="start" type="button"><span data-role="start-label">Gesprek starten</span><span class="button-icon" aria-hidden="true">◉</span></button>
-                <button class="button button-secondary" data-action="mute" type="button" disabled><span data-role="mute-label">Dempen</span><span aria-hidden="true">◌</span></button>
-                <button class="button button-danger" data-action="hangup" type="button" hidden><span>Ophangen</span><span aria-hidden="true">■</span></button>
+                <button class="button button-secondary action-button" data-action="mute" type="button" disabled aria-pressed="false" aria-label="Mute microphone">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v5a3 3 0 0 0 3 3Zm-7-3a7 7 0 0 0 14 0m-7 7v3m-4 0h8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8"></path></svg>
+                  <span data-role="mute-label">Mute</span>
+                </button>
+                <button class="button button-danger action-button" data-action="hangup" type="button" hidden aria-label="End call">
+                  <svg aria-hidden="true" viewBox="0 0 24 24" focusable="false"><path d="M5.5 12.5c3.7-2.1 9.3-2.1 13 0l-1.4 3.2a1.2 1.2 0 0 1-1.5.7l-2.4-.9a1.2 1.2 0 0 1-.8-1.1v-.5a7.6 7.6 0 0 0-4.8 0v.5a1.2 1.2 0 0 1-.8 1.1l-2.4.9a1.2 1.2 0 0 1-1.5-.7L1.5 12.5Z" fill="none" stroke="currentColor" stroke-linejoin="round" stroke-width="1.8"></path></svg>
+                  <span>End call</span>
+                </button>
               </div>
+              <p class="call-note">Your tasks continue after you hang up.</p>
               <p class="feedback feedback-error" data-role="call-error" role="alert" hidden></p>
             </section>
 
             <aside class="side-column">
-              <section class="info-card card cost-card" aria-labelledby="cost-title">
-                <div class="section-heading"><div><div class="eyebrow">GEBRUIK</div><h2 id="cost-title">Voicekosten</h2></div><span class="info-icon" title="Schatting op basis van providergebruik" aria-label="Kosteninformatie">i</span></div>
-                <div class="cost-value" data-role="voice-cost">Nog geen schatting</div>
-                <div class="cost-meta"><span data-role="voice-duration">0:00 gesprekstijd</span><span data-role="voice-cost-status">Nog niet gestart</span></div>
-                <div class="cost-divider"></div>
-                <div class="backend-cost"><span>Backendkosten</span><span data-role="backend-cost">Niet beschikbaar</span></div>
-                <p class="card-footnote">Voicekosten zijn een schatting totdat Talon de sessie afsluit.</p>
-              </section>
-
-              <section class="info-card card task-card" aria-labelledby="tasks-title">
-                <div class="section-heading"><div><div class="eyebrow">WERKGEHEUGEN</div><h2 id="tasks-title">Taakresultaten</h2></div><span class="task-count" data-role="task-count">0</span></div>
-                <div class="pending-banner" data-role="pending-banner" hidden><span class="pulse-dot" aria-hidden="true"></span><span>Een taak wordt nog afgerond nadat je ophing.</span></div>
-                <p class="empty-state" data-role="empty-tasks">Resultaten verschijnen hier zodra Talon werk uitvoert.</p>
+              <section class="info-section" aria-labelledby="tasks-title">
+                <div class="section-heading"><div><h2 id="tasks-title">Activity</h2></div><span class="task-count" data-role="task-count">0</span></div>
+                <div class="pending-banner" data-role="pending-banner" hidden><span class="pulse-dot" aria-hidden="true"></span><span>A task is still completing after you ended the call.</span></div>
+                <p class="empty-state" data-role="empty-tasks">No tasks yet.</p>
                 <ul class="result-list" data-role="results" aria-live="polite"></ul>
               </section>
 
-              <section class="info-card card notification-card" aria-labelledby="notifications-title">
-                <div class="section-heading"><div><div class="eyebrow">TALON</div><h2 id="notifications-title">Meldingen</h2></div><span class="task-count" data-role="notification-count">0</span></div>
-                <p class="empty-state" data-role="empty-notifications">Nieuwe berichten verschijnen hier.</p>
+              <section class="info-section" aria-labelledby="notifications-title">
+                <div class="section-heading"><div><h2 id="notifications-title">Messages</h2></div><span class="task-count" data-role="notification-count">0</span></div>
+                <p class="empty-state" data-role="empty-notifications">No new messages.</p>
                 <ul class="notification-list" data-role="notifications" aria-live="polite"></ul>
+              </section>
+
+              <section class="info-section cost-section" aria-labelledby="cost-title">
+                <div class="section-heading"><div><h2 id="cost-title">Voice usage</h2></div></div>
+                <div class="cost-value" data-role="voice-cost">No estimate yet</div>
+                <div class="cost-meta"><span data-role="voice-duration">0:00 call time</span><span data-role="voice-cost-status">Not started</span></div>
+                <div class="cost-divider"></div>
+                <div class="backend-cost"><span>Backend usage</span><span data-role="backend-cost">Unavailable</span></div>
+                <p class="card-footnote">Voice cost is an estimate, not confirmed billing.</p>
+                <p class="privacy-note">Audio is processed by OpenAI.</p>
               </section>
             </aside>
           </div>
-          <p class="privacy-note"><span aria-hidden="true">✦</span> Audio gaat voor dit gesprek rechtstreeks naar OpenAI. Talon bewaart geen ruwe audio. Je kunt op elk moment ophangen.</p>
         </section>
       </main>
 
-      <footer><span>Talon Voice</span><span>WebRTC · Privé op je eigen Talon</span></footer>
     </div>
-    <audio id="remote-audio" autoplay playsinline aria-label="Audio van Talon"></audio>
+    <audio id="remote-audio" autoplay playsinline aria-label="Talon audio"></audio>
     <script type="module" src="/voice/app.js"></script>
   </body>
 </html>
