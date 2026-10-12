@@ -98,6 +98,7 @@ function render(state) {
   const authenticated = state.authenticated;
   setHidden(loginScreen, authenticated);
   setHidden(callScreen, !authenticated);
+  setHidden(logoutButton, !authenticated);
   if (!authenticated) return;
 
   const phase = phaseDetails(state.phase);
@@ -108,20 +109,23 @@ function render(state) {
   text(muteLabel, state.muted ? 'Unmute' : 'Mute');
   text(taskCount, String(state.outputs.length));
   text(notificationCount, String(state.notifications.length));
-  text(sessionClock, state.session ? sessionLabel(state.session.status) : 'Private');
+  text(sessionClock, state.session ? sessionLabel(state.session.status) : '');
+  setHidden(sessionClock, !hasOpenSession(state));
+  setHidden(callMessage, state.phase === 'ready');
+  setHidden(callHint, state.phase === 'ready');
   connectionPill?.classList.toggle('is-live', state.phase === 'connected');
   connectionPill?.classList.toggle('is-warn', state.phase === 'network_lost' || state.phase === 'failed');
   lensControl?.classList.toggle('is-loading', state.phase === 'requesting_microphone' || state.phase === 'connecting');
   lensControl?.toggleAttribute('disabled', !canStartCall(state));
   lensControl?.setAttribute('aria-label', phase.startLabel);
   lensControl?.setAttribute('aria-busy', String(state.phase === 'requesting_microphone' || state.phase === 'connecting'));
-  muteButton?.toggleAttribute('disabled', state.phase !== 'connected');
+  muteButton?.toggleAttribute('disabled', !['connected', 'network_lost'].includes(state.phase));
   muteButton?.setAttribute('aria-pressed', String(state.muted));
   muteButton?.setAttribute('aria-label', state.muted ? 'Unmute microphone' : 'Mute microphone');
   setHidden(hangupButton, !hasOpenSession(state));
   hangupButton?.toggleAttribute('disabled', state.phase === 'closing' || !hasOpenSession(state));
   setHidden(audioNotice, !state.audioBlocked);
-  setHidden(pendingBanner, !state.pendingDelegation);
+  setHidden(pendingBanner, !state.pendingDelegation || Boolean(state.activeSessionId));
   if (state.errorMessage) show(callError, state.errorMessage);
   else hide(callError);
   renderUsage(state);
@@ -148,7 +152,14 @@ function renderResults(outputs) {
     top.className = 'result-top';
     const kind = document.createElement('span');
     kind.className = 'result-kind';
-    kind.textContent = output.kind === 'final' ? 'Final result' : 'Progress';
+    const outputKind = String(output.kind);
+    kind.textContent = outputKind === 'final'
+      ? 'Final result'
+      : outputKind === 'error'
+        ? 'Error'
+        : outputKind === 'unknown'
+          ? 'Unknown result'
+          : 'Progress';
     const execution = document.createElement('span');
     execution.className = `result-status status-${output.lifecycle.execution}`;
     execution.textContent = executionLabel(output.lifecycle.execution);

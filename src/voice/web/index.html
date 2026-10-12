@@ -13,9 +13,9 @@
       <header class="topbar">
         <a class="brand" href="/voice/" aria-label="Talon Voice home">
           <img class="brand-logo" src="/voice/assets/talon-logo.png" alt="Talon">
-          <span>Talon <em>Voice</em></span>
+          <span>Talon Voice</span>
         </a>
-        <div class="privacy-badge"><span class="status-dot" aria-hidden="true"></span><span>Private session</span></div>
+        <button class="button button-quiet" data-action="logout" type="button" hidden>Sign out</button>
       </header>
 
       <main>
@@ -39,18 +39,13 @@
         </section>
 
         <section class="screen call-screen" data-screen="call" aria-labelledby="call-title" hidden>
-          <div class="call-header">
-            <div class="brand-heading">
-              <h1 class="sr-only" id="call-title">Voice call</h1>
-            </div>
-            <button class="button button-quiet" data-action="logout" type="button">Sign out</button>
-          </div>
+          <h1 class="sr-only" id="call-title">Voice call</h1>
 
           <div class="call-layout">
             <section class="call-card" aria-live="polite">
               <div class="call-card-top">
                 <span class="connection-pill" data-role="connection-pill"><span class="status-dot" aria-hidden="true"></span><span data-role="phase-label">Ready to call</span></span>
-                <span class="session-clock" data-role="session-clock">Private</span>
+                <span class="session-clock" data-role="session-clock" hidden></span>
               </div>
 
               <button class="lens-control voice-orb" data-role="voice-orb" data-action="start" type="button" aria-describedby="call-message call-hint">
@@ -83,16 +78,6 @@
             </section>
 
             <aside class="side-column">
-              <section class="info-section cost-section" aria-labelledby="cost-title">
-                <div class="section-heading"><div><div class="eyebrow">VOICE USAGE</div><h2 id="cost-title">Voice usage</h2></div></div>
-                <div class="cost-value" data-role="voice-cost">No estimate yet</div>
-                <div class="cost-meta"><span data-role="voice-duration">0:00 call time</span><span data-role="voice-cost-status">Not started</span></div>
-                <div class="cost-divider"></div>
-                <div class="backend-cost"><span>Backend usage</span><span data-role="backend-cost">Unavailable</span></div>
-                <p class="card-footnote">Voice cost is an estimate, not confirmed billing.</p>
-                <p class="privacy-note">Audio is processed by OpenAI.</p>
-              </section>
-
               <section class="info-section" aria-labelledby="tasks-title">
                 <div class="section-heading"><div><h2 id="tasks-title">Activity</h2></div><span class="task-count" data-role="task-count">0</span></div>
                 <div class="pending-banner" data-role="pending-banner" hidden><span class="pulse-dot" aria-hidden="true"></span><span>A task is still completing after you ended the call.</span></div>
@@ -105,12 +90,21 @@
                 <p class="empty-state" data-role="empty-notifications">No new messages.</p>
                 <ul class="notification-list" data-role="notifications" aria-live="polite"></ul>
               </section>
+
+              <section class="info-section cost-section" aria-labelledby="cost-title">
+                <div class="section-heading"><div><h2 id="cost-title">Voice usage</h2></div></div>
+                <div class="cost-value" data-role="voice-cost">No estimate yet</div>
+                <div class="cost-meta"><span data-role="voice-duration">0:00 call time</span><span data-role="voice-cost-status">Not started</span></div>
+                <div class="cost-divider"></div>
+                <div class="backend-cost"><span>Backend usage</span><span data-role="backend-cost">Unavailable</span></div>
+                <p class="card-footnote">Voice cost is an estimate, not confirmed billing.</p>
+                <p class="privacy-note">Audio is processed by OpenAI.</p>
+              </section>
             </aside>
           </div>
         </section>
       </main>
 
-      <footer><span>Talon Voice</span><span>WebRTC · Private on your Talon</span></footer>
     </div>
     <audio id="remote-audio" autoplay playsinline aria-label="Talon audio"></audio>
     <script type="module" src="/voice/app.js"></script>
