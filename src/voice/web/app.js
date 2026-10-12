@@ -77,7 +77,10 @@ logoutButton?.addEventListener('click', () => {
   setBusy(logoutButton, true);
   void client.logout().catch((error) => {
     show(callError, errorMessage(error));
-  }).finally(() => render(client.state));
+  }).finally(() => {
+    setBusy(logoutButton, false);
+    render(client.state);
+  });
 });
 
 resumeAudioButton?.addEventListener('click', () => {

@@ -12,7 +12,7 @@
 - Build: `npm run build` PASS.
 - Built assets: `dist/voice/web/assets/hal-lens.png` (1254×1254 RGBA PNG) and `talon-logo.png` (659×610 RGB PNG). The browser asset mapping returns `image/png` for both.
 - Fixed UI copy scan: no non-English fixed strings remain in `index.html`, `app.js`, or `voice-client.ts`; dynamic task, result, notification and persona text remains unmodified.
-- Offline rendered browser fixture: PASS, **17 checks**, against the built page through intercepted HTTPS with fake REST, SSE, WebRTC, audio and media APIs; one session creation, one close, one logout, zero console errors. The fixture covered login/error recovery, start/readiness, mute, autoplay recovery, dynamic Dutch text, network loss, retained work, logout, microphone denial, reduced motion and horizontal-fit checks at 390×844, 320×740 and 1440×1000. No listener or provider was used.
+- Offline rendered browser fixture: PASS, **18 checks**, against the built page through intercepted HTTPS with fake REST, SSE, WebRTC, audio and media APIs; one session creation, one close, two logout cycles, zero console errors. The fixture covered login/error recovery, start/readiness, mute, autoplay recovery, dynamic Dutch text, network loss, retained work, repeated logout, microphone denial, reduced motion and horizontal-fit checks at 390×844, 320×740 and 1440×1000. No listener or provider was used.
 
 ## Intentional concept differences
 
