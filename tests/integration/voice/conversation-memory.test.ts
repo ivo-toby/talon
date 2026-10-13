@@ -36,6 +36,7 @@ import { ProviderRegistry } from '../../../src/providers/provider-registry.js';
 import { DurableVoiceBackendBridge } from '../../../src/voice/voice-backend-bridge.js';
 import { VoiceOutputSink } from '../../../src/voice/voice-output-sink.js';
 import { VoicePolicy } from '../../../src/voice/voice-policy.js';
+import { createVoiceAdapterSelection } from '../../../src/voice/voice-adapters.js';
 import {
   BrowserVoiceTransport,
   DurableVoiceSessionService,
@@ -60,6 +61,13 @@ const CHANNEL_ID = 'conversation-memory-channel';
 const PERSONA_ID = 'conversation-memory-persona';
 const PROVIDER_NAME = 'conversation-memory-provider';
 const MODEL_NAME = 'conversation-memory-model';
+const TEST_VOICE_CAPABILITIES = {
+  audio_streaming: 'supported',
+  interruptions: 'supported',
+  delegation: 'supported',
+  transcript_stability: 'supported',
+  usage_reporting: 'supported',
+} as const;
 
 function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
@@ -130,6 +138,7 @@ class FakeSideband implements LiveVoiceSideband {
 
 class FakeLiveProvider implements LiveVoiceProvider {
   readonly name = 'conversation-memory-live';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
   readonly sidebands = new Map<string, FakeSideband>();
   readonly createInstructions: string[] = [];
   readonly backendInputs: AgentRunInput[] = [];
@@ -409,10 +418,17 @@ describe('voice conversation memory integration', () => {
       executionGate: () => ok(undefined),
       now: () => 20,
     });
+    const transport = new BrowserVoiceTransport({ now: () => 20 });
+    const adapterSelection = createVoiceAdapterSelection({
+      transport,
+      engine: liveProvider,
+    });
+    if (adapterSelection.isErr()) throw adapterSelection.error;
     const serviceOptions = {
       store,
       provider: liveProvider,
-      transport: new BrowserVoiceTransport({ now: () => 20 }),
+      transport,
+      adapterSelection: adapterSelection.value,
       backendBridge: bridge,
       policy,
       threadRepository,
