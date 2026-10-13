@@ -83,6 +83,27 @@ export interface VoiceBrowserTelemetryRequest {
 /** Transport names are open for a later SIP adapter. */
 export type VoiceTransportKind = string;
 
+/** Capabilities negotiated between a configured transport and engine. */
+export const VOICE_CAPABILITIES = [
+  'audio_streaming',
+  'interruptions',
+  'delegation',
+  'notifications',
+  'transcript_stability',
+  'provider_acknowledgements',
+  'playback_evidence',
+  'usage_reporting',
+] as const;
+
+export type VoiceCapability = (typeof VOICE_CAPABILITIES)[number];
+
+export type VoiceCapabilityStatus = 'supported' | 'unsupported' | 'unknown';
+
+/** A partial map treats an omitted capability as unknown. */
+export type VoiceCapabilityMap = Readonly<
+  Partial<Record<VoiceCapability, VoiceCapabilityStatus>>
+>;
+
 export type VoiceSessionStatus =
   | 'created'
   | 'connecting'
@@ -522,23 +543,64 @@ export interface VoicePolicyEvaluator {
 export interface VoiceClientSessionDescriptor {
   readonly transport: VoiceTransportKind;
   readonly sessionId: VoiceSessionId;
-  readonly providerSessionId: LiveProviderSessionId;
+  /** Optional engine-private compatibility metadata; generic transports omit it. */
+  readonly providerSessionId?: LiveProviderSessionId;
   /** Server/provider answer for the browser's transport offer. */
   readonly answer: VoiceTransportAnswer;
   readonly expiresAt: number;
 }
 
-/** Browser/client offer accepted by the selected transport adapter. */
-export interface VoiceTransportOffer {
-  readonly type: VoiceTransportKind;
+/** A WebRTC offer is the only descriptor that carries SDP. */
+export interface VoiceWebRtcTransportOffer {
+  readonly type: 'webrtc';
   readonly sdp: string;
 }
 
-/** Provider/transport answer returned after accepting a client offer. */
-export interface VoiceTransportAnswer {
-  readonly type: VoiceTransportKind;
+/** A verified inbound SIP call reference does not carry browser SDP. */
+export interface VoiceSipTransportOffer {
+  readonly type: 'sip';
+  readonly reference: string;
+  readonly verified: true;
+}
+
+/** Future transports can describe their audio format without SDP. */
+export interface VoiceAudioStreamFormat {
+  readonly codec: string;
+  readonly sampleRateHz: number;
+  readonly channels: number;
+}
+
+export interface VoiceAudioStreamTransportOffer {
+  readonly type: 'audio_stream';
+  readonly format: VoiceAudioStreamFormat;
+}
+
+/** Browser/client offer accepted by the selected transport adapter. */
+export type VoiceTransportOffer =
+  | VoiceWebRtcTransportOffer
+  | VoiceSipTransportOffer
+  | VoiceAudioStreamTransportOffer;
+
+export interface VoiceWebRtcTransportAnswer {
+  readonly type: 'webrtc';
   readonly sdp: string;
 }
+
+export interface VoiceSipTransportAnswer {
+  readonly type: 'sip';
+  readonly reference: string;
+}
+
+export interface VoiceAudioStreamTransportAnswer {
+  readonly type: 'audio_stream';
+  readonly format: VoiceAudioStreamFormat;
+}
+
+/** Provider/transport answer returned after accepting a client offer. */
+export type VoiceTransportAnswer =
+  | VoiceWebRtcTransportAnswer
+  | VoiceSipTransportAnswer
+  | VoiceAudioStreamTransportAnswer;
 
 /** Default selected by Talon's browservoice configuration. */
 export const DEFAULT_VOICE_OUTPUT_VOICE = 'marin' as const;
@@ -657,6 +719,8 @@ export interface LiveVoiceSideband {
 
 export interface LiveVoiceProvider {
   readonly name: string;
+  /** Optional adapter metadata; omitted means unknown until negotiated. */
+  readonly capabilities?: VoiceCapabilityMap;
   createSession(input: LiveVoiceSessionRequest): VoiceAsyncResult<LiveVoiceSession>;
   attachSideband(session: LiveVoiceSession): VoiceAsyncResult<LiveVoiceSideband>;
   closeSession(providerSessionId: LiveProviderSessionId): VoiceAsyncResult<void>;
@@ -696,6 +760,8 @@ export type VoiceTransportEvent =
 
 export interface VoiceTransport {
   readonly kind: VoiceTransportKind;
+  /** Optional adapter metadata; omitted means unknown until negotiated. */
+  readonly capabilities?: VoiceCapabilityMap;
   open(input: VoiceTransportOpenRequest): VoiceAsyncResult<VoiceTransportHandle>;
   status(sessionId: VoiceSessionId): VoiceResult<VoiceTransportStatus>;
   onEvent(

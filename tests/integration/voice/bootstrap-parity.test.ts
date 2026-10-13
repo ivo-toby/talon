@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { err, ok } from 'neverthrow';
 
 import { TalondDaemon } from '../../../src/daemon/daemon.js';
+import { createVoiceAdapterSelection } from '../../../src/voice/voice-adapters.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type {
   LiveVoiceEvent,
@@ -26,6 +27,7 @@ import type {
   VoiceClientSessionDescriptor,
   VoiceContextSnapshot,
   VoiceEventHandler,
+  VoiceTransport,
   VoiceUnsubscribe,
 } from '../../../src/voice/voice-types.js';
 
@@ -98,6 +100,13 @@ class FakeSideband implements LiveVoiceSideband {
 
 class FakeLiveProvider implements LiveVoiceProvider {
   readonly name = 'offline-live-provider';
+  readonly capabilities = {
+    audio_streaming: 'supported',
+    interruptions: 'supported',
+    delegation: 'supported',
+    transcript_stability: 'supported',
+    usage_reporting: 'supported',
+  } as const;
   readonly sessions = new Map<string, FakeSideband>();
   readonly createInputs: LiveVoiceSessionRequest[] = [];
   private sequence = 0;
@@ -166,10 +175,20 @@ function installFakeLiveProvider(context: DaemonContext, provider: FakeLiveProvi
   if (!service) throw new Error('bootstrap did not create voice session service');
   const options = (
     service as unknown as {
-      options: { provider: LiveVoiceProvider };
+      options: {
+        provider: LiveVoiceProvider;
+        transport: VoiceTransport;
+        adapterSelection: import('../../../src/voice/voice-adapters.js').VoiceAdapterSelection;
+      };
     }
   ).options;
   options.provider = provider;
+  const adapterSelection = createVoiceAdapterSelection({
+    transport: options.transport,
+    engine: provider,
+  });
+  if (adapterSelection.isErr()) throw adapterSelection.error;
+  options.adapterSelection = adapterSelection.value;
   (context as unknown as { voiceProvider: LiveVoiceProvider }).voiceProvider = provider;
 }
 

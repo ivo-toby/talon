@@ -13,6 +13,7 @@ import { DurableVoiceBackendBridge } from '../../../../src/voice/voice-backend-b
 import { VoiceOutputSink } from '../../../../src/voice/voice-output-sink.js';
 import { DurableVoiceStore } from '../../../../src/voice/voice-store.js';
 import { VoicePolicy } from '../../../../src/voice/voice-policy.js';
+import { createVoiceAdapterSelection } from '../../../../src/voice/voice-adapters.js';
 import {
   OpenAiLiveVoiceSideband,
   type LiveWebSocket,
@@ -34,6 +35,14 @@ import type {
   VoiceTransport,
   VoiceUnsubscribe,
 } from '../../../../src/voice/voice-types.js';
+
+const TEST_VOICE_CAPABILITIES = {
+  audio_streaming: 'supported',
+  interruptions: 'supported',
+  delegation: 'supported',
+  transcript_stability: 'supported',
+  usage_reporting: 'supported',
+} as const;
 
 class FakeSideband implements LiveVoiceSideband {
   readonly commands: string[] = [];
@@ -117,24 +126,37 @@ class FakeSideband implements LiveVoiceSideband {
 
 class FakeProvider implements LiveVoiceProvider {
   readonly name = 'openai-live';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
   readonly sideband: FakeSideband;
   lastModelName: string | undefined;
   lastInstructions: string | undefined;
+  closeCount = 0;
 
-  constructor(providerSessionId = 'provider-session-1') {
+  constructor(
+    providerSessionId = 'provider-session-1',
+    private readonly omitClientProviderSessionId = false,
+  ) {
     this.sideband = new FakeSideband(providerSessionId);
   }
 
   createSession(input: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
     this.lastModelName = input.modelName;
     this.lastInstructions = input.instructions;
+    const answer: LiveVoiceSession['client']['answer'] =
+      input.transport.type === 'audio_stream'
+        ? { type: 'audio_stream', format: input.transport.format }
+        : input.transport.type === 'webrtc'
+          ? { type: 'webrtc', sdp: 'answer' }
+          : { type: 'sip', reference: input.transport.reference, verified: true };
     const session: LiveVoiceSession = {
       providerSessionId: this.sideband.providerSessionId,
       client: {
         transport: input.transport.type,
         sessionId: input.sessionId,
-        providerSessionId: this.sideband.providerSessionId,
-        answer: { type: input.transport.type, sdp: 'answer' },
+        ...(this.omitClientProviderSessionId
+          ? {}
+          : { providerSessionId: this.sideband.providerSessionId }),
+        answer,
         expiresAt: Date.now() + 60_000,
       },
     };
@@ -146,6 +168,66 @@ class FakeProvider implements LiveVoiceProvider {
   }
 
   closeSession(_providerSessionId: string) {
+    this.closeCount += 1;
+    return Promise.resolve(ok(undefined));
+  }
+}
+
+class PendingProvider extends FakeProvider {
+  readonly started: Promise<void>;
+  createCount = 0;
+  private resolveStarted!: () => void;
+  private resolveCreate!: (result: LiveVoiceSession) => void;
+  private pendingInput!: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest;
+
+  constructor() {
+    super();
+    this.started = new Promise((resolve) => {
+      this.resolveStarted = resolve;
+    });
+  }
+
+  override createSession(input: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
+    this.createCount += 1;
+    if (this.createCount > 1) return super.createSession(input);
+    this.pendingInput = input;
+    this.resolveStarted();
+    return new Promise((resolve) => {
+      this.resolveCreate = (result) => resolve(ok(result));
+    });
+  }
+
+  releaseCreate(): void {
+    void super.createSession(this.pendingInput).then((result) => {
+      if (result.isOk()) this.resolveCreate(result.value);
+    });
+  }
+}
+
+class FakeAudioStreamTransport implements VoiceTransport {
+  readonly kind = 'audio_stream';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
+
+  open(input: import('../../../../src/voice/voice-types.js').VoiceTransportOpenRequest) {
+    return Promise.resolve(
+      ok({
+        sessionId: input.sessionId,
+        transportSessionId: 'audio-stream-session',
+        kind: this.kind,
+        status: 'connected' as const,
+      }),
+    );
+  }
+
+  status(_sessionId: string) {
+    return ok('connected' as const);
+  }
+
+  onEvent(_sessionId: string, _handler: VoiceEventHandler<import('../../../../src/voice/voice-types.js').VoiceTransportEvent>) {
+    return (): void => undefined;
+  }
+
+  close(_sessionId: string, _reason: string) {
     return Promise.resolve(ok(undefined));
   }
 }
@@ -179,6 +261,7 @@ class SocketSideband {
 
 class SocketProvider implements LiveVoiceProvider {
   readonly name = 'openai-live';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
   readonly socket: SocketSideband;
   readonly sideband: OpenAiLiveVoiceSideband;
 
@@ -272,6 +355,7 @@ interface HarnessOptions {
   database?: Database.Database;
   providerSessionId?: string;
   provider?: LiveVoiceProvider;
+  transport?: VoiceTransport;
   owner?: { ownerId: string; loginRevision: number };
   backendModel?: string;
   liveModel?: string;
@@ -309,7 +393,10 @@ function createHarness(options: HarnessOptions = {}): FakeVoiceHarness | Provide
   const store = new DurableVoiceStore(harnessDb, queueRepository);
   const bridge = new DurableVoiceBackendBridge(store, queueRepository, { now: () => 20 });
   const provider = options.provider ?? new FakeProvider(options.providerSessionId);
-  const transport: VoiceTransport = new BrowserVoiceTransport({ now: () => 20 });
+  const transport: VoiceTransport =
+    options.transport ?? new BrowserVoiceTransport({ now: () => 20 });
+  const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
+  if (adapterSelection.isErr()) throw adapterSelection.error;
   const policy = new VoicePolicy({
     providerTypes: new Map([['agent-provider', 'openai-compatible']]),
   });
@@ -347,6 +434,7 @@ function createHarness(options: HarnessOptions = {}): FakeVoiceHarness | Provide
     capturePolicy,
     currentPolicy: () => capturePolicy(),
     isOwnerActive: options.isOwnerActive,
+    adapterSelection: adapterSelection.value,
     usdPerMinute: options.usdPerMinute,
     logger: options.logger,
   });
@@ -379,6 +467,74 @@ describe('browser voice lifecycle composition', () => {
     db = undefined;
   });
 
+  it('accepts a no-SDP client descriptor without exposing an engine session id', async () => {
+    const provider = new FakeProvider('audio-provider-session', true);
+    const harness = createHarness({
+      provider,
+      transport: new FakeAudioStreamTransport(),
+    });
+    db = harness.db;
+
+    const created = await harness.service.createSession(harness.owner, {
+      transport: {
+        type: 'audio_stream',
+        format: { codec: 'pcm16', sampleRateHz: 24_000, channels: 1 },
+      },
+    });
+
+    expect(created.isOk()).toBe(true);
+    if (created.isErr()) return;
+    expect(created.value.client.providerSessionId).toBeUndefined();
+    expect(created.value.client.answer).toEqual({
+      type: 'audio_stream',
+      format: { codec: 'pcm16', sampleRateHz: 24_000, channels: 1 },
+    });
+    await harness.service.closeSession(harness.owner, created.value.session.id, {
+      reason: 'hangup',
+    });
+  });
+
+  it('holds the shared reservation until a pending setup settles after close', async () => {
+    const provider = new PendingProvider();
+    const harness = createHarness({ provider });
+    db = harness.db;
+
+    const firstCreate = harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    await provider.started;
+    const persisted = harness.store.listSessions({});
+    expect(persisted.isOk()).toBe(true);
+    if (persisted.isErr() || !persisted.value[0]) return;
+    const firstSessionId = persisted.value[0].session.id;
+
+    const closed = await harness.service.closeSession(harness.owner, firstSessionId, {
+      reason: 'hangup',
+    });
+    expect(closed.isOk()).toBe(true);
+
+    const blocked = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'second-offer' },
+    });
+    expect(blocked.isErr()).toBe(true);
+    expect(provider.createCount).toBe(1);
+
+    provider.releaseCreate();
+    const firstResult = await firstCreate;
+    expect(firstResult.isErr()).toBe(true);
+    expect(provider.closeCount).toBe(1);
+
+    const next = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'third-offer' },
+    });
+    expect(next.isOk()).toBe(true);
+    if (next.isOk()) {
+      await harness.service.closeSession(harness.owner, next.value.session.id, {
+        reason: 'hangup',
+      });
+    }
+  });
+
   it('connects provider events to durable queue execution and retained status', async () => {
     db = createDb();
     const queueRepository = new QueueRepository(db);
@@ -387,6 +543,8 @@ describe('browser voice lifecycle composition', () => {
     const bridge = new DurableVoiceBackendBridge(store, queueRepository, { now: () => 20 });
     const provider = new FakeProvider();
     const transport: VoiceTransport = new BrowserVoiceTransport({ now: () => 20 });
+    const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
+    if (adapterSelection.isErr()) throw adapterSelection.error;
     const policy = new VoicePolicy({
       providerTypes: new Map([['agent-provider', 'openai-compatible']]),
     });
@@ -420,6 +578,7 @@ describe('browser voice lifecycle composition', () => {
       voiceName: 'marin',
       capturePolicy,
       currentPolicy: () => capturePolicy(),
+      adapterSelection: adapterSelection.value,
     });
     const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
     const queueManager = new QueueManager(
@@ -827,6 +986,8 @@ describe('browser voice lifecycle composition', () => {
     const bridge = new DurableVoiceBackendBridge(store, queueRepository, { now: () => 20 });
     const provider = new FakeProvider();
     const transport: VoiceTransport = new BrowserVoiceTransport({ now: () => 20 });
+    const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
+    if (adapterSelection.isErr()) throw adapterSelection.error;
     const policy = new VoicePolicy({
       providerTypes: new Map([['agent-provider', 'openai-compatible']]),
     });
@@ -860,6 +1021,7 @@ describe('browser voice lifecycle composition', () => {
       voiceName: 'marin',
       capturePolicy,
       currentPolicy: () => capturePolicy(),
+      adapterSelection: adapterSelection.value,
     });
     const sink = new VoiceOutputSink(store, (result) => bridge.notifyResult(result));
     const queueManager = new QueueManager(

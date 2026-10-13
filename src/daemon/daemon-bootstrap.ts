@@ -110,6 +110,11 @@ import {
 } from '../voice/voice-session-service.js';
 import { reconcileVoiceSessions } from '../voice/voice-session-reconciler.js';
 import { OpenAiLiveVoiceProvider } from '../voice/providers/openai-live-provider.js';
+import {
+  createVoiceAdapterSelection,
+  VoiceCallAdmission,
+} from '../voice/voice-adapters.js';
+import { createVoiceAuthorization } from '../voice/voice-authorization.js';
 import { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
 import { VoiceTelemetry } from '../voice/voice-telemetry.js';
 import type {
@@ -690,11 +695,6 @@ export async function bootstrap(
         ),
       );
     }
-    if (config.voice.allowedTransportTypes.some((type) => type !== 'webrtc')) {
-      await cleanupBootstrapFailure(db, observability, logger);
-      return err(new DaemonError('Browser voice currently supports only the webrtc transport'));
-    }
-
     const voiceAccessToken =
       config.voice.accessToken ??
       config.auth.providers[config.voice.accessTokenRef]?.apiKey ??
@@ -811,6 +811,27 @@ export async function bootstrap(
       logger,
     });
     voiceTransport = new BrowserVoiceTransport();
+    const voiceAdapterSelection = createVoiceAdapterSelection({
+      transport: voiceTransport,
+      engine: voiceProvider,
+    });
+    if (voiceAdapterSelection.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('Configured voice transport and engine capabilities are not proven'));
+    }
+    const voiceCallAdmission = new VoiceCallAdmission(config.voice.maxConcurrentSessions, {
+      maxSessionCreations: config.voice.maxSessionCreations,
+      sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
+    });
+    const voiceAuthorization = createVoiceAuthorization({
+      resolve: (owner) => voiceAuth!.resolveResult(owner).map((session) => session?.owner),
+      revoke: (owner) => {
+        const resolved = voiceAuth!.resolveResult(owner);
+        if (resolved.isErr()) return err(resolved.error);
+        if (!resolved.value) return err(new PolicyError('Voice grant is missing or revoked'));
+        return voiceAuth!.revoke(resolved.value);
+      },
+    });
     const voiceChannel = registerVoiceChannel(
       {
         channelRepo: repos.channel,
@@ -873,6 +894,9 @@ export async function bootstrap(
       capturePolicy: captureVoicePolicy,
       currentPolicy: currentVoicePolicy,
       isOwnerActive: (owner): boolean => voiceAuth?.resolve(owner) !== undefined,
+      authorization: voiceAuthorization,
+      adapterSelection: voiceAdapterSelection.value,
+      callAdmission: voiceCallAdmission,
       maxSessionLifetimeMs: config.voice.maxSessionLifetimeMs,
       maxContextChars: config.voice.maxContextChars,
       usdPerMinute: config.voice.usdPerMinute,

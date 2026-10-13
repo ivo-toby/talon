@@ -34,7 +34,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 Optional browser voice follows a separate authenticated boundary:
 
-BrowserVoiceServer → VoiceSessionService (WebRTC/auth/policy)
+BrowserVoiceServer → VoiceSessionService (transport/auth/policy)
   → Durable Voice Bridge → the same durable Queue/AgentRunner path
 ```
 

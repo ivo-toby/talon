@@ -53,6 +53,7 @@ import {
   DurableVoiceSessionService,
   IndexedVoiceAuth,
 } from '../../../src/voice/voice-session-service.js';
+import { createVoiceAdapterSelection } from '../../../src/voice/voice-adapters.js';
 import { DurableVoiceStore } from '../../../src/voice/voice-store.js';
 import { BrowserVoiceServer } from '../../../src/voice/transports/browser/browser-server.js';
 import type {
@@ -82,6 +83,13 @@ const CHANNEL_ID = 'voice-channel-id';
 const BACKEND_PROVIDER = 'voice-backend';
 const BACKEND_MODEL = 'backend-model';
 const LIVE_MODEL = 'gpt-live-offline';
+const TEST_VOICE_CAPABILITIES = {
+  audio_streaming: 'supported',
+  interruptions: 'supported',
+  delegation: 'supported',
+  transcript_stability: 'supported',
+  usage_reporting: 'supported',
+} as const;
 
 function context(version: number, digest: string, text: string): VoiceContextSnapshot {
   return {
@@ -147,7 +155,9 @@ class FakeSideband implements LiveVoiceSideband {
 
 class FakeLiveProvider implements LiveVoiceProvider {
   readonly name = 'offline-live-provider';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
   readonly sessions = new Map<string, FakeSideband>();
+  readonly sessionIds = new Map<string, string>();
   readonly createInputs: string[] = [];
   runDelayMs: number;
   runStarted = false;
@@ -162,11 +172,17 @@ class FakeLiveProvider implements LiveVoiceProvider {
     this.createInputs.push(input.modelName);
     const providerSessionId = `provider-session-${++this.sequence}`;
     this.sessions.set(providerSessionId, new FakeSideband(providerSessionId));
+    this.sessionIds.set(input.sessionId, providerSessionId);
     const client: VoiceClientSessionDescriptor = {
       transport: input.transport.type,
       sessionId: input.sessionId,
-      providerSessionId,
-      answer: { type: input.transport.type, sdp: 'offline-answer' },
+      ...(input.transport.type === 'webrtc' ? { providerSessionId } : {}),
+      answer:
+        input.transport.type === 'webrtc'
+          ? { type: 'webrtc', sdp: 'offline-answer' }
+          : input.transport.type === 'sip'
+            ? { type: 'sip', reference: input.transport.reference }
+            : { type: 'audio_stream', format: input.transport.format },
       expiresAt: Date.now() + 60_000,
     };
     const session: LiveVoiceSession = { providerSessionId, client };
@@ -189,6 +205,12 @@ class FakeLiveProvider implements LiveVoiceProvider {
     const sideband = this.sessions.get(sessionId);
     if (!sideband) throw new Error(`fake sideband not found: ${sessionId}`);
     return sideband;
+  }
+
+  sidebandForCall(sessionId: string): FakeSideband {
+    const providerSessionId = this.sessionIds.get(sessionId);
+    if (!providerSessionId) throw new Error(`fake provider call not found: ${sessionId}`);
+    return this.sidebandFor(providerSessionId);
   }
 }
 
@@ -245,7 +267,8 @@ class FakeAgentProvider implements AgentProvider {
 }
 
 class FakeSipTransport implements VoiceTransport {
-  readonly kind = 'fake-sip';
+  readonly kind = 'sip';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
   private readonly statuses = new Map<string, VoiceTransportStatus>();
   private readonly handlers = new Map<string, Set<VoiceEventHandler<VoiceTransportEvent>>>();
 
@@ -571,6 +594,9 @@ async function createHarness(
   const threadRepository = new ThreadRepository(db);
   const store = new DurableVoiceStore(db, queueRepository);
   const provider = new FakeLiveProvider(runDelayMs, options.providerSequenceStart);
+  const transport = new BrowserVoiceTransport();
+  const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
+  if (adapterSelection.isErr()) throw adapterSelection.error;
   const authRepository = options.durableDatabase ? new VoiceAuthRepository(db) : undefined;
   const auth = new IndexedVoiceAuth({
     accessToken: ACCESS_TOKEN,
@@ -606,7 +632,8 @@ async function createHarness(
   const service = new DurableVoiceSessionService({
     store,
     provider,
-    transport: new BrowserVoiceTransport(),
+    transport,
+    adapterSelection: adapterSelection.value,
     backendBridge: bridge,
     policy: policyParts.policy,
     threadRepository,
@@ -1254,6 +1281,8 @@ describe('browser voice offline integration', () => {
     const provider = new FakeLiveProvider();
     const policyParts = makePolicy(() => 1, { ownerId: 'sip-owner', loginRevision: 1 });
     const transport = new FakeSipTransport();
+    const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
+    if (adapterSelection.isErr()) throw adapterSelection.error;
     let gateInput: VoiceExecutionGateInput | undefined;
     const bridge = new DurableVoiceBackendBridge(store, queueRepository, {
       executionGate: (input) => {
@@ -1276,6 +1305,7 @@ describe('browser voice offline integration', () => {
       store,
       provider,
       transport,
+      adapterSelection: adapterSelection.value,
       backendBridge: bridge,
       policy: policyParts.policy,
       threadRepository,
@@ -1306,15 +1336,20 @@ describe('browser voice offline integration', () => {
 
     try {
       const created = await service.createSession(owner, {
-        transport: { type: 'fake-sip', sdp: 'offer' },
+        transport: { type: 'sip', reference: 'offline-fake-sip', verified: true },
       });
       expect(created.isOk()).toBe(true);
       const session = created._unsafeUnwrap().session;
-      expect(created._unsafeUnwrap().client.transport).toBe('fake-sip');
-      expect(session.transport).toBe('fake-sip');
+      expect(created._unsafeUnwrap().client.transport).toBe('sip');
+      expect(created._unsafeUnwrap().client.providerSessionId).toBeUndefined();
+      expect(created._unsafeUnwrap().client.answer).toEqual({
+        type: 'sip',
+        reference: 'offline-fake-sip',
+      });
+      expect(session.transport).toBe('sip');
       expect(transport.status(session.id)._unsafeUnwrap()).toBe('connected');
 
-      const sideband = provider.sidebandFor(created._unsafeUnwrap().client.providerSessionId);
+      const sideband = provider.sidebandForCall(session.id);
       sideband.contexts.set(
         'sip-delegation',
         context(1, 'sip-digest', 'Run the normalized fake SIP request.'),

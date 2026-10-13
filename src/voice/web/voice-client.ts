@@ -12,6 +12,7 @@ import type {
   VoiceTransportAnswer,
   VoiceUsageSummary,
 } from '../voice-types.js';
+import { isOpenAiLiveReadyEvent } from './openai-live-events.js';
 
 export type VoiceBrowserPhase =
   | 'logged_out'
@@ -738,15 +739,7 @@ export class VoiceBrowserClient {
 
   private handleProviderEvent(peer: VoicePeerConnection, event: MessageEvent): void {
     if (this.peer !== peer) return;
-    const data = typeof event.data === 'string' ? event.data : null;
-    if (data === null) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(data) as unknown;
-    } catch {
-      return;
-    }
-    if (!isRecord(parsed) || parsed.type !== 'session.started') return;
+    if (!isOpenAiLiveReadyEvent(event.data)) return;
     this.providerReady = true;
     this.updateConnectionPhase();
   }
