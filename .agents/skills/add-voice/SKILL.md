@@ -28,9 +28,11 @@ npx talonctl config-show
 ```
 
 Choose the persona first. Its configured provider must be enabled; the
-provider's normal OAuth and native-tool restrictions remain in force. Voice
-currently accepts WebRTC only. SIP and physical phone access are not supported
-by this skill.
+provider's normal OAuth and native-tool restrictions remain in force. This
+skill configures the browser WebRTC path. Incoming SIP is a separate advanced
+boundary, disabled by default, and does not provision Asterisk, keys, trunks,
+or paid calls; use the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx)
+only for an explicitly authorised operator setup.
 
 Ask: **"Which existing persona should browser voice use?"**
 

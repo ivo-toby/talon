@@ -6,9 +6,10 @@ description: Configure and operate Talon's opt-in browser voice session
 # Browser voice
 
 Talon can expose an opt-in browser voice session at `/voice/`. The browser
-uses WebRTC for the live audio path. Talon keeps authentication, policy, the
-session lifecycle, and any delegated backend work on the daemon; SIP and
-other transports are not currently supported.
+uses WebRTC for the browser live audio path. Talon keeps authentication, policy,
+the session lifecycle, and any delegated backend work on the daemon. An
+independent incoming SIP webhook boundary is available only when explicitly
+enabled; it does not replace the browser route or install a PBX.
 
 ## Requirements
 
@@ -54,6 +55,16 @@ voice:
     - https://voice.example.com
   allowedTransportTypes:
     - webrtc
+  sip:
+    enabled: false
+    host: 127.0.0.1
+    port: 0
+    path: /voice/sip/webhook
+    standardWebhookSecretRef: openai-webhook
+    issuer: operator-configured-issuer
+    audience: talon-incoming-sip
+    publicKeys: {}
+    endpointMappings: {}
   allowedToolNames: []
   allowedMcpServerNames: []
 ```
@@ -75,6 +86,15 @@ voice access. The selected persona's normal capability policy is authoritative.
 When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
 voice channel. Startup rejects a conflicting ordinary channel configuration and
 does not overwrite an existing non-voice `browser-voice` database row.
+
+For the reference-only incoming SIP authority and Asterisk setup, see the
+[Asterisk guide](voice-asterisk.mdx). SIP delivery authentication and caller
+authentication are separate: Talon verifies the Standard Webhooks raw bytes
+first, then requires a server-mapped, call-bound Ed25519 endpoint assertion.
+Missing, duplicate, expired, revoked, altered, or unmapped assertions are
+denied; Caller ID and ordinary SIP headers never grant authority. The durable
+SIP boundary reserves decisions and receipts before a future provider accept
+callback and never retries an ambiguous attempt.
 
 `publicHost` adds `https://<publicHost>` to the allowed origins and documents
 the external URL. It does not change the listener address. Keep the default

@@ -84,6 +84,7 @@ integration, or automation is safe without your configuration and review.
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
 - **Browser voice** — Opt-in authenticated WebRTC sessions at `/voice/`, backed by the durable queue and configured persona policy
+- **Incoming SIP boundary** — Separately opt-in Standard Webhooks receiver with server-verified Asterisk caller authority and durable at-most-once decision ownership
 
 ### Agent System
 
@@ -2442,6 +2443,17 @@ the real RTC connection and the engine's readiness event; a server-side
 connected status alone does not mark the call ready. Future verified SIP and
 audio-stream descriptors are transport contracts only; the production browser
 path remains WebRTC.
+
+Incoming SIP is a separate disabled-by-default boundary under `voice.sip`. It
+verifies the raw Standard Webhooks delivery before parsing, then requires a
+distinct server-verified Ed25519 caller assertion mapped from an authenticated
+Asterisk endpoint. Caller ID, `From`, `To`, and ordinary SIP headers never
+choose the owner or persona. The durable receiver bounds raw requests and
+pending work, reserves delivery/session/grant decisions atomically, persists an
+attempt marker before any future accept callback, and leaves timeouts or
+crashes as unknown without retry. See the [incoming SIP/Asterisk guide](docs/guides/voice-asterisk.mdx)
+for the reference-only signer and configuration; this does not install a PBX,
+provision keys, or place a paid call.
 
 On page load, the browser first checks the cookie with the read-only
 `GET /voice/auth/session` endpoint and only then attempts to read the optional
