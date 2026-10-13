@@ -894,7 +894,7 @@ export async function bootstrap(
         sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
         heartbeatIntervalMs: config.voice.heartbeatIntervalMs,
       },
-      { sessionService: voiceSessionService, auth: voiceAuth, logger },
+      { sessionService: voiceSessionService, auth: voiceAuth, telemetry: voiceTelemetry, logger },
     );
     logger.info(
       { persona: voicePersonaName, provider: voiceProviderName },

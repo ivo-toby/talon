@@ -36,6 +36,50 @@ export type VoiceOutputId = string;
 export type LiveProviderSessionId = string;
 export type LiveProviderDelegationId = string;
 
+/** Browser observations are proxies for transport and playback behavior. */
+export const VOICE_BROWSER_TELEMETRY_CATEGORIES = [
+  'rtc',
+  'audio',
+  'visibility',
+  'interruption',
+] as const;
+
+export type VoiceBrowserTelemetryCategory =
+  (typeof VOICE_BROWSER_TELEMETRY_CATEGORIES)[number];
+
+export const VOICE_BROWSER_TELEMETRY_STATUSES = [
+  'new',
+  'connecting',
+  'connected',
+  'disconnected',
+  'failed',
+  'closed',
+  'play_resolved',
+  'play_rejected',
+  'visible',
+  'hidden',
+  'interrupted',
+  'resumed',
+  'unknown',
+] as const;
+
+export type VoiceBrowserTelemetryStatus =
+  (typeof VOICE_BROWSER_TELEMETRY_STATUSES)[number];
+
+export interface VoiceBrowserTelemetrySample {
+  readonly category: VoiceBrowserTelemetryCategory;
+  readonly status: VoiceBrowserTelemetryStatus;
+  readonly durationMs?: number;
+  readonly count?: number;
+  /** Present only when the browser has a reliable output association. */
+  readonly outputId?: VoiceOutputId;
+}
+
+export interface VoiceBrowserTelemetryRequest {
+  readonly callId?: VoiceSessionId;
+  readonly samples: readonly VoiceBrowserTelemetrySample[];
+}
+
 /** Transport names are open for a later SIP adapter. */
 export type VoiceTransportKind = string;
 

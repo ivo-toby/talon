@@ -1,5 +1,6 @@
 import type {
   VoiceCloseReason,
+  VoiceBrowserTelemetrySample,
   VoiceCreateSessionHttpResponse,
   VoiceDelegationStatusDto,
   VoiceErrorHttpResponse,
@@ -40,6 +41,15 @@ export interface VoiceBrowserState {
   readonly pendingDelegation: boolean;
   readonly muted: boolean;
   readonly audioBlocked: boolean;
+  /** Bounded local loss diagnostics for the current or most recent call. */
+  readonly browserTelemetry: VoiceBrowserTelemetryDiagnostics;
+}
+
+export interface VoiceBrowserTelemetryDiagnostics {
+  /** Samples whose outcome could not be known after a send attempt failed. */
+  readonly unknownCount: number;
+  /** Samples discarded locally before a send attempt, such as queue saturation. */
+  readonly droppedCount: number;
 }
 export type VoiceFetch = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -85,6 +95,12 @@ export interface VoiceAudioElement {
   pause(): void;
 }
 
+export interface VoiceVisibilitySource {
+  readonly visibilityState?: string;
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+}
+
 export interface VoiceBrowserClientOptions {
   readonly apiBase?: string;
   readonly fetch?: VoiceFetch;
@@ -92,6 +108,7 @@ export interface VoiceBrowserClientOptions {
   readonly peerConnectionFactory?: () => VoicePeerConnection;
   readonly mediaDevices?: VoiceMediaDevices;
   readonly audioElement?: VoiceAudioElement;
+  readonly visibilitySource?: VoiceVisibilitySource;
   readonly sessionStorage?: VoiceSessionStorage;
   readonly csrfToken?: () => string | null;
   readonly onStateChange?: (state: VoiceBrowserState) => void;
@@ -119,6 +136,11 @@ const INITIAL_USAGE: VoiceUsageSummary = {
   backendCostStatus: 'unavailable',
 };
 
+const INITIAL_BROWSER_TELEMETRY: VoiceBrowserTelemetryDiagnostics = {
+  unknownCount: 0,
+  droppedCount: 0,
+};
+
 const INITIAL_STATE: VoiceBrowserState = {
   authenticated: false,
   phase: 'logged_out',
@@ -134,6 +156,7 @@ const INITIAL_STATE: VoiceBrowserState = {
   pendingDelegation: false,
   muted: false,
   audioBlocked: false,
+  browserTelemetry: INITIAL_BROWSER_TELEMETRY,
 };
 
 const ACTIVE_PHASES: ReadonlySet<VoiceBrowserPhase> = new Set([
@@ -153,6 +176,11 @@ const PENDING_DELEGATION_STATUSES = new Set([
 
 const SESSION_STORAGE_KEY = 'talon.voice.session-id';
 const ICE_GATHERING_TIMEOUT_MS = 10_000;
+const BROWSER_TELEMETRY_MAX_SAMPLES = 256;
+const BROWSER_TELEMETRY_BATCH_SIZE = 16;
+const BROWSER_TELEMETRY_ABORT_MS = 2_000;
+const BROWSER_TELEMETRY_CATEGORIES = ['rtc', 'audio', 'visibility', 'interruption'] as const;
+const BROWSER_TELEMETRY_MAX_UNKNOWN_SAMPLES = 256;
 const AUTH_RECOVERY_MESSAGE = 'Talon could not confirm your sign-in. Check your connection and try again.';
 const RETAINED_SESSION_RECOVERY_MESSAGE =
   'Your sign-in is active, but the previous call could not be restored. Check your connection and try again.';
@@ -181,6 +209,7 @@ export class VoiceBrowserClient {
   private readonly peerConnectionFactory: () => VoicePeerConnection;
   private readonly mediaDevices: VoiceMediaDevices;
   private readonly audioElement: VoiceAudioElement | undefined;
+  private readonly visibilitySource: VoiceVisibilitySource | undefined;
   private readonly sessionStorage: VoiceSessionStorage | undefined;
   private readonly csrfToken: () => string | null;
   private readonly onStateChange: ((state: VoiceBrowserState) => void) | undefined;
@@ -195,6 +224,19 @@ export class VoiceBrowserClient {
   private lifecycleGeneration = 0;
   private transportConnected = false;
   private providerReady = false;
+  private readonly telemetryQueue: VoiceBrowserTelemetrySample[] = [];
+  private readonly telemetryUnknownCounts: Record<VoiceBrowserTelemetrySample['category'], number> = {
+    rtc: 0,
+    audio: 0,
+    visibility: 0,
+    interruption: 0,
+  };
+  private telemetryInFlight: Promise<void> | null = null;
+  private telemetryAbortController: AbortController | null = null;
+  private telemetryAbortTimer: ReturnType<typeof setTimeout> | null = null;
+  private telemetryRtcStartedAt: number | undefined;
+  private telemetryVisibilityAttached = false;
+  private readonly visibilityListener = (): void => this.recordVisibility();
   private readonly stoppedStreams = new WeakSet<MediaStream>();
   private readonly closedPeers = new WeakSet<VoicePeerConnection>();
 
@@ -205,6 +247,7 @@ export class VoiceBrowserClient {
     this.peerConnectionFactory = options.peerConnectionFactory ?? defaultPeerConnectionFactory;
     this.mediaDevices = options.mediaDevices ?? defaultMediaDevices();
     this.audioElement = options.audioElement;
+    this.visibilitySource = options.visibilitySource ?? defaultVisibilitySource();
     this.sessionStorage = options.sessionStorage ?? defaultSessionStorage();
     this.csrfToken = options.csrfToken ?? readBrowserCsrfToken;
     this.onStateChange = options.onStateChange;
@@ -499,6 +542,9 @@ export class VoiceBrowserClient {
       createdSessionId = response.session.id;
       this.ensureCurrent(generation);
       this.activeSessionId = response.session.id;
+      this.telemetryRtcStartedAt = browserNow();
+      this.enqueueTelemetry({ category: 'rtc', status: 'connecting' });
+      this.attachVisibilityTelemetry();
       this.applySessionStatus(response.session);
       this.openEventStream(response.session.id);
       await currentPeer.setRemoteDescription(toRtcDescription(response.client.answer));
@@ -633,6 +679,7 @@ export class VoiceBrowserClient {
     });
     if (terminal) {
       this.releaseAudioTransport();
+      this.discardTelemetry();
       if (!pending) this.closeEventStream();
     }
   }
@@ -661,11 +708,24 @@ export class VoiceBrowserClient {
   private handleConnectionState(peer: VoicePeerConnection): void {
     if (this.peer !== peer) return;
     if (peer.connectionState === 'connected') {
+      const durationMs = elapsedSince(this.telemetryRtcStartedAt);
+      this.enqueueTelemetry({
+        category: 'rtc',
+        status: 'connected',
+        ...(durationMs === undefined ? {} : { durationMs }),
+      });
       this.transportConnected = true;
       this.updateConnectionPhase();
       return;
     }
     if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+      const durationMs = elapsedSince(this.telemetryRtcStartedAt);
+      this.enqueueTelemetry({
+        category: 'rtc',
+        status: peer.connectionState,
+        ...(durationMs === undefined ? {} : { durationMs }),
+      });
+      this.enqueueTelemetry({ category: 'interruption', status: 'interrupted' });
       this.transportConnected = false;
       this.releaseAudioTransport();
       this.setState({
@@ -699,15 +759,183 @@ export class VoiceBrowserClient {
     this.setState({ phase: 'connecting', message: 'Audio connection ready; Talon is confirming the session.' });
   }
 
+  private attachVisibilityTelemetry(): void {
+    if (this.telemetryVisibilityAttached || !this.visibilitySource) return;
+    try {
+      this.visibilitySource.addEventListener('visibilitychange', this.visibilityListener);
+      this.telemetryVisibilityAttached = true;
+    } catch {
+      // Browser instrumentation cannot prevent a call from starting.
+    }
+  }
+
+  private recordVisibility(): void {
+    if (!this.activeSessionId) return;
+    let visibilityState: string | undefined;
+    try {
+      visibilityState = this.visibilitySource?.visibilityState;
+    } catch {
+      visibilityState = undefined;
+    }
+    this.enqueueTelemetry({
+      category: 'visibility',
+      status:
+        visibilityState === 'hidden'
+          ? 'hidden'
+          : visibilityState === 'visible'
+            ? 'visible'
+            : 'unknown',
+    });
+  }
+
+  private enqueueTelemetry(sample: VoiceBrowserTelemetrySample): void {
+    if (!this.activeSessionId) return;
+    if (this.telemetryQueue.length >= BROWSER_TELEMETRY_MAX_SAMPLES) {
+      this.recordTelemetryUnknownSample(sample, 'dropped');
+      return;
+    }
+    this.telemetryQueue.push(sample);
+    this.flushTelemetry();
+  }
+
+  private flushTelemetry(): void {
+    if (this.telemetryInFlight || !this.hasPendingTelemetry() || !this.activeSessionId) return;
+    const sessionId = this.activeSessionId;
+    const samples = this.takeTelemetryBatch();
+    let controller: AbortController;
+    try {
+      controller = new AbortController();
+    } catch {
+      this.recordTelemetryUnknown(samples);
+      return;
+    }
+    this.telemetryAbortController = controller;
+    this.telemetryAbortTimer = setTimeout(() => controller.abort(), BROWSER_TELEMETRY_ABORT_MS);
+    const generation = this.lifecycleGeneration;
+    const request = this.requestJson(`/sessions/${encodeURIComponent(sessionId)}/telemetry`, {
+      method: 'POST',
+      csrf: true,
+      expectBody: false,
+      signal: controller.signal,
+      body: { callId: sessionId, samples },
+    })
+      .catch(() => {
+        if (this.lifecycleGeneration === generation && this.activeSessionId === sessionId) {
+          this.recordTelemetryUnknown(samples);
+        }
+      })
+      .then(() => {
+        if (this.telemetryInFlight !== request) return;
+        if (this.telemetryAbortTimer) clearTimeout(this.telemetryAbortTimer);
+        this.telemetryAbortTimer = null;
+        if (this.telemetryAbortController === controller) this.telemetryAbortController = null;
+        this.telemetryInFlight = null;
+        if (this.activeSessionId && this.telemetryQueue.length > 0) this.flushTelemetry();
+      });
+    this.telemetryInFlight = request;
+  }
+
+  private discardTelemetry(): void {
+    this.telemetryQueue.length = 0;
+    this.resetTelemetryUnknownCounts();
+    if (this.telemetryAbortTimer) clearTimeout(this.telemetryAbortTimer);
+    this.telemetryAbortTimer = null;
+    try {
+      this.telemetryAbortController?.abort();
+    } catch {
+      // Abort support is best effort during page cleanup.
+    }
+    this.telemetryAbortController = null;
+    this.telemetryRtcStartedAt = undefined;
+    if (this.telemetryVisibilityAttached) {
+      try {
+        this.visibilitySource?.removeEventListener('visibilitychange', this.visibilityListener);
+      } catch {
+        // Browser instrumentation cannot delay transport cleanup.
+      }
+      this.telemetryVisibilityAttached = false;
+    }
+  }
+
+  private hasPendingTelemetry(): boolean {
+    if (this.telemetryQueue.length > 0) return true;
+    return BROWSER_TELEMETRY_CATEGORIES.some(
+      (category) => this.telemetryUnknownCounts[category] > 0,
+    );
+  }
+
+  private takeTelemetryBatch(): VoiceBrowserTelemetrySample[] {
+    const samples: VoiceBrowserTelemetrySample[] = [];
+    for (const category of BROWSER_TELEMETRY_CATEGORIES) {
+      if (samples.length >= BROWSER_TELEMETRY_BATCH_SIZE) break;
+      const count = this.telemetryUnknownCounts[category];
+      if (count <= 0) continue;
+      const batchCount = Math.min(count, BROWSER_TELEMETRY_MAX_UNKNOWN_SAMPLES);
+      this.telemetryUnknownCounts[category] -= batchCount;
+      samples.push({ category, status: 'unknown', count: batchCount });
+    }
+    while (samples.length < BROWSER_TELEMETRY_BATCH_SIZE && this.telemetryQueue.length > 0) {
+      const sample = this.telemetryQueue.shift();
+      if (sample) samples.push(sample);
+    }
+    return samples;
+  }
+
+  private recordTelemetryUnknown(samples: readonly VoiceBrowserTelemetrySample[]): void {
+    for (const sample of samples) {
+      // Aggregate markers already account for an earlier loss; only newly
+      // failed physical samples may be queued again.
+      if (sample.status === 'unknown' && sample.count !== undefined) continue;
+      this.recordTelemetryUnknownSample(sample);
+    }
+  }
+
+  private recordTelemetryUnknownSample(
+    sample: VoiceBrowserTelemetrySample,
+    diagnostic: 'unknown' | 'dropped' = 'unknown',
+  ): void {
+    this.recordTelemetryDiagnostic(
+      diagnostic === 'unknown' ? 'unknownCount' : 'droppedCount',
+      Math.max(1, Math.min(BROWSER_TELEMETRY_MAX_UNKNOWN_SAMPLES, sample.count ?? 1)),
+    );
+    const total = BROWSER_TELEMETRY_CATEGORIES.reduce(
+      (sum, category) => sum + this.telemetryUnknownCounts[category],
+      0,
+    );
+    const remaining = BROWSER_TELEMETRY_MAX_UNKNOWN_SAMPLES - total;
+    if (remaining <= 0) return;
+    const count = Math.max(1, Math.min(BROWSER_TELEMETRY_MAX_UNKNOWN_SAMPLES, sample.count ?? 1));
+    this.telemetryUnknownCounts[sample.category] += Math.min(count, remaining);
+  }
+
+  private resetTelemetryUnknownCounts(): void {
+    for (const category of BROWSER_TELEMETRY_CATEGORIES) {
+      this.telemetryUnknownCounts[category] = 0;
+    }
+  }
+
   private async playAudio(): Promise<void> {
     if (!this.audioElement) return;
     const generation = this.lifecycleGeneration;
+    const startedAt = browserNow();
     try {
       await this.audioElement.play();
       if (!this.isCurrent(generation)) return;
+      const durationMs = elapsedSince(startedAt);
+      this.enqueueTelemetry({
+        category: 'audio',
+        status: 'play_resolved',
+        ...(durationMs === undefined ? {} : { durationMs }),
+      });
       this.setState({ audioBlocked: false });
     } catch {
       if (!this.isCurrent(generation)) return;
+      const durationMs = elapsedSince(startedAt);
+      this.enqueueTelemetry({
+        category: 'audio',
+        status: 'play_rejected',
+        ...(durationMs === undefined ? {} : { durationMs }),
+      });
       this.setState({
         audioBlocked: true,
         message: 'Audio is ready. Tap “Play audio” to hear Talon.',
@@ -722,6 +950,7 @@ export class VoiceBrowserClient {
       readonly body?: unknown;
       readonly csrf?: boolean;
       readonly expectBody?: boolean;
+      readonly signal?: AbortSignal;
     },
   ): Promise<T> {
     const headers: Record<string, string> = {};
@@ -738,6 +967,7 @@ export class VoiceBrowserClient {
         method: options.method,
         credentials: 'include',
         headers,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
         ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
       });
     } catch {
@@ -788,6 +1018,23 @@ export class VoiceBrowserClient {
     this.onStateChange?.(this.stateValue);
   }
 
+  private recordTelemetryDiagnostic(
+    kind: keyof VoiceBrowserTelemetryDiagnostics,
+    count: number,
+  ): void {
+    const boundedCount = Number.isSafeInteger(count)
+      ? Math.max(0, Math.min(BROWSER_TELEMETRY_MAX_UNKNOWN_SAMPLES, count))
+      : 0;
+    if (boundedCount === 0) return;
+    const current = this.stateValue.browserTelemetry[kind];
+    this.setState({
+      browserTelemetry: {
+        ...this.stateValue.browserTelemetry,
+        [kind]: Math.min(BROWSER_TELEMETRY_MAX_UNKNOWN_SAMPLES, current + boundedCount),
+      },
+    });
+  }
+
   private resetSessionState(): void {
     this.disposeTransport();
     this.activeSessionId = null;
@@ -809,6 +1056,7 @@ export class VoiceBrowserClient {
       pendingDelegation: false,
       muted: false,
       audioBlocked: false,
+      browserTelemetry: INITIAL_BROWSER_TELEMETRY,
     });
   }
 
@@ -861,6 +1109,7 @@ export class VoiceBrowserClient {
   }
 
   private disposeTransport(): void {
+    this.discardTelemetry();
     this.closeEventStream();
     this.releaseAudioTransport();
   }
@@ -892,6 +1141,7 @@ export class VoiceBrowserClient {
   }
 
   private invalidateLifecycle(): number {
+    this.discardTelemetry();
     this.lifecycleGeneration += 1;
     return this.lifecycleGeneration;
   }
@@ -1019,6 +1269,26 @@ function defaultSessionStorage(): VoiceSessionStorage | undefined {
   } catch {
     return undefined;
   }
+}
+
+function defaultVisibilitySource(): VoiceVisibilitySource | undefined {
+  if (typeof document === 'undefined') return undefined;
+  return document;
+}
+
+function browserNow(): number | undefined {
+  try {
+    const value = performance.now();
+    return Number.isFinite(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function elapsedSince(startedAt: number | undefined): number | undefined {
+  const now = browserNow();
+  if (startedAt === undefined || now === undefined || now < startedAt) return undefined;
+  return now - startedAt;
 }
 
 function readBrowserCsrfToken(): string | null {

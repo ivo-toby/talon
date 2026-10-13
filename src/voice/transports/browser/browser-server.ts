@@ -18,6 +18,12 @@ import {
   type VoiceAuthConfig,
   type VoiceAuthSession,
 } from '../../voice-auth.js';
+import {
+  VOICE_BROWSER_TELEMETRY_CATEGORIES,
+  VOICE_BROWSER_TELEMETRY_STATUSES,
+  type VoiceBrowserTelemetryRequest,
+  type VoiceBrowserTelemetrySample,
+} from '../../voice-types.js';
 import type {
   VoiceCloseReason,
   VoiceCreateSessionHttpRequest,
@@ -29,6 +35,10 @@ import type {
   VoiceSessionStatusDto,
   VoiceStatusEventDto,
 } from '../../voice-types.js';
+import type {
+  VoiceBrowserTelemetryResult,
+  VoiceTelemetry,
+} from '../../voice-telemetry.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 0;
@@ -40,6 +50,14 @@ const DEFAULT_MAX_SESSION_CREATIONS = 5;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15 * 1000;
 const MAX_SESSION_ID_LENGTH = 256;
 const MAX_OUTPUT_ID_LENGTH = 256;
+const MAX_TELEMETRY_REQUEST_BYTES = 16 * 1024;
+const MAX_TELEMETRY_SAMPLES_PER_BATCH = 16;
+const MAX_TELEMETRY_SAMPLES_PER_CALL = 256;
+const MAX_TELEMETRY_BATCHES_PER_MINUTE = 6;
+const MAX_TELEMETRY_RATE_KEYS = 256;
+const MAX_TELEMETRY_DURATION_MS = 86_400_000;
+const MAX_TELEMETRY_COUNT = 256;
+const TELEMETRY_RATE_WINDOW_MS = 60 * 1000;
 const VOICE_PREFIX = '/voice';
 
 const DEFAULT_ALLOWED_ORIGINS = new Set([
@@ -106,12 +124,21 @@ export interface BrowserVoiceServerConfig extends Omit<VoiceAuthConfig, 'accessT
 export interface BrowserVoiceServerDependencies {
   readonly sessionService: VoiceSessionService;
   readonly auth?: VoiceAuth;
+  readonly telemetry?: VoiceTelemetry;
   readonly logger?: Logger;
 }
 
 interface CreationState {
   count: number;
   startedAt: number;
+}
+
+interface TelemetryRateState {
+  readonly owner: VoiceOwnerContext;
+  readonly sessionId: string;
+  windowStartedAt: number;
+  acceptedBatches: number;
+  acceptedSamples: number;
 }
 
 interface StatusStream {
@@ -148,6 +175,7 @@ export class BrowserVoiceServer {
   private readonly config: BrowserVoiceServerConfig;
   private readonly sessionService: VoiceSessionService;
   private readonly auth: VoiceAuth;
+  private readonly telemetry: VoiceTelemetry | undefined;
   private readonly logger: Logger;
   private readonly staticDirectory: string | undefined;
   private readonly allowedOrigins: readonly string[] | undefined;
@@ -160,6 +188,7 @@ export class BrowserVoiceServer {
   private readonly sessionsByAuthCookie = new Map<string, Set<string>>();
   private readonly sessionOwners = new Map<string, VoiceOwnerContext>();
   private readonly creationStates = new Map<string, CreationState>();
+  private readonly telemetryRates = new Map<string, TelemetryRateState>();
 
   private server: Server | null = null;
   private startPromise: Promise<number> | null = null;
@@ -179,10 +208,12 @@ export class BrowserVoiceServer {
     if (isDependencies(sessionServiceOrDependencies)) {
       this.sessionService = sessionServiceOrDependencies.sessionService;
       this.auth = sessionServiceOrDependencies.auth ?? new VoiceAuth(requireAccessToken(config));
+      this.telemetry = sessionServiceOrDependencies.telemetry;
       this.logger = sessionServiceOrDependencies.logger ?? logger ?? silentLogger();
     } else {
       this.sessionService = sessionServiceOrDependencies;
       this.auth = new VoiceAuth(requireAccessToken(config));
+      this.telemetry = undefined;
       this.logger = logger ?? silentLogger();
     }
 
@@ -357,6 +388,10 @@ export class BrowserVoiceServer {
     }
     if (sessionRoute.action === 'playback' && request.method === 'POST') {
       await this.handlePlayback(request, response, requestId, sessionRoute.sessionId);
+      return;
+    }
+    if (sessionRoute.action === 'telemetry' && request.method === 'POST') {
+      await this.handleTelemetry(request, response, requestId, sessionRoute.sessionId);
       return;
     }
 
@@ -778,6 +813,93 @@ export class BrowserVoiceServer {
     response.end();
   }
 
+  private async handleTelemetry(
+    request: IncomingMessage,
+    response: ServerResponse,
+    requestId: string,
+    sessionId: string,
+  ): Promise<void> {
+    const authenticated = this.authenticate(request, response, requestId, true);
+    if (!authenticated) return;
+    if (!isPlausibleSessionId(sessionId) || !this.ownerMatchesExact(sessionId, authenticated.owner)) {
+      this.writeError(response, requestId, {
+        status: 404,
+        code: 'NOT_FOUND',
+        message: 'Not found',
+      });
+      return;
+    }
+
+    let body: unknown;
+    try {
+      body = await readJsonBody(request, Math.min(this.maxRequestBytes, MAX_TELEMETRY_REQUEST_BYTES));
+    } catch (cause) {
+      this.writeRequestFailure(response, requestId, cause);
+      return;
+    }
+    if (!this.auth.isActive(authenticated)) {
+      this.writeError(response, requestId, {
+        status: 401,
+        code: 'UNAUTHORIZED',
+        message: 'Authentication required',
+      });
+      return;
+    }
+    const parsed = parseTelemetryRequest(body, sessionId);
+    if (parsed instanceof RequestFailure) {
+      this.writeError(response, requestId, parsed.failure);
+      return;
+    }
+    const outputIds = parsed.samples
+      .map((sample) => sample.outputId)
+      .filter((outputId): outputId is string => outputId !== undefined);
+    if (outputIds.length > 0 && !this.sessionHasOutputs(authenticated.owner, sessionId, outputIds)) {
+      this.writeError(response, requestId, {
+        status: 404,
+        code: 'NOT_FOUND',
+        message: 'Not found',
+      });
+      return;
+    }
+    const rateKey = `${authenticated.owner.ownerId}\u0000${authenticated.owner.loginRevision}\u0000${sessionId}`;
+    const rate = this.consumeTelemetryRate(
+      rateKey,
+      authenticated.owner,
+      sessionId,
+      parsed.samples.length,
+    );
+    if (!rate) {
+      this.writeError(response, requestId, {
+        status: 429,
+        code: 'RATE_LIMITED',
+        message: 'Too many telemetry samples',
+      });
+      return;
+    }
+    let telemetryResult: VoiceBrowserTelemetryResult | undefined;
+    try {
+      telemetryResult = this.telemetry?.recordBrowserTelemetry(parsed);
+    } catch {
+      this.writeError(response, requestId, {
+        status: 503,
+        code: 'VOICE_ERROR',
+        message: 'Voice request failed',
+      });
+      return;
+    }
+    if (telemetryResult?.droppedCount) {
+      this.writeError(response, requestId, {
+        status: 503,
+        code: 'VOICE_ERROR',
+        message: 'Voice request failed',
+      });
+      return;
+    }
+    applyCorsHeaders(response, request.headers.origin);
+    response.writeHead(204);
+    response.end();
+  }
+
   private handleStream(
     request: IncomingMessage,
     response: ServerResponse,
@@ -909,6 +1031,97 @@ export class BrowserVoiceServer {
       boundOwner === undefined ||
       (boundOwner.ownerId === owner.ownerId && boundOwner.loginRevision === owner.loginRevision)
     );
+  }
+
+  private ownerMatchesExact(sessionId: string, owner: VoiceOwnerContext): boolean {
+    const boundOwner = this.sessionOwners.get(sessionId);
+    return (
+      boundOwner !== undefined &&
+      boundOwner.ownerId === owner.ownerId &&
+      boundOwner.loginRevision === owner.loginRevision
+    );
+  }
+
+  private sessionHasOutputs(
+    owner: VoiceOwnerContext,
+    sessionId: string,
+    outputIds: readonly string[],
+  ): boolean {
+    try {
+      const result = this.sessionService.status(owner, sessionId);
+      if (result.isErr() || !result.value) return false;
+      const outputs = new Set<string>();
+      for (const delegation of result.value.delegations) {
+        for (const output of delegation.outputs) outputs.add(output.id);
+      }
+      if (result.value.activeDelegation) {
+        for (const output of result.value.activeDelegation.outputs) outputs.add(output.id);
+      }
+      return outputIds.every((outputId) => outputs.has(outputId));
+    } catch {
+      return false;
+    }
+  }
+
+  private consumeTelemetryRate(
+    key: string,
+    owner: VoiceOwnerContext,
+    sessionId: string,
+    sampleCount: number,
+  ): boolean {
+    const now = Date.now();
+    let state = this.telemetryRates.get(key);
+    if (!state) {
+      if (this.telemetryRates.size >= MAX_TELEMETRY_RATE_KEYS) {
+        this.pruneTelemetryRates();
+        if (this.telemetryRates.size >= MAX_TELEMETRY_RATE_KEYS) return false;
+      }
+      state = {
+        owner,
+        sessionId,
+        windowStartedAt: now,
+        acceptedBatches: 0,
+        acceptedSamples: 0,
+      };
+      this.telemetryRates.set(key, state);
+    } else if (now - state.windowStartedAt >= TELEMETRY_RATE_WINDOW_MS) {
+      state.windowStartedAt = now;
+      state.acceptedBatches = 0;
+    }
+    if (
+      state.acceptedBatches >= MAX_TELEMETRY_BATCHES_PER_MINUTE ||
+      state.acceptedSamples + sampleCount > MAX_TELEMETRY_SAMPLES_PER_CALL
+    ) {
+      return false;
+    }
+    state.acceptedBatches += 1;
+    state.acceptedSamples += sampleCount;
+    return true;
+  }
+
+  private pruneTelemetryRates(): void {
+    for (const [key, state] of this.telemetryRates) {
+      const boundOwner = this.sessionOwners.get(state.sessionId);
+      if (
+        !boundOwner ||
+        boundOwner.ownerId !== state.owner.ownerId ||
+        boundOwner.loginRevision !== state.owner.loginRevision
+      ) {
+        this.telemetryRates.delete(key);
+        continue;
+      }
+      try {
+        const result = this.sessionService.status(state.owner, state.sessionId);
+        if (
+          result.isOk() &&
+          (result.value === null || TERMINAL_SESSION_STATUSES.has(result.value.status))
+        ) {
+          this.telemetryRates.delete(key);
+        }
+      } catch {
+        // Preserve the bounded key when authoritative status is unavailable.
+      }
+    }
   }
 
   private ownerCanRead(sessionId: string, owner: VoiceOwnerContext): boolean {
@@ -1348,13 +1561,13 @@ function isStaticPath(pathname: string): boolean {
 }
 
 function parseSessionRoute(route: string): {
-  readonly action: 'status' | 'stream' | 'close' | 'playback';
+  readonly action: 'status' | 'stream' | 'close' | 'playback' | 'telemetry';
   readonly sessionId: string;
 } | null {
   const match =
-    /^\/sessions\/([^/]+)(?:\/(events|stream|status|status-stream|close|playback))?$/.exec(route);
+    /^\/sessions\/([^/]+)(?:\/(events|stream|status|status-stream|close|playback|telemetry))?$/.exec(route);
   if (!match) return null;
-  const action: 'status' | 'stream' | 'close' | 'playback' =
+  const action: 'status' | 'stream' | 'close' | 'playback' | 'telemetry' =
     match[2] === undefined ||
     match[2] === 'events' ||
     match[2] === 'stream' ||
@@ -1363,8 +1576,96 @@ function parseSessionRoute(route: string): {
       ? match[2] === undefined
         ? 'status'
         : 'stream'
-      : (match[2] as 'close' | 'playback');
+      : (match[2] as 'close' | 'playback' | 'telemetry');
   return { action, sessionId: decodePathSegment(match[1]) };
+}
+
+function parseTelemetryRequest(
+  body: unknown,
+  sessionId: string,
+): VoiceBrowserTelemetryRequest | RequestFailure {
+  if (!isRecord(body) || !hasOnlyKeys(body, ['callId', 'samples']) || !Array.isArray(body.samples)) {
+    return invalidTelemetryRequest();
+  }
+  if (body.callId !== undefined && (typeof body.callId !== 'string' || body.callId !== sessionId)) {
+    return invalidTelemetryRequest();
+  }
+  if (body.samples.length === 0 || body.samples.length > MAX_TELEMETRY_SAMPLES_PER_BATCH) {
+    return invalidTelemetryRequest();
+  }
+  const samples: VoiceBrowserTelemetrySample[] = [];
+  for (const value of body.samples) {
+    if (!isRecord(value) || !hasOnlyKeys(value, ['category', 'status', 'durationMs', 'count', 'outputId'])) {
+      return invalidTelemetryRequest();
+    }
+    if (
+      typeof value.category !== 'string' ||
+      !VOICE_BROWSER_TELEMETRY_CATEGORIES.includes(
+        value.category as (typeof VOICE_BROWSER_TELEMETRY_CATEGORIES)[number],
+      ) ||
+      typeof value.status !== 'string' ||
+      !VOICE_BROWSER_TELEMETRY_STATUSES.includes(
+        value.status as (typeof VOICE_BROWSER_TELEMETRY_STATUSES)[number],
+      ) ||
+      !isValidTelemetryPair(value.category, value.status)
+    ) {
+      return invalidTelemetryRequest();
+    }
+    if (
+      value.durationMs !== undefined &&
+      (typeof value.durationMs !== 'number' ||
+        !Number.isFinite(value.durationMs) ||
+        value.durationMs < 0 ||
+        value.durationMs > MAX_TELEMETRY_DURATION_MS)
+    ) {
+      return invalidTelemetryRequest();
+    }
+    if (
+      value.count !== undefined &&
+      (typeof value.count !== 'number' ||
+        !Number.isSafeInteger(value.count) ||
+        value.count < 0 ||
+        value.count > MAX_TELEMETRY_COUNT)
+    ) {
+      return invalidTelemetryRequest();
+    }
+    if (
+      value.outputId !== undefined &&
+      (typeof value.outputId !== 'string' || !isBoundedTelemetryId(value.outputId))
+    ) {
+      return invalidTelemetryRequest();
+    }
+    samples.push({
+      category: value.category as VoiceBrowserTelemetrySample['category'],
+      status: value.status as VoiceBrowserTelemetrySample['status'],
+      ...(value.durationMs === undefined ? {} : { durationMs: value.durationMs }),
+      ...(value.count === undefined ? {} : { count: value.count }),
+      ...(value.outputId === undefined ? {} : { outputId: value.outputId }),
+    });
+  }
+  return { callId: sessionId, samples };
+}
+
+function invalidTelemetryRequest(): RequestFailure {
+  return new RequestFailure({ status: 400, code: 'INVALID_REQUEST', message: 'Invalid request' });
+}
+
+function isValidTelemetryPair(category: string, status: string): boolean {
+  if (category === 'rtc') {
+    return ['new', 'connecting', 'connected', 'disconnected', 'failed', 'closed', 'unknown'].includes(status);
+  }
+  if (category === 'audio') return ['play_resolved', 'play_rejected', 'unknown'].includes(status);
+  if (category === 'visibility') return ['visible', 'hidden', 'unknown'].includes(status);
+  return category === 'interruption' && ['interrupted', 'resumed', 'unknown'].includes(status);
+}
+
+function isBoundedTelemetryId(value: string): boolean {
+  return value.length > 0 && value.length <= MAX_OUTPUT_ID_LENGTH && !/[\0\r\n]/u.test(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  const allowedKeys = new Set(allowed);
+  return Object.keys(value).every((key) => allowedKeys.has(key));
 }
 
 function decodePathSegment(segment: string): string {

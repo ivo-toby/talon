@@ -2448,6 +2448,19 @@ cookie context; a separate Safari home-screen context or cleared browser data
 may require a fresh login. Background/lock-screen audio and physical iPhone
 retention are not promised by this setup.
 
+The browser also sends bounded connection and playback proxies to
+`POST /voice/sessions/:id/telemetry`. The route uses the current origin,
+cookie login, CSRF token, and exact original session grant revision; output IDs
+are accepted only when they belong to that session. Browser-local
+`performance.now()` durations, RTC states, audio `play()` promise outcomes,
+visibility, and interruptions remain separate from semantic `/playback` state.
+A resolved promise is only a playback proxy, and a generic stream cannot mark a
+specific output as played. Requests are content-free, limited to 16 samples per
+batch and 256 per call, capped at 16 KiB and six batches per minute per exact
+grant/call, use one in-flight request with a two-second abort, and discard
+pending samples during cleanup. Telemetry failures do not change call controls,
+cleanup, retries, provider actions, or backend execution.
+
 When a live delegation arrives, the first notice remains provisional until a
 1,000 ms quiet interval has passed after the latest meaningful captured USER
 signature or safety classification change. A fixed 5,000 ms collection
@@ -2957,7 +2970,11 @@ Browser voice observations are content-free across the AgentRunner, provider too
 events, host-tools bridge, and nested sub-agent spans. Server-owned correlation
 identifiers are bounded to 256 characters and allowlisted metadata to 4096
 UTF-8 bytes; transcripts, prompts, tool arguments/results, and free-form errors are
-not sent to Langfuse. Native AI SDK telemetry is disabled for voice descendants,
+not sent to Langfuse. Browser connection and playback observations use a separate
+authenticated, CSRF-protected endpoint and remain proxies: browser-local
+`performance.now()` values never combine with server clocks, and `audio.play()`
+success never claims that a person heard a complete output. Native AI SDK telemetry
+is disabled for voice descendants,
 and observation setup/update/export failures preserve the real operation result
 or error without retrying the work. The server lifecycle facade records bounded
 call, provider setup, adapter receipt, publication, queue admission/claim,

@@ -876,6 +876,23 @@ describe('bootstrap', () => {
       expect(personaRepo.findByName).toHaveBeenCalledTimes(4);
     });
 
+    it('injects the shared voice telemetry facade into the browser server', async () => {
+      const fixture = makeVoicePersonaFixture();
+      const { personaRepo } = setupVoiceBootstrapMocks(
+        fixture.config,
+        fixture.loadedPersona,
+        ok({ id: 'persona-uuid-1234', name: 'assistant', model: 'backend-model' }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const context = result._unsafeUnwrap();
+      const server = context.voiceServer as unknown as { telemetry?: unknown };
+      expect(server.telemetry).toBe(context.voiceTelemetry);
+      expect(personaRepo.findByName).toHaveBeenCalledWith('assistant');
+    });
+
     it('captures normal persona tools and instructions while ignoring the legacy voice provider override', async () => {
       const fixture = makeVoicePersonaFixture();
       const config = fixture.config as any;
