@@ -36,3 +36,15 @@ Fresh GPT-6-sol precommit review and committed Sol 6.1/xhigh WDD review remain
 separate controller gates; this evidence does not claim their outcomes.
 No full suite, production data, credentials, live provider, microphone or paid
 Voice Live test was used. Physical/mobile/audio/SIP acceptance remains open.
+
+## Final composed-path correction
+
+The committed WDD review of `e0d5e40` approved the source fixes but identified
+one P2 in the regression: reopened completion rows were consumed by a stub
+queue callback rather than AgentRunner. The follow-up changes only that test
+and this evidence. Both retained completion forms now flow through the real
+QueueProcessor and AgentRunner after reopen, with fake connector/provider
+failures exercising real retries/dead-letter handling and context rotation.
+The controller repeated the full command above: 461 tests / 16 files, typecheck,
+build and whitespace PASS; baseline remains unchanged at 75 errors/21 warnings
+and 44 changed source files checked. No production source changed in this fix.

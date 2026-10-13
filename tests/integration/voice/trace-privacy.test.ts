@@ -34,7 +34,6 @@ import {
 import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
 import { QueueManager, createQueueDiagnosticResolver } from '../../../src/queue/queue-manager.js';
-import { rowToQueueItem } from '../../../src/queue/queue-mapper.js';
 import { QueueItemStatus } from '../../../src/queue/queue-types.js';
 import { ProviderRegistry } from '../../../src/providers/provider-registry.js';
 import type { AgentProvider } from '../../../src/providers/provider.js';
@@ -943,6 +942,7 @@ describe('voice trace privacy integration', () => {
     const outputSentinel = 'VOICE_COMPOSED_OUTPUT_SENTINEL';
     const stderrSentinel = 'VOICE_COMPOSED_STDERR_SENTINEL';
     const queueErrorSentinel = 'VOICE_COMPOSED_QUEUE_ERROR_SENTINEL';
+    const providerErrorSentinel = 'VOICE_COMPOSED_PROVIDER_ERROR_SENTINEL';
     const rotationSentinel = 'VOICE_COMPOSED_ROTATION_SENTINEL';
     const personaId = 'task39-persona';
     const channelId = 'task39-channel';
@@ -1070,7 +1070,7 @@ describe('voice trace privacy integration', () => {
       const queueManager = new QueueManager(
         queueRepository,
         threadRepository,
-        { maxAttempts: 1, backoffBaseMs: 1, backoffMaxMs: 1, concurrencyLimit: 1 },
+        { maxAttempts: 2, backoffBaseMs: 60_000, backoffMaxMs: 60_000, concurrencyLimit: 1 },
         logger,
         undefined,
         diagnosticResolver,
@@ -1316,34 +1316,12 @@ describe('voice trace privacy integration', () => {
       const reopenedQueueManager = new QueueManager(
         reopenedQueueRepository,
         reopenedThreadRepository,
-        { maxAttempts: 1, backoffBaseMs: 1, backoffMaxMs: 1, concurrencyLimit: 1 },
+        { maxAttempts: 2, backoffBaseMs: 60_000, backoffMaxMs: 60_000, concurrencyLimit: 1 },
         logger,
         undefined,
         reopenedResolver,
       );
-      const processedTypes: string[] = [];
-      const processOne = async () =>
-        (reopenedQueueManager as any).processor.processNext(async (item: any) => {
-          processedTypes.push(item.type);
-          return item.type === 'message' ? err(new Error(queueErrorSentinel)) : ok(undefined);
-        });
-      await processOne();
-      await processOne();
-      expect(processedTypes).toEqual(['collaboration', 'message']);
-      const persistedRows = db
-        .prepare('SELECT * FROM queue_items WHERE thread_id = ? ORDER BY created_at ASC')
-        .all(threadId) as Array<{ status: string; error: string | null }>;
-      expect(persistedRows).toHaveLength(2);
-      expect(persistedRows.map((row) => row.status)).toEqual(
-        expect.arrayContaining(['completed', 'dead_letter']),
-      );
-      expect(persistedRows.find((row) => row.status === 'dead_letter')?.error).toBe(
-        queueErrorSentinel,
-      );
-      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(queueErrorSentinel);
-
-      const rotationMessages = reopenedMessageRepository;
-      rotationMessages
+      reopenedMessageRepository
         .insert({
           id: 'task39-rotation-inbound',
           thread_id: threadId,
@@ -1355,6 +1333,23 @@ describe('voice trace privacy integration', () => {
         })
         ._unsafeUnwrap();
       const rotationProvider = makeAgentRunnerPrivacyProvider(rotationSentinel);
+      let providerAttempts = 0;
+      const baseCreateExecutionStrategy = rotationProvider.createExecutionStrategy.bind(
+        rotationProvider,
+      );
+      (rotationProvider as any).createExecutionStrategy = () => {
+        const strategy = baseCreateExecutionStrategy() as any;
+        return {
+          ...strategy,
+          run: async (input: any) => {
+            providerAttempts += 1;
+            if (providerAttempts === 1) {
+              throw new Error(providerErrorSentinel);
+            }
+            return strategy.run(input);
+          },
+        };
+      };
       const rotationConfig = AgentRunnerProviderConfigSchema.parse({
         enabled: true,
         type: 'agent-fake',
@@ -1391,11 +1386,6 @@ describe('voice trace privacy integration', () => {
           }),
         logger,
       });
-      const agentQueueItem = reopenedQueueManager
-        .enqueue(threadId, 'message', { personaId, content: rotationSentinel })
-        ._unsafeUnwrap();
-      const claimed = reopenedQueueRepository.claimNext(threadId)._unsafeUnwrap();
-      expect(claimed?.id).toBe(agentQueueItem.id);
       const agentContext = makeTracePrivacyAgentContext({
         db,
         dataDir,
@@ -1423,10 +1413,41 @@ describe('voice trace privacy integration', () => {
         observability,
         logger,
       });
-      const agentResult = await new AgentRunner(agentContext).run(rowToQueueItem(claimed!));
-      expect(agentResult.isOk()).toBe(true);
+      const agentRunner = new AgentRunner(agentContext);
+      const sendMock = vi.mocked(voiceConnector.send);
+      sendMock.mockReset();
+      sendMock
+        .mockResolvedValueOnce(err(new Error(queueErrorSentinel)))
+        .mockResolvedValueOnce(ok(undefined))
+        .mockResolvedValueOnce(err(new Error(queueErrorSentinel)))
+        .mockResolvedValue(ok(undefined));
+      const processedTypes: string[] = [];
+      const processOne = async () =>
+        (reopenedQueueManager as any).processor.processNext(async (item: any) => {
+          processedTypes.push(item.type);
+          return agentRunner.run(item);
+        });
+      await processOne();
+      await processOne();
+      db.prepare("UPDATE queue_items SET next_retry_at = 0 WHERE status = 'failed'").run();
+      await processOne();
+      await processOne();
+      expect(processedTypes).toEqual(['collaboration', 'message', 'collaboration', 'message']);
+      const persistedRows = db
+        .prepare('SELECT * FROM queue_items WHERE thread_id = ? ORDER BY created_at ASC')
+        .all(threadId) as Array<{ status: string; error: string | null }>;
+      expect(persistedRows).toHaveLength(2);
+      expect(persistedRows.map((row) => row.status)).toEqual(
+        expect.arrayContaining(['completed', 'dead_letter']),
+      );
+      expect(persistedRows.find((row) => row.status === 'dead_letter')?.error).toContain(
+        queueErrorSentinel,
+      );
+      expect(providerAttempts).toBe(2);
       expect(rotationProvider.executionCount).toBe(1);
       expect(rotationTracker.rotateSession).toHaveBeenCalledWith(threadId);
+      expect(sendMock).toHaveBeenCalledTimes(5);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(queueErrorSentinel);
       const storedRotation = reopenedMemoryRepository
         .findByThread(threadId)
         ._unsafeUnwrap()
@@ -1442,7 +1463,11 @@ describe('voice trace privacy integration', () => {
         })),
       );
       expect(finalSpans).not.toContain(rotationSentinel);
+      expect(finalSpans).not.toContain(providerErrorSentinel);
+      expect(finalSpans).not.toContain(queueErrorSentinel);
       expect(JSON.stringify(logger.error.mock.calls)).not.toContain(rotationSentinel);
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain(providerErrorSentinel);
+      expect(JSON.stringify(logger.error.mock.calls)).not.toContain(queueErrorSentinel);
     } finally {
       await manager?.shutdown();
       bridge?.stop();
