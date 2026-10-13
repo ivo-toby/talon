@@ -210,6 +210,22 @@ voice descendants, and observation setup/update/export failures are best effort
 without retrying the underlying work. Local database and operational logs may
 still contain sensitive bounded text.
 
+The server also keeps a bounded, content-free lifecycle view when voice is
+enabled. It correlates the existing thread, call, delegation, queue, run, and
+output IDs through call creation and provider setup, adapter receipt,
+context-settled publication, admission/enqueue/claim, backend-provider start,
+durable result, output offer, provider acknowledgement, and closure. Receipt and
+publication are separate stages, and each duration uses the server's monotonic
+clock; browser playback and cross-clock latency are not inferred here. The
+facade is no-op when observability is disabled, retains at most 64 call handles,
+256 milestones, 128 delegations, and 256 outputs per call, and keeps completed
+call correlation for 60 seconds. Exporter failures or saturation drop telemetry
+only. Missing or restarted context is unknown; late and unassociated timing is
+excluded from duration denominators without rewriting a known observed outcome.
+This instrumentation never waits for export or changes queue execution, provider
+actions, delivery, retries, or cost/billing status; p50/p95 values are computed
+only from known same-process durations with their known-sample count.
+
 ## Validation boundaries
 
 The repository includes an offline integration harness using actual daemon

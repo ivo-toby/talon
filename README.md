@@ -2959,7 +2959,16 @@ identifiers are bounded to 256 characters and allowlisted metadata to 4096
 UTF-8 bytes; transcripts, prompts, tool arguments/results, and free-form errors are
 not sent to Langfuse. Native AI SDK telemetry is disabled for voice descendants,
 and observation setup/update/export failures preserve the real operation result
-or error without retrying the work.
+or error without retrying the work. The server lifecycle facade records bounded
+call, provider setup, adapter receipt, publication, queue admission/claim,
+backend start, durable result, output offer, provider acknowledgement, and
+closure transitions with a monotonic process clock. Receipt and publication are
+separate stages; missing or restarted context is unknown, while late and
+unassociated timing is excluded from duration denominators without changing a
+known observed outcome. The facade is
+no-op by default and never waits for export or changes queue, provider, delivery,
+or billing behavior. Its fixed bounds are 64 call handles, 256 milestones, 128
+delegations, 256 outputs, and 60 seconds of completed-call correlation retention.
 
 ### Setup
 

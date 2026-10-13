@@ -56,6 +56,7 @@ import type { VoicePolicy } from '../voice/voice-policy.js';
 import type { DurableVoiceSessionService, IndexedVoiceAuth } from '../voice/voice-session-service.js';
 import type { LiveVoiceProvider, VoiceTransport } from '../voice/voice-types.js';
 import type { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import type { VoiceTelemetry } from '../voice/voice-telemetry.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -133,6 +134,7 @@ export interface DaemonContext {
   readonly voiceProvider: LiveVoiceProvider | null;
   readonly voiceTransport: VoiceTransport | null;
   readonly voiceServer: BrowserVoiceServer | null;
+  readonly voiceTelemetry: VoiceTelemetry | null;
   readonly voiceRuntimeConfig?: { current: TalondConfig };
   readonly voiceGeneration?: { value: number };
 }

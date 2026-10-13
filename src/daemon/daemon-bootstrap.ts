@@ -111,6 +111,7 @@ import {
 import { reconcileVoiceSessions } from '../voice/voice-session-reconciler.js';
 import { OpenAiLiveVoiceProvider } from '../voice/providers/openai-live-provider.js';
 import { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import { VoiceTelemetry } from '../voice/voice-telemetry.js';
 import type {
   VoiceOwnerContext,
   VoicePolicySnapshot,
@@ -643,6 +644,7 @@ export async function bootstrap(
   let voiceProvider: OpenAiLiveVoiceProvider | null = null;
   let voiceTransport: BrowserVoiceTransport | null = null;
   let voiceServer: BrowserVoiceServer | null = null;
+  let voiceTelemetry: VoiceTelemetry | null = null;
   let voiceChannelId: string | null = null;
   const voiceRuntimeConfig = { current: config };
   const voiceGeneration = { value: 0 };
@@ -701,6 +703,8 @@ export async function bootstrap(
       await cleanupBootstrapFailure(db, observability, logger);
       return err(new DaemonError('voice.accessToken or its configured auth provider is required'));
     }
+
+    voiceTelemetry = new VoiceTelemetry({ observability });
 
     const providerTypes = new Map<string, string>();
     for (const [name, providerConfig] of Object.entries(config.agentRunner.providers)) {
@@ -803,6 +807,7 @@ export async function bootstrap(
       apiKey: liveAuth?.apiKey,
       baseUrl: liveAuth?.baseURL,
       maxCharacters: config.voice.maxContextChars,
+      telemetry: voiceTelemetry,
       logger,
     });
     voiceTransport = new BrowserVoiceTransport();
@@ -843,11 +848,12 @@ export async function bootstrap(
     };
     voiceBackendBridge = new DurableVoiceBackendBridge(voiceStore, repos.queue, {
       executionGate: voiceExecutionGate,
+      telemetry: voiceTelemetry,
       logger,
     });
     voiceOutputSink = new VoiceOutputSink(voiceStore, (result) => {
       voiceBackendBridge?.notifyResult(result);
-    });
+    }, { telemetry: voiceTelemetry });
     voiceSessionService = new DurableVoiceSessionService({
       store: voiceStore,
       provider: voiceProvider,
@@ -870,6 +876,7 @@ export async function bootstrap(
       maxSessionLifetimeMs: config.voice.maxSessionLifetimeMs,
       maxContextChars: config.voice.maxContextChars,
       usdPerMinute: config.voice.usdPerMinute,
+      telemetry: voiceTelemetry,
       logger,
     });
     const publicOrigins = [...config.voice.allowedOrigins];
@@ -1064,6 +1071,7 @@ export async function bootstrap(
     voiceProvider,
     voiceTransport,
     voiceServer,
+    voiceTelemetry,
     voiceRuntimeConfig,
     voiceGeneration,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
