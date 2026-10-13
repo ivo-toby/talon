@@ -24,6 +24,15 @@ verify-lint-baseline: PASS (75 errors, 21 warnings; unchanged baseline diagnosti
 PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH npx tsc --noEmit --pretty false
 PASS
 
+PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH npx vitest run tests/integration/voice/browser-voice-flow.test.ts --reporter=dot
+PASS: 1 file, 5 tests; the remembered-login case reopens a disposable migrated
+SQLite file with a fresh `VoiceAuthRepository`, HTTP server, service, store and
+fake provider. It preserves the cookie/CSRF grant and absolute expiry, reads
+auth and retained call state after restart, proves an old CSRF close at the old
+revision, then proves the new revision keeps retained reads while its close and
+playback mutations are denied on that old-revision call. Restoration leaves
+provider, queue and run counts unchanged before the explicit post-restart call.
+
 PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH npx vitest run tests/unit/voice/browser-client tests/unit/voice/browser-server/voice-assets.test.ts tests/integration/voice --reporter=dot
 PASS: 6 files, 42 tests
 
