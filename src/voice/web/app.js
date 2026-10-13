@@ -5,6 +5,7 @@ const loginScreen = query('[data-screen="login"]');
 const callScreen = query('[data-screen="call"]');
 const loginForm = query('[data-form="login"]');
 const tokenInput = query('#access-token');
+const rememberMeInput = query('#remember-me');
 const loginError = query('[data-role="login-error"]');
 const callError = query('[data-role="call-error"]');
 const callMessage = query('[data-role="call-message"]');
@@ -41,9 +42,10 @@ const client = new VoiceBrowserClient({
 loginForm?.addEventListener('submit', (event) => {
   event.preventDefault();
   const token = tokenInput?.value.trim() ?? '';
+  const rememberMe = rememberMeInput?.checked === true;
   setBusy(loginForm, true);
   hide(loginError);
-  void client.login(token).then(() => {
+  void client.login(token, { rememberMe }).then(() => {
     if (tokenInput) tokenInput.value = '';
   }).catch((error) => {
     show(loginError, errorMessage(error));

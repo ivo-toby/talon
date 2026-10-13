@@ -97,6 +97,11 @@ export interface VoiceBrowserClientOptions {
   readonly onStateChange?: (state: VoiceBrowserState) => void;
 }
 
+export interface VoiceBrowserLoginOptions {
+  /** Request the fixed one-year browser grant; omitted keeps the short grant. */
+  readonly rememberMe?: boolean;
+}
+
 export class VoiceBrowserError extends Error {
   readonly code: string;
   readonly retryable: boolean;
@@ -148,6 +153,14 @@ const PENDING_DELEGATION_STATUSES = new Set([
 
 const SESSION_STORAGE_KEY = 'talon.voice.session-id';
 const ICE_GATHERING_TIMEOUT_MS = 10_000;
+const AUTH_RECOVERY_MESSAGE = 'Talon could not confirm your sign-in. Check your connection and try again.';
+const RETAINED_SESSION_RECOVERY_MESSAGE =
+  'Your sign-in is active, but the previous call could not be restored. Check your connection and try again.';
+
+interface VoiceAuthSessionHttpResponse {
+  readonly authenticated: true;
+  readonly expiresAt: number;
+}
 
 class VoiceAttemptCancelledError extends Error {
   constructor() {
@@ -201,44 +214,58 @@ export class VoiceBrowserClient {
     return this.stateValue;
   }
 
-  async login(accessToken: string): Promise<void> {
+  async login(accessToken: string, options: VoiceBrowserLoginOptions = {}): Promise<void> {
     if (accessToken.trim().length === 0) {
       throw this.fail('Enter your access token.', 'INVALID_REQUEST', false);
+    }
+
+    const body: { accessToken: string; rememberMe?: boolean } = { accessToken };
+    if (options.rememberMe !== undefined) {
+      if (typeof options.rememberMe !== 'boolean') {
+        throw this.fail('Choose a valid remembered-login option.', 'INVALID_REQUEST', false);
+      }
+      body.rememberMe = options.rememberMe;
     }
 
     const generation = this.invalidateLifecycle();
     await this.requestJson('/login', {
       method: 'POST',
-      body: { accessToken },
+      body,
     });
     this.ensureCurrent(generation);
-    this.clearPersistedSession();
-    this.activeSessionId = null;
-    this.retainedSessionId = null;
-    this.setState({
-      authenticated: true,
-      phase: 'ready',
-      message: 'Ready to call.',
-      errorMessage: null,
-      activeSessionId: null,
-      retainedSessionId: null,
-      session: null,
-      delegations: [],
-      notifications: [],
-      outputs: [],
-      usage: INITIAL_USAGE,
-      pendingDelegation: false,
-      muted: false,
-      audioBlocked: false,
-    });
+    this.setAuthenticatedReady('Ready to call.', null, true);
   }
 
   /** Restore one retained/live session after a page refresh using the cookie. */
   async restore(): Promise<void> {
-    const sessionId = this.readPersistedSession();
-    if (!sessionId) return;
-
     const generation = this.invalidateLifecycle();
+    let authenticated: VoiceAuthSessionHttpResponse;
+    try {
+      authenticated = await this.requestAuthSession();
+      this.ensureCurrent(generation);
+    } catch (cause) {
+      if (!this.isCurrent(generation)) return;
+      if (isUnauthorizedError(cause)) {
+        this.setLoggedOut();
+        return;
+      }
+      const error = recoveryError(cause, AUTH_RECOVERY_MESSAGE);
+      this.setState({ message: error.message, errorMessage: error.message });
+      throw error;
+    }
+
+    if (authenticated.authenticated !== true || !Number.isFinite(authenticated.expiresAt)) {
+      const error = this.fail(AUTH_RECOVERY_MESSAGE, 'AUTH_CHECK_FAILED');
+      this.setState({ message: error.message, errorMessage: error.message });
+      throw error;
+    }
+
+    const sessionId = this.readPersistedSession();
+    if (!sessionId) {
+      this.setAuthenticatedReady('Ready to call.', null);
+      return;
+    }
+
     try {
       const response = await this.requestJson<VoiceGetSessionHttpResponse>(
         `/sessions/${encodeURIComponent(sessionId)}`,
@@ -262,12 +289,18 @@ export class VoiceBrowserClient {
       }
     } catch (cause) {
       if (!this.isCurrent(generation)) return;
-      if (cause instanceof VoiceBrowserError && ['UNAUTHORIZED', 'HTTP_401', 'NOT_FOUND', 'HTTP_404'].includes(cause.code)) {
-        this.clearPersistedSession();
-        this.setState({ authenticated: false, phase: 'logged_out', message: 'Sign in to start a call.' });
+      if (isUnauthorizedError(cause)) {
+        this.setLoggedOut();
         return;
       }
-      throw cause;
+      if (isNotFoundError(cause)) {
+        this.clearPersistedSession();
+        this.setAuthenticatedReady('Ready to call.', null);
+        return;
+      }
+      const error = recoveryError(cause, RETAINED_SESSION_RECOVERY_MESSAGE);
+      this.setAuthenticatedReady(RETAINED_SESSION_RECOVERY_MESSAGE, error.message);
+      throw error;
     }
   }
 
@@ -725,6 +758,20 @@ export class VoiceBrowserClient {
     return payload as T;
   }
 
+  private async requestAuthSession(): Promise<VoiceAuthSessionHttpResponse> {
+    try {
+      const response = await this.requestJson<unknown>('/auth/session', { method: 'GET' });
+      if (!isVoiceAuthSessionResponse(response)) {
+        throw this.fail(AUTH_RECOVERY_MESSAGE, 'AUTH_CHECK_FAILED');
+      }
+      return response;
+    } catch (cause) {
+      if (isUnauthorizedError(cause)) throw cause;
+      if (cause instanceof VoiceAttemptCancelledError) throw cause;
+      throw recoveryError(cause, AUTH_RECOVERY_MESSAGE);
+    }
+  }
+
   private errorFromResponse(status: number, payload: unknown): VoiceBrowserError {
     const body = isVoiceErrorResponse(payload) ? payload.error : undefined;
     const code = body?.code ?? `HTTP_${status}`;
@@ -751,6 +798,54 @@ export class VoiceBrowserClient {
     this.setState({
       phase: 'ready',
       message: 'Ready to call.',
+      errorMessage: null,
+      activeSessionId: null,
+      retainedSessionId: null,
+      session: null,
+      delegations: [],
+      notifications: [],
+      outputs: [],
+      usage: INITIAL_USAGE,
+      pendingDelegation: false,
+      muted: false,
+      audioBlocked: false,
+    });
+  }
+
+  private setAuthenticatedReady(message: string, errorMessage: string | null, clearPersisted = false): void {
+    this.disposeTransport();
+    if (clearPersisted) this.clearPersistedSession();
+    this.activeSessionId = null;
+    this.retainedSessionId = null;
+    this.transportConnected = false;
+    this.providerReady = false;
+    this.setState({
+      authenticated: true,
+      phase: 'ready',
+      message,
+      errorMessage,
+      activeSessionId: null,
+      retainedSessionId: null,
+      session: null,
+      delegations: [],
+      notifications: [],
+      outputs: [],
+      usage: INITIAL_USAGE,
+      pendingDelegation: false,
+      muted: false,
+      audioBlocked: false,
+    });
+  }
+
+  private setLoggedOut(): void {
+    this.disposeTransport();
+    this.clearPersistedSession();
+    this.activeSessionId = null;
+    this.retainedSessionId = null;
+    this.setState({
+      authenticated: false,
+      phase: 'logged_out',
+      message: 'Sign in to start a call.',
       errorMessage: null,
       activeSessionId: null,
       retainedSessionId: null,
@@ -1038,6 +1133,18 @@ function isVoiceErrorResponse(value: unknown): value is VoiceErrorHttpResponse {
   );
 }
 
+function isVoiceAuthSessionResponse(value: unknown): value is VoiceAuthSessionHttpResponse {
+  return isRecord(value) && value.authenticated === true && typeof value.expiresAt === 'number';
+}
+
+function isUnauthorizedError(cause: unknown): boolean {
+  return cause instanceof VoiceBrowserError && ['UNAUTHORIZED', 'HTTP_401'].includes(cause.code);
+}
+
+function isNotFoundError(cause: unknown): boolean {
+  return cause instanceof VoiceBrowserError && ['NOT_FOUND', 'HTTP_404'].includes(cause.code);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -1075,4 +1182,11 @@ function asVoiceBrowserError(cause: unknown, fallback: string): VoiceBrowserErro
     return new VoiceBrowserError(cause.message, 'VOICE_CLIENT_ERROR');
   }
   return new VoiceBrowserError(fallback);
+}
+
+function recoveryError(cause: unknown, message: string): VoiceBrowserError {
+  if (cause instanceof VoiceBrowserError) {
+    return new VoiceBrowserError(message, cause.code, cause.retryable);
+  }
+  return new VoiceBrowserError(message, 'VOICE_CLIENT_ERROR');
 }

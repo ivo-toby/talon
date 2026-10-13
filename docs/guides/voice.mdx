@@ -87,10 +87,26 @@ authentication, and CSRF checks still apply to every listener address.
 Open `https://voice.example.com/voice/` after the daemon and proxy are ready.
 The browser submits the access token once to `POST /voice/login`. Talon
 exchanges it for an expiring, opaque `HttpOnly` session cookie and a CSRF
-cookie. The access token is not returned to the browser API, included in
-session status, or written to logs. Mutating requests use the CSRF cookie and
-`X-CSRF-Token` header; an unauthenticated request cannot create a session or
-reach the queue/provider path.
+cookie. The login page leaves `Keep me signed in for one year` unchecked. An
+omitted or false `rememberMe` value keeps the fixed 15-minute grant; the
+explicit true value requests a fixed 365-day grant. There is no sliding
+refresh. The access token and raw session bearer are not returned to browser
+APIs, written to Web Storage, included in session status, or written to logs.
+The server persists only hashed session/CSRF verification values and bounded
+technical metadata. Grants survive a normal daemon restart; logout,
+credential/owner rotation, and configuration reload revoke the affected
+authority and rotate the verification boundary. Mutating requests use the
+CSRF cookie and `X-CSRF-Token` header; an unauthenticated request cannot create
+a session or reach the queue/provider path.
+
+On every page restore, the browser first calls the read-only auth-status route
+with the cookie, even when no retained call ID exists. Only after a valid auth
+response does it optionally read the retained call. A missing or stale call
+does not log out an authenticated owner; a retained-call 404 clears only the
+stale pointer and shows the ready state. A network or server failure preserves
+the pointer and shows an English retry message instead of claiming that the
+login expired. A different browser cookie context, cleared site data, or a
+Safari home-screen context may require a fresh login.
 
 The HTTP boundary exposes these routes:
 
@@ -98,6 +114,7 @@ The HTTP boundary exposes these routes:
 | ----------------------------------- | ---------------------------------------------------------- |
 | `GET /voice/healthz`                | Unauthenticated health check                               |
 | `POST /voice/login`                 | Exchange the configured token for browser cookies          |
+| `GET /voice/auth/session`            | Read-only cookie auth status (`authenticated`, `expiresAt`) |
 | `POST /voice/logout`                | Revoke the browser login and close its active sessions     |
 | `POST /voice/sessions`              | Create an authenticated WebRTC session                     |
 | `GET /voice/sessions/:id`           | Read retained session, delegation, output, and usage state |
@@ -109,6 +126,13 @@ The browser sends a transport offer. The server chooses the configured persona,
 provider, live model, output voice, tools, and MCP policy from the current
 login. Provider events become bounded context snapshots, then durable voice
 delegations on the ordinary queue and `AgentRunner` path.
+
+Restoration can reopen retained read-only status/history streams, but it never
+requests microphone permission, creates a peer or paid audio session, connects
+a provider, enqueues backend work, or replays old work automatically. A
+remembered login is browser authentication only; it is not a remembered live
+audio connection. Background/lock-screen audio and physical iPhone cookie
+retention remain unverified and are not promised.
 
 ## Lifecycle and limits
 

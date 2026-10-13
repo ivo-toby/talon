@@ -355,6 +355,22 @@ Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Run
 `https://<publicHost>/voice/`. SIP, physical-phone, and paid live-provider
 verification remain separate acceptance steps.
 
+The browser login form leaves `Keep me signed in for one year` unchecked. The
+default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the
+checked option sends `rememberMe: true` for a fixed 365-day grant. Grants use
+hashed session/CSRF verification data, survive ordinary restart, and are
+revoked by logout, credential/owner rotation, or configuration reload. The
+browser stores no access token or raw session bearer in Web Storage.
+
+On page load, the browser checks `GET /voice/auth/session` before an optional
+retained-call lookup. A valid cookie reaches the ready state without a
+retained call; a retained-call 404 clears only the stale pointer. Transient
+failures preserve recoverable pointers and show an English retry message.
+Restore never requests a microphone, creates a peer or paid session, connects a
+provider, enqueues work, or replays old work. Cookie retention is scoped to the
+browser cookie context; Safari home-screen contexts may need a fresh login.
+Background/lock-screen audio and physical iPhone retention are not promised.
+
 If the operator supplies a current provider rate, `voice.usdPerMinute` makes
 the displayed voice amount a duration estimate. There is no default rate;
 final provider usage remains `estimated`, a configured rate with known usage

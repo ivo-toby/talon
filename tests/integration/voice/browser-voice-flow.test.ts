@@ -21,6 +21,7 @@ import { PersonaRepository } from '../../../src/core/database/repositories/perso
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
 import { RunRepository } from '../../../src/core/database/repositories/run-repository.js';
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
+import { VoiceAuthRepository } from '../../../src/core/database/repositories/voice-auth-repository.js';
 import { AgentRunner } from '../../../src/daemon/agent-runner.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import {
@@ -152,8 +153,9 @@ class FakeLiveProvider implements LiveVoiceProvider {
   runStarted = false;
   private sequence = 0;
 
-  constructor(runDelayMs = 0) {
+  constructor(runDelayMs = 0, sequenceStart = 0) {
     this.runDelayMs = runDelayMs;
+    this.sequence = sequenceStart;
   }
 
   createSession(input: import('../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
@@ -332,8 +334,8 @@ async function waitForSse(
   }
 }
 
-function createDatabase(): Database.Database {
-  const db = new Database(':memory:');
+function createDatabase(databasePath = ':memory:'): Database.Database {
+  const db = new Database(databasePath);
   db.pragma('foreign_keys = ON');
   const migrated = runMigrations(
     db,
@@ -341,25 +343,33 @@ function createDatabase(): Database.Database {
   );
   if (migrated.isErr()) throw new Error(migrated.error.message);
   const channels = new ChannelRepository(db);
-  channels.insert({
-    id: CHANNEL_ID,
-    type: 'voice',
-    name: 'browser-voice',
-    config: '{}',
-    credentials_ref: null,
-    enabled: 1,
-  });
+  if (channels.findById(CHANNEL_ID)._unsafeUnwrap() === null) {
+    channels
+      .insert({
+        id: CHANNEL_ID,
+        type: 'voice',
+        name: 'browser-voice',
+        config: '{}',
+        credentials_ref: null,
+        enabled: 1,
+      })
+      ._unsafeUnwrap();
+  }
   const personas = new PersonaRepository(db);
-  personas.insert({
-    id: PERSONA_ID,
-    name: 'voice-persona',
-    model: BACKEND_MODEL,
-    system_prompt_file: null,
-    skills: '[]',
-    capabilities: '{"allow":[],"requireApproval":[]}',
-    mounts: '[]',
-    max_concurrent: null,
-  });
+  if (personas.findById(PERSONA_ID)._unsafeUnwrap() === null) {
+    personas
+      .insert({
+        id: PERSONA_ID,
+        name: 'voice-persona',
+        model: BACKEND_MODEL,
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{"allow":[],"requireApproval":[]}',
+        mounts: '[]',
+        max_concurrent: null,
+      })
+      ._unsafeUnwrap();
+  }
   return db;
 }
 
@@ -540,18 +550,33 @@ interface Harness {
   readonly server: BrowserVoiceServer;
   readonly queueManager: QueueManager;
   readonly startRunner: () => void;
-  readonly close: () => Promise<void>;
+  readonly close: (removeData?: boolean) => Promise<void>;
   generation: number;
 }
 
-async function createHarness(runDelayMs = 0, usdPerMinute?: number): Promise<Harness> {
-  const db = createDatabase();
-  const dataDir = mkdtempSync(join(tmpdir(), 'talon-voice-integration-'));
+interface HarnessOptions {
+  readonly durableDatabase?: boolean;
+  readonly dataDir?: string;
+  readonly providerSequenceStart?: number;
+}
+
+async function createHarness(
+  runDelayMs = 0,
+  usdPerMinute?: number,
+  options: HarnessOptions = {},
+): Promise<Harness> {
+  const dataDir = options.dataDir ?? mkdtempSync(join(tmpdir(), 'talon-voice-integration-'));
+  const db = createDatabase(options.durableDatabase ? join(dataDir, 'talon.sqlite') : ':memory:');
   const queueRepository = new QueueRepository(db);
   const threadRepository = new ThreadRepository(db);
   const store = new DurableVoiceStore(db, queueRepository);
-  const provider = new FakeLiveProvider(runDelayMs);
-  const auth = new IndexedVoiceAuth({ accessToken: ACCESS_TOKEN, ownerId: 'offline-owner' });
+  const provider = new FakeLiveProvider(runDelayMs, options.providerSequenceStart);
+  const authRepository = options.durableDatabase ? new VoiceAuthRepository(db) : undefined;
+  const auth = new IndexedVoiceAuth({
+    accessToken: ACCESS_TOKEN,
+    ownerId: 'offline-owner',
+    repository: authRepository,
+  });
   let generation = 1;
   const owner: VoiceOwnerContext = { ownerId: 'offline-owner', loginRevision: 1 };
   const policyParts = makePolicy(() => generation, owner);
@@ -629,6 +654,7 @@ async function createHarness(runDelayMs = 0, usdPerMinute?: number): Promise<Har
     { sessionService: service, auth, logger: pino({ level: 'silent' }) },
   );
   await server.start();
+  let closed = false;
   return {
     db,
     dataDir,
@@ -646,12 +672,17 @@ async function createHarness(runDelayMs = 0, usdPerMinute?: number): Promise<Har
     set generation(value: number) {
       generation = value;
     },
-    close: async () => {
+    close: async (removeData = true) => {
+      if (closed) {
+        if (removeData) rmSync(dataDir, { recursive: true, force: true });
+        return;
+      }
+      closed = true;
       queueManager.stopProcessing();
       await service.shutdown();
       await server.stop();
       db.close();
-      rmSync(dataDir, { recursive: true, force: true });
+      if (removeData) rmSync(dataDir, { recursive: true, force: true });
     },
   };
 }
@@ -688,6 +719,220 @@ describe('browser voice offline integration', () => {
 
   afterEach(async () => {
     for (const harness of harnesses.splice(0)) await harness.close();
+  });
+
+  it('survives a durable HTTP/auth/store restart without widening voice authority', async () => {
+    const first = await createHarness(0, undefined, { durableDatabase: true });
+    harnesses.push(first);
+    const firstUrl = baseUrl(first.server);
+    const login = await fetch(`${firstUrl}/voice/login`, {
+      method: 'POST',
+      headers: {
+        ...requestHeaders(),
+        'content-type': 'application/json',
+        'x-forwarded-proto': 'https',
+      },
+      body: JSON.stringify({ accessToken: ACCESS_TOKEN, rememberMe: true }),
+    });
+
+    expect(login.status).toBe(200);
+    expect(login.headers.getSetCookie().some((value) => value.includes('Max-Age=31536000'))).toBe(
+      true,
+    );
+    const auth = cookieParts(login);
+    const loginBody = await jsonResponse(login);
+    const rememberedExpiresAt = loginBody.expiresAt;
+    expect(rememberedExpiresAt).toEqual(expect.any(Number));
+
+    const authStatus = await fetch(`${firstUrl}/voice/auth/session`, {
+      headers: { ...requestHeaders(auth), 'x-forwarded-proto': 'https' },
+    });
+    expect(
+      (first.db.prepare('SELECT COUNT(*) AS count FROM voice_sessions').get() as { count: number })
+        .count,
+    ).toBe(0);
+    expect(authStatus.status).toBe(200);
+    expect(authStatus.headers.get('cache-control')).toContain('no-store');
+    expect(await jsonResponse(authStatus)).toEqual({
+      authenticated: true,
+      expiresAt: rememberedExpiresAt,
+    });
+    expect(JSON.stringify(loginBody)).not.toContain(ACCESS_TOKEN);
+    expect(
+      (
+        first.db.prepare('SELECT COUNT(*) AS count FROM voice_auth_sessions').get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
+
+    const oldOwner = first.auth
+      .authenticate({ headers: { cookie: auth.cookie } })
+      ._unsafeUnwrap().owner;
+    const created = await fetch(`${firstUrl}/voice/sessions`, {
+      method: 'POST',
+      headers: {
+        ...requestHeaders(auth),
+        'content-type': 'application/json',
+        'x-forwarded-proto': 'https',
+      },
+      body: JSON.stringify({ transport: { type: 'webrtc', sdp: 'offline-offer' } }),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await jsonResponse(created);
+    const oldCallId = (createdBody.session as { id: string }).id;
+    expect(first.provider.createInputs).toEqual([LIVE_MODEL]);
+    const providerCallsBeforeRestart = first.provider.createInputs.length;
+    const executionCountsBeforeRestart = {
+      queueItems: (
+        first.db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number }
+      ).count,
+      runs: (first.db.prepare('SELECT COUNT(*) AS count FROM runs').get() as { count: number })
+        .count,
+    };
+
+    await first.close(false);
+    const restarted = await createHarness(0, undefined, {
+      durableDatabase: true,
+      dataDir: first.dataDir,
+      providerSequenceStart: providerCallsBeforeRestart,
+    });
+    harnesses.push(restarted);
+    const restartedUrl = baseUrl(restarted.server);
+    expect(restarted.provider.createInputs).toHaveLength(0);
+    expect(
+      (
+        restarted.db.prepare('SELECT COUNT(*) AS count FROM voice_auth_sessions').get() as {
+          count: number;
+        }
+      ).count,
+    ).toBe(1);
+    const restoredAuthStatus = await fetch(`${restartedUrl}/voice/auth/session`, {
+      headers: { ...requestHeaders(auth), 'x-forwarded-proto': 'https' },
+    });
+    expect(restoredAuthStatus.status).toBe(200);
+    expect(await jsonResponse(restoredAuthStatus)).toEqual({
+      authenticated: true,
+      expiresAt: rememberedExpiresAt,
+    });
+    expect(
+      restarted.auth.authenticate({ headers: { cookie: auth.cookie } })._unsafeUnwrap().owner,
+    ).toEqual(oldOwner);
+
+    const restoredCall = await fetch(`${restartedUrl}/voice/sessions/${oldCallId}`, {
+      headers: { ...requestHeaders(auth), 'x-forwarded-proto': 'https' },
+    });
+    expect(restoredCall.status).toBe(200);
+    expect((await jsonResponse(restoredCall)).session).toMatchObject({
+      id: oldCallId,
+      status: 'closed',
+    });
+    expect(restarted.provider.createInputs).toHaveLength(0);
+    expect(
+      (restarted.db.prepare('SELECT COUNT(*) AS count FROM queue_items').get() as { count: number })
+        .count,
+    ).toBe(executionCountsBeforeRestart.queueItems);
+    expect(
+      (restarted.db.prepare('SELECT COUNT(*) AS count FROM runs').get() as { count: number }).count,
+    ).toBe(executionCountsBeforeRestart.runs);
+
+    const restoredActiveCall = await fetch(`${restartedUrl}/voice/sessions`, {
+      method: 'POST',
+      headers: {
+        ...requestHeaders(auth),
+        'content-type': 'application/json',
+        'x-forwarded-proto': 'https',
+      },
+      body: JSON.stringify({ transport: { type: 'webrtc', sdp: 'offline-restart-offer' } }),
+    });
+    expect(restoredActiveCall.status).toBe(201);
+    const restoredActiveCallId = (
+      (await jsonResponse(restoredActiveCall)).session as { id: string }
+    ).id;
+    expect(restarted.provider.createInputs).toEqual([LIVE_MODEL]);
+
+    const restoredClose = await fetch(
+      `${restartedUrl}/voice/sessions/${restoredActiveCallId}/close`,
+      {
+        method: 'POST',
+        headers: {
+          ...requestHeaders(auth),
+          'content-type': 'application/json',
+          'x-forwarded-proto': 'https',
+        },
+        body: JSON.stringify({ reason: 'hangup' }),
+      },
+    );
+    expect(restoredClose.status).toBe(200);
+    expect((await jsonResponse(restoredClose)).session).toMatchObject({
+      id: restoredActiveCallId,
+      status: 'closed',
+    });
+
+    const relogin = await fetch(`${restartedUrl}/voice/login`, {
+      method: 'POST',
+      headers: {
+        ...requestHeaders(),
+        'content-type': 'application/json',
+        'x-forwarded-proto': 'https',
+      },
+      body: JSON.stringify({ accessToken: ACCESS_TOKEN, rememberMe: false }),
+    });
+    expect(relogin.status).toBe(200);
+    expect(relogin.headers.getSetCookie().some((value) => value.includes('Max-Age=900'))).toBe(
+      true,
+    );
+    const newAuth = cookieParts(relogin);
+    const newOwner = restarted.auth
+      .authenticate({ headers: { cookie: newAuth.cookie } })
+      ._unsafeUnwrap().owner;
+    expect(newOwner.ownerId).toBe(oldOwner.ownerId);
+    expect(newOwner.loginRevision).not.toBe(oldOwner.loginRevision);
+
+    const retainedWithNewLogin = await fetch(
+      `${restartedUrl}/voice/sessions/${restoredActiveCallId}`,
+      {
+        headers: { ...requestHeaders(newAuth), 'x-forwarded-proto': 'https' },
+      },
+    );
+    expect(retainedWithNewLogin.status).toBe(200);
+    expect((await jsonResponse(retainedWithNewLogin)).session).toMatchObject({
+      id: restoredActiveCallId,
+      status: 'closed',
+    });
+
+    const newCloseOfOldRevisionCall = await fetch(
+      `${restartedUrl}/voice/sessions/${restoredActiveCallId}/close`,
+      {
+        method: 'POST',
+        headers: {
+          ...requestHeaders(newAuth),
+          'content-type': 'application/json',
+          'x-forwarded-proto': 'https',
+        },
+        body: JSON.stringify({ reason: 'hangup' }),
+      },
+    );
+    expect(newCloseOfOldRevisionCall.status).toBe(404);
+    const newPlaybackOfOldRevisionCall = await fetch(
+      `${restartedUrl}/voice/sessions/${restoredActiveCallId}/playback`,
+      {
+        method: 'POST',
+        headers: {
+          ...requestHeaders(newAuth),
+          'content-type': 'application/json',
+          'x-forwarded-proto': 'https',
+        },
+        body: JSON.stringify({ outputId: 'missing-output', status: 'played' }),
+      },
+    );
+    expect(newPlaybackOfOldRevisionCall.status).toBe(404);
+    expect(restarted.provider.createInputs).toEqual([LIVE_MODEL]);
+
+    const oldRevisionRead = await fetch(`${restartedUrl}/voice/sessions/${restoredActiveCallId}`, {
+      headers: { ...requestHeaders(auth), 'x-forwarded-proto': 'https' },
+    });
+    expect(oldRevisionRead.status).toBe(200);
   });
 
   it('authenticates, admits SQLite work, runs AgentRunner, streams lifecycle, and retains closed cost state', async () => {
