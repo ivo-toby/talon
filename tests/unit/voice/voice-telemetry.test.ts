@@ -342,4 +342,68 @@ describe('VoiceTelemetry', () => {
     expect(telemetry.getSummary('call-1')?.droppedCount).toBe(1);
     expect(starts.some((input) => input.metadata?.stage === 'not-a-stage')).toBe(false);
   });
+
+  it('keeps browser proxies separate, bounded, and content-free', () => {
+    const { service, starts } = fakeObservability();
+    const telemetry = new VoiceTelemetry({ observability: service });
+    telemetry.startCall({ callId: 'call-1', threadId: 'thread-1' });
+
+    expect(
+      telemetry.recordBrowserTelemetry({
+        callId: 'call-1',
+        samples: [
+          { category: 'rtc', status: 'connected', durationMs: 12.25 },
+          { category: 'audio', status: 'unknown' },
+          { category: 'rtc', status: 'connected', durationMs: Number.POSITIVE_INFINITY },
+          { category: 'rtc', status: 'connected', freeText: 'secret' } as never,
+        ],
+      }),
+    ).toEqual({ acceptedCount: 1, droppedCount: 2, unknownCount: 1 });
+
+    const summary = telemetry.getSummary('call-1');
+    expect(summary).toMatchObject({
+      milestoneCount: 1,
+      browserAcceptedCount: 1,
+      browserDroppedCount: 2,
+      browserUnknownCount: 1,
+    });
+    const browserExports = starts.filter((input) => input.name === 'voice-browser-metric');
+    expect(browserExports).toHaveLength(2);
+    expect(JSON.stringify(browserExports)).not.toContain('secret');
+    expect(JSON.stringify(browserExports)).not.toContain('transcript');
+  });
+
+  it('marks browser samples arriving after call finalization as unknown', () => {
+    const telemetry = new VoiceTelemetry();
+    telemetry.startCall({ callId: 'call-1' });
+    telemetry.finishCall('call-1');
+
+    expect(
+      telemetry.recordBrowserTelemetry({
+        callId: 'call-1',
+        samples: [{ category: 'rtc', status: 'connected' }],
+      }),
+    ).toEqual({ acceptedCount: 0, droppedCount: 0, unknownCount: 1 });
+    expect(telemetry.getSummary('call-1')).toMatchObject({
+      browserAcceptedCount: 0,
+      browserUnknownCount: 1,
+    });
+  });
+
+  it('counts aggregate unknown browser samples by their bounded count', () => {
+    const telemetry = new VoiceTelemetry();
+    telemetry.startCall({ callId: 'call-1' });
+
+    expect(
+      telemetry.recordBrowserTelemetry({
+        callId: 'call-1',
+        samples: [{ category: 'rtc', status: 'unknown', count: 3 }],
+      }),
+    ).toEqual({ acceptedCount: 0, droppedCount: 0, unknownCount: 3 });
+    expect(telemetry.getSummary('call-1')).toMatchObject({
+      browserAcceptedCount: 0,
+      browserDroppedCount: 0,
+      browserUnknownCount: 3,
+    });
+  });
 });

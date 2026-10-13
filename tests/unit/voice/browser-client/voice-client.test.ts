@@ -937,6 +937,252 @@ describe('VoiceBrowserClient', () => {
     expect(client.state.audioBlocked).toBe(false);
     expect(requestsFor(fetcher).some((input) => input.endsWith('/playback'))).toBe(false);
   });
+
+  it('keeps one browser telemetry request in flight and discards queued samples on dispose', async () => {
+    const { stream } = makeStream();
+    const peer = makePeer();
+    const source = new FakeEventSource();
+    const visibilityListeners = new Map<string, () => void>();
+    const visibilitySource = {
+      visibilityState: 'visible',
+      addEventListener: (type: string, listener: () => void): void => {
+        visibilityListeners.set(type, listener);
+      },
+      removeEventListener: (type: string, listener: () => void): void => {
+        if (visibilityListeners.get(type) === listener) visibilityListeners.delete(type);
+      },
+    };
+    const telemetryResponse = deferred<Response>();
+    const telemetryRequests: RequestInit[] = [];
+    const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) return okResponse(createResponse());
+      if (input.endsWith('/telemetry')) {
+        telemetryRequests.push(init ?? {});
+        return telemetryResponse.promise;
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source,
+      peer,
+      visibilitySource,
+      mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+    });
+
+    await client.login('operator-token');
+    await client.startCall();
+    await vi.waitFor(() => expect(telemetryRequests).toHaveLength(1));
+    visibilityListeners.get('visibilitychange')?.();
+    peer.setConnectionState('connected');
+    expect(telemetryRequests).toHaveLength(1);
+    client.dispose();
+    expect(telemetryRequests[0]?.signal?.aborted).toBe(true);
+    telemetryResponse.resolve(new Response(null, { status: 204 }));
+    await Promise.resolve();
+    expect(telemetryRequests).toHaveLength(1);
+    expect(visibilityListeners.has('visibilitychange')).toBe(false);
+  });
+
+  it.each(['network', 'server'] as const)(
+    'accounts for %s telemetry failure without retrying the failed batch',
+    async (failure) => {
+      const { stream } = makeStream();
+      const peer = makePeer();
+      const source = new FakeEventSource();
+      const microphone = vi.fn(async () => stream);
+      const telemetryRequests: RequestInit[] = [];
+      const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+        if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+        if (input.endsWith('/sessions')) return okResponse(createResponse());
+        if (input.endsWith('/telemetry')) {
+          telemetryRequests.push(init ?? {});
+          if (failure === 'network') throw new Error('offline');
+          return errorResponse(503, 'VOICE_ERROR');
+        }
+        return new Response(null, { status: 204 });
+      });
+      const client = makeClient({
+        fetcher,
+        source,
+        peer,
+        mediaDevices: { getUserMedia: microphone },
+      });
+
+      await client.login('operator-token');
+      await client.startCall();
+      await vi.waitFor(() => expect(telemetryRequests).toHaveLength(2));
+      expect(JSON.parse(String(telemetryRequests[0]?.body))).toMatchObject({
+        samples: [{ category: 'rtc', status: 'connecting' }],
+      });
+      expect(JSON.parse(String(telemetryRequests[1]?.body))).toMatchObject({
+        samples: [
+          { category: 'rtc', status: 'unknown', count: 1 },
+          { category: 'rtc', status: 'connected' },
+        ],
+      });
+      await Promise.resolve();
+      expect(telemetryRequests).toHaveLength(2);
+      await vi.waitFor(() => expect(client.state.browserTelemetry.unknownCount).toBe(2));
+      expect(microphone).toHaveBeenCalledOnce();
+      expect(requestsFor(fetcher).filter((input) => input.endsWith('/sessions'))).toHaveLength(1);
+      expect(requestsFor(fetcher).some((input) => input.endsWith('/close'))).toBe(false);
+      expect(peer.close).not.toHaveBeenCalled();
+    },
+  );
+
+  it('retains the final failed sample diagnostic through disposal', async () => {
+    const { stream } = makeStream();
+    const peer = makePeer();
+    const source = new FakeEventSource();
+    const telemetryRequests: RequestInit[] = [];
+    const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) return okResponse(createResponse());
+      if (input.endsWith('/telemetry')) {
+        telemetryRequests.push(init ?? {});
+        return telemetryRequests.length === 1
+          ? new Response(null, { status: 204 })
+          : errorResponse(503, 'VOICE_ERROR');
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source,
+      peer,
+      mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+    });
+
+    await client.login('operator-token');
+    await client.startCall();
+    await vi.waitFor(() => expect(telemetryRequests).toHaveLength(2));
+    await vi.waitFor(() => expect(client.state.browserTelemetry.unknownCount).toBe(1));
+
+    client.dispose();
+    expect(client.state.browserTelemetry).toEqual({ unknownCount: 1, droppedCount: 0 });
+  });
+
+  it('keeps the telemetry latch through disposal until an abort-ignoring request settles', async () => {
+    const first = makeStream();
+    const second = makeStream();
+    const firstPeer = makePeer();
+    const secondPeer = makePeer();
+    const source = new FakeEventSource();
+    const telemetryRequests: RequestInit[] = [];
+    const firstTelemetry = deferred<Response>();
+    const secondTelemetry = deferred<Response>();
+    let telemetryIndex = 0;
+    const peers = [firstPeer, secondPeer];
+    const streams = [first.stream, second.stream];
+    const microphone = vi.fn(async () => {
+      const stream = streams.shift();
+      if (!stream) throw new Error('unexpected microphone request');
+      return stream;
+    });
+    const peerFactory = vi.fn(() => {
+      const peer = peers.shift();
+      if (!peer) throw new Error('unexpected peer request');
+      return peer.peer;
+    });
+    const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) return okResponse(createResponse());
+      if (input.endsWith('/close')) {
+        return okResponse({ session: makeStatus({ status: 'closed' }), pendingDelegation: false });
+      }
+      if (input.endsWith('/telemetry')) {
+        telemetryRequests.push(init ?? {});
+        const response = telemetryIndex === 0 ? firstTelemetry.promise : secondTelemetry.promise;
+        telemetryIndex += 1;
+        return response;
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source,
+      peer: firstPeer,
+      peerConnectionFactory: peerFactory,
+      mediaDevices: { getUserMedia: microphone },
+    });
+
+    await client.login('operator-token');
+    await client.startCall();
+    await vi.waitFor(() => expect(telemetryRequests).toHaveLength(1));
+
+    await client.hangup();
+    client.dispose();
+    expect(telemetryRequests[0]?.signal?.aborted).toBe(true);
+    await client.login('operator-token');
+    await client.startCall();
+    expect(telemetryRequests).toHaveLength(1);
+
+    firstTelemetry.resolve(errorResponse(503, 'VOICE_ERROR'));
+    await vi.waitFor(() => expect(telemetryRequests).toHaveLength(2));
+    const secondBody = JSON.parse(String(telemetryRequests[1]?.body)) as {
+      samples: Array<{ category: string; status: string }>;
+    };
+    expect(secondBody.samples).toEqual(
+      expect.arrayContaining([{ category: 'rtc', status: 'connecting' }]),
+    );
+    expect(secondBody.samples.some((sample) => sample.status === 'unknown')).toBe(false);
+    secondTelemetry.resolve(new Response(null, { status: 204 }));
+    await Promise.resolve();
+
+    expect(microphone).toHaveBeenCalledTimes(2);
+    expect(peerFactory).toHaveBeenCalledTimes(2);
+    expect(requestsFor(fetcher).filter((input) => input.endsWith('/sessions'))).toHaveLength(2);
+    expect(requestsFor(fetcher).filter((input) => input.endsWith('/close'))).toHaveLength(1);
+  });
+
+  it('accounts for bounded queue saturation as an unknown browser proxy', async () => {
+    const { stream } = makeStream();
+    const peer = makePeer();
+    const source = new FakeEventSource();
+    const firstTelemetry = deferred<Response>();
+    const telemetryRequests: RequestInit[] = [];
+    const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      if (input.endsWith('/sessions')) return okResponse(createResponse());
+      if (input.endsWith('/telemetry')) {
+        telemetryRequests.push(init ?? {});
+        return telemetryRequests.length === 1
+          ? firstTelemetry.promise
+          : new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source,
+      peer,
+      mediaDevices: { getUserMedia: vi.fn(async () => stream) },
+    });
+
+    await client.login('operator-token');
+    await client.startCall();
+    await vi.waitFor(() => expect(telemetryRequests).toHaveLength(1));
+    const enqueueTelemetry = (
+      client as unknown as {
+        enqueueTelemetry(sample: { category: 'rtc'; status: 'connected' }): void;
+      }
+    ).enqueueTelemetry.bind(client);
+    for (let index = 0; index < 257; index += 1) {
+      enqueueTelemetry({ category: 'rtc', status: 'connected' });
+    }
+
+    firstTelemetry.resolve(new Response(null, { status: 204 }));
+    await vi.waitFor(() => expect(telemetryRequests.length).toBeGreaterThanOrEqual(2));
+    expect(JSON.parse(String(telemetryRequests[1]?.body))).toMatchObject({
+      samples: [
+        { category: 'rtc', status: 'unknown', count: 2 },
+        ...Array.from({ length: 15 }, () => ({ category: 'rtc', status: 'connected' })),
+      ],
+    });
+    expect(client.state.browserTelemetry.droppedCount).toBe(2);
+  });
 });
 
 function requestsFor(fetcher: VoiceFetch): string[] {

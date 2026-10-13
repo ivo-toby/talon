@@ -18,6 +18,12 @@ import {
   startVoiceObservationSafely,
   type VoiceObservationContext,
 } from '../observability/langfuse/voice-observation.js';
+import {
+  VOICE_BROWSER_TELEMETRY_CATEGORIES,
+  VOICE_BROWSER_TELEMETRY_STATUSES,
+  type VoiceBrowserTelemetryRequest,
+  type VoiceBrowserTelemetrySample,
+} from './voice-types.js';
 
 export const VOICE_TELEMETRY_MAX_CALLS = 64;
 export const VOICE_TELEMETRY_MAX_MILESTONES_PER_CALL = 256;
@@ -26,9 +32,15 @@ export const VOICE_TELEMETRY_MAX_OUTPUTS_PER_CALL = 256;
 export const VOICE_TELEMETRY_MAX_ID_LENGTH = 256;
 export const VOICE_TELEMETRY_MAX_SUMMARY_BYTES = 4096;
 export const VOICE_TELEMETRY_COMPLETED_RETENTION_MS = 60_000;
+export const VOICE_BROWSER_TELEMETRY_MAX_SAMPLES_PER_CALL = 256;
+export const VOICE_BROWSER_TELEMETRY_MAX_DURATION_MS = 86_400_000;
+export const VOICE_BROWSER_TELEMETRY_MAX_COUNT = 256;
+export const VOICE_BROWSER_TELEMETRY_MAX_REPRESENTED_SAMPLES_PER_CALL =
+  VOICE_BROWSER_TELEMETRY_MAX_SAMPLES_PER_CALL * VOICE_BROWSER_TELEMETRY_MAX_COUNT;
 
 const VOICE_TELEMETRY_STAGE_OBSERVATION_NAME = 'voice-lifecycle-stage';
 const VOICE_TELEMETRY_SUMMARY_OBSERVATION_NAME = 'voice-lifecycle-summary';
+const VOICE_BROWSER_TELEMETRY_OBSERVATION_NAME = 'voice-browser-metric';
 const VOICE_TELEMETRY_EXPORT_KEYS = new Set([
   'voice',
   'redacted',
@@ -47,6 +59,10 @@ const VOICE_TELEMETRY_EXPORT_KEYS = new Set([
   'outputId',
   'knownDurationCount',
   'summary',
+  'browser',
+  'browserCategory',
+  'browserStatus',
+  'count',
 ]);
 const VOICE_TELEMETRY_EXPORT_ID_KEYS = new Set([
   'callId',
@@ -157,7 +173,17 @@ export interface VoiceTelemetrySummary {
   readonly unknownCount: number;
   readonly duplicateCount: number;
   readonly unassociatedCount: number;
+  /** Counts represented browser observations; aggregate unknown counts contribute logical units. */
+  readonly browserAcceptedCount: number;
+  readonly browserDroppedCount: number;
+  readonly browserUnknownCount: number;
   readonly stages: Readonly<Partial<Record<VoiceTelemetryStage, VoiceTelemetryStageSummary>>>;
+}
+
+export interface VoiceBrowserTelemetryResult {
+  readonly acceptedCount: number;
+  readonly droppedCount: number;
+  readonly unknownCount: number;
 }
 
 export interface VoiceTelemetryOptions {
@@ -196,6 +222,11 @@ interface CallState {
   unknownCount: number;
   duplicateCount: number;
   unassociatedCount: number;
+  browserAcceptedCount: number;
+  browserDroppedCount: number;
+  browserUnknownCount: number;
+  /** Physical request entries consume the per-call quota independently of aggregate counts. */
+  browserPhysicalSampleCount: number;
   finalized: boolean;
   finalStatus: 'active' | 'closed' | 'incomplete';
   finishedAt?: number;
@@ -262,6 +293,10 @@ export class VoiceTelemetry {
       unknownCount: 0,
       duplicateCount: 0,
       unassociatedCount: 0,
+      browserAcceptedCount: 0,
+      browserDroppedCount: 0,
+      browserUnknownCount: 0,
+      browserPhysicalSampleCount: 0,
       finalized: false,
       finalStatus: 'active',
     };
@@ -354,6 +389,96 @@ export class VoiceTelemetry {
   /** Alias for callers that prefer the term milestone. */
   recordMilestone(input: VoiceTelemetryMilestoneInput): void {
     this.record(input);
+  }
+
+  /** Record browser-local proxy samples without entering semantic lifecycle state. */
+  recordBrowserTelemetry(input: VoiceBrowserTelemetryRequest): VoiceBrowserTelemetryResult {
+    this.pruneExpired();
+    const value = input as unknown as Record<string, unknown> | null;
+    const samples = Array.isArray(value?.samples) ? value.samples : [];
+    const callId = boundedId(typeof value?.callId === 'string' ? value.callId : undefined);
+    if (!callId) {
+      this.droppedCalls += 1;
+      return { acceptedCount: 0, droppedCount: samples.length, unknownCount: 0 };
+    }
+    const state = this.calls.get(callId);
+    if (!state) {
+      this.unknownCalls += 1;
+      return { acceptedCount: 0, droppedCount: 0, unknownCount: samples.length };
+    }
+    if (state.finalized) {
+      let unknownCount = 0;
+      let droppedCount = 0;
+      for (const sample of samples) {
+        const representedCount = boundedBrowserSampleCount(sample);
+        if (state.browserPhysicalSampleCount >= VOICE_BROWSER_TELEMETRY_MAX_SAMPLES_PER_CALL) {
+          droppedCount += representedCount;
+          addBrowserLogicalCount(state, 'browserDroppedCount', representedCount);
+          continue;
+        }
+        state.browserPhysicalSampleCount += 1;
+        const recordedUnknown = addBrowserLogicalCount(
+          state,
+          'browserUnknownCount',
+          representedCount,
+        );
+        unknownCount += recordedUnknown;
+        const overflow = representedCount - recordedUnknown;
+        if (overflow > 0) {
+          droppedCount += overflow;
+          addBrowserLogicalCount(state, 'browserDroppedCount', overflow);
+        }
+      }
+      return { acceptedCount: 0, droppedCount, unknownCount };
+    }
+
+    let acceptedCount = 0;
+    let droppedCount = 0;
+    let unknownCount = 0;
+    for (const sample of samples) {
+      const valid = validBrowserTelemetrySample(sample);
+      const representedCount = valid ? browserSampleCount(sample) : 1;
+      if (state.browserPhysicalSampleCount >= VOICE_BROWSER_TELEMETRY_MAX_SAMPLES_PER_CALL) {
+        addBrowserLogicalCount(state, 'browserDroppedCount', representedCount);
+        droppedCount += representedCount;
+        continue;
+      }
+      state.browserPhysicalSampleCount += 1;
+      if (!valid) {
+        addBrowserLogicalCount(state, 'browserDroppedCount', 1);
+        droppedCount += 1;
+        continue;
+      }
+      const metadata = this.browserExportMetadata(state, sample);
+      if (!metadata || !this.exportBrowserObservation(state, metadata)) {
+        addBrowserLogicalCount(state, 'browserDroppedCount', representedCount);
+        droppedCount += representedCount;
+        continue;
+      }
+      if (sample.status === 'unknown') {
+        const recordedUnknown = addBrowserLogicalCount(
+          state,
+          'browserUnknownCount',
+          representedCount,
+        );
+        unknownCount += recordedUnknown;
+        const overflow = representedCount - recordedUnknown;
+        if (overflow > 0) {
+          addBrowserLogicalCount(state, 'browserDroppedCount', overflow);
+          droppedCount += overflow;
+        }
+        // Unknown is retained as an observation, but never counted as a
+        // successful browser proxy.
+        continue;
+      }
+      acceptedCount += addBrowserLogicalCount(state, 'browserAcceptedCount', 1);
+    }
+    return { acceptedCount, droppedCount, unknownCount };
+  }
+
+  /** Alias for callers that name the browser payload as samples. */
+  recordBrowserSamples(input: VoiceBrowserTelemetryRequest): VoiceBrowserTelemetryResult {
+    return this.recordBrowserTelemetry(input);
   }
 
   finishCall(callId: string, status: 'closed' | 'incomplete' | 'unknown' = 'closed'): void {
@@ -478,9 +603,51 @@ export class VoiceTelemetry {
     }
   }
 
+  private browserExportMetadata(
+    state: CallState,
+    sample: VoiceBrowserTelemetrySample,
+  ): Record<string, string | number | boolean> | undefined {
+    return this.exportMetadata(state, {
+      browser: true,
+      browserCategory: sample.category,
+      browserStatus: sample.status,
+      ...(sample.durationMs !== undefined ? { durationMs: sample.durationMs } : {}),
+      ...(sample.count !== undefined ? { count: sample.count } : {}),
+      ...(sample.outputId ? { outputId: sample.outputId } : {}),
+    });
+  }
+
+  private exportBrowserObservation(
+    state: CallState,
+    metadata: Record<string, string | number | boolean>,
+  ): boolean {
+    if (!validExportMetadata(metadata)) return false;
+    let observation: StartedObservationHandle;
+    try {
+      observation = this.observability.startWithTraceparent(state.span.getTraceparent(), {
+        type: 'agent',
+        name: VOICE_BROWSER_TELEMETRY_OBSERVATION_NAME,
+        input: '[voice browser proxy redacted]',
+        metadata,
+        trace: {
+          ...(state.input.threadId ? { sessionId: state.input.threadId } : {}),
+          tags: ['voice', 'browser'],
+        },
+      });
+    } catch {
+      return false;
+    }
+    try {
+      observation.end();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private exportMetadata(
     state: CallState,
-    fields: Record<string, string | number>,
+    fields: Record<string, string | number | boolean>,
   ): Record<string, string | number | boolean> | undefined {
     const base: Record<string, string | number | boolean> = {
       voice: true,
@@ -602,6 +769,90 @@ function boundedId(value: string | undefined): string | undefined {
   return typeof value === 'string' && value.length > 0 && value.length <= VOICE_TELEMETRY_MAX_ID_LENGTH
     ? value
     : undefined;
+}
+
+type BrowserLogicalCountField =
+  | 'browserAcceptedCount'
+  | 'browserDroppedCount'
+  | 'browserUnknownCount';
+
+function browserSampleCount(sample: VoiceBrowserTelemetrySample): number {
+  if (sample.status !== 'unknown' || sample.count === undefined) return 1;
+  return Math.min(sample.count, VOICE_BROWSER_TELEMETRY_MAX_COUNT);
+}
+
+function boundedBrowserSampleCount(value: unknown): number {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return 1;
+  const count = (value as Record<string, unknown>).count;
+  return typeof count === 'number' && Number.isSafeInteger(count) && count >= 0
+    ? Math.min(count, VOICE_BROWSER_TELEMETRY_MAX_COUNT)
+    : 1;
+}
+
+function addBrowserLogicalCount(
+  state: CallState,
+  field: BrowserLogicalCountField,
+  requested: number,
+): number {
+  const used =
+    state.browserAcceptedCount + state.browserDroppedCount + state.browserUnknownCount;
+  const remaining = Math.max(0, VOICE_BROWSER_TELEMETRY_MAX_REPRESENTED_SAMPLES_PER_CALL - used);
+  const recorded = Math.min(Math.max(0, requested), remaining);
+  state[field] += recorded;
+  return recorded;
+}
+
+function validBrowserTelemetrySample(value: unknown): value is VoiceBrowserTelemetrySample {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const sample = value as Record<string, unknown>;
+  const allowedKeys = new Set(['category', 'status', 'durationMs', 'count', 'outputId']);
+  if (Object.keys(sample).some((key) => !allowedKeys.has(key))) return false;
+  if (
+    typeof sample.category !== 'string' ||
+    !VOICE_BROWSER_TELEMETRY_CATEGORIES.includes(
+      sample.category as (typeof VOICE_BROWSER_TELEMETRY_CATEGORIES)[number],
+    ) ||
+    typeof sample.status !== 'string' ||
+    !VOICE_BROWSER_TELEMETRY_STATUSES.includes(
+      sample.status as (typeof VOICE_BROWSER_TELEMETRY_STATUSES)[number],
+    )
+  ) {
+    return false;
+  }
+  const validPair =
+    (sample.category === 'rtc' &&
+      ['new', 'connecting', 'connected', 'disconnected', 'failed', 'closed', 'unknown'].includes(
+        sample.status,
+      )) ||
+    (sample.category === 'audio' && ['play_resolved', 'play_rejected', 'unknown'].includes(sample.status)) ||
+    (sample.category === 'visibility' && ['visible', 'hidden', 'unknown'].includes(sample.status)) ||
+    (sample.category === 'interruption' && ['interrupted', 'resumed', 'unknown'].includes(sample.status));
+  if (!validPair) return false;
+  if (
+    sample.durationMs !== undefined &&
+    (typeof sample.durationMs !== 'number' ||
+      !Number.isFinite(sample.durationMs) ||
+      sample.durationMs < 0 ||
+      sample.durationMs > VOICE_BROWSER_TELEMETRY_MAX_DURATION_MS)
+  ) {
+    return false;
+  }
+  if (
+    sample.count !== undefined &&
+    (typeof sample.count !== 'number' ||
+      !Number.isSafeInteger(sample.count) ||
+      sample.count < 0 ||
+      sample.count > VOICE_BROWSER_TELEMETRY_MAX_COUNT)
+  ) {
+    return false;
+  }
+  if (
+    sample.outputId !== undefined &&
+    (typeof sample.outputId !== 'string' || boundedId(sample.outputId) === undefined)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function normalizeCallInput(input: VoiceTelemetryCallInput, callId: string): VoiceTelemetryCallInput {
@@ -761,6 +1012,9 @@ function summaryFor(state: CallState): VoiceTelemetrySummary {
     unknownCount: state.unknownCount,
     duplicateCount: state.duplicateCount,
     unassociatedCount: state.unassociatedCount,
+    browserAcceptedCount: state.browserAcceptedCount,
+    browserDroppedCount: state.browserDroppedCount,
+    browserUnknownCount: state.browserUnknownCount,
     stages,
   };
   return boundedSummary(summary);
@@ -792,6 +1046,21 @@ function validExportMetadata(
     ) {
       return false;
     }
+    if (
+      key === 'durationMs' &&
+      (typeof value !== 'number' || value > VOICE_BROWSER_TELEMETRY_MAX_DURATION_MS)
+    ) {
+      return false;
+    }
+    if (
+      key === 'count' &&
+      (typeof value !== 'number' ||
+        !Number.isSafeInteger(value) ||
+        value < 0 ||
+        value > VOICE_BROWSER_TELEMETRY_MAX_COUNT)
+    ) {
+      return false;
+    }
     if ((key === 'voice' || key === 'redacted') && value !== true) return false;
     if (VOICE_TELEMETRY_EXPORT_ID_KEYS.has(key)) {
       if (typeof value !== 'string' || boundedId(value) === undefined) return false;
@@ -807,6 +1076,25 @@ function validExportMetadata(
       key === 'status' &&
       (typeof value !== 'string' ||
         !VOICE_TELEMETRY_STATUSES.includes(value as VoiceTelemetryStatus))
+    ) {
+      return false;
+    }
+    if (key === 'browser' && value !== true) return false;
+    if (
+      key === 'browserCategory' &&
+      (typeof value !== 'string' ||
+        !VOICE_BROWSER_TELEMETRY_CATEGORIES.includes(
+          value as (typeof VOICE_BROWSER_TELEMETRY_CATEGORIES)[number],
+        ))
+    ) {
+      return false;
+    }
+    if (
+      key === 'browserStatus' &&
+      (typeof value !== 'string' ||
+        !VOICE_BROWSER_TELEMETRY_STATUSES.includes(
+          value as (typeof VOICE_BROWSER_TELEMETRY_STATUSES)[number],
+        ))
     ) {
       return false;
     }
@@ -840,6 +1128,9 @@ function boundedSummary(summary: VoiceTelemetrySummary): VoiceTelemetrySummary {
     unknownCount: summary.unknownCount,
     duplicateCount: summary.duplicateCount,
     unassociatedCount: summary.unassociatedCount,
+    browserAcceptedCount: summary.browserAcceptedCount,
+    browserDroppedCount: summary.browserDroppedCount,
+    browserUnknownCount: summary.browserUnknownCount,
     stages: {},
   };
 }

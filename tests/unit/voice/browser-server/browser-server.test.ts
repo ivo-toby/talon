@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from 'vitest';
+import { describe, expect, it, afterEach, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { err, ok } from '../../../../src/core/types/result.js';
@@ -16,9 +16,11 @@ import {
 import type {
   VoiceAsyncResult,
   VoiceClientSessionDescriptor,
+  VoiceDelegationStatusDto,
   VoiceEventHandler,
   VoiceFinalizationState,
   VoiceOwnerContext,
+  VoiceOutputStatusDto,
   VoicePlaybackReport,
   VoiceSessionCloseRequest,
   VoiceSessionCreateRequest,
@@ -32,6 +34,7 @@ import type {
   VoiceAuthSession,
   VoiceResult,
 } from '../../../../src/voice/voice-types.js';
+import type { VoiceTelemetry } from '../../../../src/voice/voice-telemetry.js';
 
 const ORIGIN = 'http://127.0.0.1';
 
@@ -40,6 +43,7 @@ class FakeVoiceSessionService implements VoiceSessionService {
   readonly playbackReports: VoicePlaybackReport[] = [];
   private nextId = 1;
   private readonly sessions = new Map<string, { ownerId: string; record: VoiceSessionRecord }>();
+  private readonly outputIds = new Map<string, string>();
   private readonly rejectedStatusRevisions = new Set<string>();
   private handler: VoiceEventHandler<VoiceStatusEventDto> | undefined;
   private createStartedResolve: (() => void) | undefined;
@@ -69,7 +73,7 @@ class FakeVoiceSessionService implements VoiceSessionService {
     ) {
       return err(new PolicyError('voice login is no longer active'));
     }
-    return ok(toStatus(entry.record));
+    return ok(toStatus(entry.record, this.outputIds.get(sessionId)));
   }
 
   async closeSession(owner: VoiceOwnerContext, sessionId: string, input: VoiceSessionCloseRequest) {
@@ -152,6 +156,10 @@ class FakeVoiceSessionService implements VoiceSessionService {
 
   rejectStoredStatusRevision(sessionId: string): void {
     this.rejectedStatusRevisions.add(sessionId);
+  }
+
+  addOutput(sessionId: string, outputId: string): void {
+    this.outputIds.set(sessionId, outputId);
   }
 }
 
@@ -451,6 +459,173 @@ describe('BrowserVoiceServer', () => {
     expect(playback.status).toBe(404);
     expect(service.closedReasons).toEqual([]);
     expect(service.playbackReports).toEqual([]);
+  });
+
+  it('accepts bounded browser proxies without mutating semantic playback', async () => {
+    const service = new FakeVoiceSessionService();
+    const telemetry = {
+      recordBrowserTelemetry: vi.fn(),
+    } as unknown as VoiceTelemetry;
+    const server = await startServer(service, {}, undefined, telemetry);
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    const cookieHeader = `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`;
+    expect((await createAt(base, cookieHeader, csrf)).status).toBe(201);
+    service.addOutput('session-1', 'output-1');
+
+    const accepted = await fetch(`${base}/voice/sessions/session-1/telemetry`, {
+      method: 'POST',
+      headers: {
+        cookie: cookieHeader,
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-csrf-token': csrf,
+      },
+      body: JSON.stringify({
+        callId: 'session-1',
+        samples: [
+          { category: 'rtc', status: 'connected', durationMs: 12.5 },
+          { category: 'audio', status: 'play_rejected', outputId: 'output-1' },
+        ],
+      }),
+    });
+    expect(accepted.status).toBe(204);
+    expect(telemetry.recordBrowserTelemetry).toHaveBeenCalledWith({
+      callId: 'session-1',
+      samples: [
+        { category: 'rtc', status: 'connected', durationMs: 12.5 },
+        { category: 'audio', status: 'play_rejected', outputId: 'output-1' },
+      ],
+    });
+    expect(service.playbackReports).toEqual([]);
+
+    const malformed = await fetch(`${base}/voice/sessions/session-1/telemetry`, {
+      method: 'POST',
+      headers: {
+        cookie: cookieHeader,
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-csrf-token': csrf,
+      },
+      body: JSON.stringify({ samples: [{ category: 'rtc', status: 'connected', freeText: 'x' }] }),
+    });
+    expect(malformed.status).toBe(400);
+
+    const secondLogin = await loginAt(base);
+    const secondCookies = getSetCookies(secondLogin);
+    const secondCookie = cookieValue(secondCookies, VOICE_SESSION_COOKIE);
+    const secondCsrf = cookieValue(secondCookies, VOICE_CSRF_COOKIE);
+    const wrongRevision = await fetch(`${base}/voice/sessions/session-1/telemetry`, {
+      method: 'POST',
+      headers: {
+        cookie: `${VOICE_SESSION_COOKIE}=${secondCookie}; ${VOICE_CSRF_COOKIE}=${secondCsrf}`,
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-csrf-token': secondCsrf,
+      },
+      body: JSON.stringify({ samples: [{ category: 'rtc', status: 'connected' }] }),
+    });
+    expect(wrongRevision.status).toBe(404);
+  });
+
+  it('surfaces a telemetry facade drop instead of returning a silent success', async () => {
+    const service = new FakeVoiceSessionService();
+    const telemetry = {
+      recordBrowserTelemetry: vi.fn(() => ({ acceptedCount: 0, droppedCount: 1, unknownCount: 0 })),
+    } as unknown as VoiceTelemetry;
+    const server = await startServer(service, {}, undefined, telemetry);
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    const cookieHeader = `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`;
+    expect((await createAt(base, cookieHeader, csrf)).status).toBe(201);
+
+    const response = await postTelemetry(base, cookieHeader, csrf);
+
+    expect(response.status).toBe(503);
+    expect(service.playbackReports).toEqual([]);
+  });
+
+  it('keeps the per-call sample cap across rate windows', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const service = new FakeVoiceSessionService();
+      const server = await startServer(service);
+      const base = `http://127.0.0.1:${server.port}`;
+      const login = await loginAt(base);
+      const cookies = getSetCookies(login);
+      const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+      const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+      const cookieHeader = `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`;
+      expect((await createAt(base, cookieHeader, csrf)).status).toBe(201);
+
+      const batch = Array.from({ length: 16 }, () => ({ category: 'rtc', status: 'connected' }));
+      for (let index = 0; index < 6; index += 1) {
+        expect((await postTelemetry(base, cookieHeader, csrf, batch)).status).toBe(204);
+      }
+      clock.mockReturnValue(1_060_001);
+      for (let index = 0; index < 6; index += 1) {
+        expect((await postTelemetry(base, cookieHeader, csrf, batch)).status).toBe(204);
+      }
+      clock.mockReturnValue(1_120_002);
+      for (let index = 0; index < 4; index += 1) {
+        expect((await postTelemetry(base, cookieHeader, csrf, batch)).status).toBe(204);
+      }
+      expect((await postTelemetry(base, cookieHeader, csrf, batch)).status).toBe(429);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('reclaims terminal telemetry keys while retaining a live call key', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      const service = new FakeVoiceSessionService();
+      const server = await startServer(service, {
+        maxConcurrentSessions: 2,
+        maxSessionCreations: 1_000,
+      });
+      const base = `http://127.0.0.1:${server.port}`;
+      const login = await loginAt(base);
+      const cookies = getSetCookies(login);
+      const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+      const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+      const cookieHeader = `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`;
+      expect((await createAt(base, cookieHeader, csrf)).status).toBe(201);
+      const liveBatch = Array.from({ length: 16 }, () => ({ category: 'rtc', status: 'connected' }));
+      for (let index = 0; index < 6; index += 1) {
+        expect((await postTelemetry(base, cookieHeader, csrf, liveBatch, 'session-1')).status).toBe(204);
+      }
+      clock.mockReturnValue(1_060_001);
+      for (let index = 0; index < 6; index += 1) {
+        expect((await postTelemetry(base, cookieHeader, csrf, liveBatch, 'session-1')).status).toBe(204);
+      }
+      clock.mockReturnValue(1_120_002);
+      for (let index = 0; index < 3; index += 1) {
+        expect((await postTelemetry(base, cookieHeader, csrf, liveBatch, 'session-1')).status).toBe(204);
+      }
+
+      for (let index = 0; index < 255; index += 1) {
+        const created = await createAt(base, cookieHeader, csrf);
+        expect(created.status).toBe(201);
+        const sessionId = `session-${index + 2}`;
+        expect((await postTelemetry(base, cookieHeader, csrf, undefined, sessionId)).status).toBe(204);
+        service.markTerminal(sessionId, 'closed');
+      }
+
+      const recovered = await createAt(base, cookieHeader, csrf);
+      expect(recovered.status).toBe(201);
+      expect((await postTelemetry(base, cookieHeader, csrf, undefined, 'session-257')).status).toBe(204);
+      expect((await postTelemetry(base, cookieHeader, csrf, liveBatch, 'session-1')).status).toBe(204);
+      expect((await postTelemetry(base, cookieHeader, csrf, undefined, 'session-1')).status).toBe(429);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('allows proxy same-origin reads without a referrer', async () => {
@@ -854,6 +1029,7 @@ async function startServer(
   service: FakeVoiceSessionService,
   overrides: Partial<BrowserVoiceServerConfig> = {},
   auth?: VoiceAuth,
+  telemetry?: VoiceTelemetry,
 ): Promise<BrowserVoiceServer> {
   const config = {
     accessToken: 'secret',
@@ -861,8 +1037,10 @@ async function startServer(
     ...overrides,
   };
   const server = auth
-    ? new BrowserVoiceServer(config, { sessionService: service, auth })
-    : new BrowserVoiceServer(config, service);
+    ? new BrowserVoiceServer(config, { sessionService: service, auth, telemetry })
+    : telemetry
+      ? new BrowserVoiceServer(config, { sessionService: service, telemetry })
+      : new BrowserVoiceServer(config, service);
   activeServers.push(server);
   await server.start();
   return server;
@@ -910,6 +1088,25 @@ function createAt(base: string, cookieHeader: string, csrf: string): Promise<Res
       'x-csrf-token': csrf,
     },
     body: JSON.stringify({ transport: { type: 'webrtc', sdp: 'offer' } }),
+  });
+}
+
+function postTelemetry(
+  base: string,
+  cookieHeader: string,
+  csrf: string,
+  samples: readonly unknown[] = [{ category: 'rtc', status: 'connected' }],
+  sessionId = 'session-1',
+): Promise<Response> {
+  return fetch(`${base}/voice/sessions/${encodeURIComponent(sessionId)}/telemetry`, {
+    method: 'POST',
+    headers: {
+      cookie: cookieHeader,
+      origin: ORIGIN,
+      'content-type': 'application/json',
+      'x-csrf-token': csrf,
+    },
+    body: JSON.stringify({ callId: sessionId, samples }),
   });
 }
 
@@ -1017,7 +1214,35 @@ function makeRecord(id: string, owner: VoiceOwnerContext): VoiceSessionRecord {
   };
 }
 
-function toStatus(record: VoiceSessionRecord): VoiceSessionStatusDto {
+function toStatus(record: VoiceSessionRecord, outputId?: string): VoiceSessionStatusDto {
+  const output: VoiceOutputStatusDto | undefined = outputId
+    ? {
+        delegationId: 'delegation-1',
+        id: outputId,
+        kind: 'final',
+        lifecycle: {
+          execution: 'succeeded',
+          delivery: 'acknowledged',
+          providerAcknowledgement: 'acknowledged',
+          playback: 'not_started',
+        },
+        createdAt: record.createdAt,
+        updatedAt: record.createdAt,
+      }
+    : undefined;
+  const delegation: VoiceDelegationStatusDto | undefined = output
+    ? {
+        id: output.delegationId,
+        revision: 1,
+        status: 'completed',
+        contextVersion: 1,
+        execution: 'succeeded',
+        output: output.lifecycle,
+        outputs: [output],
+        createdAt: record.createdAt,
+        updatedAt: record.createdAt,
+      }
+    : undefined;
   return {
     id: record.id,
     status: record.status,
@@ -1026,7 +1251,7 @@ function toStatus(record: VoiceSessionRecord): VoiceSessionStatusDto {
     startedAt: record.startedAt,
     deadlineAt: record.deadlineAt,
     closedAt: record.closedAt,
-    delegations: [],
+    delegations: delegation ? [delegation] : [],
     usage: record.usage,
     finalization: record.finalization,
   };

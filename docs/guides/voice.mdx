@@ -121,6 +121,21 @@ The HTTP boundary exposes these routes:
 | `GET /voice/sessions/:id/events`    | Subscribe to authenticated status events with SSE          |
 | `POST /voice/sessions/:id/close`    | Hang up or close a session                                 |
 | `POST /voice/sessions/:id/playback` | Report output playback state                               |
+| `POST /voice/sessions/:id/telemetry` | Submit bounded browser connection/playback proxies         |
+
+The telemetry route is separate from semantic playback reporting. It accepts
+only fixed RTC, audio play-promise, visibility, and interruption categories,
+finite browser-local durations/counts, and output IDs that already belong to
+the session. Requests require the current origin, login, CSRF token, and the
+original session grant revision. The request body is capped at 16 KiB, batches
+contain at most 16 samples (256 per call), and each exact grant/call accepts at
+most six batches per minute. The browser keeps at most one request in flight
+and aborts a request after two seconds; pending samples are discarded during
+cleanup. Samples are content-free proxies: a resolved `audio.play()` promise
+does not prove that a person heard audio, and a generic stream cannot mark a
+particular output as played. Missing, dropped, late, or unassociated
+observations remain unknown; they never change durable output playback, call
+cleanup, retries, provider actions, or backend execution.
 
 The browser sends a transport offer. The server chooses the configured persona,
 provider, live model, output voice, tools, and MCP policy from the current

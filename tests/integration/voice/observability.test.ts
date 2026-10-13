@@ -60,9 +60,13 @@ describe('voice server lifecycle observability', () => {
       providerDelegationId: 'provider-1',
       outputId: 'output-1',
     });
+    telemetry.recordBrowserTelemetry({
+      callId: 'call-1',
+      samples: [{ category: 'audio', status: 'play_rejected', durationMs: 3.5 }],
+    });
     telemetry.finishCall('call-1');
 
-    expect(service.startWithTraceparent).toHaveBeenCalledTimes(5);
+    expect(service.startWithTraceparent).toHaveBeenCalledTimes(6);
     expect(rootHandle.end).toHaveBeenCalledOnce();
     expect(JSON.stringify(updates)).not.toContain('private transcript');
     expect(JSON.stringify(updates)).not.toContain('api-key');
@@ -77,6 +81,14 @@ describe('voice server lifecycle observability', () => {
         stage: 'result_verified',
         status: 'completed',
         outputId: 'output-1',
+      }),
+    );
+    expect(starts.find((input) => input.name === 'voice-browser-metric')?.metadata).toEqual(
+      expect.objectContaining({
+        browser: true,
+        browserCategory: 'audio',
+        browserStatus: 'play_rejected',
+        durationMs: 3.5,
       }),
     );
     expect(starts.find((input) => input.name === 'voice-lifecycle-summary')?.metadata?.summary).toContain(
