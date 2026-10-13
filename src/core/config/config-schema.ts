@@ -223,6 +223,33 @@ export const AuthConfigSchema = z.object({
 
 const BROWSER_VOICE_CHANNEL_NAME = 'browser-voice';
 
+/** Disabled-by-default inbound SIP webhook and caller-proof configuration. */
+export const SipEndpointMappingSchema = z.object({
+  ownerId: z.string().trim().min(1).max(256),
+  personaId: z.string().trim().min(1).max(256),
+});
+
+export const SipConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  host: z.string().default('127.0.0.1'),
+  port: z.number().int().min(0).max(65_535).default(0),
+  path: z.string().trim().min(1).default('/voice/sip/webhook'),
+  /** Prefer an environment-backed auth provider for this secret. */
+  standardWebhookSecret: z.string().optional(),
+  standardWebhookSecretRef: z.string().trim().min(1).default('openai-webhook'),
+  issuer: z.string().trim().min(1).max(256).optional(),
+  audience: z.string().trim().min(1).max(256).optional(),
+  publicKeys: z.record(z.string().trim().min(1).max(256), z.string().min(1)).default({}),
+  endpointMappings: z
+    .record(z.string().trim().min(1).max(256), SipEndpointMappingSchema)
+    .default({}),
+  revokedIssuers: z.array(z.string().trim().min(1).max(256)).default([]),
+  revokedKeyIds: z.array(z.string().trim().min(1).max(256)).default([]),
+  maxRequestBytes: z.number().int().min(1).max(256 * 1024).default(256 * 1024),
+  timestampToleranceSeconds: z.number().int().min(1).default(300),
+  deliveryReplayWindowMs: z.number().int().min(1_000).default(72 * 60 * 60 * 1_000),
+});
+
 /** Opt-in browservoice runtime. Secrets are resolved here, never copied into channels. */
 export const VoiceConfigSchema = z.object({
   enabled: z.boolean().default(false),
@@ -248,6 +275,7 @@ export const VoiceConfigSchema = z.object({
   maxSessionCreations: z.number().int().min(1).default(5),
   sessionCreationWindowMs: z.number().int().min(1_000).default(60_000),
   heartbeatIntervalMs: z.number().int().min(1_000).default(15_000),
+  sip: SipConfigSchema.default(() => SipConfigSchema.parse({})),
 });
 
 // ---------------------------------------------------------------------------

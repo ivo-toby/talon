@@ -56,6 +56,8 @@ import type { VoicePolicy } from '../voice/voice-policy.js';
 import type { DurableVoiceSessionService, IndexedVoiceAuth } from '../voice/voice-session-service.js';
 import type { LiveVoiceProvider, VoiceTransport } from '../voice/voice-types.js';
 import type { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import type { SipIngressService } from '../voice/transports/sip/sip-ingress-service.js';
+import type { SipWebhookServer } from '../voice/transports/sip/sip-webhook-server.js';
 import type { VoiceTelemetry } from '../voice/voice-telemetry.js';
 
 // ---------------------------------------------------------------------------
@@ -134,6 +136,9 @@ export interface DaemonContext {
   readonly voiceProvider: LiveVoiceProvider | null;
   readonly voiceTransport: VoiceTransport | null;
   readonly voiceServer: BrowserVoiceServer | null;
+  /** Optional incoming SIP runtime; absent unless voice.sip.enabled is true. */
+  readonly voiceSipIngress?: SipIngressService | null;
+  readonly voiceSipWebhookServer?: SipWebhookServer | null;
   readonly voiceTelemetry: VoiceTelemetry | null;
   readonly voiceRuntimeConfig?: { current: TalondConfig };
   readonly voiceGeneration?: { value: number };

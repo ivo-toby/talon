@@ -116,6 +116,10 @@ import {
 } from '../voice/voice-adapters.js';
 import { createVoiceAuthorization } from '../voice/voice-authorization.js';
 import { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import { VoiceSipRepository } from '../core/database/repositories/voice-sip-repository.js';
+import { ConfiguredSipAuthorizationResolver } from '../voice/transports/sip/sip-authorization.js';
+import { SipIngressService } from '../voice/transports/sip/sip-ingress-service.js';
+import { SipWebhookServer } from '../voice/transports/sip/sip-webhook-server.js';
 import { VoiceTelemetry } from '../voice/voice-telemetry.js';
 import type {
   VoiceOwnerContext,
@@ -649,6 +653,8 @@ export async function bootstrap(
   let voiceProvider: OpenAiLiveVoiceProvider | null = null;
   let voiceTransport: BrowserVoiceTransport | null = null;
   let voiceServer: BrowserVoiceServer | null = null;
+  let voiceSipIngress: SipIngressService | null = null;
+  let voiceSipWebhookServer: SipWebhookServer | null = null;
   let voiceTelemetry: VoiceTelemetry | null = null;
   let voiceChannelId: string | null = null;
   const voiceRuntimeConfig = { current: config };
@@ -926,6 +932,53 @@ export async function bootstrap(
     );
   }
 
+  // Incoming SIP is an independent, disabled-by-default boundary. It may be
+  // enabled without browser voice, but it never infers caller identity from
+  // the provider delivery or ordinary SIP headers.
+  if (config.voice?.sip?.enabled) {
+    const sipConfig = config.voice.sip;
+    const sipResolver = new ConfiguredSipAuthorizationResolver({
+      issuer: sipConfig.issuer,
+      audience: sipConfig.audience,
+      publicKeys: sipConfig.publicKeys,
+      endpointMappings: sipConfig.endpointMappings,
+      revokedIssuers: sipConfig.revokedIssuers,
+      revokedKeyIds: sipConfig.revokedKeyIds,
+    });
+    voiceSipIngress = new SipIngressService({
+      repository: new VoiceSipRepository(db),
+      authorization: sipResolver,
+      deliveryReplayWindowMs: sipConfig.deliveryReplayWindowMs,
+    });
+    const standardWebhookSecret =
+      sipConfig.standardWebhookSecret ??
+      config.auth.providers[sipConfig.standardWebhookSecretRef]?.apiKey ??
+      config.auth.apiKey;
+    voiceSipWebhookServer = new SipWebhookServer({
+      enabled: true,
+      host: sipConfig.host,
+      port: sipConfig.port,
+      path: sipConfig.path,
+      standardWebhookSecret,
+      maxRequestBytes: sipConfig.maxRequestBytes,
+      timestampToleranceSeconds: sipConfig.timestampToleranceSeconds,
+    }, { ingress: voiceSipIngress });
+    const reconciledSip = voiceSipIngress.reconcileInterruptedAttempts();
+    if (reconciledSip.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Failed to reconcile incoming SIP state: ${reconciledSip.error.message}`,
+          reconciledSip.error,
+        ),
+      );
+    }
+    logger.info(
+      { host: sipConfig.host, port: sipConfig.port, path: sipConfig.path },
+      'bootstrap: incoming SIP ingress initialized',
+    );
+  }
+
   // 11. Generic recovery follows voice reconciliation and excludes voice rows.
   recoverFromCrash(repos.queue, logger);
 
@@ -1095,6 +1148,8 @@ export async function bootstrap(
     voiceProvider,
     voiceTransport,
     voiceServer,
+    voiceSipIngress,
+    voiceSipWebhookServer,
     voiceTelemetry,
     voiceRuntimeConfig,
     voiceGeneration,

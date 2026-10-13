@@ -403,6 +403,19 @@ voice:
   allowedTransportTypes:
     - webrtc
   allowedOrigins: []
+  # Incoming SIP is a separate, disabled-by-default boundary. The reference
+  # Asterisk setup is documented in docs/guides/voice-asterisk.mdx; no keys,
+  # webhook secret, trunk, or owner mapping belongs in this example.
+  sip:
+    enabled: false
+    host: 127.0.0.1
+    port: 0
+    path: /voice/sip/webhook
+    standardWebhookSecretRef: openai-webhook
+    issuer: operator-configured-issuer
+    audience: talon-incoming-sip
+    publicKeys: {}
+    endpointMappings: {}
   # Deprecated compatibility fields. Voice inherits the selected persona's
   # capabilities, skills, and configured MCP servers; these lists are ignored.
   allowedToolNames: []

@@ -352,8 +352,11 @@ network namespace as `talond`, or configure `voice.host` with a reachable
 container interface or `0.0.0.0` and restrict the published network path.
 Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Run
 `talonctl doctor` after the config change and open
-`https://<publicHost>/voice/`. SIP, physical-phone, and paid live-provider
-verification remain separate acceptance steps.
+`https://<publicHost>/voice/`. Incoming SIP is a separate disabled-by-default
+boundary; enabling it requires an explicit operator decision and an authenticated
+Asterisk setup described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
+This setup skill does not install a PBX, provision keys or trunks, or place a
+paid call.
 
 The browser login form leaves `Keep me signed in for one year` unchecked. The
 default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the

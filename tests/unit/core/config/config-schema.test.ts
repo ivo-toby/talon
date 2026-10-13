@@ -1109,6 +1109,36 @@ describe('TalondConfigSchema', () => {
     expect(result.success).toBe(true);
   });
 
+  it('keeps incoming SIP disabled by default and validates its bounded settings', () => {
+    const defaults = TalondConfigSchema.safeParse({});
+    expect(defaults.success).toBe(true);
+    if (defaults.success) {
+      expect(defaults.data.voice.sip.enabled).toBe(false);
+      expect(defaults.data.voice.sip.maxRequestBytes).toBe(256 * 1024);
+      expect(defaults.data.voice.sip.deliveryReplayWindowMs).toBe(72 * 60 * 60 * 1_000);
+    }
+
+    const configured = TalondConfigSchema.safeParse({
+      voice: {
+        sip: {
+          enabled: true,
+          issuer: 'operator-issuer',
+          audience: 'talon-incoming',
+          publicKeys: { primary: 'base64url-public-key' },
+          endpointMappings: {
+            'endpoint-1': { ownerId: 'owner-1', personaId: 'persona-1' },
+          },
+        },
+      },
+    });
+    expect(configured.success).toBe(true);
+
+    const oversized = TalondConfigSchema.safeParse({
+      voice: { sip: { maxRequestBytes: 256 * 1024 + 1 } },
+    });
+    expect(oversized.success).toBe(false);
+  });
+
   it('accepts openai-compatible provider options for both main and background agents', () => {
     const result = TalondConfigSchema.safeParse({
       agentRunner: {
