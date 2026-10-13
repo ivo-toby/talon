@@ -8,16 +8,22 @@ description: Configure and operate Talon's opt-in browser voice session
 Talon can expose an opt-in browser voice session at `/voice/`. The browser
 uses WebRTC for the browser live audio path. Talon keeps authentication, policy,
 the session lifecycle, and any delegated backend work on the daemon. An
-independent incoming SIP webhook boundary is available only when explicitly
-enabled; it does not replace the browser route or install a PBX.
+independent incoming SIP webhook boundary can also accept a provider-created
+GPT-Live session when explicitly enabled; it reuses the same policy, history,
+queue, and backend path without installing a PBX or adding a media bridge.
 
 ## Requirements
 
 - A persona whose configured provider is enabled. Voice backend work uses that
   persona's normal model and queue, including its provider's normal OAuth and
   native-tool restrictions.
-- A voice access token and, when the live provider requires one, a live API
-  key. Keep both in environment variables referenced by `auth.providers`.
+- For browser voice, a voice access token and, when the live provider requires
+  one, a live API key. Keep both in environment variables referenced by
+  `auth.providers`.
+- For incoming SIP, a configured `voice.persona`, enabled persona provider, live
+  API key, Standard Webhooks secret, and server-owned endpoint assertion keys
+  and mappings. Browser access tokens are not required for SIP-only operation;
+  missing caller authority is denied.
 - HTTPS for a browser reached through a network. Local loopback testing can
   use HTTP. The listener defaults to loopback; when a reverse proxy runs in a
   different VM, container, or network namespace, set `voice.host` to a
@@ -87,14 +93,16 @@ When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
 voice channel. Startup rejects a conflicting ordinary channel configuration and
 does not overwrite an existing non-voice `browser-voice` database row.
 
-For the reference-only incoming SIP authority and Asterisk setup, see the
+For the incoming SIP authority and reference Asterisk setup, see the
 [Asterisk guide](voice-asterisk.mdx). SIP delivery authentication and caller
 authentication are separate: Talon verifies the Standard Webhooks raw bytes
 first, then requires a server-mapped, call-bound Ed25519 endpoint assertion.
 Missing, duplicate, expired, revoked, altered, or unmapped assertions are
-denied; Caller ID and ordinary SIP headers never grant authority. The durable
-SIP boundary reserves decisions and receipts before a future provider accept
-callback and never retries an ambiguous attempt.
+denied; Caller ID and ordinary SIP headers never grant authority. After the
+durable decision and attempt marker are recorded, Talon accepts the existing
+`data.session_id` once, attaches its Live sideband, and sends delegations
+through the ordinary backend queue. An ambiguous accept remains unknown and
+is never retried automatically.
 
 `publicHost` adds `https://<publicHost>` to the allowed origins and documents
 the external URL. It does not change the listener address. Keep the default
@@ -143,6 +151,10 @@ The HTTP boundary exposes these routes:
 | `POST /voice/sessions/:id/playback` | Report output playback state                               |
 | `POST /voice/sessions/:id/telemetry` | Submit bounded browser connection/playback proxies         |
 
+When `voice.sip.enabled` is true, `voice.sip.path` is a separate provider
+webhook endpoint. It is authenticated before JSON parsing and does not use
+browser cookies or browser CSRF state.
+
 The telemetry route is separate from semantic playback reporting. It accepts
 only fixed RTC, audio play-promise, visibility, and interruption categories,
 finite browser-local durations/counts, and output IDs that already belong to
@@ -160,16 +172,18 @@ cleanup, retries, provider actions, or backend execution.
 The browser sends a transport offer. The server chooses the configured persona,
 provider, live model, output voice, tools, and MCP policy from the current
 login. Provider events become bounded context snapshots, then durable voice
-delegations on the ordinary queue and `AgentRunner` path.
+delegations on the ordinary queue and `AgentRunner` path. Incoming SIP uses the
+verified server-owned persona and grant instead of browser login, while the
+same queue and backend bridge handle its delegations.
 
 Transport and live-engine capabilities are selected from trusted daemon
 configuration. Talon rejects a combination when a required capability is
-unsupported or unproven before it creates the provider session. The browser
-shows a connected call only after both the actual RTC connection and the live
-engine readiness event are observed; an optimistic server lifecycle status is
-not sufficient. The generic boundary also has variant descriptors for future
-verified SIP references and audio streams, but this browser deployment enables
-WebRTC only.
+unsupported or unproven before it creates or accepts the provider session. The
+browser shows a connected call only after both the actual RTC connection and
+the live engine readiness event are observed; an optimistic server lifecycle
+status is not sufficient. Incoming SIP uses a lifecycle-only transport for the
+provider-owned media path; Talon does not expose SIP audio as browser playback,
+and missing playback evidence stays unknown.
 
 Restoration can reopen retained read-only status/history streams, but it never
 requests microphone permission, creates a peer or paid audio session, connects

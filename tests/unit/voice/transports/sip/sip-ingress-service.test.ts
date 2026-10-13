@@ -108,6 +108,19 @@ describe('SipIngressService', () => {
     expect(authorizationResolver.resolve).toHaveBeenCalledOnce();
     expect(acceptCall).toHaveBeenCalledOnce();
 
+    expect(
+      service.isProviderSessionActive('session-1', {
+        ownerId: 'owner-1',
+        loginRevision: 1,
+      }, currentNowMs),
+    ).toBe(true);
+    expect(
+      service.isProviderSessionActive('session-1', {
+        ownerId: 'owner-1',
+        loginRevision: 2,
+      }, currentNowMs),
+    ).toBe(false);
+
     const counts = repository.counts()._unsafeUnwrap();
     expect(counts).toEqual({ decisions: 1, receipts: 1, grants: 1 });
     expect(repository.findByProviderSessionId('session-1')._unsafeUnwrap()?.grant.owner_id).toBe('owner-1');

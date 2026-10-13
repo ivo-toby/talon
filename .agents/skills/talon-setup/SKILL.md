@@ -351,8 +351,10 @@ restrict network access. Preserve `Host` and `Origin`, send
 `X-Forwarded-Proto: https`, set `publicHost` to the public hostname, then run
 `npx talonctl doctor --config talond.yaml` and open
 `https://<publicHost>/voice/`. Incoming SIP is a separate disabled-by-default
-boundary; enabling it requires an explicit operator decision and an authenticated
-Asterisk setup described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
+boundary; when enabled it accepts the existing provider-created GPT-Live
+session after independent caller proof and uses the same backend queue. It
+requires an explicit operator decision and an authenticated Asterisk setup
+described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
 This setup skill does not install a PBX, provision keys or trunks, or place a
 paid call.
 

@@ -577,7 +577,7 @@ export class TalondDaemon {
       messagePipeline: this.ctx.messagePipeline,
       logger: this.logger,
     });
-    if (newConfig.voice?.enabled && this.ctx.voiceSessionService) {
+    if ((newConfig.voice?.enabled || newConfig.voice?.sip?.enabled) && this.ctx.voiceSessionService) {
       const voiceConnector = registerVoiceConnector({
         channelRegistry: this.ctx.channelRegistry,
         channelRepo: this.ctx.repos.channel,
@@ -612,7 +612,11 @@ export class TalondDaemon {
     // Update config snapshot.
     (this.ctx as { config: TalondConfig }).config = newConfig;
     if (this.ctx.voiceRuntimeConfig) this.ctx.voiceRuntimeConfig.current = newConfig;
-    if (voiceReload && !voiceConfigChanged && newConfig.voice?.enabled) {
+    if (
+      voiceReload &&
+      !voiceConfigChanged &&
+      (newConfig.voice?.enabled || newConfig.voice?.sip?.enabled)
+    ) {
       voiceReload.openAdmission();
     } else if (voiceReload && voiceConfigChanged) {
       this.logger.warn('daemon: reload — browser voice configuration changed; restart required to rebuild its provider and auth runtime');

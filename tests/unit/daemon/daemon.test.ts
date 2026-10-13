@@ -57,7 +57,7 @@ import { TalondDaemon } from '../../../src/daemon/daemon.js';
 import { bootstrap } from '../../../src/daemon/daemon-bootstrap.js';
 import { loadConfig } from '../../../src/core/config/config-loader.js';
 import { writePidFile, removePidFile } from '../../../src/daemon/lifecycle.js';
-import { injectSiblingBotIds } from '../../../src/channels/channel-setup.js';
+import { injectSiblingBotIds, registerVoiceConnector } from '../../../src/channels/channel-setup.js';
 import { DaemonError } from '../../../src/core/errors/index.js';
 import {
   CodexSandboxRunnerReadinessError,
@@ -667,6 +667,42 @@ describe('TalondDaemon', () => {
       await daemon.reload();
 
       expect(injectSiblingBotIds).toHaveBeenCalledOnce();
+    });
+
+    it('keeps SIP-only voice admission and connector registration active on reload', async () => {
+      const voiceSessionService = {
+        closeAdmission: vi.fn(),
+        bumpGeneration: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+        openAdmission: vi.fn(),
+      };
+      const voiceSipIngress = {
+        closeAdmission: vi.fn(),
+        revokeAllAuthority: vi.fn().mockReturnValue(ok(0)),
+        openAdmission: vi.fn(),
+      };
+      const config = {
+        ...makeMockContext().config,
+        voice: {
+          enabled: false,
+          sip: { enabled: true, host: '127.0.0.1', port: 8787 },
+        },
+      } as any;
+      const ctx = setupSuccessfulBootstrap({
+        config,
+        voiceSessionService: voiceSessionService as any,
+        voiceSipIngress: voiceSipIngress as any,
+      });
+      await daemon.start('/config.yaml');
+      vi.mocked(registerVoiceConnector).mockClear();
+      vi.mocked(loadConfig).mockReturnValue(ok(config));
+
+      const result = await daemon.reload();
+
+      expect(result.isOk()).toBe(true);
+      expect(registerVoiceConnector).toHaveBeenCalledOnce();
+      expect(voiceSessionService.openAdmission).toHaveBeenCalledOnce();
+      expect(voiceSipIngress.openAdmission).toHaveBeenCalledOnce();
     });
 
     it('rebinds the effective indirect voice credential after durable invalidation', async () => {

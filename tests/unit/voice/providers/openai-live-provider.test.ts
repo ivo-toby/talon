@@ -7,7 +7,10 @@ import {
   OpenAiLiveVoiceProvider,
   OpenAiLiveVoiceSideband,
 } from '../../../../src/voice/providers/openai-live-provider.js';
-import type { LiveVoiceSessionRequest } from '../../../../src/voice/voice-types.js';
+import type {
+  LiveVoiceIncomingSessionRequest,
+  LiveVoiceSessionRequest,
+} from '../../../../src/voice/voice-types.js';
 
 class FakeSocket {
   readyState = 0;
@@ -65,6 +68,22 @@ function request(overrides: Partial<LiveVoiceSessionRequest> = {}): LiveVoiceSes
     delegationMode: 'client',
     transport: { type: 'webrtc', sdp: 'v=0\r\n' },
     audio: { output: { voice: 'marin' } },
+    ...overrides,
+  };
+}
+
+function incomingRequest(
+  overrides: Partial<LiveVoiceIncomingSessionRequest> = {},
+): LiveVoiceIncomingSessionRequest {
+  return {
+    sessionId: 'voice-sip-1',
+    providerSessionId: 'provider-sip-1',
+    modelName: 'gpt-live-1',
+    voice: 'marin',
+    admissionExpiresAt: Date.now() + 10_000,
+    sessionExpiresAt: Date.now() + 900_000,
+    instructions: 'Speak briefly and delegate substantive work.',
+    delegationMode: 'client',
     ...overrides,
   };
 }
@@ -1123,6 +1142,135 @@ describe('OpenAiLiveVoiceProvider', () => {
 
     expect(result.isOk()).toBe(true);
     expect(requestCount).toBe(2);
+  });
+
+  it('accepts and attaches an existing incoming SIP session without startup commands', async () => {
+    const socket = new FakeSocket();
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push({ url: String(input), init });
+      return new Response(null, { status: 200 });
+    });
+    const provider = new OpenAiLiveVoiceProvider({
+      apiKey: 'test-key',
+      fetch,
+      webSocketFactory: () => socket as unknown as LiveWebSocket,
+      defaultSessionLifetimeMs: 20_000,
+    });
+
+    const accepted = await provider.acceptIncomingSession!(incomingRequest());
+    expect(accepted.isOk()).toBe(true);
+    const acceptBody = JSON.parse(String(requests[0]?.init?.body)) as Record<string, any>;
+    expect(requests[0]?.url).toBe(
+      'https://api.openai.com/v1/live/sessions/provider-sip-1/accept',
+    );
+    expect(acceptBody).toEqual({
+      session: {
+        type: 'live',
+        model: 'gpt-live-1',
+        instructions: 'Speak briefly and delegate substantive work.',
+        audio: { output: { voice: 'marin' } },
+        delegation: { type: 'client' },
+        store: false,
+      },
+    });
+    expect(acceptBody.session.audio.format).toBeUndefined();
+
+    const attached = provider.attachSideband(accepted._unsafeUnwrap());
+    socket.open();
+    expect((await attached).isOk()).toBe(true);
+    expect(socket.sent).toHaveLength(0);
+
+    const closing = provider.closeSession('provider-sip-1');
+    await Promise.resolve();
+    expect(requests[1]?.url).toBe(
+      'https://api.openai.com/v1/live/sessions/provider-sip-1/hangup',
+    );
+    expect(requests[1]?.init?.body).toBeUndefined();
+    expect(closing).toBeInstanceOf(Promise);
+    socket.receive({
+      type: 'session.closed',
+      event_id: 'sip-closed-1',
+      reason: 'remote_hangup',
+      usage: { seconds: 7 },
+    });
+    expect((await closing).isOk()).toBe(true);
+  });
+
+  it('does not register an incoming session after an ambiguous accept response', async () => {
+    const provider = new OpenAiLiveVoiceProvider({
+      apiKey: 'test-key',
+      fetch: vi.fn(async () => new Response('{"accepted":true}', { status: 200 })),
+    });
+    const result = await provider.acceptIncomingSession!(
+      incomingRequest({
+        sessionId: 'voice-sip-ambiguous',
+        providerSessionId: 'provider-sip-ambiguous',
+      }),
+    );
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().reason).toBe('invalid_response');
+    const attached = await provider.attachSideband({
+      providerSessionId: 'provider-sip-ambiguous',
+      client: {
+        transport: 'sip',
+        sessionId: 'voice-sip-ambiguous',
+        answer: { type: 'sip', reference: 'provider-sip-ambiguous' },
+        expiresAt: Date.now() + 900_000,
+      },
+    });
+    expect(attached.isErr()).toBe(true);
+  });
+
+  it('keeps incoming acceptance unowned for every ambiguous HTTP outcome without retrying', async () => {
+    const cases: Array<{
+      readonly name: string;
+      readonly fetch: typeof fetch;
+    }> = [
+      {
+        name: 'whitespace response',
+        fetch: vi.fn(async () => new Response(' \n', { status: 200 })) as typeof fetch,
+      },
+      {
+        name: 'response read failure',
+        fetch: vi.fn(
+          async () =>
+            ({
+              status: 200,
+              ok: true,
+              text: async () => {
+                throw new Error('body read failed');
+              },
+            }) as Response,
+        ) as typeof fetch,
+      },
+      {
+        name: 'server failure',
+        fetch: vi.fn(async () => new Response('upstream failure', { status: 503 })) as typeof fetch,
+      },
+    ];
+
+    for (const [index, candidate] of cases.entries()) {
+      const provider = new OpenAiLiveVoiceProvider({ apiKey: 'test-key', fetch: candidate.fetch });
+      const result = await provider.acceptIncomingSession!(
+        incomingRequest({
+          sessionId: `voice-sip-ambiguous-${index}`,
+          providerSessionId: `provider-sip-ambiguous-${index}`,
+        }),
+      );
+      expect(result.isErr(), candidate.name).toBe(true);
+      expect(candidate.fetch).toHaveBeenCalledTimes(1);
+      const attached = await provider.attachSideband({
+        providerSessionId: `provider-sip-ambiguous-${index}`,
+        client: {
+          transport: 'sip',
+          sessionId: `voice-sip-ambiguous-${index}`,
+          answer: { type: 'sip', reference: `provider-sip-ambiguous-${index}` },
+          expiresAt: Date.now() + 900_000,
+        },
+      });
+      expect(attached.isErr(), candidate.name).toBe(true);
+    }
   });
 
   it('returns an incomplete finalization error when close deadline expires', async () => {

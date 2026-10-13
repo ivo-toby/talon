@@ -353,8 +353,10 @@ container interface or `0.0.0.0` and restrict the published network path.
 Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Run
 `talonctl doctor` after the config change and open
 `https://<publicHost>/voice/`. Incoming SIP is a separate disabled-by-default
-boundary; enabling it requires an explicit operator decision and an authenticated
-Asterisk setup described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
+boundary; when enabled it accepts the existing provider-created GPT-Live
+session after independent caller proof and uses the same backend queue. It
+requires an explicit operator decision and an authenticated Asterisk setup
+described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
 This setup skill does not install a PBX, provision keys or trunks, or place a
 paid call.
 

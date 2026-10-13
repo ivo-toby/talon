@@ -6,6 +6,7 @@ import type { TalonError } from '../../core/errors/error-types.js';
 import type {
   LiveVoiceCommand,
   LiveVoiceEvent,
+  LiveVoiceIncomingSessionRequest,
   LiveVoiceProvider,
   LiveVoiceSession,
   LiveVoiceSessionRequest,
@@ -35,6 +36,9 @@ import type { VoiceTelemetry } from '../voice-telemetry.js';
 
 export const OPENAI_LIVE_API_BASE = 'https://api.openai.com';
 export const OPENAI_LIVE_SESSION_PATH = '/v1/live/sessions';
+export const OPENAI_LIVE_ACCEPT_SUFFIX = '/accept';
+export const OPENAI_LIVE_ATTACH_SUFFIX = '/attach';
+export const OPENAI_LIVE_HANGUP_SUFFIX = '/hangup';
 export const DEFAULT_LIVE_REQUEST_TIMEOUT_MS = 15_000;
 export const DEFAULT_LIVE_OPEN_TIMEOUT_MS = DEFAULT_LIVE_REQUEST_TIMEOUT_MS;
 export const DEFAULT_LIVE_CLOSE_TIMEOUT_MS = 5_000;
@@ -86,6 +90,7 @@ export type LiveSidebandFinalization = 'pending' | 'confirmed' | 'incomplete';
 interface ProviderSessionState {
   readonly session: LiveVoiceSession;
   readonly expiresAt: number;
+  readonly incoming: boolean;
   sideband?: OpenAiLiveVoiceSideband;
 }
 
@@ -315,7 +320,60 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
         expiresAt,
       },
     };
-    this.sessions.set(providerSessionId, { session, expiresAt });
+    this.sessions.set(providerSessionId, { session, expiresAt, incoming: false });
+    return ok(session);
+  }
+
+  async acceptIncomingSession(
+    input: LiveVoiceIncomingSessionRequest,
+  ): VoiceAsyncResult<LiveVoiceSession> {
+    const validationError = validateIncomingSessionRequest(input, this.now());
+    if (validationError) return err(validationError);
+
+    const configured = this.checkConfiguration();
+    if (configured) return err(configured);
+    if (this.sessions.has(input.providerSessionId)) {
+      return err(providerError('invalid_request', 'GPT-Live session is already owned by this provider'));
+    }
+
+    const accepted = await this.requestJson(
+      `${OPENAI_LIVE_SESSION_PATH}/${encodeURIComponent(input.providerSessionId)}${OPENAI_LIVE_ACCEPT_SUFFIX}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          session: {
+            type: 'live',
+            model: input.modelName,
+            instructions: input.instructions,
+            audio: { output: { voice: input.voice } },
+            delegation: { type: 'client' },
+            store: false,
+          },
+        }),
+      },
+      { expectedStatus: 200, emptyBody: true },
+    );
+    if (accepted.isErr()) return err(accepted.error);
+
+    const session: LiveVoiceSession = {
+      providerSessionId: input.providerSessionId,
+      client: {
+        transport: 'sip',
+        sessionId: input.sessionId,
+        providerSessionId: input.providerSessionId,
+        answer: { type: 'sip', reference: input.providerSessionId },
+        expiresAt: input.sessionExpiresAt,
+      },
+    };
+    // Register only after the definitive accept response. An ambiguous HTTP
+    // result stays unowned so the ingress attempt remains unknown and cannot
+    // be retried automatically by this adapter.
+    this.sessions.set(input.providerSessionId, {
+      session,
+      expiresAt: input.sessionExpiresAt,
+      incoming: true,
+    });
     return ok(session);
   }
 
@@ -330,7 +388,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
       return err(providerError('session_expired', 'GPT-Live session has expired'));
     if (state.sideband) return ok(state.sideband);
 
-    const url = `${webSocketBaseUrl(this.baseUrl)}${OPENAI_LIVE_SESSION_PATH}/${encodeURIComponent(session.providerSessionId)}/attach`;
+    const url = `${webSocketBaseUrl(this.baseUrl)}${OPENAI_LIVE_SESSION_PATH}/${encodeURIComponent(session.providerSessionId)}${OPENAI_LIVE_ATTACH_SUFFIX}`;
     let socket: LiveWebSocket;
     try {
       socket = this.webSocketFactory(url, this.authorizationHeaders());
@@ -364,13 +422,28 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
       );
 
     let closeError: TalonError | undefined;
+    if (state.incoming) {
+      const hangup = await this.requestJson(
+        `${OPENAI_LIVE_SESSION_PATH}/${encodeURIComponent(providerSessionId)}${OPENAI_LIVE_HANGUP_SUFFIX}`,
+        { method: 'POST', headers: { Accept: 'application/json' } },
+        { expectedStatus: 200, emptyBody: true },
+      );
+      if (hangup.isErr()) closeError = hangup.error;
+      if (state.sideband) {
+        const finalized = await state.sideband.waitForFinalization();
+        if (finalized.isErr() && !closeError) closeError = finalized.error;
+      }
+      this.sessions.delete(providerSessionId);
+      return closeError ? err(closeError) : ok(undefined);
+    }
+
     if (state.sideband) {
       const closed = await state.sideband.close(true);
       if (closed.isErr()) closeError = closed.error;
     }
 
     const hangup = await this.requestJson(
-      `${OPENAI_LIVE_SESSION_PATH}/${encodeURIComponent(providerSessionId)}/hangup`,
+      `${OPENAI_LIVE_SESSION_PATH}/${encodeURIComponent(providerSessionId)}${OPENAI_LIVE_HANGUP_SUFFIX}`,
       { method: 'POST', headers: { Accept: 'application/json' } },
     );
     this.sessions.delete(providerSessionId);
@@ -391,7 +464,11 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
     return { Authorization: `Bearer ${this.apiKey ?? ''}` };
   }
 
-  private async requestJson(path: string, init: RequestInit): Promise<VoiceResult<unknown>> {
+  private async requestJson(
+    path: string,
+    init: RequestInit,
+    options: { readonly expectedStatus?: number; readonly emptyBody?: boolean } = {},
+  ): Promise<VoiceResult<unknown>> {
     const configured = this.checkConfiguration();
     if (configured) return err(configured);
 
@@ -403,7 +480,10 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
         headers: { ...this.authorizationHeaders(), ...(init.headers ?? {}) },
         signal: controller.signal,
       });
-      if (!response.ok) {
+      if (
+        (options.expectedStatus !== undefined && response.status !== options.expectedStatus) ||
+        (options.expectedStatus === undefined && !response.ok)
+      ) {
         return err(
           providerError(
             'http',
@@ -414,6 +494,10 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
       }
       try {
         const body = await response.text();
+        if (options.emptyBody) {
+          if (body === '') return ok(undefined);
+          return err(providerError('invalid_response', 'GPT-Live returned an unexpected response body'));
+        }
         if (body.trim() === '') return ok(undefined);
         return ok(JSON.parse(body) as unknown);
       } catch {
@@ -644,6 +728,46 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
         this.closeSocket(true);
       }
     });
+    return this.closeResult;
+  }
+
+  /**
+   * Incoming SIP is closed by the Live hangup endpoint. The sideband must
+   * remain attached until the provider emits its terminal event, so this path
+   * deliberately does not send the browser/session `session.close` command.
+   */
+  waitForFinalization(): VoiceAsyncResult<void> {
+    if (this.closeResult) return this.closeResult;
+    if (this.finalized) {
+      this.retirePendingDelegations();
+      this.closeSocket();
+      return Promise.resolve(ok(undefined));
+    }
+
+    this.closeRequested = true;
+    this.retirePendingDelegations();
+    this.closeResult = new Promise((resolve) => {
+      this.resolveClose = resolve;
+    });
+    this.closeTimer = setTimeout(() => {
+      if (this.finalized) return;
+      this.finalization = 'incomplete';
+      this.closeSocket(true);
+      this.resolveClose?.(
+        err(providerError('finalization_incomplete', 'GPT-Live close was not finalized')),
+      );
+      this.resolveClose = undefined;
+    }, this.closeTimeoutMs);
+
+    if (!this.connected || this.socket.readyState !== LIVE_WEBSOCKET_OPEN) {
+      this.finalization = 'incomplete';
+      clearTimeout(this.closeTimer);
+      this.closeSocket(true);
+      this.resolveClose?.(
+        err(providerError('finalization_incomplete', 'GPT-Live sideband was not connected')),
+      );
+      this.resolveClose = undefined;
+    }
     return this.closeResult;
   }
 
@@ -1698,6 +1822,32 @@ function validateSessionRequest(input: LiveVoiceSessionRequest): LiveProviderErr
   }
   if (typeof input.transport.sdp !== 'string' || input.transport.sdp.length > 1_000_000) {
     return providerError('invalid_request', 'GPT-Live WebRTC offer is invalid');
+  }
+  return undefined;
+}
+
+function validateIncomingSessionRequest(
+  input: LiveVoiceIncomingSessionRequest,
+  now: number,
+): LiveProviderError | undefined {
+  if (
+    !input ||
+    typeof input !== 'object' ||
+    !nonEmptyString(input.sessionId) ||
+    !nonEmptyString(input.providerSessionId) ||
+    !nonEmptyString(input.modelName) ||
+    !nonEmptyString(input.voice) ||
+    !nonEmptyString(input.instructions) ||
+    input.delegationMode !== 'client' ||
+    !Number.isSafeInteger(input.admissionExpiresAt) ||
+    input.admissionExpiresAt <= now ||
+    !Number.isSafeInteger(input.sessionExpiresAt) ||
+    input.sessionExpiresAt <= now
+  ) {
+    return providerError(
+      'invalid_request',
+      'GPT-Live incoming session identity, voice, and expiry are required',
+    );
   }
   return undefined;
 }
