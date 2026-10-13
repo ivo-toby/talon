@@ -15,6 +15,7 @@ import { ChannelRegistry } from '../../../../src/channels/channel-registry.js';
 import { registerVoiceConnector } from '../../../../src/channels/channel-setup.js';
 import { ChannelSendHandler } from '../../../../src/tools/host-tools/channel-send.js';
 import { DurableVoiceBackendBridge } from '../../../../src/voice/voice-backend-bridge.js';
+import { createVoiceAdapterSelection } from '../../../../src/voice/voice-adapters.js';
 import { VoicePolicy } from '../../../../src/voice/voice-policy.js';
 import {
   BrowserVoiceTransport,
@@ -30,6 +31,14 @@ import type {
   VoiceEventHandler,
   VoiceUnsubscribe,
 } from '../../../../src/voice/voice-types.js';
+
+const TEST_VOICE_CAPABILITIES = {
+  audio_streaming: 'supported',
+  interruptions: 'supported',
+  delegation: 'supported',
+  transcript_stability: 'supported',
+  usage_reporting: 'supported',
+} as const;
 
 class FakeSideband implements LiveVoiceSideband {
   readonly providerSessionId = 'provider-session-1';
@@ -69,6 +78,7 @@ class FakeSideband implements LiveVoiceSideband {
 
 class FakeProvider implements LiveVoiceProvider {
   readonly name = 'openai-live';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
   readonly sideband = new FakeSideband();
   createCount = 0;
   closeCount = 0;
@@ -124,6 +134,9 @@ function createHarness(options: { readonly ownerActive?: () => boolean } = {}) {
   const store = new DurableVoiceStore(db, queue);
   const bridge = new DurableVoiceBackendBridge(store, queue, { now: () => 20 });
   const provider = new FakeProvider();
+  const transport = new BrowserVoiceTransport({ now: () => 20 });
+  const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
+  if (adapterSelection.isErr()) throw adapterSelection.error;
   const policy = new VoicePolicy({
     providerTypes: new Map([['agent-provider', 'openai-compatible']]),
   });
@@ -146,7 +159,8 @@ function createHarness(options: { readonly ownerActive?: () => boolean } = {}) {
   const service = new DurableVoiceSessionService({
     store,
     provider,
-    transport: new BrowserVoiceTransport({ now: () => 20 }),
+    transport,
+    adapterSelection: adapterSelection.value,
     backendBridge: bridge,
     policy,
     threadRepository: threads,
