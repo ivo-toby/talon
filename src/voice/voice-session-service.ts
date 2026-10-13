@@ -73,6 +73,7 @@ import type {
   VoiceTranscriptFragment,
   VoiceUnsubscribe,
   VoiceUsageUpdate,
+  VoiceLoginRequest,
 } from './voice-types.js';
 import type { VoiceStore } from './voice-types.js';
 
@@ -268,51 +269,73 @@ export class BrowserVoiceTransport implements VoiceTransport {
 export class IndexedVoiceAuth extends VoiceAuth {
   private readonly owners = new Map<string, IndexedOwnerSessions>();
 
+  constructor(config: VoiceAuthConfig) {
+    super(config);
+    this.takeHydratedSessions();
+  }
+
   override login(
-    input: string | { readonly accessToken: string },
+    input: string | VoiceLoginRequest,
     options: VoiceAuthLoginOptions = {},
   ): VoiceResult<VoiceAuthLoginResult> {
     const result = super.login(input, options);
-    if (result.isOk()) {
-      let owner = this.owners.get(result.value.session.owner.ownerId);
-      if (!owner) {
-        owner = { revisions: new Map() };
-        this.owners.set(result.value.session.owner.ownerId, owner);
-      }
-      owner.revisions.set(result.value.session.owner.loginRevision, result.value.session);
-    }
-    this.prune();
+    if (result.isOk()) this.indexSession(result.value.session);
     return result;
   }
 
-  override revoke(session: VoiceAuthSession): void {
-    super.revoke(session);
-    const owner = this.owners.get(session.owner.ownerId);
-    owner?.revisions.delete(session.owner.loginRevision);
-    if (owner?.revisions.size === 0) this.owners.delete(session.owner.ownerId);
+  override revoke(session: VoiceAuthSession): VoiceResult<void> {
+    const result = super.revoke(session);
+    if (result.isOk()) this.removeIndexedSession(session);
+    return result;
+  }
+
+  resolveResult(owner: VoiceOwnerContext): VoiceResult<VoiceAuthSession | undefined> {
+    const pruned = this.pruneRuntimeSessions();
+    if (pruned.isErr()) return err(pruned.error);
+    const session = this.owners.get(owner.ownerId)?.revisions.get(owner.loginRevision);
+    if (!session) return ok(undefined);
+    const active = this.isActiveResult(session);
+    if (active.isErr()) return err(active.error);
+    return ok(active.value ? session : undefined);
   }
 
   resolve(owner: VoiceOwnerContext): VoiceAuthSession | undefined {
-    this.prune();
-    const session = this.owners.get(owner.ownerId)?.revisions.get(owner.loginRevision);
-    return session && this.isActive(session) ? session : undefined;
+    const result = this.resolveResult(owner);
+    return result.isOk() ? result.value : undefined;
   }
 
-  invalidateRuntime(): void {
-    for (const owner of this.owners.values()) {
-      for (const session of owner.revisions.values()) super.revoke(session);
-    }
-    this.owners.clear();
+  override invalidateRuntime(): VoiceResult<void> {
+    const result = super.invalidateRuntime();
+    if (result.isOk()) this.owners.clear();
+    return result;
   }
 
-  private prune(): void {
-    for (const [ownerId, owner] of this.owners) {
-      for (const [revision, session] of owner.revisions) {
-        if (!this.isActive(session)) owner.revisions.delete(revision);
-      }
-      if (owner.revisions.size === 0) this.owners.delete(ownerId);
-    }
+  protected override onRuntimeSessionRegistered(session: VoiceAuthSession): void {
+    this.indexSession(session);
   }
+
+  protected override onRuntimeSessionRevoked(session: VoiceAuthSession): void {
+    this.removeIndexedSession(session);
+  }
+
+  private indexSession(session: VoiceAuthSession): void {
+    let owner = this.owners.get(session.owner.ownerId);
+    if (!owner) {
+      owner = { revisions: new Map() };
+      this.owners.set(session.owner.ownerId, owner);
+    }
+    owner.revisions.set(session.owner.loginRevision, session);
+  }
+
+  private removeIndexedSession(session: VoiceAuthSession): void {
+    const owner = this.owners.get(session.owner.ownerId);
+    if (!owner) return;
+    if (owner.revisions.get(session.owner.loginRevision) === session) {
+      owner.revisions.delete(session.owner.loginRevision);
+    }
+    if (owner.revisions.size === 0) this.owners.delete(session.owner.ownerId);
+  }
+
 }
 
 /** Durable VoiceSessionService implementation used by daemon composition. */

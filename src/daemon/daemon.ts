@@ -409,7 +409,12 @@ export class TalondDaemon {
       voiceReload.closeAdmission();
       voiceReload.bumpGeneration();
       if (this.ctx.voiceGeneration) this.ctx.voiceGeneration.value += 1;
-      this.ctx.voiceAuth?.invalidateRuntime();
+    }
+    const invalidated = this.ctx.voiceAuth?.invalidateRuntime();
+    if (invalidated?.isErr()) {
+      return err(new DaemonError('Failed to revoke browser voice authentication', invalidated.error));
+    }
+    if (voiceReload) {
       await voiceReload.shutdown();
       if (voiceConfigChanged) {
         try {
@@ -417,6 +422,25 @@ export class TalondDaemon {
         } catch (cause) {
           this.logger.warn({ cause }, 'daemon: reload — failed to stop old browser voice server');
         }
+      }
+    }
+
+    if (this.ctx.voiceAuth && !newConfig.voice?.enabled) this.ctx.voiceAuth.disable();
+
+    if (this.ctx.voiceAuth && newConfig.voice?.enabled) {
+      const voiceAccessToken = resolveVoiceAccessToken(newConfig);
+      const voicePersonaName = newConfig.voice.persona ?? newConfig.personas[0]?.name;
+      if (!voiceAccessToken || !voicePersonaName) {
+        this.ctx.voiceAuth.disable();
+        return err(new DaemonError('Failed to reload browser voice authentication'));
+      }
+      const rebound = this.ctx.voiceAuth.rebind(
+        voiceAccessToken,
+        `voice:${voicePersonaName}`,
+      );
+      if (rebound.isErr()) {
+        this.ctx.voiceAuth.disable();
+        return err(new DaemonError('Failed to reload browser voice authentication', rebound.error));
       }
     }
 
@@ -734,4 +758,14 @@ export class TalondDaemon {
     if (changed.length > 0)
       this.logger.info({ changed: changed }, 'daemon: reload — personas changed');
   }
+}
+
+function resolveVoiceAccessToken(config: TalondConfig): string | undefined {
+  const voice = config.voice;
+  if (!voice?.enabled) return undefined;
+  return (
+    voice.accessToken ??
+    config.auth.providers[voice.accessTokenRef]?.apiKey ??
+    config.auth.apiKey
+  );
 }

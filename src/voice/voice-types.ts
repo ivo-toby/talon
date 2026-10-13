@@ -1063,6 +1063,8 @@ export type VoiceStatusEventDto =
 
 export interface VoiceLoginRequest {
   readonly accessToken: string;
+  /** Explicitly requested fixed one-year persistence; omitted means 15 minutes. */
+  readonly rememberMe?: boolean;
 }
 
 export interface VoiceLoginResponse {

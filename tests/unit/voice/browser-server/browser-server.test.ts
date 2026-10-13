@@ -5,6 +5,7 @@ import { err, ok } from '../../../../src/core/types/result.js';
 import { PolicyError } from '../../../../src/core/errors/error-types.js';
 import {
   VoiceAuth,
+  VoiceAuthError,
   VOICE_CSRF_COOKIE,
   VOICE_SESSION_COOKIE,
 } from '../../../../src/voice/voice-auth.js';
@@ -28,6 +29,8 @@ import type {
   VoiceSessionStatusDto,
   VoiceStatusEventDto,
   VoiceUnsubscribe,
+  VoiceAuthSession,
+  VoiceResult,
 } from '../../../../src/voice/voice-types.js';
 
 const ORIGIN = 'http://127.0.0.1';
@@ -152,6 +155,12 @@ class FakeVoiceSessionService implements VoiceSessionService {
   }
 }
 
+class RevokeFailureAuth extends VoiceAuth {
+  override revoke(_session: VoiceAuthSession): VoiceResult<void> {
+    return err(new VoiceAuthError('storage_error'));
+  }
+}
+
 const activeServers: BrowserVoiceServer[] = [];
 
 afterEach(async () => {
@@ -263,6 +272,76 @@ describe('BrowserVoiceServer', () => {
     });
     expect(sameOwnerRead.status).toBe(200);
     expect(service.closedReasons).toEqual([]);
+  });
+
+  it('supports fixed remember durations and exposes only minimal auth status', async () => {
+    const server = await startServer(new FakeVoiceSessionService());
+    const base = `http://127.0.0.1:${server.port}`;
+    const invalid = await fetch(`${base}/voice/login`, {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ accessToken: 'secret', rememberMe: 'yes' }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const login = await fetch(`${base}/voice/login`, {
+      method: 'POST',
+      headers: { origin: ORIGIN, 'content-type': 'application/json' },
+      body: JSON.stringify({ accessToken: 'secret', rememberMe: true }),
+    });
+    expect(login.status).toBe(200);
+    const cookies = getSetCookies(login);
+    const cookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    expect(cookies.find((value) => value.startsWith(`${VOICE_SESSION_COOKIE}=`))).toContain(
+      'Max-Age=31536000',
+    );
+
+    const status = await fetch(`${base}/voice/auth/session`, {
+      headers: {
+        origin: ORIGIN,
+        cookie: `${VOICE_SESSION_COOKIE}=${cookie}; ${VOICE_CSRF_COOKIE}=${csrf}`,
+      },
+    });
+    expect(status.status).toBe(200);
+    expect(await status.json()).toEqual({ authenticated: true, expiresAt: expect.any(Number) });
+    expect(status.headers.get('cache-control')).toBe('no-store');
+
+    const crossOrigin = await fetch(`${base}/voice/auth/session`, {
+      headers: {
+        origin: 'https://attacker.example',
+        cookie: `${VOICE_SESSION_COOKIE}=${cookie}; ${VOICE_CSRF_COOKIE}=${csrf}`,
+      },
+    });
+    expect(crossOrigin.status).toBe(403);
+  });
+
+  it('does not report logout success when durable revocation fails', async () => {
+    const auth = new RevokeFailureAuth({ accessToken: 'secret' });
+    const server = await startServer(new FakeVoiceSessionService(), {}, auth);
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const cookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    const logout = await fetch(`${base}/voice/logout`, {
+      method: 'POST',
+      headers: {
+        origin: ORIGIN,
+        cookie: `${VOICE_SESSION_COOKIE}=${cookie}; ${VOICE_CSRF_COOKIE}=${csrf}`,
+        'x-csrf-token': csrf,
+      },
+    });
+    expect(logout.status).toBe(500);
+    expect(await logout.json()).toMatchObject({ error: { code: 'VOICE_ERROR' } });
+
+    const stillAuthenticated = await fetch(`${base}/voice/auth/session`, {
+      headers: {
+        origin: ORIGIN,
+        cookie: `${VOICE_SESSION_COOKIE}=${cookie}; ${VOICE_CSRF_COOKIE}=${csrf}`,
+      },
+    });
+    expect(stillAuthenticated.status).toBe(200);
   });
 
   it('denies retained reads to a different stable owner', async () => {
