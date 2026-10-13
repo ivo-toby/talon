@@ -53,6 +53,15 @@ example; use the actual slot named by `liveApiKeyRef` if it differs. The access
 token is exchanged once for an expiring cookie and is never sent to the live
 provider or returned in session status.
 
+The browser login form leaves `Keep me signed in for one year` unchecked. The
+default omitted/false `rememberMe` request creates a fixed 15-minute grant;
+checking it sends the strict boolean `rememberMe: true` for a fixed 365-day
+grant. There is no sliding refresh. Talon persists only hashed session/CSRF
+verification values and bounded metadata, preserving grants across normal
+restart while logout, credential/owner rotation, and configuration reload
+revoke the affected authority. The browser never stores the access token or
+raw session bearer in Web Storage.
+
 ## Add the voice block
 
 Edit the config with the selected persona and provider. The listener defaults
@@ -160,6 +169,16 @@ describes only the observed window and does not prove that no provider event
 occurred before observation began. The provider offset is not proof that a user
 turn was complete; offline checks do not establish provider-specific live audio
 timing or causal attribution.
+
+On page load, the browser checks `GET /voice/auth/session` before looking up an
+optional retained call. A valid cookie reaches the ready screen without a
+retained call; a retained-call 404 clears only the stale pointer. Transient
+auth or retained-call failures preserve recoverable pointers and show an
+English retry message. Restore may reopen read-only history/status streams but
+never requests a microphone, creates a peer or paid session, connects a
+provider, enqueues work, or replays old work. Cookie retention depends on the
+browser cookie context; Safari home-screen contexts may need a fresh login.
+Background/lock-screen audio and physical iPhone retention are not promised.
 
 See [the browser voice guide](../../../docs/guides/voice.mdx) and [the config
 reference](../../../docs/reference/config-schema.mdx) for the route list and

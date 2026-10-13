@@ -2376,10 +2376,16 @@ planned as an additional layer.
 Browser voice is disabled by default. When enabled, Talon binds the configured
 `voice.host` HTTP listener (`127.0.0.1` by default) and a reverse proxy can
 publish it over HTTPS. The browser exchanges an operator-configured token for
-an expiring cookie session; `voice.persona` then selects an existing normal
-persona, its backend provider/model, ordinary tools, skills, and configured MCP
-servers. The selected backend provider must be enabled, and its normal
-provider, OAuth, and native-tool restrictions still apply.
+an expiring cookie session; the login page has an unchecked `Keep me signed in
+for one year` option. The default omitted/unchecked request uses a fixed
+15-minute grant; selecting the option sends `rememberMe: true` for a fixed
+365-day grant. The browser stores no bearer credential in Web Storage. The
+server stores only hashed session/CSRF verification values and keeps grants
+across a normal restart; logout, credential/owner rotation, and configuration
+reload revoke the affected authority. `voice.persona` then selects an existing
+normal persona, its backend provider/model, ordinary tools, skills, and
+configured MCP servers. The selected backend provider must be enabled, and its
+normal provider, OAuth, and native-tool restrictions still apply.
 
 Use environment references for both the browser token and live provider key:
 
@@ -2428,6 +2434,19 @@ usage, and lifecycle state in local SQLite, not raw audio. Cloud provider
 retention is controlled by the provider account. See the [browser voice guide](docs/guides/voice.mdx)
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.
+
+On page load, the browser first checks the cookie with the read-only
+`GET /voice/auth/session` endpoint and only then attempts to read the optional
+retained-call pointer. A valid cookie reaches the ready screen even when the
+pointer is missing or stale; a retained-call 404 clears only that pointer.
+Transient auth or retained-call failures keep recoverable pointers and show a
+retry message instead of claiming that the login expired. Restore opens only
+read-only status/history streams: it never requests microphone access, creates
+a peer or paid audio session, connects a provider, enqueues backend work, or
+replays old work automatically. Cookie retention still depends on the browser
+cookie context; a separate Safari home-screen context or cleared browser data
+may require a fresh login. Background/lock-screen audio and physical iPhone
+retention are not promised by this setup.
 
 When a live delegation arrives, the first notice remains provisional until a
 1,000 ms quiet interval has passed after the latest meaningful captured USER

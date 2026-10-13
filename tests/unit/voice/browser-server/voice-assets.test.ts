@@ -48,4 +48,14 @@ describe('browser voice static assets', () => {
       expect((body as Buffer).length).toBeGreaterThan(0);
     },
   );
+
+  it('serves the English remembered-login option in the browser page', async () => {
+    const mock = makeResponse();
+    await serveAsset('/voice/', mock.response);
+
+    const body = mock.end.mock.calls[0]?.[0];
+    expect(Buffer.isBuffer(body)).toBe(true);
+    expect((body as Buffer).toString('utf8')).toContain('Keep me signed in for one year');
+    expect((body as Buffer).toString('utf8')).toContain('id="remember-me"');
+  });
 });

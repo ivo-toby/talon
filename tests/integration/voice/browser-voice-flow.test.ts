@@ -690,6 +690,30 @@ describe('browser voice offline integration', () => {
     for (const harness of harnesses.splice(0)) await harness.close();
   });
 
+  it('keeps the remembered-login choice server-side and exposes minimal cookie auth status', async () => {
+    const harness = await createHarness();
+    harnesses.push(harness);
+    const url = baseUrl(harness.server);
+    const login = await fetch(`${url}/voice/login`, {
+      method: 'POST',
+      headers: { ...requestHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ accessToken: ACCESS_TOKEN, rememberMe: true }),
+    });
+
+    expect(login.status).toBe(200);
+    expect(login.headers.getSetCookie().some((value) => value.includes('Max-Age=31536000'))).toBe(true);
+    const auth = cookieParts(login);
+    const status = await fetch(`${url}/voice/auth/session`, {
+      headers: { ...requestHeaders(auth), 'x-forwarded-proto': 'https' },
+    });
+
+    expect(status.status).toBe(200);
+    expect(status.headers.get('cache-control')).toContain('no-store');
+    const body = await jsonResponse(status);
+    expect(body).toEqual({ authenticated: true, expiresAt: expect.any(Number) });
+    expect(JSON.stringify(body)).not.toContain(ACCESS_TOKEN);
+  });
+
   it('authenticates, admits SQLite work, runs AgentRunner, streams lifecycle, and retains closed cost state', async () => {
     const harness = await createHarness(0, 0.06);
     harnesses.push(harness);

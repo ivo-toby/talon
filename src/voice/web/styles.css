@@ -121,6 +121,24 @@ h2 { margin: 0; font-size: 1.35rem; font-weight: 620; letter-spacing: -0.035em; 
 }
 .input-wrap input:focus { border-color: var(--accent-bright); box-shadow: 0 0 0 3px rgba(197, 43, 38, 0.2); }
 .input-wrap input::placeholder { color: var(--muted); }
+.login-card .remember-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 500;
+  line-height: 1.45;
+  cursor: pointer;
+}
+.login-card .remember-option input {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin: 0;
+  accent-color: var(--accent-bright);
+}
 
 .button {
   display: inline-flex;

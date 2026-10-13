@@ -303,6 +303,13 @@ to be enabled. The provider's normal OAuth and native-tool restrictions remain
 in force. Its `voice.model` is the live voice model; the persona's `model`
 remains the backend model.
 
+The browser login form leaves `Keep me signed in for one year` unchecked. The
+default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the
+checked option sends `rememberMe: true` for a fixed 365-day grant. Grants use
+hashed session/CSRF verification data, survive ordinary restart, and are
+revoked by logout, credential/owner rotation, or configuration reload. The
+browser stores no access token or raw session bearer in Web Storage.
+
 If enabled, add environment-backed auth slots and the `voice` block to the
 config. Never ask for or write the token values:
 
@@ -351,6 +358,15 @@ the UI's voice amount a duration estimate. There is no default rate. Final
 provider usage remains `estimated`; a configured rate with known usage and an
 incomplete close is `incomplete`, and an omitted rate is `unavailable`. Backend
 cost comes only from AgentRunner run accounting.
+
+On page load, the browser checks `GET /voice/auth/session` before an optional
+retained-call lookup. A valid cookie reaches the ready state without a
+retained call; a retained-call 404 clears only the stale pointer. Transient
+failures preserve recoverable pointers and show an English retry message.
+Restore never requests a microphone, creates a peer or paid session, connects a
+provider, enqueues work, or replays old work. Cookie retention is scoped to the
+browser cookie context; Safari home-screen contexts may need a fresh login.
+Background/lock-screen audio and physical iPhone retention are not promised.
 
 ### Step 4: Channel configuration
 

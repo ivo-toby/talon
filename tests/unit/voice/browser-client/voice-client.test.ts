@@ -22,6 +22,13 @@ function okResponse(payload: unknown): Response {
   });
 }
 
+function errorResponse(status: number, code: string, message = 'temporary'): Response {
+  return new Response(JSON.stringify({ error: { code, message } }), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 class FakeEventSource implements VoiceEventSource {
   readonly listeners = new Map<string, (event: Event) => void>();
   readonly close = vi.fn();
@@ -329,6 +336,39 @@ describe('VoiceBrowserClient', () => {
       occurredAt: 260,
     });
     expect(client.state.notifications).toEqual([makeNotification()]);
+  });
+
+  it.each([
+    { rememberMe: false, expected: { accessToken: 'operator-token', rememberMe: false } },
+    { rememberMe: true, expected: { accessToken: 'operator-token', rememberMe: true } },
+  ])('sends the remembered-login choice as a strict boolean', async ({ rememberMe, expected }) => {
+    const requests: Array<{ input: string; init?: RequestInit }> = [];
+    const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+      requests.push({ input, init });
+      return input.endsWith('/login')
+        ? okResponse({ authenticated: true, expiresAt: 10_000 })
+        : new Response(null, { status: 204 });
+    });
+    const client = makeClient({ fetcher, source: new FakeEventSource(), peer: makePeer() });
+
+    await client.login('operator-token', { rememberMe });
+
+    expect(JSON.parse(String(requests[0]?.init?.body))).toEqual(expected);
+  });
+
+  it('keeps the short-login compatibility payload when rememberMe is omitted', async () => {
+    const requests: Array<{ input: string; init?: RequestInit }> = [];
+    const fetcher: VoiceFetch = vi.fn(async (input, init) => {
+      requests.push({ input, init });
+      return input.endsWith('/login')
+        ? okResponse({ authenticated: true, expiresAt: 10_000 })
+        : new Response(null, { status: 204 });
+    });
+    const client = makeClient({ fetcher, source: new FakeEventSource(), peer: makePeer() });
+
+    await client.login('operator-token');
+
+    expect(JSON.parse(String(requests[0]?.init?.body))).toEqual({ accessToken: 'operator-token' });
   });
 
   it('waits for complete ICE gathering before sending the offer', async () => {
@@ -693,6 +733,7 @@ describe('VoiceBrowserClient', () => {
     const peer = makePeer();
     const fetcher: VoiceFetch = vi.fn(async (input, init) => {
       requests.push({ input, init });
+      if (input.endsWith('/auth/session')) return okResponse({ authenticated: true, expiresAt: 10_000 });
       if (input.endsWith('/sessions/session-1')) return okResponse({ session: status });
       return new Response(null, { status: 204 });
     });
@@ -700,10 +741,13 @@ describe('VoiceBrowserClient', () => {
 
     await client.restore();
 
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.input).toContain('/sessions/session-1');
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.input).toContain('/auth/session');
     expect(requests[0]?.init?.method).toBe('GET');
     expect(requests[0]?.init?.credentials).toBe('include');
+    expect(requests[1]?.input).toContain('/sessions/session-1');
+    expect(requests[1]?.init?.method).toBe('GET');
+    expect(requests[1]?.init?.credentials).toBe('include');
     expect(client.state.authenticated).toBe(true);
     expect(client.state.retainedSessionId).toBe('session-1');
     expect(client.state.outputs[0]?.text).toBe('De taak is afgerond.');
@@ -714,12 +758,10 @@ describe('VoiceBrowserClient', () => {
 
   it.each(['network', 'server'] as const)('keeps the saved session ID after a %s restore failure', async (failure) => {
     const storage = makeStorage('session-1');
-    const fetcher: VoiceFetch = vi.fn(async () => {
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      if (input.endsWith('/auth/session')) return okResponse({ authenticated: true, expiresAt: 10_000 });
       if (failure === 'network') throw new Error('offline');
-      return new Response(JSON.stringify({ error: { code: 'VOICE_ERROR', message: 'temporary' } }), {
-        status: 503,
-        headers: { 'content-type': 'application/json' },
-      });
+      return errorResponse(503, 'VOICE_ERROR');
     });
     const client = makeClient({
       fetcher,
@@ -730,6 +772,104 @@ describe('VoiceBrowserClient', () => {
 
     await expect(client.restore()).rejects.toMatchObject({ code: failure === 'network' ? 'NETWORK_ERROR' : 'VOICE_ERROR' });
     expect(storage.values.get('talon.voice.session-id')).toBe('session-1');
+    expect(client.state.authenticated).toBe(true);
+    expect(client.state.message).toContain('previous call could not be restored');
+    expect(client.state.message).not.toContain('expired');
+  });
+
+  it('authenticates without a retained call and never starts browser audio work', async () => {
+    const storage = makeStorage();
+    const microphone = vi.fn();
+    const peerFactory = vi.fn(() => makePeer().peer);
+    const requests: string[] = [];
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      requests.push(input);
+      if (input.endsWith('/auth/session')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source: new FakeEventSource(),
+      peer: makePeer(),
+      peerConnectionFactory: peerFactory,
+      mediaDevices: { getUserMedia: microphone },
+      sessionStorage: storage,
+    });
+
+    await client.restore();
+
+    expect(requests).toEqual(['/voice/auth/session']);
+    expect(client.state).toMatchObject({ authenticated: true, phase: 'ready', activeSessionId: null });
+    expect(microphone).not.toHaveBeenCalled();
+    expect(peerFactory).not.toHaveBeenCalled();
+  });
+
+  it('clears only a stale retained pointer after auth succeeds', async () => {
+    const storage = makeStorage('stale-session');
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      if (input.endsWith('/auth/session')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      return errorResponse(404, 'NOT_FOUND', 'not found');
+    });
+    const client = makeClient({ fetcher, source: new FakeEventSource(), peer: makePeer(), sessionStorage: storage });
+
+    await client.restore();
+
+    expect(storage.values.has('talon.voice.session-id')).toBe(false);
+    expect(client.state).toMatchObject({ authenticated: true, phase: 'ready', message: 'Ready to call.' });
+  });
+
+  it('clears login and retained state when auth restoration is unauthorized', async () => {
+    const storage = makeStorage('session-1');
+    const fetcher: VoiceFetch = vi.fn(async () => errorResponse(401, 'UNAUTHORIZED', 'expired'));
+    const client = makeClient({ fetcher, source: new FakeEventSource(), peer: makePeer(), sessionStorage: storage });
+
+    await client.restore();
+
+    expect(storage.values.has('talon.voice.session-id')).toBe(false);
+    expect(client.state).toMatchObject({ authenticated: false, phase: 'logged_out', message: 'Sign in to start a call.' });
+    expect(client.state.message).not.toContain('expired');
+  });
+
+  it('does not let a late restore response undo a newer login', async () => {
+    const storage = makeStorage('old-session');
+    const authProbe = deferred<Response>();
+    const requests: string[] = [];
+    const fetcher: VoiceFetch = vi.fn(async (input) => {
+      requests.push(input);
+      if (input.endsWith('/auth/session')) return authProbe.promise;
+      if (input.endsWith('/login')) return okResponse({ authenticated: true, expiresAt: 10_000 });
+      return new Response(null, { status: 204 });
+    });
+    const client = makeClient({
+      fetcher,
+      source: new FakeEventSource(),
+      peer: makePeer(),
+      sessionStorage: storage,
+    });
+
+    const restore = client.restore();
+    await vi.waitFor(() => expect(requests).toContain('/voice/auth/session'));
+    await client.login('new-token', { rememberMe: false });
+    authProbe.resolve(okResponse({ authenticated: true, expiresAt: 10_000 }));
+    await restore;
+
+    expect(client.state).toMatchObject({ authenticated: true, phase: 'ready', message: 'Ready to call.' });
+    expect(storage.values.has('talon.voice.session-id')).toBe(false);
+    expect(requests).not.toContain('/voice/sessions/old-session');
+  });
+
+  it.each(['network', 'server'] as const)('preserves the retained pointer when auth probe fails with %s', async (failure) => {
+    const storage = makeStorage('session-1');
+    const fetcher: VoiceFetch = vi.fn(async () => {
+      if (failure === 'network') throw new Error('offline');
+      return errorResponse(503, 'VOICE_ERROR');
+    });
+    const client = makeClient({ fetcher, source: new FakeEventSource(), peer: makePeer(), sessionStorage: storage });
+
+    await expect(client.restore()).rejects.toMatchObject({ code: failure === 'network' ? 'NETWORK_ERROR' : 'VOICE_ERROR' });
+    expect(storage.values.get('talon.voice.session-id')).toBe('session-1');
+    expect(client.state.message).toContain('confirm your sign-in');
+    expect(client.state.message).not.toContain('expired');
   });
 
   it('reports a status stream network loss while keeping the session available to hang up', async () => {
