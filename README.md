@@ -2953,6 +2953,14 @@ Running autonomous agents across multiple channels means you lose visibility fas
 
 Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
 
+Browser voice observations are content-free across the AgentRunner, provider tool
+events, host-tools bridge, and nested sub-agent spans. Server-owned correlation
+identifiers are bounded to 256 characters and allowlisted metadata to 4096
+UTF-8 bytes; transcripts, prompts, tool arguments/results, and free-form errors are
+not sent to Langfuse. Native AI SDK telemetry is disabled for voice descendants,
+and observation setup/update/export failures preserve the real operation result
+or error without retrying the work.
+
 ### Setup
 
 **1. Get Langfuse credentials**

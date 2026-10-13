@@ -13,6 +13,8 @@ import {
   type BackgroundAgentProcessOptions,
 } from './background-agent-process.js';
 import type { BackgroundTaskRepository } from '../../core/database/repositories/background-task-repository.js';
+import type { ThreadRepository } from '../../core/database/repositories/thread-repository.js';
+import type { ChannelRepository } from '../../core/database/repositories/channel-repository.js';
 import type {
   CanonicalMcpServer,
   PreparedProviderResultFiles,
@@ -24,6 +26,15 @@ import type {
   ObservabilityService,
   StartedObservationHandle,
 } from '../../observability/langfuse/observability-types.js';
+import {
+  createVoiceSafeLogger,
+  createVoiceObservationContext,
+  classifyVoiceChannelType,
+  isVoiceObservationContext,
+  startVoiceObservationSafely,
+  type VoiceObservationContext,
+  type VoicePrivacyClassification,
+} from '../../observability/langfuse/voice-observation.js';
 import type { ExecutionEnvManager } from '../../execution-env/execution-env-manager.js';
 import type { OAuthTokenStore } from '../../auth/oauth-token-store.js';
 import {
@@ -65,6 +76,8 @@ export interface SpawnBackgroundAgentInput {
   workingDirectory?: string;
   timeoutMinutes?: number;
   traceparent?: string;
+  /** Server-owned context inherited from a voice run; never supplied by the worker. */
+  voiceObservation?: VoiceObservationContext;
   allowedMcpTools: string[];
   sandbox?: boolean;
   controlDirectory?: string;
@@ -100,6 +113,9 @@ interface BackgroundAgentManagerDeps {
    * (and the MCP server is expected to 401 loudly).
    */
   oauthTokenStore?: OAuthTokenStore;
+  /** Trusted persisted ownership used to classify completion diagnostics after restart. */
+  threadRepository?: Pick<ThreadRepository, 'findById'>;
+  channelRepository?: Pick<ChannelRepository, 'findById'>;
 }
 
 interface ManagedProcess {
@@ -108,6 +124,7 @@ interface ManagedProcess {
   provider: AgentProvider;
   resultFiles?: PreparedProviderResultFiles;
   observation?: StartedObservationHandle;
+  voiceObservation?: VoiceObservationContext;
 }
 
 interface SandboxContext {
@@ -202,15 +219,22 @@ export class BackgroundAgentManager {
     }
 
     const taskId = randomUUID();
-    this.deps.logger.info(
-      { taskId, personaId: input.personaId, profileName: input.profileName },
+    const spawnLogger = input.voiceObservation
+      ? createVoiceSafeLogger(this.deps.logger)
+      : this.deps.logger;
+    spawnLogger.info(
+      {
+        taskId,
+        personaId: input.personaId,
+        ...(input.voiceObservation ? { voice: true } : { profileName: input.profileName }),
+      },
       'background agent spawning',
     );
     const MIN_TIMEOUT_MINUTES = 15;
     const requested = input.timeoutMinutes ?? this.deps.defaultTimeoutMinutes;
     const timeoutMinutes = Math.max(MIN_TIMEOUT_MINUTES, requested);
     if (requested < MIN_TIMEOUT_MINUTES) {
-      this.deps.logger.warn(
+      spawnLogger.warn(
         { taskId, requested, clamped: timeoutMinutes },
         'background-agent: timeout clamped to minimum',
       );
@@ -228,18 +252,42 @@ export class BackgroundAgentManager {
         ? providerOptions['defaultModel']
         : undefined);
 
-    // Start a LangFuse observation span if observability is available.
-    const observation = this.deps.observability
-      ? this.deps.observability.startWithTraceparent(input.traceparent ?? null, {
-          type: 'agent',
-          name: 'background-agent',
-          input: { prompt: input.prompt, taskId, threadId: input.threadId },
-          ...(observationModel ? { model: observationModel } : {}),
-          trace: {
-            userId: undefined,
-            tags: ['background-agent', `provider:${providerEntry.provider.name}`],
-          },
+    const inheritedVoiceObservation = isVoiceObservationContext(input.voiceObservation)
+      ? input.voiceObservation
+      : undefined;
+    const voiceObservation = inheritedVoiceObservation
+      ? createVoiceObservationContext({
+          ...inheritedVoiceObservation,
+          runId: taskId,
         })
+      : undefined;
+
+    // Start a LangFuse observation span if observability is available. Voice
+    // spans are sanitized before entering the SDK; ordinary tracing is kept
+    // byte-for-byte compatible with the existing background path.
+    const observation = this.deps.observability
+      ? voiceObservation
+        ? startVoiceObservationSafely(
+            this.deps.observability,
+            input.traceparent ?? null,
+            {
+              type: 'agent',
+              name: 'background-agent',
+              input: { prompt: input.prompt, taskId, threadId: input.threadId },
+              ...(observationModel ? { model: observationModel } : {}),
+            },
+            voiceObservation,
+          )
+        : this.deps.observability.startWithTraceparent(input.traceparent ?? null, {
+            type: 'agent',
+            name: 'background-agent',
+            input: { prompt: input.prompt, taskId, threadId: input.threadId },
+            ...(observationModel ? { model: observationModel } : {}),
+            trace: {
+              userId: undefined,
+              tags: ['background-agent', `provider:${providerEntry.provider.name}`],
+            },
+          })
       : undefined;
 
     const childTraceparent = observation?.getTraceparent() ?? undefined;
@@ -301,11 +349,13 @@ export class BackgroundAgentManager {
     } catch (cause) {
       observation?.end();
       this.cleanupPaths(this.mergeCleanupPaths([], sandboxContext));
-      await this.destroyOwnedExecutionEnv(taskId);
-      return err(new BackgroundAgentError(
-        `Failed to prepare MCP servers for background agent: ${cause instanceof Error ? cause.message : String(cause)}`,
-        cause instanceof Error ? cause : undefined,
-      ));
+      await this.destroyOwnedExecutionEnv(taskId, voiceObservation !== undefined);
+      return err(
+        new BackgroundAgentError(
+          `Failed to prepare MCP servers for background agent: ${cause instanceof Error ? cause.message : String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
     }
     const disableNativeShellAndFilesystemTools = hasOAuthMcpAuth(workerMcpServers);
 
@@ -325,7 +375,7 @@ export class BackgroundAgentManager {
     if (invocationResult.isErr()) {
       observation?.end();
       this.cleanupPaths(this.mergeCleanupPaths([], sandboxContext));
-      await this.destroyOwnedExecutionEnv(taskId);
+      await this.destroyOwnedExecutionEnv(taskId, voiceObservation !== undefined);
       return err(invocationResult.error);
     }
 
@@ -353,7 +403,7 @@ export class BackgroundAgentManager {
     if (createResult.isErr()) {
       observation?.end();
       this.cleanupPaths(cleanupPaths);
-      await this.destroyOwnedExecutionEnv(taskId);
+      await this.destroyOwnedExecutionEnv(taskId, voiceObservation !== undefined);
       return err(new BackgroundAgentError(createResult.error.message, createResult.error));
     }
 
@@ -369,7 +419,7 @@ export class BackgroundAgentManager {
         observation?.end();
         this.deps.repository.updateStatus(taskId, 'failed', undefined, uploadResult.error.message);
         this.cleanupPaths(cleanupPaths);
-        await this.destroyOwnedExecutionEnv(taskId);
+        await this.destroyOwnedExecutionEnv(taskId, voiceObservation !== undefined);
         return err(new BackgroundAgentError(uploadResult.error.message, uploadResult.error));
       }
     }
@@ -388,6 +438,8 @@ export class BackgroundAgentManager {
       threadId: input.threadId,
       personaId: input.workerPersonaId,
       bridgeSecret,
+      ...(childTraceparent ? { traceparent: childTraceparent } : {}),
+      ...(voiceObservation ? { voiceObservation } : {}),
     });
 
     const startResult = processInstance.start();
@@ -396,7 +448,7 @@ export class BackgroundAgentManager {
       observation?.end();
       this.deps.repository.updateStatus(taskId, 'failed', undefined, startResult.error.message);
       this.cleanupPaths(cleanupPaths);
-      await this.destroyOwnedExecutionEnv(taskId);
+      await this.destroyOwnedExecutionEnv(taskId, voiceObservation !== undefined);
       return err(startResult.error);
     }
 
@@ -411,15 +463,24 @@ export class BackgroundAgentManager {
       provider: providerEntry.provider,
       resultFiles: invocation.resultFiles,
       observation,
+      ...(voiceObservation ? { voiceObservation } : {}),
     });
 
+    const isVoiceCompletion = voiceObservation !== undefined;
     void completion
       .then((result) => this.handleCompletion(taskId, result))
       .catch((cause) => {
-        this.deps.logger.error(
-          { err: cause, taskId },
-          'background-agent: completion handling failed',
-        );
+        if (isVoiceCompletion) {
+          createVoiceSafeLogger(this.deps.logger).error(
+            { taskId, voice: true, errorCategory: 'unknown' },
+            'background-agent: voice completion handling failed',
+          );
+        } else {
+          this.deps.logger.error(
+            { err: cause, taskId },
+            'background-agent: completion handling failed',
+          );
+        }
       });
 
     return ok(taskId);
@@ -486,8 +547,12 @@ export class BackgroundAgentManager {
       undefined,
       'Cancelled by user',
     );
+    // A persisted task may outlive its in-memory process after a restart.
+    // Treat that missing classification as unknown so cleanup failures stay
+    // content-free instead of falling back to the ordinary raw-error log.
+    const privacy = this.classifyTaskPrivacy(taskResult.value, managedProcess?.voiceObservation);
     this.cleanupTask(taskId);
-    await this.destroyOwnedExecutionEnv(taskId);
+    await this.destroyOwnedExecutionEnv(taskId, privacy);
 
     return updateResult.isOk()
       ? ok(true)
@@ -497,7 +562,7 @@ export class BackgroundAgentManager {
   async recoverOrphanedTasks(): Promise<void> {
     const result = this.deps.repository.findActive();
     if (result.isErr()) {
-      this.deps.logger.error(
+      createVoiceSafeLogger(this.deps.logger).error(
         { err: result.error },
         'background-agent: failed to load active tasks',
       );
@@ -512,7 +577,7 @@ export class BackgroundAgentManager {
           undefined,
           'daemon restarted during execution',
         );
-        await this.destroyOwnedExecutionEnv(task.id);
+        await this.destroyOwnedExecutionEnv(task.id, this.classifyTaskPrivacy(task));
         continue;
       }
 
@@ -523,7 +588,7 @@ export class BackgroundAgentManager {
           undefined,
           'daemon restarted during execution',
         );
-        await this.destroyOwnedExecutionEnv(task.id);
+        await this.destroyOwnedExecutionEnv(task.id, this.classifyTaskPrivacy(task));
         continue;
       }
 
@@ -538,7 +603,7 @@ export class BackgroundAgentManager {
           undefined,
           'daemon restarted during execution (pid reused)',
         );
-        await this.destroyOwnedExecutionEnv(task.id);
+        await this.destroyOwnedExecutionEnv(task.id, this.classifyTaskPrivacy(task));
         continue;
       }
 
@@ -548,7 +613,7 @@ export class BackgroundAgentManager {
         undefined,
         'daemon restarted during execution (cannot reattach)',
       );
-      await this.destroyOwnedExecutionEnv(task.id);
+      await this.destroyOwnedExecutionEnv(task.id, this.classifyTaskPrivacy(task));
     }
   }
 
@@ -559,7 +624,10 @@ export class BackgroundAgentManager {
       process.observation?.end();
       this.deps.repository.updateStatus(taskId, 'cancelled', undefined, 'Daemon shutting down');
       this.cleanupTask(taskId);
-      await this.destroyOwnedExecutionEnv(taskId);
+      await this.destroyOwnedExecutionEnv(
+        taskId,
+        this.classifyTaskPrivacyById(taskId, process.voiceObservation),
+      );
     }
     this.processes.clear();
   }
@@ -579,6 +647,10 @@ export class BackgroundAgentManager {
       return;
     }
 
+    const task = currentTaskResult.value;
+    const managedProcess = this.processes.get(taskId);
+    const privacy = this.classifyTaskPrivacy(task, managedProcess?.voiceObservation);
+
     if (result.isErr()) {
       this.deps.repository.updateStatus(
         taskId,
@@ -586,12 +658,11 @@ export class BackgroundAgentManager {
         undefined,
         this.truncate(result.error.message),
       );
-      this.enqueueNotification(taskId);
-      const failedProcess = this.processes.get(taskId);
-      failedProcess?.observation?.update({ statusMessage: result.error.message });
-      failedProcess?.observation?.end();
+      this.enqueueNotification(taskId, privacy);
+      managedProcess?.observation?.update({ statusMessage: result.error.message });
+      managedProcess?.observation?.end();
       this.cleanupTask(taskId);
-      await this.destroyOwnedExecutionEnv(taskId);
+      await this.destroyOwnedExecutionEnv(taskId, privacy);
       return;
     }
 
@@ -601,7 +672,6 @@ export class BackgroundAgentManager {
       exitCode: number | null;
       timedOut: boolean;
     };
-    const managedProcess = this.processes.get(taskId);
     let parsedResult: ProviderResult;
     try {
       parsedResult = managedProcess
@@ -632,11 +702,11 @@ export class BackgroundAgentManager {
         this.truncate(debugOutput),
         this.truncate(message),
       );
-      this.enqueueNotification(taskId);
+      this.enqueueNotification(taskId, privacy);
       managedProcess?.observation?.update({ statusMessage: message });
       managedProcess?.observation?.end();
       this.cleanupTask(taskId);
-      await this.destroyOwnedExecutionEnv(taskId);
+      await this.destroyOwnedExecutionEnv(taskId, privacy);
       return;
     }
 
@@ -690,18 +760,22 @@ export class BackgroundAgentManager {
     });
     managedProcess?.observation?.end();
 
-    this.enqueueNotification(taskId);
+    this.enqueueNotification(taskId, privacy);
     this.cleanupTask(taskId);
-    await this.destroyOwnedExecutionEnv(taskId);
+    await this.destroyOwnedExecutionEnv(taskId, privacy);
   }
 
-  private enqueueNotification(taskId: string): void {
+  private enqueueNotification(taskId: string, privacy?: VoicePrivacyClassification): void {
     const taskResult = this.deps.repository.findById(taskId);
     if (taskResult.isErr() || !taskResult.value) {
       return;
     }
 
     const task = taskResult.value;
+    // A completion can arrive after the process map was cleared during a
+    // restart. Derive privacy from persisted task/thread/channel state.
+    const diagnosticPrivacy = privacy ?? this.classifyTaskPrivacy(task);
+    const voiceCompletion = diagnosticPrivacy !== 'nonvoice';
     const title = this.notificationTitle(task.status);
     const preview = task.prompt.length > 80 ? `${task.prompt.slice(0, 77)}...` : task.prompt;
     const summary = this.notificationSummary(task).slice(0, 500);
@@ -728,10 +802,17 @@ export class BackgroundAgentManager {
       content,
     });
     if (notifyResult.isErr()) {
-      this.deps.logger.error(
-        { taskId: task.id, err: notifyResult.error },
-        'background-agent: failed to enqueue completion notification',
-      );
+      if (voiceCompletion) {
+        createVoiceSafeLogger(this.deps.logger).error(
+          { taskId: task.id, voice: true, errorCategory: 'unknown' },
+          'background-agent: failed to enqueue voice completion notification',
+        );
+      } else {
+        this.deps.logger.error(
+          { taskId: task.id, err: notifyResult.error },
+          'background-agent: failed to enqueue completion notification',
+        );
+      }
     }
 
     const messageResult = this.deps.queueManager.enqueue(task.threadId, 'message', {
@@ -740,10 +821,17 @@ export class BackgroundAgentManager {
       providerName: task.providerName,
     });
     if (messageResult.isErr()) {
-      this.deps.logger.error(
-        { taskId: task.id, err: messageResult.error },
-        'background-agent: failed to enqueue completion message',
-      );
+      if (voiceCompletion) {
+        createVoiceSafeLogger(this.deps.logger).error(
+          { taskId: task.id, voice: true, errorCategory: 'unknown' },
+          'background-agent: failed to enqueue voice completion message',
+        );
+      } else {
+        this.deps.logger.error(
+          { taskId: task.id, err: messageResult.error },
+          'background-agent: failed to enqueue completion message',
+        );
+      }
     }
   }
 
@@ -910,6 +998,45 @@ export class BackgroundAgentManager {
     return Object.keys(env).length > 0 ? env : undefined;
   }
 
+  /** Resolve completion privacy from persisted task → thread → channel state. */
+  private classifyTaskPrivacy(
+    task: Pick<BackgroundTask, 'threadId' | 'channelId'>,
+    fallbackVoiceObservation?: VoiceObservationContext,
+  ): VoicePrivacyClassification {
+    const threadRepository = this.deps.threadRepository;
+    const channelRepository = this.deps.channelRepository;
+    if (!threadRepository || !channelRepository) {
+      return fallbackVoiceObservation ? 'voice' : 'unknown';
+    }
+
+    try {
+      const threadResult = threadRepository.findById(task.threadId);
+      if (threadResult.isErr() || threadResult.value === null) return 'unknown';
+      if (threadResult.value.channel_id !== task.channelId) return 'unknown';
+      const channelResult = channelRepository.findById(threadResult.value.channel_id);
+      if (channelResult.isErr() || channelResult.value === null) return 'unknown';
+      return classifyVoiceChannelType(channelResult.value.type);
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  private classifyTaskPrivacyById(
+    taskId: string,
+    fallbackVoiceObservation?: VoiceObservationContext,
+  ): VoicePrivacyClassification {
+    try {
+      const taskResult = this.deps.repository.findById(taskId);
+      return taskResult.isOk() && taskResult.value
+        ? this.classifyTaskPrivacy(taskResult.value, fallbackVoiceObservation)
+        : fallbackVoiceObservation
+          ? 'voice'
+          : 'unknown';
+    } catch {
+      return 'unknown';
+    }
+  }
+
   private mergeCleanupPaths(
     invocationCleanupPaths: string[],
     sandboxContext: SandboxContext | null,
@@ -919,7 +1046,10 @@ export class BackgroundAgentManager {
       : invocationCleanupPaths;
   }
 
-  private async destroyOwnedExecutionEnv(taskId: string): Promise<void> {
+  private async destroyOwnedExecutionEnv(
+    taskId: string,
+    privacy: VoicePrivacyClassification | boolean = 'unknown',
+  ): Promise<void> {
     if (!this.deps.executionEnvManager) {
       return;
     }
@@ -927,8 +1057,16 @@ export class BackgroundAgentManager {
     try {
       await this.deps.executionEnvManager.destroyOwnedByTask(taskId);
     } catch (cause) {
-      this.deps.logger.warn(
-        { err: cause, taskId },
+      const classification =
+        typeof privacy === 'boolean' ? (privacy ? 'voice' : 'nonvoice') : privacy;
+      const logger =
+        classification === 'nonvoice' ? this.deps.logger : createVoiceSafeLogger(this.deps.logger);
+      logger.warn(
+        classification === 'nonvoice'
+          ? { err: cause, taskId }
+          : classification === 'voice'
+            ? { taskId, voice: true, errorCategory: 'unknown' }
+            : { voice: true, errorCategory: 'unknown' },
         'background-agent: failed to destroy owned execution environment',
       );
     }

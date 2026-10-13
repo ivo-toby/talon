@@ -12,11 +12,21 @@ import { ok, err, type Result } from 'neverthrow';
 import { QueueError } from '../core/errors/index.js';
 import type { QueueRepository } from '../core/database/repositories/queue-repository.js';
 import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
+import type { ChannelRepository } from '../core/database/repositories/channel-repository.js';
 import { calculateBackoff } from './retry-strategy.js';
 import { DeadLetterHandler } from './dead-letter.js';
-import { QueueProcessor, type VoiceQueueClaimer } from './queue-processor.js';
+import {
+  logQueueDiagnostic,
+  QueueProcessor,
+  type QueueDiagnosticResolver,
+  type VoiceQueueClaimer,
+} from './queue-processor.js';
 import { type QueueItem, QueueItemStatus } from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
+import {
+  classifyVoiceChannelType,
+  type VoicePrivacyClassification,
+} from '../observability/langfuse/voice-observation.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -49,6 +59,43 @@ export interface QueueStats {
 /** Polling interval for the processing loop in milliseconds. */
 const POLL_INTERVAL_MS = 500;
 
+/** Build the server-owned queue diagnostic resolver from persisted repositories. */
+export function createQueueDiagnosticResolver(
+  threadRepo: Pick<ThreadRepository, 'findById'>,
+  channelRepo: Pick<ChannelRepository, 'findById'>,
+): QueueDiagnosticResolver {
+  const resolveThread = (threadId: string): VoicePrivacyClassification => {
+    try {
+      const threadResult = threadRepo.findById(threadId);
+      if (threadResult.isErr() || threadResult.value === null) return 'unknown';
+      const channelResult = channelRepo.findById(threadResult.value.channel_id);
+      if (channelResult.isErr() || channelResult.value === null) return 'unknown';
+      return classifyVoiceChannelType(channelResult.value.type);
+    } catch {
+      return 'unknown';
+    }
+  };
+
+  return {
+    resolveThread,
+    resolveRow: (row) => resolveThread(row.thread_id),
+  };
+}
+
+function classifyQueueThread(
+  resolver: QueueDiagnosticResolver,
+  threadId: string,
+): VoicePrivacyClassification {
+  try {
+    const classification = resolver.resolveThread(threadId);
+    return classification === 'voice' || classification === 'nonvoice' || classification === 'unknown'
+      ? classification
+      : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
 /**
  * Orchestrates enqueueing, background processing, and queue statistics.
  *
@@ -68,8 +115,9 @@ export class QueueManager {
     private readonly config: QueueConfig,
     private readonly logger: pino.Logger,
     voiceClaimer?: VoiceQueueClaimer,
+    private readonly diagnosticResolver?: QueueDiagnosticResolver,
   ) {
-    this.deadLetterHandler = new DeadLetterHandler(queueRepo, logger);
+    this.deadLetterHandler = new DeadLetterHandler(queueRepo, logger, diagnosticResolver);
     this.processor = new QueueProcessor(
       queueRepo,
       calculateBackoff,
@@ -78,6 +126,7 @@ export class QueueManager {
       config.backoffBaseMs,
       config.backoffMaxMs,
       voiceClaimer,
+      diagnosticResolver,
     );
   }
 
@@ -132,7 +181,16 @@ export class QueueManager {
     }
 
     const item = rowToQueueItem(result.value);
-    this.logger.info({ itemId: item.id, threadId, type }, 'queue item enqueued');
+    const privacy = this.diagnosticResolver
+      ? classifyQueueThread(this.diagnosticResolver, threadId)
+      : 'unknown';
+    logQueueDiagnostic(
+      this.logger,
+      privacy,
+      'info',
+      { itemId: item.id, threadId, type },
+      'queue item enqueued',
+    );
     return ok(item);
   }
 
@@ -177,7 +235,7 @@ export class QueueManager {
   stats(): QueueStats {
     const result = this.queueRepo.countByStatus();
     if (result.isErr()) {
-      this.logger.error({ err: result.error }, 'failed to read queue stats');
+      logQueueDiagnostic(this.logger, 'unknown', 'error', {}, 'failed to read queue stats');
       return { pending: 0, claimed: 0, processing: 0, deadLetter: 0 };
     }
 

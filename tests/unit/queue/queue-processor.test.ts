@@ -419,4 +419,41 @@ describe('QueueProcessor', () => {
       expect(row.status).toBe('failed');
     });
   });
+
+  it('keeps voice queue transitions intact when diagnostic logging throws', async () => {
+    const throwingLogger = {
+      info: () => { throw new Error('info logger failed'); },
+      warn: () => { throw new Error('warn logger failed'); },
+      error: () => { throw new Error('error logger failed'); },
+      debug: () => { throw new Error('debug logger failed'); },
+      trace: () => { throw new Error('trace logger failed'); },
+      fatal: () => { throw new Error('fatal logger failed'); },
+      child: vi.fn(),
+    } as any;
+    const resolver = {
+      resolveThread: () => 'voice' as const,
+      resolveRow: () => 'voice' as const,
+    };
+    const dlHandler = new DeadLetterHandler(repo, throwingLogger, resolver);
+    const proc = new QueueProcessor(
+      repo,
+      calculateBackoff,
+      dlHandler,
+      throwingLogger,
+      1,
+      1,
+      undefined,
+      resolver,
+    );
+    const itemId = enqueueItem(repo, threadId, { max_attempts: 1 });
+
+    await expect(proc.processNext(async () => err(new Error('VOICE_QUEUE_FAILURE_SENTINEL'))))
+      .resolves.toMatchObject({ id: itemId });
+    const row = db.prepare('SELECT status, error FROM queue_items WHERE id = ?').get(itemId) as {
+      status: string;
+      error: string;
+    };
+    expect(row.status).toBe('dead_letter');
+    expect(row.error).toBe('VOICE_QUEUE_FAILURE_SENTINEL');
+  });
 });
