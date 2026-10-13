@@ -27,6 +27,11 @@ import type {
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { SubAgentsConfig } from '../core/config/config-types.js';
 import { runSubAgentModelChain } from './subagent-model-chain.js';
+import {
+  createVoiceSafeLogger,
+  observeVoiceSafely,
+  type VoiceObservationContext,
+} from '../observability/langfuse/voice-observation.js';
 
 // ---------------------------------------------------------------------------
 // Invoke context
@@ -42,8 +47,9 @@ export interface SubAgentInvokeContext {
   personaSubagents: string[];
   personaCapabilities: ResolvedCapabilities;
   traceparent?: string;
+  /** Server-owned context; never populated from a bridge request. */
+  voiceObservation?: VoiceObservationContext;
 }
-
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -105,13 +111,21 @@ export class SubAgentRunner {
         return value;
       };
 
-      const result = ctx.traceparent
-        ? await this.observability.observeWithTraceparent(
-            ctx.traceparent,
-            observationInput,
-            observeFn,
-          )
-        : await this.observability.observe(observationInput, observeFn);
+      const result = ctx.voiceObservation
+        ? await observeVoiceSafely({
+            service: this.observability,
+            traceparent: ctx.traceparent,
+            input: observationInput,
+            context: ctx.voiceObservation,
+            callback: observeFn,
+          })
+        : ctx.traceparent
+          ? await this.observability.observeWithTraceparent(
+              ctx.traceparent,
+              observationInput,
+              observeFn,
+            )
+          : await this.observability.observe(observationInput, observeFn);
 
       return ok(result);
     } catch (error) {
@@ -157,17 +171,20 @@ export class SubAgentRunner {
 
     const systemPrompt = agent.promptContents.join('\n\n');
     const childLogger = createChildLogger(this.logger, {
-      tool: `subagent:${name}`,
+      tool: ctx.voiceObservation ? 'voice-subagent' : `subagent:${name}`,
       threadId: ctx.threadId,
       persona: ctx.personaId,
     });
+    const modelChainLogger = ctx.voiceObservation
+      ? createVoiceSafeLogger(childLogger)
+      : childLogger;
     const chainResult = await runSubAgentModelChain({
-      name,
+      name: ctx.voiceObservation ? 'voice-subagent' : name,
       agent,
       input,
       override: this.subagentOverrides[name],
       modelResolver: this.modelResolver,
-      logger: childLogger,
+      logger: modelChainLogger,
       createContext: ({ model, entry, abortSignal, providerOptions }) => ({
         threadId: ctx.threadId,
         personaId: ctx.personaId,
@@ -175,8 +192,12 @@ export class SubAgentRunner {
         model,
         maxOutputTokens: entry.maxTokens,
         rootPaths: agent.manifest.rootPaths,
-        services: { ...this.services, logger: childLogger },
-        telemetry: { isEnabled: !(this.observability instanceof NoopObservabilityService) },
+        services: { ...this.services, logger: modelChainLogger },
+        telemetry: {
+          isEnabled:
+            ctx.voiceObservation === undefined &&
+            !(this.observability instanceof NoopObservabilityService),
+        },
         abortSignal,
         providerOptions,
       }),

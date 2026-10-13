@@ -12,6 +12,7 @@ import type { ToolExecutionContext } from './channel-send.js';
 import type { SubAgentRunner } from '../../subagents/subagent-runner.js';
 import type { PersonaLoader } from '../../personas/persona-loader.js';
 import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
+import { isVoiceObservationContext } from '../../observability/langfuse/voice-observation.js';
 
 /** Arguments accepted by the subagent.invoke tool. */
 export interface SubAgentInvokeArgs {
@@ -56,6 +57,9 @@ export class SubAgentInvokeHandler {
    */
   async execute(args: SubAgentInvokeArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
+    const voiceObservation = isVoiceObservationContext(context.voiceObservation)
+      ? context.voiceObservation
+      : undefined;
 
     // Validate required args
     if (!args.name || typeof args.name !== 'string' || args.name.trim() === '') {
@@ -98,6 +102,7 @@ export class SubAgentInvokeHandler {
       personaSubagents: loadedPersona.config.subagents ?? [],
       personaCapabilities: loadedPersona.resolvedCapabilities,
       traceparent: context.traceparent,
+      voiceObservation,
     });
 
     if (result.isErr()) {
@@ -105,7 +110,7 @@ export class SubAgentInvokeHandler {
         requestId,
         tool: 'subagent.invoke',
         status: 'error',
-        error: result.error.message,
+        error: voiceObservation ? 'subagent.invoke failed' : result.error.message,
       };
     }
 

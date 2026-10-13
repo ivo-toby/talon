@@ -6,6 +6,7 @@ import { z } from 'zod';
 
 import type { DaemonContext } from './daemon-context.js';
 import type { AssembledContext } from './context-assembler.js';
+import type { ContextRollerDiagnostics } from './context-roller.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import {
   filterAllowedMcpTools,
@@ -30,7 +31,19 @@ import type {
   CanonicalMcpSdkServer,
   CanonicalMcpServer,
 } from '../providers/provider-types.js';
-import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
+import type {
+  ObservationHandle,
+  ObservationInput,
+  StartedObservationHandle,
+} from '../observability/langfuse/observability-types.js';
+import {
+  classifyVoiceChannelType,
+  createVoiceObservationContext,
+  observeVoiceSafely,
+  startVoiceObservationSafely,
+  type VoiceObservationContext,
+  type VoicePrivacyClassification,
+} from '../observability/langfuse/voice-observation.js';
 import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-tools-bridge-auth.js';
 import type { VoiceBackendRequest } from '../voice/voice-types.js';
 import type { VoiceExecutionGate, VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
@@ -162,6 +175,14 @@ export class AgentRunner {
     const reasoningEffort = loadedPersona.config.reasoningEffort;
 
     const threadResult = this.ctx.repos.thread.findById(item.threadId);
+    const voicePrivacyClassification: VoicePrivacyClassification = isVoiceTask
+      ? 'voice'
+      : threadResult.isErr() || threadResult.value === null
+        ? 'unknown'
+        : this.isTrustedVoiceThread(threadResult.value);
+    // Unknown persisted channel state fails closed for telemetry while the
+    // normal execution path continues with its established authority.
+    const redactVoiceTelemetry = voicePrivacyClassification !== 'nonvoice';
     const providerAffinityResetAt =
       threadResult.isOk() && threadResult.value
         ? getProviderAffinityResetAt(threadResult.value.metadata)
@@ -235,7 +256,12 @@ export class AgentRunner {
     // fresh provider session and reconstructed history. Restoring a session
     // would attach the wrong persona or replay the prior live call.
     let resolvedSessionId: string | undefined;
-    if (strategy.supportsSessionResumption && !isA2ATask && !isScheduleTask && !isVoiceTask) {
+    if (
+      strategy.supportsSessionResumption &&
+      !isA2ATask &&
+      !isScheduleTask &&
+      !isVoiceTask
+    ) {
       const sessionLookupOptions = {
         excludeCollaboration: true,
         modelName: model,
@@ -287,7 +313,9 @@ export class AgentRunner {
         if (dbSessionResult.isOk() && dbSessionResult.value) {
           resolvedSessionId = dbSessionResult.value;
           this.ctx.logger.info(
-            { threadId: item.threadId, sessionId: resolvedSessionId },
+            redactVoiceTelemetry
+              ? { threadId: item.threadId, voice: true, event: 'session_restored' }
+              : { threadId: item.threadId, sessionId: resolvedSessionId },
             'agent-runner: restored session from DB after restart',
           );
         }
@@ -371,6 +399,26 @@ export class AgentRunner {
       requireApproval: [],
     };
     const voiceToolAccess = isVoiceTask ? filterVoiceMcpTools(resolvedCapabilities) : undefined;
+    const voiceObservation = redactVoiceTelemetry
+      ? createVoiceObservationContext({
+          ...(isVoiceTask
+            ? {
+                callId: voiceRequest.sessionId,
+                delegationId: voiceRequest.delegationId,
+                queueItemId: item.id,
+              }
+            : {}),
+          runId,
+          threadId: item.threadId,
+          personaId,
+          provider: providerEntry.provider.name,
+          model,
+        })
+      : undefined;
+    const rotationDiagnostics: ContextRollerDiagnostics = {
+      privacy: voicePrivacyClassification,
+      ...(voiceObservation ? { voiceObservation } : {}),
+    };
     let runFinalized = false;
     const bridgeSecret = generateBridgeSecret();
     this.ctx.hostToolsBridge.registerRunAuthentication?.({
@@ -385,10 +433,11 @@ export class AgentRunner {
             ),
           }
         : {}),
+      ...(voiceObservation ? { voiceObservation } : {}),
     });
 
     const runInput = {
-      content: isVoiceTask ? '[voice context redacted]' : content,
+      content: voiceObservation ? '[voice context redacted]' : content,
       itemType: item.type,
       persona: personaName,
       provider: providerEntry.provider.name,
@@ -402,8 +451,23 @@ export class AgentRunner {
       provider: providerEntry.provider.name,
     };
 
+    const observeRun = async <T>(
+      input: ObservationInput,
+      callback: (observation: ObservationHandle) => Promise<T> | T,
+    ): Promise<T> => {
+      if (voiceObservation) {
+        return await observeVoiceSafely({
+          service: this.ctx.observability,
+          input,
+          context: voiceObservation,
+          callback,
+        });
+      }
+      return await this.ctx.observability.observe(input, callback);
+    };
+
     try {
-      await this.ctx.observability.observe(
+      await observeRun(
         {
           type: 'agent',
           name: 'foreground-run',
@@ -498,7 +562,9 @@ export class AgentRunner {
             ];
 
             this.ctx.logger.info(
-              { runId, personaId, allowedMcpTools },
+              voiceObservation
+                ? { runId, personaId, voice: true, toolCount: allowedMcpTools.length }
+                : { runId, personaId, allowedMcpTools },
               'agent-sdk: persona tool restrictions applied',
             );
 
@@ -534,11 +600,21 @@ export class AgentRunner {
             // — the human should not see activity from a delegated persona.
             if (!isVoiceTask && !isA2ATask && connector?.sendTyping && externalId) {
               connector.sendTyping(externalId).catch((e: unknown) => {
-                this.ctx.logger.debug({ err: e }, 'sendTyping failed');
+                this.ctx.logger.debug(
+                  voiceObservation
+                    ? { runId, threadId: item.threadId, voice: true, errorCategory: 'unknown' }
+                    : { err: e },
+                  'sendTyping failed',
+                );
               });
               typingInterval = setInterval(() => {
                 connector.sendTyping!(externalId).catch((e: unknown) => {
-                  this.ctx.logger.debug({ err: e }, 'sendTyping failed');
+                  this.ctx.logger.debug(
+                    voiceObservation
+                      ? { runId, threadId: item.threadId, voice: true, errorCategory: 'unknown' }
+                      : { err: e },
+                    'sendTyping failed',
+                  );
                 });
               }, 4000);
             }
@@ -576,7 +652,7 @@ export class AgentRunner {
               : (contextManagement?.recentMessageCount ?? DEFAULT_FRESH_SESSION_RECENT_MESSAGES);
             const getPreviousContext = async (): Promise<AssembledContext> => {
               if (!previousContextResolved) {
-                previousContext = await this.ctx.observability.observe(
+                previousContext = await observeRun(
                   {
                     type: 'retriever',
                     name: 'previous-context',
@@ -636,7 +712,9 @@ export class AgentRunner {
               });
               if (waitingResult.isErr()) {
                 this.ctx.logger.debug(
-                  { err: waitingResult.error },
+                  voiceObservation
+                    ? { runId, threadId: item.threadId, voice: true, errorCategory: 'unknown' }
+                    : { err: waitingResult.error },
                   'agent-runner: waiting notification failed',
                 );
               }
@@ -678,13 +756,15 @@ export class AgentRunner {
 
               const systemPrompt = systemPromptParts.filter(Boolean).join('\n\n');
 
-              return await this.ctx.observability.observe(
+              return await observeRun(
                 {
                   type: 'generation',
                   name: 'provider-attempt',
                   input: {
-                    prompt: isVoiceTask ? '[voice context redacted]' : content,
-                    systemPrompt: isVoiceTask ? '[voice system prompt redacted]' : systemPrompt,
+                    prompt: voiceObservation ? '[voice context redacted]' : content,
+                    systemPrompt: voiceObservation
+                      ? '[voice system prompt redacted]'
+                      : systemPrompt,
                     resumeSessionId: resumeSessionId ?? null,
                   },
                   metadata: {
@@ -696,6 +776,12 @@ export class AgentRunner {
                   model,
                 },
                 async (generationObservation) => {
+                  if (voiceObservation) {
+                    this.ctx.hostToolsBridge.setRunAuthenticationTraceparent?.(
+                      runId,
+                      generationObservation.getTraceparent(),
+                    );
+                  }
                   const sdkSkillServer: Record<string, CanonicalMcpSdkServer> = {};
                   if (
                     providerEntry.provider.skillLoaderTransport === 'in-process' &&
@@ -723,7 +809,12 @@ export class AgentRunner {
                               };
                             }
 
-                            this.ctx.logger.info({ runId, skill: args.name }, 'skill.loaded');
+                            this.ctx.logger.info(
+                              voiceObservation
+                                ? { runId, voice: true, skill: 'voice-skill' }
+                                : { runId, skill: args.name },
+                              'skill.loaded',
+                            );
                             return {
                               content: [{ type: 'text' as const, text: content }],
                             };
@@ -791,14 +882,21 @@ export class AgentRunner {
                   }
 
                   this.ctx.logger.info(
-                    {
-                      runId,
-                      personaId,
-                      model,
-                      threadId: item.threadId,
-                      provider: providerEntry.provider.name,
-                      resumeSession: resumeSessionId ?? null,
-                    },
+                    voiceObservation
+                      ? {
+                          runId,
+                          personaId,
+                          threadId: item.threadId,
+                          voice: true,
+                        }
+                      : {
+                          runId,
+                          personaId,
+                          model,
+                          threadId: item.threadId,
+                          provider: providerEntry.provider.name,
+                          resumeSession: resumeSessionId ?? null,
+                        },
                     'agent-runner: starting query',
                   );
 
@@ -923,7 +1021,7 @@ export class AgentRunner {
 
                           if (event.result.isError) {
                             this.ctx.logger.warn(
-                              isVoiceTask
+                              voiceObservation
                                 ? { runId, result: '[voice provider error redacted]' }
                                 : { runId, result: event.result.output },
                               'agent-runner: run ended with provider error',
@@ -987,7 +1085,9 @@ export class AgentRunner {
                               });
                               if (toolCallResult.isErr()) {
                                 this.ctx.logger.warn(
-                                  { runId, error: toolCallResult.error.message },
+                                  voiceObservation
+                                    ? { runId, voice: true, errorCategory: 'unknown' }
+                                    : { runId, error: toolCallResult.error.message },
                                   'agent-runner: tool call message send failed, continuing',
                                 );
                               }
@@ -1006,14 +1106,17 @@ export class AgentRunner {
                             pendingNoIdToolObservations,
                             event,
                             isVoiceTask,
+                            voiceObservation,
                           );
                           this.ctx.logger.debug(
-                            {
-                              runId,
-                              messageType: event.messageType,
-                              tool: event.tool,
-                              subtype: event.subtype,
-                            },
+                            voiceObservation
+                              ? { runId, voice: true, messageType: 'tool_event' }
+                              : {
+                                  runId,
+                                  messageType: event.messageType,
+                                  tool: event.tool,
+                                  subtype: event.subtype,
+                                },
                             'agent-sdk: streaming event',
                           );
                         } else {
@@ -1089,7 +1192,7 @@ export class AgentRunner {
                   await Promise.allSettled(pendingProviderToolTasks);
 
                   generationObservation.update({
-                    output: isVoiceTask ? '[voice output redacted]' : fullOutputText,
+                    output: voiceObservation ? '[voice output redacted]' : fullOutputText,
                     metadata: {
                       resultSessionId: resultSessionId ?? null,
                       resumeSessionId: resumeSessionId ?? null,
@@ -1140,14 +1243,20 @@ export class AgentRunner {
               ranOnResumedCodexSession =
                 existingSessionId !== undefined && providerEntry.type === 'codex-cli';
             } catch (cause) {
-              if (!isVoiceTask && strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
+              if (
+                !isVoiceTask &&
+                strategy.type === 'sdk' &&
+                this.shouldRetryFreshSession(cause)
+              ) {
                 this.ctx.sessionTracker.rotateSession(item.threadId);
                 this.ctx.logger.warn(
-                  {
-                    threadId: item.threadId,
-                    sessionId: cause.resumeSessionId,
-                    error: cause.message,
-                  },
+                  voiceObservation
+                    ? { runId, threadId: item.threadId, voice: true, errorCategory: 'unknown' }
+                    : {
+                        threadId: item.threadId,
+                        sessionId: cause.resumeSessionId,
+                        error: cause.message,
+                      },
                   'agent-sdk: resumed session failed before any events, retrying fresh session',
                 );
                 ({ outputText, fullOutputText, resultSessionId, usage, lastStepUsage } =
@@ -1160,7 +1269,12 @@ export class AgentRunner {
             // Store session ID for future conversation resumption (memory + DB).
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
-            if (resultSessionId && !isA2ATask && !isScheduleTask && !isVoiceTask) {
+            if (
+              resultSessionId &&
+              !isA2ATask &&
+              !isScheduleTask &&
+              !isVoiceTask
+            ) {
               if (reasoningEffort !== undefined) {
                 this.ctx.sessionTracker.setSessionId(
                   item.threadId,
@@ -1184,15 +1298,25 @@ export class AgentRunner {
             if (typingInterval) clearInterval(typingInterval);
 
             this.ctx.logger.info(
-              {
-                runId,
-                inputTokens: usage.inputTokens,
-                outputTokens: usage.outputTokens,
-                cacheReadTokens: usage.cacheReadTokens ?? 0,
-                cacheWriteTokens: usage.cacheWriteTokens ?? 0,
-                totalCostUsd: usage.totalCostUsd ?? 0,
-                sessionId: resultSessionId,
-              },
+              voiceObservation
+                ? {
+                    runId,
+                    voice: true,
+                    inputTokens: usage.inputTokens,
+                    outputTokens: usage.outputTokens,
+                    cacheReadTokens: usage.cacheReadTokens ?? 0,
+                    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+                    totalCostUsd: usage.totalCostUsd ?? 0,
+                  }
+                : {
+                    runId,
+                    inputTokens: usage.inputTokens,
+                    outputTokens: usage.outputTokens,
+                    cacheReadTokens: usage.cacheReadTokens ?? 0,
+                    cacheWriteTokens: usage.cacheWriteTokens ?? 0,
+                    totalCostUsd: usage.totalCostUsd ?? 0,
+                    sessionId: resultSessionId,
+                  },
               'agent-runner: query completed',
             );
 
@@ -1206,7 +1330,9 @@ export class AgentRunner {
             });
             if (tokenResult.isErr()) {
               this.ctx.logger.error(
-                { runId, err: tokenResult.error },
+                voiceObservation
+                  ? { runId, voice: true, errorCategory: 'unknown' }
+                  : { runId, err: tokenResult.error },
                 'agent-runner: failed to persist token usage',
               );
             }
@@ -1284,8 +1410,7 @@ export class AgentRunner {
             if (
               this.ctx.contextRoller &&
               enabledContextManagement &&
-              !isVoiceTask &&
-              !isScheduleTask
+              !isVoiceTask && !isScheduleTask
             ) {
               // Gate rotation on per-step usage when the provider reports
               // it; cumulative `usage` across a multi-tool agent loop can
@@ -1316,7 +1441,7 @@ export class AgentRunner {
                   {
                     threadId: item.threadId,
                     metric: enabledContextManagement.triggerMetric,
-                    provider: providerEntry.provider.name,
+                    provider: voiceObservation ? 'voice-provider' : providerEntry.provider.name,
                   },
                   'agent-runner: configured trigger metric not available from provider, skipping context rotation',
                 );
@@ -1348,6 +1473,7 @@ export class AgentRunner {
                           threadResult.isOk() && threadResult.value
                             ? threadResult.value.channel_id
                             : undefined,
+                          rotationDiagnostics,
                         )
                       : await this.ctx.contextRoller.checkAndRotate(
                           item.threadId,
@@ -1355,6 +1481,7 @@ export class AgentRunner {
                           contextUsagePayload,
                           enabledContextManagement.thresholdRatio,
                           enabledContextManagement.summarizer,
+                          rotationDiagnostics,
                         );
 
                     // Some providers need a fresh turn after context rotation
@@ -1393,12 +1520,16 @@ export class AgentRunner {
                       );
                       if (enqueueResult.isOk()) {
                         this.ctx.logger.info(
-                          { threadId: item.threadId, provider: providerEntry.provider.name },
+                          voiceObservation
+                            ? { threadId: item.threadId, voice: true }
+                            : { threadId: item.threadId, provider: providerEntry.provider.name },
                           'agent-runner: auto-enqueued continuation after context rotation for stateless provider',
                         );
                       } else {
                         this.ctx.logger.warn(
-                          { threadId: item.threadId, err: enqueueResult.error.message },
+                          voiceObservation
+                            ? { threadId: item.threadId, voice: true, errorCategory: 'unknown' }
+                            : { threadId: item.threadId, err: enqueueResult.error.message },
                           'agent-runner: failed to auto-enqueue continuation after context rotation',
                         );
                       }
@@ -1406,7 +1537,9 @@ export class AgentRunner {
                   }
                 } catch (e: unknown) {
                   this.ctx.logger.error(
-                    { threadId: item.threadId, err: e },
+                    voiceObservation
+                      ? { threadId: item.threadId, voice: true, errorCategory: 'unknown' }
+                      : { threadId: item.threadId, err: e },
                     'agent-runner: context rotation failed',
                   );
                 }
@@ -1415,13 +1548,13 @@ export class AgentRunner {
 
             runObservation.update({
               output: {
-                text: isVoiceTask ? '[voice output redacted]' : fullOutputText,
+                text: voiceObservation ? '[voice output redacted]' : fullOutputText,
               },
               metadata: {
                 resultSessionId: resultSessionId ?? null,
               },
               trace: {
-                output: isVoiceTask ? '[voice output redacted]' : fullOutputText,
+                output: voiceObservation ? '[voice output redacted]' : fullOutputText,
               },
             });
 
@@ -1438,7 +1571,7 @@ export class AgentRunner {
                 : voiceSink.failure(voiceRequest.delegationId, 'VOICE_EXECUTION_FAILED');
               if (voiceResult.isErr()) {
                 this.ctx.logger.warn(
-                  { runId, delegationId: voiceRequest.delegationId, err: voiceResult.error },
+                  { runId, voice: true, errorCategory: 'unknown' },
                   'agent-runner: failed to persist voice failure state',
                 );
               }
@@ -1516,6 +1649,7 @@ export class AgentRunner {
       serverName?: string;
     },
     redactContent: boolean,
+    voiceObservation?: VoiceObservationContext,
   ): void {
     if (this.shouldSkipProviderToolObservation(event)) {
       if (event.toolUseId) {
@@ -1532,18 +1666,36 @@ export class AgentRunner {
     }
 
     if (this.isProviderToolStartEvent(event.messageType) && event.toolUseId) {
-      const observation = this.ctx.observability.startWithTraceparent(traceparent, {
-        type: 'tool',
-        name: this.getProviderToolObservationName(event),
-        input: redactContent ? '[voice tool input redacted]' : (event.input ?? {}),
-        metadata: {
-          ...metadata,
-          messageType: event.messageType,
-          toolUseId: event.toolUseId,
-          subtype: event.subtype ?? null,
-          serverName: event.serverName ?? null,
-        },
-      });
+      const observation = voiceObservation
+        ? startVoiceObservationSafely(
+            this.ctx.observability,
+            traceparent,
+            {
+              type: 'tool',
+              name: this.getProviderToolObservationName(event),
+              input: event.input ?? {},
+              metadata: {
+                ...metadata,
+                messageType: event.messageType,
+                toolUseId: event.toolUseId,
+                subtype: event.subtype ?? null,
+                serverName: event.serverName ?? null,
+              },
+            },
+            voiceObservation,
+          )
+        : this.ctx.observability.startWithTraceparent(traceparent, {
+            type: 'tool',
+            name: this.getProviderToolObservationName(event),
+            input: redactContent ? '[voice tool input redacted]' : (event.input ?? {}),
+            metadata: {
+              ...metadata,
+              messageType: event.messageType,
+              toolUseId: event.toolUseId,
+              subtype: event.subtype ?? null,
+              serverName: event.serverName ?? null,
+            },
+          });
       activeProviderToolObservations.set(event.toolUseId, observation);
       return;
     }
@@ -1584,17 +1736,34 @@ export class AgentRunner {
 
     // Start events without toolUseId: track with FIFO queue so we can end them when the
     // matching result event arrives. This avoids the zero-latency observation problem.
-    const noIdObservation = this.ctx.observability.startWithTraceparent(traceparent, {
-      type: 'tool',
-      name: this.getProviderToolObservationName(event),
-      input: redactContent ? '[voice tool input redacted]' : (event.input ?? {}),
-      metadata: {
-        ...metadata,
-        messageType: event.messageType,
-        subtype: event.subtype ?? null,
-        serverName: event.serverName ?? null,
-      },
-    });
+    const noIdObservation = voiceObservation
+      ? startVoiceObservationSafely(
+          this.ctx.observability,
+          traceparent,
+          {
+            type: 'tool',
+            name: this.getProviderToolObservationName(event),
+            input: event.input ?? {},
+            metadata: {
+              ...metadata,
+              messageType: event.messageType,
+              subtype: event.subtype ?? null,
+              serverName: event.serverName ?? null,
+            },
+          },
+          voiceObservation,
+        )
+      : this.ctx.observability.startWithTraceparent(traceparent, {
+          type: 'tool',
+          name: this.getProviderToolObservationName(event),
+          input: redactContent ? '[voice tool input redacted]' : (event.input ?? {}),
+          metadata: {
+            ...metadata,
+            messageType: event.messageType,
+            subtype: event.subtype ?? null,
+            serverName: event.serverName ?? null,
+          },
+        });
     pendingNoIdToolObservations.push(noIdObservation);
   }
 
@@ -1648,6 +1817,24 @@ export class AgentRunner {
       messageType === 'mcp_tool_result' ||
       messageType.endsWith('_tool_result')
     );
+  }
+
+  /**
+   * Recover voice privacy for queued descendants after the parent run has
+   * been cleaned up or the daemon has restarted. This classification is
+   * deliberately separate from voice execution handling: the ordinary
+   * message still executes with its normal persona permissions and result,
+   * while its observations remain content-free.
+   */
+  private isTrustedVoiceThread(thread: { channel_id: string }): VoicePrivacyClassification {
+    const channelResult = this.ctx.repos.channel.findById(thread.channel_id);
+    // The persisted channel type is server-owned. A voice channel remains a
+    // privacy boundary even when a queued descendant has lost its original
+    // call/delegation correlation; the context then carries only run/thread
+    // identifiers and the absence is treated as an unknown correlation. A
+    // repository failure is also unknown, so telemetry must fail closed.
+    if (channelResult.isErr() || channelResult.value === null) return 'unknown';
+    return classifyVoiceChannelType(channelResult.value.type);
   }
 
   private getProviderToolObservationName(event: {
@@ -1753,7 +1940,7 @@ export class AgentRunner {
     const result = sink.failure(request.delegationId, errorCode);
     if (result.isErr()) {
       this.ctx.logger.warn(
-        { delegationId: request.delegationId, err: result.error },
+        { delegationId: request.delegationId, voice: true, errorCategory: 'unknown' },
         'agent-runner: failed to persist early voice failure state',
       );
     }

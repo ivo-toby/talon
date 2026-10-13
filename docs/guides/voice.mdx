@@ -201,9 +201,14 @@ known usage but an incomplete close, the status is `incomplete`, and no
 configured rate is `unavailable`.
 Talon never fabricates a voice dollar amount from token totals. Backend cost is
 reported only from the AgentRunner run accounting and is kept separate. Voice
-prompt and output content is redacted from the Langfuse voice observation path,
-while local database and operational logs may still contain sensitive bounded
-text.
+observations across AgentRunner, provider tool events, the host-tools bridge,
+and nested sub-agents use a server-owned redaction context: transcripts,
+prompts, tool arguments/results, and free-form errors are excluded from
+Langfuse. Correlation identifiers are bounded to 256 characters and
+allowlisted metadata to 4096 UTF-8 bytes. Native AI SDK telemetry is disabled for
+voice descendants, and observation setup/update/export failures are best effort
+without retrying the underlying work. Local database and operational logs may
+still contain sensitive bounded text.
 
 ## Validation boundaries
 

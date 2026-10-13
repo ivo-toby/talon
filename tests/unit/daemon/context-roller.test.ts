@@ -6,6 +6,7 @@ import {
   DEFAULT_MAX_OBSERVATION_CHARS,
   type ContextRollerDeps,
 } from '../../../src/daemon/context-roller.js';
+import { createVoiceObservationContext } from '../../../src/observability/langfuse/voice-observation.js';
 
 const mockSummarizerRun = vi.fn();
 
@@ -90,6 +91,43 @@ describe('ContextRoller', () => {
     expect(deps.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-1');
   });
 
+  it('passes trusted rotation diagnostics while preserving raw stored summary content', async () => {
+    const sentinel = 'VOICE_ROTATION_SUMMARY_SENTINEL';
+    const messages = [
+      { direction: 'inbound', content: JSON.stringify({ body: sentinel }), created_at: 1000 },
+    ];
+    mockSummarizerRun.mockResolvedValueOnce(ok({
+      summary: sentinel,
+      data: { summary: sentinel, keyFacts: [], openThreads: [] },
+    }));
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread: vi.fn().mockReturnValue(ok(messages)),
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+    const voiceObservation = createVoiceObservationContext({ runId: 'rotation-run' });
+
+    await new ContextRoller(deps).checkAndRotate(
+      'thread-1',
+      'persona-1',
+      { ratio: 0.8, inputTokens: 100, rawMetric: 100, rawMetricName: 'input_tokens' },
+      0.4,
+      'session-summarizer',
+      { privacy: 'voice', voiceObservation },
+    );
+
+    expect(mockSummarizerRun).toHaveBeenCalledWith(
+      'thread-1',
+      'persona-1',
+      expect.objectContaining({ transcript: expect.stringContaining(sentinel) }),
+      { privacy: 'voice', voiceObservation },
+    );
+    expect(JSON.stringify(deps.logger.error.mock.calls)).not.toContain(sentinel);
+    expect(JSON.stringify(deps.logger.info.mock.calls)).not.toContain(sentinel);
+    expect(JSON.stringify(deps.memoryRepo.insert.mock.calls)).toContain(sentinel);
+  });
+
   it('uses the configured summarizer name when a resolver is available', async () => {
     const messages = [
       { direction: 'inbound', content: JSON.stringify({ body: 'hello' }), created_at: 1000 },
@@ -162,11 +200,8 @@ describe('ContextRoller', () => {
     expect(deps.memoryRepo.insert).not.toHaveBeenCalled();
     expect(deps.sessionTracker.rotateSession).not.toHaveBeenCalled();
     expect(deps.logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({
-        threadId: 'thread-1',
-        summarizer: 'missing-summarizer',
-      }),
-      expect.stringContaining('summarizer not available'),
+      { voice: true, errorCategory: 'unknown' },
+      'voice descendant event',
     );
   });
 
@@ -589,8 +624,8 @@ describe('ContextRoller', () => {
     expect(mockSummarizerRun).not.toHaveBeenCalled();
     expect(deps.sessionTracker.rotateSession).not.toHaveBeenCalled();
     expect(deps.logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ threadId: 'thread-1' }),
-      expect.stringContaining('failed to read messages'),
+      { voice: true, errorCategory: 'unknown' },
+      'voice descendant event',
     );
   });
 
@@ -904,8 +939,8 @@ describe('ContextRoller', () => {
 
     // Should log error about findById failure blocking rotation
     expect(deps.logger.error).toHaveBeenCalledWith(
-      expect.objectContaining({ key: 'work:people' }),
-      expect.stringContaining('findById failed'),
+      { voice: true, errorCategory: 'unknown' },
+      'voice descendant event',
     );
 
     // Should NOT attempt upsert — rotation aborted during preparation

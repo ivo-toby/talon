@@ -19,6 +19,22 @@ import type {
 } from '../../core/database/repositories/thread-repository.js';
 import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
+import {
+  isVoiceObservationContext,
+  type VoiceObservationContext,
+} from '../../observability/langfuse/voice-observation.js';
+
+function voiceDiagnosticFields(
+  voiceObservation: VoiceObservationContext,
+  extras: Record<string, string | boolean> = {},
+): Record<string, string | boolean> {
+  return {
+    voice: true,
+    ...(voiceObservation.runId ? { runId: voiceObservation.runId } : {}),
+    ...(voiceObservation.threadId ? { threadId: voiceObservation.threadId } : {}),
+    ...extras,
+  };
+}
 
 /**
  * Returns the origin chat's external_id recorded in a dedicated schedule
@@ -70,6 +86,8 @@ export interface ToolExecutionContext {
   personaId: string;
   requestId?: string;
   traceparent?: string;
+  /** Server-owned context for content-free voice observations. */
+  voiceObservation?: VoiceObservationContext;
   /** Set when this run is executing an A2A task. Used for hop-count enforcement. */
   a2aTaskId?: string;
   /** Hop depth of the current A2A task (0 for top-level). */
@@ -141,24 +159,45 @@ export class ChannelSendHandler {
    */
   async execute(args: ChannelSendArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
+    const voiceObservation = isVoiceObservationContext(context.voiceObservation)
+      ? context.voiceObservation
+      : undefined;
     let { channelId } = args;
     const { content, replyTo } = args;
 
     this.deps.logger.info(
-      { requestId, runId: context.runId, threadId: context.threadId, personaId: context.personaId, channelId },
+      voiceObservation
+        ? voiceDiagnosticFields(voiceObservation, { event: 'channel_send' })
+        : {
+            requestId,
+            runId: context.runId,
+            threadId: context.threadId,
+            personaId: context.personaId,
+            channelId,
+          },
       'channel.send: executing',
     );
 
     // Validate required args
     if (!channelId || typeof channelId !== 'string' || channelId.trim() === '') {
       const error = new ToolError('channel.send: channelId is required and must be a non-empty string');
-      this.deps.logger.warn({ requestId, channelId }, error.message);
+      this.deps.logger.warn(
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'policy' })
+          : { requestId, channelId },
+        voiceObservation ? 'channel.send: invalid channel id' : error.message,
+      );
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
     if (!content || typeof content !== 'string' || content.trim() === '') {
       const error = new ToolError('channel.send: content is required and must be a non-empty string');
-      this.deps.logger.warn({ requestId }, error.message);
+      this.deps.logger.warn(
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'policy' })
+          : { requestId },
+        voiceObservation ? 'channel.send: invalid content' : error.message,
+      );
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
@@ -182,7 +221,12 @@ export class ChannelSendHandler {
     const connector = this.deps.channelRegistry.get(channelId);
     if (!connector) {
       const error = new ToolError(`channel.send: channel "${channelId}" not found in registry`);
-      this.deps.logger.warn({ requestId, channelId }, error.message);
+      this.deps.logger.warn(
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'unknown' })
+          : { requestId, channelId },
+        voiceObservation ? 'channel.send: channel lookup failed' : error.message,
+      );
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
@@ -212,12 +256,22 @@ export class ChannelSendHandler {
     const threadResult = this.deps.threadRepository.findById(context.threadId);
     if (threadResult.isErr()) {
       const msg = `channel.send: failed to resolve thread "${context.threadId}" — ${threadResult.error.message}`;
-      this.deps.logger.error({ requestId, threadId: context.threadId, err: threadResult.error }, msg);
+      this.deps.logger.error(
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'unknown' })
+          : { requestId, threadId: context.threadId, err: threadResult.error },
+        voiceObservation ? 'channel.send: recipient thread lookup failed' : msg,
+      );
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
     if (!threadResult.value) {
       const msg = `channel.send: thread "${context.threadId}" not found — cannot resolve recipient`;
-      this.deps.logger.error({ requestId, threadId: context.threadId, channelId }, msg);
+      this.deps.logger.error(
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'unknown' })
+          : { requestId, threadId: context.threadId, channelId },
+        voiceObservation ? 'channel.send: recipient thread missing' : msg,
+      );
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
     const originExternalId = readOriginExternalId(threadResult.value.metadata);
@@ -246,7 +300,9 @@ export class ChannelSendHandler {
         'channel.send: no recipient chat id. This run is on a schedule thread without an originExternalId (likely created from the CLI). ' +
         'Pass `externalChatId` explicitly, or use `channel.list` to discover available chats and `channel.broadcast` to fan out to all bound chats.';
       this.deps.logger.warn(
-        { requestId, threadId: context.threadId, channelId, threadExternalId: fallbackExternalId },
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'unknown' })
+          : { requestId, threadId: context.threadId, channelId, threadExternalId: fallbackExternalId },
         'channel.send: missing valid recipient chat id',
       );
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
@@ -256,12 +312,19 @@ export class ChannelSendHandler {
 
     if (result.isErr()) {
       const msg = `channel.send: failed to send message — ${result.error.message}`;
-      this.deps.logger.error({ requestId, channelId, err: result.error }, msg);
+      this.deps.logger.error(
+        voiceObservation
+          ? voiceDiagnosticFields(voiceObservation, { errorCategory: 'unknown' })
+          : { requestId, channelId, err: result.error },
+        voiceObservation ? 'channel.send: connector send failed' : msg,
+      );
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
     this.deps.logger.info(
-      { requestId, channelId, threadId: context.threadId },
+      voiceObservation
+        ? voiceDiagnosticFields(voiceObservation, { event: 'message_sent' })
+        : { requestId, channelId, threadId: context.threadId },
       'channel.send: message sent successfully',
     );
     this.persistOutboundMessage({
@@ -273,6 +336,7 @@ export class ChannelSendHandler {
       personaId: context.personaId,
       runThreadId: context.threadId,
       messageId,
+      ...(voiceObservation ? { voiceObservation } : {}),
     });
 
     return {
@@ -299,6 +363,7 @@ export class ChannelSendHandler {
      * outbound into context.
      */
     runThreadId: string;
+    voiceObservation?: VoiceObservationContext;
   }): void {
     if (!this.deps.channelRepository || !this.deps.messageRepository) {
       return;
@@ -307,12 +372,16 @@ export class ChannelSendHandler {
     const channelResult = this.deps.channelRepository.findByName(input.channelName);
     if (channelResult.isErr() || !channelResult.value) {
       this.deps.logger.warn(
-        {
-          requestId: input.requestId,
-          channelName: input.channelName,
-          err: channelResult.isErr() ? channelResult.error : undefined,
-        },
-        'channel.send: delivered message but failed to resolve channel for outbound persistence',
+        input.voiceObservation
+          ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'unknown' })
+          : {
+              requestId: input.requestId,
+              channelName: input.channelName,
+              err: channelResult.isErr() ? channelResult.error : undefined,
+            },
+        input.voiceObservation
+          ? 'channel.send: outbound persistence channel lookup failed'
+          : 'channel.send: delivered message but failed to resolve channel for outbound persistence',
       );
       return;
     }
@@ -340,13 +409,17 @@ export class ChannelSendHandler {
     });
     if (insertResult.isErr()) {
       this.deps.logger.warn(
-        {
-          requestId: input.requestId,
-          runId: input.runId,
-          threadId: targetThread.id,
-          err: insertResult.error,
-        },
-        'channel.send: delivered message but failed to persist outbound context',
+        input.voiceObservation
+          ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'unknown' })
+          : {
+              requestId: input.requestId,
+              runId: input.runId,
+              threadId: targetThread.id,
+              err: insertResult.error,
+            },
+        input.voiceObservation
+          ? 'channel.send: outbound persistence insert failed'
+          : 'channel.send: delivered message but failed to persist outbound context',
       );
       return;
     }
@@ -366,12 +439,14 @@ export class ChannelSendHandler {
     ) {
       this.deps.sessionTracker.rotateSession(targetThread.id);
       this.deps.logger.info(
-        {
-          requestId: input.requestId,
-          runId: input.runId,
-          recipientThreadId: targetThread.id,
-          runThreadId: input.runThreadId,
-        },
+        input.voiceObservation
+          ? voiceDiagnosticFields(input.voiceObservation, { event: 'recipient_session_rotated' })
+          : {
+              requestId: input.requestId,
+              runId: input.runId,
+              recipientThreadId: targetThread.id,
+              runThreadId: input.runThreadId,
+            },
         'channel.send: rotated recipient session after cross-thread outbound persistence',
       );
     }
@@ -393,7 +468,11 @@ export class ChannelSendHandler {
    * bound to.
    */
   private shouldPersistForTarget(
-    input: { requestId: string; personaId: string },
+    input: {
+      requestId: string;
+      personaId: string;
+      voiceObservation?: VoiceObservationContext;
+    },
     channelId: string,
     targetThread: ThreadRow,
   ): boolean {
@@ -406,13 +485,17 @@ export class ChannelSendHandler {
     );
     if (scopedResult.isErr()) {
       this.deps.logger.warn(
-        {
-          requestId: input.requestId,
-          channelId,
-          threadId: targetThread.id,
-          err: scopedResult.error,
-        },
-        'channel.send: skipping outbound persistence — binding lookup failed',
+        input.voiceObservation
+          ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'unknown' })
+          : {
+              requestId: input.requestId,
+              channelId,
+              threadId: targetThread.id,
+              err: scopedResult.error,
+            },
+        input.voiceObservation
+          ? 'channel.send: outbound persistence binding lookup failed'
+          : 'channel.send: skipping outbound persistence — binding lookup failed',
       );
       return false;
     }
@@ -422,26 +505,34 @@ export class ChannelSendHandler {
         return true;
       }
       this.deps.logger.warn(
-        {
-          requestId: input.requestId,
-          channelId,
-          threadId: targetThread.id,
-          personaId: input.personaId,
-          scopedPersonaId: scoped.persona_id,
-        },
-        'channel.send: delivered message but skipping outbound persistence — thread is bound to a different persona',
+        input.voiceObservation
+          ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'policy' })
+          : {
+              requestId: input.requestId,
+              channelId,
+              threadId: targetThread.id,
+              personaId: input.personaId,
+              scopedPersonaId: scoped.persona_id,
+            },
+        input.voiceObservation
+          ? 'channel.send: outbound persistence binding rejected'
+          : 'channel.send: delivered message but skipping outbound persistence — thread is bound to a different persona',
       );
       return false;
     }
     const defaultResult = this.deps.bindingRepository.findDefaultForChannel(channelId);
     if (defaultResult.isErr()) {
       this.deps.logger.warn(
-        {
-          requestId: input.requestId,
-          channelId,
-          err: defaultResult.error,
-        },
-        'channel.send: skipping outbound persistence — default binding lookup failed',
+        input.voiceObservation
+          ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'unknown' })
+          : {
+              requestId: input.requestId,
+              channelId,
+              err: defaultResult.error,
+            },
+        input.voiceObservation
+          ? 'channel.send: outbound persistence default binding lookup failed'
+          : 'channel.send: skipping outbound persistence — default binding lookup failed',
       );
       return false;
     }
@@ -450,20 +541,28 @@ export class ChannelSendHandler {
       return true;
     }
     this.deps.logger.warn(
-      {
-        requestId: input.requestId,
-        channelId,
-        threadId: targetThread.id,
-        personaId: input.personaId,
-        defaultPersonaId: defaultBinding?.persona_id ?? null,
-      },
-      'channel.send: delivered message but skipping outbound persistence — no binding for this persona on target channel/thread',
+      input.voiceObservation
+        ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'policy' })
+        : {
+            requestId: input.requestId,
+            channelId,
+            threadId: targetThread.id,
+            personaId: input.personaId,
+            defaultPersonaId: defaultBinding?.persona_id ?? null,
+          },
+      input.voiceObservation
+        ? 'channel.send: outbound persistence binding missing'
+        : 'channel.send: delivered message but skipping outbound persistence — no binding for this persona on target channel/thread',
     );
     return false;
   }
 
   private resolveTargetThread(
-    input: { requestId: string; externalThreadId: string },
+    input: {
+      requestId: string;
+      externalThreadId: string;
+      voiceObservation?: VoiceObservationContext;
+    },
     channelId: string,
   ): ThreadRow | null {
     const existingResult = this.deps.threadRepository.findByExternalId(
@@ -472,13 +571,17 @@ export class ChannelSendHandler {
     );
     if (existingResult.isErr()) {
       this.deps.logger.warn(
-        {
-          requestId: input.requestId,
-          channelId,
-          externalThreadId: input.externalThreadId,
-          err: existingResult.error,
-        },
-        'channel.send: delivered message but failed to resolve recipient thread for outbound persistence',
+        input.voiceObservation
+          ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'unknown' })
+          : {
+              requestId: input.requestId,
+              channelId,
+              externalThreadId: input.externalThreadId,
+              err: existingResult.error,
+            },
+        input.voiceObservation
+          ? 'channel.send: outbound persistence recipient lookup failed'
+          : 'channel.send: delivered message but failed to resolve recipient thread for outbound persistence',
       );
       return null;
     }
@@ -506,13 +609,17 @@ export class ChannelSendHandler {
     }
 
     this.deps.logger.warn(
-      {
-        requestId: input.requestId,
-        channelId,
-        externalThreadId: input.externalThreadId,
-        err: insertResult.error,
-      },
-      'channel.send: delivered message but failed to create recipient thread for outbound persistence',
+      input.voiceObservation
+        ? voiceDiagnosticFields(input.voiceObservation, { errorCategory: 'unknown' })
+        : {
+            requestId: input.requestId,
+            channelId,
+            externalThreadId: input.externalThreadId,
+            err: insertResult.error,
+          },
+      input.voiceObservation
+        ? 'channel.send: outbound persistence recipient creation failed'
+        : 'channel.send: delivered message but failed to create recipient thread for outbound persistence',
     );
     return null;
   }

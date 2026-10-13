@@ -45,7 +45,10 @@ import {
   BROWSER_VOICE_CHANNEL_NAME,
 } from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
-import { QueueManager } from '../queue/queue-manager.js';
+import {
+  createQueueDiagnosticResolver,
+  QueueManager,
+} from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
 import { DaemonError } from '../core/errors/error-types.js';
@@ -78,13 +81,21 @@ import { CodexCliProvider } from '../providers/codex-cli-provider.js';
 import { OpenAiCompatibleProvider } from '../providers/openai-compatible-provider.js';
 import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider-registry.js';
 import { recoverFromCrash } from './lifecycle.js';
-import { ContextRoller } from './context-roller.js';
+import {
+  ContextRoller,
+  normalizeContextRollerDiagnostics,
+} from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
 import { loadToolInstructions } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
+import {
+  createVoiceObservationContext,
+  createVoiceSafeLogger,
+  observeVoiceSafely,
+} from '../observability/langfuse/voice-observation.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
 import { VoiceRepository } from '../core/database/repositories/voice-repository.js';
 import { VoiceAuthRepository } from '../core/database/repositories/voice-auth-repository.js';
@@ -501,39 +512,66 @@ export async function bootstrap(
         threadId,
         personaId,
         input,
+        diagnostics,
       ) => {
-        const result = await runSubAgentModelChain({
-          name: summarizerName,
-          agent: summarizerAgent,
-          input,
-          override: overrideConfig,
-          modelResolver,
-          logger,
-          createContext: ({ model, entry, abortSignal, providerOptions }) => ({
-            threadId,
-            personaId,
-            model,
-            systemPrompt: summarizerPrompt,
-            maxOutputTokens: entry.maxTokens,
-            rootPaths: [],
-            services: {
-              memory: repos.memory,
-              schedules: repos.schedule,
-              personas: repos.persona,
-              channels: repos.channel,
-              threads: repos.thread,
-              messages: repos.message,
-              runs: repos.run,
-              queue: repos.queue,
-              logger,
-            },
-            telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
-            abortSignal,
-            providerOptions,
-          }),
-        });
+        const resolvedDiagnostics = normalizeContextRollerDiagnostics(diagnostics);
+        const isVoiceOrUnknown = resolvedDiagnostics.privacy !== 'nonvoice';
+        const modelChainLogger = isVoiceOrUnknown ? createVoiceSafeLogger(logger) : logger;
+        const voiceObservation = isVoiceOrUnknown
+          ? resolvedDiagnostics.voiceObservation ??
+            createVoiceObservationContext({ threadId, personaId })
+          : undefined;
+        const run = async (): Promise<Result<import('../subagents/subagent-types.js').SubAgentResult, import('../core/errors/index.js').SubAgentError>> => {
+          const result = await runSubAgentModelChain({
+            name: summarizerName,
+            agent: summarizerAgent,
+            input,
+            override: overrideConfig,
+            modelResolver,
+            logger: modelChainLogger,
+            createContext: ({ model, entry, abortSignal, providerOptions }) => ({
+              threadId,
+              personaId,
+              model,
+              systemPrompt: summarizerPrompt,
+              maxOutputTokens: entry.maxTokens,
+              rootPaths: [],
+              services: {
+                memory: repos.memory,
+                schedules: repos.schedule,
+                personas: repos.persona,
+                channels: repos.channel,
+                threads: repos.thread,
+                messages: repos.message,
+                runs: repos.run,
+                queue: repos.queue,
+                logger: modelChainLogger,
+              },
+              telemetry: {
+                isEnabled:
+                  !isVoiceOrUnknown && !(observability instanceof NoopObservabilityService),
+              },
+              abortSignal,
+              providerOptions,
+            }),
+          });
 
-        return result.map((value) => value.result);
+          return result.map((value) => value.result);
+        };
+
+        if (!voiceObservation) return await run();
+
+        return await observeVoiceSafely({
+          service: observability,
+          input: {
+            type: 'agent',
+            name: `context-roller:${summarizerName}`,
+            input,
+            metadata: { threadId, personaId, summarizer: summarizerName },
+          },
+          context: voiceObservation,
+          callback: async () => await run(),
+        });
       };
 
       boundSummarizers.set(summarizerName, boundSummarizer);
@@ -864,12 +902,14 @@ export async function bootstrap(
   const channelRegistry = new ChannelRegistry(logger);
 
   // 13. Queue manager. Voice rows must claim through the durable bridge.
+  const queueDiagnosticResolver = createQueueDiagnosticResolver(repos.thread, repos.channel);
   const queueManager = new QueueManager(
     repos.queue,
     repos.thread,
     config.queue,
     logger,
     voiceBackendBridge?.claimQueueItem.bind(voiceBackendBridge),
+    queueDiagnosticResolver,
   );
 
   let executionEnvManager: ExecutionEnvManager | null = null;
@@ -905,6 +945,8 @@ export async function bootstrap(
       // types — without this, background runs receive raw
       // `auth: { kind: 'oauth2' }` entries and the MCP server 401s.
       oauthTokenStore,
+      threadRepository: repos.thread,
+      channelRepository: repos.channel,
       logger,
       observability,
     });
