@@ -49,7 +49,7 @@ describe('VoiceAuthRepository', () => {
     expect(repository.verifyCredential('owner-1', 'rotated-secret')._unsafeUnwrap()).toBe(true);
   });
 
-  it('allocates a revision above historical voice sessions and prunes only expired grants', () => {
+  it('allocates revisions above history and prunes expired or revoked grants', () => {
     db = createTestDb();
     const repository = new VoiceAuthRepository(db);
     repository.bindCredential('owner-1', 'secret', 100);
@@ -87,7 +87,18 @@ describe('VoiceAuthRepository', () => {
       })
       ._unsafeUnwrap();
     expect(repository.countActive(151)._unsafeUnwrap()).toBe(1);
-    expect(repository.pruneExpired(151)._unsafeUnwrap()).toBe(1);
+    const revoked = repository
+      .createSession({
+        id: 'auth-session-revoked',
+        sessionTokenHash: hashVoiceAuthToken('cookie-revoked'),
+        csrfTokenHash: hashVoiceAuthToken('csrf-revoked'),
+        ownerId: 'owner-1',
+        createdAt: 100,
+        expiresAt: 10_000,
+      })
+      ._unsafeUnwrap();
+    expect(repository.revokeSession(revoked.id, 151).isOk()).toBe(true);
+    expect(repository.pruneExpired(151)._unsafeUnwrap()).toBe(2);
     expect(repository.countActive(151)._unsafeUnwrap()).toBe(1);
 
     const next = repository
@@ -100,7 +111,7 @@ describe('VoiceAuthRepository', () => {
         expiresAt: 10_000,
       })
       ._unsafeUnwrap();
-    expect(next.login_revision).toBe(20);
+    expect(next.login_revision).toBe(21);
   });
 
   it('requires both csrf values for the same active revision and rejects revoked rows', () => {

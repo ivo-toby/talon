@@ -22,6 +22,28 @@ function cookieValue(setCookie: string, name: string): string {
   return match[1];
 }
 
+function runtimeSessionCounts(auth: IndexedVoiceAuth): {
+  cookieSessions: number;
+  revisionSessions: number;
+  owners: number;
+  indexedRevisions: number;
+} {
+  const state = auth as unknown as {
+    sessions: Map<string, unknown>;
+    sessionsByRevision: Map<string, unknown>;
+    owners: Map<string, { revisions: Map<number, unknown> }>;
+  };
+  return {
+    cookieSessions: state.sessions.size,
+    revisionSessions: state.sessionsByRevision.size,
+    owners: state.owners.size,
+    indexedRevisions: [...state.owners.values()].reduce(
+      (count, owner) => count + owner.revisions.size,
+      0,
+    ),
+  };
+}
+
 describe('VoiceAuth', () => {
   it('exchanges the configured token for strict cookies and an owner context', () => {
     let now = 1_000;
@@ -187,6 +209,100 @@ describe('VoiceAuth', () => {
     expect(auth.authenticate({ headers: { cookie: first.cookies[0] } }).isOk()).toBe(true);
     now = 1_101;
     expect(auth.login('configured-secret').isOk()).toBe(true);
+  });
+
+  it('bounds revoked durable rows and preserves revisions across restart', () => {
+    db = createTestDb();
+    const repository = new VoiceAuthRepository(db);
+    let now = 1_000;
+    const auth = new IndexedVoiceAuth({
+      accessToken: 'configured-secret',
+      ownerId: 'owner-1',
+      repository,
+      maxSessions: 1,
+      now: () => now,
+    });
+    const revisions: number[] = [];
+
+    for (let index = 0; index < 8; index += 1) {
+      const login = auth
+        .login({ accessToken: 'configured-secret', rememberMe: true })
+        ._unsafeUnwrap();
+      revisions.push(login.session.owner.loginRevision);
+      expect(auth.revoke(login.session).isOk()).toBe(true);
+      now += 1;
+    }
+
+    expect(revisions).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM voice_auth_sessions').get()).toEqual({
+      count: 1,
+    });
+    expect(
+      db.prepare('SELECT COUNT(*) AS count FROM voice_auth_sessions WHERE revoked_at IS NOT NULL').get(),
+    ).toEqual({ count: 1 });
+    expect(runtimeSessionCounts(auth)).toEqual({
+      cookieSessions: 0,
+      revisionSessions: 0,
+      owners: 0,
+      indexedRevisions: 0,
+    });
+
+    const restarted = new IndexedVoiceAuth({
+      accessToken: 'configured-secret',
+      ownerId: 'owner-1',
+      repository,
+      maxSessions: 1,
+      now: () => now,
+    });
+    expect(runtimeSessionCounts(restarted)).toEqual({
+      cookieSessions: 0,
+      revisionSessions: 0,
+      owners: 0,
+      indexedRevisions: 0,
+    });
+    const next = restarted
+      .login({ accessToken: 'configured-secret', rememberMe: true })
+      ._unsafeUnwrap();
+    expect(next.session.owner.loginRevision).toBe(9);
+    expect(restarted.revoke(next.session).isOk()).toBe(true);
+    expect(repository.pruneExpired(now)._unsafeUnwrap()).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM voice_auth_sessions').get()).toEqual({
+      count: 0,
+    });
+  });
+
+  it('cleans expired durable grants from base and indexed runtime maps', () => {
+    db = createTestDb();
+    const repository = new VoiceAuthRepository(db);
+    let now = 1_000;
+    const auth = new IndexedVoiceAuth({
+      accessToken: 'configured-secret',
+      ownerId: 'owner-1',
+      repository,
+      maxSessions: 1,
+      sessionTtlMs: 100,
+      now: () => now,
+    });
+    let last = auth.login('configured-secret')._unsafeUnwrap();
+    for (let index = 1; index < 8; index += 1) {
+      now = last.session.expiresAt + 1;
+      last = auth.login('configured-secret')._unsafeUnwrap();
+    }
+
+    expect(runtimeSessionCounts(auth)).toEqual({
+      cookieSessions: 1,
+      revisionSessions: 1,
+      owners: 1,
+      indexedRevisions: 1,
+    });
+    now = last.session.expiresAt + 1;
+    expect(auth.resolve(last.session.owner)).toBeUndefined();
+    expect(runtimeSessionCounts(auth)).toEqual({
+      cookieSessions: 0,
+      revisionSessions: 0,
+      owners: 0,
+      indexedRevisions: 0,
+    });
   });
 
   it('rotates durable credentials without leaving the previous key usable', () => {

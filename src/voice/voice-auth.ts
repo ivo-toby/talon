@@ -266,6 +266,12 @@ export class VoiceAuth {
     if (this.repository) {
       const pruned = this.repository.pruneExpired(now);
       if (pruned.isErr()) return err(this.storageError(pruned.error));
+    }
+
+    const runtimePruned = this.pruneRuntimeSessions();
+    if (runtimePruned.isErr()) return err(runtimePruned.error);
+
+    if (this.repository) {
       const count = this.repository.countActive(now);
       if (count.isErr()) return err(this.storageError(count.error));
       if (count.value >= this.maxSessions) return err(new VoiceAuthError('rate_limited'));
@@ -280,7 +286,6 @@ export class VoiceAuth {
       if (persisted.isErr()) return err(this.storageError(persisted.error));
       session = this.sessionFromRow(persisted.value, cookieValue, csrfToken);
     } else {
-      this.removeExpiredSessions(now);
       if (this.sessions.size >= this.maxSessions) {
         return err(new VoiceAuthError('rate_limited'));
       }
@@ -320,7 +325,11 @@ export class VoiceAuth {
         this.now(),
       );
       if (persisted.isErr()) return err(this.storageError(persisted.error));
-      if (!persisted.value) return err(new VoiceAuthError('invalid_cookie'));
+      if (!persisted.value) {
+        const stale = this.sessions.get(cookieValue);
+        if (stale) this.forgetRuntimeSession(stale);
+        return err(new VoiceAuthError('invalid_cookie'));
+      }
       const key = this.revisionKey(persisted.value.owner_id, persisted.value.login_revision);
       const existing = this.sessionsByRevision.get(key);
       const session =
@@ -367,7 +376,9 @@ export class VoiceAuth {
         this.now(),
       );
       if (current.isErr()) return err(this.storageError(current.error));
-      return ok(current.value?.id === metadata.id);
+      const active = current.value?.id === metadata.id;
+      if (!active) this.forgetRuntimeSession(session);
+      return ok(active);
     }
     const current = this.sessions.get(session.cookieValue);
     if (current !== session) return ok(false);
@@ -605,10 +616,17 @@ export class VoiceAuth {
     }
   }
 
-  private removeExpiredSessions(now: number): void {
-    for (const session of this.sessions.values()) {
-      if (session.expiresAt <= now) this.forgetRuntimeSession(session);
+  /** Drop runtime sessions whose durable authority is no longer active. */
+  protected pruneRuntimeSessions(): VoiceResult<void> {
+    const sessions = new Set<VoiceAuthSession>([
+      ...this.sessions.values(),
+      ...this.sessionsByRevision.values(),
+    ]);
+    for (const session of sessions) {
+      const active = this.isActiveResult(session);
+      if (active.isErr()) return err(active.error);
     }
+    return ok(undefined);
   }
 
   private remoteKey(remoteAddress: string | undefined): string {

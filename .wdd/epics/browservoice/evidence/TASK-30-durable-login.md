@@ -11,9 +11,10 @@ Durable credentials use native salted scrypt (`N=16384`, `r=8`, `p=1`,
 `maxmem=64 MiB`). Cookie and CSRF verification values are stored as SHA-256
 base64url hashes. Remembered sessions have a fixed `365 days` TTL
 (`31,536,000,000 ms`); omitted or false `rememberMe` uses `15 minutes`
-(`900,000 ms`). The durable cap is `256` active grants. Expired rows are
-pruned before capacity checks; active grants are never evicted and expiry is
-never renewed.
+(`900,000 ms`). The durable cap is `256` active grants. Expired and revoked
+rows are pruned before capacity checks; active grants are never evicted and
+expiry is never renewed. Runtime cleanup removes inactive durable sessions
+from both base cookie/revision maps and the indexed owner map.
 
 ## Required checks
 
@@ -31,7 +32,7 @@ PASS (0 errors, 0 warnings)
 
 PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH npx vitest run tests/unit/core/database/voice tests/unit/voice/browser-server tests/unit/voice/lifecycle/auth.test.ts tests/unit/daemon/daemon-bootstrap.test.ts tests/unit/daemon/daemon.test.ts
 Test Files  8 passed (8)
-Tests       122 passed (122)
+Tests       124 passed (124)
 
 PATH=/Users/ivo.toby/.local/share/mise/installs/node/24.15.0/bin:$PATH npm run build
 PASS
@@ -59,11 +60,12 @@ grant and ordinary voice row were read successfully:
 The allocator remains above every allocated revision after the grant is
 revoked or expired, and migration 015 does not modify earlier migrations.
 Focused tests cover salted/hash-only storage, normal restart hydration,
-independent grants, fixed durations, cap/pruning, revision non-reuse,
-credential rotation and rotation-back invalidation, same-session and
-cross-session CSRF, typed storage failures, logout failure propagation,
-minimal auth status/no-store/origin enforcement, and reload ordering/failure
-handling for indirect effective credentials.
+independent grants, fixed durations, cap/pruning, repeated revoke-cycle row
+cleanup, runtime-map cleanup after expiry, revision non-reuse, credential
+rotation and rotation-back invalidation, same-session and cross-session CSRF,
+typed storage failures, logout failure propagation, minimal auth
+status/no-store/origin enforcement, and reload ordering/failure handling for
+indirect effective credentials.
 
 ## Limits
 

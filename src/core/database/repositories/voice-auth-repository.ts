@@ -143,13 +143,13 @@ export class VoiceAuthRepository extends BaseRepository {
     }
   }
 
-  /** Remove expired grants before enforcing the bounded active-session cap. */
+  /** Remove expired and revoked grants before enforcing the bounded active-session cap. */
   pruneExpired(now: number): Result<number, DbError> {
     try {
       const result = this.db
         .prepare(
           `DELETE FROM voice_auth_sessions
-            WHERE expires_at <= ?`,
+            WHERE revoked_at IS NOT NULL OR expires_at <= ?`,
         )
         .run(now);
       return ok(result.changes);

@@ -280,7 +280,6 @@ export class IndexedVoiceAuth extends VoiceAuth {
   ): VoiceResult<VoiceAuthLoginResult> {
     const result = super.login(input, options);
     if (result.isOk()) this.indexSession(result.value.session);
-    this.prune();
     return result;
   }
 
@@ -291,7 +290,8 @@ export class IndexedVoiceAuth extends VoiceAuth {
   }
 
   resolveResult(owner: VoiceOwnerContext): VoiceResult<VoiceAuthSession | undefined> {
-    this.prune();
+    const pruned = this.pruneRuntimeSessions();
+    if (pruned.isErr()) return err(pruned.error);
     const session = this.owners.get(owner.ownerId)?.revisions.get(owner.loginRevision);
     if (!session) return ok(undefined);
     const active = this.isActiveResult(session);
@@ -336,15 +336,6 @@ export class IndexedVoiceAuth extends VoiceAuth {
     if (owner.revisions.size === 0) this.owners.delete(session.owner.ownerId);
   }
 
-  private prune(): void {
-    for (const [ownerId, owner] of this.owners) {
-      for (const [revision, session] of owner.revisions) {
-        const active = this.isActiveResult(session);
-        if (active.isOk() && !active.value) owner.revisions.delete(revision);
-      }
-      if (owner.revisions.size === 0) this.owners.delete(ownerId);
-    }
-  }
 }
 
 /** Durable VoiceSessionService implementation used by daemon composition. */
