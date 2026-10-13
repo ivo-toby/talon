@@ -87,6 +87,7 @@ import { NoopObservabilityService } from '../observability/langfuse/noop-observa
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
 import { VoiceRepository } from '../core/database/repositories/voice-repository.js';
+import { VoiceAuthRepository } from '../core/database/repositories/voice-auth-repository.js';
 import { DurableVoiceStore } from '../voice/voice-store.js';
 import { DurableVoiceBackendBridge, type VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
 import { VoiceOutputSink } from '../voice/voice-output-sink.js';
@@ -672,10 +673,16 @@ export async function bootstrap(
       providerTypes,
       provenMcpServers,
     });
+    const voiceAuthRepository = new VoiceAuthRepository(db);
     voiceAuth = new IndexedVoiceAuth({
       accessToken: voiceAccessToken,
       ownerId: `voice:${voicePersonaName}`,
+      repository: voiceAuthRepository,
     });
+    if (voiceAuth.initializationResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('Failed to initialize browser voice authentication'));
+    }
     const voiceBackendModel = loadedVoicePersona.value.config.model;
     const voiceLiveModel = config.voice.model ?? 'gpt-live-1';
     const captureVoicePolicy = (owner: VoiceOwnerContext): VoiceResult<VoicePolicySnapshot> => {

@@ -300,6 +300,7 @@ export class BrowserVoiceServer {
     const sameOriginRead =
       request.method === 'GET' &&
       (route === '/healthz' ||
+        route === '/auth/session' ||
         sessionRoute?.action === 'status' ||
         sessionRoute?.action === 'stream');
     if (!this.isAllowedOrigin(request, sameOriginRead)) {
@@ -318,6 +319,10 @@ export class BrowserVoiceServer {
     }
     if ((route === '/logout' || route === '/auth/logout') && request.method === 'POST') {
       await this.handleLogout(request, response, requestId);
+      return;
+    }
+    if (route === '/auth/session' && request.method === 'GET') {
+      this.handleAuthSession(request, response, requestId);
       return;
     }
     if (route === '/healthz' && request.method === 'GET') {
@@ -397,18 +402,43 @@ export class BrowserVoiceServer {
       });
       return;
     }
+    const rememberMe = readOptionalBooleanProperty(body, 'rememberMe');
+    if (rememberMe === INVALID_BOOLEAN) {
+      this.writeError(response, requestId, {
+        status: 400,
+        code: 'INVALID_REQUEST',
+        message: 'Invalid request',
+      });
+      return;
+    }
 
-    const result = this.auth.login(accessToken, {
-      remoteAddress: request.socket.remoteAddress,
-      secure: this.isSecureRequest(request),
-    });
+    const result = this.auth.login(
+      rememberMe === undefined ? { accessToken } : { accessToken, rememberMe },
+      {
+        remoteAddress: request.socket.remoteAddress,
+        secure: this.isSecureRequest(request),
+      },
+    );
     if (result.isErr()) {
-      const status =
-        result.error instanceof VoiceAuthError && result.error.kind === 'rate_limited' ? 429 : 401;
+      const status = authFailureStatus(result.error, 401);
       this.writeError(response, requestId, {
         status,
-        code: status === 429 ? 'RATE_LIMITED' : 'UNAUTHORIZED',
-        message: status === 429 ? 'Too many login attempts' : 'Authentication failed',
+        code:
+          status === 429
+            ? 'RATE_LIMITED'
+            : status === 400
+              ? 'INVALID_REQUEST'
+              : status === 500
+                ? 'VOICE_ERROR'
+                : 'UNAUTHORIZED',
+        message:
+          status === 429
+            ? 'Too many login attempts'
+            : status === 400
+              ? 'Invalid request'
+              : status === 500
+                ? 'Voice request failed'
+                : 'Authentication failed',
       });
       return;
     }
@@ -426,7 +456,11 @@ export class BrowserVoiceServer {
     const authenticated = this.authenticate(request, response, requestId, true);
     if (!authenticated) return;
 
-    this.auth.revoke(authenticated);
+    const revoked = this.auth.revoke(authenticated);
+    if (revoked.isErr()) {
+      this.writeAuthFailure(response, requestId, revoked.error);
+      return;
+    }
     this.closeStreamsForAuth(authenticated);
     const sessionIds = this.sessionsByAuthCookie.get(authenticated.cookieValue);
     if (sessionIds) {
@@ -446,6 +480,20 @@ export class BrowserVoiceServer {
     }
     response.setHeader('set-cookie', this.auth.clearCookieHeaders(this.isSecureRequest(request)));
     this.writeJson(response, 200, { loggedOut: true });
+  }
+
+  private handleAuthSession(
+    request: IncomingMessage,
+    response: ServerResponse,
+    requestId: string,
+  ): void {
+    const authenticated = this.authenticate(request, response, requestId, false);
+    if (!authenticated) return;
+    applyCorsHeaders(response, request.headers.origin);
+    this.writeJson(response, 200, {
+      authenticated: true,
+      expiresAt: authenticated.expiresAt,
+    });
   }
 
   private async handleCreateSession(
@@ -821,21 +869,13 @@ export class BrowserVoiceServer {
   ): VoiceAuthSession | null {
     const result = this.auth.authenticate(request);
     if (result.isErr()) {
-      this.writeError(response, requestId, {
-        status: 401,
-        code: 'UNAUTHORIZED',
-        message: 'Authentication required',
-      });
+      this.writeAuthFailure(response, requestId, result.error);
       return null;
     }
     if (requireCsrf) {
       const csrfResult = this.auth.verifyCsrf(request, result.value);
       if (csrfResult.isErr()) {
-        this.writeError(response, requestId, {
-          status: 403,
-          code: 'CSRF_DENIED',
-          message: 'CSRF validation failed',
-        });
+        this.writeAuthFailure(response, requestId, csrfResult.error);
         return null;
       }
     }
@@ -1176,6 +1216,20 @@ export class BrowserVoiceServer {
     }
   }
 
+  private writeAuthFailure(response: ServerResponse, requestId: string, error: unknown): void {
+    const status = authFailureStatus(error, 401);
+    this.writeError(response, requestId, {
+      status,
+      code: status === 500 ? 'VOICE_ERROR' : status === 403 ? 'CSRF_DENIED' : 'UNAUTHORIZED',
+      message:
+        status === 500
+          ? 'Voice request failed'
+          : status === 403
+            ? 'CSRF validation failed'
+            : 'Authentication required',
+    });
+  }
+
   private writeDomainError(response: ServerResponse, requestId: string, _error: unknown): void {
     this.writeError(response, requestId, {
       status: 500,
@@ -1287,6 +1341,7 @@ function isStaticPath(pathname: string): boolean {
     route === '/logout' ||
     route === '/auth/login' ||
     route === '/auth/logout' ||
+    route === '/auth/session' ||
     route === '/sessions' ||
     route.startsWith('/sessions/')
   );
@@ -1338,6 +1393,34 @@ function readStringProperty(value: unknown, key: string): string | null {
   if (!isRecord(value)) return null;
   const property = value[key];
   return typeof property === 'string' ? property : null;
+}
+
+const INVALID_BOOLEAN = Symbol('invalid boolean');
+
+function readOptionalBooleanProperty(
+  value: unknown,
+  key: string,
+): boolean | undefined | typeof INVALID_BOOLEAN {
+  if (!isRecord(value)) return INVALID_BOOLEAN;
+  const property = value[key];
+  if (property === undefined) return undefined;
+  return typeof property === 'boolean' ? property : INVALID_BOOLEAN;
+}
+
+function authFailureStatus(error: unknown, fallback: number): number {
+  if (!(error instanceof VoiceAuthError)) return fallback;
+  switch (error.kind) {
+    case 'invalid_request':
+      return 400;
+    case 'invalid_csrf':
+      return 403;
+    case 'rate_limited':
+      return 429;
+    case 'storage_error':
+      return 500;
+    default:
+      return fallback;
+  }
 }
 
 async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise<unknown> {
