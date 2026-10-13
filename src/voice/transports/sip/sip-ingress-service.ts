@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { err, ok, type Result } from '../../../core/types/result.js';
+import type { TalonError } from '../../../core/errors/error-types.js';
 import type {
   SipReservation,
   SipReservationInput,
@@ -22,6 +23,7 @@ import {
   SIP_MAX_ASSERTION_BYTES,
   SIP_MAX_IDENTIFIER_BYTES,
 } from './sip-authorization.js';
+import type { VoiceOwnerContext } from '../../voice-types.js';
 
 export const SIP_ADMISSION_WINDOW_MS = 60_000;
 export const SIP_DELIVERY_REPLAY_WINDOW_MS = 72 * 60 * 60 * 1_000;
@@ -70,7 +72,7 @@ export interface SipIngressServiceOptions {
   readonly now?: () => number;
   readonly admissionWindowMs?: number;
   readonly deliveryReplayWindowMs?: number;
-  /** Optional future TASK37 seam; absent means reserve only. */
+  /** Accept the verified existing provider session; absent means reserve only. */
   readonly acceptCall?: (
     input: SipCallAcceptanceRequest,
   ) => Promise<SipCallControlResult>;
@@ -129,6 +131,42 @@ export class SipIngressService {
 
   openAdmission(): void {
     this.admissionOpen = true;
+  }
+
+  /**
+   * Check the durable grant while SIP setup or backend execution is in
+   * progress. Attempted is included because the callback owns the interval
+   * between the durable attempt marker and the definitive accepted outcome.
+   */
+  isProviderSessionActive(
+    providerSessionId: string,
+    owner: VoiceOwnerContext,
+    now = this.now(),
+  ): boolean {
+    const reservation = this.options.repository.findByProviderSessionId(providerSessionId);
+    if (reservation.isErr() || !reservation.value) return false;
+    const { decision, grant } = reservation.value;
+    if (grant.owner_id !== owner.ownerId || grant.revision !== owner.loginRevision) return false;
+    if (grant.revoked_at !== null) return false;
+    if (decision.state === 'accepted') return true;
+    return (
+      decision.state === 'attempted' &&
+      grant.expires_at * 1_000 > now
+    );
+  }
+
+  /** Record the durable acceptance only after the provider returned exact 200/empty. */
+  markAccepted(callId: string): Result<boolean, TalonError> {
+    const recorded = this.options.repository.recordOutcome(callId, 'accepted', this.now());
+    if (recorded.isErr()) return err(recorded.error);
+    return ok(recorded.value?.decision.state === 'accepted');
+  }
+
+  /** Record terminal SIP closure only after Live finalization is confirmed. */
+  markClosed(callId: string): Result<boolean, Error> {
+    const recorded = this.options.repository.recordOutcome(callId, 'closed', this.now());
+    if (recorded.isErr()) return err(recorded.error);
+    return ok(recorded.value?.decision.state === 'closed');
   }
 
   /** Mark in-flight external acceptance as unknown after a restart. */

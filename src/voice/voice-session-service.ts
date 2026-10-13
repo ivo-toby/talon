@@ -53,6 +53,7 @@ import type {
   VoiceContextSnapshot,
   VoiceDelegationRecord,
   VoiceEventHandler,
+  VoiceIncomingSessionRequest,
   VoiceNotificationRequest,
   VoiceNotificationResult,
   VoiceNotificationStatusDto,
@@ -74,6 +75,7 @@ import type {
   VoiceStatusEventDto,
   VoiceSupersedeResult,
   VoiceTransport,
+  VoiceTransportKind,
   VoiceTransportEvent,
   VoiceTransportHandle,
   VoiceTransportOpenRequest,
@@ -132,6 +134,11 @@ export interface VoiceSessionServiceOptions {
   ) => VoiceResult<VoicePolicySnapshot>;
   /** Exact session authority check. The HTTP auth layer remains separate. */
   readonly isOwnerActive?: (owner: VoiceOwnerContext) => boolean;
+  /** SIP grant check bound to the durable provider session identity. */
+  readonly isIncomingOwnerActive?: (
+    owner: VoiceOwnerContext,
+    providerSessionId: string,
+  ) => boolean;
   readonly now?: () => number;
   readonly maxSessionLifetimeMs?: number;
   readonly maxContextChars?: number;
@@ -143,16 +150,27 @@ export interface VoiceSessionServiceOptions {
   readonly logger?: pino.Logger;
   /** Trusted server-selected transport/engine contract. */
   readonly adapterSelection?: VoiceAdapterSelection;
+  /** Additional provider-owned transports, such as incoming SIP. */
+  readonly transports?: ReadonlyMap<VoiceTransportKind, VoiceTransport>;
+  /** Capability negotiation for each additional transport. */
+  readonly adapterSelections?: ReadonlyMap<VoiceTransportKind, VoiceAdapterSelection>;
   /** Shared across all voice transports, including pending setup. */
   readonly callAdmission?: VoiceCallAdmission;
   readonly maxConcurrentSessions?: number;
   /** Optional transport-neutral exact grant authority. */
   readonly authorization?: VoiceAuthorization;
+  /** Called immediately after a provider accept is durably acknowledged. */
+  readonly onIncomingAccepted?: (callId: string) => VoiceResult<boolean>;
+  /** Called once when an incoming SIP provider finalization is confirmed. */
+  readonly onIncomingClosed?: (callId: string) => void;
 }
 
 interface SessionRuntime {
   readonly sideband: LiveVoiceSideband;
   readonly providerSessionId: string;
+  readonly transport: VoiceTransport;
+  readonly authority: 'browser' | 'sip';
+  readonly incomingCallId?: string;
   readonly contextDiagnosticCorrelationId: string;
   unsubscribeProvider: VoiceUnsubscribe;
   unsubscribeTransport: VoiceUnsubscribe;
@@ -434,7 +452,91 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     this.pendingSetupReservations.add(reservation.value.id);
 
     try {
-      return await this.createSessionInternal(owner, input, reservation.value);
+      return await this.createSessionInternal(owner, input, reservation.value, {
+        transport: this.options.transport,
+        authority: 'browser',
+      });
+    } finally {
+      this.pendingSetupReservations.delete(reservation.value.id);
+      if (reservation.value.sessionId === undefined) {
+        reservation.value.release();
+      } else if (!this.runtimes.has(reservation.value.sessionId)) {
+        this.releaseReservation(reservation.value.sessionId);
+      }
+    }
+  }
+
+  async acceptIncomingSession(
+    input: VoiceIncomingSessionRequest,
+  ): VoiceAsyncResult<VoiceSessionCreateResult> {
+    if (!this.admissionOpen) return err(new PolicyError('Voice session admission is closed'));
+    if (
+      input.providerSessionId.trim() === '' ||
+      input.callId.trim() === '' ||
+      input.personaId.trim() === '' ||
+      !Number.isSafeInteger(input.admissionExpiresAt) ||
+      input.admissionExpiresAt <= this.now()
+    ) {
+      return err(new PolicyError('Incoming SIP session identity or expiry is invalid'));
+    }
+    const transport = this.options.transports?.get('sip');
+    if (!transport || transport.kind !== 'sip') {
+      return err(new PolicyError('Incoming SIP transport is not configured'));
+    }
+    if (!this.options.provider.acceptIncomingSession) {
+      return err(new PolicyError('Incoming SIP acceptance is unavailable'));
+    }
+    if (!this.options.onIncomingAccepted || !this.options.onIncomingClosed) {
+      return err(new PolicyError('Incoming SIP durable lifecycle callbacks are required'));
+    }
+    const ownerError = this.ensureOwnerActive(input.owner, true);
+    if (ownerError) return err(ownerError);
+    if (!this.options.isIncomingOwnerActive) {
+      return err(new PolicyError('Incoming SIP authority check is required'));
+    }
+    if (!this.options.isIncomingOwnerActive(input.owner, input.providerSessionId)) {
+      return err(new PolicyError('Incoming SIP authority is no longer active'));
+    }
+    const configuredSelection = this.options.adapterSelections?.get('sip');
+    if (!configuredSelection) return err(new PolicyError('Incoming SIP adapter selection is required'));
+    if (
+      configuredSelection.transport !== transport ||
+      configuredSelection.engine !== this.options.provider
+    ) {
+      return err(new PolicyError('Incoming SIP adapter selection does not match active adapters'));
+    }
+    const selection = createVoiceAdapterSelection({
+      transport,
+      engine: this.options.provider,
+      requiredCapabilities: configuredSelection.negotiation.requiredCapabilities,
+    });
+    if (selection.isErr()) return err(selection.error);
+    const negotiated = requireVoiceCapabilities(selection.value.negotiation);
+    if (negotiated.isErr()) return err(negotiated.error);
+    const policy = this.capturePolicy(input.owner);
+    if (policy.isErr()) return err(policy.error);
+    if (policy.value.personaId !== input.personaId) {
+      return err(new PolicyError('Incoming SIP persona does not match the configured voice persona'));
+    }
+    const reservation = this.callAdmission.reserve(input.owner.ownerId);
+    if (reservation.isErr()) return err(reservation.error);
+    this.pendingSetupReservations.add(reservation.value.id);
+    try {
+      return await this.createSessionInternal(
+        input.owner,
+        { transport: { type: 'sip', reference: input.providerSessionId, verified: true } },
+        reservation.value,
+        {
+          transport,
+          authority: 'sip',
+          incoming: {
+            callId: input.callId,
+            providerSessionId: input.providerSessionId,
+            admissionExpiresAt: input.admissionExpiresAt,
+          },
+          capturedPolicy: policy.value,
+        },
+      );
     } finally {
       this.pendingSetupReservations.delete(reservation.value.id);
       if (reservation.value.sessionId === undefined) {
@@ -449,11 +551,26 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     owner: VoiceOwnerContext,
     input: VoiceSessionCreateRequest,
     reservation: VoiceCallReservation,
+    setup: {
+      readonly transport: VoiceTransport;
+      readonly authority: 'browser' | 'sip';
+      readonly incoming?: {
+        readonly callId: string;
+        readonly providerSessionId: string;
+        readonly admissionExpiresAt: number;
+      };
+      readonly capturedPolicy?: VoicePolicySnapshot;
+    },
   ): VoiceAsyncResult<VoiceSessionCreateResult> {
     const setupGeneration = this.lifecycleGeneration;
-    const policy = this.capturePolicy(owner);
+    const policy = setup.capturedPolicy ? ok(setup.capturedPolicy) : this.capturePolicy(owner);
     if (policy.isErr()) return err(policy.error);
-    const beforePersist = this.ensureSetupActive(owner, setupGeneration);
+    const beforePersist = this.ensureSetupActive(
+      owner,
+      setupGeneration,
+      setup.authority === 'sip',
+      setup.incoming?.providerSessionId,
+    );
     if (beforePersist) return err(beforePersist);
     const sessionId = uuidv4();
     const threadId = this.createThread(owner.ownerId, policy.value.personaId, sessionId);
@@ -467,8 +584,9 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       owner,
       personaId: policy.value.personaId,
       threadId: threadId.value,
-      transport: this.options.transport.kind,
+      transport: setup.transport.kind,
       status: 'connecting',
+      ...(setup.incoming ? { providerSessionId: setup.incoming.providerSessionId } : {}),
       createdAt: now,
       deadlineAt: now + this.maxSessionLifetimeMs,
       policy: policy.value,
@@ -489,9 +607,14 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       personaId: policy.value.personaId,
       provider: this.options.providerName,
       model: this.options.liveModelName ?? policy.value.modelName,
-      transport: this.options.transport.kind,
+      transport: setup.transport.kind,
     });
-    const beforeProvider = this.ensureSetupActive(owner, setupGeneration);
+    const beforeProvider = this.ensureSetupActive(
+      owner,
+      setupGeneration,
+      setup.authority === 'sip',
+      setup.incoming?.providerSessionId,
+    );
     if (beforeProvider) {
       this.failSession(sessionId, persisted.value.revision, 'voice_admission_closed');
       return err(beforeProvider);
@@ -504,37 +627,76 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       stage: 'provider_setup_started',
       status: 'started',
     });
-    const providerSession = await this.options.provider.createSession({
-      sessionId,
-      ownerId: owner.ownerId,
-      modelName: this.options.liveModelName ?? policy.value.modelName,
-      instructions: composeVoiceInstructions(this.options.instructions, history.value),
-      delegationMode: 'client',
-      transport: input.transport,
-      audio: { output: { voice: policy.value.voiceName } },
-    });
+    const providerSession = setup.incoming
+      ? await this.options.provider.acceptIncomingSession!({
+          sessionId,
+          providerSessionId: setup.incoming.providerSessionId,
+          modelName: this.options.liveModelName ?? policy.value.modelName,
+          voice: policy.value.voiceName,
+          admissionExpiresAt: setup.incoming.admissionExpiresAt,
+          sessionExpiresAt: session.deadlineAt,
+          instructions: composeVoiceInstructions(this.options.instructions, history.value),
+          delegationMode: 'client',
+        })
+      : await this.options.provider.createSession({
+          sessionId,
+          ownerId: owner.ownerId,
+          modelName: this.options.liveModelName ?? policy.value.modelName,
+          instructions: composeVoiceInstructions(this.options.instructions, history.value),
+          delegationMode: 'client',
+          transport: input.transport,
+          audio: { output: { voice: policy.value.voiceName } },
+        });
     if (providerSession.isErr()) {
       this.failSession(sessionId, persisted.value.revision, 'provider_create_failed');
       return err(providerSession.error);
     }
+    const cleanupAcceptedIncoming = async (
+      attachedSideband?: LiveVoiceSideband,
+    ): Promise<void> => {
+      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming && isFinalizationConfirmed(attachedSideband)) {
+        this.options.onIncomingClosed?.(setup.incoming.callId);
+      }
+    };
+    if (setup.incoming) {
+      const registered = this.options.onIncomingAccepted!(setup.incoming.callId);
+      if (registered.isErr() || !registered.value) {
+        await cleanupAcceptedIncoming();
+        this.failSession(sessionId, persisted.value.revision, 'incoming_authority_lost');
+        return err(
+          registered.isErr()
+            ? registered.error
+            : new PolicyError('Incoming SIP durable acceptance was not recorded'),
+        );
+      }
+    }
     const setupAfterProvider = this.ensureSetupSessionOpen(sessionId);
     if (setupAfterProvider) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming();
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       return err(setupAfterProvider);
     }
     const providerIdentityValid =
       (providerSession.value.client.providerSessionId === undefined ||
         providerSession.value.providerSessionId === providerSession.value.client.providerSessionId) &&
       providerSession.value.client.sessionId === sessionId &&
-      providerSession.value.client.transport === this.options.transport.kind;
+      providerSession.value.client.transport === setup.transport.kind;
     if (!providerIdentityValid) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming();
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, persisted.value.revision, 'provider_session_identity_mismatch');
       return err(new PolicyError('Voice provider session descriptor does not match the session'));
     }
-    const activeAfterProviderCreate = this.ensureSetupActive(owner, setupGeneration);
+    const activeAfterProviderCreate = this.ensureSetupActive(
+      owner,
+      setupGeneration,
+      setup.authority === 'sip',
+      setup.incoming?.providerSessionId,
+    );
     if (activeAfterProviderCreate) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming();
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, persisted.value.revision, 'voice_login_revoked');
       return err(activeAfterProviderCreate);
     }
@@ -546,31 +708,36 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       updatedAt: this.now(),
     });
     if (withProvider.isErr()) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming();
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, persisted.value.revision, 'provider_session_persist_failed');
       return err(withProvider.error);
     }
     const setupBeforeSideband = this.ensureSetupSessionOpen(sessionId);
     if (setupBeforeSideband) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming();
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       return err(setupBeforeSideband);
     }
 
     const sideband = await this.options.provider.attachSideband(providerSession.value);
     if (sideband.isErr()) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming();
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, withProvider.value.revision, 'provider_sideband_failed');
       return err(sideband.error);
     }
     if (sideband.value.providerSessionId !== providerSession.value.providerSessionId) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming(sideband.value);
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, withProvider.value.revision, 'provider_sideband_identity_mismatch');
       return err(new PolicyError('Voice provider sideband identity does not match the session'));
     }
     const setupAfterSideband = this.ensureSetupSessionOpen(sessionId);
     if (setupAfterSideband) {
-      await sideband.value.close(false);
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (!setup.incoming) await sideband.value.close(false);
+      if (setup.incoming) await cleanupAcceptedIncoming(sideband.value);
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       return err(setupAfterSideband);
     }
     this.telemetry?.record({
@@ -578,9 +745,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       stage: 'provider_setup_completed',
       status: 'completed',
     });
-    const activeAfterSideband = this.ensureSetupActive(owner, setupGeneration);
+    const activeAfterSideband = this.ensureSetupActive(
+      owner,
+      setupGeneration,
+      setup.authority === 'sip',
+      setup.incoming?.providerSessionId,
+    );
     if (activeAfterSideband) {
-      await this.closeProvider(providerSession.value.providerSessionId, false);
+      if (setup.incoming) await cleanupAcceptedIncoming(sideband.value);
+      else await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, withProvider.value.revision, 'voice_login_revoked');
       return err(activeAfterSideband);
     }
@@ -588,6 +761,9 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const runtime: SessionRuntime = {
       sideband: sideband.value,
       providerSessionId: providerSession.value.providerSessionId,
+      transport: setup.transport,
+      authority: setup.authority,
+      ...(setup.incoming ? { incomingCallId: setup.incoming.callId } : {}),
       contextDiagnosticCorrelationId: diagnosticCorrelationIdForSideband(sideband.value),
       unsubscribeProvider: () => undefined,
       unsubscribeTransport: () => undefined,
@@ -606,12 +782,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         event,
       });
     });
-    runtime.unsubscribeTransport = this.options.transport.onEvent(sessionId, (event) => {
+    runtime.unsubscribeTransport = setup.transport.onEvent(sessionId, (event) => {
       void this.receiveTransportEvent(sessionId, event);
     });
     this.runtimes.set(sessionId, runtime);
 
-    const transport = await this.options.transport.open({
+    const transport = await setup.transport.open({
       sessionId,
       ownerId: owner.ownerId,
       client: providerSession.value.client,
@@ -622,10 +798,10 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     }
     const setupAfterTransport = this.ensureSetupSessionOpen(sessionId);
     if (setupAfterTransport) {
-      await this.options.transport.close(sessionId, 'setup_closed');
+      await setup.transport.close(sessionId, 'setup_closed');
       return err(setupAfterTransport);
     }
-    if (transport.value.sessionId !== sessionId || transport.value.kind !== this.options.transport.kind) {
+    if (transport.value.sessionId !== sessionId || transport.value.kind !== setup.transport.kind) {
       await this.closeSession(owner, sessionId, { reason: 'transport_failure' });
       return err(new PolicyError('Voice transport handle does not match the session'));
     }
@@ -634,7 +810,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       stage: 'transport_connected',
       status: 'completed',
     });
-    const activeAfterTransport = this.ensureSetupActive(owner, setupGeneration);
+    const activeAfterTransport = this.ensureSetupActive(
+      owner,
+      setupGeneration,
+      setup.authority === 'sip',
+      setup.incoming?.providerSessionId,
+    );
     if (activeAfterTransport) {
       await this.closeSession(owner, sessionId, { reason: 'logout' });
       return err(activeAfterTransport);
@@ -702,13 +883,24 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         for (const unsubscribe of runtime.resultUnsubscribes.values()) unsubscribe();
         runtime.resultUnsubscribes.clear();
       }
-      await runtime.sideband.close(input.reason !== 'transport_failure');
-      const finalUsage = latestSidebandUsage(runtime.sideband);
-      if (finalUsage) this.persistUsage(sessionId, finalUsage);
+      if (runtime.authority === 'sip') {
+        // The provider's SIP hangup endpoint owns closure. Calling the generic
+        // sideband close command here would turn an incoming call into a
+        // browser-style session close before final usage arrives.
+      } else {
+        await runtime.sideband.close(input.reason !== 'transport_failure');
+      }
       runtime.unsubscribeProvider();
     }
-    await this.options.transport.close(sessionId, input.reason);
+    await (runtime?.transport ?? this.transportFor(current.transport))?.close(sessionId, input.reason);
     if (current.providerSessionId) await this.closeProvider(current.providerSessionId, input.reason !== 'transport_failure');
+    if (runtime) {
+      // SIP final usage arrives while closeProvider waits for session.closed.
+      // Persist it only after that wait, otherwise the terminal projection can
+      // permanently retain the last non-final usage update.
+      const finalUsage = latestSidebandUsage(runtime.sideband);
+      if (finalUsage) this.persistUsage(sessionId, finalUsage);
+    }
 
     const latest = this.options.store.readSession(sessionId);
     if (latest.isErr()) return err(latest.error);
@@ -738,6 +930,13 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     // delivery remains until the terminal result arrives.
     this.releaseReservation(sessionId);
     this.publishSession(terminal.value);
+    if (
+      runtime?.authority === 'sip' &&
+      runtime.incomingCallId &&
+      finalization.status === 'confirmed'
+    ) {
+      this.options.onIncomingClosed?.(runtime.incomingCallId);
+    }
     if (!pendingDelegation) this.runtimes.delete(sessionId);
     return ok({ session: terminal.value, pendingDelegation });
   }
@@ -760,11 +959,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       });
     if (matching.length === 0) return err(new PolicyError('Voice thread was not found'));
     const projection = matching.find(
-      (candidate) =>
-        candidate.session.status === 'connected' &&
-        candidate.session.deadlineAt > this.now() &&
-        this.runtimes.has(candidate.session.id) &&
-        this.ensureOwnerActive(candidate.session.owner) === undefined,
+      (candidate) => {
+        const runtime = this.runtimes.get(candidate.session.id);
+        return (
+          candidate.session.status === 'connected' &&
+          candidate.session.deadlineAt > this.now() &&
+          runtime !== undefined &&
+          this.ensureRuntimeOwnerActive(runtime, candidate.session.owner) === undefined
+        );
+      },
     );
     const selectedProjection = projection ?? matching[0];
     if (!selectedProjection) return err(new PolicyError('Voice thread was not found'));
@@ -817,7 +1020,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
           outcome = ok({ sessionId: session.id, notificationId, speechRequested: false });
           return;
         }
-        const activeOwnerError = this.ensureOwnerActive(latest.value.owner);
+        const activeOwnerError = this.ensureRuntimeOwnerActive(runtime, latest.value.owner);
         const sourceBelongsToCurrentSession =
           sourceDelegation !== undefined &&
           sourceDelegation.sessionId === session.id &&
@@ -1045,22 +1248,57 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     return this.capturePolicy(owner);
   }
 
-  private ensureOwnerActive(owner: VoiceOwnerContext): TalonError | undefined {
-    if (this.options.authorization) {
+  private transportFor(kind: VoiceTransportKind): VoiceTransport | undefined {
+    if (this.options.transport.kind === kind) return this.options.transport;
+    return this.options.transports?.get(kind);
+  }
+
+  private ensureOwnerActive(
+    owner: VoiceOwnerContext,
+    skipBrowserAuthorization = false,
+  ): TalonError | undefined {
+    if (this.options.authorization && !skipBrowserAuthorization) {
       const grant = resolveExactVoiceGrant(this.options.authorization, owner);
       if (grant.isErr()) return grant.error;
     }
-    if (this.options.isOwnerActive && !this.options.isOwnerActive(owner)) {
+    if (!skipBrowserAuthorization && this.options.isOwnerActive && !this.options.isOwnerActive(owner)) {
       return new PolicyError('Voice login is no longer active');
     }
     return undefined;
   }
 
-  private ensureSetupActive(owner: VoiceOwnerContext, setupGeneration: number): TalonError | undefined {
+  private ensureSetupActive(
+    owner: VoiceOwnerContext,
+    setupGeneration: number,
+    skipBrowserAuthorization = false,
+    incomingProviderSessionId?: string,
+  ): TalonError | undefined {
     if (!this.admissionOpen || this.lifecycleGeneration !== setupGeneration) {
       return new PolicyError('Voice session admission is closed');
     }
-    return this.ensureOwnerActive(owner);
+    if (skipBrowserAuthorization && incomingProviderSessionId) {
+      if (!this.options.isIncomingOwnerActive) {
+        return new PolicyError('Incoming SIP authority check is required');
+      }
+      if (!this.options.isIncomingOwnerActive(owner, incomingProviderSessionId)) {
+        return new PolicyError('Incoming SIP authority is no longer active');
+      }
+    }
+    return this.ensureOwnerActive(owner, skipBrowserAuthorization);
+  }
+
+  private ensureRuntimeOwnerActive(
+    runtime: SessionRuntime,
+    owner: VoiceOwnerContext,
+  ): TalonError | undefined {
+    if (
+      runtime.authority === 'sip' &&
+      (!this.options.isIncomingOwnerActive ||
+        !this.options.isIncomingOwnerActive(owner, runtime.providerSessionId))
+    ) {
+      return new PolicyError('Incoming SIP authority is no longer active');
+    }
+    return this.ensureOwnerActive(owner, runtime.authority === 'sip');
   }
 
   private ensureSetupSessionOpen(sessionId: VoiceSessionId): TalonError | undefined {
@@ -1471,7 +1709,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       await this.closeSession(session.owner, sessionId, { reason: 'deadline' });
       return ok(undefined);
     }
-    const ownerError = this.ensureOwnerActive(session.owner);
+    const ownerError = this.ensureRuntimeOwnerActive(runtime, session.owner);
     if (ownerError) {
       await this.closeSession(session.owner, sessionId, { reason: 'logout' });
       return ok(undefined);
@@ -1548,7 +1786,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       policy: session.policy,
       requestedAt: this.now(),
     };
-    const admissionOwnerError = this.ensureOwnerActive(session.owner);
+    const admissionOwnerError = this.ensureRuntimeOwnerActive(runtime, session.owner);
     if (admissionOwnerError) {
       await this.closeSession(session.owner, sessionId, { reason: 'logout' });
       return ok(undefined);
@@ -2333,16 +2571,21 @@ function finalizationFromRuntime(
   runtime: SessionRuntime | undefined,
   usage: VoiceUsageUpdate | undefined,
 ): VoiceSessionRecord['finalization'] {
-  const candidate = runtime?.sideband as
-    | (LiveVoiceSideband & { finalizationStatus?: 'pending' | 'confirmed' | 'incomplete' })
-    | undefined;
-  const status = candidate?.finalizationStatus === 'confirmed' || usage?.final
-    ? 'confirmed'
-    : 'incomplete';
+  const status = isFinalizationConfirmed(runtime?.sideband, usage) ? 'confirmed' : 'incomplete';
   return {
     status,
     ...(status === 'confirmed' ? { confirmedAt: usage?.receivedAt } : {}),
   };
+}
+
+function isFinalizationConfirmed(
+  sideband: LiveVoiceSideband | undefined,
+  usage = latestSidebandUsage(sideband),
+): boolean {
+  const candidate = sideband as
+    | (LiveVoiceSideband & { finalizationStatus?: 'pending' | 'confirmed' | 'incomplete' })
+    | undefined;
+  return candidate?.finalizationStatus === 'confirmed' || usage?.final === true;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {

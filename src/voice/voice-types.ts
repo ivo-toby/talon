@@ -624,6 +624,25 @@ export interface LiveVoiceSessionRequest {
   };
 }
 
+/**
+ * Provider request for an already-created incoming Live session.  The
+ * provider session identifier comes from the authenticated SIP event; this
+ * path must never call the generic Live session creation endpoint.
+ */
+export interface LiveVoiceIncomingSessionRequest {
+  readonly sessionId: VoiceSessionId;
+  readonly providerSessionId: LiveProviderSessionId;
+  readonly modelName: string;
+  readonly voice: VoiceOutputVoice;
+  /** The short-lived proof used only while accepting the existing session. */
+  readonly admissionExpiresAt: number;
+  /** The durable session deadline after provider acceptance. */
+  readonly sessionExpiresAt: number;
+  /** The composed Talon persona/history instructions for the backend contract. */
+  readonly instructions: string;
+  readonly delegationMode: 'client';
+}
+
 export interface LiveVoiceSession {
   readonly providerSessionId: LiveProviderSessionId;
   readonly client: VoiceClientSessionDescriptor;
@@ -715,6 +734,8 @@ export interface LiveVoiceSideband {
   send(command: LiveVoiceCommand): VoiceAsyncResult<void>;
   onEvent(handler: VoiceEventHandler<LiveVoiceEvent>): VoiceUnsubscribe;
   close(graceful: boolean): VoiceAsyncResult<void>;
+  /** Wait for provider finalization after an external hangup request. */
+  waitForFinalization?(): VoiceAsyncResult<void>;
 }
 
 export interface LiveVoiceProvider {
@@ -722,6 +743,10 @@ export interface LiveVoiceProvider {
   /** Optional adapter metadata; omitted means unknown until negotiated. */
   readonly capabilities?: VoiceCapabilityMap;
   createSession(input: LiveVoiceSessionRequest): VoiceAsyncResult<LiveVoiceSession>;
+  /** Accept a provider-owned incoming session without creating a new one. */
+  acceptIncomingSession?(
+    input: LiveVoiceIncomingSessionRequest,
+  ): VoiceAsyncResult<LiveVoiceSession>;
   attachSideband(session: LiveVoiceSession): VoiceAsyncResult<LiveVoiceSideband>;
   closeSession(providerSessionId: LiveProviderSessionId): VoiceAsyncResult<void>;
 }
@@ -1021,6 +1046,16 @@ export interface VoiceSessionCreateResult {
   readonly client: VoiceClientSessionDescriptor;
 }
 
+/** Trusted incoming SIP admission passed by the SIP authority boundary. */
+export interface VoiceIncomingSessionRequest {
+  readonly callId: string;
+  readonly providerSessionId: LiveProviderSessionId;
+  readonly owner: VoiceOwnerContext;
+  readonly personaId: string;
+  /** The short-lived durable admission proof deadline. */
+  readonly admissionExpiresAt: number;
+}
+
 export type VoiceCloseReason = 'hangup' | 'logout' | 'deadline' | 'shutdown' | 'transport_failure';
 
 export interface VoiceSessionCloseRequest {
@@ -1068,6 +1103,9 @@ export interface VoiceSessionService {
   createSession(
     owner: VoiceOwnerContext,
     input: VoiceSessionCreateRequest,
+  ): VoiceAsyncResult<VoiceSessionCreateResult>;
+  acceptIncomingSession(
+    input: VoiceIncomingSessionRequest,
   ): VoiceAsyncResult<VoiceSessionCreateResult>;
   status(
     owner: VoiceOwnerContext,

@@ -242,8 +242,10 @@ auth:
 
 ## `voice`
 
-Browser voice is opt-in and disabled by default. It starts an HTTP listener
-for the authenticated WebRTC UI on `voice.host` (loopback by default) and uses
+Browser voice and incoming SIP are opt-in and disabled by default. Browser
+voice starts an HTTP listener for the authenticated WebRTC UI on `voice.host`
+(loopback by default). Incoming SIP starts its own authenticated webhook
+listener and accepts an existing provider-created GPT-Live session. Both use
 the ordinary durable queue and `AgentRunner` path for backend work.
 
 ```yaml
@@ -318,8 +320,9 @@ voice:
 | `sip.timestampToleranceSeconds` | positive integer | `300` | Standard Webhooks delivery timestamp tolerance |
 | `sip.deliveryReplayWindowMs` | integer ≥ 1000 | `259200000` | Maximum delivery retry replay window |
 
-When `voice.enabled` is true, Talon requires a configured persona and its
-selected provider (or the agent-runner default) to be enabled. The provider's
+When `voice.enabled` or `voice.sip.enabled` is true, Talon requires a configured
+persona and its selected provider (or the agent-runner default) to be enabled.
+The provider's
 normal implementation, OAuth, and native-tool restrictions remain in force.
 The configured access token is resolved from `voice.accessToken`, then the
 `accessTokenRef` provider, then the global `auth.apiKey`. Use HTTPS through a
@@ -352,9 +355,11 @@ endpoint mapped by `endpointMappings`; Caller ID and ordinary SIP headers are
 never used as authority. The raw request is capped at 256 KiB and verified
 before JSON parsing. Durable admission retains at most 10,000 call decisions,
 50,000 delivery receipts, and 10,000 grants, with unknown/pending replay
-tombstones retained indefinitely. A future provider accept callback receives a
-durable attempt marker; ambiguous outcomes remain unknown and are never retried
-automatically. See [Incoming SIP with Asterisk](../guides/voice-asterisk.mdx).
+tombstones retained indefinitely. After the durable attempt marker, Talon
+makes one `POST /v1/live/sessions/{data.session_id}/accept`, attaches the same
+existing session, and never creates a new Live session for SIP. Ambiguous
+accept or missing close finalization remains unknown/incomplete and is never
+retried automatically. See [Incoming SIP with Asterisk](../guides/voice-asterisk.mdx).
 
 When `usdPerMinute` is configured, voice cost is estimated from cumulative
 provider-reported seconds. Final provider usage does not confirm billing, so
