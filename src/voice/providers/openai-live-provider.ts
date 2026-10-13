@@ -187,6 +187,15 @@ function contextChangedMeaningfully(
 /** GPT-Live adapter using the documented Live API, never the Realtime API. */
 export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
   readonly name = 'openai-live';
+  readonly capabilities = {
+    audio_streaming: 'supported',
+    interruptions: 'supported',
+    delegation: 'supported',
+    notifications: 'supported',
+    transcript_stability: 'supported',
+    provider_acknowledgements: 'supported',
+    usage_reporting: 'supported',
+  } as const;
 
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
@@ -253,6 +262,10 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
     const configured = this.checkConfiguration();
     if (configured) return err(configured);
 
+    if (input.transport.type !== 'webrtc') {
+      return err(providerError('unsupported_transport', 'GPT-Live requires a WebRTC offer'));
+    }
+    const transport = input.transport;
     const voice = nonEmptyString(input.audio?.output?.voice) ? input.audio.output.voice : 'marin';
     const body = {
       session: {
@@ -262,7 +275,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
         instructions: input.instructions,
         audio: { output: { voice } },
       },
-      transport: { type: input.transport.type, sdp: input.transport.sdp },
+      transport: { type: 'webrtc', sdp: transport.sdp },
     };
     const response = await this.requestJson(OPENAI_LIVE_SESSION_PATH, {
       method: 'POST',
@@ -276,7 +289,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
     const answer = data ? asRecord(data.transport) : undefined;
     const answerSdp = answer ? stringValue(answer.sdp) : undefined;
     const answerType = answer ? stringValue(answer.type) : undefined;
-    if (!providerSessionId || !answerSdp) {
+    if (!providerSessionId || !answerSdp || (answerType !== undefined && answerType !== 'webrtc')) {
       return err(
         providerError(
           'invalid_response',
@@ -295,10 +308,10 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
     const session: LiveVoiceSession = {
       providerSessionId,
       client: {
-        transport: input.transport.type,
+        transport: 'webrtc',
         sessionId: input.sessionId,
         providerSessionId,
-        answer: { type: answerType ?? input.transport.type, sdp: answerSdp },
+        answer: { type: 'webrtc', sdp: answerSdp },
         expiresAt,
       },
     };

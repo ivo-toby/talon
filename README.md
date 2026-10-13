@@ -2435,6 +2435,14 @@ retention is controlled by the provider account. See the [browser voice guide](d
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.
 
+The daemon selects the browser transport and live engine from trusted
+configuration and denies required capabilities that are unsupported or
+unknown before creating a provider session. Browser readiness still requires
+the real RTC connection and the engine's readiness event; a server-side
+connected status alone does not mark the call ready. Future verified SIP and
+audio-stream descriptors are transport contracts only; the production browser
+path remains WebRTC.
+
 On page load, the browser first checks the cookie with the read-only
 `GET /voice/auth/session` endpoint and only then attempts to read the optional
 retained-call pointer. A valid cookie reaches the ready screen even when the

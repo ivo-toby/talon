@@ -39,14 +39,13 @@ import type {
   VoiceBrowserTelemetryResult,
   VoiceTelemetry,
 } from '../../voice-telemetry.js';
+import { VoiceCreationRateLimitError } from '../../voice-adapters.js';
 
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 0;
 const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024;
 const DEFAULT_MAX_SDP_BYTES = 64 * 1024;
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 1;
-const DEFAULT_CREATION_WINDOW_MS = 60 * 1000;
-const DEFAULT_MAX_SESSION_CREATIONS = 5;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 15 * 1000;
 const MAX_SESSION_ID_LENGTH = 256;
 const MAX_OUTPUT_ID_LENGTH = 256;
@@ -128,11 +127,6 @@ export interface BrowserVoiceServerDependencies {
   readonly logger?: Logger;
 }
 
-interface CreationState {
-  count: number;
-  startedAt: number;
-}
-
 interface TelemetryRateState {
   readonly owner: VoiceOwnerContext;
   readonly sessionId: string;
@@ -187,7 +181,6 @@ export class BrowserVoiceServer {
   private creatingSessions = 0;
   private readonly sessionsByAuthCookie = new Map<string, Set<string>>();
   private readonly sessionOwners = new Map<string, VoiceOwnerContext>();
-  private readonly creationStates = new Map<string, CreationState>();
   private readonly telemetryRates = new Map<string, TelemetryRateState>();
 
   private server: Server | null = null;
@@ -551,15 +544,6 @@ export class BrowserVoiceServer {
     }
     this.creatingSessions += 1;
     try {
-      if (!this.consumeCreation(authenticated.owner.ownerId)) {
-        this.writeError(response, requestId, {
-          status: 429,
-          code: 'RATE_LIMITED',
-          message: 'Too many session creations',
-        });
-        return;
-      }
-
       let body: unknown;
       try {
         body = await readJsonBody(request, this.maxRequestBytes);
@@ -1157,10 +1141,8 @@ export class BrowserVoiceServer {
       });
     }
     const type = readStringProperty(body.transport, 'type');
-    const sdp = readStringProperty(body.transport, 'sdp');
     if (
       type === null ||
-      sdp === null ||
       type.length === 0 ||
       type.length > 64 ||
       !this.allowedTransportTypes.includes(type)
@@ -1171,28 +1153,49 @@ export class BrowserVoiceServer {
         message: 'Invalid request',
       });
     }
-    if (Buffer.byteLength(sdp, 'utf8') > this.maxSdpBytes) {
-      return new RequestFailure({
-        status: 413,
-        code: 'PAYLOAD_TOO_LARGE',
-        message: 'Payload too large',
-      });
+    if (type === 'webrtc') {
+      const sdp = readStringProperty(body.transport, 'sdp');
+      if (sdp === null || sdp.length === 0) {
+        return new RequestFailure({ status: 400, code: 'INVALID_REQUEST', message: 'Invalid request' });
+      }
+      if (Buffer.byteLength(sdp, 'utf8') > this.maxSdpBytes) {
+        return new RequestFailure({
+          status: 413,
+          code: 'PAYLOAD_TOO_LARGE',
+          message: 'Payload too large',
+        });
+      }
+      return { transport: { type: 'webrtc', sdp } };
     }
-    return { transport: { type, sdp } };
-  }
-
-  private consumeCreation(ownerId: string): boolean {
-    const now = Date.now();
-    const windowMs = this.config.sessionCreationWindowMs ?? DEFAULT_CREATION_WINDOW_MS;
-    const max = this.config.maxSessionCreations ?? DEFAULT_MAX_SESSION_CREATIONS;
-    const current = this.creationStates.get(ownerId);
-    if (!current || now - current.startedAt >= windowMs) {
-      this.creationStates.set(ownerId, { count: 1, startedAt: now });
-      return true;
+    // A browser body cannot attest that a SIP reference was verified. SIP
+    // ingress must construct that descriptor after its own authority checks.
+    if (type === 'sip') {
+      return new RequestFailure({ status: 400, code: 'INVALID_REQUEST', message: 'Invalid request' });
     }
-    if (current.count >= max) return false;
-    current.count += 1;
-    return true;
+    if (type === 'audio_stream' && isRecord(body.transport.format)) {
+      const codec = readStringProperty(body.transport.format, 'codec');
+      const sampleRateHz = body.transport.format.sampleRateHz;
+      const channels = body.transport.format.channels;
+      if (
+        codec !== null &&
+        codec.length > 0 &&
+        codec.length <= 64 &&
+        typeof sampleRateHz === 'number' &&
+        Number.isSafeInteger(sampleRateHz) &&
+        sampleRateHz > 0 &&
+        typeof channels === 'number' &&
+        Number.isSafeInteger(channels) &&
+        channels > 0
+      ) {
+        return {
+          transport: {
+            type: 'audio_stream',
+            format: { codec, sampleRateHz, channels },
+          },
+        };
+      }
+    }
+    return new RequestFailure({ status: 400, code: 'INVALID_REQUEST', message: 'Invalid request' });
   }
 
   private reconcileTerminalSessions(currentOwner: VoiceOwnerContext): void {
@@ -1443,7 +1446,15 @@ export class BrowserVoiceServer {
     });
   }
 
-  private writeDomainError(response: ServerResponse, requestId: string, _error: unknown): void {
+  private writeDomainError(response: ServerResponse, requestId: string, error: unknown): void {
+    if (error instanceof VoiceCreationRateLimitError) {
+      this.writeError(response, requestId, {
+        status: 429,
+        code: 'RATE_LIMITED',
+        message: 'Too many session creations',
+      });
+      return;
+    }
     this.writeError(response, requestId, {
       status: 500,
       code: 'VOICE_ERROR',

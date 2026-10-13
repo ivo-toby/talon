@@ -142,6 +142,15 @@ provider, live model, output voice, tools, and MCP policy from the current
 login. Provider events become bounded context snapshots, then durable voice
 delegations on the ordinary queue and `AgentRunner` path.
 
+Transport and live-engine capabilities are selected from trusted daemon
+configuration. Talon rejects a combination when a required capability is
+unsupported or unproven before it creates the provider session. The browser
+shows a connected call only after both the actual RTC connection and the live
+engine readiness event are observed; an optimistic server lifecycle status is
+not sufficient. The generic boundary also has variant descriptors for future
+verified SIP references and audio streams, but this browser deployment enables
+WebRTC only.
+
 Restoration can reopen retained read-only status/history streams, but it never
 requests microphone permission, creates a peer or paid audio session, connects
 a provider, enqueues backend work, or replays old work automatically. A

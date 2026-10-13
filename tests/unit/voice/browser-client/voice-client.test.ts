@@ -298,6 +298,8 @@ describe('VoiceBrowserClient', () => {
       session: makeStatus({ status: 'connected' }),
       occurredAt: 150,
     });
+    peer.emitProviderEvent({ type: 'response.done' });
+    expect(client.state.phase).toBe('connecting');
     peer.emitProviderEvent({ type: 'session.started', session: { id: 'provider-session-1' } });
     expect(client.state.phase).toBe('connected');
 

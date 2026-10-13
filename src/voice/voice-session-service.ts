@@ -32,6 +32,14 @@ import {
   type VoiceAuthLoginResult,
   type VoiceAuthSession,
 } from './voice-auth.js';
+import {
+  createVoiceAdapterSelection,
+  requireVoiceCapabilities,
+  VoiceCallAdmission,
+  type VoiceAdapterSelection,
+  type VoiceCallReservation,
+} from './voice-adapters.js';
+import { resolveExactVoiceGrant, type VoiceAuthorization } from './voice-authorization.js';
 import type {
   LiveVoiceEvent,
   LiveVoiceProvider,
@@ -133,6 +141,13 @@ export interface VoiceSessionServiceOptions {
   /** Content-free server lifecycle observations. */
   readonly telemetry?: VoiceTelemetry;
   readonly logger?: pino.Logger;
+  /** Trusted server-selected transport/engine contract. */
+  readonly adapterSelection?: VoiceAdapterSelection;
+  /** Shared across all voice transports, including pending setup. */
+  readonly callAdmission?: VoiceCallAdmission;
+  readonly maxConcurrentSessions?: number;
+  /** Optional transport-neutral exact grant authority. */
+  readonly authorization?: VoiceAuthorization;
 }
 
 interface SessionRuntime {
@@ -170,6 +185,16 @@ export interface BrowserVoiceTransportOptions {
 /** In-memory browser transport adapter for the voice lifecycle composition. */
 export class BrowserVoiceTransport implements VoiceTransport {
   readonly kind = 'webrtc';
+  readonly capabilities = {
+    audio_streaming: 'supported',
+    interruptions: 'supported',
+    delegation: 'supported',
+    notifications: 'supported',
+    transcript_stability: 'supported',
+    provider_acknowledgements: 'supported',
+    playback_evidence: 'supported',
+    usage_reporting: 'supported',
+  } as const;
 
   private readonly now: () => number;
   private readonly createTransportSessionId: () => string;
@@ -351,8 +376,9 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
   private readonly generation: () => number;
   private readonly telemetry: VoiceTelemetry | undefined;
   private readonly runtimes = new Map<VoiceSessionId, SessionRuntime>();
-  private readonly activeSessionIds = new Set<VoiceSessionId>();
-  private creatingSession = false;
+  private readonly callAdmission: VoiceCallAdmission;
+  private readonly reservations = new Map<VoiceSessionId, VoiceCallReservation>();
+  private readonly pendingSetupReservations = new Set<string>();
   private admissionOpen = true;
   private lifecycleGeneration = 0;
 
@@ -373,6 +399,8 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     this.usdPerMinute = optionalNonNegativeFinite(options.usdPerMinute, 'usdPerMinute');
     this.generation = options.generation ?? ((): number => this.lifecycleGeneration);
     this.telemetry = options.telemetry;
+    this.callAdmission =
+      options.callAdmission ?? new VoiceCallAdmission(options.maxConcurrentSessions ?? 1);
   }
 
   async createSession(
@@ -382,21 +410,45 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (!this.admissionOpen) return err(new PolicyError('Voice session admission is closed'));
     const ownerError = this.ensureOwnerActive(owner);
     if (ownerError) return err(ownerError);
-    if (this.creatingSession || this.activeSessionIds.size > 0) {
-      return err(new PolicyError('Only one browser voice session may be active'));
+    const configuredSelection = this.options.adapterSelection;
+    if (!configuredSelection) return err(new PolicyError('Voice adapter selection is required'));
+    if (
+      configuredSelection.transport !== this.options.transport ||
+      configuredSelection.engine !== this.options.provider
+    ) {
+      return err(new PolicyError('Voice adapter selection does not match the active adapters'));
     }
-    this.creatingSession = true;
+    const actualSelection = createVoiceAdapterSelection({
+      transport: this.options.transport,
+      engine: this.options.provider,
+      requiredCapabilities: configuredSelection.negotiation.requiredCapabilities,
+    });
+    if (actualSelection.isErr()) return err(actualSelection.error);
+    const negotiated = requireVoiceCapabilities(actualSelection.value.negotiation);
+    if (negotiated.isErr()) return err(negotiated.error);
+    if (input.transport.type !== actualSelection.value.transport.kind) {
+      return err(new PolicyError('Voice transport is not the configured adapter'));
+    }
+    const reservation = this.callAdmission.reserve(owner.ownerId);
+    if (reservation.isErr()) return err(reservation.error);
+    this.pendingSetupReservations.add(reservation.value.id);
 
     try {
-      return await this.createSessionInternal(owner, input);
+      return await this.createSessionInternal(owner, input, reservation.value);
     } finally {
-      this.creatingSession = false;
+      this.pendingSetupReservations.delete(reservation.value.id);
+      if (reservation.value.sessionId === undefined) {
+        reservation.value.release();
+      } else if (!this.runtimes.has(reservation.value.sessionId)) {
+        this.releaseReservation(reservation.value.sessionId);
+      }
     }
   }
 
   private async createSessionInternal(
     owner: VoiceOwnerContext,
     input: VoiceSessionCreateRequest,
+    reservation: VoiceCallReservation,
   ): VoiceAsyncResult<VoiceSessionCreateResult> {
     const setupGeneration = this.lifecycleGeneration;
     const policy = this.capturePolicy(owner);
@@ -425,6 +477,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     };
     const persisted = this.options.store.createSession(session);
     if (persisted.isErr()) return err(persisted.error);
+    const bound = reservation.bind(sessionId);
+    if (bound.isErr()) {
+      this.failSession(sessionId, persisted.value.revision, 'voice_admission_lost');
+      return err(bound.error);
+    }
+    this.reservations.set(sessionId, bound.value);
     this.telemetry?.startCall({
       callId: sessionId,
       threadId: threadId.value,
@@ -433,12 +491,13 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       model: this.options.liveModelName ?? policy.value.modelName,
       transport: this.options.transport.kind,
     });
-    this.activeSessionIds.add(sessionId);
     const beforeProvider = this.ensureSetupActive(owner, setupGeneration);
     if (beforeProvider) {
       this.failSession(sessionId, persisted.value.revision, 'voice_admission_closed');
       return err(beforeProvider);
     }
+    const setupBeforeProvider = this.ensureSetupSessionOpen(sessionId);
+    if (setupBeforeProvider) return err(setupBeforeProvider);
 
     this.telemetry?.record({
       callId: sessionId,
@@ -458,8 +517,14 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       this.failSession(sessionId, persisted.value.revision, 'provider_create_failed');
       return err(providerSession.error);
     }
+    const setupAfterProvider = this.ensureSetupSessionOpen(sessionId);
+    if (setupAfterProvider) {
+      await this.closeProvider(providerSession.value.providerSessionId, false);
+      return err(setupAfterProvider);
+    }
     const providerIdentityValid =
-      providerSession.value.providerSessionId === providerSession.value.client.providerSessionId &&
+      (providerSession.value.client.providerSessionId === undefined ||
+        providerSession.value.providerSessionId === providerSession.value.client.providerSessionId) &&
       providerSession.value.client.sessionId === sessionId &&
       providerSession.value.client.transport === this.options.transport.kind;
     if (!providerIdentityValid) {
@@ -483,8 +548,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (withProvider.isErr()) {
       await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, persisted.value.revision, 'provider_session_persist_failed');
-      this.activeSessionIds.delete(sessionId);
       return err(withProvider.error);
+    }
+    const setupBeforeSideband = this.ensureSetupSessionOpen(sessionId);
+    if (setupBeforeSideband) {
+      await this.closeProvider(providerSession.value.providerSessionId, false);
+      return err(setupBeforeSideband);
     }
 
     const sideband = await this.options.provider.attachSideband(providerSession.value);
@@ -497,6 +566,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       await this.closeProvider(providerSession.value.providerSessionId, false);
       this.failSession(sessionId, withProvider.value.revision, 'provider_sideband_identity_mismatch');
       return err(new PolicyError('Voice provider sideband identity does not match the session'));
+    }
+    const setupAfterSideband = this.ensureSetupSessionOpen(sessionId);
+    if (setupAfterSideband) {
+      await sideband.value.close(false);
+      await this.closeProvider(providerSession.value.providerSessionId, false);
+      return err(setupAfterSideband);
     }
     this.telemetry?.record({
       callId: sessionId,
@@ -544,6 +619,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (transport.isErr()) {
       await this.closeSession(owner, sessionId, { reason: 'transport_failure' });
       return err(transport.error);
+    }
+    const setupAfterTransport = this.ensureSetupSessionOpen(sessionId);
+    if (setupAfterTransport) {
+      await this.options.transport.close(sessionId, 'setup_closed');
+      return err(setupAfterTransport);
     }
     if (transport.value.sessionId !== sessionId || transport.value.kind !== this.options.transport.kind) {
       await this.closeSession(owner, sessionId, { reason: 'transport_failure' });
@@ -656,7 +736,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     // already-open status stream can receive the retained result after hangup.
     // Provider and transport listeners were removed above; only result/status
     // delivery remains until the terminal result arrives.
-    this.activeSessionIds.delete(sessionId);
+    this.releaseReservation(sessionId);
     this.publishSession(terminal.value);
     if (!pendingDelegation) this.runtimes.delete(sessionId);
     return ok({ session: terminal.value, pendingDelegation });
@@ -966,6 +1046,10 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
   }
 
   private ensureOwnerActive(owner: VoiceOwnerContext): TalonError | undefined {
+    if (this.options.authorization) {
+      const grant = resolveExactVoiceGrant(this.options.authorization, owner);
+      if (grant.isErr()) return grant.error;
+    }
     if (this.options.isOwnerActive && !this.options.isOwnerActive(owner)) {
       return new PolicyError('Voice login is no longer active');
     }
@@ -977,6 +1061,16 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       return new PolicyError('Voice session admission is closed');
     }
     return this.ensureOwnerActive(owner);
+  }
+
+  private ensureSetupSessionOpen(sessionId: VoiceSessionId): TalonError | undefined {
+    const projection = this.options.store.readSession(sessionId);
+    if (projection.isErr()) return projection.error;
+    if (!projection.value) return new PolicyError('Voice session was not found');
+    if (['closing', 'closed', 'expired', 'failed'].includes(projection.value.session.status)) {
+      return new PolicyError('Voice session setup was closed');
+    }
+    return undefined;
   }
 
   private createThread(ownerId: string, personaId: string, sessionId: string): VoiceResult<string> {
@@ -1965,7 +2059,15 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     });
     if (result.isOk()) this.publishSession(result.value);
     this.telemetry?.finishCall(sessionId, 'incomplete');
-    this.activeSessionIds.delete(sessionId);
+    this.releaseReservation(sessionId);
+  }
+
+  private releaseReservation(sessionId: VoiceSessionId): void {
+    const reservation = this.reservations.get(sessionId);
+    if (!reservation) return;
+    if (this.pendingSetupReservations.has(reservation.id)) return;
+    reservation.release();
+    this.reservations.delete(sessionId);
   }
 
   private async closeProvider(providerSessionId: string, graceful: boolean): Promise<void> {

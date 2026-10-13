@@ -13,6 +13,7 @@ import {
   BrowserVoiceServer,
   type BrowserVoiceServerConfig,
 } from '../../../../src/voice/transports/browser/browser-server.js';
+import { VoiceCreationRateLimitError } from '../../../../src/voice/voice-adapters.js';
 import type {
   VoiceAsyncResult,
   VoiceClientSessionDescriptor,
@@ -176,6 +177,52 @@ afterEach(async () => {
 });
 
 describe('BrowserVoiceServer', () => {
+  it('maps shared owner creation admission denial to a typed 429 response', async () => {
+    const service = new FakeVoiceSessionService();
+    vi.spyOn(service, 'createSession').mockResolvedValue(err(new VoiceCreationRateLimitError()));
+    const server = await startServer(service);
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+
+    const response = await createAt(
+      base,
+      `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`,
+      csrf,
+    );
+
+    expect(response.status).toBe(429);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'RATE_LIMITED', message: 'Too many session creations' },
+    });
+  });
+
+  it('does not let a browser body self-attest a verified SIP reference', async () => {
+    const server = await startServer(new FakeVoiceSessionService(), {
+      allowedTransportTypes: ['sip'],
+    });
+    const base = `http://127.0.0.1:${server.port}`;
+    const login = await loginAt(base);
+    const cookies = getSetCookies(login);
+    const sessionCookie = cookieValue(cookies, VOICE_SESSION_COOKIE);
+    const csrf = cookieValue(cookies, VOICE_CSRF_COOKIE);
+    const response = await fetch(`${base}/voice/sessions`, {
+      method: 'POST',
+      headers: {
+        cookie: `${VOICE_SESSION_COOKIE}=${sessionCookie}; ${VOICE_CSRF_COOKIE}=${csrf}`,
+        origin: ORIGIN,
+        'content-type': 'application/json',
+        'x-csrf-token': csrf,
+      },
+      body: JSON.stringify({
+        transport: { type: 'sip', reference: 'incoming-call-1', verified: true },
+      }),
+    });
+    expect(response.status).toBe(400);
+  });
+
   it('honors a configured listener host while defaulting to loopback', async () => {
     const defaultServer = await startServer(new FakeVoiceSessionService());
     expect(boundHost(defaultServer)).toBe('127.0.0.1');
