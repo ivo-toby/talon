@@ -48,6 +48,7 @@ import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-to
 import type { VoiceBackendRequest } from '../voice/voice-types.js';
 import type { VoiceExecutionGate, VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
 import type { VoiceOutputSink } from '../voice/voice-output-sink.js';
+import type { VoiceTelemetry } from '../voice/voice-telemetry.js';
 import { getVoiceNativeToolNames } from '../voice/voice-policy.js';
 
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
@@ -82,12 +83,14 @@ export class AgentRunner {
   private readonly queryTimeoutMs: number;
   private readonly voiceOutputSink?: VoiceOutputSink;
   private readonly voiceExecutionGate?: VoiceExecutionGate;
+  private readonly voiceTelemetry?: VoiceTelemetry;
 
   constructor(ctx: DaemonContext, options?: AgentRunnerOptions) {
     this.ctx = ctx;
     this.queryTimeoutMs = options?.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
     this.voiceOutputSink = options?.voiceOutputSink;
     this.voiceExecutionGate = options?.voiceExecutionGate;
+    this.voiceTelemetry = ctx.voiceTelemetry ?? undefined;
   }
 
   /**
@@ -990,7 +993,18 @@ export class AgentRunner {
                         if (queryCancelled) {
                           throw new Error('Agent query timed out before provider start');
                         }
-                        if (isVoiceTask) voiceProviderStarted = true;
+                        if (isVoiceTask) {
+                          this.voiceTelemetry?.record({
+                            callId: voiceRequest.sessionId,
+                            stage: 'backend_provider_start',
+                            status: 'started',
+                            delegationId: voiceRequest.delegationId,
+                            providerDelegationId: voiceRequest.providerDelegationId,
+                            queueItemId: item.id,
+                            runId,
+                          });
+                          voiceProviderStarted = true;
+                        }
                         stream = strategy.run(queryInput);
                       } catch (cause) {
                         const message = cause instanceof Error ? cause.message : String(cause);
@@ -1134,7 +1148,18 @@ export class AgentRunner {
                     if (queryCancelled) {
                       throw new Error('Agent query timed out before provider start');
                     }
-                    if (isVoiceTask) voiceProviderStarted = true;
+                    if (isVoiceTask) {
+                      this.voiceTelemetry?.record({
+                        callId: voiceRequest.sessionId,
+                        stage: 'backend_provider_start',
+                        status: 'started',
+                        delegationId: voiceRequest.delegationId,
+                        providerDelegationId: voiceRequest.providerDelegationId,
+                        queueItemId: item.id,
+                        runId,
+                      });
+                      voiceProviderStarted = true;
+                    }
                     const result = await strategy.run(queryInput);
                     sawEvents = true;
                     outputText = result.output;

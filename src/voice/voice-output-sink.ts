@@ -20,6 +20,7 @@ import type {
   VoiceResult,
   VoiceStore,
 } from './voice-types.js';
+import type { VoiceTelemetry } from './voice-telemetry.js';
 
 /** Keep retained output bounded even if a provider returns an oversized value. */
 export const MAX_VOICE_OUTPUT_CHARS = 32_000;
@@ -29,6 +30,7 @@ export type VoiceOutputPublisher = (result: VoiceBackendResult) => void | VoiceR
 export interface VoiceOutputSinkOptions {
   readonly now?: () => number;
   readonly maxOutputChars?: number;
+  readonly telemetry?: VoiceTelemetry;
 }
 
 /**
@@ -87,6 +89,7 @@ export function authoritativeVoiceResult(
 export class VoiceOutputSink {
   private readonly now: () => number;
   private readonly maxOutputChars: number;
+  private readonly telemetry: VoiceTelemetry | undefined;
 
   constructor(
     private readonly store: VoiceStore,
@@ -98,6 +101,7 @@ export class VoiceOutputSink {
       1,
       Math.min(options.maxOutputChars ?? MAX_VOICE_OUTPUT_CHARS, MAX_VOICE_OUTPUT_CHARS),
     );
+    this.telemetry = options.telemetry;
   }
 
   executionStarted(delegationId: string, occurredAt = this.now()): VoiceResult<VoiceBackendResult> {
@@ -202,6 +206,31 @@ export class VoiceOutputSink {
     if (persisted.isErr()) return err(persisted.error);
     const authoritative = authoritativeVoiceResult(this.store, persisted.value);
     if (authoritative.isErr()) return err(authoritative.error);
+    if (
+      authoritative.value.execution === 'succeeded' ||
+      authoritative.value.execution === 'failed' ||
+      authoritative.value.execution === 'unknown' ||
+      authoritative.value.execution === 'skipped'
+    ) {
+      const delegation = this.store.findDelegation(result.delegationId);
+      if (delegation.isOk() && delegation.value) {
+        this.telemetry?.record({
+          callId: delegation.value.sessionId,
+          stage: 'result_verified',
+          status:
+            authoritative.value.execution === 'succeeded'
+              ? 'completed'
+              : authoritative.value.execution === 'failed'
+                ? 'failed'
+                : 'unknown',
+          delegationId: delegation.value.id,
+          providerDelegationId: delegation.value.providerDelegationId,
+          queueItemId: delegation.value.queueItemId,
+          ...(delegation.value.runId ? { runId: delegation.value.runId } : {}),
+          outputId: authoritative.value.outputId,
+        });
+      }
+    }
     if (!this.publisher) return authoritative;
 
     try {

@@ -31,6 +31,7 @@ import {
   type TranscriptContextResult,
 } from './transcript-buffer.js';
 import { LiveProviderError, type LiveProviderErrorReason } from './live-provider-error.js';
+import type { VoiceTelemetry } from '../voice-telemetry.js';
 
 export const OPENAI_LIVE_API_BASE = 'https://api.openai.com';
 export const OPENAI_LIVE_SESSION_PATH = '/v1/live/sessions';
@@ -76,6 +77,7 @@ export interface OpenAiLiveVoiceProviderOptions extends TranscriptBufferOptions 
   readonly defaultSessionLifetimeMs?: number;
   readonly maxProviderEventBytes?: number;
   readonly maxPendingCommands?: number;
+  readonly telemetry?: VoiceTelemetry;
   readonly logger?: pino.Logger;
 }
 
@@ -198,6 +200,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
   private readonly maxProviderEventBytes: number;
   private readonly maxPendingCommands: number;
   private readonly logger: pino.Logger | undefined;
+  private readonly telemetry: VoiceTelemetry | undefined;
   private readonly transcriptOptions: TranscriptBufferOptions;
   private readonly sessions = new Map<string, ProviderSessionState>();
 
@@ -234,6 +237,7 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
       options.maxPendingCommands ?? DEFAULT_MAX_PENDING_COMMANDS,
       'maxPendingCommands',
     );
+    this.telemetry = options.telemetry;
     this.logger = options.logger;
     this.transcriptOptions = {
       maxFragments: options.maxFragments,
@@ -328,6 +332,8 @@ export class OpenAiLiveVoiceProvider implements LiveVoiceProvider {
       closeTimeoutMs: this.closeTimeoutMs,
       maxProviderEventBytes: this.maxProviderEventBytes,
       maxPendingCommands: this.maxPendingCommands,
+      callId: session.client.sessionId,
+      telemetry: this.telemetry,
       logger: this.logger,
       transcriptOptions: this.transcriptOptions,
     });
@@ -419,6 +425,8 @@ export interface OpenAiLiveVoiceSidebandOptions {
   readonly closeTimeoutMs: number;
   readonly maxProviderEventBytes: number;
   readonly maxPendingCommands: number;
+  readonly callId?: string;
+  readonly telemetry?: VoiceTelemetry;
   readonly logger?: pino.Logger;
   readonly transcriptOptions: TranscriptBufferOptions;
 }
@@ -435,6 +443,8 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
   private readonly maxProviderEventBytes: number;
   private readonly maxPendingCommands: number;
   private readonly logger: pino.Logger | undefined;
+  private readonly callId: string;
+  private readonly telemetry: VoiceTelemetry | undefined;
   private readonly transcript: TranscriptBuffer;
   private readonly handlers = new Set<VoiceEventHandler<LiveVoiceEvent>>();
   private readonly pendingCommands = new Map<string, PendingCommand>();
@@ -481,6 +491,8 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
     this.closeTimeoutMs = options.closeTimeoutMs;
     this.maxProviderEventBytes = options.maxProviderEventBytes;
     this.maxPendingCommands = options.maxPendingCommands;
+    this.callId = options.callId ?? providerSessionId;
+    this.telemetry = options.telemetry;
     this.logger = options.logger;
     this.diagnosticStartedAt = this.now();
     this.transcript = new TranscriptBuffer(options.transcriptOptions);
@@ -874,6 +886,13 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       );
       return;
     }
+
+    this.telemetry?.record({
+      callId: this.callId,
+      stage: 'delegation_received',
+      status: 'accepted',
+      providerDelegationId,
+    });
 
     const proposal: VoiceDelegationProposal = {
       providerDelegationId,
@@ -1402,6 +1421,12 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       if (signature) this.rememberPublishedUserSignature(signature);
     }
     this.logPublicationDiagnostic(providerDelegationId, 'published', undefined);
+    this.telemetry?.record({
+      callId: this.callId,
+      stage: 'delegation_published',
+      status: 'accepted',
+      providerDelegationId,
+    });
     this.publish({
       kind: 'delegation',
       eventId: pending.eventId,

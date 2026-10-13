@@ -32,6 +32,7 @@ import type {
   VoiceStore,
   VoiceUnsubscribe,
 } from './voice-types.js';
+import type { VoiceTelemetry } from './voice-telemetry.js';
 
 /** Actual runtime posture supplied by AgentRunner at the provider boundary. */
 export interface VoiceExecutionGateInput {
@@ -64,6 +65,8 @@ export interface VoiceBackendBridgeOptions {
   readonly now?: () => number;
   /** Optional logger for asynchronous listener failures. */
   readonly logger?: pino.Logger;
+  /** Content-free server lifecycle observations. */
+  readonly telemetry?: VoiceTelemetry;
 }
 
 const INITIAL_OUTPUT_LIFECYCLE: VoiceOutputLifecycle = {
@@ -78,6 +81,7 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
   private readonly listeners = new Map<string, Set<VoiceEventHandler<VoiceBackendResult>>>();
   private readonly recentResults = new Map<string, VoiceBackendResult>();
   private readonly now: () => number;
+  private readonly telemetry: VoiceTelemetry | undefined;
 
   constructor(
     private readonly store: VoiceStore,
@@ -85,6 +89,7 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
     private readonly options: VoiceBackendBridgeOptions = {},
   ) {
     this.now = options.now ?? Date.now;
+    this.telemetry = options.telemetry;
   }
 
   admit(request: VoiceBackendRequest): VoiceAsyncResult<VoiceAdmissionReceipt> {
@@ -155,7 +160,10 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
         maxAttempts: 1,
       },
     });
-    if (admitted.isOk()) return Promise.resolve(admitted);
+    if (admitted.isOk()) {
+      this.recordAdmissionTelemetry(request, admitted.value);
+      return Promise.resolve(admitted);
+    }
 
     // A concurrent identical admission may have committed between the lookup
     // above and this transaction. Re-read only the same internal ID; a fresh
@@ -166,7 +174,9 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
       concurrent.value &&
       stableJson(concurrent.value.request) === stableJson(request)
     ) {
-      return Promise.resolve(this.receiptForDelegation(concurrent.value));
+      const receipt = this.receiptForDelegation(concurrent.value);
+      if (receipt.isOk()) this.recordAdmissionTelemetry(request, receipt.value);
+      return Promise.resolve(receipt);
     }
     return Promise.resolve(admitted);
   }
@@ -314,7 +324,37 @@ export class DurableVoiceBackendBridge implements VoiceBackendBridgeContract {
     if (!claimedQueueResult.value || claimedQueueResult.value.status !== 'claimed') {
       return err(new DbError(`Voice queue claim did not persist for item ${row.id}`));
     }
+    this.telemetry?.record({
+      callId: delegation.sessionId,
+      stage: 'claim',
+      status: 'accepted',
+      delegationId: delegation.id,
+      providerDelegationId: delegation.providerDelegationId,
+      queueItemId: row.id,
+    });
     return ok(claimedQueueResult.value);
+  }
+
+  private recordAdmissionTelemetry(
+    request: VoiceBackendRequest,
+    receipt: VoiceAdmissionReceipt,
+  ): void {
+    this.telemetry?.record({
+      callId: request.sessionId,
+      stage: 'admission',
+      status: 'accepted',
+      delegationId: receipt.delegationId,
+      providerDelegationId: request.providerDelegationId,
+      queueItemId: receipt.queueItemId,
+    });
+    this.telemetry?.record({
+      callId: request.sessionId,
+      stage: 'enqueue',
+      status: 'accepted',
+      delegationId: receipt.delegationId,
+      providerDelegationId: request.providerDelegationId,
+      queueItemId: receipt.queueItemId,
+    });
   }
 
   /**

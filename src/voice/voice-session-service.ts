@@ -76,6 +76,7 @@ import type {
   VoiceLoginRequest,
 } from './voice-types.js';
 import type { VoiceStore } from './voice-types.js';
+import type { VoiceTelemetry } from './voice-telemetry.js';
 
 const DEFAULT_SESSION_LIFETIME_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_CONTEXT_CHARS = 32_000;
@@ -129,6 +130,8 @@ export interface VoiceSessionServiceOptions {
   readonly shutdownTimeoutMs?: number;
   /** Optional operator-provided live voice rate; absent means no new estimate. */
   readonly usdPerMinute?: number;
+  /** Content-free server lifecycle observations. */
+  readonly telemetry?: VoiceTelemetry;
   readonly logger?: pino.Logger;
 }
 
@@ -346,6 +349,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
   private readonly shutdownTimeoutMs: number;
   private readonly usdPerMinute: number | undefined;
   private readonly generation: () => number;
+  private readonly telemetry: VoiceTelemetry | undefined;
   private readonly runtimes = new Map<VoiceSessionId, SessionRuntime>();
   private readonly activeSessionIds = new Set<VoiceSessionId>();
   private creatingSession = false;
@@ -368,6 +372,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     );
     this.usdPerMinute = optionalNonNegativeFinite(options.usdPerMinute, 'usdPerMinute');
     this.generation = options.generation ?? ((): number => this.lifecycleGeneration);
+    this.telemetry = options.telemetry;
   }
 
   async createSession(
@@ -420,6 +425,14 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     };
     const persisted = this.options.store.createSession(session);
     if (persisted.isErr()) return err(persisted.error);
+    this.telemetry?.startCall({
+      callId: sessionId,
+      threadId: threadId.value,
+      personaId: policy.value.personaId,
+      provider: this.options.providerName,
+      model: this.options.liveModelName ?? policy.value.modelName,
+      transport: this.options.transport.kind,
+    });
     this.activeSessionIds.add(sessionId);
     const beforeProvider = this.ensureSetupActive(owner, setupGeneration);
     if (beforeProvider) {
@@ -427,6 +440,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       return err(beforeProvider);
     }
 
+    this.telemetry?.record({
+      callId: sessionId,
+      stage: 'provider_setup_started',
+      status: 'started',
+    });
     const providerSession = await this.options.provider.createSession({
       sessionId,
       ownerId: owner.ownerId,
@@ -480,6 +498,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       this.failSession(sessionId, withProvider.value.revision, 'provider_sideband_identity_mismatch');
       return err(new PolicyError('Voice provider sideband identity does not match the session'));
     }
+    this.telemetry?.record({
+      callId: sessionId,
+      stage: 'provider_setup_completed',
+      status: 'completed',
+    });
     const activeAfterSideband = this.ensureSetupActive(owner, setupGeneration);
     if (activeAfterSideband) {
       await this.closeProvider(providerSession.value.providerSessionId, false);
@@ -526,6 +549,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       await this.closeSession(owner, sessionId, { reason: 'transport_failure' });
       return err(new PolicyError('Voice transport handle does not match the session'));
     }
+    this.telemetry?.record({
+      callId: sessionId,
+      stage: 'transport_connected',
+      status: 'completed',
+    });
     const activeAfterTransport = this.ensureSetupActive(owner, setupGeneration);
     if (activeAfterTransport) {
       await this.closeSession(owner, sessionId, { reason: 'logout' });
@@ -620,6 +648,10 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       updatedAt: this.now(),
     });
     if (terminal.isErr()) return err(terminal.error);
+    this.telemetry?.finishCall(
+      sessionId,
+      terminalStatus === 'closed' ? 'closed' : 'incomplete',
+    );
     // Keep a runtime shell while claimed/running work is unresolved so an
     // already-open status stream can receive the retained result after hangup.
     // Provider and transport listeners were removed above; only result/status
@@ -887,6 +919,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       );
     await withTimeout(Promise.allSettled(closes), this.shutdownTimeoutMs);
     await withTimeout(this.waitForTerminalResults(sessionIds), this.shutdownTimeoutMs);
+    this.telemetry?.shutdown();
   }
 
   private async waitForTerminalResults(sessionIds: readonly string[]): Promise<void> {
@@ -1428,6 +1461,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     }
     const admitted = await this.options.backendBridge.admit(request);
     if (admitted.isErr()) {
+      this.telemetry?.record({
+        callId: sessionId,
+        stage: 'admission',
+        status: 'rejected',
+        providerDelegationId: proposal.providerDelegationId,
+      });
       await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I could not safely queue that request. Please repeat it.');
       return ok(undefined);
     }
@@ -1737,11 +1776,30 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const command = isSafeFailure
       ? { kind: 'instruction' as const, delegationId: delegation.value.providerDelegationId, content, outputId }
       : { kind: 'commentary' as const, delegationId: delegation.value.providerDelegationId, content, outputId };
-    const sent = stale
-      ? ok(undefined)
-      : content.length > 0
-        ? await runtime.sideband.send(command)
-        : err(new PolicyError('Voice result has no deliverable text'));
+    let sent: VoiceResult<void>;
+    if (stale) {
+      this.telemetry?.record({
+        callId: delegation.value.sessionId,
+        stage: 'output_offered',
+        status: 'unknown',
+        delegationId: delegation.value.id,
+        providerDelegationId: delegation.value.providerDelegationId,
+        outputId,
+      });
+      sent = ok(undefined);
+    } else if (content.length > 0) {
+      sent = await runtime.sideband.send(command);
+      this.telemetry?.record({
+        callId: delegation.value.sessionId,
+        stage: 'output_offered',
+        status: sent.isOk() ? 'sent' : 'failed',
+        delegationId: delegation.value.id,
+        providerDelegationId: delegation.value.providerDelegationId,
+        outputId,
+      });
+    } else {
+      sent = err(new PolicyError('Voice result has no deliverable text'));
+    }
     if (stale) await this.sendStaleNotice(runtime, delegation.value, result.execution !== 'running');
     if (!stale) {
       const retained = this.persistBackendResult(delegation.value, result, content);
@@ -1841,6 +1899,14 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     };
     const saved = this.options.store.recordOutputLifecycle({ delegationId, outputId, lifecycle });
     if (saved.isErr()) return err(saved.error);
+    this.telemetry?.record({
+      callId: delegation.value.sessionId,
+      stage: 'provider_acknowledged',
+      status: 'acknowledged',
+      delegationId,
+      providerDelegationId: delegation.value.providerDelegationId,
+      outputId,
+    });
     this.publishDelegation(sessionId, delegationId);
     return ok(undefined);
   }
@@ -1898,6 +1964,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       updatedAt: this.now(),
     });
     if (result.isOk()) this.publishSession(result.value);
+    this.telemetry?.finishCall(sessionId, 'incomplete');
     this.activeSessionIds.delete(sessionId);
   }
 
