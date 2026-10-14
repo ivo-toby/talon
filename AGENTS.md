@@ -157,6 +157,8 @@ rtk lsof -nP -iTCP:17701 -sTCP:LISTEN
 
 ## Documentation
 
+- `CONTEXT.md` — Domain glossary; use its Image, Attachment, Inspection, and Finding terminology
+- `docs/adr/` — Architectural decisions and their tradeoffs
 - `selfdoc.md` — Architecture overview written as self-documentation
 - `BOARD.md` — Project task tracking
 - `config/talond.example.yaml` — Full config reference
@@ -170,7 +172,7 @@ Always make sure you are in a feature or fix branch before getting to work
 
 ### Reviews
 
-Before every commit, request a fresh independent code review from GPT-6-sol. Address all critical, high, and medium findings; commit only when none remain.
+Before every commit, request a fresh independent code review from GPT-6.1-sol at xhigh reasoning effort. Address all critical, high, and medium findings; commit only when none remain.
 When dealing with PR reviews, always resolve a comment when it's fixed or deemed invalid, always add a comment what you fixed, which commit, or why the comment was invalid
 
 ### Documentation
@@ -185,4 +187,4 @@ Do not consider a feature complete until the docs match the code. PR reviewers s
 
 ### Offload work
 
-If you can, offload coding tasks to GPT-5.3-codex-high using the codex skill, only do this for well defined, tightly scoped tasks.
+For WDD work, use the implementation models configured in `.wdd/config.json`. For other well-defined, tightly scoped tasks, offload coding to GPT-5.3-codex-high using the codex skill when available.

@@ -1,0 +1,70 @@
+{
+  "appliedIdempotencyKeys": [
+    "auto:1:5759e5a83d07329a",
+    "auto:2:2f197ff48f22f891",
+    "auto:3:4017bd625981011c"
+  ],
+  "archiveBlocked": null,
+  "archivePending": null,
+  "constitution": {
+    "ratification": {
+      "at": "2026-10-14T13:02:23Z",
+      "by": "Ivo",
+      "decisionFingerprint": "sha256:8a57ee8df974b3f10dfa6bf75f80884034c9deb2d7e9a53760dde2cc02a51998"
+    },
+    "status": "ratified"
+  },
+  "epic": "image-processing",
+  "events": [
+    {
+      "at": "2026-10-14T13:02:23Z",
+      "idempotencyKey": "auto:1:5759e5a83d07329a",
+      "revision": 1,
+      "task": null,
+      "type": "constitution.ratified"
+    },
+    {
+      "at": "2026-10-14T13:19:38Z",
+      "idempotencyKey": "auto:2:2f197ff48f22f891",
+      "revision": 2,
+      "task": null,
+      "type": "epic.created"
+    },
+    {
+      "at": "2026-10-14T13:19:39Z",
+      "idempotencyKey": "auto:3:4017bd625981011c",
+      "revision": 3,
+      "task": null,
+      "type": "intake.configured"
+    }
+  ],
+  "intake": {
+    "configure": {
+      "at": "2026-10-14T13:19:39Z",
+      "by": "Ivo",
+      "sha256": "sha256:38f8a26ad7d2990d2a29d13610f822941554c0fb6264cbe10c6d67097bf5ac0a"
+    }
+  },
+  "monitoring": {
+    "lastCheckedAt": null,
+    "mode": "manual",
+    "nextCheckDueAt": null,
+    "observations": {},
+    "status": "inactive"
+  },
+  "parked": {},
+  "reconcile": {
+    "everyNMerges": 3,
+    "lastCheckpointAt": null,
+    "mergesSinceCheckpoint": 0,
+    "pendingNotes": []
+  },
+  "revision": 3,
+  "schemaVersion": 7,
+  "scope": null,
+  "tasks": {},
+  "telemetry": {
+    "eventApplications": 3,
+    "renderCount": 0
+  }
+}
