@@ -191,6 +191,50 @@ describe('SubAgentRunner', () => {
     expect(callArgs[1]).toEqual({ key: 'value' });
   });
 
+  it('forwards the trusted runId from the invoke context into the sub-agent context', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents);
+
+    const result = await runner.execute(
+      'test-agent',
+      { key: 'value' },
+      makeContext({ runId: 'run-42' }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.runId).toBe('run-42');
+  });
+
+  it('leaves runId undefined when the caller supplies none (existing subagents stay compatible)', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents);
+
+    const result = await runner.execute('test-agent', { key: 'value' }, makeContext());
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.runId).toBeUndefined();
+  });
+
+  it('never takes run identity from model-authored sub-agent input', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents);
+
+    const result = await runner.execute(
+      'test-agent',
+      { runId: 'model-authored-run', run_id: 'snake-run' },
+      makeContext(),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.runId).toBeUndefined();
+  });
+
   it('rejects unknown sub-agent name', async () => {
     const runner = makeRunner(new Map());
 

@@ -113,6 +113,14 @@ export interface SubAgentContext {
   threadId: string;
   /** The persona that triggered (or owns) this sub-agent run. */
   personaId: string;
+  /**
+   * Trusted run identity of the invoking daemon run, forwarded from the
+   * host-tool `ToolExecutionContext`. Supplied by Talon only — never read
+   * from model-authored sub-agent input and never guessed from an active
+   * run. Optional for existing subagents; sub-agents that record run
+   * provenance (vision Findings) require it and must fail when absent.
+   */
+  runId?: string;
   /** Assembled system prompt built from the sub-agent's prompt fragments. */
   systemPrompt: string;
   /** Resolved AI SDK model instance ready for generation. */
