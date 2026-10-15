@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -137,6 +137,36 @@ describe('runMigrations', () => {
     const result = runMigrations(db, tmpDir);
     expect(result.isErr()).toBe(true);
     expect(result._unsafeUnwrapErr().message).toMatch(/numeric version prefix/);
+  });
+
+  it('upgrades a real version-013 database to Signal state without disturbing queued work', () => {
+    const realMigrationsDir = join(import.meta.dirname, '../../../../../src/core/database/migrations');
+    for (const file of readdirSync(realMigrationsDir).filter((file) => /^\d+.*\.sql$/.test(file) && Number(file.split('-')[0]) <= 13)) {
+      copyFileSync(join(realMigrationsDir, file), join(tmpDir, file));
+    }
+    expect(runMigrations(db, tmpDir).isOk()).toBe(true);
+    expect(db.pragma('user_version', { simple: true })).toBe(13);
+    db.exec(`
+      INSERT INTO channels (id, type, name, created_at, updated_at) VALUES ('c', 'terminal', 'test', 1, 1);
+      INSERT INTO threads (id, channel_id, external_id, created_at, updated_at) VALUES ('t', 'c', 'test', 1, 1);
+      INSERT INTO queue_items (id, thread_id, payload, created_at, updated_at) VALUES ('q', 't', '{"saved":true}', 1, 1);
+    `);
+    expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(1);
+    expect(db.pragma('user_version', { simple: true })).toBe(14);
+    expect(db.prepare('SELECT payload FROM queue_items WHERE id = ?').get('q')).toEqual({ payload: '{"saved":true}' });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('signal_account_state', 'signal_destination_leases')").all()).toHaveLength(2);
+    expect(runMigrations(db, realMigrationsDir)._unsafeUnwrap()).toBe(0);
+  });
+
+  it('rejects incomplete persisted reservations and invalid lease purposes', () => {
+    const realMigrationsDir = join(import.meta.dirname, '../../../../../src/core/database/migrations');
+    runMigrations(db, realMigrationsDir)._unsafeUnwrap();
+    expect(() => db.prepare(`INSERT INTO signal_account_state
+      (account_uuid, reservation_delivery_id, created_at, updated_at) VALUES (?, 'delivery', 1, 1)`)
+      .run('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa')).toThrow(/CHECK constraint/);
+    expect(() => db.prepare(`INSERT INTO signal_destination_leases
+      (account_uuid, external_thread_id, lease_id, queue_item_id, delivery_id, kind, created_at, updated_at)
+      VALUES ('account', 'destination', 'lease', 'queue', 'delivery', 'invalid', 1, 1)`).run()).toThrow(/CHECK constraint/);
   });
 
   it('applies the real initial schema migration without error', () => {
