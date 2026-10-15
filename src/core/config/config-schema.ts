@@ -10,6 +10,7 @@
  */
 
 import { z } from 'zod';
+import { SignalConfigSchema } from '../../channels/connectors/signal/signal-config.js';
 import { isUnsafeCodexSandboxToken } from '../../subagents/codex-sandbox-protocol.js';
 
 import {
@@ -146,23 +147,48 @@ export const PersonaConfigSchema = z.object({
 // Channel
 // ---------------------------------------------------------------------------
 
-export const ChannelConfigSchema = z.object({
-  type: z.enum([
-    'telegram',
-    'whatsapp',
-    'whatsappBusiness',
-    'whatsappBaileys',
-    'slack',
-    'email',
-    'discord',
-    'terminal',
-  ]),
-  name: z.string().min(1),
-  config: z.record(z.string(), z.unknown()).default({}),
-  tokenRef: z.string().optional(),
-  enabled: z.boolean().default(true),
-  showToolCalls: z.boolean().optional(),
-});
+export const ChannelConfigSchema = z
+  .object({
+    type: z.enum([
+      'telegram',
+      'whatsapp',
+      'whatsappBusiness',
+      'whatsappBaileys',
+      'slack',
+      'email',
+      'discord',
+      'terminal',
+      'signal',
+    ]),
+    name: z.string().min(1),
+    config: z.record(z.string(), z.unknown()).default({}),
+    tokenRef: z.string().optional(),
+    enabled: z.boolean().default(true),
+    showToolCalls: z.boolean().optional(),
+  })
+  .transform((value, ctx) => {
+    if (value.type !== 'signal') return value;
+    const signal = SignalConfigSchema.safeParse(value.config);
+    if (!signal.success) {
+      for (const issue of signal.error.issues) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['config', ...issue.path],
+          message: 'Invalid Signal configuration field',
+        });
+      }
+      return z.NEVER;
+    }
+    if (signal.data.accountMode === 'personal' && value.showToolCalls === true) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['showToolCalls'],
+        message: 'Personal Signal mode forbids tool notices',
+      });
+      return z.NEVER;
+    }
+    return { ...value, config: signal.data };
+  });
 
 // ---------------------------------------------------------------------------
 // Bindings

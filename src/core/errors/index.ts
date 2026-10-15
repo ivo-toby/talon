@@ -14,6 +14,11 @@ export {
   SandboxError,
   ToolError,
   ChannelError,
+  SignalDeliveryError,
+  DeliveryDeferredError,
+  DeliveryCancelled,
+  NonRetryableRunError,
+  SIGNAL_DELIVERY_REASONS,
   QueueError,
   ScheduleError,
   MigrationError,
@@ -29,6 +34,14 @@ export {
   BackgroundAgentError,
   A2AError,
   ExecutionEnvError,
+} from './error-types.js';
+
+export type {
+  SignalDeliveryReason,
+  SignalDeliveryOutcome,
+  SignalChunkAcceptance,
+  SignalRetryScope,
+  SignalDeliveryFailure,
 } from './error-types.js';
 
 export { ErrorCodes } from './error-codes.js';

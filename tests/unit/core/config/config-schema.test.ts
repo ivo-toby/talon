@@ -1373,3 +1373,90 @@ describe('TalondConfigSchema', () => {
     });
   });
 });
+
+describe('Signal named channel configuration', () => {
+  const accountUuid = 'AAAAAAAA-1111-2222-3333-BBBBBBBBBBBB';
+  const config = {
+    accountMode: 'personal',
+    socketPath: '/run/talon-signal/bridge.sock',
+    account: accountUuid,
+    accountUuid,
+    deviceId: 3,
+    deviceCreatedTimestamp: 100,
+  };
+
+  it('admits and normalizes Signal without changing ordinary connector defaults', () => {
+    const result = ChannelConfigSchema.safeParse({ type: 'signal', name: 'personal', config });
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.config).toMatchObject({
+      accountUuid: accountUuid.toLowerCase(),
+      account: accountUuid.toLowerCase(),
+      allowedDmPeers: [],
+      allowedGroups: [],
+      allowedSenders: [],
+      triggerPrefix: '!talon',
+      requestTimeoutMs: 30_000,
+      reconnectBaseMs: 1_000,
+      reconnectMaxMs: 60_000,
+    });
+    expect(ChannelConfigSchema.parse({ type: 'terminal', name: 'local' }).config).toEqual({});
+  });
+
+  it('preserves ordinary and dedicated output policy and validates root config field paths safely', () => {
+    expect(
+      ChannelConfigSchema.parse({ type: 'terminal', name: 'local', showToolCalls: true })
+        .showToolCalls,
+    ).toBe(true);
+    expect(
+      ChannelConfigSchema.safeParse({
+        type: 'signal',
+        name: 'dedicated',
+        config: { ...config, accountMode: 'dedicated', deviceId: 1 },
+        showToolCalls: true,
+      }).success,
+    ).toBe(true);
+    const invalid = TalondConfigSchema.safeParse({
+      channels: [
+        {
+          type: 'signal',
+          name: 'personal',
+          config: { ...config, allowedDmPeers: ['private-invalid-identifier'] },
+        },
+      ],
+    });
+    expect(invalid.success).toBe(false);
+    if (!invalid.success) {
+      expect(invalid.error.issues[0].path).toEqual(['channels', 0, 'config', 'allowedDmPeers', 0]);
+      expect(invalid.error.message).not.toContain('private-invalid-identifier');
+    }
+    expect(
+      TalondConfigSchema.parse({ channels: [{ type: 'signal', name: 'personal', config }] })
+        .channels[0].config.accountUuid,
+    ).toBe(accountUuid.toLowerCase());
+  });
+
+  it('rejects unsafe personal output and incomplete device setup', () => {
+    expect(
+      ChannelConfigSchema.safeParse({
+        type: 'signal',
+        name: 'personal',
+        config,
+        showToolCalls: true,
+      }).success,
+    ).toBe(false);
+    for (const change of [
+      { deviceId: 1 },
+      { deviceCreatedTimestamp: undefined },
+      { deviceCreatedTimestamp: 0 },
+    ]) {
+      expect(
+        ChannelConfigSchema.safeParse({
+          type: 'signal',
+          name: 'personal',
+          config: { ...config, ...change },
+        }).success,
+      ).toBe(false);
+    }
+  });
+});
