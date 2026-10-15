@@ -92,6 +92,21 @@ export {
   DEFAULT_PENDING_INGESTION_LIMIT,
 } from './image-ingestion-repository.js';
 
+export type {
+  FindingRow,
+  FindingUsageInput,
+  CreateFindingInput,
+  FindingRecord,
+  FindingPageAnchor,
+  FindFindingsOptions,
+  FindingPage,
+} from './finding-repository.js';
+export {
+  FindingRepository,
+  mapFindingRow,
+  DEFAULT_FINDING_LIMIT,
+} from './finding-repository.js';
+
 export { BackgroundTaskRepository } from './background-task-repository.js';
 export type { InsertA2ATaskInput } from './a2a-task-repository.js';
 export { A2ATaskRepository } from './a2a-task-repository.js';
