@@ -65,3 +65,14 @@ export type { InsertA2ATaskInput } from './a2a-task-repository.js';
 export { A2ATaskRepository } from './a2a-task-repository.js';
 export { ExecutionEnvRepository } from './execution-env-repository.js';
 export { ExecutionEnvCheckpointRepository } from './execution-env-checkpoint-repository.js';
+
+export { SignalAccountStateRepository, SignalStateError } from './signal-account-state-repository.js';
+export type {
+  SignalAccountState,
+  SignalSendReservation,
+  SignalPause,
+  SignalPauseKind,
+  SignalStateFailureReason,
+} from './signal-account-state-repository.js';
+export { SignalDestinationLeaseRepository } from './signal-destination-lease-repository.js';
+export type { SignalDestinationLease } from './signal-destination-lease-repository.js';
