@@ -6,7 +6,7 @@
  */
 
 import type { Result } from '../core/types/result.js';
-import type { ChannelError } from '../core/errors/error-types.js';
+import type { ChannelError, PipelineError } from '../core/errors/error-types.js';
 
 // ---------------------------------------------------------------------------
 // Attachment
@@ -42,6 +42,21 @@ export interface Action {
 // Agent output
 // ---------------------------------------------------------------------------
 
+export type SignalDeliveryPurpose = 'reply' | 'background' | 'explicit' | 'progress';
+
+/** Authenticated runner/host context only; never accepted from model tool arguments. */
+export interface TrustedDeliveryContext {
+  readonly queueItemId: string;
+  readonly deliveryId: string;
+  readonly runId?: string;
+  readonly purpose: SignalDeliveryPurpose;
+}
+
+export type InboundReceipt = 'accepted' | 'duplicate' | 'dropped';
+export type InboundReceiptHandler = (
+  event: InboundEvent,
+) => Result<InboundReceipt, PipelineError> | Promise<Result<InboundReceipt, PipelineError>>;
+
 /**
  * The normalised outbound payload produced by an agent run.
  * `body` is Markdown — each connector converts it to channel-native format.
@@ -53,6 +68,8 @@ export interface AgentOutput {
   attachments?: Attachment[];
   /** Optional interactive actions (buttons, approval prompts). */
   actions?: Action[];
+  /** Internal metadata, never serialized into Signal RPC or exposed as model fields. */
+  trustedDelivery?: TrustedDeliveryContext;
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +158,9 @@ export interface ChannelConnector {
    * Only one handler is supported; a second call replaces the previous one.
    */
   onMessage(handler: (event: InboundEvent) => void | Promise<void>): void;
+
+  /** Optional local durable-acceptance receipt; not an upstream network acknowledgement. */
+  onMessageWithReceipt?(handler: InboundReceiptHandler): void;
 
   /**
    * Send an agent output to the given external thread.
