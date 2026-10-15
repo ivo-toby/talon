@@ -1,0 +1,168 @@
+{
+  "repository": "https://github.com/AsamK/signal-cli",
+  "tag": "v0.14.9",
+  "commit": "3997429779095ff3a2d64c877126e84fce9852aa",
+  "purpose": "Read-only contract reference, not a Talon runtime dependency",
+  "files": [
+    {
+      "path": "README.md",
+      "sha256": "f0cb4f8450913532c862c5b9377a32ad2cef51a6b67beb1f15397c0187313e1f",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/README.md"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/LICENSE"
+    },
+    {
+      "path": "man/signal-cli-jsonrpc.5.adoc",
+      "sha256": "9a70ce4c202590f37abd9c0b7e46cf843ae66acc446377c926639d218fb796a0",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/man/signal-cli-jsonrpc.5.adoc"
+    },
+    {
+      "path": "man/signal-cli.1.adoc",
+      "sha256": "c23455df8dcc6717ec713bf18817dffe3a5c80d3e86fa7919648049aaf66926d",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/man/signal-cli.1.adoc"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/ListAccountsCommand.java",
+      "sha256": "ddbac49ab753598281114cadd7eb3cf822e752f0cc97de87d902b63228488d60",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/ListAccountsCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/ListDevicesCommand.java",
+      "sha256": "4c709e902e743672d2e5183677df1feb3ef9a78a814674168135b0dca076f73a",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/ListDevicesCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/VersionCommand.java",
+      "sha256": "2070328780d9db116127ce1055b7e0bb0874f4f71c5d9884704cf4579b73c61c",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/VersionCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/SendCommand.java",
+      "sha256": "8a7e2655a731147706ff7c3e377495bd679a5c7f7d2a713ffb82002e3af306ba",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/SendCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/DaemonCommand.java",
+      "sha256": "ff9a013f6918456e16f4d9c16de340e64deecd22ec2ad6c2d1e1482201909f9c",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/DaemonCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/LinkCommand.java",
+      "sha256": "4f6bd4ac066b80db67bf7c93cdb35297d14fccc0286c2f7c65bd7d723269031f",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/LinkCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/StartLinkCommand.java",
+      "sha256": "55bc4a1ac911ef89ff0915185d9541a0b6c231093c1fd44a85bd8e6c262df37b",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/StartLinkCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/FinishLinkCommand.java",
+      "sha256": "9a5419fb9b65423388e1a5f03fb15f2cd8af9b887ca66da3e87826bd5b089bad",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/FinishLinkCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonMessageEnvelope.java",
+      "sha256": "9c6260bfd21b77052eabc0fdf6ebdf12778183bd8827c26f3c2ae7d7e65b1610",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonMessageEnvelope.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonDataMessage.java",
+      "sha256": "7876ed9ab9eb40ce5ad215d7895bf0348cbdf607346b091dfa22059dc08abf3a",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonDataMessage.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonSyncMessage.java",
+      "sha256": "96ed5c81b073e53be9eb51682d241bdf874713d314cb834fac6085a1b28b2ca2",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonSyncMessage.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonSyncDataMessage.java",
+      "sha256": "c94ba89cd35ebfb2ddb0d09a032ee58d80663d3d07d8bc8584faa85dbc7dc6b4",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonSyncDataMessage.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonGroupInfo.java",
+      "sha256": "9296c8773c4e4bf77fa5babf2286cc00aff0ec69daa8ab41fc75abfa62cd5072",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonGroupInfo.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonSendMessageResult.java",
+      "sha256": "77b9e3d79eaa74657ab4e60b3d86968552c5c99d1c79a13e1b0caffa47caee2d",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonSendMessageResult.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonRecipientAddress.java",
+      "sha256": "fe5905558b3aae63432bd7413d9d243e10565ba4b00f20538150560fffa87981",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonRecipientAddress.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonReceiveMessageHandler.java",
+      "sha256": "325e7c072f58ed3ec0de03f3ad5938b5bbff226734b623006b928ceaa8826264",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonReceiveMessageHandler.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/jsonrpc/SocketHandler.java",
+      "sha256": "64df44f9e9391318f9738c1d8dbbc456ddadd7f51e8d42afaa3a39581ca8fabc",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/jsonrpc/SocketHandler.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcDispatcherHandler.java",
+      "sha256": "46f2c74c50f0bff4af3a21fc491bd7ee86d1ca8039931d68b7d4d37352fa1933",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcDispatcherHandler.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/util/SendMessageResultUtils.java",
+      "sha256": "c4edad52dc0f011572a9bd3706be785b3d0523782547643b7e12426e998c619e",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/util/SendMessageResultUtils.java"
+    },
+    {
+      "path": "lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java",
+      "sha256": "b0a02f7c225cc6f65f5f3f2074024d0179148e8fa83f7bad397e7747dda7b777",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java"
+    },
+    {
+      "path": "lib/src/main/java/org/asamk/signal/manager/internal/ManagerImpl.java",
+      "sha256": "17070869ae791632082ce3777ef0e204ab1c2e8947ee90dcef85050dc44c30b2",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/lib/src/main/java/org/asamk/signal/manager/internal/ManagerImpl.java"
+    },
+    {
+      "path": "lib/src/main/java/org/asamk/signal/manager/api/MessageEnvelope.java",
+      "sha256": "11614b56130bd43e146a64db701f8ae54796e35dcf3397dc4ac5cd682bc3b7f0",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/lib/src/main/java/org/asamk/signal/manager/api/MessageEnvelope.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcCommandHandler.java",
+      "sha256": "951062c1b09a8e8d4768d90cdc3211ae7e0fcf9abf878214eab73d0dd2a4e103",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcCommandHandler.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/ListGroupsCommand.java",
+      "sha256": "edb7b51250b8084f636ef90d725ca428ca16d50b3e892ab5f488a2099e1ae7c2",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/ListGroupsCommand.java"
+    },
+    {
+      "path": "lib/src/main/java/org/asamk/signal/manager/api/RecipientIdentifier.java",
+      "sha256": "339739b217359a557223d501117c6be062f362717d08c74659c284a326f4b392",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/lib/src/main/java/org/asamk/signal/manager/api/RecipientIdentifier.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/commands/ListContactsCommand.java",
+      "sha256": "104efe5dbdd634c36b59decd40a506dfc9b4258528bed54d51c28d611ddafd87",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/commands/ListContactsCommand.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/jsonrpc/JsonRpcResponse.java",
+      "sha256": "dd89d9b7fce6fd451c49ae694152680862be6190fd7a1b251e4daae3e9618813",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/jsonrpc/JsonRpcResponse.java"
+    },
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonContact.java",
+      "sha256": "1b757f5416320e16385b1195446aa2879cc3f60ebc9f2c1dfec5c5087fb8442a",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonContact.java"
+    }
+  ]
+}

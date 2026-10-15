@@ -1,0 +1,147 @@
+package org.asamk.signal.util;
+
+import org.asamk.signal.commands.exceptions.CommandException;
+import org.asamk.signal.commands.exceptions.RateLimitErrorException;
+import org.asamk.signal.commands.exceptions.UntrustedKeyErrorException;
+import org.asamk.signal.commands.exceptions.UserErrorException;
+import org.asamk.signal.json.JsonSendMessageResult;
+import org.asamk.signal.manager.api.ProofRequiredException;
+import org.asamk.signal.manager.api.RateLimitException;
+import org.asamk.signal.manager.api.RecipientIdentifier;
+import org.asamk.signal.manager.api.SendGroupMessageResults;
+import org.asamk.signal.manager.api.SendMessageResult;
+import org.asamk.signal.manager.api.SendMessageResults;
+import org.asamk.signal.output.JsonWriter;
+import org.asamk.signal.output.OutputWriter;
+import org.asamk.signal.output.PlainTextWriter;
+
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
+
+public class SendMessageResultUtils {
+
+    private SendMessageResultUtils() {
+    }
+
+    public static void outputResult(final OutputWriter outputWriter, final SendGroupMessageResults sendMessageResults) {
+        switch (outputWriter) {
+            case PlainTextWriter writer -> {
+                var errors = getErrorMessagesFromSendMessageResults(sendMessageResults.results());
+                printSendMessageResultErrors(writer, errors);
+                writer.println("{}", sendMessageResults.timestamp());
+            }
+            case JsonWriter writer -> {
+                var results = getJsonSendMessageResults(sendMessageResults.results());
+                writer.write(Map.of("timestamp", sendMessageResults.timestamp(), "results", results));
+            }
+        }
+    }
+
+    public static void outputResult(
+            final OutputWriter outputWriter,
+            final SendMessageResults sendMessageResults
+    ) throws CommandException {
+        switch (outputWriter) {
+            case PlainTextWriter writer -> {
+                var errors = getErrorMessagesFromSendMessageResults(sendMessageResults.results());
+                printSendMessageResultErrors(writer, errors);
+                writer.println("{}", sendMessageResults.timestamp());
+            }
+            case JsonWriter writer -> {
+                var results = getJsonSendMessageResults(sendMessageResults.results());
+                writer.write(Map.of("timestamp", sendMessageResults.timestamp(), "results", results));
+            }
+        }
+        if (!sendMessageResults.hasSuccess()) {
+            if (sendMessageResults.hasOnlyUntrustedIdentity()) {
+                throw new UntrustedKeyErrorException("Failed to send message due to untrusted identities");
+            } else if (sendMessageResults.hasOnlyRateLimitFailure()) {
+                final var retryAfter = sendMessageResults.maxRateLimitRetryAfterMilliseconds();
+                final var nextAttempt = retryAfter == null ? 0L : System.currentTimeMillis() + retryAfter;
+                throw new RateLimitErrorException("Failed to send message due to rate limiting",
+                        new RateLimitException(nextAttempt));
+            } else {
+                throw new UserErrorException("Failed to send message");
+            }
+        }
+    }
+
+    public static List<String> getErrorMessagesFromSendMessageResults(final Map<RecipientIdentifier, List<SendMessageResult>> mapResults) {
+        return mapResults.entrySet()
+                .stream()
+                .flatMap(entry -> entry.getValue()
+                        .stream()
+                        .map(SendMessageResultUtils::getErrorMessageFromSendMessageResult)
+                        .filter(Objects::nonNull)
+                        .map(error -> entry.getKey().getIdentifier() + ": " + error))
+                .toList();
+    }
+
+    public static List<String> getErrorMessagesFromSendMessageResults(Collection<SendMessageResult> results) {
+        return results.stream()
+                .map(SendMessageResultUtils::getErrorMessageFromSendMessageResult)
+                .filter(Objects::nonNull)
+                .toList();
+    }
+
+    public static String getErrorMessageFromSendMessageResult(SendMessageResult result) {
+        var identifier = result.address().getLegacyIdentifier();
+        if (result.proofRequiredFailure() != null) {
+            final var failure = result.proofRequiredFailure();
+            return String.format(
+                    "CAPTCHA proof required for sending to \"%s\", available options \"%s\" with challenge token \"%s\", or wait \"%d\" seconds.\n"
+                            + (
+                            failure.getOptions().contains(ProofRequiredException.Option.CAPTCHA)
+                                    ? """
+                                      To get the captcha token, go to https://signalcaptchas.org/challenge/generate.html
+                                      After solving the captcha, right-click on the "Open Signal" link and copy the link.
+                                      Use the following command to submit the captcha token:
+                                      signal-cli submitRateLimitChallenge --challenge CHALLENGE_TOKEN --captcha CAPTCHA_TOKEN"""
+                                    : ""
+                    ),
+                    identifier,
+                    failure.getOptions()
+                            .stream()
+                            .map(ProofRequiredException.Option::toString)
+                            .collect(Collectors.joining(", ")),
+                    failure.getToken(),
+                    Math.ceilDiv(failure.getRetryAfterMilliseconds(), 1000L));
+        } else if (result.isNetworkFailure()) {
+            return String.format("Network failure for \"%s\"", identifier);
+        } else if (result.isRateLimitFailure()) {
+            final var retryAfter = result.rateLimitRetryAfterMilliseconds();
+            return retryAfter != null ? String.format("Rate limit failure for \"%s\", retry after %d seconds",
+                    identifier,
+                    Math.ceilDiv(retryAfter, 1000L)) : String.format("Rate limit failure for \"%s\"", identifier);
+        } else if (result.isUnregisteredFailure()) {
+            return String.format("Unregistered user \"%s\"", identifier);
+        } else if (result.isIdentityFailure()) {
+            return String.format("Untrusted Identity for \"%s\"", identifier);
+        }
+        return null;
+    }
+
+    public static void printSendMessageResultErrors(PlainTextWriter writer, List<String> errors) {
+        if (errors.isEmpty()) {
+            return;
+        }
+        writer.println("Failed to send (some) messages:");
+        for (var error : errors) {
+            writer.println(error);
+        }
+    }
+
+    private static List<JsonSendMessageResult> getJsonSendMessageResults(final Map<RecipientIdentifier, List<SendMessageResult>> mapResults) {
+        return mapResults.entrySet().stream().flatMap(entry -> {
+            final var groupId = entry.getKey() instanceof RecipientIdentifier.Group g ? g.groupId() : null;
+            return entry.getValue().stream().map(r -> JsonSendMessageResult.from(r, groupId));
+        }).toList();
+    }
+
+    public static List<JsonSendMessageResult> getJsonSendMessageResults(Collection<SendMessageResult> results) {
+        return results.stream().map(JsonSendMessageResult::from).toList();
+    }
+}

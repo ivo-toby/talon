@@ -2,7 +2,7 @@
   "branching": {
     "basePattern": "wdd/{scope-slug}",
     "targetBranch": "main",
-    "taskPattern": "task/{task-id}"
+    "taskPattern": "task/signal-{task-id}"
   },
   "concurrency": {
     "maxConcurrent": 3
@@ -15,12 +15,12 @@
   },
   "models": {
     "implementation": {
-      "default": "gpt-5.6-luna max",
-      "highRisk": "gpt-6.1-sol high"
+      "default": "openai/gpt-5.6-luna:max",
+      "highRisk": "openai-codex/gpt-6.1-sol:high"
     },
     "planning": null,
-    "review": "gpt-6.1-sol xhigh",
-    "specReview": "gpt-6.1-sol xhigh"
+    "review": "openai-codex/gpt-6.1-sol:xhigh",
+    "specReview": "openai-codex/gpt-6.1-sol:xhigh"
   },
   "openQuestions": [],
   "review": {
@@ -45,6 +45,6 @@
     "unavailableJustification": null
   },
   "worktrees": {
-    "root": "../talon.feat-image-processing.wdd-worktrees"
+    "root": ".worktrees"
   }
 }

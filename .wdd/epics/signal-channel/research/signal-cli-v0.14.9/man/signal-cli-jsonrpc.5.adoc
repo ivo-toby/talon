@@ -1,0 +1,188 @@
+/////
+vim:set ts=4 sw=4 tw=82 noet:
+/////
+
+:quotes.~:
+
+= signal-cli-jsonrpc (5)
+:doctype: manpage
+
+== Name
+
+signal-cli-jsonrpc - A commandline and dbus interface for the Signal messenger
+
+== Synopsis
+
+*signal-cli* [--verbose] [--data-dir DATA_DIR] [-a ACCOUNT] daemon [--socket[=SOCKET_PATH]] [--tcp[=HOST:PORT]] [--http[=HOST:PORT]]
+
+*signal-cli* [--verbose] [--data-dir DATA_DIR] [-a ACCOUNT] jsonRpc
+
+== Description
+
+See signal-cli (1) for details on the application.
+
+signal-cli provides a JSON-RPC based API with the `jsonRpc` and `daemon` commands.
+
+- `jsonRpc` command accepts input on STDIN and responds on STDOUT.
+This is intended to make it easier to embed signal-cli in other applications.
+
+  `signal-cli -a _ACCOUNT_ jsonRpc` or for multi-account mode `signal-cli jsonRpc`
+
+- `daemon` command provides a UNIX, TCP socket or HTTP endpoint and can handle requests from multiple clients.
+
+  `signal-cli -a _ACCOUNT_ daemon --socket` or for multi-account mode `signal-cli daemon --socket`
+
+With `--http` signal-cli exposes three endpoints;
+
+* POST /api/v1/rpc : Expects a single or batch JSON-RPC request
+* GET /api/v1/events : Returns a Server-Sent Events (SSE) stream of incoming messages
+* GET /api/v1/check : Responds with 200 OK if daemon is running
+
+Each event of `/api/v1/events` has an `id`.
+signal-cli keeps the last 1000 events in memory.
+A client that reconnects with a `Last-Event-ID` header first receives the events after that id.
+If the id is unknown, e.g. because signal-cli was restarted, all kept events are sent.
+
+== Basic usage
+
+In JSON-RPC mode, signal-cli will read requests from stdin.
+Every request must be a JSON object in a single line.
+Requests must have a unique "id" value to be able to match the response to the corresponding request.
+
+Example:
+
+REQUEST: `{"jsonrpc":"2.0","method":"listGroups","id":"my special mark"}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":[{"id":"Pmpi+EfPWmsxiomLe9Nx2XF9HOE483p6iKiFj65iMwI=","name":"My Group","description":"It's special because it is mine.","isMember":true,"isBlocked":false,"members":["+33123456789","+440123456789"],"pendingMembers":[],"requestingMembers":[],"admins":["+33123456789","+440123456789"],"groupInviteLink":"https://signal.group/#CjQKIAtcbUw482i7bqvmJCwdgvg0FMif52N5v9lGg_bE4U3zEhCjHKSaPzWImMpnCbU8A1r0"}],"id":"my special mark"}`
+
+From the command line:
+
+`echo '{"jsonrpc":"2.0","method":"listGroups","id":"my special mark"}' | signal-cli -u +33123456789 jsonRpc`
+
+Like in dbus daemon mode, messages are automatically received in jsonRpc mode (`--receive-mode=on-start`).
+Incoming messages are sent as JSON-RPC notifications.
+
+Example:
+
+`{"jsonrpc":"2.0","method":"receive","params":{"envelope":{"source":"+33123456789","sourceNumber":"+33123456789","sourceUuid":"uuid","sourceName":"name","sourceDevice":1,"timestamp":1631458508784,"dataMessage":{"timestamp":1631458508784,"message":"foobar","expiresInSeconds":0,"viewOnce":false,"mentions":[],"attachments":[],"contacts":[]}}}}`
+
+In order to not miss messages, automatic receiving of messages can be disabled with the `--receive-mode=manual` parameter.
+
+REQUEST: `{"jsonrpc":"2.0","id":"id","method":"subscribeReceive"}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":0,"id":"id"}`
+
+Messages are then sent similar to the automatic mode, but wrapped in a subscription response object:
+
+`{"jsonrpc":"2.0","method":"receive","params":{"subscription":0,"result":{"envelope":{"source":"+33123456789","sourceNumber":"+33123456789","sourceUuid":"uuid","sourceName":"name","sourceDevice":2,"timestamp":1693064367769,"syncMessage":{"sentMessage":{"destination":"+33123456789","destinationNumber":"+33123456789","destinationUuid":"uuid","timestamp":1693064367769,"message":"j","expiresInSeconds":0,"viewOnce":false}}},"account":"+33123456789"}}}`
+
+=== Multi-account mode
+
+When the daemon/jsonRpc command is started without an account parameter (-a), signal-cli will provide all local accounts and additional commands to register (`register`) and link (`startLink`, `finishLink`) new accounts.
+
+In multi-account mode, requests for a single account require an additional `account` param.
+For an account without a phone number, this parameter must be its ACI (Account ID).
+`listAccounts` returns the ACI in `aci` and a null `number` for these accounts.
+Receive events identify them by ACI in the `account` field.
+
+REQUEST: `{"jsonrpc":"2.0","method":"listGroups","id":"my special mark","params":{"account":"+33123456789"}}`
+
+== Commands
+
+The commands available for the JSON-RPC mode are the same as the cli commands (except `register`, `verify` and `link`).
+The `method` field is the command name and the parameters can be sent as the `params` object.
+
+- Parameter names are provided in camelCase format instead of the hyphen format on the cli.
+
+  e.g.: `--group-id=ID` on the cli becomes `"groupId":"ID"`
+
+- Parameters that can take multiple values on the command line can be provided as single json value or as json array
+
+  e.g. `--attachment ATTACH1 ATTACH2` becomes `"attachments":["ATTACH1", "ATTACH2"]`
+
+  `--attachment ATTACH` becomes `"attachment":"ATTACH"`
+
+=== Additional JSON-RPC commands
+
+==== subscribeReceive
+
+For receiving message with `--receive-mode=manual` parameter.
+
+Tells the daemon to start receiving messages, returns the subscription id as a single integer value in the result.
+
+==== unsubscribeReceive
+
+Stop a previous subscription for receiving messages.
+
+Params:
+
+- `subscription`: the subscription id returned by `subscribeReceive`
+
+==== startLink
+
+Starts the provisioning for a new linked account.
+Responds with a URI that can be used with the `addDevice` signal-cli command or encoded as a QR-code and scanned with a mobile phone.
+The URI is only valid for a short amount of time.
+
+REQUEST: `{"jsonrpc":"2.0","method":"startLink","id":"5"}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":{"deviceLinkUri":"sgnl://linkdevice?uuid=X&pub_key=X"},"id":"5"}`
+
+==== finishLink
+
+Finish provisioning of a new linked account.
+Can be called immediately after `startLink`, it will wait for a response from the primary device.
+
+Params:
+
+- `deviceLinkUri`: the URI returned by `startLink`
+- `deviceName`: (optional) the name for the new linked device
+
+REQUEST: `{"jsonrpc":"2.0","method":"finishLink","id":"6","params":{"deviceLinkUri":"sgnl://linkdevice?uuid=X&pub_key=X","deviceName":"new-name"}}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":{"number":null,"aci":"11111111-1111-4111-8111-111111111111"},"id":"6"}`
+
+The `number` field contains the phone number for a numbered account. Linking a numberless
+account uses the same QR flow; no Account Key is supplied to `finishLink`.
+
+== Examples
+
+REQUEST: `{"jsonrpc":"2.0","method":"listGroups","id":"5"}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":[...],"id":"5"}`
+
+---
+
+REQUEST: `{"jsonrpc":"2.0","method":"send","params":{"recipient":["+YYY"],"message":"MESSAGE"},"id":4}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":{"timestamp":999},"id":4}`
+
+---
+
+REQUEST: `{"jsonrpc":"2.0","method":"send","params":{"groupId":"GROUP_ID_BASE64","message":"MESSAGE"},"id":4}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":{"timestamp":999},"id":4}`
+
+---
+
+REQUEST: `{"jsonrpc":"2.0","method":"updateGroup","params":{"groupId":"GROUP_ID=","name":"new group name","members":["+ZZZ"],"link":"enabledWithApproval","setPermissionEditDetails":"only-admins","memberLabelEmoji":"😀","memberLabel":"My Label"},"id":"someId"}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":{"timestamp":9999},"id":"someId"}`
+
+---
+
+REQUEST: `{"jsonrpc":"2.0","method":"sendSyncRequest","id":9}`
+
+RESPONSE: `{"jsonrpc":"2.0","result":{},"id":9}`
+
+---
+
+REQUEST: `{"jsonrpc":"2.0"}`
+
+RESPONSE: `{"jsonrpc":"2.0","error":{"code":-32600,"message":"method field must be set","data":null},"id":null}`
+
+== Authors
+
+Maintained by AsamK <asamk@gmx.de>, who is assisted by other open source contributors.
+For more information about signal-cli development, see
+<https://github.com/AsamK/signal-cli>.

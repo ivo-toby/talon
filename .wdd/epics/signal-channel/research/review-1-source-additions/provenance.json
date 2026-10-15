@@ -1,0 +1,18 @@
+{
+  "tag": "v0.14.9",
+  "commit": "3997429779095ff3a2d64c877126e84fce9852aa",
+  "purpose": "Additive source evidence for round-1 dispositions; original research snapshot unchanged",
+  "files": [
+    {
+      "path": "src/main/java/org/asamk/signal/json/JsonError.java",
+      "sha256": "2aae5a524626d0b22a4a46fe7005eb5c55e560d7f56d6baa4d0213519e144e2b",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/src/main/java/org/asamk/signal/json/JsonError.java"
+    },
+    {
+      "path": "lib/src/main/java/org/asamk/signal/manager/Manager.java",
+      "sha256": "218a0f222385180229b25a9858a36336e44b793b01c23b7cc08f919e3d5f5bfc",
+      "upstream": "https://github.com/AsamK/signal-cli/blob/3997429779095ff3a2d64c877126e84fce9852aa/lib/src/main/java/org/asamk/signal/manager/Manager.java"
+    }
+  ],
+  "license_file": "../signal-cli-v0.14.9/LICENSE"
+}

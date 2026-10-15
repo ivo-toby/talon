@@ -1,0 +1,570 @@
+{
+  "kind": "wdd_plan",
+  "schemaVersion": 1,
+  "scope": {
+    "id": "SCOPE-signal-channel",
+    "baseRef": "wdd/signal-channel",
+    "maxConcurrent": 3,
+    "reconcileEveryNMerges": 3,
+    "reviewPolicy": "always"
+  },
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "title": "TASK-001: Signal configuration, identity and delivery contracts",
+      "dependsOn": [],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-001.md",
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-6",
+        "spec.md#AC-8",
+        "spec.md#AC-9",
+        "spec.md#AC-10",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/core/config/config-schema.ts",
+        "src/core/errors/error-types.ts",
+        "src/core/errors/error-codes.ts",
+        "src/core/errors/index.ts",
+        "src/channels/channel-types.ts",
+        "src/channels/connectors/signal/signal-types.ts",
+        "src/channels/connectors/signal/signal-config.ts",
+        "src/channels/connectors/signal/signal-identities.ts",
+        "src/queue/signal-delivery-checkpoint.ts",
+        "tests/unit/core/config/config-schema.test.ts",
+        "tests/unit/core/errors/error-types.test.ts",
+        "tests/unit/channels/connectors/signal/signal-contracts.test.ts",
+        "tests/unit/queue/signal-delivery-checkpoint.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-002",
+      "title": "TASK-002: Atomic inbound acceptance and connector receipts",
+      "dependsOn": [
+        "TASK-001"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-002.md",
+      "context": [
+        "spec.md#AC-11",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/core/database/transaction.ts",
+        "src/core/database/index.ts",
+        "src/pipeline/message-pipeline.ts",
+        "tests/unit/core/database/transaction.test.ts",
+        "tests/unit/pipeline/message-pipeline.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-003",
+      "title": "TASK-003: Trusted Unix JSON-RPC transport",
+      "dependsOn": [
+        "TASK-001"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-003.md",
+      "context": [
+        "spec.md#AC-8",
+        "spec.md#AC-10",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md",
+        "research/signal-cli-v0.14.9/man/signal-cli-jsonrpc.5.adoc",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/JsonRpcResponse.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcDispatcherHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SocketHandler.java"
+      ],
+      "conflictDomains": [
+        "src/channels/connectors/signal/signal-rpc-client.ts",
+        "src/channels/connectors/signal/signal-wire.ts",
+        "src/channels/connectors/signal/signal-socket-trust.ts",
+        "tests/unit/channels/connectors/signal/signal-rpc-client.test.ts",
+        "tests/unit/channels/connectors/signal/signal-socket-trust.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-004",
+      "title": "TASK-004: Receive activation, provenance and bounded quarantine",
+      "dependsOn": [
+        "TASK-001"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-004.md",
+      "context": [
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-11",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonReceiveMessageHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonMessageEnvelope.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonDataMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncDataMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListDevicesCommand.java"
+      ],
+      "conflictDomains": [
+        "src/channels/connectors/signal/signal-inbound-policy.ts",
+        "src/channels/connectors/signal/signal-device-registry.ts",
+        "src/channels/connectors/signal/signal-inbound-buffer.ts",
+        "src/channels/connectors/signal/signal-diagnostics.ts",
+        "tests/unit/channels/connectors/signal/signal-inbound-policy.test.ts",
+        "tests/unit/channels/connectors/signal/signal-inbound-buffer.test.ts",
+        "tests/unit/channels/connectors/signal/signal-diagnostics.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-005",
+      "title": "TASK-005: Persistent account state and destination leases",
+      "dependsOn": [
+        "TASK-001"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-005.md",
+      "context": [
+        "spec.md#AC-5",
+        "spec.md#AC-8",
+        "spec.md#AC-10",
+        "spec.md#AC-12",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/core/database/migrations/014-signal-state.sql",
+        "src/core/database/repositories/signal-account-state-repository.ts",
+        "src/core/database/repositories/signal-destination-lease-repository.ts",
+        "src/core/database/repositories/index.ts",
+        "tests/unit/core/database/repositories/signal-account-state-repository.test.ts",
+        "tests/unit/core/database/repositories/signal-destination-lease-repository.test.ts",
+        "tests/unit/core/database/migrations/runner.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-006",
+      "title": "TASK-006: Queue delivery-only retry, cancellation and crash recovery",
+      "dependsOn": [
+        "TASK-001",
+        "TASK-005"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-006.md",
+      "context": [
+        "spec.md#AC-8",
+        "spec.md#AC-10",
+        "spec.md#AC-12",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/core/database/repositories/queue-repository.ts",
+        "src/daemon/lifecycle.ts",
+        "tests/unit/core/database/repositories/queue-repository.test.ts",
+        "tests/unit/queue/queue-processor.test.ts",
+        "tests/unit/queue/queue-manager.test.ts",
+        "tests/unit/queue/dead-letter.test.ts",
+        "tests/unit/daemon/lifecycle.test.ts",
+        "src/queue/**"
+      ]
+    },
+    {
+      "id": "TASK-007",
+      "title": "TASK-007: Text sender, account FIFO and target verification",
+      "dependsOn": [
+        "TASK-001",
+        "TASK-003",
+        "TASK-005",
+        "TASK-006"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-007.md",
+      "context": [
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-8",
+        "spec.md#AC-9",
+        "spec.md#AC-10",
+        "spec.md#AC-12",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/SendCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListContactsCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListGroupsCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSendMessageResult.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/util/SendMessageResultUtils.java",
+        "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java",
+        "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/internal/ManagerImpl.java",
+        "research/review-1-source-additions/src/main/java/org/asamk/signal/json/JsonError.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SocketHandler.java"
+      ],
+      "conflictDomains": [
+        "src/channels/connectors/signal/signal-send-coordinator.ts",
+        "src/channels/connectors/signal/signal-send-result.ts",
+        "src/channels/connectors/signal/signal-text.ts",
+        "src/channels/connectors/signal/signal-target.ts",
+        "tests/unit/channels/connectors/signal/signal-send-coordinator.test.ts",
+        "tests/unit/channels/connectors/signal/signal-send-result.test.ts",
+        "tests/unit/channels/connectors/signal/signal-target.test.ts",
+        "tests/unit/channels/connectors/signal/signal-text.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-008",
+      "title": "TASK-008: Signal connector and verification lifecycle",
+      "dependsOn": [
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-007"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-008.md",
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-8",
+        "spec.md#AC-9",
+        "spec.md#AC-10",
+        "spec.md#AC-11",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md",
+        "research/signal-cli-v0.14.9/man/signal-cli-jsonrpc.5.adoc",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/JsonRpcResponse.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcDispatcherHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SocketHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonReceiveMessageHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonMessageEnvelope.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonDataMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncDataMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListDevicesCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/VersionCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListAccountsCommand.java"
+      ],
+      "conflictDomains": [
+        "src/channels/connectors/signal/signal-connector.ts",
+        "src/channels/connectors/signal/signal-account-verifier.ts",
+        "src/channels/connectors/signal/index.ts",
+        "tests/unit/channels/connectors/signal/signal-connector.test.ts",
+        "tests/unit/channels/connectors/signal/signal-account-verifier.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-009",
+      "title": "TASK-009: Saved reply delivery actor and invocation guard",
+      "dependsOn": [
+        "TASK-006",
+        "TASK-008"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-009.md",
+      "context": [
+        "spec.md#AC-5",
+        "spec.md#AC-8",
+        "spec.md#AC-10",
+        "spec.md#AC-12",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/daemon/signal-reply-delivery.ts",
+        "src/daemon/signal-invocation-guard.ts",
+        "tests/unit/daemon/signal-reply-delivery.test.ts",
+        "tests/unit/daemon/signal-invocation-guard.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-010",
+      "title": "TASK-010: Runner and channel tool delivery integration",
+      "dependsOn": [
+        "TASK-009"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-010.md",
+      "context": [
+        "spec.md#AC-5",
+        "spec.md#AC-8",
+        "spec.md#AC-12",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/daemon/agent-runner.ts",
+        "src/daemon/daemon-context.ts",
+        "src/tools/tool-types.ts",
+        "tests/unit/daemon/agent-runner.test.ts",
+        "tests/unit/tools/host-tools/channel-send.test.ts",
+        "tests/unit/tools/host-tools/channel-broadcast.test.ts",
+        "tests/unit/tools/host-tools/channel-list.test.ts",
+        "tests/unit/subagents/background/background-agent-manager.test.ts",
+        "src/tools/host-tools/**"
+      ]
+    },
+    {
+      "id": "TASK-011",
+      "title": "TASK-011: Signal CLI admission, status and local resume",
+      "dependsOn": [
+        "TASK-001",
+        "TASK-006",
+        "TASK-008"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-011.md",
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-10",
+        "spec.md#AC-12",
+        "spec.md#AC-13",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/cli/config-utils.ts",
+        "src/cli/index.ts",
+        "src/ipc/ipc-types.ts",
+        "src/ipc/daemon-ipc-client.ts",
+        "src/cli/commands/**",
+        "tests/unit/cli/**"
+      ]
+    },
+    {
+      "id": "TASK-012",
+      "title": "TASK-012: Runtime wiring and reload integration",
+      "dependsOn": [
+        "TASK-002",
+        "TASK-003",
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008",
+        "TASK-009",
+        "TASK-010",
+        "TASK-011"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-012.md",
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-5",
+        "spec.md#AC-10",
+        "spec.md#AC-11",
+        "spec.md#AC-12",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "src/channels/channel-setup.ts",
+        "src/channels/index.ts",
+        "src/ipc/daemon-ipc-server.ts",
+        "tests/unit/channels/channel-setup.test.ts",
+        "tests/unit/ipc/signal-resume.test.ts",
+        "tests/unit/ipc/daemon-ipc-server.test.ts",
+        "src/daemon/channel-factory.ts",
+        "src/daemon/daemon-bootstrap.ts",
+        "src/daemon/daemon.ts",
+        "src/daemon/daemon-types.ts",
+        "src/daemon/index.ts",
+        "tests/unit/daemon/channel-factory.test.ts",
+        "tests/unit/daemon/daemon-bootstrap.test.ts",
+        "tests/unit/daemon/daemon.test.ts",
+        "tests/unit/daemon/reload.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-013",
+      "title": "TASK-013: Packaged fake bridge and complete deliverable gate",
+      "dependsOn": [
+        "TASK-012"
+      ],
+      "risk": "high",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-013.md",
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-8",
+        "spec.md#AC-10",
+        "spec.md#AC-11",
+        "spec.md#AC-12",
+        "spec.md#AC-14",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md",
+        "research/signal-cli-v0.14.9/man/signal-cli-jsonrpc.5.adoc",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/JsonRpcResponse.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcDispatcherHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SocketHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonReceiveMessageHandler.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonMessageEnvelope.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonDataMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncDataMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncMessage.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListDevicesCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/SendCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListContactsCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListGroupsCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSendMessageResult.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/util/SendMessageResultUtils.java",
+        "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java",
+        "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/internal/ManagerImpl.java",
+        "research/review-1-source-additions/src/main/java/org/asamk/signal/json/JsonError.java"
+      ],
+      "conflictDomains": [
+        "tests/smoke/signal-channel-smoke.mjs",
+        ".agents/skills/run-talon-smoke/**",
+        "tests/unit/channels/connectors/signal/signal-deliverable-conformance.test.ts"
+      ]
+    },
+    {
+      "id": "TASK-014",
+      "title": "TASK-014: Signal setup walkthroughs for both agent clients",
+      "dependsOn": [
+        "TASK-012"
+      ],
+      "risk": "normal",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-014.md",
+      "context": [
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-10",
+        "spec.md#AC-13",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/DaemonCommand.java",
+        "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListDevicesCommand.java"
+      ],
+      "conflictDomains": [
+        ".agents/skills/add-signal/**",
+        ".agents/skills/talon-setup/**",
+        ".agents/skills/talon-setup-docker/**",
+        ".claude/skills/add-signal/**",
+        ".claude/skills/talon-setup/**",
+        ".claude/skills/talon-setup-docker/**"
+      ]
+    },
+    {
+      "id": "TASK-015",
+      "title": "TASK-015: User and architecture documentation",
+      "dependsOn": [
+        "TASK-012"
+      ],
+      "risk": "normal",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-015.md",
+      "context": [
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-4",
+        "spec.md#AC-5",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-8",
+        "spec.md#AC-9",
+        "spec.md#AC-10",
+        "spec.md#AC-11",
+        "spec.md#AC-12",
+        "spec.md#AC-13",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "README.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "config/talond.example.yaml",
+        "docs/setup-guide.md",
+        "docs/signal-channel.md"
+      ]
+    },
+    {
+      "id": "TASK-016",
+      "title": "TASK-016: Starter distribution synchronization",
+      "dependsOn": [
+        "TASK-014",
+        "TASK-015"
+      ],
+      "risk": "normal",
+      "model": null,
+      "reviewModel": null,
+      "specPath": "tasks/TASK-016.md",
+      "context": [
+        "spec.md#AC-13",
+        "spec.md#AC-14",
+        "design.md",
+        "shared-context/contract-inventory.md",
+        "research/contract-constraints.md"
+      ],
+      "conflictDomains": [
+        "scripts/sync-starter-skills.sh",
+        "starter/.claude/skills/**",
+        "starter-stack/.claude/skills/**",
+        "starter/README.md",
+        "starter-stack/README.md",
+        "tests/unit/deploy/starter-bundle.test.ts"
+      ]
+    }
+  ]
+}

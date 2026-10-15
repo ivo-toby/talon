@@ -1,48 +1,260 @@
 {
   "appliedIdempotencyKeys": [
-    "auto:1:5759e5a83d07329a",
-    "auto:2:2f197ff48f22f891",
-    "auto:3:4017bd625981011c"
+    "auto:1:ae96f198c3b0a9db",
+    "auto:2:6084333685901432",
+    "auto:3:4017bd625981011c",
+    "auto:4:75a26b894acf9730",
+    "auto:5:57682d281b1e676d",
+    "auto:6:57682d281b1e676d",
+    "auto:7:de93e790f760244c",
+    "auto:8:de93e790f760244c",
+    "auto:9:9c3ef8bc5a97bc5d"
   ],
   "archiveBlocked": null,
   "archivePending": null,
   "constitution": {
     "ratification": {
-      "at": "2026-10-14T13:02:23Z",
+      "amendedFrom": "sha256:6fe903ebae8db363bbeffca07fb519546a1f59289afcd8999ad6e028fb1273e3",
+      "at": "2026-10-15T17:34:09Z",
       "by": "Ivo",
-      "decisionFingerprint": "sha256:8a57ee8df974b3f10dfa6bf75f80884034c9deb2d7e9a53760dde2cc02a51998"
+      "decisionFingerprint": "sha256:c0c5740bd33a619fcd922f8a149e017129f93b5d730dfe25450806accc90c395"
     },
     "status": "ratified"
   },
-  "epic": "image-processing",
+  "epic": "signal-channel",
   "events": [
     {
-      "at": "2026-10-14T13:02:23Z",
-      "idempotencyKey": "auto:1:5759e5a83d07329a",
+      "at": "2026-10-14T17:15:32Z",
+      "idempotencyKey": "auto:1:ae96f198c3b0a9db",
       "revision": 1,
       "task": null,
       "type": "constitution.ratified"
     },
     {
-      "at": "2026-10-14T13:19:38Z",
-      "idempotencyKey": "auto:2:2f197ff48f22f891",
+      "at": "2026-10-14T17:15:42Z",
+      "idempotencyKey": "auto:2:6084333685901432",
       "revision": 2,
       "task": null,
       "type": "epic.created"
     },
     {
-      "at": "2026-10-14T13:19:39Z",
+      "at": "2026-10-14T17:15:50Z",
       "idempotencyKey": "auto:3:4017bd625981011c",
       "revision": 3,
       "task": null,
       "type": "intake.configured"
+    },
+    {
+      "at": "2026-10-14T17:23:10Z",
+      "idempotencyKey": "auto:4:75a26b894acf9730",
+      "revision": 4,
+      "task": null,
+      "type": "intake.spec_approved"
+    },
+    {
+      "at": "2026-10-14T17:44:32Z",
+      "idempotencyKey": "auto:5:57682d281b1e676d",
+      "revision": 5,
+      "task": null,
+      "type": "intake.research_recorded"
+    },
+    {
+      "at": "2026-10-14T17:45:55Z",
+      "idempotencyKey": "auto:6:57682d281b1e676d",
+      "revision": 6,
+      "task": null,
+      "type": "intake.research_recorded"
+    },
+    {
+      "at": "2026-10-15T10:35:50Z",
+      "idempotencyKey": "auto:7:de93e790f760244c",
+      "revision": 7,
+      "task": null,
+      "type": "intake.design_approved"
+    },
+    {
+      "at": "2026-10-15T10:42:03Z",
+      "idempotencyKey": "auto:8:de93e790f760244c",
+      "revision": 8,
+      "task": null,
+      "type": "intake.design_approved"
+    },
+    {
+      "at": "2026-10-15T17:34:09Z",
+      "idempotencyKey": "auto:9:9c3ef8bc5a97bc5d",
+      "revision": 9,
+      "task": null,
+      "type": "constitution.amended"
     }
   ],
   "intake": {
     "configure": {
-      "at": "2026-10-14T13:19:39Z",
+      "at": "2026-10-14T17:15:50Z",
       "by": "Ivo",
-      "sha256": "sha256:38f8a26ad7d2990d2a29d13610f822941554c0fb6264cbe10c6d67097bf5ac0a"
+      "sha256": "sha256:bd0014ef2dd5c6d3efc680ddf2bb92898057bfab19bdd3604c42d45019b4cb58"
+    },
+    "design": {
+      "at": "2026-10-15T10:42:03Z",
+      "by": "Ivo",
+      "deliverableCommand": "npm run build && bash .agents/skills/run-talon-smoke/scripts/verify-signal-deliverable.sh --no-build",
+      "sha256": "sha256:0a5f82387d2ae3596e78d0eeae4dd94de4ae753fc0a8856be1811459183e7b79"
+    },
+    "research": {
+      "artifacts": [
+        {
+          "path": "shared-context/contract-inventory.md",
+          "sha256": "sha256:7766e98cbd3053de3e443dc2151a19e3c8915cddeaef7101cb9f701dead57469"
+        },
+        {
+          "path": "research/contract-constraints.md",
+          "sha256": "sha256:93b2b908caf72ce700023c4dd146d64ef0359263fe0c09c2886427069ecda8d0"
+        },
+        {
+          "path": "research/knowledge-input.md",
+          "sha256": "sha256:561a6877aa17a60b74838dbbf81ca4fb9e2383f969f34618661fbbf599f2148d"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/LICENSE",
+          "sha256": "sha256:8ceb4b9ee5adedde47b31e975c1d90c73ad27b6b165a1dcd80c7c545eb65b903"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/README.md",
+          "sha256": "sha256:f0cb4f8450913532c862c5b9377a32ad2cef51a6b67beb1f15397c0187313e1f"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/api/MessageEnvelope.java",
+          "sha256": "sha256:11614b56130bd43e146a64db701f8ae54796e35dcf3397dc4ac5cd682bc3b7f0"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/api/RecipientIdentifier.java",
+          "sha256": "sha256:339739b217359a557223d501117c6be062f362717d08c74659c284a326f4b392"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/config/ServiceConfig.java",
+          "sha256": "sha256:b0a02f7c225cc6f65f5f3f2074024d0179148e8fa83f7bad397e7747dda7b777"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/lib/src/main/java/org/asamk/signal/manager/internal/ManagerImpl.java",
+          "sha256": "sha256:17070869ae791632082ce3777ef0e204ab1c2e8947ee90dcef85050dc44c30b2"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/man/signal-cli-jsonrpc.5.adoc",
+          "sha256": "sha256:9a70ce4c202590f37abd9c0b7e46cf843ae66acc446377c926639d218fb796a0"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/man/signal-cli.1.adoc",
+          "sha256": "sha256:c23455df8dcc6717ec713bf18817dffe3a5c80d3e86fa7919648049aaf66926d"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/provenance.json",
+          "sha256": "sha256:1688803686e9271931967fcbcedc4e58505a22de0fa596b1f77368beae5b0f6c"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/DaemonCommand.java",
+          "sha256": "sha256:ff9a013f6918456e16f4d9c16de340e64deecd22ec2ad6c2d1e1482201909f9c"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/FinishLinkCommand.java",
+          "sha256": "sha256:9a5419fb9b65423388e1a5f03fb15f2cd8af9b887ca66da3e87826bd5b089bad"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/LinkCommand.java",
+          "sha256": "sha256:4f6bd4ac066b80db67bf7c93cdb35297d14fccc0286c2f7c65bd7d723269031f"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListAccountsCommand.java",
+          "sha256": "sha256:ddbac49ab753598281114cadd7eb3cf822e752f0cc97de87d902b63228488d60"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListContactsCommand.java",
+          "sha256": "sha256:104efe5dbdd634c36b59decd40a506dfc9b4258528bed54d51c28d611ddafd87"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListDevicesCommand.java",
+          "sha256": "sha256:4c709e902e743672d2e5183677df1feb3ef9a78a814674168135b0dca076f73a"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/ListGroupsCommand.java",
+          "sha256": "sha256:edb7b51250b8084f636ef90d725ca428ca16d50b3e892ab5f488a2099e1ae7c2"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/SendCommand.java",
+          "sha256": "sha256:8a7e2655a731147706ff7c3e377495bd679a5c7f7d2a713ffb82002e3af306ba"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/StartLinkCommand.java",
+          "sha256": "sha256:55bc4a1ac911ef89ff0915185d9541a0b6c231093c1fd44a85bd8e6c262df37b"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/commands/VersionCommand.java",
+          "sha256": "sha256:2070328780d9db116127ce1055b7e0bb0874f4f71c5d9884704cf4579b73c61c"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonContact.java",
+          "sha256": "sha256:1b757f5416320e16385b1195446aa2879cc3f60ebc9f2c1dfec5c5087fb8442a"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonDataMessage.java",
+          "sha256": "sha256:7876ed9ab9eb40ce5ad215d7895bf0348cbdf607346b091dfa22059dc08abf3a"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonGroupInfo.java",
+          "sha256": "sha256:9296c8773c4e4bf77fa5babf2286cc00aff0ec69daa8ab41fc75abfa62cd5072"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonMessageEnvelope.java",
+          "sha256": "sha256:9c6260bfd21b77052eabc0fdf6ebdf12778183bd8827c26f3c2ae7d7e65b1610"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonReceiveMessageHandler.java",
+          "sha256": "sha256:325e7c072f58ed3ec0de03f3ad5938b5bbff226734b623006b928ceaa8826264"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonRecipientAddress.java",
+          "sha256": "sha256:fe5905558b3aae63432bd7413d9d243e10565ba4b00f20538150560fffa87981"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSendMessageResult.java",
+          "sha256": "sha256:77b9e3d79eaa74657ab4e60b3d86968552c5c99d1c79a13e1b0caffa47caee2d"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncDataMessage.java",
+          "sha256": "sha256:c94ba89cd35ebfb2ddb0d09a032ee58d80663d3d07d8bc8584faa85dbc7dc6b4"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/json/JsonSyncMessage.java",
+          "sha256": "sha256:96ed5c81b073e53be9eb51682d241bdf874713d314cb834fac6085a1b28b2ca2"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/JsonRpcResponse.java",
+          "sha256": "sha256:dd89d9b7fce6fd451c49ae694152680862be6190fd7a1b251e4daae3e9618813"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcCommandHandler.java",
+          "sha256": "sha256:951062c1b09a8e8d4768d90cdc3211ae7e0fcf9abf878214eab73d0dd2a4e103"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SignalJsonRpcDispatcherHandler.java",
+          "sha256": "sha256:46f2c74c50f0bff4af3a21fc491bd7ee86d1ca8039931d68b7d4d37352fa1933"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/jsonrpc/SocketHandler.java",
+          "sha256": "sha256:64df44f9e9391318f9738c1d8dbbc456ddadd7f51e8d42afaa3a39581ca8fabc"
+        },
+        {
+          "path": "research/signal-cli-v0.14.9/src/main/java/org/asamk/signal/util/SendMessageResultUtils.java",
+          "sha256": "sha256:c4edad52dc0f011572a9bd3706be785b3d0523782547643b7e12426e998c619e"
+        }
+      ],
+      "at": "2026-10-14T17:45:55Z",
+      "by": "Codex",
+      "done": true
+    },
+    "spec": {
+      "at": "2026-10-14T17:23:10Z",
+      "by": "Ivo",
+      "criteria": 15,
+      "sha256": "sha256:e952d2505bce9bf101285e4efa7460efaf340ade151c9aa950f4f5981490cd52"
     }
   },
   "monitoring": {
@@ -59,12 +271,12 @@
     "mergesSinceCheckpoint": 0,
     "pendingNotes": []
   },
-  "revision": 3,
+  "revision": 9,
   "schemaVersion": 7,
   "scope": null,
   "tasks": {},
   "telemetry": {
-    "eventApplications": 3,
+    "eventApplications": 9,
     "renderCount": 0
   }
 }
