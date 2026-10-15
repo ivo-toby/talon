@@ -6,5 +6,6 @@
  */
 
 export { createDatabase } from './connection.js';
+export { runResultTransaction } from './transaction.js';
 export { runMigrations } from './migrations/index.js';
 export * from './repositories/index.js';

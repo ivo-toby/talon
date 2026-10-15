@@ -1,36 +1,30 @@
-/**
- * MessagePipeline — end-to-end message ingestion pipeline.
- *
- * Connects channel connectors to the durable work queue by orchestrating:
- *   InboundEvent → channel lookup → thread resolution → normalization →
- *   deduplication → persona routing → queue enqueue.
- *
- * All expected failure paths are returned as Result errors; exceptions are
- * never thrown across the public boundary.
- */
-
+/** Atomic local handoff from normalized channel events to the durable queue. */
 import { v4 as uuidv4 } from 'uuid';
 import type pino from 'pino';
 import { ok, err, type Result } from 'neverthrow';
 import { PipelineError } from '../core/errors/index.js';
+import { runResultTransaction } from '../core/database/transaction.js';
 import type { ChannelRepository } from '../core/database/repositories/channel-repository.js';
 import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
 import type { MessageRepository } from '../core/database/repositories/message-repository.js';
 import type { ChannelRouter } from '../channels/channel-router.js';
 import type { QueueManager } from '../queue/queue-manager.js';
 import type { AuditLogger } from '../core/logging/audit-logger.js';
-import type { InboundEvent } from '../channels/channel-types.js';
+import type { InboundEvent, InboundReceipt } from '../channels/channel-types.js';
 import { MessageNormalizer } from './message-normalizer.js';
-import type { PipelineResult, PipelineStats } from './pipeline-types.js';
+import type { NormalizedMessage, PipelineResult, PipelineStats } from './pipeline-types.js';
 
-/**
- * Orchestrates the full inbound message lifecycle from raw InboundEvent
- * through to a work item on the durable queue.
- *
- * The pipeline is stateless with respect to messages — all state is in the
- * database. The only mutable state held by this class is the aggregate stats
- * counters.
- */
+type AcceptanceResult = Exclude<PipelineResult, 'error'>;
+type FailureReason =
+  | 'CHANNEL_LOOKUP_FAILED'
+  | 'CHANNEL_NOT_FOUND'
+  | 'THREAD_LOOKUP_FAILED'
+  | 'THREAD_INSERT_FAILED'
+  | 'MESSAGE_INSERT_FAILED'
+  | 'ROUTING_FAILED'
+  | 'ENQUEUE_FAILED'
+  | 'UNEXPECTED_FAILURE';
+
 export class MessagePipeline {
   private readonly normalizer = new MessageNormalizer();
   private readonly statsCounters: PipelineStats = {
@@ -40,6 +34,7 @@ export class MessagePipeline {
     errors: 0,
   };
 
+  /** All repositories (including router/queue/audit) must share one SQLite connection. */
   constructor(
     private readonly messageRepo: MessageRepository,
     private readonly threadRepo: ThreadRepository,
@@ -50,222 +45,193 @@ export class MessagePipeline {
     private readonly logger: pino.Logger,
   ) {}
 
-  /**
-   * Processes a single InboundEvent through the full pipeline.
-   *
-   * Steps:
-   *  1. Resolve channel by name.
-   *  2. Resolve (or create) thread by external ID.
-   *  3. Normalize event to canonical NormalizedMessage.
-   *  4. Persist message with INSERT OR IGNORE deduplication.
-   *  5. Route to persona via ChannelRouter.
-   *  6. Enqueue work item.
-   *
-   * @param event - The inbound event emitted by a channel connector.
-   * @returns Ok(PipelineResult) on all expected outcomes, Err(PipelineError) on unexpected failures.
-   */
+  /** Compatible legacy outcomes for ordinary connector callers. */
   handleInboundEvent(event: InboundEvent): Result<PipelineResult, PipelineError> {
-    this.statsCounters.processed++;
-
-    try {
-      // ------------------------------------------------------------------
-      // Step 1: Resolve channel by name.
-      // ------------------------------------------------------------------
-      const channelResult = this.channelRepo.findByName(event.channelName);
-      if (channelResult.isErr()) {
-        this.statsCounters.errors++;
-        return err(
-          new PipelineError(
-            `Failed to look up channel '${event.channelName}': ${channelResult.error.message}`,
-            channelResult.error,
-          ),
-        );
-      }
-      const channel = channelResult.value;
-      if (channel === null) {
-        this.statsCounters.errors++;
-        this.logger.warn({ channelName: event.channelName }, 'pipeline: channel not found');
-        return err(new PipelineError(`Channel not found: ${event.channelName}`));
-      }
-      const channelId = channel.id;
-
-      // ------------------------------------------------------------------
-      // Step 2: Resolve or create thread.
-      // ------------------------------------------------------------------
-      const threadResult = this.threadRepo.findByExternalId(channelId, event.externalThreadId);
-      if (threadResult.isErr()) {
-        this.statsCounters.errors++;
-        return err(
-          new PipelineError(
-            `Failed to look up thread for channel ${channelId}, external ID '${event.externalThreadId}': ${threadResult.error.message}`,
-            threadResult.error,
-          ),
-        );
-      }
-
-      let threadId: string;
-      if (threadResult.value !== null) {
-        threadId = threadResult.value.id;
-      } else {
-        // Thread does not exist yet — create it.
-        const newThreadId = uuidv4();
-        const insertResult = this.threadRepo.insert({
-          id: newThreadId,
-          channel_id: channelId,
-          external_id: event.externalThreadId,
-          metadata: '{}',
-        });
-        if (insertResult.isErr()) {
-          this.statsCounters.errors++;
-          return err(
-            new PipelineError(
-              `Failed to create thread for channel ${channelId}, external ID '${event.externalThreadId}': ${insertResult.error.message}`,
-              insertResult.error,
-            ),
-          );
-        }
-        threadId = newThreadId;
-        this.logger.debug(
-          { threadId, channelId, externalThreadId: event.externalThreadId },
-          'pipeline: created new thread',
-        );
-      }
-
-      // ------------------------------------------------------------------
-      // Step 3: Normalize the event.
-      // ------------------------------------------------------------------
-      const normalized = this.normalizer.normalize(event, channelId, threadId);
-
-      // ------------------------------------------------------------------
-      // Step 4: Persist with INSERT OR IGNORE deduplication.
-      // Check before inserting to distinguish duplicate from first insert.
-      // ------------------------------------------------------------------
-      const scopedIdempotencyKey = `${channelId}:${normalized.idempotencyKey}`;
-      const alreadyExists = this.messageRepo.existsByIdempotencyKey(scopedIdempotencyKey);
-      if (alreadyExists) {
-        this.statsCounters.duplicates++;
-        this.logger.debug(
-          { idempotencyKey: scopedIdempotencyKey, channelName: event.channelName },
-          'pipeline: duplicate message detected, skipping',
-        );
-        return ok('duplicate');
-      }
-
-      const insertResult = this.messageRepo.insert({
-        id: normalized.id,
-        thread_id: normalized.threadId,
-        direction: 'inbound',
-        content: normalized.content,
-        idempotency_key: scopedIdempotencyKey,
-        provider_id: normalized.senderId,
-        run_id: null,
-      });
-      if (insertResult.isErr()) {
-        this.statsCounters.errors++;
-        return err(
-          new PipelineError(
-            `Failed to persist message with idempotency key '${scopedIdempotencyKey}': ${insertResult.error.message}`,
-            insertResult.error,
-          ),
-        );
-      }
-
-      // ------------------------------------------------------------------
-      // Step 5: Resolve persona via ChannelRouter.
-      // ------------------------------------------------------------------
-      const personaResult = this.router.resolvePersona(channelId, threadId);
-      if (personaResult.isErr()) {
-        this.statsCounters.errors++;
-        return err(
-          new PipelineError(
-            `Failed to resolve persona for channel ${channelId}, thread ${threadId}: ${personaResult.error.message}`,
-            personaResult.error,
-          ),
-        );
-      }
-
-      const personaId = personaResult.value;
-      if (personaId === null) {
-        this.statsCounters.noPersona++;
-        this.logger.warn(
-          { channelId, threadId, channelName: event.channelName },
-          'pipeline: no persona binding found; message dropped',
-        );
-        this.auditLogger.logChannelSend({
-          threadId,
-          action: 'pipeline.message.dropped',
-          details: {
-            reason: 'no_persona',
-            channelId,
-            channelName: event.channelName,
-            externalThreadId: event.externalThreadId,
-            messageId: normalized.id,
-            idempotencyKey: scopedIdempotencyKey,
-          },
-        });
-        return ok('no_persona');
-      }
-
-      // ------------------------------------------------------------------
-      // Step 6: Enqueue work item.
-      // ------------------------------------------------------------------
-      const enqueueResult = this.queueManager.enqueue(
-        threadId,
-        'message',
-        {
-          messageId: normalized.id,
-          channelId,
-          channelName: event.channelName,
-          senderId: normalized.senderId,
-          content: normalized.content,
-          timestamp: normalized.timestamp,
-          personaId,
-        },
-        normalized.id,
-      );
-
-      if (enqueueResult.isErr()) {
-        this.statsCounters.errors++;
-        return err(
-          new PipelineError(
-            `Failed to enqueue message ${normalized.id} for thread ${threadId}: ${enqueueResult.error.message}`,
-            enqueueResult.error,
-          ),
-        );
-      }
-
-      this.logger.info(
-        {
-          messageId: normalized.id,
-          threadId,
-          channelId,
-          queueItemId: enqueueResult.value.id,
-          personaId,
-        },
-        'pipeline: message enqueued',
-      );
-
-      return ok('enqueued');
-    } catch (cause) {
-      // Catch-all for truly unexpected errors (programming bugs, not domain failures).
-      this.statsCounters.errors++;
-      const message = cause instanceof Error ? cause.message : String(cause);
-      this.logger.error({ err: cause }, `pipeline: unexpected error: ${message}`);
-      return err(
-        new PipelineError(
-          `Unexpected pipeline error: ${message}`,
-          cause instanceof Error ? cause : undefined,
-        ),
-      );
-    }
+    return this.acceptInboundEvent(event);
   }
 
-  /**
-   * Returns a snapshot of running pipeline counters.
-   *
-   * Counters are updated on every call to `handleInboundEvent` regardless of
-   * outcome, making them suitable for health checks and monitoring dashboards.
-   */
+  /** Local transaction completion only, not an acknowledgement to the remote service. */
+  handleInboundEventWithReceipt(event: InboundEvent): Result<InboundReceipt, PipelineError> {
+    return this.acceptInboundEvent(event).map((outcome) => {
+      switch (outcome) {
+        case 'enqueued':
+          return 'accepted';
+        case 'duplicate':
+          return 'duplicate';
+        case 'no_persona':
+          return 'dropped';
+      }
+    });
+  }
+
+  private acceptInboundEvent(event: InboundEvent): Result<AcceptanceResult, PipelineError> {
+    this.statsCounters.processed++;
+    let result: Result<AcceptanceResult, PipelineError>;
+    try {
+      // BaseRepository.transaction uses the existing message connection; bootstrap
+      // supplies that same connection to thread, binding, queue and audit producers.
+      result = runResultTransaction(
+        (callback) => this.messageRepo.transaction(callback),
+        () => this.processInboundEvent(event),
+      );
+    } catch (cause) {
+      if (event.channelType !== 'signal') {
+        this.logger.error({ err: cause }, 'pipeline: unexpected error');
+      }
+      result = err(this.failure(event, 'UNEXPECTED_FAILURE', cause));
+    }
+
+    if (result.isErr()) {
+      this.statsCounters.errors++;
+      if (event.channelType === 'signal') {
+        this.logger.warn(
+          { channelName: event.channelName, reason: 'LOCAL_ACCEPTANCE_FAILED' },
+          'pipeline: Signal inbound acceptance failed',
+        );
+      }
+    } else if (result.value === 'duplicate') {
+      this.statsCounters.duplicates++;
+    } else if (result.value === 'no_persona') {
+      this.statsCounters.noPersona++;
+    }
+    return result;
+  }
+
+  private processInboundEvent(event: InboundEvent): Result<AcceptanceResult, PipelineError> {
+    const channelResult = this.channelRepo.findByName(event.channelName);
+    if (channelResult.isErr()) {
+      return err(this.failure(event, 'CHANNEL_LOOKUP_FAILED', channelResult.error));
+    }
+    const channel = channelResult.value;
+    if (channel === null) {
+      this.logger.warn({ channelName: event.channelName }, 'pipeline: channel not found');
+      return err(this.failure(event, 'CHANNEL_NOT_FOUND'));
+    }
+    const channelId = channel.id;
+
+    const threadResult = this.threadRepo.findByExternalId(channelId, event.externalThreadId);
+    if (threadResult.isErr()) {
+      return err(this.failure(event, 'THREAD_LOOKUP_FAILED', threadResult.error));
+    }
+    const threadId = threadResult.value?.id ?? uuidv4();
+    if (threadResult.value === null) {
+      const insertResult = this.threadRepo.insert({
+        id: threadId,
+        channel_id: channelId,
+        external_id: event.externalThreadId,
+        metadata: '{}',
+      });
+      if (insertResult.isErr()) {
+        return err(this.failure(event, 'THREAD_INSERT_FAILED', insertResult.error));
+      }
+      this.logger.debug(
+        event.channelType === 'signal'
+          ? { threadId, channelId }
+          : { threadId, channelId, externalThreadId: event.externalThreadId },
+        'pipeline: created new thread',
+      );
+    }
+
+    const normalized: Readonly<NormalizedMessage> = this.normalizer.normalize(
+      event,
+      channelId,
+      threadId,
+    );
+    const scopedIdempotencyKey = `${channelId}:${normalized.idempotencyKey}`;
+    if (this.messageRepo.existsByIdempotencyKey(scopedIdempotencyKey)) {
+      this.logger.debug(
+        event.channelType === 'signal'
+          ? { channelName: event.channelName }
+          : { idempotencyKey: scopedIdempotencyKey, channelName: event.channelName },
+        'pipeline: duplicate message detected, skipping',
+      );
+      // Historical transcript-only rows deliberately remain duplicates, not repairs.
+      return ok('duplicate');
+    }
+
+    const insertResult = this.messageRepo.insert({
+      id: normalized.id,
+      thread_id: normalized.threadId,
+      direction: 'inbound',
+      content: normalized.content,
+      idempotency_key: scopedIdempotencyKey,
+      provider_id: normalized.senderId,
+      run_id: null,
+    });
+    if (insertResult.isErr()) {
+      return err(this.failure(event, 'MESSAGE_INSERT_FAILED', insertResult.error));
+    }
+
+    const personaResult = this.router.resolvePersona(channelId, threadId);
+    if (personaResult.isErr()) {
+      return err(this.failure(event, 'ROUTING_FAILED', personaResult.error));
+    }
+    const personaId = personaResult.value;
+    if (personaId === null) {
+      this.logger.warn(
+        { channelId, threadId, channelName: event.channelName },
+        'pipeline: no persona binding found; message dropped',
+      );
+      this.auditLogger.logChannelSend({
+        threadId,
+        action: 'pipeline.message.dropped',
+        details: {
+          reason: 'no_persona',
+          channelId,
+          channelName: event.channelName,
+          messageId: normalized.id,
+          ...(event.channelType === 'signal'
+            ? {}
+            : { externalThreadId: event.externalThreadId, idempotencyKey: scopedIdempotencyKey }),
+        },
+      });
+      return ok('no_persona');
+    }
+
+    const enqueueResult = this.queueManager.enqueue(
+      threadId,
+      'message',
+      {
+        messageId: normalized.id,
+        channelId,
+        channelName: event.channelName,
+        senderId: normalized.senderId,
+        content: normalized.content,
+        timestamp: normalized.timestamp,
+        personaId,
+      },
+      normalized.id,
+    );
+    if (enqueueResult.isErr()) {
+      return err(this.failure(event, 'ENQUEUE_FAILED', enqueueResult.error));
+    }
+    this.logger.info(
+      {
+        messageId: normalized.id,
+        threadId,
+        channelId,
+        queueItemId: enqueueResult.value.id,
+        personaId,
+      },
+      'pipeline: message enqueued',
+    );
+    return ok('enqueued');
+  }
+
+  private failure(event: InboundEvent, reason: FailureReason, cause?: unknown): PipelineError {
+    // Returned errors reach shared callback loggers too: never retain a Signal
+    // repository error/cause, which may contain untrusted identifiers or content.
+    if (event.channelType === 'signal') {
+      return new PipelineError(`Signal inbound acceptance failed: ${reason}`);
+    }
+    const message = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '';
+    return new PipelineError(
+      `Pipeline ${reason}${message ? `: ${message}` : ''}`,
+      cause instanceof Error ? cause : undefined,
+    );
+  }
+
+  /** Snapshot counters count only committed outcomes or rolled-back failures. */
   stats(): PipelineStats {
     return { ...this.statsCounters };
   }

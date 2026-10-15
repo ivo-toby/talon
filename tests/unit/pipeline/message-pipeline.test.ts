@@ -1,27 +1,34 @@
 /**
  * Unit tests for MessagePipeline.
  *
- * Uses vi.fn() mocks for all repositories and collaborators so that each test
- * exercises the pipeline's orchestration logic in isolation.
+ * Legacy orchestration checks plus real SQLite acceptance/rollback regressions.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ok, err } from 'neverthrow';
 import pino from 'pino';
 import { MessagePipeline } from '../../../src/pipeline/message-pipeline.js';
 import { PipelineError } from '../../../src/core/errors/index.js';
 import { DbError, ChannelError, QueueError } from '../../../src/core/errors/index.js';
-import type { InboundEvent } from '../../../src/channels/channel-types.js';
-import type { MessageRepository } from '../../../src/core/database/repositories/message-repository.js';
-import type { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
-import type { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
-import type { ChannelRouter } from '../../../src/channels/channel-router.js';
-import type { QueueManager } from '../../../src/queue/queue-manager.js';
-import type { AuditLogger } from '../../../src/core/logging/audit-logger.js';
+import type { InboundEvent, InboundReceiptHandler } from '../../../src/channels/channel-types.js';
+import { MessageRepository } from '../../../src/core/database/repositories/message-repository.js';
+import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
+import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
+import { ChannelRouter } from '../../../src/channels/channel-router.js';
+import { QueueManager } from '../../../src/queue/queue-manager.js';
+import { AuditLogger } from '../../../src/core/logging/audit-logger.js';
 import type { ChannelRow } from '../../../src/core/database/repositories/channel-repository.js';
 import type { ThreadRow } from '../../../src/core/database/repositories/thread-repository.js';
 import type { MessageRow } from '../../../src/core/database/repositories/message-repository.js';
 import type { QueueItem } from '../../../src/queue/queue-types.js';
+import { createTestDb } from '../core/database/repositories/helpers.js';
+import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
+import { BindingRepository } from '../../../src/core/database/repositories/binding-repository.js';
+import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
+import {
+  AuditRepository,
+  RepositoryAuditStore,
+} from '../../../src/core/database/repositories/audit-repository.js';
 import { QueueItemStatus } from '../../../src/queue/queue-types.js';
 
 // ---------------------------------------------------------------------------
@@ -111,6 +118,7 @@ function makeMocks() {
     findById: vi.fn(),
     findByThread: vi.fn(),
     existsByIdempotencyKey: vi.fn(),
+    transaction: <T>(callback: () => T): T => callback(),
   } as unknown as MessageRepository;
 
   const threadRepo = {
@@ -542,5 +550,305 @@ describe('MessagePipeline', () => {
       const result = await pipeline.handleInboundEvent(makeEvent());
       expect(result._unsafeUnwrapErr().code).toBe('PIPELINE_ERROR');
     });
+  });
+});
+
+// Contract snapshot: design.md "Atomic ingress and replay actor (F16)";
+// repository producers: message-repository.ts:88-102, queue-repository.ts:136-151,
+// base-repository.ts:78-82 and daemon-bootstrap.ts:155-174 (one connection),
+// all pinned by merged TASK-001 base ae8c6c0. Receipt producer:
+// ae8c6c0:src/channels/channel-types.ts:55-58.
+// No signal-cli RPC fields are consumed here: these are normalized InboundEvents.
+describe('MessagePipeline atomic SQLite acceptance', () => {
+  let db: ReturnType<typeof createTestDb>;
+  let pipeline: MessagePipeline;
+  let event: Readonly<InboundEvent>;
+  let messageRepo: MessageRepository;
+  let threadRepo: ThreadRepository;
+  let bindings: BindingRepository;
+  let router: ChannelRouter;
+  let queueManager: QueueManager;
+  let logs: string[];
+
+  beforeEach(() => {
+    db = createTestDb();
+    logs = [];
+    const logger = pino(
+      { level: 'debug' },
+      {
+        write: (line: string) => {
+          logs.push(line);
+        },
+      },
+    );
+    const channelRepo = new ChannelRepository(db);
+    threadRepo = new ThreadRepository(db);
+    messageRepo = new MessageRepository(db);
+    bindings = new BindingRepository(db);
+    const personas = new PersonaRepository(db);
+    channelRepo
+      .insert({
+        id: 'channel',
+        type: 'signal',
+        name: 'fixture',
+        config: '{}',
+        credentials_ref: null,
+        enabled: 1,
+      })
+      ._unsafeUnwrap();
+    personas
+      .insert({
+        id: 'persona',
+        name: 'fixture',
+        model: 'fixture',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{}',
+        mounts: '[]',
+        max_concurrent: null,
+      })
+      ._unsafeUnwrap();
+    bindings
+      .insert({
+        id: 'binding',
+        channel_id: 'channel',
+        thread_id: null,
+        persona_id: 'persona',
+        is_default: 1,
+      })
+      ._unsafeUnwrap();
+    router = new ChannelRouter(bindings, logger);
+    queueManager = new QueueManager(
+      new QueueRepository(db),
+      threadRepo,
+      { maxAttempts: 3, backoffBaseMs: 1000, backoffMaxMs: 60000, concurrencyLimit: 5 },
+      logger,
+    );
+    pipeline = new MessagePipeline(
+      messageRepo,
+      threadRepo,
+      channelRepo,
+      queueManager,
+      router,
+      new AuditLogger(logger, new RepositoryAuditStore(new AuditRepository(db))),
+      logger,
+    );
+    event = Object.freeze(makeEvent({ channelType: 'signal', channelName: 'fixture' }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    db.close();
+  });
+
+  it('rolls back transcript and new thread on enqueue Err, then replay accepts one pair', () => {
+    const originalBindings = db.prepare('SELECT * FROM bindings').all();
+    db.exec(`CREATE TRIGGER touch_routing AFTER INSERT ON messages
+      BEGIN UPDATE bindings SET updated_at = updated_at + 1; END;
+      CREATE TRIGGER refuse_queue BEFORE INSERT ON queue_items
+      BEGIN SELECT RAISE(ABORT, 'fixture enqueue failure'); END`);
+
+    expect(pipeline.handleInboundEvent(event).isErr()).toBe(true);
+    expect(db.prepare('SELECT * FROM messages').all()).toEqual([]);
+    expect(db.prepare('SELECT * FROM threads').all()).toEqual([]);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toEqual([]);
+    expect(db.prepare('SELECT * FROM bindings').all()).toEqual(originalBindings);
+    expect(pipeline.stats()).toEqual({ processed: 1, errors: 1, duplicates: 0, noPersona: 0 });
+
+    db.exec('DROP TRIGGER refuse_queue');
+    expect(pipeline.handleInboundEvent(event)._unsafeUnwrap()).toBe('enqueued');
+    expect(pipeline.handleInboundEvent(event)._unsafeUnwrap()).toBe('duplicate');
+    expect(db.prepare('SELECT * FROM messages').all()).toHaveLength(1);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toHaveLength(1);
+    expect(
+      db
+        .prepare(
+          `SELECT q.id FROM queue_items q JOIN messages m
+      ON q.message_id = m.id AND q.thread_id = m.thread_id`,
+        )
+        .all(),
+    ).toHaveLength(1);
+  });
+
+  it('rolls back an enqueue Err after queue insertion, preserving previously accepted work', () => {
+    expect(pipeline.handleInboundEventWithReceipt(event)._unsafeUnwrap()).toBe('accepted');
+    const before = {
+      threads: db.prepare('SELECT * FROM threads').all(),
+      messages: db.prepare('SELECT * FROM messages').all(),
+      queue: db.prepare('SELECT * FROM queue_items').all(),
+    };
+    const originalEnqueue = queueManager.enqueue.bind(queueManager);
+    vi.spyOn(queueManager, 'enqueue').mockImplementationOnce((...args) => {
+      expect(db.inTransaction).toBe(true);
+      originalEnqueue(...args)._unsafeUnwrap();
+      expect(db.prepare('SELECT * FROM queue_items').all()).toHaveLength(2);
+      return err(new QueueError('fixture failure after queue write'));
+    });
+    const next = Object.freeze({ ...event, idempotencyKey: 'second-key' });
+    expect(pipeline.handleInboundEventWithReceipt(next).isErr()).toBe(true);
+    expect(db.prepare('SELECT * FROM threads').all()).toEqual(before.threads);
+    expect(db.prepare('SELECT * FROM messages').all()).toEqual(before.messages);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toEqual(before.queue);
+    expect(pipeline.handleInboundEventWithReceipt(next)._unsafeUnwrap()).toBe('accepted');
+    expect(pipeline.handleInboundEventWithReceipt(next)._unsafeUnwrap()).toBe('duplicate');
+    expect(db.prepare('SELECT * FROM messages').all()).toHaveLength(2);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toHaveLength(2);
+  });
+
+  it('returns the TASK-001 typed accepted/duplicate receipts after commit', async () => {
+    const receipt: InboundReceiptHandler = pipeline.handleInboundEventWithReceipt.bind(pipeline);
+    const before = JSON.stringify(event);
+    expect((await receipt(event))._unsafeUnwrap()).toBe('accepted');
+    expect(db.inTransaction).toBe(false);
+    expect((await receipt(event))._unsafeUnwrap()).toBe('duplicate');
+    expect(db.prepare('SELECT * FROM messages').all()).toHaveLength(1);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toHaveLength(1);
+    expect(JSON.stringify(event)).toBe(before);
+    expect(pipeline.stats()).toEqual({ processed: 2, errors: 0, duplicates: 1, noPersona: 0 });
+  });
+
+  it('returns Err receipt on failed enqueue and accepted on replay, never duplicate', () => {
+    db.exec(`CREATE TRIGGER refuse_queue BEFORE INSERT ON queue_items
+      BEGIN SELECT RAISE(ABORT, 'fixture enqueue failure'); END`);
+    const failed = pipeline.handleInboundEventWithReceipt(event);
+    expect(failed.isErr()).toBe(true);
+    expect(failed._unsafeUnwrapErr()).toBeInstanceOf(PipelineError);
+    expect(db.prepare('SELECT * FROM messages').all()).toEqual([]);
+    db.exec('DROP TRIGGER refuse_queue');
+    expect(pipeline.handleInboundEventWithReceipt(event)._unsafeUnwrap()).toBe('accepted');
+    expect(db.prepare('SELECT * FROM messages').all()).toHaveLength(1);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toHaveLength(1);
+  });
+
+  it('preserves historical transcript-only duplicates without manufacturing work', () => {
+    threadRepo
+      .insert({
+        id: 'historical-thread',
+        channel_id: 'channel',
+        external_id: event.externalThreadId,
+        metadata: '{}',
+      })
+      ._unsafeUnwrap();
+    messageRepo
+      .insert({
+        id: 'historical-message',
+        thread_id: 'historical-thread',
+        direction: 'inbound',
+        content: event.content,
+        idempotency_key: `channel:${event.idempotencyKey}`,
+        provider_id: event.senderId,
+        run_id: null,
+      })
+      ._unsafeUnwrap();
+    const before = db.prepare('SELECT * FROM messages').all();
+    expect(pipeline.handleInboundEventWithReceipt(event)._unsafeUnwrap()).toBe('duplicate');
+    expect(db.prepare('SELECT * FROM messages').all()).toEqual(before);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toEqual([]);
+  });
+
+  it('commits intentional no-persona transcript/drop audit and replays as duplicate', () => {
+    bindings.delete('binding')._unsafeUnwrap();
+    expect(pipeline.handleInboundEventWithReceipt(event)._unsafeUnwrap()).toBe('dropped');
+    expect(db.prepare('SELECT * FROM messages').all()).toHaveLength(1);
+    expect(db.prepare('SELECT * FROM threads').all()).toHaveLength(1);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toEqual([]);
+    expect(db.prepare('SELECT action FROM audit_log').all()).toEqual([
+      { action: 'pipeline.message.dropped' },
+    ]);
+    expect(pipeline.handleInboundEventWithReceipt(event)._unsafeUnwrap()).toBe('duplicate');
+    expect(db.prepare('SELECT * FROM audit_log').all()).toHaveLength(1);
+    expect(pipeline.stats()).toEqual({ processed: 2, errors: 0, duplicates: 1, noPersona: 1 });
+  });
+
+  it('retains legacy no_persona and enqueued outcomes for ordinary callers on real SQLite', () => {
+    db.prepare("UPDATE channels SET type = 'telegram' WHERE id = 'channel'").run();
+    const ordinary = Object.freeze({ ...event, channelType: 'telegram' });
+    expect(pipeline.handleInboundEvent(ordinary)._unsafeUnwrap()).toBe('enqueued');
+    bindings.delete('binding')._unsafeUnwrap();
+    expect(
+      pipeline.handleInboundEvent({ ...ordinary, idempotencyKey: 'another' })._unsafeUnwrap(),
+    ).toBe('no_persona');
+    expect(db.prepare('SELECT * FROM messages').all()).toHaveLength(2);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toHaveLength(1);
+  });
+
+  it('rolls back routing Err after insert and accepts a replay using the real router', () => {
+    vi.spyOn(router, 'resolvePersona').mockReturnValueOnce(
+      err(new ChannelError('fixture failure')),
+    );
+    expect(pipeline.handleInboundEventWithReceipt(event).isErr()).toBe(true);
+    expect(db.prepare('SELECT * FROM messages').all()).toEqual([]);
+    expect(db.prepare('SELECT * FROM threads').all()).toEqual([]);
+    expect(pipeline.handleInboundEventWithReceipt(event)._unsafeUnwrap()).toBe('accepted');
+  });
+
+  it('rolls back unexpected routing exceptions after insert without leaking the exception', () => {
+    vi.spyOn(router, 'resolvePersona').mockImplementationOnce(() => {
+      throw new Error(
+        `private exception ${event.content} ${event.senderId} ${event.idempotencyKey}`,
+      );
+    });
+    const result = pipeline.handleInboundEventWithReceipt(event);
+    expect(result._unsafeUnwrapErr().message).toBe(
+      'Signal inbound acceptance failed: UNEXPECTED_FAILURE',
+    );
+    expect(result._unsafeUnwrapErr().cause).toBeUndefined();
+    expect(db.prepare('SELECT * FROM messages').all()).toEqual([]);
+    expect(db.prepare('SELECT * FROM threads').all()).toEqual([]);
+    expect(db.prepare('SELECT * FROM queue_items').all()).toEqual([]);
+    for (const privateValue of [
+      event.content,
+      event.senderId,
+      event.idempotencyKey,
+      'private exception',
+    ]) {
+      expect(logs.join('')).not.toContain(privateValue);
+    }
+    expect(pipeline.stats().errors).toBe(1);
+    expect(pipeline.handleInboundEventWithReceipt(event)._unsafeUnwrap()).toBe('accepted');
+  });
+
+  it('omits body, remote identities, keys and raw database causes from Signal diagnostics', () => {
+    const privateEvent = Object.freeze(
+      makeEvent({
+        channelType: 'signal',
+        channelName: 'fixture',
+        content: 'private-body-marker',
+        senderId: 'private-sender-marker',
+        externalThreadId: 'private-thread-marker',
+        idempotencyKey: 'private-dedup-marker',
+        raw: { secret: 'private-raw-marker' },
+      }),
+    );
+    db.exec(`CREATE TRIGGER refuse_queue BEFORE INSERT ON queue_items
+      BEGIN SELECT RAISE(ABORT, 'private-body-marker private-sender-marker private-thread-marker private-dedup-marker'); END`);
+    const failure = pipeline.handleInboundEventWithReceipt(privateEvent)._unsafeUnwrapErr();
+    expect(failure.message).toBe('Signal inbound acceptance failed: ENQUEUE_FAILED');
+    expect(failure.cause).toBeUndefined();
+    db.exec('DROP TRIGGER refuse_queue');
+    // Also cover debug duplicate records and the intentional-drop audit path.
+    expect(pipeline.handleInboundEventWithReceipt(privateEvent)._unsafeUnwrap()).toBe('accepted');
+    expect(pipeline.handleInboundEventWithReceipt(privateEvent)._unsafeUnwrap()).toBe('duplicate');
+    bindings.delete('binding')._unsafeUnwrap();
+    expect(
+      pipeline
+        .handleInboundEventWithReceipt({ ...privateEvent, idempotencyKey: 'private-drop-marker' })
+        ._unsafeUnwrap(),
+    ).toBe('dropped');
+    const diagnostics =
+      logs.join('') +
+      JSON.stringify(failure) +
+      JSON.stringify(db.prepare('SELECT * FROM audit_log').all());
+    for (const privateValue of [
+      privateEvent.content,
+      privateEvent.senderId,
+      privateEvent.externalThreadId,
+      privateEvent.idempotencyKey,
+      'private-raw-marker',
+      'private-drop-marker',
+    ]) {
+      expect(diagnostics).not.toContain(privateValue);
+    }
+    expect(logs.join('')).toContain('LOCAL_ACCEPTANCE_FAILED');
   });
 });
