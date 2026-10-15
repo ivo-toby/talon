@@ -126,7 +126,12 @@ export class SignalCheckpointError extends QueueError {
 /** Persisted input is untrusted. Never return raw JSON/Zod errors or dynamic paths. */
 export function parseSignalDeliveryCheckpoint(
   input: unknown,
-  context: { readonly queueItemId: string; readonly now: number },
+  context: {
+    readonly queueItemId: string;
+    readonly now: number;
+    /** Classification/local finalization only; never use expired work to authorize a send. */
+    readonly allowExpired?: boolean;
+  },
 ): Result<SignalDeliveryCheckpoint, SignalCheckpointError> {
   try {
     const serialized = typeof input === 'string' ? input : JSON.stringify(input);
@@ -143,6 +148,7 @@ export function parseSignalDeliveryCheckpoint(
     // Delivered work must still be locally finalizable after expiry, without sending again.
     if (
       result.data.expiresAt <= context.now &&
+      context.allowExpired !== true &&
       result.data.phase !== 'delivered' &&
       result.data.phase !== 'terminal'
     ) {
