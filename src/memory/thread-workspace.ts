@@ -9,7 +9,9 @@
  * ```
  * {dataDir}/threads/{threadId}/
  *   memory/          - notebook files (CLAUDE.md, facts.md, etc.)
- *   attachments/     - files received from channel users
+ *   attachments/
+ *     images/        - Normalized JPEG files owned by Images (TASK-003)
+ *   artifacts/       - files produced by agent runs
  *   artifacts/       - files produced by agent runs
  *   ipc/
  *     input/         - host -> sandbox messages
@@ -55,6 +57,14 @@ export class ThreadWorkspace {
     return path.join(this.getThreadDir(threadId), 'attachments');
   }
 
+  /**
+   * Absolute path to the thread's owned image subtree — the final home of
+   * Normalized JPEG files (`attachments/images/{imageId}.jpg`).
+   */
+  getImageAttachmentsDir(threadId: string): string {
+    return path.join(this.getAttachmentsDir(threadId), 'images');
+  }
+
   /** Absolute path to the artifacts directory for a thread. */
   getArtifactsDir(threadId: string): string {
     return path.join(this.getThreadDir(threadId), 'artifacts');
@@ -91,6 +101,7 @@ export class ThreadWorkspace {
     const dirs = [
       this.getMemoryDir(threadId),
       this.getAttachmentsDir(threadId),
+      this.getImageAttachmentsDir(threadId),
       this.getArtifactsDir(threadId),
       this.getIpcInputDir(threadId),
       this.getIpcOutputDir(threadId),
