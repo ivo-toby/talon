@@ -91,10 +91,12 @@ export class SubAgentInvokeHandler {
 
     const loadedPersona = loadedResult.value;
 
-    // Delegate to the sub-agent runner
+    // Delegate to the sub-agent runner. `runId` comes from the trusted host
+    // execution context only — never from model-authored tool arguments.
     const result = await this.deps.runner.execute(args.name, args.input ?? {}, {
       threadId: context.threadId,
       personaId: context.personaId,
+      runId: context.runId,
       personaSubagents: loadedPersona.config.subagents ?? [],
       personaCapabilities: loadedPersona.resolvedCapabilities,
       traceparent: context.traceparent,
