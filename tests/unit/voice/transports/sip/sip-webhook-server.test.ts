@@ -14,9 +14,9 @@ afterEach(async () => {
   await Promise.all(activeServers.splice(0).map((server) => server.stop()));
 });
 
-function event(deliveryId: string, overrides: Record<string, unknown> = {}): string {
+function event(eventId: string, overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
-    id: deliveryId,
+    id: eventId,
     created_at: Math.floor(Date.now() / 1_000),
     type: 'live.transport.incoming',
     object: 'event',
@@ -69,9 +69,10 @@ describe('SipWebhookServer', () => {
     );
     activeServers.push(server);
     await server.start();
-    const deliveryId = 'delivery-1';
+    const deliveryId = 'wh_delivery-1';
+    const eventId = 'evt_event-1';
     const timestamp = String(Math.floor(Date.now() / 1_000));
-    const body = event(deliveryId);
+    const body = event(eventId);
     const response = await fetch(`http://127.0.0.1:${server.port}${SIP_WEBHOOK_DEFAULT_PATH}`, {
       method: 'POST',
       headers: {
@@ -86,15 +87,51 @@ describe('SipWebhookServer', () => {
     expect(ingress.ingest).toHaveBeenCalledOnce();
     const received = ingress.ingest.mock.calls[0]?.[0];
     expect(received).toMatchObject({
-      id: deliveryId,
+      id: eventId,
       type: 'live.transport.incoming',
       data: { type: 'sip', sessionId: 'provider-session-1' },
+    });
+    expect(ingress.ingest.mock.calls[0]?.[1]).toEqual({
+      deliveryId,
+      deliveredAt: Number(timestamp),
     });
     expect(received.data.sipHeaders).toEqual([
       { name: 'From', value: 'sip:forged@example.test' },
       { name: 'X-Talon-Voice-Assertion', value: 'talon-sip-v1.proof.signature' },
       { name: 'X-Custom', value: 'preserve-me' },
     ]);
+  });
+
+
+  it.each([undefined, null, '', 42, 'x'.repeat(257)])(
+    'rejects an invalid event ID independently of the delivery ID: %s',
+    (id) => {
+      const body = { ...JSON.parse(event('evt_valid')), id };
+      expect(() => __private.parseIncomingSipEvent(Buffer.from(JSON.stringify(body)))).toThrow();
+    },
+  );
+
+  it('rejects a changed delivery ID even when the body and signature are unchanged', async () => {
+    const ingress = fakeIngress();
+    const server = new SipWebhookServer(
+      { enabled: true, standardWebhookSecret: secret, port: 0 },
+      { ingress: ingress as never },
+    );
+    activeServers.push(server);
+    await server.start();
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const body = event('evt_separate');
+    const response = await fetch(`http://127.0.0.1:${server.port}${SIP_WEBHOOK_DEFAULT_PATH}`, {
+      method: 'POST',
+      headers: {
+        'webhook-id': 'wh_tampered',
+        'webhook-timestamp': timestamp,
+        'webhook-signature': signature('wh_original', timestamp, body),
+      },
+      body,
+    });
+    expect(response.status).toBe(401);
+    expect(ingress.ingest).not.toHaveBeenCalled();
   });
 
   it('authenticates the exact raw bytes when the body is not valid UTF-8', () => {
@@ -176,7 +213,6 @@ describe('SipWebhookServer', () => {
     expect(() =>
       __private.parseIncomingSipEvent(
         Buffer.from(JSON.stringify({ id: deliveryId, type: 'response', data: {} })),
-        deliveryId,
       ),
     ).toThrow();
   });
@@ -191,7 +227,6 @@ describe('SipWebhookServer', () => {
     };
     const parsed = __private.parseIncomingSipEvent(
       Buffer.from(JSON.stringify(duplicate)),
-      'delivery-3',
     );
     expect(parsed.data.sipHeaders.map((header) => header.name)).toEqual([
       'From',

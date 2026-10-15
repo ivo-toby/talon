@@ -149,7 +149,7 @@ export class SipWebhookServer {
       }
       let parsed: IncomingSipEvent;
       try {
-        parsed = parseIncomingSipEvent(verified.value.body, verified.value.deliveryId);
+        parsed = parseIncomingSipEvent(verified.value.body);
       } catch {
         writeJson(response, 400, { error: 'Invalid webhook delivery' });
         return;
@@ -251,10 +251,10 @@ function verifyStandardWebhook(
   });
 }
 
-function parseIncomingSipEvent(body: Buffer, deliveryId: string): IncomingSipEvent {
+function parseIncomingSipEvent(body: Buffer): IncomingSipEvent {
   const parsed = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
   if (
-    parsed.id !== deliveryId ||
+    !isBoundedHeader(parsed.id, 256) ||
     parsed.type !== 'live.transport.incoming' ||
     !parsed.data ||
     typeof parsed.data !== 'object' ||

@@ -352,7 +352,9 @@ restrict network access. Preserve `Host` and `Origin`, send
 `npx talonctl doctor --config talond.yaml` and open
 `https://<publicHost>/voice/`. Incoming SIP is a separate disabled-by-default
 boundary; when enabled it accepts the existing provider-created GPT-Live
-session after independent caller proof and uses the same backend queue. It
+session after independent caller proof and uses the same backend queue. The
+webhook delivery ID and body event ID are independent; an OpenAI dashboard
+test without Asterisk caller proof is still rejected and does not start a call. It
 requires an explicit operator decision and an authenticated Asterisk setup
 described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
 This setup skill does not install a PBX, provision keys or trunks, or place a

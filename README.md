@@ -2446,7 +2446,9 @@ provider-terminated media; it does not add a browser audio bridge or playback
 evidence. The production browser path remains WebRTC.
 
 Incoming SIP is a separate disabled-by-default boundary under `voice.sip`. It
-verifies the raw Standard Webhooks delivery before parsing, then requires a
+verifies the raw Standard Webhooks delivery before parsing. The signed
+`webhook-id` identifies the delivery for deduplication; the body event `id` is
+validated independently and need not match it. The receiver then requires a
 distinct server-verified Ed25519 caller assertion mapped from an authenticated
 Asterisk endpoint. Caller ID, `From`, `To`, and ordinary SIP headers never
 choose the owner or persona. The durable receiver bounds raw requests and
