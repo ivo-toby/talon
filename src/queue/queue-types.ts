@@ -1,3 +1,6 @@
+import type { Result } from 'neverthrow';
+import type { SignalDeliveryCheckpoint } from './signal-delivery-checkpoint.js';
+
 /**
  * Queue domain types.
  *
@@ -54,3 +57,16 @@ export interface QueueItem {
   /** Unix epoch ms when the item was last modified. */
   updatedAt: number;
 }
+
+export type QueueHandler = (item: QueueItem) => Promise<Result<void, Error>>;
+
+/**
+ * Saved ready/delivered work only: never query a provider or reconstruct tools/notifications.
+ * The actor owns chunk transitions and guarded local finalization. Ok alone does not complete it.
+ * Retain generated text/receipts and retry failed state writes, never provider/tools/RPC work.
+ * Recheck durable ownership before each chunk/finalization; propagate DeliveryCancelled unchanged.
+ */
+export type SavedSignalDeliveryHandler = (
+  item: QueueItem,
+  checkpoint: SignalDeliveryCheckpoint,
+) => Promise<Result<void, Error>>;

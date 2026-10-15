@@ -15,7 +15,12 @@ import type { ThreadRepository } from '../core/database/repositories/thread-repo
 import { calculateBackoff } from './retry-strategy.js';
 import { DeadLetterHandler } from './dead-letter.js';
 import { QueueProcessor } from './queue-processor.js';
-import { type QueueItem, QueueItemStatus } from './queue-types.js';
+import {
+  type QueueItem,
+  type QueueHandler,
+  type SavedSignalDeliveryHandler,
+  QueueItemStatus,
+} from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +66,9 @@ export class QueueManager {
   private readonly deadLetterHandler: DeadLetterHandler;
   private loopTimer: ReturnType<typeof setInterval> | null = null;
   private activeCount = 0;
+  private claimsQuiesced = false;
+  private drainPromise: Promise<void> | null = null;
+  private resolveDrain: (() => void) | null = null;
 
   constructor(
     private readonly queueRepo: QueueRepository,
@@ -142,7 +150,7 @@ export class QueueManager {
    *
    * @param handler - Async function invoked for each claimed queue item.
    */
-  startProcessing(handler: (item: QueueItem) => Promise<Result<void, Error>>): void {
+  startProcessing(handler: QueueHandler, savedDeliveryHandler?: SavedSignalDeliveryHandler): void {
     if (this.loopTimer !== null) {
       this.logger.warn('startProcessing called while loop is already running');
       return;
@@ -151,7 +159,7 @@ export class QueueManager {
     this.logger.info({ pollIntervalMs: POLL_INTERVAL_MS }, 'queue processing loop started');
 
     this.loopTimer = setInterval(() => {
-      void this.tick(handler);
+      void this.tick(handler, savedDeliveryHandler);
     }, POLL_INTERVAL_MS);
   }
 
@@ -167,6 +175,39 @@ export class QueueManager {
       this.loopTimer = null;
       this.logger.info('queue processing loop stopped');
     }
+  }
+
+  /** Pause new claims only. Active handlers retain their slots and may finish/save replies. */
+  quiesceClaims(): void {
+    this.claimsQuiesced = true;
+  }
+
+  /**
+   * Quiesce synchronously, then wait for all active dispatches, including inspection/state retries.
+   * Concurrent callers share one pending barrier. Claims stay quiesced after it resolves.
+   * No timeout declares idle while work remains. Call outside dispatch handlers;
+   * this does not drain independent Signal actors/RPCs.
+   */
+  quiesceAndDrainClaims(): Promise<void> {
+    this.quiesceClaims();
+    if (this.drainPromise !== null) return this.drainPromise;
+    if (this.activeCount === 0) return Promise.resolve();
+    this.drainPromise = new Promise<void>((resolve) => {
+      this.resolveDrain = resolve;
+    });
+    return this.drainPromise;
+  }
+
+  /**
+   * Resume on the existing loop only; never starts stopped polling or services.
+   * Pending-drain calls are ignored: explicitly resume again after drain/recovery succeeds.
+   */
+  resumeClaims(): void {
+    if (this.drainPromise !== null) {
+      this.logger.warn('queue claims cannot resume while dispatch drain is pending');
+      return;
+    }
+    this.claimsQuiesced = false;
   }
 
   /**
@@ -196,8 +237,10 @@ export class QueueManager {
    * Single processing loop tick: dispatches items up to the concurrency limit.
    */
   private async tick(
-    handler: (item: QueueItem) => Promise<Result<void, Error>>,
+    handler: QueueHandler,
+    savedDeliveryHandler?: SavedSignalDeliveryHandler,
   ): Promise<void> {
+    if (this.claimsQuiesced || this.loopTimer === null) return;
     const slots = this.config.concurrencyLimit - this.activeCount;
     if (slots <= 0) {
       return;
@@ -206,7 +249,7 @@ export class QueueManager {
     // Dispatch up to `slots` items in parallel.
     const dispatches: Promise<QueueItem | null>[] = [];
     for (let i = 0; i < slots; i++) {
-      dispatches.push(this.dispatchOne(handler));
+      dispatches.push(this.dispatchOne(handler, savedDeliveryHandler));
     }
 
     await Promise.all(dispatches);
@@ -216,13 +259,21 @@ export class QueueManager {
    * Claims and processes a single item, tracking the active count.
    */
   private async dispatchOne(
-    handler: (item: QueueItem) => Promise<Result<void, Error>>,
+    handler: QueueHandler,
+    savedDeliveryHandler?: SavedSignalDeliveryHandler,
   ): Promise<QueueItem | null> {
+    if (this.claimsQuiesced || this.loopTimer === null) return null;
     this.activeCount++;
     try {
-      return await this.processor.processNext(handler);
+      return await this.processor.processNext(handler, savedDeliveryHandler);
     } finally {
       this.activeCount--;
+      if (this.activeCount === 0 && this.resolveDrain !== null) {
+        const resolve = this.resolveDrain;
+        this.resolveDrain = null;
+        this.drainPromise = null;
+        resolve();
+      }
     }
   }
 }
