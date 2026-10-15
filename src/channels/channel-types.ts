@@ -7,6 +7,7 @@
 
 import type { Result } from '../core/types/result.js';
 import type { ChannelError } from '../core/errors/error-types.js';
+import type { ImageRejectionReason } from '../images/image-types.js';
 
 // ---------------------------------------------------------------------------
 // Attachment
@@ -23,6 +24,45 @@ export interface Attachment {
   data: Buffer | string;
   size: number;
 }
+
+// ---------------------------------------------------------------------------
+// Inbound attachment (payload or closed rejection)
+// ---------------------------------------------------------------------------
+
+/**
+ * A metadata-only outcome for a delivered Attachment that the connector could
+ * not hand over as a payload — for example an unsupported image MIME, a slot
+ * overflow, or a failed media fetch.
+ *
+ * Rejections carry no bytes, paths, staging references, or credentials; they
+ * exist so the pipeline can record a closed Rejected Image in source order
+ * instead of silently losing the delivered item. The reason vocabulary is the
+ * shared Image rejection list (`IMAGE_REJECTION_REASONS`), so connectors must
+ * not invent channel-specific reasons.
+ *
+ * Payload `Attachment`s are identified by the absence of `kind`.
+ */
+export interface InboundAttachmentRejection {
+  /** Discriminates this arm from a payload `Attachment`. */
+  readonly kind: 'rejected';
+  /** Closed rejection reason, never a channel-specific value. */
+  rejectionReason: ImageRejectionReason;
+  /** Declared filename when the channel supplied one. */
+  filename?: string;
+  /** Declared MIME type when the channel supplied one; a filename never establishes MIME. */
+  mimeType?: string;
+  /** Declared size in bytes when the channel supplied one. */
+  size?: number;
+  /** Zero-based position of the delivered item, preserving source order. */
+  sourcePosition: number;
+}
+
+/**
+ * One inbound Attachment: either the delivered payload or a metadata-only
+ * rejection. Array position in {@link InboundEvent.attachments} is source order
+ * for both arms. Outbound Attachments keep requiring a payload.
+ */
+export type InboundAttachment = Attachment | InboundAttachmentRejection;
 
 // ---------------------------------------------------------------------------
 // Actions (interactive elements)
@@ -81,8 +121,11 @@ export interface InboundEvent {
   idempotencyKey: string;
   /** Plain text content of the message. */
   content: string;
-  /** Any file attachments included with the message. */
-  attachments?: Attachment[];
+  /**
+   * Attachments delivered with the message, in source order. Each entry is
+   * either the delivered payload or a metadata-only rejection outcome.
+   */
+  attachments?: InboundAttachment[];
   /** Original provider payload — preserved for debugging and audit purposes. */
   raw?: unknown;
   /** Unix epoch milliseconds when the event was received. */

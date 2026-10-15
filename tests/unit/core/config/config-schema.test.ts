@@ -17,6 +17,7 @@ import {
   AgentRunnerConfigSchema,
   BackgroundAgentConfigSchema,
   ProviderConfigSchema,
+  ImagesConfigSchema,
 } from '../../../../src/core/config/config-schema.js';
 
 // ---------------------------------------------------------------------------
@@ -906,6 +907,192 @@ describe('AgentRunnerConfigSchema', () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ImagesConfigSchema
+// ---------------------------------------------------------------------------
+
+describe('ImagesConfigSchema', () => {
+  it('parses an empty object with the six approved defaults', () => {
+    const result = ImagesConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.maxInputBytes).toBe(10485760);
+      expect(result.data.maxPerMessage).toBe(5);
+      expect(result.data.maxPerInspection).toBe(5);
+      expect(result.data.maxEdge).toBe(4096);
+      expect(result.data.jpegQuality).toBe(85);
+      expect(result.data.retentionHours).toBe(24);
+      expect(result.data).toEqual({
+        maxInputBytes: 10485760,
+        maxPerMessage: 5,
+        maxPerInspection: 5,
+        maxEdge: 4096,
+        jpegQuality: 85,
+        retentionHours: 24,
+      });
+    }
+  });
+
+  it('accepts explicit overrides for every field', () => {
+    const result = ImagesConfigSchema.safeParse({
+      maxInputBytes: 5242880,
+      maxPerMessage: 10,
+      maxPerInspection: 3,
+      maxEdge: 2048,
+      jpegQuality: 92,
+      retentionHours: 6,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual({
+        maxInputBytes: 5242880,
+        maxPerMessage: 10,
+        maxPerInspection: 3,
+        maxEdge: 2048,
+        jpegQuality: 92,
+        retentionHours: 6,
+      });
+    }
+  });
+
+  it('accepts the lower boundary of every positive-integer field', () => {
+    const result = ImagesConfigSchema.safeParse({
+      maxInputBytes: 1,
+      maxPerMessage: 1,
+      maxPerInspection: 1,
+      maxEdge: 1,
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.maxInputBytes).toBe(1);
+      expect(result.data.maxPerMessage).toBe(1);
+      expect(result.data.maxPerInspection).toBe(1);
+      expect(result.data.maxEdge).toBe(1);
+    }
+  });
+
+  it('rejects zero, negative, and fractional maxInputBytes', () => {
+    expect(ImagesConfigSchema.safeParse({ maxInputBytes: 0 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxInputBytes: -1 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxInputBytes: -10485760 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxInputBytes: 1048576.5 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxInputBytes: '10485760' }).success).toBe(false);
+  });
+
+  it('rejects zero, negative, and fractional maxPerMessage', () => {
+    expect(ImagesConfigSchema.safeParse({ maxPerMessage: 0 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxPerMessage: -3 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxPerMessage: 2.5 }).success).toBe(false);
+  });
+
+  it('rejects zero, negative, and fractional maxPerInspection', () => {
+    expect(ImagesConfigSchema.safeParse({ maxPerInspection: 0 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxPerInspection: -1 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxPerInspection: 5.5 }).success).toBe(false);
+  });
+
+  it('keeps upload slots and Inspection counts independent', () => {
+    const narrowInspection = ImagesConfigSchema.safeParse({
+      maxPerMessage: 5,
+      maxPerInspection: 1,
+    });
+    expect(narrowInspection.success).toBe(true);
+    if (narrowInspection.success) {
+      expect(narrowInspection.data.maxPerMessage).toBe(5);
+      expect(narrowInspection.data.maxPerInspection).toBe(1);
+    }
+
+    const narrowUploads = ImagesConfigSchema.safeParse({
+      maxPerMessage: 1,
+      maxPerInspection: 12,
+    });
+    expect(narrowUploads.success).toBe(true);
+    if (narrowUploads.success) {
+      expect(narrowUploads.data.maxPerMessage).toBe(1);
+      expect(narrowUploads.data.maxPerInspection).toBe(12);
+    }
+  });
+
+  it('rejects zero, negative, and fractional maxEdge', () => {
+    expect(ImagesConfigSchema.safeParse({ maxEdge: 0 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxEdge: -4096 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ maxEdge: 4095.5 }).success).toBe(false);
+  });
+
+  it('accepts JPEG quality at both ends of 1-100', () => {
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: 1 }).success).toBe(true);
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: 85 }).success).toBe(true);
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: 100 }).success).toBe(true);
+  });
+
+  it('rejects JPEG quality outside 1-100 and non-integer quality', () => {
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: 0 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: -1 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: 101 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: 85.5 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ jpegQuality: 'high' }).success).toBe(false);
+  });
+
+  it('rejects zero and negative retentionHours', () => {
+    expect(ImagesConfigSchema.safeParse({ retentionHours: 0 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ retentionHours: -24 }).success).toBe(false);
+    expect(ImagesConfigSchema.safeParse({ retentionHours: '24' }).success).toBe(false);
+  });
+
+  it('accepts fractional retentionHours (retention is positive hours, not an integer count)', () => {
+    const result = ImagesConfigSchema.safeParse({ retentionHours: 0.5 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.retentionHours).toBe(0.5);
+    }
+  });
+
+  it('strips unknown images fields', () => {
+    const result = ImagesConfigSchema.safeParse({ maxInputBytes: 1024, unknownLimit: 7 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.maxInputBytes).toBe(1024);
+      expect((result.data as Record<string, unknown>)['unknownLimit']).toBeUndefined();
+    }
+  });
+
+  it('is registered in TalondConfigSchema with defaults', () => {
+    const result = TalondConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.images).toEqual({
+        maxInputBytes: 10485760,
+        maxPerMessage: 5,
+        maxPerInspection: 5,
+        maxEdge: 4096,
+        jpegQuality: 85,
+        retentionHours: 24,
+      });
+    }
+  });
+
+  it('merges a partial images override with the remaining defaults', () => {
+    const result = TalondConfigSchema.safeParse({
+      images: { maxPerMessage: 2, jpegQuality: 70 },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.images.maxPerMessage).toBe(2);
+      expect(result.data.images.jpegQuality).toBe(70);
+      expect(result.data.images.maxInputBytes).toBe(10485760);
+      expect(result.data.images.maxPerInspection).toBe(5);
+      expect(result.data.images.maxEdge).toBe(4096);
+      expect(result.data.images.retentionHours).toBe(24);
+    }
+  });
+
+  it('rejects an invalid images override at the root', () => {
+    expect(TalondConfigSchema.safeParse({ images: { jpegQuality: 0 } }).success).toBe(false);
+    expect(TalondConfigSchema.safeParse({ images: { maxEdge: -1 } }).success).toBe(false);
+    expect(TalondConfigSchema.safeParse({ images: { retentionHours: 0 } }).success).toBe(false);
   });
 });
 
