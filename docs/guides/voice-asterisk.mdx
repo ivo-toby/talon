@@ -1,0 +1,83 @@
+---
+title: Incoming SIP with Asterisk
+description: Reference-only authenticated incoming SIP boundary for Talon
+---
+
+# Incoming SIP with Asterisk
+
+Talon's incoming SIP receiver is disabled by default. When explicitly enabled,
+it accepts only an OpenAI `live.transport.incoming` event whose `data.type` is
+`sip` and whose `data.session_id` is present. The Standard Webhooks signature is
+verified over the bounded raw request before JSON parsing. That proves the
+provider delivery; it does not authenticate the caller.
+
+Caller authority comes from a separate short-lived Ed25519 assertion generated
+by an authenticated Asterisk PJSIP endpoint. Talon verifies the configured
+issuer, key, audience, signature, endpoint subject mapping, nonce, call binding,
+and time bounds. Caller ID, `From`, `To`, and ordinary SIP headers never choose
+an owner, persona, capability, or provider session. A duplicated, altered,
+missing, expired, revoked, or unmapped assertion is denied.
+
+The reference files are [the restricted dialplan](../../examples/voice/asterisk/extensions.conf.example),
+[the PJSIP shape](../../examples/voice/asterisk/pjsip.conf.example), and [the
+native Ed25519 AGI signer](../../scripts/voice/asterisk-sign-call.mjs). The
+signer reads its private key from `TALON_SIP_PRIVATE_KEY_FILE`, queries the
+server-owned `TALON_SIP_ENDPOINT_SUBJECT` and `TALON_SIP_CALL_BINDING` channel
+variables through AGI (the dialplan populates them from `CHANNEL(endpoint)` and
+`CHANNEL(uniqueid)`), and writes only bounded AGI protocol commands. It rejects
+shell/AGI arguments and never logs the assertion or key. The caller channel
+copies the assertion to a single-level inherited variable before `Dial`; the
+outgoing `b()` pre-dial handler removes any inherited
+`X-Talon-Voice-Assertion` and adds exactly one locally generated assertion.
+
+Example configuration is intentionally incomplete and contains no usable key,
+webhook secret, trunk, or owner mapping:
+
+```yaml
+voice:
+  # Browser voice and incoming SIP are independently opt-in.
+  sip:
+    enabled: false
+    host: 127.0.0.1
+    port: 0
+    path: /voice/sip/webhook
+    standardWebhookSecretRef: openai-webhook
+    issuer: operator-configured-issuer
+    audience: talon-incoming-sip
+    publicKeys: {}
+    endpointMappings: {}
+```
+
+The durable boundary reserves a call, exact authority grant, and delivery
+receipt in one SQLite `BEGIN IMMEDIATE` transaction. It uses the provider
+session ID and assertion nonce for replay protection, allocates revisions from
+the existing shared voice allocator, and persists an attempt marker before the
+one existing-session GPT-Live acceptance attempt. For a verified attempt,
+Talon calls the provider's `/accept` route with the incoming
+`data.session_id`, records ownership only after an exact `200` response
+with an empty body, and then attaches the matching `/attach` sideband.
+Delegations use the ordinary Talon voice queue and `AgentRunner` path. The
+60-second event/assertion window is admission proof only; accepted
+authority lasts until durable revocation or close, provider finalization,
+or the configured session deadline. A timeout, crash, or ambiguous
+acceptance becomes `unknown` and is never retried automatically. Missing
+or failed finalization remains incomplete and does not mark the durable
+SIP decision closed. A duplicate delivery returns the existing safe
+outcome without a second attempt.
+
+The fixed engineering limits are 256 KiB raw webhook bytes, 32 pending receipt
+work items, a 60-second original-event/proof admission window, a 5-second
+deferred-decision budget, 10,000 retained decision rows, 50,000 receipts, and
+10,000 grants. Cleanup can remove at most 100 rows per admission and only old,
+expired/revoked, known-terminal call families. Pending, attempted, and unknown
+tombstones remain and continue to deny new admission when storage saturates.
+
+This is an offline authority, persistence, and existing-session integration
+boundary. TASK-37 implements the GPT-Live `/accept` and `/attach` flow and the
+ordinary Talon delegation path described above; its checks use fake provider
+HTTP/WebSocket and backend transports. This work still does not install
+Asterisk, provision keys, enable a Live project or trunk, prove custom-header
+preservation on a real trunk, bridge media, or place/accept a paid call. Actual
+Asterisk configuration, issuer/key and principal mapping, project/trunk
+routing, SIP header/media compatibility, and provider billing remain
+unverified deployment concerns.

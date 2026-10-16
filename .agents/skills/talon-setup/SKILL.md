@@ -294,6 +294,98 @@ after user confirmation. Run
 daemon because hot reload does not rebuild the sub-agent resolver. Do not run a
 live sub-agent merely to test it: that would consume the user's subscription quota.
 
+### Optional browser voice
+
+Ask one question: **"Do you want to enable the opt-in browser voice UI?"**
+Leave it disabled unless the user explicitly opts in. Browser voice currently
+supports authenticated WebRTC only and requires the selected persona's provider
+to be enabled. The provider's normal OAuth and native-tool restrictions remain
+in force. Its `voice.model` is the live voice model; the persona's `model`
+remains the backend model.
+
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
+The browser login form leaves `Keep me signed in for one year` unchecked. The
+default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the
+checked option sends `rememberMe: true` for a fixed 365-day grant. Grants use
+hashed session/CSRF verification data, survive ordinary restart, and are
+revoked by logout, credential/owner rotation, or configuration reload. The
+browser stores no access token or raw session bearer in Web Storage.
+
+If enabled, add environment-backed auth slots and the `voice` block to the
+config. Never ask for or write the token values:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
+  persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedTransportTypes: [webrtc]
+  allowedOrigins: [https://voice.example.com]
+```
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Do not configure an ordinary channel with that name; a
+conflicting channel is rejected during startup.
+
+`voice.persona` selects an existing normal persona. Its backend model,
+capabilities, skills, and configured MCP servers are reused by voice. The
+separate `voice.model` is the live audio model. Approval-gated capabilities are
+unavailable because voice has no interactive approval channel, and the legacy
+`voice.allowedToolNames` / `voice.allowedMcpServerNames` fields are ignored.
+
+The listener defaults to loopback. For a non-local browser, put HTTPS in front
+of it. If the reverse proxy runs in another VM, container, or network
+namespace, set `voice.host` to a reachable interface address or `0.0.0.0` and
+restrict network access. Preserve `Host` and `Origin`, send
+`X-Forwarded-Proto: https`, set `publicHost` to the public hostname, then run
+`npx talonctl doctor --config talond.yaml` and open
+`https://<publicHost>/voice/`. Incoming SIP is a separate disabled-by-default
+boundary; when enabled it accepts the existing provider-created GPT-Live
+session after independent caller proof and uses the same backend queue. The
+webhook delivery ID and body event ID are independent; an OpenAI dashboard
+test without Asterisk caller proof is still rejected and does not start a call. It
+requires an explicit operator decision and an authenticated Asterisk setup
+described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
+This setup skill does not install a PBX, provision keys or trunks, or place a
+paid call.
+
+Voice backend failures keep the user-facing error generic. For troubleshooting,
+inspect the failed run’s `error` field: when available it includes only allowlisted
+category, code, HTTP status and stage metadata. Provider messages, response bodies,
+headers and URLs are excluded. An `unknown` category or elapsed duration alone
+does not establish a timeout or root cause.
+
+If the operator supplies a current provider rate, `voice.usdPerMinute` makes
+the UI's voice amount a duration estimate. There is no default rate. Final
+provider usage remains `estimated`; a configured rate with known usage and an
+incomplete close is `incomplete`, and an omitted rate is `unavailable`. Backend
+cost comes only from AgentRunner run accounting.
+
+On page load, the browser checks `GET /voice/auth/session` before an optional
+retained-call lookup. A valid cookie reaches the ready state without a
+retained call; a retained-call 404 clears only the stale pointer. Transient
+failures preserve recoverable pointers and show an English retry message.
+Restore never requests a microphone, creates a peer or paid session, connects a
+provider, enqueues work, or replays old work. Cookie retention is scoped to the
+browser cookie context; Safari home-screen contexts may need a fresh login.
+Background/lock-screen audio and physical iPhone retention are not promised.
+
 ### Step 4: Channel configuration
 
 Ask: **"Which channel do you want to connect first?"**

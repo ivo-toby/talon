@@ -12,6 +12,7 @@ import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import type { ChannelRegistry } from '../../../src/channels/channel-registry.js';
 import { ok } from 'neverthrow';
+import { createVoiceObservationContext } from '../../../src/observability/langfuse/voice-observation.js';
 
 // Mock createDatabase so it doesn't try to open a real file for the readonly connection.
 // Returns an err() result so the bridge falls back to the main ctx.db connection.
@@ -375,6 +376,47 @@ describe('HostToolsBridge', () => {
       expect(response.error).toContain('bridge secret');
     });
 
+    it('keeps invalid-secret voice diagnostics free of request-supplied identifiers', async () => {
+      const forgedThread = 'VOICE_FORGED_THREAD_IDENTIFIER_SENTINEL';
+      const forgedPersona = 'VOICE_FORGED_PERSONA_IDENTIFIER_SENTINEL';
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-1',
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+        }),
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        bridgeSecret: 'wrong-bridge-secret',
+        context: {
+          runId: 'run-001',
+          threadId: forgedThread,
+          personaId: forgedPersona,
+          requestId: 'req-voice-invalid-secret',
+        },
+      });
+
+      expect(response.error).toBe('Invalid bridge secret');
+      expect(JSON.stringify(mockCtx.logger.warn.mock.calls)).not.toContain(forgedThread);
+      expect(JSON.stringify(mockCtx.logger.warn.mock.calls)).not.toContain(forgedPersona);
+      expect(mockCtx.logger.warn).toHaveBeenCalledWith(
+        { voice: true, errorCategory: 'unknown' },
+        'voice descendant event',
+      );
+    });
+
     it('rejects requests whose persona does not match the authenticated run context', async () => {
       bridge = new HostToolsBridge(mockCtx);
       bridge.registerRunAuthentication({
@@ -431,6 +473,332 @@ describe('HostToolsBridge', () => {
       });
 
       expect((response.result as any)?.status).toBe('success');
+    });
+
+    it('keeps voice observation context server-owned', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-1',
+          runId: 'run-001',
+          threadId: 'thread-001',
+        }),
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-voice-1',
+          voiceObservation: { redacted: false },
+          callId: 'forged-call',
+        },
+      });
+
+      expect(response.error).toBe('Voice observation context is server-owned');
+    });
+
+    it('rejects forged voice flags on non-voice runs', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-nonvoice-forged',
+          voiceObservation: { kind: 'voice', redacted: true },
+        },
+      });
+
+      expect(response.error).toBe('Voice observation context is server-owned');
+    });
+
+    it('redacts voice tool telemetry while preserving the real tool result', async () => {
+      let observedInput: unknown;
+      const update = vi.fn();
+      mockCtx.observability.observe = vi.fn(async (input, fn) => {
+        observedInput = input;
+        return await fn({
+          update,
+          getTraceparent: vi.fn().mockReturnValue(null),
+        });
+      });
+
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-1',
+          runId: 'run-001',
+          threadId: 'thread-001',
+        }),
+      });
+      (bridge as any).dispatch = vi.fn().mockResolvedValue({
+        requestId: 'req-voice-2',
+        tool: 'schedule.manage',
+        status: 'success',
+        result: { sentinel: 'VOICE_SENTINEL' },
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'schedule_manage',
+        args: { action: 'list', sentinel: 'VOICE_SENTINEL' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-voice-2',
+        },
+      });
+
+      expect((response.result as any)?.result?.sentinel).toBe('VOICE_SENTINEL');
+      expect(observedInput).toEqual(
+        expect.objectContaining({ input: '[voice tool input redacted]' }),
+      );
+      expect(JSON.stringify(observedInput)).not.toContain('VOICE_SENTINEL');
+      expect(JSON.stringify(update.mock.calls)).not.toContain('VOICE_SENTINEL');
+    });
+
+    it('redacts voice capability-loader exceptions in diagnostic logs', async () => {
+      const sentinel = 'VOICE_CAPABILITY_LOADER_EXCEPTION_SENTINEL';
+      vi.mocked(mockCtx.personaLoader.getByName).mockImplementationOnce(() => {
+        throw new Error(sentinel);
+      });
+
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-1',
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+        }),
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-voice-loader-error',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('error');
+      expect(JSON.stringify(mockCtx.logger.error.mock.calls)).not.toContain(sentinel);
+      expect(mockCtx.logger.error).toHaveBeenCalledWith(
+        { voice: true, errorCategory: 'unknown' },
+        'voice descendant event',
+      );
+    });
+
+    it('redacts memory keys, SQL, and URLs while concurrent nonvoice logs retain their arguments', async () => {
+      const voiceKey = 'VOICE_MEMORY_KEY_SENTINEL';
+      const voiceSql = `SELECT * FROM memory_items UNION SELECT 1 -- ${'VOICE_SQL_SENTINEL'}`;
+      const voiceUrl = 'VOICE_HTTP_TARGET_SECRET';
+      const nonvoiceUrl = 'ORDINARY_HTTP_TARGET_SECRET';
+      let releaseVoice!: () => void;
+      let voiceEntered!: () => void;
+      const voiceGate = new Promise<void>((resolve) => {
+        releaseVoice = resolve;
+      });
+      const voiceStarted = new Promise<void>((resolve) => {
+        voiceEntered = resolve;
+      });
+
+      vi.mocked(mockCtx.repos.run.findById).mockImplementation((runId: string) =>
+        ok({
+          id: runId,
+          thread_id: runId === 'run-002' ? 'thread-002' : 'thread-001',
+          persona_id: runId === 'run-002' ? 'persona-002' : 'persona-001',
+        } as any),
+      );
+      mockCtx.observability.observe = vi.fn(async (input, fn) => {
+        if ((input as any).metadata?.threadId === 'thread-001') {
+          voiceEntered();
+          await voiceGate;
+        }
+        return await fn({
+          update: vi.fn(),
+          getTraceparent: vi.fn().mockReturnValue(null),
+        });
+      });
+
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-logger-scope',
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+        }),
+      });
+      bridge.registerRunAuthentication({
+        runId: 'run-002',
+        threadId: 'thread-002',
+        personaId: 'persona-002',
+        bridgeSecret: 'bridge-secret-002',
+      });
+
+      const invoke = (
+        request: Record<string, unknown>,
+        socket: { write: ReturnType<typeof vi.fn> },
+      ): Promise<void> => (bridge as any).handleRequest(JSON.stringify(request), socket);
+      const voiceMemorySocket = { write: vi.fn() };
+      const voiceMemoryPromise = invoke(
+        {
+          id: 'voice-memory',
+          tool: 'memory_access',
+          args: { operation: 'read', key: voiceKey },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'voice-memory-request',
+          },
+        },
+        voiceMemorySocket,
+      );
+      await voiceStarted;
+
+      const nonvoiceSocket = { write: vi.fn() };
+      const nonvoicePromise = (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'nonvoice-http',
+          tool: 'net_http',
+          args: { method: 'GET', url: nonvoiceUrl },
+          bridgeSecret: 'bridge-secret-002',
+          context: {
+            runId: 'run-002',
+            threadId: 'thread-002',
+            personaId: 'persona-002',
+            requestId: 'nonvoice-http-request',
+          },
+        }),
+        nonvoiceSocket,
+      );
+      await nonvoicePromise;
+      expect(JSON.stringify(nonvoiceSocket.write.mock.calls)).toContain(nonvoiceUrl);
+
+      releaseVoice();
+      await voiceMemoryPromise;
+
+      const voiceSqlSocket = { write: vi.fn() };
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'voice-sql',
+          tool: 'db_query',
+          args: { sql: voiceSql },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'voice-sql-request',
+          },
+        }),
+        voiceSqlSocket,
+      );
+
+      const voiceUrlSocket = { write: vi.fn() };
+      await (bridge as any).handleRequest(
+        JSON.stringify({
+          id: 'voice-url',
+          tool: 'net_http',
+          args: { method: 'GET', url: voiceUrl },
+          bridgeSecret: validBridgeSecret,
+          context: {
+            runId: 'run-001',
+            threadId: 'thread-001',
+            personaId: 'persona-001',
+            requestId: 'voice-url-request',
+          },
+        }),
+        voiceUrlSocket,
+      );
+
+      const loggerCalls = JSON.stringify([
+        mockCtx.logger.info.mock.calls,
+        mockCtx.logger.warn.mock.calls,
+        mockCtx.logger.error.mock.calls,
+        mockCtx.logger.debug.mock.calls,
+      ]);
+      expect(loggerCalls).toContain(nonvoiceUrl);
+      expect(loggerCalls).not.toContain(voiceKey);
+      expect(loggerCalls).not.toContain('VOICE_SQL_SENTINEL');
+      expect(loggerCalls).not.toContain(voiceUrl);
+      expect((mockCtx.repos.memory.findById as any)).toHaveBeenCalledWith(
+        'thread-001',
+        voiceKey,
+      );
+      expect(JSON.parse(voiceMemorySocket.write.mock.calls[0]?.[0]).result.status).toBe('success');
+      expect(JSON.parse(voiceSqlSocket.write.mock.calls[0]?.[0]).result.status).toBe('error');
+      expect(JSON.parse(voiceUrlSocket.write.mock.calls[0]?.[0]).result.status).toBe('error');
+    });
+
+    it('denies trusted approval-gated voice tools even when persona capability allows them', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        deniedToolNames: ['memory.access'],
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-approval-001',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('error');
+      expect((response.result as any)?.error).toContain('requires approval');
     });
 
     it('dispatches schedule.manage create and returns success', async () => {

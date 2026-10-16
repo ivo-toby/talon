@@ -91,7 +91,18 @@ vi.mock('../../../src/channels/channel-router.js', () => ({
 }));
 
 vi.mock('../../../src/channels/channel-setup.js', () => ({
+  BROWSER_VOICE_CHANNEL_NAME: 'browser-voice',
   registerChannels: vi.fn(),
+  registerVoiceChannel: vi.fn().mockReturnValue({
+    isErr: () => false,
+    isOk: () => true,
+    value: 'voice-channel-id',
+  }),
+  registerVoiceConnector: vi.fn().mockReturnValue({
+    isErr: () => false,
+    isOk: () => true,
+    value: undefined,
+  }),
 }));
 
 vi.mock('../../../src/pipeline/message-pipeline.js', () => ({
@@ -100,6 +111,10 @@ vi.mock('../../../src/pipeline/message-pipeline.js', () => ({
 
 vi.mock('../../../src/queue/queue-manager.js', () => ({
   QueueManager: vi.fn().mockImplementation(() => ({})),
+  createQueueDiagnosticResolver: vi.fn().mockReturnValue({
+    resolveThread: vi.fn().mockReturnValue('unknown'),
+    resolveRow: vi.fn().mockReturnValue('unknown'),
+  }),
 }));
 
 vi.mock('../../../src/scheduler/scheduler.js', () => ({
@@ -149,6 +164,18 @@ vi.mock('../../../src/daemon/lifecycle.js', () => ({
   recoverFromCrash: vi.fn(),
 }));
 
+vi.mock('../../../src/voice/voice-session-reconciler.js', () => ({
+  reconcileVoiceSessions: vi.fn().mockReturnValue({
+    isErr: () => false,
+    value: {
+      sessions: 0,
+      unknownDelegations: [],
+      skippedDelegations: [],
+      preservedFinalResults: [],
+    },
+  }),
+}));
+
 vi.mock('../../../src/a2a/index.js', () => ({
   buildAgentCardRegistry: vi.fn().mockReturnValue(new Map()),
   A2ATaskMapper: vi.fn().mockImplementation(() => ({})),
@@ -167,8 +194,12 @@ import { PersonaLoader } from '../../../src/personas/persona-loader.js';
 import { SkillLoader } from '../../../src/skills/skill-loader.js';
 import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
+import { reconcileVoiceSessions } from '../../../src/voice/voice-session-reconciler.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
-import { BackgroundTaskRepository } from '../../../src/core/database/repositories/index.js';
+import {
+  BackgroundTaskRepository,
+  PersonaRepository,
+} from '../../../src/core/database/repositories/index.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
 import { createDiscardLogger } from './helpers.js';
@@ -281,6 +312,65 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
   };
 }
 
+function makeVoicePersonaFixture(personaName = 'assistant') {
+  const personaConfig = {
+    name: personaName,
+    model: 'backend-model',
+    provider: 'voice-backend',
+    skills: [],
+    capabilities: { allow: [], requireApproval: [] },
+    mounts: [],
+  };
+  const loadedPersona = {
+    config: personaConfig,
+    resolvedCapabilities: { allow: [], requireApproval: [] },
+  };
+  const config = makeConfig({
+    personas: [personaConfig],
+    auth: {
+      mode: 'api_key',
+      apiKey: 'global-secret',
+      providers: {
+        openai: { apiKey: 'live-secret' },
+      },
+    },
+    agentRunner: {
+      defaultProvider: 'voice-backend',
+      providers: {
+        'voice-backend': makeAgentRunnerProviderConfig({
+          type: 'openai-compatible',
+          command: 'offline-voice-provider',
+          contextManagement: { enabled: false },
+        }),
+      },
+    },
+    voice: {
+      enabled: true,
+      host: '127.0.0.1',
+      port: 0,
+      persona: personaName,
+      provider: 'voice-backend',
+      accessToken: 'voice-secret',
+      accessTokenRef: 'voice',
+      liveApiKeyRef: 'openai',
+      model: 'gpt-live-offline',
+      voice: 'marin',
+      instructions: 'Offline voice test.',
+      allowedTransportTypes: ['webrtc'],
+      allowedOrigins: [],
+      allowedToolNames: [],
+      allowedMcpServerNames: [],
+      maxSessionLifetimeMs: 900_000,
+      maxContextChars: 32_000,
+      maxConcurrentSessions: 1,
+      maxSessionCreations: 5,
+      sessionCreationWindowMs: 60_000,
+      heartbeatIntervalMs: 15_000,
+    },
+  });
+  return { config, loadedPersona };
+}
+
 function makeMockDb() {
   const mockStatement = {
     run: vi.fn().mockReturnValue({ changes: 0, lastInsertRowid: 0 }),
@@ -319,11 +409,40 @@ function setupSuccessfulMocks() {
     loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
     getByName: vi.fn().mockReturnValue(ok({})),
   }) as any);
+  vi.mocked(PersonaRepository).mockImplementation(() => ({}) as any);
   vi.mocked(SkillLoader).mockImplementation(() => ({
     loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
   }) as any);
 
   return { config, db, observability };
+}
+
+function setupVoiceBootstrapMocks(
+  config: unknown,
+  loadedPersona: unknown,
+  personaRowResult: unknown,
+) {
+  const db = makeMockDb();
+  const observability = {
+    observe: vi.fn(),
+    observeWithTraceparent: vi.fn(),
+    shutdown: vi.fn().mockResolvedValue(undefined),
+  };
+  const personaRepo = {
+    findByName: vi.fn().mockReturnValue(personaRowResult),
+  };
+
+  vi.mocked(loadConfig).mockReturnValue(ok(config as any));
+  vi.mocked(createDatabase).mockReturnValue(ok(db as any));
+  vi.mocked(runMigrations).mockReturnValue(ok(1));
+  vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
+  vi.mocked(PersonaRepository).mockImplementation(() => personaRepo as any);
+  vi.mocked(PersonaLoader).mockImplementation(() => ({
+    loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+    getByName: vi.fn().mockReturnValue(ok(loadedPersona)),
+  }) as any);
+
+  return { db, observability, personaRepo };
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +814,215 @@ describe('bootstrap', () => {
       await bootstrap('/config.yaml', logger);
 
       expect(recoverFromCrash).toHaveBeenCalledOnce();
+    });
+
+    it('passes the configured voice rate to startup reconciliation', async () => {
+      setupSuccessfulMocks();
+      const config = makeConfig({ voice: { usdPerMinute: 0.06 } });
+      vi.mocked(loadConfig).mockReturnValue(ok(config as any));
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(reconcileVoiceSessions).toHaveBeenCalledWith(
+        expect.anything(),
+        { usdPerMinute: 0.06 },
+      );
+    });
+
+    it('uses the persisted persona id for voice startup and current policy capture', async () => {
+      const persistedPersonaId = 'persona-uuid-1234';
+      const personaName = 'assistant';
+      const { config, loadedPersona } = makeVoicePersonaFixture(personaName);
+      const { personaRepo } = setupVoiceBootstrapMocks(
+        config,
+        loadedPersona,
+        ok({
+          id: persistedPersonaId,
+          name: personaName,
+          model: 'backend-model',
+        }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const service = result._unsafeUnwrap().voiceSessionService as unknown as {
+        options: {
+          personaId: string;
+          capturePolicy: (owner: { ownerId: string; loginRevision: number }) => ReturnType<typeof ok>;
+        };
+      };
+      expect(service.options.personaId).toBe(persistedPersonaId);
+      const captured = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(captured.isOk()).toBe(true);
+      expect(captured._unsafeUnwrap()).toMatchObject({ personaId: persistedPersonaId });
+
+      personaRepo.findByName.mockReturnValueOnce(ok(null));
+      const missingCurrentPersona = service.options.capturePolicy({
+        ownerId: 'voice:assistant',
+        loginRevision: 1,
+      });
+      expect(missingCurrentPersona.isErr()).toBe(true);
+
+      personaRepo.findByName.mockReturnValueOnce(err(new Error('persona row lookup failed')));
+      const erroredCurrentPersona = service.options.capturePolicy({
+        ownerId: 'voice:assistant',
+        loginRevision: 1,
+      });
+      expect(erroredCurrentPersona.isErr()).toBe(true);
+      expect(erroredCurrentPersona._unsafeUnwrapErr().message).toContain('persona row lookup failed');
+      expect(personaRepo.findByName).toHaveBeenCalledWith(personaName);
+      expect(personaRepo.findByName).toHaveBeenCalledTimes(4);
+    });
+
+    it('injects the shared voice telemetry facade into the browser server', async () => {
+      const fixture = makeVoicePersonaFixture();
+      const { personaRepo } = setupVoiceBootstrapMocks(
+        fixture.config,
+        fixture.loadedPersona,
+        ok({ id: 'persona-uuid-1234', name: 'assistant', model: 'backend-model' }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const context = result._unsafeUnwrap();
+      const server = context.voiceServer as unknown as { telemetry?: unknown };
+      expect(server.telemetry).toBe(context.voiceTelemetry);
+      expect(personaRepo.findByName).toHaveBeenCalledWith('assistant');
+    });
+
+    it('captures normal persona tools and instructions while ignoring the legacy voice provider override', async () => {
+      const fixture = makeVoicePersonaFixture();
+      const config = fixture.config as any;
+      const { loadedPersona } = fixture;
+      const personaConfig = config.personas[0] as Record<string, unknown>;
+      personaConfig.provider = 'claude-code';
+      loadedPersona.config.provider = 'claude-code';
+      loadedPersona.systemPromptContent = 'PRIVATE PERSONA SYSTEM PROMPT';
+      loadedPersona.resolvedCapabilities = {
+        allow: ['memory.access'],
+        requireApproval: ['db.query'],
+      };
+      config.agentRunner = {
+        defaultProvider: 'claude-code',
+        providers: {
+          'claude-code': makeAgentRunnerProviderConfig(),
+        },
+      };
+      config.voice.provider = 'unavailable-legacy-provider';
+      config.voice.allowedToolNames = ['legacy_tool'];
+      config.voice.allowedMcpServerNames = ['legacy_server'];
+      config.voice.instructions = 'Gebruik Nederlands in de stem.';
+      const { personaRepo } = setupVoiceBootstrapMocks(
+        config,
+        loadedPersona,
+        ok({ id: 'persona-uuid-1234', name: 'assistant', model: 'backend-model' }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const service = result._unsafeUnwrap().voiceSessionService as unknown as {
+        options: {
+          providerName: string;
+          instructions: string;
+          capturePolicy: (owner: { ownerId: string; loginRevision: number }) => ReturnType<typeof ok>;
+        };
+      };
+      expect(service.options.providerName).toBe('claude-code');
+      expect(service.options.instructions).toContain('Talon persona "assistant"');
+      expect(service.options.instructions).toContain('Speech role:');
+      expect(service.options.instructions).toContain('Delegation contract:');
+      expect(service.options.instructions).toContain('Gebruik Nederlands in de stem.');
+      expect(service.options.instructions).not.toContain('PRIVATE PERSONA SYSTEM PROMPT');
+
+      const captured = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(captured.isOk()).toBe(true);
+      expect(captured._unsafeUnwrap()).toMatchObject({
+        providerName: 'claude-code',
+        allowedToolNames: ['memory_access'],
+        allowedMcpServerNames: [],
+        nativeToolNames: ['WebFetch', 'WebSearch'],
+        requireApproval: false,
+      });
+      expect(personaRepo.findByName).toHaveBeenCalledWith('assistant');
+    });
+
+    it('captures current loaded skills after a hot reload', async () => {
+      const fixture = makeVoicePersonaFixture();
+      const config = fixture.config as any;
+      config.personas[0].skills = ['voice-tools'];
+      fixture.loadedPersona.config.skills = ['voice-tools'];
+      const initialSkill = {
+        manifest: { name: 'voice-tools', description: '', eager: false },
+        resolvedMcpServers: [
+          {
+            name: 'stale-search',
+            config: { transport: 'stdio', command: 'stale-search' },
+          },
+        ],
+      };
+      const reloadedSkill = {
+        manifest: { name: 'voice-tools', description: '', eager: false },
+        resolvedMcpServers: [
+          {
+            name: 'current-search',
+            config: { transport: 'stdio', command: 'current-search' },
+          },
+        ],
+      };
+      vi.mocked(SkillLoader).mockImplementation(() => ({
+        loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([initialSkill])),
+      }) as any);
+      setupVoiceBootstrapMocks(
+        config,
+        fixture.loadedPersona,
+        ok({ id: 'persona-uuid-1234', name: 'assistant', model: 'backend-model' }),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+      const service = ctx.voiceSessionService as unknown as {
+        options: {
+          capturePolicy: (owner: { ownerId: string; loginRevision: number }) => ReturnType<typeof ok>;
+        };
+      };
+      const initial = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(initial.isOk()).toBe(true);
+      expect(initial._unsafeUnwrap()).toMatchObject({
+        allowedMcpServerNames: ['stale-search'],
+      });
+
+      (ctx as unknown as { loadedSkills: unknown[] }).loadedSkills = [reloadedSkill];
+      const reloaded = service.options.capturePolicy({ ownerId: 'voice:assistant', loginRevision: 1 });
+      expect(reloaded.isOk()).toBe(true);
+      expect(reloaded._unsafeUnwrap()).toMatchObject({
+        allowedMcpServerNames: ['current-search'],
+      });
+    });
+
+    it.each([
+      ['missing', ok(null), 'Voice persona not found'],
+      ['lookup error', err(new Error('persona row lookup failed')), 'persona row lookup failed'],
+    ])('fails voice startup when the persisted persona row is %s', async (_state, personaRowResult, expectedMessage) => {
+      const { config, loadedPersona } = makeVoicePersonaFixture();
+      const { db, observability } = setupVoiceBootstrapMocks(
+        config,
+        loadedPersona,
+        personaRowResult,
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isErr()).toBe(true);
+      const bootstrapError = result._unsafeUnwrapErr();
+      expect(bootstrapError.cause?.message ?? bootstrapError.message).toContain(expectedMessage);
+      expect(db.close).toHaveBeenCalledOnce();
+      expect(observability.shutdown).toHaveBeenCalledOnce();
     });
 
     it('creates HostToolsBridge and attaches it to context', async () => {
@@ -1422,6 +1750,484 @@ describe('bootstrap', () => {
       } finally {
         vi.doUnmock('../../../src/subagents/subagent-loader.js');
         vi.doUnmock('../../../src/subagents/model-resolver.js');
+        vi.resetModules();
+      }
+    });
+
+    it('executes bootstrap-bound summarizer, observer, and reflector runs with privacy-safe descendants', async () => {
+      const generateObject = vi.fn().mockResolvedValue({
+        object: {
+          keyFacts: ['stored summary fact'],
+          openThreads: ['stored open thread'],
+          memoryUpdates: [],
+          summary: 'stored summary result',
+        },
+        usage: { inputTokens: 11, outputTokens: 7 },
+      });
+      const generateText = vi.fn().mockImplementation(async ({ prompt }: { prompt: string }) => {
+        if (prompt.includes('<observation-log>')) {
+          return {
+            text: 'Date: 2026-10-13\n- retained reflection result',
+            usage: { inputTokens: 13, outputTokens: 5 },
+          };
+        }
+        return {
+          text: JSON.stringify({
+            observations: [
+              { date: '2026-10-13', time: '10:00', priority: 'high', text: 'stored observation' },
+            ],
+            taskComplete: true,
+            currentTask: '',
+            suggestedContinuation: '',
+            memoryUpdates: [],
+          }),
+          usage: { inputTokens: 17, outputTokens: 9 },
+        };
+      });
+      const fakeModel = {} as any;
+      const loadedAgents: any[] = [];
+      const executions: Array<{ name: string; context: any; input: unknown }> = [];
+
+      vi.doMock('ai', () => ({ generateObject, generateText }));
+      vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
+        SubAgentLoader: vi.fn().mockImplementation(() => ({
+          loadAll: vi
+            .fn()
+            .mockImplementation(async (dir: string) =>
+              dir.includes('subagents/default') ? ok(loadedAgents) : ok([]),
+            ),
+        })),
+      }));
+      vi.doMock('../../../src/subagents/model-resolver.js', () => ({
+        ModelResolver: vi.fn().mockImplementation(() => ({
+          resolve: vi.fn().mockResolvedValue(ok(fakeModel)),
+        })),
+      }));
+      vi.resetModules();
+
+      try {
+        const [{ run: summarize }, { run: observe }, { run: reflect }] = await Promise.all([
+          import('../../../src/subagents/default/session-summarizer/index.js'),
+          import('../../../src/subagents/default/session-observer/index.js'),
+          import('../../../src/subagents/default/session-reflector/index.js'),
+        ]);
+
+        const makeAgent = (name: string, run: typeof summarize) => ({
+          manifest: {
+            name,
+            version: '0.1.0',
+            description: `Test ${name}`,
+            model: { provider: 'anthropic', name: `${name}-manifest`, maxTokens: 2048 },
+            requiredCapabilities: [],
+            rootPaths: [],
+            timeoutMs: 30_000,
+            requiresEnv: [],
+          },
+          promptContents: [`Prompt for ${name}`],
+          run: async (context: any, input: unknown) => {
+            executions.push({ name, context, input });
+            return await run(context, input as any);
+          },
+          rootDir: `/tmp/${name}`,
+        });
+
+        loadedAgents.push(
+          makeAgent('session-summarizer', summarize),
+          makeAgent('session-observer', observe),
+          makeAgent('session-reflector', reflect),
+        );
+
+        const { loadConfig: isolatedLoadConfig } =
+          await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } =
+          await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } =
+          await import('../../../src/core/database/migrations/runner.js');
+        const { PersonaLoader: isolatedPersonaLoader } =
+          await import('../../../src/personas/persona-loader.js');
+        const { SkillLoader: isolatedSkillLoader } =
+          await import('../../../src/skills/skill-loader.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } =
+          await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } =
+          await import('../../../src/daemon/daemon-bootstrap.js');
+
+        const provider = (summarizer: string) =>
+          makeAgentRunnerProviderConfig({
+            type: 'claude-code',
+            contextManagement: makeContextManagementConfig({ summarizer }),
+          });
+        const config = makeConfig({
+          agentRunner: {
+            defaultProvider: 'claude-code',
+            providers: {
+              'claude-code': provider('session-summarizer'),
+              'observer-provider': provider('session-observer'),
+              'reflector-provider': provider('session-reflector'),
+            },
+          },
+        });
+        const db = makeMockDb();
+        const observedHandles = [] as Array<{ update: ReturnType<typeof vi.fn> }>;
+        const observeService = vi
+          .fn()
+          .mockImplementation(async (_input: unknown, callback: any) => {
+            const handle = {
+              update: vi.fn(),
+              getTraceparent: vi.fn().mockReturnValue(null),
+            };
+            observedHandles.push(handle);
+            await callback(handle);
+            throw new Error('synthetic exporter failure');
+          });
+        const observability = {
+          observe: observeService,
+          observeWithTraceparent: observeService,
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+
+        vi.mocked(isolatedLoadConfig).mockReturnValue(ok(config as any));
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(db as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+        vi.mocked(isolatedPersonaLoader).mockImplementation(
+          () =>
+            ({
+              loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+              getByName: vi.fn().mockReturnValue(ok({})),
+            }) as any,
+        );
+        vi.mocked(isolatedSkillLoader).mockImplementation(
+          () =>
+            ({
+              loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
+            }) as any,
+        );
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+        expect(result.isOk()).toBe(true);
+        const context = result._unsafeUnwrap();
+        const resolver = (context.contextRoller as any).deps.resolveSummarizerRun as (
+          name: string,
+        ) =>
+          | ((
+              threadId: string,
+              personaId: string,
+              input: Record<string, unknown>,
+              diagnostics?: { privacy: 'voice' | 'nonvoice' | 'unknown' },
+            ) => Promise<any>)
+          | null;
+
+        expect(resolver('session-summarizer')).toBeTypeOf('function');
+        expect(resolver('session-observer')).toBeTypeOf('function');
+        expect(resolver('session-reflector')).toBeTypeOf('function');
+
+        const originalInfo = logger.info;
+        const originalWarn = logger.warn;
+        (logger as any).info = vi.fn(() => {
+          throw new Error('logger unavailable');
+        });
+        (logger as any).warn = vi.fn(() => {
+          throw new Error('logger unavailable');
+        });
+        let voiceResult: any;
+        try {
+          voiceResult = await resolver('session-summarizer')!(
+            'voice-thread',
+            'voice-persona',
+            { transcript: 'voice transcript retained for inference' },
+            { privacy: 'voice' },
+          );
+          expect(() =>
+            (executions[0].context.services.logger as any).warn(
+              { secret: 'voice prompt' },
+              'voice output',
+            ),
+          ).not.toThrow();
+        } finally {
+          (logger as any).info = originalInfo;
+          (logger as any).warn = originalWarn;
+        }
+
+        const unknownResult = await resolver('session-observer')!(
+          'unknown-thread',
+          'unknown-persona',
+          { transcript: 'unknown transcript retained for inference' },
+          { privacy: 'unknown' },
+        );
+        const nonVoiceResult = await resolver('session-reflector')!(
+          'terminal-thread',
+          'terminal-persona',
+          { observationLog: 'stored observation input' },
+          { privacy: 'nonvoice' },
+        );
+
+        expect(voiceResult.isOk()).toBe(true);
+        expect(voiceResult._unsafeUnwrap().summary).toBe('stored summary result');
+        expect(unknownResult.isOk()).toBe(true);
+        expect((unknownResult._unsafeUnwrap().data as any).observations).toHaveLength(1);
+        expect(nonVoiceResult.isOk()).toBe(true);
+        expect((nonVoiceResult._unsafeUnwrap().data as any).consolidatedLog).toContain(
+          'retained reflection result',
+        );
+        expect(executions.map(({ name }) => name)).toEqual([
+          'session-summarizer',
+          'session-observer',
+          'session-reflector',
+        ]);
+        expect(executions.map(({ context: runContext }) => runContext.telemetry)).toEqual([
+          { isEnabled: false },
+          { isEnabled: false },
+          { isEnabled: true },
+        ]);
+        expect(executions[0].context.services.logger).not.toBe(logger);
+        expect(executions[1].context.services.logger).not.toBe(logger);
+        expect(executions[2].context.services.logger).toBe(logger);
+        expect(generateObject).toHaveBeenCalledOnce();
+        expect(generateText).toHaveBeenCalledTimes(2);
+        expect(generateObject.mock.calls[0][0].experimental_telemetry).toEqual({
+          isEnabled: false,
+        });
+        expect(generateText.mock.calls.map(([options]) => options.experimental_telemetry)).toEqual([
+          { isEnabled: false },
+          { isEnabled: true },
+        ]);
+        expect(observeService).toHaveBeenCalledTimes(2);
+        expect(observeService.mock.calls[0][0]).toMatchObject({
+          type: 'agent',
+          name: 'voice-agent',
+          input: '[voice context redacted]',
+        });
+        expect(JSON.stringify(observeService.mock.calls)).not.toContain(
+          'voice transcript retained',
+        );
+        expect(observedHandles).toHaveLength(2);
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-loader.js');
+        vi.doUnmock('../../../src/subagents/model-resolver.js');
+        vi.doUnmock('ai');
+        vi.resetModules();
+      }
+    });
+
+    it('preserves actual observer and summarizer results across malformed output and model failover', async () => {
+      const generateObject = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('synthetic provider model failure'))
+        .mockResolvedValueOnce({
+          object: {
+            keyFacts: ['failover fact'],
+            openThreads: [],
+            memoryUpdates: [],
+            summary: 'failover summary result',
+          },
+          usage: { inputTokens: 19, outputTokens: 8 },
+        });
+      const generateText = vi
+        .fn()
+        .mockResolvedValueOnce({
+          text: 'malformed observer output',
+          usage: { inputTokens: 23, outputTokens: 3 },
+        })
+        .mockResolvedValueOnce({
+          text: JSON.stringify({
+            observations: [
+              {
+                date: '2026-10-13',
+                time: '11:00',
+                priority: 'medium',
+                text: 'failover observation',
+              },
+            ],
+            taskComplete: false,
+            currentTask: 'stored current task',
+            suggestedContinuation: 'stored continuation',
+            memoryUpdates: [],
+          }),
+          usage: { inputTokens: 29, outputTokens: 11 },
+        });
+      const fakeModel = {} as any;
+      const loadedAgents: any[] = [];
+      const executions: Array<{ name: string; context: any }> = [];
+      const resolve = vi.fn().mockResolvedValue(ok(fakeModel));
+
+      vi.doMock('ai', () => ({ generateObject, generateText }));
+      vi.doMock('../../../src/subagents/subagent-loader.js', () => ({
+        SubAgentLoader: vi.fn().mockImplementation(() => ({
+          loadAll: vi
+            .fn()
+            .mockImplementation(async (dir: string) =>
+              dir.includes('subagents/default') ? ok(loadedAgents) : ok([]),
+            ),
+        })),
+      }));
+      vi.doMock('../../../src/subagents/model-resolver.js', () => ({
+        ModelResolver: vi.fn().mockImplementation(() => ({ resolve })),
+      }));
+      vi.resetModules();
+
+      try {
+        const [{ run: summarize }, { run: observe }] = await Promise.all([
+          import('../../../src/subagents/default/session-summarizer/index.js'),
+          import('../../../src/subagents/default/session-observer/index.js'),
+        ]);
+        const makeAgent = (name: string, run: typeof summarize) => ({
+          manifest: {
+            name,
+            version: '0.1.0',
+            description: `Test ${name}`,
+            model: { provider: 'anthropic', name: `${name}-manifest`, maxTokens: 2048 },
+            requiredCapabilities: [],
+            rootPaths: [],
+            timeoutMs: 30_000,
+            requiresEnv: [],
+          },
+          promptContents: [`Prompt for ${name}`],
+          run: async (context: any, input: unknown) => {
+            executions.push({ name, context });
+            return await run(context, input as any);
+          },
+          rootDir: `/tmp/${name}`,
+        });
+        loadedAgents.push(
+          makeAgent('session-summarizer', summarize),
+          makeAgent('session-observer', observe),
+        );
+
+        const { loadConfig: isolatedLoadConfig } =
+          await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } =
+          await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } =
+          await import('../../../src/core/database/migrations/runner.js');
+        const { PersonaLoader: isolatedPersonaLoader } =
+          await import('../../../src/personas/persona-loader.js');
+        const { SkillLoader: isolatedSkillLoader } =
+          await import('../../../src/skills/skill-loader.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } =
+          await import('../../../src/observability/langfuse/index.js');
+        const { bootstrap: isolatedBootstrap } =
+          await import('../../../src/daemon/daemon-bootstrap.js');
+
+        const provider = (summarizer: string) =>
+          makeAgentRunnerProviderConfig({
+            type: 'claude-code',
+            contextManagement: makeContextManagementConfig({ summarizer }),
+          });
+        const config = makeConfig({
+          agentRunner: {
+            defaultProvider: 'claude-code',
+            providers: {
+              'claude-code': provider('session-summarizer'),
+              'observer-provider': provider('session-observer'),
+            },
+          },
+          subagents: {
+            'session-summarizer': {
+              model: [{ provider: 'anthropic', name: 'summary-fallback', maxTokens: 1024 }],
+            },
+            'session-observer': {
+              model: [{ provider: 'anthropic', name: 'observer-fallback', maxTokens: 1024 }],
+            },
+          },
+        });
+        const db = makeMockDb();
+        const observeService = vi
+          .fn()
+          .mockImplementation(
+            async (_input: unknown, callback: any) =>
+              await callback({ update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) }),
+          );
+        const observability = {
+          observe: observeService,
+          observeWithTraceparent: observeService,
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+
+        vi.mocked(isolatedLoadConfig).mockReturnValue(ok(config as any));
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(db as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+        vi.mocked(isolatedPersonaLoader).mockImplementation(
+          () =>
+            ({
+              loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
+              getByName: vi.fn().mockReturnValue(ok({})),
+            }) as any,
+        );
+        vi.mocked(isolatedSkillLoader).mockImplementation(
+          () =>
+            ({
+              loadFromPersonaConfig: vi.fn().mockResolvedValue(ok([])),
+            }) as any,
+        );
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+        expect(result.isOk()).toBe(true);
+        const context = result._unsafeUnwrap();
+        const resolver = (context.contextRoller as any).deps.resolveSummarizerRun as (
+          name: string,
+        ) =>
+          | ((
+              threadId: string,
+              personaId: string,
+              input: Record<string, unknown>,
+              diagnostics?: { privacy: 'voice' | 'nonvoice' | 'unknown' },
+            ) => Promise<any>)
+          | null;
+
+        const summaryResult = await resolver('session-summarizer')!(
+          'summary-thread',
+          'summary-persona',
+          { transcript: 'failover transcript retained for inference' },
+          { privacy: 'nonvoice' },
+        );
+        const observerResult = await resolver('session-observer')!(
+          'observer-thread',
+          'observer-persona',
+          { transcript: 'malformed output must fail over' },
+          { privacy: 'unknown' },
+        );
+
+        expect(summaryResult.isOk()).toBe(true);
+        expect(summaryResult._unsafeUnwrap().summary).toBe('failover summary result');
+        expect(observerResult.isOk()).toBe(true);
+        expect(observerResult._unsafeUnwrap().summary).toBe('stored current task');
+        expect((observerResult._unsafeUnwrap().data as any).taskComplete).toBe(false);
+        expect((observerResult._unsafeUnwrap().data as any).suggestedContinuation).toBe(
+          'stored continuation',
+        );
+        expect(generateObject).toHaveBeenCalledTimes(2);
+        expect(generateText).toHaveBeenCalledTimes(2);
+        expect(executions.map(({ name }) => name)).toEqual([
+          'session-summarizer',
+          'session-summarizer',
+          'session-observer',
+          'session-observer',
+        ]);
+        expect(
+          executions.slice(0, 2).every(({ context: runContext }) => runContext.telemetry.isEnabled),
+        ).toBe(true);
+        expect(
+          executions.slice(2).every(({ context: runContext }) => !runContext.telemetry.isEnabled),
+        ).toBe(true);
+        expect(
+          generateObject.mock.calls.map(([options]) => options.experimental_telemetry),
+        ).toEqual([{ isEnabled: true }, { isEnabled: true }]);
+        expect(generateText.mock.calls.map(([options]) => options.experimental_telemetry)).toEqual([
+          { isEnabled: false },
+          { isEnabled: false },
+        ]);
+        expect(resolve).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'summary-fallback', source: 'override' }),
+        );
+        expect(resolve).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'observer-fallback', source: 'override' }),
+        );
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-loader.js');
+        vi.doUnmock('../../../src/subagents/model-resolver.js');
+        vi.doUnmock('ai');
         vi.resetModules();
       }
     });

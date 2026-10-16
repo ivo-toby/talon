@@ -240,6 +240,136 @@ auth:
 
 ---
 
+## `voice`
+
+Browser voice and incoming SIP are opt-in and disabled by default. Browser
+voice starts an HTTP listener for the authenticated WebRTC UI on `voice.host`
+(loopback by default). Incoming SIP starts its own authenticated webhook
+listener and accepts an existing provider-created GPT-Live session. Both use
+the ordinary durable queue and `AgentRunner` path for backend work.
+
+```yaml
+voice:
+  enabled: false
+  host: 127.0.0.1
+  port: 0
+  # publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
+  # model: gpt-live-1
+  # persona: assistant
+  voice: marin
+  allowedTransportTypes:
+    - webrtc
+  allowedOrigins: []
+  sip:
+    enabled: false
+    host: 127.0.0.1
+    port: 0
+    path: /voice/sip/webhook
+    standardWebhookSecretRef: openai-webhook
+    issuer: operator-configured-issuer
+    audience: talon-incoming-sip
+    publicKeys: {}
+    endpointMappings: {}
+  # Deprecated compatibility fields. Voice inherits the persona policy; these
+  # empty lists are ignored.
+  allowedToolNames: []
+  allowedMcpServerNames: []
+```
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | boolean | `false` | Start the browser voice runtime |
+| `host` | string | `127.0.0.1` | Node listener host or address; defaults to loopback and accepts configured wildcard or IPv6 addresses |
+| `port` | integer `0..65535` | `0` | Listener port; `0` selects an available port |
+| `publicHost` | non-empty string | — | Public HTTPS host; adds `https://<publicHost>` to allowed origins |
+| `accessToken` | string | — | Direct access token; prefer `accessTokenRef` and an environment-backed auth provider |
+| `accessTokenRef` | non-empty string | `voice` | `auth.providers.<name>.apiKey` slot used for browser login |
+| `liveApiKeyRef` | non-empty string | `openai` | `auth.providers.<name>` slot used by the live voice provider |
+| `provider` | non-empty string | selected persona provider | Deprecated compatibility field; the selected persona's provider (or agent-runner default) is authoritative and must be enabled |
+| `model` | non-empty string | `gpt-live-1` at bootstrap | Live voice model; the persona's `model` remains the backend model |
+| `persona` | non-empty string | first configured persona | Persona used for backend policy and execution |
+| `voice` | non-empty string | `marin` | Server-selected live output voice |
+| `usdPerMinute` | finite number ≥ 0 | — | Optional operator-supplied voice rate used for a duration estimate; there is no default |
+| `instructions` | string | `You are Talon, a helpful voice assistant.` | Live provider instructions |
+| `allowedTransportTypes` | non-empty string[] | `['webrtc']` | Transport allowlist; current runtime accepts only `webrtc` |
+| `allowedOrigins` | URL[] | `[]` | Explicit browser origins; `publicHost` contributes an HTTPS origin |
+| `allowedToolNames` | string[] | `[]` | Deprecated compatibility field; ignored. Voice inherits the selected persona's normal capabilities |
+| `allowedMcpServerNames` | string[] | `[]` | Deprecated compatibility field; ignored. Voice inherits the selected persona's configured skills and MCP servers |
+| `maxSessionLifetimeMs` | integer ≥ 1000 | `900000` | Maximum voice session lifetime |
+| `maxContextChars` | integer `256..256000` | `32000` | Bound for voice context passed to the live provider |
+| `maxConcurrentSessions` | integer ≥ 1 | `1` | Active browser session limit |
+| `maxSessionCreations` | integer ≥ 1 | `5` | Session creations allowed per window |
+| `sessionCreationWindowMs` | integer ≥ 1000 | `60000` | Session creation rate-limit window |
+| `heartbeatIntervalMs` | integer ≥ 1000 | `15000` | SSE heartbeat interval |
+| `sip.enabled` | boolean | `false` | Start the authenticated incoming SIP webhook listener |
+| `sip.host` | string | `127.0.0.1` | SIP webhook listener host |
+| `sip.port` | integer `0..65535` | `0` | SIP webhook listener port |
+| `sip.path` | non-empty string | `/voice/sip/webhook` | Standard Webhooks endpoint path |
+| `sip.standardWebhookSecret` | string | — | Direct Standard Webhooks secret; prefer `standardWebhookSecretRef` |
+| `sip.standardWebhookSecretRef` | non-empty string | `openai-webhook` | Auth provider slot containing the webhook secret |
+| `sip.issuer` | non-empty string | — | Trusted assertion issuer; missing configuration denies callers |
+| `sip.audience` | non-empty string | — | Trusted assertion audience |
+| `sip.publicKeys` | map of key ID to PEM/base64url public key | `{}` | Ed25519 verification keys; no URL fetching |
+| `sip.endpointMappings` | map of endpoint subject to `{ownerId, personaId}` | `{}` | Server-owned Asterisk identity mapping |
+| `sip.revokedIssuers` | string[] | `[]` | Issuers denied immediately |
+| `sip.revokedKeyIds` | string[] | `[]` | Key IDs denied immediately |
+| `sip.maxRequestBytes` | integer `1..262144` | `262144` | Raw body limit before verification/parsing |
+| `sip.timestampToleranceSeconds` | positive integer | `300` | Standard Webhooks delivery timestamp tolerance |
+| `sip.deliveryReplayWindowMs` | integer ≥ 1000 | `259200000` | Maximum delivery retry replay window |
+
+When `voice.enabled` or `voice.sip.enabled` is true, Talon requires a configured
+persona and its selected provider (or the agent-runner default) to be enabled.
+The provider's
+normal implementation, OAuth, and native-tool restrictions remain in force.
+The configured access token is resolved from `voice.accessToken`, then the
+`accessTokenRef` provider, then the global `auth.apiKey`. Use HTTPS through a
+reverse proxy for non-local browsers, preserve `Host` and `Origin`, and send
+`X-Forwarded-Proto: https` so secure cookies and origin checks reflect the
+public connection. If that proxy runs outside the daemon's network namespace,
+set `voice.host` to a reachable interface or wildcard address and restrict
+network exposure at the proxy or firewall. `voice.model` controls the live
+voice provider only; it does not change the persona backend model.
+
+`voice.persona` selects an existing normal persona, including its backend
+model, ordinary tools, skills, and configured MCP servers. Capabilities in
+`requireApproval` remain unavailable because voice has no interactive approval
+channel. The owner/persona pair uses one durable voice thread across calls;
+prompt history is bounded by `DEFAULT_VOICE_HISTORY_ROWS` and
+`DEFAULT_VOICE_HISTORY_CHARACTERS`. Durable voice rows have no automatic TTL
+cleanup, and old calls or messages from other channels are not imported.
+Voice stores bounded prompt fragments, outputs, usage, and lifecycle state in
+SQLite. Raw audio is not represented in the voice schema, and provider-side
+cloud retention remains governed by the provider account and API settings.
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Startup rejects a conflicting ordinary channel configuration and
+does not overwrite an existing non-voice `browser-voice` database row.
+
+Incoming SIP is independently disabled by default. Its Standard Webhooks
+secret authenticates the provider delivery only. Each accepted event also
+requires a separately verified Ed25519 assertion from an authenticated Asterisk
+endpoint mapped by `endpointMappings`; Caller ID and ordinary SIP headers are
+never used as authority. The raw request is capped at 256 KiB and verified
+before JSON parsing. Durable admission retains at most 10,000 call decisions,
+50,000 delivery receipts, and 10,000 grants, with unknown/pending replay
+tombstones retained indefinitely. After the durable attempt marker, Talon
+makes one `POST /v1/live/sessions/{data.session_id}/accept`, attaches the same
+existing session, and never creates a new Live session for SIP. Ambiguous
+accept or missing close finalization remains unknown/incomplete and is never
+retried automatically. See [Incoming SIP with Asterisk](../guides/voice-asterisk.mdx).
+
+When `usdPerMinute` is configured, voice cost is estimated from cumulative
+provider-reported seconds. Final provider usage does not confirm billing, so
+the status remains `estimated`; when that rate has known seconds but an
+incomplete close, the status is `incomplete`, while an omitted rate is
+`unavailable`. Backend cost comes only from AgentRunner run accounting and
+remains separate.
+
+---
+
 ## `agentRunner`
 
 ```yaml

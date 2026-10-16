@@ -213,6 +213,46 @@ export function filterAllowedMcpTools(capabilities: ResolvedCapabilities): strin
   return [...allowedMcpNames];
 }
 
+export interface VoiceMcpToolAccess {
+  /** Host tools that can be exposed to the voice provider without approval. */
+  readonly allowedMcpTools: string[];
+  /** Host tools that remain persona-authorized but require approval. */
+  readonly deniedMcpTools: string[];
+}
+
+/**
+ * Resolves the voice-safe subset of host tools.
+ *
+ * Normal provider execution intentionally keeps the existing union semantics
+ * in {@link filterAllowedMcpTools}. Voice has no interactive approval channel,
+ * so approval-gated capability families are omitted and denied again at the
+ * bridge using trusted run metadata.
+ */
+export function filterVoiceMcpTools(capabilities: ResolvedCapabilities): VoiceMcpToolAccess {
+  const approvalPrefixes = new Set(
+    capabilities.requireApproval
+      .map(extractCapabilityPrefix)
+      .filter((prefix): prefix is string => prefix !== null),
+  );
+  const allowedPrefixes = new Set(
+    capabilities.allow
+      .map(extractCapabilityPrefix)
+      .filter((prefix): prefix is string => prefix !== null && !approvalPrefixes.has(prefix)),
+  );
+
+  const allowedMcpTools: string[] = [];
+  const deniedMcpTools: string[] = [];
+  for (const entry of HOST_TOOL_REGISTRY) {
+    if (approvalPrefixes.has(entry.capabilityPrefix)) {
+      deniedMcpTools.push(entry.mcpName);
+    } else if (allowedPrefixes.has(entry.capabilityPrefix)) {
+      allowedMcpTools.push(entry.mcpName);
+    }
+  }
+
+  return { allowedMcpTools, deniedMcpTools };
+}
+
 /**
  * Given resolved capabilities, returns the set of internal (dot-notation)
  * tool names that the persona is allowed to use.

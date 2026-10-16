@@ -6,6 +6,7 @@ import type { QueueManager } from '../../../../src/queue/queue-manager.js';
 import { BackgroundTaskRepository } from '../../../../src/core/database/repositories/background-task-repository.js';
 import { BackgroundAgentManager } from '../../../../src/subagents/background/background-agent-manager.js';
 import { BackgroundAgentError } from '../../../../src/core/errors/error-types.js';
+import { createVoiceObservationContext } from '../../../../src/observability/langfuse/voice-observation.js';
 
 function createTestDb(): Database.Database {
   const db = new Database(':memory:');
@@ -226,9 +227,9 @@ describe('BackgroundAgentManager', () => {
     });
     // The auth field must be stripped — providers never see it.
     expect((passed.glean as Record<string, unknown>).auth).toBeUndefined();
-    expect(
-      prepareBackgroundInvocation.mock.calls[0][0].disableNativeShellAndFilesystemTools,
-    ).toBe(true);
+    expect(prepareBackgroundInvocation.mock.calls[0][0].disableNativeShellAndFilesystemTools).toBe(
+      true,
+    );
   });
 
   it('passes server entries through unchanged when no oauthTokenStore is wired', async () => {
@@ -284,7 +285,9 @@ describe('BackgroundAgentManager', () => {
     for (const mcpServers of unsafeServers) {
       const result = await manager.spawn({ ...spawnInput, mcpServers });
       expect(result.isErr()).toBe(true);
-      expect(result._unsafeUnwrapErr().message).toMatch(/provider-expandable environment-variable syntax/i);
+      expect(result._unsafeUnwrapErr().message).toMatch(
+        /provider-expandable environment-variable syntax/i,
+      );
     }
 
     expect(prepareBackgroundInvocation).not.toHaveBeenCalled();
@@ -847,6 +850,46 @@ describe('BackgroundAgentManager', () => {
     expect(repository.findById(taskId)._unsafeUnwrap()?.status).toBe('cancelled');
   });
 
+  it('keeps cleanup failure diagnostics safe when cancellation has no managed process', async () => {
+    const logger = makeLogger();
+    const cleanupError = 'VOICE_CANCEL_CLEANUP_ERROR_SENTINEL';
+    const executionEnvManager = {
+      destroyOwnedByTask: vi.fn().mockRejectedValue(new Error(cleanupError)),
+    };
+    repository.create({
+      id: 'voice-cancelled-after-restart',
+      personaId: 'persona-1',
+      providerName: 'claude-code',
+      threadId: 'voice-thread',
+      channelId: 'browser-voice',
+      prompt: 'VOICE_CANCEL_PROMPT_SENTINEL',
+      workingDirectory: null,
+      status: 'running',
+      output: null,
+      error: null,
+      pid: 4242,
+      timeoutMinutes: 30,
+      sandboxEnabled: true,
+      primaryExecutionEnvId: 'env-voice',
+    });
+    const manager = createManager({ executionEnvManager, logger });
+
+    const result = await manager.cancel('voice-cancelled-after-restart');
+
+    expect(result.isOk()).toBe(true);
+    expect(repository.findById('voice-cancelled-after-restart')._unsafeUnwrap()?.status).toBe(
+      'cancelled',
+    );
+    expect(executionEnvManager.destroyOwnedByTask).toHaveBeenCalledWith(
+      'voice-cancelled-after-restart',
+    );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(cleanupError);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { voice: true, errorCategory: 'unknown' },
+      'voice descendant event',
+    );
+  });
+
   it('revokes bridge auth immediately when a running task is cancelled', async () => {
     const manager = createManager();
     const taskId = (await manager.spawn(spawnInput))._unsafeUnwrap();
@@ -888,6 +931,45 @@ describe('BackgroundAgentManager', () => {
     await manager.recoverOrphanedTasks();
 
     expect(repository.findById('orphan-1')._unsafeUnwrap()?.status).toBe('failed');
+  });
+
+  it('keeps orphan cleanup failure diagnostics safe when voice classification is unavailable', async () => {
+    const logger = makeLogger();
+    const cleanupError = 'VOICE_ORPHAN_CLEANUP_ERROR_SENTINEL';
+    const executionEnvManager = {
+      destroyOwnedByTask: vi.fn().mockRejectedValue(new Error(cleanupError)),
+    };
+    repository.create({
+      id: 'voice-orphan-after-restart',
+      personaId: 'persona-1',
+      providerName: 'claude-code',
+      threadId: 'voice-thread',
+      channelId: 'browser-voice',
+      prompt: 'VOICE_ORPHAN_PROMPT_SENTINEL',
+      workingDirectory: null,
+      status: 'running',
+      output: null,
+      error: null,
+      pid: 999999,
+      timeoutMinutes: 30,
+      sandboxEnabled: true,
+      primaryExecutionEnvId: 'env-voice',
+    });
+    const manager = createManager({ executionEnvManager, logger });
+
+    await manager.recoverOrphanedTasks();
+
+    expect(repository.findById('voice-orphan-after-restart')._unsafeUnwrap()?.status).toBe(
+      'failed',
+    );
+    expect(executionEnvManager.destroyOwnedByTask).toHaveBeenCalledWith(
+      'voice-orphan-after-restart',
+    );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(cleanupError);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { voice: true, errorCategory: 'unknown' },
+      'voice descendant event',
+    );
   });
 
   it('kills active processes during shutdown', async () => {
@@ -1065,6 +1147,7 @@ describe('BackgroundAgentManager', () => {
 
   function createManagerWithObservability() {
     const { observability, observation } = makeObservability();
+    const logger = makeLogger();
     const claudeProvider = {
       name: 'claude-code',
       createExecutionStrategy: vi.fn(),
@@ -1092,14 +1175,15 @@ describe('BackgroundAgentManager', () => {
         listEnabled: vi.fn().mockReturnValue(['claude-code']),
         get: vi.fn((name: string) => (name === 'claude-code' ? providerEntry : undefined)),
       } as any,
-      logger: makeLogger(),
+      logger,
       processFactory,
       isPidAlive: vi.fn().mockReturnValue(false),
       readProcessCommandLine: vi.fn().mockReturnValue('claude --print'),
       observability,
+      hostToolsBridge,
     });
 
-    return { manager, observability, observation };
+    return { manager, observability, observation, logger };
   }
 
   it('starts a background agent observation span on spawn', async () => {
@@ -1299,6 +1383,130 @@ describe('BackgroundAgentManager', () => {
     const payload = updateCall![0] as Record<string, unknown>;
     expect(payload.usageDetails).toBeUndefined();
     expect(payload.costDetails).toBeUndefined();
+  });
+
+  it('keeps background voice observations redacted through completion and bridge registration', async () => {
+    const { manager, observability, observation, logger } = createManagerWithObservability();
+    const sentinel = 'VOICE_BACKGROUND_SENTINEL';
+    const voiceObservation = createVoiceObservationContext({
+      callId: 'call-1',
+      delegationId: 'delegation-1',
+      queueItemId: 'queue-1',
+      runId: 'parent-run-1',
+      threadId: 'thread-1',
+      personaId: 'persona-1',
+      provider: 'claude-code',
+      model: 'claude-sonnet-4-6',
+    });
+
+    const taskId = (
+      await manager.spawn({
+        ...spawnInput,
+        prompt: sentinel,
+        traceparent: '00-parent-trace-parent-span-01',
+        voiceObservation,
+      })
+    )._unsafeUnwrap();
+
+    expect(prepareBackgroundInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: sentinel }),
+    );
+    expect(observability.startWithTraceparent).toHaveBeenCalledWith(
+      '00-parent-trace-parent-span-01',
+      expect.objectContaining({
+        name: 'voice-agent',
+        input: '[voice context redacted]',
+        output: undefined,
+        trace: expect.objectContaining({ input: '[voice context redacted]' }),
+      }),
+    );
+    expect(hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: taskId,
+        traceparent: '00-child-trace-child-span-01',
+        voiceObservation: expect.objectContaining({
+          kind: 'voice',
+          redacted: true,
+          callId: 'call-1',
+          delegationId: 'delegation-1',
+          runId: taskId,
+        }),
+      }),
+    );
+
+    completionResolve?.(
+      ok({
+        stdout: sentinel,
+        stderr: `${sentinel}-stderr`,
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(observation.update).toHaveBeenCalledWith(
+      expect.objectContaining({ output: '[voice output redacted]' }),
+    );
+    expect(observation.update.mock.calls.flat()).not.toContain(sentinel);
+    expect(logger.error.mock.calls.flat()).not.toContain(sentinel);
+    expect(observation.end).toHaveBeenCalledTimes(1);
+    expect(queueManager.enqueue).toHaveBeenCalledWith(
+      'thread-1',
+      'message',
+      expect.objectContaining({ content: expect.stringContaining(sentinel) }),
+    );
+  });
+
+  it('derives completion enqueue diagnostics from persisted voice state after restart', async () => {
+    const logger = makeLogger();
+    const enqueueError = 'VOICE_COMPLETION_ENQUEUE_ERROR_SENTINEL';
+    const enqueue = vi.fn().mockReturnValue(err(new Error(enqueueError)));
+    const taskId = 'voice-completion-after-restart';
+    repository.create({
+      id: taskId,
+      personaId: 'persona-1',
+      providerName: 'claude-code',
+      threadId: 'voice-thread',
+      channelId: 'voice-channel',
+      prompt: 'VOICE_COMPLETION_PROMPT_SENTINEL',
+      workingDirectory: null,
+      status: 'running',
+      output: null,
+      error: null,
+      pid: null,
+      timeoutMinutes: 30,
+      sandboxEnabled: false,
+      primaryExecutionEnvId: null,
+    });
+    const manager = createManager({
+      logger,
+      queueManager: { enqueue } as any,
+      threadRepository: {
+        findById: vi.fn().mockReturnValue(ok({ channel_id: 'voice-channel' })),
+      },
+      channelRepository: {
+        findById: vi.fn().mockReturnValue(ok({ type: 'voice' })),
+      },
+    });
+
+    await (manager as any).handleCompletion(
+      taskId,
+      ok({
+        stdout: 'VOICE_COMPLETION_OUTPUT_SENTINEL',
+        stderr: 'VOICE_COMPLETION_STDERR_SENTINEL',
+        exitCode: 0,
+        timedOut: false,
+      }),
+    );
+
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(logger.error).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(logger.error.mock.calls)).not.toContain(enqueueError);
+    for (const [fields] of logger.error.mock.calls) {
+      expect(fields).toEqual(expect.objectContaining({ voice: true, errorCategory: 'unknown' }));
+      expect(fields).not.toHaveProperty('err');
+    }
   });
 
   it('works without observability service (backwards compatible)', async () => {

@@ -83,6 +83,8 @@ integration, or automation is safe without your configuration and review.
 - **Discord** — Gateway events with REST API, rate limit handling _(inbound not yet implemented)_
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
+- **Browser voice** — Opt-in authenticated WebRTC sessions at `/voice/`, backed by the durable queue and configured persona policy
+- **Incoming SIP boundary** — Separately opt-in Standard Webhooks receiver with server-verified Asterisk caller authority and durable at-most-once decision ownership
 
 ### Agent System
 
@@ -481,6 +483,7 @@ dataDir: data
 | `schedules`            | Agent-managed schedule entries (cron, interval, one-shot)                     |
 | `scheduler`            | Scheduler tick interval                                                       |
 | `auth`                 | `subscription` or `api_key` authentication mode                               |
+| `voice`                | Optional browser voice listener, authentication, live model, and lifecycle limits |
 | `subagentCli`          | Opt-in direct Claude Code adapter for bounded sub-agent generations             |
 | `langfuse`             | Langfuse observability: API keys, base URL, environment, flush settings       |
 | `sprites`              | Sprites.dev execution environments: token, resource limits, defaults          |
@@ -2369,6 +2372,152 @@ bridge; it does not sandbox a provider runtime or make an external model or
 MCP server safe by itself. Docker container isolation for agent sandboxing is
 planned as an additional layer.
 
+### Browser voice
+
+Browser voice is disabled by default. When enabled, Talon binds the configured
+`voice.host` HTTP listener (`127.0.0.1` by default) and a reverse proxy can
+publish it over HTTPS. The browser exchanges an operator-configured token for
+an expiring cookie session; the login page has an unchecked `Keep me signed in
+for one year` option. The default omitted/unchecked request uses a fixed
+15-minute grant; selecting the option sends `rememberMe: true` for a fixed
+365-day grant. The browser stores no bearer credential in Web Storage. The
+server stores only hashed session/CSRF verification values and keeps grants
+across a normal restart; logout, credential/owner rotation, and configuration
+reload revoke the affected authority. `voice.persona` then selects an existing
+normal persona, its backend provider/model, ordinary tools, skills, and
+configured MCP servers. The selected backend provider must be enabled, and its
+normal provider, OAuth, and native-tool restrictions still apply.
+
+Use environment references for both the browser token and live provider key:
+
+```yaml
+auth:
+  providers:
+    voice:
+      apiKey: ${TALON_VOICE_ACCESS_TOKEN}
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+
+voice:
+  enabled: true
+  host: 127.0.0.1
+  port: 8787
+  publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
+  persona: assistant
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedOrigins:
+    - https://voice.example.com
+```
+
+The old `voice.allowedToolNames` and `voice.allowedMcpServerNames` fields are
+deprecated compatibility fields and are ignored. Voice inherits the selected
+persona's normal capability and skill/MCP policy. A capability in
+`requireApproval` remains unavailable to voice because there is no interactive
+approval channel; grant only tools that can run without approval.
+
+When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
+voice channel. Startup rejects a conflicting ordinary channel configuration and
+does not overwrite an existing non-voice `browser-voice` database row.
+
+The default loopback bind is suitable when the proxy shares the daemon's
+network namespace. If the proxy is remote, set `voice.host` to a reachable
+interface or `0.0.0.0` and restrict network access; `allowedOrigins`,
+authentication, and CSRF checks still apply. The reverse proxy must preserve
+the public `Host` and `Origin` and send `X-Forwarded-Proto: https`. Voice uses
+one durable owner/persona thread across calls. Prompt history is bounded by
+`DEFAULT_VOICE_HISTORY_ROWS` and `DEFAULT_VOICE_HISTORY_CHARACTERS`; durable
+voice rows have no automatic TTL cleanup, and old calls or messages from other
+channels are not imported. Talon stores bounded prompt fragments, output,
+usage, and lifecycle state in local SQLite, not raw audio. Textless running
+progress is retained as lifecycle state without creating an empty delivery;
+terminal empty results remain delivery failures. Cloud provider
+retention is controlled by the provider account. See the [browser voice guide](docs/guides/voice.mdx)
+and [voice config reference](docs/reference/config-schema.mdx) for limits,
+cost status, and validation boundaries.
+
+The daemon selects the browser transport and live engine from trusted
+configuration and denies required capabilities that are unsupported or
+unknown before creating a provider session. Browser readiness still requires
+the real RTC connection and the engine's readiness event; a server-side
+connected status alone does not mark the call ready. Incoming SIP uses a
+verified provider-owned session reference and a lifecycle-only transport for
+provider-terminated media; it does not add a browser audio bridge or playback
+evidence. The production browser path remains WebRTC.
+
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
+Incoming SIP is a separate disabled-by-default boundary under `voice.sip`. It
+verifies the raw Standard Webhooks delivery before parsing. The signed
+`webhook-id` identifies the delivery for deduplication; the body event `id` is
+validated independently and need not match it. The receiver then requires a
+distinct server-verified Ed25519 caller assertion mapped from an authenticated
+Asterisk endpoint. Caller ID, `From`, `To`, and ordinary SIP headers never
+choose the owner or persona. The durable receiver bounds raw requests and
+pending work, reserves delivery/session/grant decisions atomically, persists an
+attempt marker before the one existing-session accept callback, attaches the
+same Live sideband, and leaves timeouts or crashes as unknown without retry.
+See the [incoming SIP/Asterisk guide](docs/guides/voice-asterisk.mdx)
+for the reference-only signer and configuration; this does not install a PBX,
+provision keys, or place a paid call.
+
+On page load, the browser first checks the cookie with the read-only
+`GET /voice/auth/session` endpoint and only then attempts to read the optional
+retained-call pointer. A valid cookie reaches the ready screen even when the
+pointer is missing or stale; a retained-call 404 clears only that pointer.
+Transient auth or retained-call failures keep recoverable pointers and show a
+retry message instead of claiming that the login expired. Restore opens only
+read-only status/history streams: it never requests microphone access, creates
+a peer or paid audio session, connects a provider, enqueues backend work, or
+replays old work automatically. Cookie retention still depends on the browser
+cookie context; a separate Safari home-screen context or cleared browser data
+may require a fresh login. Background/lock-screen audio and physical iPhone
+retention are not promised by this setup.
+
+The browser also sends bounded connection and playback proxies to
+`POST /voice/sessions/:id/telemetry`. The route uses the current origin,
+cookie login, CSRF token, and exact original session grant revision; output IDs
+are accepted only when they belong to that session. Browser-local
+`performance.now()` durations, RTC states, audio `play()` promise outcomes,
+visibility, and interruptions remain separate from semantic `/playback` state.
+A resolved promise is only a playback proxy, and a generic stream cannot mark a
+specific output as played. Requests are content-free, limited to 16 samples per
+batch and 256 per call, capped at 16 KiB and six batches per minute per exact
+grant/call, use one in-flight request with a two-second abort, and discard
+pending samples during cleanup. Telemetry failures do not change call controls,
+cleanup, retries, provider actions, or backend execution.
+
+When a live delegation arrives, the first notice remains provisional until a
+1,000 ms quiet interval has passed after the latest meaningful captured USER
+signature or safety classification change. A fixed 5,000 ms collection
+deadline starts when that notice is received and never extends. An initial safe
+snapshot still waits for quiet; an unsafe snapshot remains pending at quiet
+expiry so a valid late transcript can settle before the absolute deadline. At
+absolute expiry, a safe but unsettled snapshot is invalidated and follows the
+clarification path. These timers are local policy, not a completeness proof,
+and do not depend on an undocumented response-completion event.
+
+Later notices require a fresh user turn and never reuse an earlier utterance.
+Late assistant progress, completion timing, and notification speech do not
+rewrite an admitted request; user corrections, ambiguous timing, truncation,
+and provider replay conflicts remain unsafe. If the provider's missing
+transcript arrives after first publication or expiry, it is treated as a late
+change and fails closed. Optional diagnostics contain only local opaque
+correlation IDs, fixed event/reason values, bounded durations, counts, and an
+observation-scope marker; close summaries also report fixed availability,
+opened, finalized, close-requested, and observation-duration fields. They
+exclude transcript, prompt, provider ID, payload, error, hash, and credential
+data. A zero observed-delegation count only describes the observed window and
+does not prove that no provider event happened before observation began. The
+provider offset is not treated as proof that a user turn was complete. Offline
+checks cover transcript ordering, not provider-specific live audio timing or
+causal attribution.
+
 ### Host-Tools MCP Bridge
 
 Agents interact with the host through a small set of MCP tools exposed over a Unix socket. The daemon mediates all side effects — agents cannot access channels, databases, or the network directly.
@@ -2847,6 +2996,33 @@ Running autonomous agents across multiple channels means you lose visibility fas
 ### How it works
 
 Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
+
+Voice backend failures keep the user-facing error generic. For troubleshooting,
+inspect the failed run’s `error` field: when available it includes only allowlisted
+category, code, HTTP status and stage metadata. Provider messages, response bodies,
+headers and URLs are excluded. An `unknown` category or elapsed duration alone
+does not establish a timeout or root cause.
+
+Browser voice observations are content-free across the AgentRunner, provider tool
+events, host-tools bridge, and nested sub-agent spans. Server-owned correlation
+identifiers are bounded to 256 characters and allowlisted metadata to 4096
+UTF-8 bytes; transcripts, prompts, tool arguments/results, and free-form errors are
+not sent to Langfuse. Browser connection and playback observations use a separate
+authenticated, CSRF-protected endpoint and remain proxies: browser-local
+`performance.now()` values never combine with server clocks, and `audio.play()`
+success never claims that a person heard a complete output. Native AI SDK telemetry
+is disabled for voice descendants,
+and observation setup/update/export failures preserve the real operation result
+or error without retrying the work. The server lifecycle facade records bounded
+call, provider setup, adapter receipt, publication, queue admission/claim,
+backend start, durable result, output offer, provider acknowledgement, and
+closure transitions with a monotonic process clock. Receipt and publication are
+separate stages; missing or restarted context is unknown, while late and
+unassociated timing is excluded from duration denominators without changing a
+known observed outcome. The facade is
+no-op by default and never waits for export or changes queue, provider, delivery,
+or billing behavior. Its fixed bounds are 64 call handles, 256 milestones, 128
+delegations, 256 outputs, and 60 seconds of completed-call correlation retention.
 
 ### Setup
 

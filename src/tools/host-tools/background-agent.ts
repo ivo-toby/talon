@@ -16,6 +16,7 @@ import { BackgroundAgentError } from '../../core/errors/error-types.js';
 import { filterAllowedMcpTools } from '../tool-filter.js';
 import { resolveToolInstructions } from '../tool-instructions.js';
 import { buildTimeContext } from '../../core/time-context.js';
+import type { VoiceObservationContext } from '../../observability/langfuse/voice-observation.js';
 
 const DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT = 10;
 
@@ -214,13 +215,20 @@ export class BackgroundAgentHandler {
           DEFAULT_BACKGROUND_CONTEXT_RECENT_MESSAGE_COUNT,
         ).text || undefined;
     } catch (cause) {
-      this.deps.logger.warn(
-        {
-          threadId: context.threadId,
-          error: cause instanceof Error ? cause.message : String(cause),
-        },
-        'background-agent: failed to assemble prior thread context',
-      );
+      if (context.voiceObservation) {
+        this.deps.logger.warn(
+          { threadId: context.threadId, voice: true, errorCategory: 'unknown' },
+          'background-agent: failed to assemble voice thread context',
+        );
+      } else {
+        this.deps.logger.warn(
+          {
+            threadId: context.threadId,
+            error: cause instanceof Error ? cause.message : String(cause),
+          },
+          'background-agent: failed to assemble prior thread context',
+        );
+      }
     }
 
     // Resolution chain (most specific to least specific):
@@ -318,6 +326,7 @@ export class BackgroundAgentHandler {
       ...(args.workingDirectory ? { workingDirectory: args.workingDirectory } : {}),
       ...(args.timeoutMinutes ? { timeoutMinutes: args.timeoutMinutes } : {}),
       traceparent: context.traceparent,
+      ...(context.voiceObservation ? { voiceObservation: context.voiceObservation } : {}),
     });
 
     if (spawnResult.isErr()) {
@@ -351,7 +360,12 @@ export class BackgroundAgentHandler {
       };
     }
 
-    const ownership = this.ensureTaskOwnership(args.taskId, context.threadId, requestId);
+    const ownership = this.ensureTaskOwnership(
+      args.taskId,
+      context.threadId,
+      requestId,
+      context.voiceObservation,
+    );
     if (ownership.status !== 'ok') {
       return this.taskOwnershipError(args.taskId, ownership, requestId);
     }
@@ -373,7 +387,12 @@ export class BackgroundAgentHandler {
       return this.errorResult(requestId, 'Missing required field: taskId');
     }
 
-    const ownership = this.ensureTaskOwnership(args.taskId, context.threadId, requestId);
+    const ownership = this.ensureTaskOwnership(
+      args.taskId,
+      context.threadId,
+      requestId,
+      context.voiceObservation,
+    );
     if (ownership.status !== 'ok') {
       return this.taskOwnershipError(args.taskId, ownership, requestId);
     }
@@ -400,7 +419,12 @@ export class BackgroundAgentHandler {
       return this.errorResult(requestId, 'Missing required field: taskId');
     }
 
-    const ownership = this.ensureTaskOwnership(args.taskId, context.threadId, requestId);
+    const ownership = this.ensureTaskOwnership(
+      args.taskId,
+      context.threadId,
+      requestId,
+      context.voiceObservation,
+    );
     if (ownership.status !== 'ok') {
       return this.taskOwnershipError(args.taskId, ownership, requestId);
     }
@@ -432,11 +456,19 @@ export class BackgroundAgentHandler {
     taskId: string,
     threadId: string,
     requestId: string,
+    voiceObservation?: VoiceObservationContext,
   ): OwnedTaskResult {
     const taskResult = this.deps.backgroundAgentManager.getTask(taskId);
     if (taskResult.isErr()) {
       this.deps.logger.warn(
-        { requestId, taskId, err: taskResult.error.message },
+        voiceObservation
+          ? {
+              voice: true,
+              ...(voiceObservation.runId ? { runId: voiceObservation.runId } : {}),
+              ...(voiceObservation.threadId ? { threadId: voiceObservation.threadId } : {}),
+              errorCategory: 'unknown',
+            }
+          : { requestId, taskId, err: taskResult.error.message },
         'background-agent: failed to load task for ownership check',
       );
       return { status: 'error', message: taskResult.error.message };

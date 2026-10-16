@@ -3,7 +3,12 @@ import Database from 'better-sqlite3';
 import { ok, err } from 'neverthrow';
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
-import { QueueManager, type QueueConfig } from '../../../src/queue/queue-manager.js';
+import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
+import {
+  createQueueDiagnosticResolver,
+  QueueManager,
+  type QueueConfig,
+} from '../../../src/queue/queue-manager.js';
 import { QueueItemStatus, type QueueItem } from '../../../src/queue/queue-types.js';
 import { createTestDb, createTestLogger, seedThread, uuid } from './helpers.js';
 
@@ -112,6 +117,60 @@ describe('QueueManager', () => {
       }
       const stats = manager.stats();
       expect(stats.deadLetter).toBe(1);
+    });
+  });
+
+  describe('trusted queue diagnostic privacy', () => {
+    it('injects one persisted resolver into processor and dead-letter handlers', async () => {
+      const logger = {
+        info: vi.fn(),
+        warn: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn(),
+        trace: vi.fn(),
+        fatal: vi.fn(),
+        child: vi.fn().mockReturnThis(),
+      } as any;
+      const resolver = {
+        resolveThread: vi.fn().mockReturnValue('voice'),
+        resolveRow: vi.fn().mockReturnValue('voice'),
+      };
+      const isolatedManager = new QueueManager(
+        queueRepo,
+        threadRepo,
+        { ...DEFAULT_CONFIG, maxAttempts: 1 },
+        logger,
+        undefined,
+        resolver,
+      );
+      const internals = isolatedManager as any;
+      expect(internals.processor.diagnosticResolver).toBe(resolver);
+      expect(internals.deadLetterHandler.diagnosticResolver).toBe(resolver);
+
+      const item = isolatedManager.enqueue(threadId, 'message', {})._unsafeUnwrap();
+      const processed = await internals.processor.processNext(async () =>
+        err(new Error('VOICE_QUEUE_FAILURE_SENTINEL')),
+      );
+
+      expect(processed?.id).toBe(item.id);
+      expect(resolver.resolveRow).toHaveBeenCalled();
+      expect(
+        (queueRepo.findById(item.id)._unsafeUnwrap() as { error: string }).error,
+      ).toBe('VOICE_QUEUE_FAILURE_SENTINEL');
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('VOICE_QUEUE_FAILURE_SENTINEL');
+      isolatedManager.stopProcessing();
+    });
+
+    it('classifies from persisted thread and channel rows', () => {
+      const channelId = (db.prepare('SELECT channel_id FROM threads WHERE id = ?').get(threadId) as {
+        channel_id: string;
+      }).channel_id;
+      db.prepare('UPDATE channels SET type = ? WHERE id = ?').run('voice', channelId);
+      const channelRepo = new ChannelRepository(db);
+      const resolver = createQueueDiagnosticResolver(threadRepo, channelRepo);
+
+      expect(resolver.resolveThread(threadId)).toBe('voice');
+      expect(resolver.resolveThread(uuid())).toBe('unknown');
     });
   });
 

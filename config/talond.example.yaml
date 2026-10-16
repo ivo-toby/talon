@@ -380,6 +380,49 @@ auth:
     #   baseURL: https://ollama.com/v1
     #   apiKey: ${OLLAMA_API_KEY}
 
+# Optional browser voice. Disabled by default. Keep the access token and live
+# provider key in environment variables referenced by auth.providers; do not
+# put literal secrets in this file.
+voice:
+  # When enabled, browser-voice is reserved for the internal voice channel;
+  # conflicting ordinary channel config is rejected and an existing non-voice
+  # database row is not overwritten.
+  enabled: false
+  # Defaults to loopback. For a proxy in another network namespace, set this
+  # to a reachable interface address or 0.0.0.0 and restrict network access.
+  host: 127.0.0.1
+  port: 0
+  # publicHost: voice.example.com
+  accessTokenRef: voice
+  liveApiKeyRef: openai
+  # provider: openai-compatible  # deprecated compatibility field; persona provider is authoritative
+  # model: gpt-live-1
+  # persona: assistant
+  voice: marin
+  # usdPerMinute: 0.00  # placeholder only; replace with a current provider rate; omitted means unavailable
+  allowedTransportTypes:
+    - webrtc
+  allowedOrigins: []
+  # Incoming SIP is a separate, disabled-by-default boundary. It accepts an
+  # existing provider-created GPT-Live session and reuses the normal persona,
+  # queue, and backend path. The reference Asterisk setup is documented in
+  # docs/guides/voice-asterisk.mdx; no keys, webhook secret, trunk, or owner
+  # mapping belongs in this example.
+  sip:
+    enabled: false
+    host: 127.0.0.1
+    port: 0
+    path: /voice/sip/webhook
+    standardWebhookSecretRef: openai-webhook
+    issuer: operator-configured-issuer
+    audience: talon-incoming-sip
+    publicKeys: {}
+    endpointMappings: {}
+  # Deprecated compatibility fields. Voice inherits the selected persona's
+  # capabilities, skills, and configured MCP servers; these lists are ignored.
+  allowedToolNames: []
+  allowedMcpServerNames: []
+
 # Langfuse observability — traces agent runs, tool calls, and LLM generations.
 # Sign up at https://cloud.langfuse.com or self-host: https://langfuse.com/docs/deployment/self-host
 langfuse:

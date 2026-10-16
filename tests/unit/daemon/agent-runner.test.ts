@@ -54,6 +54,11 @@ import type {
   ObservationHandle,
   StartedObservationHandle,
 } from '../../../src/observability/langfuse/observability-types.js';
+import {
+  createSharedVoiceThreadMetadata,
+  createVoiceThreadExternalId,
+  type VoiceBackendRequest,
+} from '../../../src/voice/voice-types.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -151,6 +156,7 @@ function makeMockContext(): DaemonContext {
           ok({
             id: 'chan-001',
             name: 'test-channel',
+            type: 'terminal',
           }),
         ),
       } as any,
@@ -243,6 +249,8 @@ function makeMockContext(): DaemonContext {
     } as any,
     hostToolsBridge: {
       path: '/tmp/test-data/host-tools.sock',
+      registerRunAuthentication: vi.fn(),
+      unregisterRunAuthentication: vi.fn(),
     } as any,
     providerRegistry: new ProviderRegistry(
       {
@@ -294,6 +302,50 @@ async function* makeProviderStream(overrides: Record<string, unknown> = {}) {
       isError: false,
       ...overrides,
     },
+  };
+}
+
+function makeVoiceBackendRequest(
+  id = 'voice-delegation-1',
+  providerName = 'claude-code',
+  modelName = 'claude-sonnet-4-20250514',
+): VoiceBackendRequest {
+  return {
+    sessionId: 'voice-session-1',
+    delegationId: id,
+    providerDelegationId: `provider-${id}`,
+    threadId: 'thread-001',
+    personaId: 'persona-001',
+    context: {
+      version: 4,
+      digest: 'context-digest-4',
+      capturedAt: 100,
+      text: 'Current voice request: report service health.',
+      fragments: [],
+      truncated: false,
+    },
+    policy: {
+      generation: 9,
+      ownerId: 'owner-1',
+      personaId: 'persona-001',
+      providerName,
+      modelName,
+      voiceName: 'marin',
+      capabilityNames: ['channel.send:*', 'memory.access', 'schedule.manage'],
+      allowedToolNames: [
+        'channel_send',
+        'channel_list',
+        'channel_broadcast',
+        'memory_access',
+        'schedule_manage',
+      ],
+      allowedMcpServerNames: [],
+      nativeToolNames: [],
+      requireApproval: false,
+      loginRevision: 3,
+      capturedAt: 100,
+    },
+    requestedAt: 100,
   };
 }
 
@@ -651,6 +703,235 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('keeps queued completion runs on persisted voice threads content-free in telemetry while preserving session continuity', async () => {
+      const sentinel = 'VOICE_QUEUED_COMPLETION_SENTINEL';
+      const voiceMetadata = createSharedVoiceThreadMetadata('owner-1', 'persona-001');
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('voice-resumed-session');
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: createVoiceThreadExternalId('owner-1', 'persona-001'),
+          metadata: JSON.stringify(voiceMetadata),
+        } as any),
+      );
+      vi.mocked(ctx.repos.channel.findById).mockReturnValue(
+        ok({ id: 'chan-001', name: 'test-channel', type: 'voice' } as any),
+      );
+      mockQuery.mockReturnValue(
+        (async function* queuedVoiceCompletion() {
+          yield {
+            type: 'assistant',
+            message: { content: [{ text: sentinel }] },
+          };
+          yield {
+            type: 'result',
+            subtype: 'success',
+            result: sentinel,
+            session_id: 'voice-queued-provider-session',
+            total_cost_usd: 0.001,
+            usage: { input_tokens: 12, output_tokens: 8 },
+            is_error: false,
+          };
+        })(),
+      );
+
+      const result = await runner.run(
+        makeQueueItem({ payload: { personaId: 'persona-001', content: sentinel } }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(mockQuery).toHaveBeenCalledOnce();
+      expect(ctx.sessionTracker.getSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'claude-code',
+        'claude-sonnet-4-20250514',
+      );
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ session_id: 'voice-resumed-session' }),
+      );
+      expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'voice-queued-provider-session',
+        'claude-code',
+        'claude-sonnet-4-20250514',
+      );
+      expect(ctx.repos.run.updateSessionId).toHaveBeenCalledWith(
+        expect.any(String),
+        'voice-queued-provider-session',
+      );
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.objectContaining({
+          voiceObservation: expect.objectContaining({ kind: 'voice', redacted: true }),
+        }),
+      );
+      expect(
+        ctx.observability.observe.mock.calls.map(([input]) => JSON.stringify(input)).join('\n'),
+      ).not.toContain(sentinel);
+      expect(ctx.logger.info.mock.calls.flat()).not.toContain(sentinel);
+      expect(ctx.channelRegistry.get('test-channel')?.send).toHaveBeenCalledWith(
+        voiceMetadata.externalId,
+        {
+          body: sentinel,
+        },
+      );
+      expect(ctx.repos.message.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ content: JSON.stringify({ body: sentinel }) }),
+      );
+    });
+
+    it('preserves known nonvoice execution and telemetry', async () => {
+      const sentinel = 'KNOWN_NONVOICE_SENTINEL';
+      mockQuery.mockReturnValue(
+        (async function* knownNonvoiceCompletion() {
+          yield {
+            type: 'assistant',
+            message: { content: [{ text: sentinel }] },
+          };
+          yield {
+            type: 'result',
+            subtype: 'success',
+            result: sentinel,
+            session_id: 'known-nonvoice-session',
+            total_cost_usd: 0.001,
+            usage: { input_tokens: 12, output_tokens: 8 },
+            is_error: false,
+          };
+        })(),
+      );
+
+      const result = await runner.run(
+        makeQueueItem({ payload: { personaId: 'persona-001', content: sentinel } }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(JSON.stringify(ctx.observability.observe.mock.calls)).toContain(sentinel);
+      const authInput = ctx.hostToolsBridge.registerRunAuthentication.mock.calls[0]?.[0] as
+        | { voiceObservation?: unknown }
+        | undefined;
+      expect(authInput?.voiceObservation).toBeUndefined();
+    });
+
+    it.each([
+      'thread repository error',
+      'missing thread',
+      'channel repository error',
+      'missing channel',
+    ])('fails closed for %s without changing queued execution', async (lookupCase) => {
+      const sentinel = `UNKNOWN_PRIVACY_${lookupCase.replaceAll(' ', '_').toUpperCase()}`;
+      const voiceThread = {
+        id: 'thread-001',
+        channel_id: 'chan-001',
+        external_id: 'voice-external-id',
+      };
+      const voiceChannel = { id: 'chan-001', name: 'test-channel', type: 'voice' };
+
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(ok(voiceThread as any));
+      vi.mocked(ctx.repos.channel.findById).mockReturnValue(ok(voiceChannel as any));
+      if (lookupCase === 'thread repository error') {
+        vi.mocked(ctx.repos.thread.findById).mockReturnValueOnce(
+          err(new Error('thread lookup unavailable') as any),
+        );
+      } else if (lookupCase === 'missing thread') {
+        vi.mocked(ctx.repos.thread.findById).mockReturnValueOnce(ok(null) as any);
+      } else if (lookupCase === 'channel repository error') {
+        vi.mocked(ctx.repos.channel.findById).mockReturnValueOnce(
+          err(new Error('channel lookup unavailable') as any),
+        );
+      } else {
+        vi.mocked(ctx.repos.channel.findById).mockReturnValueOnce(ok(null) as any);
+      }
+      mockQuery.mockReturnValue(
+        (async function* unknownPrivacyCompletion() {
+          yield {
+            type: 'assistant',
+            message: { content: [{ text: sentinel }] },
+          };
+          yield {
+            type: 'result',
+            subtype: 'success',
+            result: sentinel,
+            session_id: 'unknown-privacy-session',
+            total_cost_usd: 0.001,
+            usage: { input_tokens: 12, output_tokens: 8 },
+            is_error: false,
+          };
+        })(),
+      );
+
+      const result = await runner.run(
+        makeQueueItem({ payload: { personaId: 'persona-001', content: sentinel } }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(mockQuery).toHaveBeenCalledOnce();
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.objectContaining({
+          voiceObservation: expect.objectContaining({ kind: 'voice', redacted: true }),
+        }),
+      );
+      expect(ctx.channelRegistry.get('test-channel')?.send).toHaveBeenCalledWith(
+        'voice-external-id',
+        { body: sentinel },
+      );
+      expect(ctx.repos.message.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ content: JSON.stringify({ body: sentinel }) }),
+      );
+      expect(JSON.stringify(ctx.observability.observe.mock.calls)).not.toContain(sentinel);
+      expect(
+        JSON.stringify([
+          ...ctx.logger.info.mock.calls,
+          ...ctx.logger.warn.mock.calls,
+          ...ctx.logger.error.mock.calls,
+          ...ctx.logger.debug.mock.calls,
+        ]),
+      ).not.toContain(sentinel);
+    });
+
+    it('keeps context rotation enabled for queued voice-channel messages', async () => {
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: 'voice-external-id',
+        } as any),
+      );
+      vi.mocked(ctx.repos.channel.findById).mockReturnValue(
+        ok({ id: 'chan-001', name: 'test-channel', type: 'voice' } as any),
+      );
+      ctx.contextRoller = {
+        checkAndRotate: vi.fn().mockResolvedValue({ rotated: false, hasOpenThreads: false }),
+      } as any;
+      mockQuery.mockReturnValue(
+        makeAgentStream({
+          usage: {
+            input_tokens: 100,
+            output_tokens: 50,
+            cache_read_input_tokens: 80_000,
+          },
+        }),
+      );
+
+      const result = await runner.run(
+        makeQueueItem({
+          payload: { personaId: 'persona-001', content: 'VOICE_ROTATION_SENTINEL' },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+        'thread-001',
+        'persona-001',
+        expect.objectContaining({ rawMetric: 80_000 }),
+        0.4,
+        'session-summarizer',
+        expect.objectContaining({ privacy: 'voice' }),
+      );
+      expect(JSON.stringify(ctx.observability.observe.mock.calls)).not.toContain(
+        'VOICE_ROTATION_SENTINEL',
+      );
+    });
+
     it('reports usageDetails with snake_case keys for LangFuse pricing lookup', async () => {
       mockQuery.mockReturnValue(
         makeAgentStream({
@@ -729,6 +1010,7 @@ describe('AgentRunner', () => {
         },
         0.4,
         'session-summarizer',
+        expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
 
@@ -775,6 +1057,7 @@ describe('AgentRunner', () => {
         },
         0.39,
         'session-summarizer',
+        expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
 
@@ -886,6 +1169,7 @@ describe('AgentRunner', () => {
         },
         0.5,
         'session-summarizer',
+        expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
 
@@ -996,6 +1280,7 @@ describe('AgentRunner', () => {
         },
         0.5,
         'session-summarizer',
+        expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
 
@@ -1117,6 +1402,7 @@ describe('AgentRunner', () => {
         },
         0.75,
         'session-summarizer',
+        expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
 
@@ -1242,6 +1528,7 @@ describe('AgentRunner', () => {
         },
         0.8,
         'session-summarizer',
+        expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
 
@@ -1387,6 +1674,7 @@ describe('AgentRunner', () => {
         },
         0.75,
         'session-summarizer',
+        expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
 
@@ -1650,6 +1938,722 @@ describe('AgentRunner', () => {
     });
   });
 
+  describe('voice backend path', () => {
+    it('uses the admitted context and gate without channel delivery or context rotation', async () => {
+      const request: VoiceBackendRequest = {
+        sessionId: 'voice-session-1',
+        delegationId: 'voice-delegation-1',
+        providerDelegationId: 'provider-delegation-1',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        context: {
+          version: 4,
+          digest: 'context-digest-4',
+          capturedAt: 100,
+          text: 'Current voice request: report service health.',
+          fragments: [],
+          truncated: false,
+        },
+        policy: {
+          generation: 9,
+          ownerId: 'owner-1',
+          personaId: 'persona-001',
+          providerName: 'claude-code',
+          modelName: 'claude-sonnet-4-20250514',
+          voiceName: 'marin',
+          capabilityNames: ['channel.send:*', 'memory.access', 'schedule.manage'],
+          allowedToolNames: [
+            'channel_send',
+            'channel_list',
+            'channel_broadcast',
+            'memory_access',
+            'schedule_manage',
+          ],
+          allowedMcpServerNames: [],
+          nativeToolNames: ['WebFetch', 'WebSearch'],
+          requireApproval: false,
+          loginRevision: 3,
+          capturedAt: 100,
+        },
+        requestedAt: 100,
+      };
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const gate = vi.fn(() => ok(undefined));
+      vi.mocked(ctx.contextAssembler.assemble).mockReturnValue({
+        text: 'Previous backend context.',
+        summaryFound: true,
+        recentMessageCount: 1,
+        charCount: 24,
+      });
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(mockQuery).toHaveBeenCalledOnce();
+      expect(gate).toHaveBeenCalledOnce();
+      expect(gate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          request,
+          providerName: 'claude-code',
+          providerType: 'claude-code',
+          modelName: 'claude-sonnet-4-20250514',
+          nativeToolsDisabled: false,
+          nativeToolNames: ['WebSearch', 'WebFetch'],
+        }),
+      );
+      expect(sink.executionStarted).toHaveBeenCalledWith(request.delegationId, expect.any(Number));
+      expect(sink.final).toHaveBeenCalledWith(request.delegationId, 'Hello from the agent!');
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        prompt: string;
+        options: { systemPrompt: string; tools?: string[] };
+      };
+      expect(queryCall.prompt).toBe(request.context.text);
+      expect(queryCall.options.systemPrompt).toContain(request.context.text);
+      expect(queryCall.options.tools).toBeUndefined();
+      expect(queryCall.options.systemPrompt).toContain('Previous backend context.');
+      expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith('thread-001', 10, {
+        excludeMessageId: undefined,
+        excludeVoiceSessionId: request.sessionId,
+      });
+      expect(ctx.repos.message.insert).not.toHaveBeenCalled();
+      expect(ctx.channelRegistry.get('test-channel')?.send).not.toHaveBeenCalled();
+    });
+
+    it('publishes only remaining final text and redacts provider tool content', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-progress');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const toolObservation = makeStartedObservationHandle(null);
+      ctx.observability.startWithTraceparent = vi.fn(() => toolObservation);
+
+      async function* streamWithVoiceTool() {
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'progress' }] },
+        };
+        yield {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'voice-tool-1',
+                name: 'Read',
+                input: { secret: 'voice input' },
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'user',
+          message: {
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'voice-tool-1',
+                content: 'voice output',
+                is_error: false,
+              },
+            ],
+          },
+        };
+        yield {
+          type: 'assistant',
+          message: { content: [{ text: 'final' }] },
+        };
+        yield {
+          type: 'result',
+          subtype: 'success',
+          result: 'progress final',
+          session_id: 'voice-session-result',
+          total_cost_usd: 0.01,
+          usage: { input_tokens: 100, output_tokens: 50 },
+          is_error: false,
+        };
+      }
+
+      mockQuery.mockReturnValue(streamWithVoiceTool());
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(sink.progress).toHaveBeenCalledWith(request.delegationId, 'progress');
+      expect(sink.final).toHaveBeenCalledWith(request.delegationId, 'final');
+      expect(ctx.observability.startWithTraceparent).toHaveBeenCalledWith(
+        GENERATION_TRACEPARENT,
+        expect.objectContaining({
+          type: 'tool',
+          input: '[voice tool input redacted]',
+        }),
+      );
+      expect(toolObservation.update).toHaveBeenCalledWith(
+        expect.objectContaining({ output: '[voice tool output redacted]' }),
+      );
+    });
+
+    it('excludes approval families from provider tools and registers a trusted bridge deny list', async () => {
+      const baseRequest = makeVoiceBackendRequest('voice-delegation-approval');
+      const request: VoiceBackendRequest = {
+        ...baseRequest,
+        policy: {
+          ...baseRequest.policy,
+          capabilityNames: [...baseRequest.policy.capabilityNames, 'db.query'],
+        },
+      };
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: ['db.query'],
+          },
+        } as any),
+      );
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.hostToolsBridge.registerRunAuthentication).toHaveBeenCalledWith(
+        expect.objectContaining({ deniedToolNames: ['db.query'] }),
+      );
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any> };
+      };
+      expect(
+        queryCall.options.mcpServers.__talond_host_tools.env.TALOND_ALLOWED_TOOLS.split(',').filter(
+          Boolean,
+        ),
+      ).not.toContain('db_query');
+    });
+
+    it('retains the OAuth MCP native restriction for voice providers', async () => {
+      const baseRequest = makeVoiceBackendRequest('voice-delegation-oauth');
+      const request: VoiceBackendRequest = {
+        ...baseRequest,
+        policy: {
+          ...baseRequest.policy,
+          allowedMcpServerNames: ['privateSearch'],
+        },
+      };
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: ['oauth-search'],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      (ctx as any).loadedSkills = [
+        {
+          manifest: { name: 'oauth-search' },
+          format: 'yaml',
+          promptContents: ['Search the connected source.'],
+          resolvedToolManifests: [],
+          resolvedMcpServers: [
+            {
+              name: 'privateSearch',
+              config: {
+                transport: 'http',
+                url: 'https://mcp.example.test',
+                auth: { kind: 'oauth2', tokenStore: 'oauth-search/privateSearch' },
+              },
+            },
+          ],
+          migrationPaths: [],
+        },
+      ];
+      (ctx as any).oauthTokenStore = {
+        materializeBearer: vi.fn().mockResolvedValue('oauth-access-token'),
+      };
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(gate).toHaveBeenCalledWith(
+        expect.objectContaining({ nativeToolsDisabled: true, nativeToolNames: [] }),
+      );
+      const queryCall = mockQuery.mock.calls[0]![0] as {
+        options: { mcpServers: Record<string, any>; tools?: string[] };
+      };
+      expect(queryCall.options.tools).toEqual(['WebSearch', 'WebFetch']);
+      expect(queryCall.options.mcpServers.privateSearch).toEqual({
+        type: 'http',
+        url: 'https://mcp.example.test',
+        headers: { Authorization: 'Bearer oauth-access-token' },
+      });
+    });
+
+    it('does not retain provider error text in voice telemetry or run status', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-error');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      mockQuery.mockReturnValue(makeAgentStream({ result: 'provider secret', is_error: true }));
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ result: '[voice provider error redacted]' }),
+        'agent-runner: run ended with provider error',
+      );
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: expect.not.stringContaining('provider secret') }),
+      );
+    });
+
+    it('sanitizes hostile Error proxies and copies only safe timeout metadata', () => {
+      const sanitize = (runner as unknown as { toVoiceError(value: unknown): Error }).toVoiceError.bind(runner);
+      const fail = () => { throw new Error('PRIVATE_SENTINEL'); };
+      expect(sanitize(new Proxy(new Error('PRIVATE_SENTINEL'), { getOwnPropertyDescriptor: fail })).message).toBe('Voice provider execution failed');
+      expect(sanitize(new Proxy(new Error('PRIVATE_SENTINEL'), { getPrototypeOf: fail })).message).toBe('Voice provider execution failed');
+      const timeout = Object.assign(new Error('Agent query timed out after 3s'), { cause: 'PRIVATE_SENTINEL', raw: 'PRIVATE_SENTINEL' });
+      const safe = sanitize(timeout);
+      expect(safe).not.toBe(timeout);
+      expect(safe.message).toBe(timeout.message);
+      expect(JSON.stringify(safe)).toBe('{"diagnostic":{"category":"timeout","stage":"agent-query"}}');
+    });
+
+    it('sanitizes a voice provider error event before queue propagation', async () => {
+      const request = makeVoiceBackendRequest(
+        'voice-delegation-error-event',
+        'openai-compatible',
+        'gpt-4o',
+      );
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'gpt-4o',
+            skills: [],
+            capabilities: { allow: [] },
+          },
+          systemPromptContent: 'You are a test bot.',
+          resolvedCapabilities: {
+            allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+            requireApproval: [],
+          },
+        } as any),
+      );
+      async function* providerErrorStream() {
+        yield { type: 'error' as const, message: 'PRIVATE provider payload' };
+      }
+      ctx.providerRegistry = {
+        get: vi.fn().mockReturnValue({
+          name: 'openai-compatible',
+          type: 'openai-compatible',
+          provider: {
+            name: 'openai-compatible',
+            skillLoaderTransport: 'stdio',
+            createExecutionStrategy: () => ({
+              type: 'sdk' as const,
+              supportsSessionResumption: false as const,
+              run: () => providerErrorStream(),
+            }),
+            prepareBackgroundInvocation: vi.fn(),
+            parseBackgroundResult: vi.fn(),
+            estimateContextUsage: vi.fn().mockReturnValue({
+              inputTokens: 0,
+              metrics: { input_tokens: 0 },
+            }),
+          },
+          config: makeAgentRunnerProviderConfig({
+            command: 'openai-compatible',
+            contextWindowTokens: 1000,
+          }),
+        }),
+      } as any;
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: 'Voice provider execution failed' }),
+      );
+      expect(result._unsafeUnwrapErr().message).not.toContain('PRIVATE provider payload');
+    });
+
+    it.each(['event', 'throw', 'sync'])(
+      'persists safe voice diagnostics for %s without exposing provider content',
+      async (failureMode) => {
+        const request = makeVoiceBackendRequest(
+          'voice-delegation-error-event',
+          'openai-compatible',
+          'gpt-4o',
+        );
+        const sink = {
+          executionStarted: vi.fn(() => ok(undefined)),
+          progress: vi.fn(() => ok(undefined)),
+          final: vi.fn(() => ok(undefined)),
+          failure: vi.fn(() => ok(undefined)),
+          unknown: vi.fn(() => ok(undefined)),
+        };
+        vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+          ok({
+            config: {
+              model: 'gpt-4o',
+              skills: [],
+              capabilities: { allow: [] },
+            },
+            systemPromptContent: 'You are a test bot.',
+            resolvedCapabilities: {
+              allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+              requireApproval: [],
+            },
+          } as any),
+        );
+        const failure = Object.assign(new Error('PRIVATE provider payload'), {
+          statusCode: 401,
+          diagnostic: { category: 'auth', httpStatus: 401, stage: 'wrapper-stream' },
+        });
+        async function* providerErrorStream() {
+          if (failureMode === 'throw') throw failure;
+          yield {
+            type: 'error' as const,
+            message: 'PRIVATE provider payload',
+            diagnostic: {
+              category: 'auth' as const,
+              httpStatus: 401,
+              stage: 'wrapper-stream' as const,
+              code: 'PRIVATE provider payload',
+              url: 'PRIVATE provider payload',
+            },
+          };
+        }
+        ctx.providerRegistry = {
+          get: vi.fn().mockReturnValue({
+            name: 'openai-compatible',
+            type: 'openai-compatible',
+            provider: {
+              name: 'openai-compatible',
+              skillLoaderTransport: 'stdio',
+              createExecutionStrategy: () => ({
+                type: 'sdk' as const,
+                supportsSessionResumption: false as const,
+                run: () => {
+                  if (failureMode === 'sync') throw failure;
+                  return providerErrorStream();
+                },
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({
+                inputTokens: 0,
+                metrics: { input_tokens: 0 },
+              }),
+            },
+            config: makeAgentRunnerProviderConfig({
+              command: 'openai-compatible',
+              contextWindowTokens: 1000,
+            }),
+          }),
+        } as any;
+        const gate = vi.fn(() => ok(undefined));
+        runner = new AgentRunner(ctx, {
+          voiceOutputSink: sink as any,
+          voiceExecutionGate: gate as any,
+        });
+
+        const result = await runner.run(
+          makeQueueItem({
+            type: 'collaboration',
+            payload: {
+              kind: 'voice_backend',
+              delegationId: request.delegationId,
+              sessionId: request.sessionId,
+              request,
+            },
+          }),
+        );
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+        expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+          expect.any(String),
+          'failed',
+          expect.objectContaining({
+            error:
+              'Voice provider execution failed [{"category":"auth","httpStatus":401,"stage":"wrapper-stream"}]',
+          }),
+        );
+        expect(JSON.stringify(ctx.repos.run.updateStatus.mock.calls)).not.toContain(
+          'PRIVATE provider payload',
+        );
+        expect(JSON.stringify(result._unsafeUnwrapErr())).not.toContain('PRIVATE provider payload');
+      },
+    );
+
+    it('sanitizes a thrown voice provider exception before queue propagation', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-thrown-error');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      mockQuery.mockImplementation(() => {
+        throw new Error('PRIVATE provider exception');
+      });
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: 'Voice provider execution failed' }),
+      );
+    });
+
+    it('sanitizes a rejected voice provider stream before queue propagation', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-stream-error');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      async function* rejectedProviderStream() {
+        throw new Error('PRIVATE provider stream exception');
+      }
+      mockQuery.mockReturnValue(rejectedProviderStream());
+      const gate = vi.fn(() => ok(undefined));
+      runner = new AgentRunner(ctx, {
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+      expect(result._unsafeUnwrapErr().message).not.toContain('PRIVATE provider stream exception');
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: 'Voice provider execution failed' }),
+      );
+    });
+
+    it('cancels a timed out eligibility gate before it can start the provider', async () => {
+      const request = makeVoiceBackendRequest('voice-delegation-timeout');
+      const sink = {
+        executionStarted: vi.fn(() => ok(undefined)),
+        progress: vi.fn(() => ok(undefined)),
+        final: vi.fn(() => ok(undefined)),
+        failure: vi.fn(() => ok(undefined)),
+        unknown: vi.fn(() => ok(undefined)),
+      };
+      let resolveGate: ((value: unknown) => void) | undefined;
+      let gateCalledResolve: (() => void) | undefined;
+      const gateResult = new Promise<unknown>((resolve) => {
+        resolveGate = resolve;
+      });
+      const gateCalled = new Promise<void>((resolve) => {
+        gateCalledResolve = resolve;
+      });
+      const gate = vi.fn(() => {
+        gateCalledResolve?.();
+        return gateResult;
+      });
+      const shortRunner = new AgentRunner(ctx, {
+        queryTimeoutMs: 20,
+        voiceOutputSink: sink as any,
+        voiceExecutionGate: gate as any,
+      });
+
+      const resultPromise = shortRunner.run(
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            kind: 'voice_backend',
+            delegationId: request.delegationId,
+            sessionId: request.sessionId,
+            request,
+          },
+        }),
+      );
+      await gateCalled;
+      const result = await resultPromise;
+      resolveGate?.(ok(undefined));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('timed out after');
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(sink.failure).toHaveBeenCalledWith(request.delegationId, 'VOICE_EXECUTION_FAILED');
+    }, 10_000);
+  });
+
   describe('background task notifications', () => {
     it('delivers host-generated background task notifications without invoking Claude', async () => {
       const item = makeQueueItem({
@@ -1795,6 +2799,49 @@ describe('AgentRunner', () => {
         expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
         expect.any(Function),
       );
+      expect(ctx.logger.info).toHaveBeenCalledWith(
+        { threadId: 'thread-001', sessionId: 'session-from-db' },
+        'agent-runner: restored session from DB after restart',
+      );
+    });
+
+    it('redacts the restored provider session ID for voice-channel descendants', async () => {
+      const sentinel = 'VOICE_DB_RESTORE_SESSION_SENTINEL';
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: 'voice-external-id',
+        } as any),
+      );
+      vi.mocked(ctx.repos.channel.findById).mockReturnValue(
+        ok({ id: 'chan-001', name: 'test-channel', type: 'voice' } as any),
+      );
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue(undefined);
+      vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(sentinel));
+
+      const result = await runner.run(
+        makeQueueItem({
+          payload: { personaId: 'persona-001', content: 'VOICE_DB_RESTORE_PROMPT' },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      const queryCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
+      expect(queryCall.options.resume).toBe(sentinel);
+      expect(ctx.repos.run.insert).toHaveBeenCalledWith(
+        expect.objectContaining({ session_id: sentinel }),
+      );
+      const restoreLogs = ctx.logger.info.mock.calls.filter(
+        ([, message]) => message === 'agent-runner: restored session from DB after restart',
+      );
+      expect(restoreLogs).toEqual([
+        [
+          { threadId: 'thread-001', voice: true, event: 'session_restored' },
+          'agent-runner: restored session from DB after restart',
+        ],
+      ]);
+      expect(JSON.stringify(restoreLogs)).not.toContain(sentinel);
     });
 
     it('does not restore an explicit-effort DB session when persona omits reasoningEffort', async () => {
@@ -2574,6 +3621,60 @@ describe('AgentRunner', () => {
       ).toHaveLength(2);
     });
 
+    it('retries stale sessions for queued voice-channel messages while redacting observations', async () => {
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: 'voice-external-id',
+        } as any),
+      );
+      vi.mocked(ctx.repos.channel.findById).mockReturnValue(
+        ok({ id: 'chan-001', name: 'test-channel', type: 'voice' } as any),
+      );
+      vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-voice-session');
+      mockQuery
+        .mockImplementationOnce(() => {
+          throw new Error('Session not found: VOICE_STALE_PROVIDER_ERROR_SENTINEL');
+        })
+        .mockReturnValueOnce(makeAgentStream());
+
+      const result = await runner.run(
+        makeQueueItem({
+          payload: { personaId: 'persona-001', content: 'VOICE_STALE_PROMPT_SENTINEL' },
+        }),
+      );
+
+      expect(result.isOk()).toBe(true);
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+      const firstCall = mockQuery.mock.calls[0]![0] as { options: { resume?: string } };
+      const secondCall = mockQuery.mock.calls[1]![0] as { options: { resume?: string } };
+      expect(firstCall.options.resume).toBe('stale-voice-session');
+      expect(secondCall.options.resume).toBeUndefined();
+      expect(ctx.sessionTracker.rotateSession).toHaveBeenCalledWith('thread-001');
+      expect(ctx.sessionTracker.setSessionId).toHaveBeenCalledWith(
+        'thread-001',
+        'session-abc-123',
+        'claude-code',
+        'claude-sonnet-4-20250514',
+      );
+      expect(JSON.stringify(ctx.observability.observe.mock.calls)).not.toContain(
+        'VOICE_STALE_PROMPT_SENTINEL',
+      );
+      const serializedWarnings = JSON.stringify(ctx.logger.warn.mock.calls);
+      expect(serializedWarnings).not.toContain('VOICE_STALE_PROVIDER_ERROR_SENTINEL');
+      expect(serializedWarnings).not.toContain('stale-voice-session');
+      expect(ctx.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: expect.any(String),
+          threadId: 'thread-001',
+          voice: true,
+          errorCategory: 'unknown',
+        }),
+        'agent-sdk: resumed session failed before any events, retrying fresh session',
+      );
+    });
+
     it('updates run to failed on agent error and clears typing interval', async () => {
       mockQuery.mockImplementation(() => {
         throw new Error('Agent SDK crash');
@@ -2589,6 +3690,43 @@ describe('AgentRunner', () => {
         expect.any(String),
         'failed',
         expect.objectContaining({ error: 'Agent SDK crash' }),
+      );
+    });
+
+    it('preserves ordinary provider errors for queued voice-channel messages while sanitizing observations', async () => {
+      vi.mocked(ctx.repos.thread.findById).mockReturnValue(
+        ok({
+          id: 'thread-001',
+          channel_id: 'chan-001',
+          external_id: 'voice-external-id',
+        } as any),
+      );
+      vi.mocked(ctx.repos.channel.findById).mockReturnValue(
+        ok({ id: 'chan-001', name: 'test-channel', type: 'voice' } as any),
+      );
+      const providerError = 'QUEUED_VOICE_PROVIDER_ERROR';
+      mockQuery.mockImplementation(() => {
+        throw new Error(providerError);
+      });
+
+      const result = await runner.run(
+        makeQueueItem({
+          payload: { personaId: 'persona-001', content: 'VOICE_ERROR_PROMPT_SENTINEL' },
+        }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain(providerError);
+      expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+        expect.any(String),
+        'failed',
+        expect.objectContaining({ error: expect.stringContaining(providerError) }),
+      );
+      expect(JSON.stringify(ctx.observability.observe.mock.calls)).not.toContain(
+        'VOICE_ERROR_PROMPT_SENTINEL',
+      );
+      expect(JSON.stringify(ctx.logger.error.mock.calls)).not.toContain(
+        'VOICE_ERROR_PROMPT_SENTINEL',
       );
     });
 
@@ -3099,21 +4237,25 @@ describe('AgentRunner', () => {
           },
         } as any),
       );
-      (ctx as any).loadedSkills = [{
-        manifest: { name: 'oauth-search' },
-        format: 'yaml',
-        promptContents: ['Search the connected source.'],
-        resolvedToolManifests: [],
-        resolvedMcpServers: [{
-          name: 'privateSearch',
-          config: {
-            transport: 'http',
-            url: 'https://mcp.example.test',
-            auth: { kind: 'oauth2', tokenStore: 'oauth-search/privateSearch' },
-          },
-        }],
-        migrationPaths: [],
-      }];
+      (ctx as any).loadedSkills = [
+        {
+          manifest: { name: 'oauth-search' },
+          format: 'yaml',
+          promptContents: ['Search the connected source.'],
+          resolvedToolManifests: [],
+          resolvedMcpServers: [
+            {
+              name: 'privateSearch',
+              config: {
+                transport: 'http',
+                url: 'https://mcp.example.test',
+                auth: { kind: 'oauth2', tokenStore: 'oauth-search/privateSearch' },
+              },
+            },
+          ],
+          migrationPaths: [],
+        },
+      ];
       (ctx as any).oauthTokenStore = {
         materializeBearer: vi.fn().mockResolvedValue('oauth-access-token'),
       };

@@ -76,6 +76,56 @@ describe('ContextAssembler', () => {
     expect(result.text).not.toMatch(/^Assistant: /m);
   });
 
+  it('excludes current voice session transcript while retaining prior voice history', () => {
+    const findLatestByThread = vi.fn().mockReturnValue(ok([
+      {
+        id: 'voice-prior',
+        direction: 'inbound',
+        content: JSON.stringify({
+          body: 'My cat is called Nori.',
+          voice: {
+            kind: 'transcript',
+            sessionId: 'voice-session-prior',
+            fragmentId: 'prior-fragment',
+            role: 'user',
+            state: 'completed',
+            sequence: 1,
+          },
+        }),
+      },
+      {
+        id: 'voice-current',
+        direction: 'inbound',
+        content: JSON.stringify({
+          body: 'What is my cat called?',
+          voice: {
+            kind: 'transcript',
+            sessionId: 'voice-session-current',
+            fragmentId: 'current-fragment',
+            role: 'user',
+            state: 'completed',
+            sequence: 1,
+          },
+        }),
+      },
+    ]));
+    const deps = makeDeps({
+      messageRepo: {
+        findLatestByThread,
+        findLatestByThreadSince: vi.fn().mockReturnValue(ok([])),
+      } as any,
+    });
+
+    const result = new ContextAssembler(deps).assemble('thread-1', 10, {
+      excludeVoiceSessionId: 'voice-session-current',
+    });
+
+    expect(result.text).toContain('My cat is called Nori.');
+    expect(result.text).not.toContain('What is my cat called?');
+    expect(result.recentMessageCount).toBe(1);
+    expect(findLatestByThread).toHaveBeenCalledWith('thread-1', 200);
+  });
+
   it('includes both summary and recent messages', () => {
     const deps = makeDeps({
       memoryRepo: {

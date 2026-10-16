@@ -9,6 +9,7 @@ import type { ModelResolver } from '../../../src/subagents/model-resolver.js';
 import { SubAgentError } from '../../../src/core/errors/index.js';
 import type pino from 'pino';
 import type { ObservabilityService } from '../../../src/observability/langfuse/observability-types.js';
+import { createVoiceObservationContext } from '../../../src/observability/langfuse/voice-observation.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -346,6 +347,87 @@ describe('SubAgentRunner', () => {
     expect(result.isOk()).toBe(true);
     const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(ctx.telemetry).toEqual({ isEnabled: true });
+  });
+
+  it('disables native model telemetry for voice sub-agents', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const observe = vi.fn(async (_input, fn) =>
+      fn({ update: vi.fn(), getTraceparent: vi.fn().mockReturnValue(null) }),
+    );
+    const realObservability = {
+      observe,
+      observeWithTraceparent: vi.fn(),
+      startWithTraceparent: vi.fn(),
+      shutdown: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ObservabilityService;
+    const runner = makeRunner(agents, mockResolver, realObservability);
+
+    const result = await runner.execute(
+      'test-agent',
+      { sentinel: 'VOICE_SENTINEL' },
+      makeContext({
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-1',
+          runId: 'run-1',
+          threadId: 'thread-1',
+        }),
+      }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.telemetry).toEqual({ isEnabled: false });
+  });
+
+  it('keeps a successful voice model run successful when diagnostic logging throws', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const throwingChild = {
+      info: vi.fn(() => {
+        throw new Error('logger info failure');
+      }),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      trace: vi.fn(),
+      fatal: vi.fn(),
+      child: vi.fn(),
+    } as unknown as pino.Logger;
+    const logger = {
+      child: vi.fn().mockReturnValue(throwingChild),
+    } as unknown as pino.Logger;
+    const resolver = {
+      resolve: vi.fn().mockResolvedValue(ok({} as any)),
+    } as unknown as ModelResolver;
+    const runner = new SubAgentRunner(
+      agents,
+      resolver,
+      mockServices,
+      logger,
+      undefined,
+      {
+        'test-agent': {
+          model: [{ provider: 'ollama', name: 'primary' }],
+        },
+      },
+    );
+
+    const result = await runner.execute(
+      'test-agent',
+      { sentinel: 'VOICE_SENTINEL' },
+      makeContext({
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-1',
+          runId: 'run-1',
+          threadId: 'thread-1',
+        }),
+      }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    expect(agent.run).toHaveBeenCalledOnce();
+    expect(resolver.resolve).toHaveBeenCalledTimes(1);
   });
 
   describe('failover', () => {

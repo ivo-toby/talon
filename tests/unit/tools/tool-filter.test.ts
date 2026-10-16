@@ -6,6 +6,7 @@ import { describe, it, expect } from 'vitest';
 import {
   extractCapabilityPrefix,
   filterAllowedMcpTools,
+  filterVoiceMcpTools,
   filterAllowedTools,
   isToolAllowed,
   ALL_HOST_TOOLS,
@@ -205,6 +206,37 @@ describe('filterAllowedTools', () => {
     expect(result).toContain('net.http');
     expect(result).toContain('execution.env');
     expect(result).toHaveLength(5);
+  });
+});
+
+describe('filterVoiceMcpTools', () => {
+  it('omits approval families while retaining other persona tools', () => {
+    const result = filterVoiceMcpTools({
+      allow: ['channel.send:*', 'db.query', 'memory.access'],
+      requireApproval: ['db.query'],
+    });
+
+    expect(result.allowedMcpTools).toEqual([
+      'channel_send',
+      'channel_list',
+      'channel_broadcast',
+      'memory_access',
+    ]);
+    expect(result.deniedMcpTools).toEqual(['db_query']);
+  });
+
+  it('denies the complete family for scoped approval labels', () => {
+    const result = filterVoiceMcpTools({
+      allow: ['channel.send:trusted'],
+      requireApproval: ['channel.send:other'],
+    });
+
+    expect(result.allowedMcpTools).toEqual([]);
+    expect(result.deniedMcpTools).toEqual([
+      'channel_send',
+      'channel_list',
+      'channel_broadcast',
+    ]);
   });
 });
 

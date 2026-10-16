@@ -218,6 +218,67 @@ export const AuthConfigSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Browser voice
+// ---------------------------------------------------------------------------
+
+const BROWSER_VOICE_CHANNEL_NAME = 'browser-voice';
+
+/** Disabled-by-default inbound SIP webhook and caller-proof configuration. */
+export const SipEndpointMappingSchema = z.object({
+  ownerId: z.string().trim().min(1).max(256),
+  personaId: z.string().trim().min(1).max(256),
+});
+
+export const SipConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  host: z.string().default('127.0.0.1'),
+  port: z.number().int().min(0).max(65_535).default(0),
+  path: z.string().trim().min(1).default('/voice/sip/webhook'),
+  /** Prefer an environment-backed auth provider for this secret. */
+  standardWebhookSecret: z.string().optional(),
+  standardWebhookSecretRef: z.string().trim().min(1).default('openai-webhook'),
+  issuer: z.string().trim().min(1).max(256).optional(),
+  audience: z.string().trim().min(1).max(256).optional(),
+  publicKeys: z.record(z.string().trim().min(1).max(256), z.string().min(1)).default({}),
+  endpointMappings: z
+    .record(z.string().trim().min(1).max(256), SipEndpointMappingSchema)
+    .default({}),
+  revokedIssuers: z.array(z.string().trim().min(1).max(256)).default([]),
+  revokedKeyIds: z.array(z.string().trim().min(1).max(256)).default([]),
+  maxRequestBytes: z.number().int().min(1).max(256 * 1024).default(256 * 1024),
+  timestampToleranceSeconds: z.number().int().min(1).default(300),
+  deliveryReplayWindowMs: z.number().int().min(1_000).default(72 * 60 * 60 * 1_000),
+});
+
+/** Opt-in browservoice runtime. Secrets are resolved here, never copied into channels. */
+export const VoiceConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  host: z.string().default('127.0.0.1'),
+  port: z.number().int().min(0).max(65_535).default(0),
+  publicHost: z.string().trim().min(1).optional(),
+  accessToken: z.string().optional(),
+  accessTokenRef: z.string().trim().min(1).default('voice'),
+  liveApiKeyRef: z.string().trim().min(1).default('openai'),
+  provider: z.string().trim().min(1).optional(),
+  model: z.string().trim().min(1).optional(),
+  persona: z.string().trim().min(1).optional(),
+  voice: z.string().trim().min(1).default('marin'),
+  usdPerMinute: z.number().finite().nonnegative().optional(),
+  instructions: z.string().default('You are Talon, a helpful voice assistant.'),
+  allowedTransportTypes: z.array(z.string().trim().min(1)).min(1).default(['webrtc']),
+  allowedOrigins: z.array(z.string().url()).default([]),
+  allowedToolNames: z.array(z.string().trim().min(1)).default([]),
+  allowedMcpServerNames: z.array(z.string().trim().min(1)).default([]),
+  maxSessionLifetimeMs: z.number().int().min(1_000).default(15 * 60 * 1000),
+  maxContextChars: z.number().int().min(256).max(256_000).default(32_000),
+  maxConcurrentSessions: z.number().int().min(1).default(1),
+  maxSessionCreations: z.number().int().min(1).default(5),
+  sessionCreationWindowMs: z.number().int().min(1_000).default(60_000),
+  heartbeatIntervalMs: z.number().int().min(1_000).default(15_000),
+  sip: SipConfigSchema.default(() => SipConfigSchema.parse({})),
+});
+
+// ---------------------------------------------------------------------------
 // Providers
 // ---------------------------------------------------------------------------
 
@@ -516,6 +577,7 @@ export const TalondConfigSchema = z
     queue: QueueConfigSchema.default(() => QueueConfigSchema.parse({})),
     scheduler: SchedulerConfigSchema.default(() => SchedulerConfigSchema.parse({})),
     auth: AuthConfigSchema.default(() => AuthConfigSchema.parse({})),
+    voice: VoiceConfigSchema.default(() => VoiceConfigSchema.parse({})),
     agentRunner: AgentRunnerConfigSchema.default(() => AgentRunnerConfigSchema.parse({})),
     backgroundAgent: BackgroundAgentConfigSchema.default(() =>
       BackgroundAgentConfigSchema.parse({}),
@@ -530,6 +592,18 @@ export const TalondConfigSchema = z
     dataDir: z.string().default('data'),
   })
   .superRefine((value, ctx) => {
+    if (value.voice.enabled) {
+      value.channels.forEach((channel, index) => {
+        if (channel.name === BROWSER_VOICE_CHANNEL_NAME) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['channels', index, 'name'],
+            message: `channel name "${BROWSER_VOICE_CHANNEL_NAME}" is reserved for browser voice`,
+          });
+        }
+      });
+    }
+
     for (const [subAgentName, override] of Object.entries(value.subagents)) {
       if (
         !value.subagentSandbox.codex.enabled &&

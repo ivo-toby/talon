@@ -14,9 +14,17 @@
 
 import type { MessageRepository, MessageRow } from '../core/database/repositories/message-repository.js';
 import type { MemoryRepository } from '../core/database/repositories/memory-repository.js';
+import {
+  DEFAULT_VOICE_HISTORY_ROWS,
+  formatVoiceHistory,
+  parseVoiceMessageContent,
+} from '../voice/voice-types.js';
 
 export interface ContextAssemblerDeps {
-  messageRepo: Pick<MessageRepository, 'findLatestByThread' | 'findLatestByThreadSince'>;
+  messageRepo: Pick<MessageRepository, 'findLatestByThread' | 'findLatestByThreadSince'> &
+    Partial<
+      Pick<MessageRepository, 'findLatestByThreadPage' | 'findLatestByThreadSincePage'>
+    >;
   memoryRepo: Pick<MemoryRepository, 'findByThread'>;
 }
 
@@ -50,13 +58,16 @@ export class ContextAssembler {
    *   passed to the provider as the live prompt; echoing it in the system
    *   prompt as a `[previous turn, user]: …` entry caused stateless
    *   providers to respond twice (once to the replay, once to the prompt).
+   * @param options.excludeVoiceSessionId — optional voice call identity. Voice
+   *   rows from that call are omitted because the live request already carries
+   *   them; older voice rows use the bounded historical voice format.
    *
    * Returns a markdown string and metadata for observability.
    */
   assemble(
     threadId: string,
     recentMessageLimit: number,
-    options: { excludeMessageId?: string } = {},
+    options: { excludeMessageId?: string; excludeVoiceSessionId?: string } = {},
   ): AssembledContext {
     const sections: string[] = [];
     let summaryFound = false;
@@ -164,24 +175,53 @@ export class ContextAssembler {
     // cap so the context window grows toward the rotation threshold naturally
     // — essential for stateless providers where every turn is a fresh session.
     const PRE_SUMMARY_MESSAGE_CAP = 50;
-    const messagesResult = rotationBoundary !== null
-      ? this.deps.messageRepo.findLatestByThreadSince(
-          threadId,
-          rotationBoundary,
-          recentMessageLimit,
-        )
-      : this.deps.messageRepo.findLatestByThread(
-          threadId,
-          Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP),
-        );
-    if (messagesResult.isOk() && messagesResult.value.length > 0) {
+    const messageLimit = options.excludeVoiceSessionId
+      ? Math.max(recentMessageLimit, DEFAULT_VOICE_HISTORY_ROWS)
+      : recentMessageLimit;
+    let messages: MessageRow[];
+    if (options.excludeVoiceSessionId) {
+      messages = this.readVoiceMessages(
+        threadId,
+        rotationBoundary,
+        messageLimit,
+        options.excludeVoiceSessionId,
+      );
+    } else {
+      const messagesResult = rotationBoundary !== null
+        ? this.deps.messageRepo.findLatestByThreadSince(
+            threadId,
+            rotationBoundary,
+            recentMessageLimit,
+          )
+        : this.deps.messageRepo.findLatestByThread(
+            threadId,
+            Math.max(recentMessageLimit, PRE_SUMMARY_MESSAGE_CAP),
+          );
+      messages = messagesResult.isOk() ? messagesResult.value : [];
+    }
+    if (messages.length > 0) {
       const filtered = options.excludeMessageId
-        ? messagesResult.value.filter((m) => m.id !== options.excludeMessageId)
-        : messagesResult.value;
-      if (filtered.length > 0) {
-        const formatted = this.formatMessages(filtered);
-        sections.push(`### Recent Messages\n\n${formatted}`);
-        recentMessageCount = filtered.length;
+        ? messages.filter((m) => m.id !== options.excludeMessageId)
+        : messages;
+      const voiceFiltered = options.excludeVoiceSessionId
+        ? filtered.filter((message) => {
+            const content = parseVoiceMessageContent(message.content);
+            return !(
+              content?.voice?.kind === 'transcript' &&
+              content.voice.sessionId === options.excludeVoiceSessionId
+            );
+          })
+        : filtered;
+      if (voiceFiltered.length > 0) {
+        const formatted = options.excludeVoiceSessionId
+          ? formatVoiceHistory(voiceFiltered)
+          : this.formatMessages(voiceFiltered);
+        if (formatted) {
+          sections.push(`### Recent Messages\n\n${formatted}`);
+          recentMessageCount = options.excludeVoiceSessionId
+            ? formatted.split('\n').length
+            : voiceFiltered.length;
+        }
       }
     }
 
@@ -211,6 +251,74 @@ export class ContextAssembler {
       recentMessageCount,
       charCount: text.length,
     };
+  }
+
+  private readVoiceMessages(
+    threadId: string,
+    rotationBoundary: number | null,
+    limit: number,
+    excludeSessionId: string,
+  ): MessageRow[] {
+    const pageSize = Math.max(limit, DEFAULT_VOICE_HISTORY_ROWS);
+    if (rotationBoundary !== null && this.deps.messageRepo.findLatestByThreadSincePage) {
+      return this.readVoicePages(
+        (offset) =>
+          this.deps.messageRepo.findLatestByThreadSincePage!(
+            threadId,
+            rotationBoundary,
+            pageSize,
+            offset,
+          ),
+        pageSize,
+        limit,
+        excludeSessionId,
+      );
+    }
+    if (rotationBoundary === null && this.deps.messageRepo.findLatestByThreadPage) {
+      return this.readVoicePages(
+        (offset) =>
+          this.deps.messageRepo.findLatestByThreadPage!(threadId, pageSize, offset),
+        pageSize,
+        limit,
+        excludeSessionId,
+      );
+    }
+
+    const fallback = rotationBoundary !== null
+      ? this.deps.messageRepo.findLatestByThreadSince(threadId, rotationBoundary, pageSize)
+      : this.deps.messageRepo.findLatestByThread(threadId, pageSize);
+    return fallback.isOk()
+      ? fallback.value.filter((message) => {
+          const content = parseVoiceMessageContent(message.content);
+          return !(
+            content?.voice?.kind === 'transcript' && content.voice.sessionId === excludeSessionId
+          );
+        })
+      : [];
+  }
+
+  private readVoicePages(
+    readPage: (offset: number) => ReturnType<MessageRepository['findLatestByThreadPage']>,
+    pageSize: number,
+    limit: number,
+    excludeSessionId: string,
+  ): MessageRow[] {
+    const selected: MessageRow[] = [];
+    let offset = 0;
+    while (selected.length < limit) {
+      const page = readPage(offset);
+      if (page.isErr()) return [];
+      const eligible = page.value.filter((message) => {
+        const content = parseVoiceMessageContent(message.content);
+        return !(
+          content?.voice?.kind === 'transcript' && content.voice.sessionId === excludeSessionId
+        );
+      });
+      selected.unshift(...eligible);
+      if (page.value.length < pageSize) break;
+      offset += page.value.length;
+    }
+    return selected.slice(-limit);
   }
 
   private formatMessages(messages: MessageRow[]): string {
