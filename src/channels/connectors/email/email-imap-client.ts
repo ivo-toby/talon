@@ -9,8 +9,8 @@
 
 import type pino from 'pino';
 import { ImapFlow, type MailboxLockObject } from 'imapflow';
-import { simpleParser, type AddressObject, type ParsedMail } from 'mailparser';
-import type { EmailConfig, ImapClient, ParsedEmail } from './email-types.js';
+import { simpleParser, type AddressObject, type Attachment, type ParsedMail } from 'mailparser';
+import type { EmailAttachment, EmailConfig, ImapClient, ParsedEmail } from './email-types.js';
 
 /** Maximum number of unseen messages processed per poll. */
 const MAX_MESSAGES_PER_POLL = 20;
@@ -158,6 +158,7 @@ export function mapParsedMail(parsed: ParsedMail, uid: number): ParsedEmail {
   const references = Array.isArray(parsed.references)
     ? parsed.references.join(' ')
     : parsed.references;
+  const attachments = forwardAttachments(parsed.attachments);
 
   return {
     messageId: parsed.messageId ?? `<no-id-${uid}@local>`,
@@ -169,7 +170,39 @@ export function mapParsedMail(parsed: ParsedMail, uid: number): ParsedEmail {
     references,
     timestamp: parsed.date?.getTime() ?? Date.now(),
     authenticationResults: readAuthenticationResults(parsed),
+    ...(attachments !== undefined ? { attachments } : {}),
   };
+}
+
+/**
+ * Forward ONLY the fields the image pipeline needs from each parsed
+ * attachment (contract inventory E5, pinned against the actual installed
+ * MailParser 3.9.37): `filename?`, `contentType`, `contentDisposition?`,
+ * `size`, the decoded `content` Buffer and the `related` flag. Parser
+ * internals (`checksum`, `headers`, `partId`, `release`) and `contentId`/
+ * `cid` are dropped — inline/related exclusion is decided by the disposition
+ * and the `related` flag, never by a content ID, and copying the full
+ * attachment object would widen the durable surface for no consumer.
+ *
+ * The decoded Buffers are already in memory (whole-message fetch is capped
+ * before parsing); forwarding shares them, it does not copy pixels.
+ */
+function forwardAttachments(
+  attachments: Attachment[] | undefined,
+): EmailAttachment[] | undefined {
+  if (!Array.isArray(attachments) || attachments.length === 0) {
+    return undefined;
+  }
+  return attachments.map((attachment) => ({
+    ...(attachment.filename !== undefined ? { filename: attachment.filename } : {}),
+    ...(attachment.contentType !== undefined ? { contentType: attachment.contentType } : {}),
+    ...(attachment.contentDisposition !== undefined
+      ? { contentDisposition: attachment.contentDisposition }
+      : {}),
+    ...(typeof attachment.size === 'number' ? { size: attachment.size } : {}),
+    ...(attachment.related === true ? { related: true } : {}),
+    content: attachment.content,
+  }));
 }
 
 function firstAddress(addresses: AddressObject | AddressObject[] | undefined): string {
