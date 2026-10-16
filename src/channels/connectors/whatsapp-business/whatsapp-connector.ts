@@ -17,17 +17,34 @@
  */
 
 import type pino from 'pino';
-import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
+import type {
+  ChannelConnector,
+  InboundAttachment,
+  InboundEvent,
+  AgentOutput,
+} from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
 import type {
   WhatsAppConfig,
+  WhatsAppMediaEnvelope,
   WhatsAppWebhookPayload,
   WhatsAppSendResult,
 } from './whatsapp-types.js';
 import { markdownToWhatsApp } from './whatsapp-format.js';
 import { WhatsAppWebhookServer } from './whatsapp-webhook-server.js';
+import type { ImageSelectionSettings } from '../../../images/image-selection.js';
+import type { MediaStream } from '../../../images/image-transport.js';
+import {
+  DEFAULT_WHATSAPP_IMAGE_SETTINGS,
+  fetchWhatsAppMedia,
+  planHasImageSlots,
+  planWhatsAppMedia,
+  whatsappMediaCaption,
+  type OpenedWhatsAppMedia,
+  type WhatsAppMediaMetadata,
+} from './whatsapp-media.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -35,6 +52,17 @@ import { WhatsAppWebhookServer } from './whatsapp-webhook-server.js';
 
 const DEFAULT_API_VERSION = 'v18.0';
 const GRAPH_API_BASE = 'https://graph.facebook.com';
+
+/**
+ * Fixed-text failure messages for the two verified media steps.
+ *
+ * Both media URLs are request-bearing (a media URL is pre-signed) and an
+ * error message can reach logs, so nothing here ever interpolates the access
+ * token, a URL, a media ID, or a server-provided error body, and no error
+ * carries a `cause`. The mapper collapses these to the closed vocabulary.
+ */
+const MEDIA_LOOKUP_FAILED = 'whatsapp media lookup failed';
+const MEDIA_DOWNLOAD_FAILED = 'whatsapp media download failed';
 
 // ---------------------------------------------------------------------------
 // WhatsAppConnector
@@ -58,12 +86,25 @@ export class WhatsAppConnector implements ChannelConnector {
   private running = false;
   private webhookServer: WhatsAppWebhookServer | null = null;
 
+  /**
+   * Image selection settings (the shared `images` config block): the
+   * per-message slot cap and the per-image byte cap. The defaults mirror the
+   * config-schema `images` defaults, so a connector constructed without them
+   * still enforces bounds. There is deliberately no channel-specific byte cap.
+   */
+  private readonly imageSettings: ImageSelectionSettings;
+
   constructor(
     private readonly config: WhatsAppConfig,
     private readonly channelName: string,
     private readonly logger: pino.Logger,
+    options?: { imageSettings?: Partial<ImageSelectionSettings> },
   ) {
     this.name = channelName;
+    this.imageSettings = {
+      ...DEFAULT_WHATSAPP_IMAGE_SETTINGS,
+      ...(options?.imageSettings ?? {}),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -211,12 +252,18 @@ export class WhatsAppConnector implements ChannelConnector {
   // ---------------------------------------------------------------------------
 
   /**
-   * Accept a raw WhatsApp Cloud API webhook payload, normalise each text
-   * message into an InboundEvent, and invoke the registered handler.
+   * Accept a raw WhatsApp Cloud API webhook payload, normalise each message
+   * into an InboundEvent, and invoke the registered handler.
    *
-   * This method is the integration point for the daemon's HTTP endpoint.
-   * Non-text message types (image, document, audio, etc.) are logged and
-   * skipped — they are not surfaced to the handler in v1.
+   * This method is the integration point for the daemon's HTTP endpoint. The
+   * payload `object` check here and the `field === 'messages'` check below are
+   * admission gates: they resolve BEFORE any media work, so a payload that is
+   * rejected here performs zero Graph API requests. (Signature verification of
+   * the raw POST lives in {@link WhatsAppWebhookServer}.)
+   *
+   * Messages that carry neither text/caption nor slot-consuming image media
+   * (audio, video, stickers, non-image documents) are logged and skipped,
+   * preserving the pre-media behavior.
    *
    * @param payload - Raw webhook payload from the WhatsApp Cloud API.
    */
@@ -257,13 +304,46 @@ export class WhatsAppConnector implements ChannelConnector {
     message: import('./whatsapp-types.js').WhatsAppMessage,
     contacts: import('./whatsapp-types.js').WhatsAppContact[],
   ): Promise<void> {
-    if (message.type !== 'text' || !message.text?.body) {
+    // Effective text source: a text body, or the caption carried INSIDE the
+    // media object (WhatsApp puts a photo's caption on `image.caption`). An
+    // empty string is not content, matching the pre-media behavior.
+    const textBody = message.text?.body;
+    const caption = whatsappMediaCaption(message);
+    const sourceText = typeof textBody === 'string' && textBody !== '' ? textBody : (caption ?? '');
+
+    // Pure planning — no request happens here. It decides whether the message
+    // carries slot-consuming image media (selected OR closed-rejected). Media
+    // excluded without a slot (sticker, non-image document) admits nothing on
+    // its own, exactly like the pre-media path.
+    const mediaPlan = planWhatsAppMedia(message, this.imageSettings);
+    const hasImageSlots = planHasImageSlots(mediaPlan);
+
+    if (sourceText === '' && !hasImageSlots) {
       this.logger.info(
         { channelName: this.name, messageId: message.id, type: message.type },
         'whatsapp message type not supported, skipping',
       );
       return;
     }
+
+    if (!this.handler) {
+      this.logger.warn(
+        { channelName: this.name },
+        'whatsapp-business connector received message but no handler is registered',
+      );
+      return;
+    }
+
+    // Media ingestion runs ONLY after every gate above has admitted the event.
+    // One shared message fetch budget covers the metadata lookup and the byte
+    // download of every item in this message; it is disposed inside
+    // `fetchWhatsAppMedia`.
+    const attachments: InboundAttachment[] = hasImageSlots
+      ? await fetchWhatsAppMedia(mediaPlan, {
+          lookupMedia: (mediaId, signal) => this.lookupWhatsAppMedia(mediaId, signal),
+          openMedia: (metadata, signal) => this.openWhatsAppMedia(metadata, signal),
+        })
+      : [];
 
     // Resolve sender display name from contacts list if available.
     const contact = contacts.find((c) => c.wa_id === message.from);
@@ -280,18 +360,11 @@ export class WhatsAppConnector implements ChannelConnector {
       externalThreadId,
       senderId,
       idempotencyKey: message.id,
-      content: message.text.body,
+      content: sourceText,
       timestamp: Number(message.timestamp) * 1000, // WhatsApp sends seconds; we want ms
       raw: { message, contact: contact ?? null },
+      ...(attachments.length > 0 ? { attachments } : {}),
     };
-
-    if (!this.handler) {
-      this.logger.warn(
-        { channelName: this.name },
-        'whatsapp-business connector received message but no handler is registered',
-      );
-      return;
-    }
 
     try {
       await this.handler(event);
@@ -302,4 +375,139 @@ export class WhatsAppConnector implements ChannelConnector {
       );
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Verified media contract (TASK-008)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Step 1 of the verified media contract: the media-ID lookup.
+   *
+   * `GET {GRAPH_API_BASE}/{configured apiVersion}/{media-id}
+   * ?phone_number_id={phoneNumberId}` with `Authorization: Bearer {existing
+   * connector token}` — the connector's own configured version and existing
+   * credential, never a hardcoded version literal or a new auth scheme. The
+   * DIRECT response envelope (`{ messaging_product, url, mime_type, sha256,
+   * file_size, id }`, no `data` wrapper) is verified HERE, before any download
+   * URL is selected: `messaging_product` must be `whatsapp` and `url` must be a
+   * non-empty `https:` URL, because the next step re-attaches this same token
+   * to whatever URL this response supplied.
+   *
+   * `mime_type` and `file_size` are carried forward so eligibility and sizing
+   * are decided without transferring a single byte. `sha256` and `id` are not
+   * consumed.
+   *
+   * Every failure path throws the same fixed text: no token, no URL, no media
+   * ID, no server error body, and no cause.
+   */
+  private async lookupWhatsAppMedia(
+    mediaId: string,
+    signal: AbortSignal,
+  ): Promise<WhatsAppMediaMetadata> {
+    const apiVersion = this.config.apiVersion ?? DEFAULT_API_VERSION;
+    const url =
+      `${GRAPH_API_BASE}/${apiVersion}/${encodeURIComponent(mediaId)}` +
+      `?phone_number_id=${encodeURIComponent(this.config.phoneNumberId)}`;
+
+    let response: Response;
+    let envelope: WhatsAppMediaEnvelope;
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        signal,
+        headers: {
+          Authorization: `Bearer ${this.config.accessToken}`,
+        },
+      });
+      if (!response.ok) {
+        throw new Error(MEDIA_LOOKUP_FAILED);
+      }
+      envelope = (await response.json()) as WhatsAppMediaEnvelope;
+    } catch {
+      throw new Error(MEDIA_LOOKUP_FAILED);
+    }
+
+    if (envelope === null || typeof envelope !== 'object') {
+      throw new Error(MEDIA_LOOKUP_FAILED);
+    }
+    // Envelope verification BEFORE selecting a download URL.
+    if (envelope.messaging_product !== 'whatsapp') {
+      throw new Error(MEDIA_LOOKUP_FAILED);
+    }
+    const mediaUrl = envelope.url;
+    if (typeof mediaUrl !== 'string' || mediaUrl.length === 0 || !mediaUrl.startsWith('https://')) {
+      throw new Error(MEDIA_LOOKUP_FAILED);
+    }
+
+    const metadata: WhatsAppMediaMetadata = { url: mediaUrl };
+    if (typeof envelope.mime_type === 'string' && envelope.mime_type.length > 0) {
+      metadata.mimeType = envelope.mime_type;
+    }
+    const fileSize = parseFileSize(envelope.file_size);
+    if (fileSize !== undefined) {
+      metadata.fileSize = fileSize;
+    }
+    return metadata;
+  }
+
+  /**
+   * Step 2 of the verified media contract: the byte download, authenticated
+   * SEPARATELY from the lookup. Meta documents that the access token must be
+   * re-attached to the media URL — "If you omit your token, the request will
+   * fail" — and that a successful response is the RAW binary asset with a
+   * `content-type` response header, not JSON.
+   *
+   * The response `content-type` is returned as MIME metadata only; it never
+   * widens eligibility, which was already decided from the verified envelope.
+   * A transport error, a non-OK status (Meta returns `404 Not Found`), or an
+   * absent body all throw the same fixed text.
+   */
+  private async openWhatsAppMedia(
+    metadata: WhatsAppMediaMetadata,
+    signal: AbortSignal,
+  ): Promise<OpenedWhatsAppMedia> {
+    let response: Response;
+    try {
+      response = await fetch(metadata.url, {
+        method: 'GET',
+        signal,
+        headers: {
+          Authorization: `Bearer ${this.config.accessToken}`,
+        },
+      });
+    } catch {
+      throw new Error(MEDIA_DOWNLOAD_FAILED);
+    }
+    if (!response.ok || response.body === null) {
+      throw new Error(MEDIA_DOWNLOAD_FAILED);
+    }
+
+    const contentType =
+      typeof response.headers?.get === 'function' ? response.headers.get('content-type') : undefined;
+    return {
+      stream: response.body as unknown as MediaStream,
+      ...(typeof contentType === 'string' && contentType.length > 0 ? { contentType } : {}),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the envelope's `file_size`, which Meta documents as a string
+ * (`"9517907"`) but which tolerates a number. Anything that is not a finite
+ * non-negative number counts as UNDECLARED, so an unparseable size can never
+ * manufacture a `size_limit` rejection nor block an otherwise valid download.
+ */
+function parseFileSize(value: string | number | undefined): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) && value >= 0 ? value : undefined;
+  }
+  if (typeof value !== 'string' || value.trim() === '') {
+    return undefined;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
