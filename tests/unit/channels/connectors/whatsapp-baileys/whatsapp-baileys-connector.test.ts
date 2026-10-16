@@ -11,6 +11,7 @@ import pino from 'pino';
 import { WhatsAppBaileysConnector } from '../../../../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-connector.js';
 import { markdownToWhatsApp } from '../../../../../src/channels/connectors/whatsapp-business/whatsapp-format.js';
 import type { WhatsAppBaileysConfig } from '../../../../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-types.js';
+import type { BaileysImageIngestOptions } from '../../../../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-images.js';
 import type { InboundEvent } from '../../../../../src/channels/channel-types.js';
 import {
   classifyRejection,
@@ -23,8 +24,11 @@ import {
 
 const logger = pino({ level: 'silent' });
 
-function makeConnector(config: WhatsAppBaileysConfig = {}): WhatsAppBaileysConnector {
-  return new WhatsAppBaileysConnector(config, 'test-baileys', logger);
+function makeConnector(
+  config: WhatsAppBaileysConfig = {},
+  imageMedia?: BaileysImageIngestOptions,
+): WhatsAppBaileysConnector {
+  return new WhatsAppBaileysConnector(config, 'test-baileys', logger, imageMedia);
 }
 
 /** Minimal Baileys WAMessage shape for handleInboundMessage. */
@@ -337,13 +341,49 @@ describe('WhatsAppBaileysConnector', () => {
       expect(received).toHaveLength(0);
     });
 
-    it('drops non-text messages (e.g. imageMessage)', async () => {
+    it('routes imageMessage into the image path: undownloadable media becomes a closed rejection, not a drop', async () => {
+      // TASK-007 changed this behavior: image messages are no longer dropped
+      // as "non-text". An imageMessage without downloadable media still
+      // reaches the callback with a metadata-only download_failed rejection
+      // (the fake opener simulates the media fetch failing).
+      let openCalls = 0;
+      const c = makeConnector({}, {
+        openMedia: async () => {
+          openCalls += 1;
+          throw new Error('media unavailable');
+        },
+      });
       const received: InboundEvent[] = [];
-      connector.onMessage(async (event) => { received.push(event); });
+      c.onMessage(async (event) => { received.push(event); });
 
-      await handle(connector, makeMsg({ messageType: 'imageMessage' }));
+      await handle(c, makeMsg({ messageType: 'imageMessage' }));
+
+      expect(openCalls).toBe(1);
+      expect(received).toHaveLength(1);
+      expect(received[0].content).toBe('');
+      expect(received[0].attachments).toHaveLength(1);
+      expect(received[0].attachments?.[0]).toMatchObject({
+        kind: 'rejected',
+        rejectionReason: 'download_failed',
+        sourcePosition: 0,
+      });
+    });
+
+    it('still drops genuinely non-media non-text messages without invoking the opener', async () => {
+      let openCalls = 0;
+      const c = makeConnector({}, {
+        openMedia: async () => {
+          openCalls += 1;
+          throw new Error('must not be called');
+        },
+      });
+      const received: InboundEvent[] = [];
+      c.onMessage(async (event) => { received.push(event); });
+
+      await handle(c, makeMsg({ messageType: 'videoMessage' }));
 
       expect(received).toHaveLength(0);
+      expect(openCalls).toBe(0);
     });
 
     it('logs a warning when no handler is registered', async () => {
