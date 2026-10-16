@@ -203,6 +203,7 @@ export interface VoiceSessionRecord {
 
 export type VoiceTranscriptRole = 'user' | 'assistant';
 export type VoiceTranscriptFragmentKind = 'delta' | 'completed' | 'correction';
+export type VoiceTranscriptTiming = 'atomic_chunk';
 
 /** Normalized transcript data; provider-specific event fields stay in the adapter. */
 export interface VoiceTranscriptFragment {
@@ -213,6 +214,8 @@ export interface VoiceTranscriptFragment {
   readonly text: string;
   readonly startMs?: number;
   readonly endMs?: number;
+  /** Server-owned semantics for provider chunks with complete timing. */
+  readonly timing?: VoiceTranscriptTiming;
   readonly receivedAt: number;
 }
 

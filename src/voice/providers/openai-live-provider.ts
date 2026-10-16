@@ -23,7 +23,6 @@ import type {
   VoiceUsageUpdate,
 } from '../voice-types.js';
 import {
-  fragmentIdForProviderEvent,
   firstString,
   TranscriptBuffer,
   transcriptRoleForEvent,
@@ -955,14 +954,23 @@ export class OpenAiLiveVoiceSideband implements LiveVoiceSideband {
       );
       return;
     }
+    const groupingId = firstString(payload, ['item_id', 'transcript_id', 'id']);
+    const fragmentId = groupingId ?? eventId;
+    const atomicChunk =
+      isNativeTranscriptDelta(type) &&
+      eventId.length > 0 &&
+      groupingId === undefined &&
+      timing.hasExplicitStart &&
+      timing.hasExplicitEnd;
     const fragment: VoiceTranscriptFragment = {
-      id: fragmentIdForProviderEvent(eventId, payload),
+      id: atomicChunk ? eventId : fragmentId,
       role,
       kind: transcriptKind(type),
       sequence,
       text,
       ...(timing.startMs !== undefined ? { startMs: timing.startMs } : {}),
       ...(timing.endMs !== undefined ? { endMs: timing.endMs } : {}),
+      ...(atomicChunk ? { timing: 'atomic_chunk' as const } : {}),
       receivedAt: this.now(),
     };
     const appended = this.transcript.append(fragment);
@@ -1915,18 +1923,42 @@ function transcriptKind(type: string): VoiceTranscriptFragmentKind {
 function transcriptTiming(payload: ProviderPayload): {
   readonly startMs?: number;
   readonly endMs?: number;
+  readonly hasExplicitStart: boolean;
+  readonly hasExplicitEnd: boolean;
   readonly invalid: boolean;
 } {
-  const startMs = finiteNumber(payload.start_ms) ?? finiteNumber(payload.offset_ms);
-  const endMs = finiteNumber(payload.end_ms);
-  if (startMs !== undefined && startMs < 0) return { invalid: true };
-  if (endMs !== undefined && endMs < 0) return { invalid: true };
-  if (startMs !== undefined && endMs !== undefined && endMs < startMs) return { invalid: true };
+  const hasExplicitStart = payload.start_ms !== undefined;
+  const hasExplicitEnd = payload.end_ms !== undefined;
+  const explicitStartMs = finiteNumber(payload.start_ms);
+  const explicitEndMs = finiteNumber(payload.end_ms);
+  if (
+    (hasExplicitStart && explicitStartMs === undefined) ||
+    (hasExplicitEnd && explicitEndMs === undefined)
+  ) {
+    return { hasExplicitStart, hasExplicitEnd, invalid: true };
+  }
+  const startMs = hasExplicitStart ? explicitStartMs : finiteNumber(payload.offset_ms);
+  const endMs = explicitEndMs;
+  if (startMs !== undefined && startMs < 0) {
+    return { hasExplicitStart, hasExplicitEnd, invalid: true };
+  }
+  if (endMs !== undefined && endMs < 0) {
+    return { hasExplicitStart, hasExplicitEnd, invalid: true };
+  }
+  if (startMs !== undefined && endMs !== undefined && endMs < startMs) {
+    return { hasExplicitStart, hasExplicitEnd, invalid: true };
+  }
   return {
     ...(startMs !== undefined ? { startMs } : {}),
     ...(endMs !== undefined ? { endMs } : {}),
+    hasExplicitStart,
+    hasExplicitEnd,
     invalid: false,
   };
+}
+
+function isNativeTranscriptDelta(type: string): boolean {
+  return type === 'session.input_transcript.delta' || type === 'session.output_transcript.delta';
 }
 
 function isRetryableProviderCode(code: string): boolean {

@@ -376,6 +376,11 @@ provider, enqueues work, or replays old work. Cookie retention is scoped to the
 browser cookie context; Safari home-screen contexts may need a fresh login.
 Background/lock-screen audio and physical iPhone retention are not promised.
 
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
 If the operator supplies a current provider rate, `voice.usdPerMinute` makes
 the displayed voice amount a duration estimate. There is no default rate;
 final provider usage remains `estimated`, a configured rate with known usage

@@ -2447,6 +2447,11 @@ verified provider-owned session reference and a lifecycle-only transport for
 provider-terminated media; it does not add a browser audio bridge or playback
 evidence. The production browser path remains WebRTC.
 
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
 Incoming SIP is a separate disabled-by-default boundary under `voice.sip`. It
 verifies the raw Standard Webhooks delivery before parsing. The signed
 `webhook-id` identifies the delivery for deduplication; the body event `id` is

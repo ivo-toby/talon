@@ -109,7 +109,12 @@ export class TranscriptBuffer {
         return { outcome: 'duplicate', fragment: existing };
       }
 
-      if (existing.kind === 'delta' && boundedFragment.kind === 'delta') {
+      if (
+        existing.kind === 'delta' &&
+        boundedFragment.kind === 'delta' &&
+        existing.timing !== 'atomic_chunk' &&
+        boundedFragment.timing !== 'atomic_chunk'
+      ) {
         const fingerprint = deltaFingerprint(boundedFragment);
         if (this.hasDeltaFingerprint(boundedFragment.id, fingerprint)) {
           return { outcome: 'duplicate', fragment: existing };
@@ -225,11 +230,16 @@ export class TranscriptBuffer {
       }
       if (start !== undefined && start > offsetMs) continue;
       if (end !== undefined && end > offsetMs) {
-        if (fragment.role === 'user') {
+        const atomicChunk =
+          fragment.kind === 'delta' &&
+          fragment.timing === 'atomic_chunk' &&
+          start !== undefined &&
+          end !== undefined;
+        if (!atomicChunk && fragment.role === 'user') {
           uncertain = true;
           reason ??= 'boundary_fragment';
         }
-        continue;
+        if (!atomicChunk) continue;
       }
       fragments.push(fragment);
     }
@@ -307,12 +317,13 @@ function sameFragment(left: VoiceTranscriptFragment, right: VoiceTranscriptFragm
     left.kind === right.kind &&
     left.text === right.text &&
     left.startMs === right.startMs &&
-    left.endMs === right.endMs
+    left.endMs === right.endMs &&
+    left.timing === right.timing
   );
 }
 
 function deltaFingerprint(fragment: VoiceTranscriptFragment): string {
-  return JSON.stringify([fragment.text, fragment.startMs, fragment.endMs]);
+  return JSON.stringify([fragment.text, fragment.startMs, fragment.endMs, fragment.timing]);
 }
 
 /**
@@ -328,6 +339,7 @@ function semanticDigest(fragments: readonly VoiceTranscriptFragment[]): string {
     text: fragment.text,
     ...(fragment.startMs !== undefined ? { startMs: fragment.startMs } : {}),
     ...(fragment.endMs !== undefined ? { endMs: fragment.endMs } : {}),
+    ...(fragment.timing !== undefined ? { timing: fragment.timing } : {}),
   }));
   return createHash('sha256').update(JSON.stringify(semanticFragments)).digest('hex');
 }

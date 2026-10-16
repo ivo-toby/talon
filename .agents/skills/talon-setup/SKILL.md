@@ -303,6 +303,11 @@ to be enabled. The provider's normal OAuth and native-tool restrictions remain
 in force. Its `voice.model` is the live voice model; the persona's `model`
 remains the backend model.
 
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
 The browser login form leaves `Keep me signed in for one year` unchecked. The
 default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the
 checked option sends `rememberMe: true` for a fixed 365-day grant. Grants use

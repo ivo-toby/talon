@@ -208,6 +208,7 @@ describe('OpenAiLiveVoiceProvider', () => {
     expect((transcriptEvents[1].fragment as { kind: string }).kind).toBe('correction');
     const delegationContext = sideband.getContextForDelegation('provider-delegation-1');
     expect(delegationContext?.snapshot?.text).toContain('No Thursday');
+    expect(delegationContext?.snapshot?.text).not.toContain('Book Friday');
     expect(delegationContext?.snapshot?.version).toBe(2);
     expect(delegationContext?.uncertain).toBe(true);
     expect(delegationContext?.reason).toBe('transcript_changed');
@@ -258,6 +259,232 @@ describe('OpenAiLiveVoiceProvider', () => {
     ).toBe(true);
     expect(sideband.usage?.voiceSeconds).toBe(4);
     vi.useRealTimers();
+  });
+
+  it('accepts overlapping native timed chunks without coalescing or admitting later chunks', async () => {
+    vi.useFakeTimers({ now: 1_000 });
+    try {
+      const socket = new FakeSocket();
+      const sideband = new OpenAiLiveVoiceSideband(
+        socket as unknown as LiveWebSocket,
+        'provider-session-atomic-chunks',
+        {
+          now: () => Date.now(),
+          expiresAt: 20_000,
+          closeTimeoutMs: 20,
+          maxProviderEventBytes: 1_000,
+          maxPendingCommands: 4,
+          transcriptOptions: { maxFragments: 8, maxCharacters: 200, now: () => Date.now() },
+        },
+      );
+      const events: Array<Record<string, unknown>> = [];
+      sideband.onEvent((event) => events.push(event as unknown as Record<string, unknown>));
+      const opened = sideband.open();
+      socket.open();
+      expect((await opened).isOk()).toBe(true);
+
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'atomic-first',
+        delta: 'first',
+        start_ms: 0,
+        end_ms: 80,
+      });
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'atomic-overlap',
+        delta: ' overlap',
+        start_ms: 40,
+        end_ms: 140,
+      });
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'atomic-later',
+        delta: 'later turn',
+        start_ms: 200,
+        end_ms: 300,
+      });
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'atomic-first',
+        delta: 'duplicate',
+        start_ms: 0,
+        end_ms: 80,
+      });
+
+      expect(sideband.transcriptBuffer.fragments).toHaveLength(3);
+      expect(sideband.transcriptBuffer.fragments).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'atomic-first', timing: 'atomic_chunk' }),
+          expect.objectContaining({ id: 'atomic-overlap', timing: 'atomic_chunk' }),
+          expect.objectContaining({ id: 'atomic-later', timing: 'atomic_chunk' }),
+        ]),
+      );
+      expect(events.filter((event) => event.kind === 'transcript')).toHaveLength(3);
+
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'atomic-delegation',
+        delegation: { id: 'provider-delegation-atomic', target: 'client' },
+        offset_ms: 100,
+      });
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
+      const context = sideband.getContextForDelegation('provider-delegation-atomic');
+      expect(context?.uncertain).toBe(false);
+      expect(context?.snapshot?.text).toContain('first');
+      expect(context?.snapshot?.text).toContain('overlap');
+      expect(context?.snapshot?.text).not.toContain('later turn');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps missing timings and legacy overlapping fragments unsafe', async () => {
+    vi.useFakeTimers({ now: 1_000 });
+    try {
+      const socket = new FakeSocket();
+      const sideband = new OpenAiLiveVoiceSideband(
+        socket as unknown as LiveWebSocket,
+        'provider-session-missing-timing',
+        {
+          now: () => Date.now(),
+          expiresAt: 20_000,
+          closeTimeoutMs: 20,
+          maxProviderEventBytes: 1_000,
+          maxPendingCommands: 4,
+          transcriptOptions: { maxFragments: 8, maxCharacters: 200, now: () => Date.now() },
+        },
+      );
+      const events: Array<Record<string, unknown>> = [];
+      sideband.onEvent((event) => events.push(event as unknown as Record<string, unknown>));
+      const opened = sideband.open();
+      socket.open();
+      expect((await opened).isOk()).toBe(true);
+
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'untimed-delta',
+        item_id: 'untimed-item',
+        delta: 'missing timing',
+      });
+      socket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'invalid-explicit-timing',
+        item_id: 'invalid-explicit-item',
+        delta: 'invalid timing',
+        start_ms: -1,
+        end_ms: 100,
+        offset_ms: 0,
+      });
+      expect(sideband.transcriptBuffer.fragments).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: 'invalid-explicit-item' })]),
+      );
+      socket.receive({
+        type: 'session.delegation.created',
+        event_id: 'untimed-delegation',
+        delegation: { id: 'provider-delegation-untimed', target: 'client' },
+        offset_ms: 50,
+      });
+      expect(sideband.getContextForDelegation('provider-delegation-untimed')).toMatchObject({
+        uncertain: true,
+        reason: 'untimed_fragment',
+      });
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+      expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+
+      const legacySocket = new FakeSocket();
+      const legacy = new OpenAiLiveVoiceSideband(
+        legacySocket as unknown as LiveWebSocket,
+        'provider-session-legacy-overlap',
+        {
+          now: () => Date.now(),
+          expiresAt: 20_000,
+          closeTimeoutMs: 20,
+          maxProviderEventBytes: 1_000,
+          maxPendingCommands: 4,
+          transcriptOptions: { maxFragments: 8, maxCharacters: 200, now: () => Date.now() },
+        },
+      );
+      const legacyEvents: Array<Record<string, unknown>> = [];
+      legacy.onEvent((event) => legacyEvents.push(event as unknown as Record<string, unknown>));
+      const legacyOpened = legacy.open();
+      legacySocket.open();
+      expect((await legacyOpened).isOk()).toBe(true);
+      legacySocket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'legacy-offset-delta',
+        item_id: 'legacy-offset-item',
+        delta: 'legacy offset timing',
+        offset_ms: 0,
+        end_ms: 100,
+      });
+      const legacyOffsetFragment = legacy.transcriptBuffer.fragments.find(
+        (fragment) => fragment.id === 'legacy-offset-item',
+      );
+      expect(legacyOffsetFragment).toMatchObject({ startMs: 0, endMs: 100 });
+      expect(legacyOffsetFragment).not.toHaveProperty('timing');
+      legacySocket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'legacy-equal-id',
+        item_id: 'legacy-equal-id',
+        delta: 'first',
+        start_ms: 0,
+        end_ms: 40,
+      });
+      legacySocket.receive({
+        type: 'session.input_transcript.delta',
+        event_id: 'legacy-equal-id-next',
+        item_id: 'legacy-equal-id',
+        delta: ' second',
+        start_ms: 0,
+        end_ms: 80,
+      });
+      const mixedLegacyFragment = legacy.transcriptBuffer.fragments.find(
+        (fragment) => fragment.id === 'legacy-equal-id',
+      );
+      expect(mixedLegacyFragment).toMatchObject({ kind: 'delta', text: 'first second' });
+      expect(mixedLegacyFragment).not.toHaveProperty('timing');
+      legacySocket.receive({
+        type: 'session.input_transcript.completed',
+        event_id: 'legacy-overlap',
+        item_id: 'legacy-offset-item',
+        text: 'legacy overlap',
+        start_ms: 0,
+        end_ms: 100,
+      });
+      legacySocket.receive({
+        type: 'session.input_transcript.correction',
+        event_id: 'legacy-correction',
+        item_id: 'legacy-offset-item',
+        text: 'legacy corrected',
+        start_ms: 0,
+        end_ms: 100,
+      });
+      expect(legacy.transcriptBuffer.fragments).toHaveLength(2);
+      expect(
+        legacy.transcriptBuffer.fragments.find((fragment) => fragment.id === 'legacy-offset-item'),
+      ).toMatchObject({
+        id: 'legacy-offset-item',
+        kind: 'correction',
+        text: 'legacy corrected',
+      });
+      legacySocket.receive({
+        type: 'session.delegation.created',
+        event_id: 'legacy-delegation',
+        delegation: { id: 'provider-delegation-legacy', target: 'client' },
+        offset_ms: 50,
+      });
+      expect(legacy.getContextForDelegation('provider-delegation-legacy')).toMatchObject({
+        uncertain: true,
+        reason: 'boundary_fragment',
+      });
+      vi.advanceTimersByTime(DEFAULT_DELEGATION_CONTEXT_WAIT_MS);
+      expect(legacyEvents.filter((event) => event.kind === 'delegation')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('does not guess when delegation context is missing and reports unknown acknowledgements', async () => {
@@ -404,9 +631,8 @@ describe('OpenAiLiveVoiceProvider', () => {
           }
         ).providerDelegationId,
       ).toBe('provider-delegation-early');
-      expect(sideband.contextForDelegation('provider-delegation-early')?.text).toContain(
-        'Book Friday',
-      );
+      expect(sideband.contextForDelegation('provider-delegation-early')?.text).toContain('Book');
+      expect(sideband.contextForDelegation('provider-delegation-early')?.text).toContain('Friday');
 
       socket.receive({
         type: 'session.delegation.created',
@@ -739,7 +965,10 @@ describe('OpenAiLiveVoiceProvider', () => {
       vi.advanceTimersByTime(1);
       expect(events.filter((event) => event.kind === 'delegation')).toHaveLength(1);
       expect(sideband.contextForDelegation('provider-delegation-late-settlement')?.text).toContain(
-        'Late but valid request',
+        'Late but',
+      );
+      expect(sideband.contextForDelegation('provider-delegation-late-settlement')?.text).toContain(
+        'valid request',
       );
     } finally {
       vi.useRealTimers();

@@ -175,6 +175,11 @@ occurred before observation began. The provider offset is not proof that a user
 turn was complete; offline checks do not establish provider-specific live audio
 timing or causal attribution.
 
+The delegation offset is a capture boundary, not an utterance cutoff. Only
+event-identified native input/output transcript deltas with valid explicit
+`start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
+missing or legacy timing remains fail-closed at capture.
+
 On page load, the browser checks `GET /voice/auth/session` before looking up an
 optional retained call. A valid cookie reaches the ready screen without a
 retained call; a retained-call 404 clears only the stale pointer. Transient

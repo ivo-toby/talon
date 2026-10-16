@@ -113,4 +113,139 @@ describe('TranscriptBuffer', () => {
     expect(context.snapshot?.text).toContain('progress update');
     expect(context.snapshot?.text).not.toContain('notification speech');
   });
+
+  it('includes a complete atomic chunk that straddles the delegation offset', () => {
+    const buffer = new TranscriptBuffer({ maxFragments: 8, maxCharacters: 100 });
+    buffer.append(
+      fragment({
+        id: 'atomic-first',
+        text: 'first chunk',
+        startMs: 0,
+        endMs: 100,
+        timing: 'atomic_chunk',
+      }),
+    );
+    buffer.append(
+      fragment({
+        id: 'atomic-later',
+        text: 'later turn',
+        sequence: 2,
+        startMs: 200,
+        endMs: 300,
+        timing: 'atomic_chunk',
+      }),
+    );
+
+    const context = buffer.captureAt(50);
+
+    expect(context.uncertain).toBe(false);
+    expect(context.reason).toBeUndefined();
+    expect(context.snapshot?.text).toContain('first chunk');
+    expect(context.snapshot?.text).not.toContain('later turn');
+  });
+
+  it('keeps an unmarked overlapping fragment unsafe and does not coalesce atomic chunks', () => {
+    const buffer = new TranscriptBuffer({ maxFragments: 8, maxCharacters: 100 });
+    buffer.append(
+      fragment({
+        id: 'legacy-overlap',
+        text: 'legacy overlap',
+        startMs: 0,
+        endMs: 100,
+      }),
+    );
+    buffer.append(
+      fragment({
+        id: 'atomic-one',
+        text: 'one',
+        sequence: 2,
+        startMs: 0,
+        endMs: 100,
+        timing: 'atomic_chunk',
+      }),
+    );
+    buffer.append(
+      fragment({
+        id: 'atomic-two',
+        text: 'two',
+        sequence: 3,
+        startMs: 0,
+        endMs: 100,
+        timing: 'atomic_chunk',
+      }),
+    );
+
+    const context = buffer.captureAt(50);
+
+    expect(context.uncertain).toBe(true);
+    expect(context.reason).toBe('boundary_fragment');
+    expect(buffer.fragments.map((item) => item.id)).toEqual([
+      'legacy-overlap',
+      'atomic-one',
+      'atomic-two',
+    ]);
+    expect(context.snapshot?.digest).toBeDefined();
+    expect(context.snapshot?.text).toContain('one');
+    expect(context.snapshot?.text).toContain('two');
+  });
+
+  it('includes timing semantics in equality, delta fingerprints, and context digests', () => {
+    const buffer = new TranscriptBuffer({ maxFragments: 8, maxCharacters: 100 });
+    buffer.append(
+      fragment({
+        id: 'same-id',
+        text: 'same',
+        startMs: 0,
+        endMs: 100,
+        timing: 'atomic_chunk',
+      }),
+    );
+    expect(
+      buffer.append(
+        fragment({
+          id: 'same-id',
+          text: 'same',
+          startMs: 0,
+          endMs: 100,
+          timing: 'atomic_chunk',
+          sequence: 2,
+        }),
+      ).outcome,
+    ).toBe('duplicate');
+
+    const atomicDigest = buffer.captureAt(50).snapshot?.digest;
+    const unmarked = new TranscriptBuffer({ maxFragments: 8, maxCharacters: 100 });
+    unmarked.append(fragment({ id: 'same-id', text: 'same', startMs: 0, endMs: 100 }));
+    const unmarkedDigest = unmarked.captureAt(50).snapshot?.digest;
+
+    expect(atomicDigest).not.toBe(unmarkedDigest);
+    expect(buffer.fragments).toHaveLength(1);
+  });
+
+  it('keeps a corrected atomic fragment fail-closed at a boundary', () => {
+    const buffer = new TranscriptBuffer({ maxFragments: 8, maxCharacters: 100 });
+    buffer.append(
+      fragment({
+        id: 'atomic-correction',
+        text: 'original',
+        startMs: 0,
+        endMs: 100,
+        timing: 'atomic_chunk',
+      }),
+    );
+    const corrected = buffer.append(
+      fragment({
+        id: 'atomic-correction',
+        text: 'corrected',
+        sequence: 2,
+        startMs: 0,
+        endMs: 100,
+        timing: 'atomic_chunk',
+      }),
+    );
+
+    expect(corrected.outcome).toBe('corrected');
+    expect(corrected.fragment.kind).toBe('correction');
+    expect(buffer.captureAt(50)).toMatchObject({ uncertain: true, reason: 'boundary_fragment' });
+  });
 });
