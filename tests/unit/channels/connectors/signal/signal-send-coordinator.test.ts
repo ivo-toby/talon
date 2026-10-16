@@ -2328,4 +2328,1210 @@ describe('SignalSendCoordinator integration with real migrated SQLite', () => {
       },
     );
   }
+  it('TASK018: hands off the observed complete acceptance after an actual SQLite outage is repaired without another RPC', async () => {
+    const ctx = save('accepted');
+    nextSend = () => {
+      db.exec(`CREATE TRIGGER fail_retained_settlement BEFORE UPDATE OF reservation_delivery_id ON signal_account_state
+        WHEN NEW.reservation_delivery_id IS NULL
+        BEGIN SELECT RAISE(ABORT, 'private settlement failure'); END`);
+      return sendResult();
+    };
+    const pending = sender.sendPreparedChunk(target, 'accepted', ctx);
+    await advance(8000);
+    expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+      reason: 'STATE_WRITE_FAILED',
+      currentChunkAcceptance: 'complete',
+      successCount: 1,
+    });
+    const original = (await sender.drain())._unsafeUnwrapErr();
+    expect(original).toMatchObject({ reason: 'DATABASE' });
+    expect(checkpoint(ctx).phase).toBe('in_flight');
+    db.exec('DROP TRIGGER fail_retained_settlement');
+    expect(sender.retryStateWrites().isOk()).toBe(true);
+    expect((await sender.drain()).isOk()).toBe(true);
+    expect(checkpoint(ctx)).toMatchObject({
+      phase: 'delivered',
+      nextChunk: 1,
+      acceptedChunks: 1,
+      successCount: 1,
+    });
+    expect(accounts.findByAccount(account)._unsafeUnwrap()?.reservation).toBeNull();
+    expect(leases.find(account, target)._unsafeUnwrap()).toBeNull();
+    expect(calls).toHaveLength(2);
+  });
+
+  describe('TASK018 retained persistence obligations', () => {
+    function failSettlement(): void {
+      db.exec(`CREATE TRIGGER fail_retained_settlement BEFORE UPDATE OF reservation_delivery_id ON signal_account_state
+        WHEN NEW.reservation_delivery_id IS NULL
+        BEGIN SELECT RAISE(ABORT, 'private settlement failure'); END`);
+    }
+    function restrictedOutcome(
+      kind: 'complete' | 'refused' | 'partial' | 'unknown',
+    ): SignalRpcResult {
+      const hint = { retryAfterSeconds: 5000, token: 'discard-secret' };
+      if (kind === 'complete') return sendResult([resultEntry('SUCCESS', hint)]);
+      if (kind === 'refused') return remote(-5, [resultEntry('RATE_LIMIT_FAILURE', hint)]);
+      return sendResult([
+        resultEntry(),
+        resultEntry(kind === 'partial' ? 'RATE_LIMIT_FAILURE' : 'NETWORK_FAILURE', hint),
+      ]);
+    }
+    function observedSender(
+      onChange: (health: ReturnType<SignalSendCoordinator['persistenceHealth']>) => void,
+    ): SignalSendCoordinator {
+      return new SignalSendCoordinator({
+        accounts,
+        leases,
+        queue,
+        readiness: () => readiness,
+        monotonicNow: () => performance.now(),
+        onPersistenceChange: onChange,
+        rpc: {
+          request: (request) => {
+            calls.push({
+              request,
+              wire: encodeSignalRpcRequest(request, 'observed')._unsafeUnwrap().toString('utf8'),
+              at: Date.now(),
+              reservation: accounts.findByAccount(account)._unsafeUnwrap()?.reservation,
+              checkpoint: undefined,
+            });
+            return Promise.resolve(
+              request.method === 'send' ? nextSend(request) : nextMetadata(request),
+            );
+          },
+        },
+      });
+    }
+
+    it('publishes the complete invocation obligation count after deferring cleanup behind settlement', async () => {
+      const health: ReturnType<SignalSendCoordinator['persistenceHealth']>[] = [];
+      sender = observedSender((value) => {
+        health.push(value);
+      });
+      nextSend = () => {
+        failSettlement();
+        return sendResult();
+      };
+      const pending = sender.sendPreparedChunk(groupA, 'text', context('progress'));
+      await advance(8000);
+      await pending;
+      expect(health.at(-1)).toEqual({ state: 'blocked', stopped: true, pendingWrites: 2 });
+      db.exec('DROP TRIGGER fail_retained_settlement');
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(health.at(-1)).toEqual({ state: 'healthy', stopped: true, pendingWrites: 0 });
+      expect(calls).toHaveLength(2);
+    });
+
+    for (const purpose of ['reply', 'background', 'explicit', 'progress'] as const) {
+      it.each(['complete', 'refused', 'partial', 'unknown'] as const)(
+        `repairs ${purpose} generic %s with exact independent hints, original detection and no tail dispatch`,
+        async (kind) => {
+          const body = 'a'.repeat(2001);
+          const saved = purpose === 'reply' || purpose === 'background';
+          const ctx = saved ? save(body, groupA, purpose) : context(purpose);
+          nextSend = () => {
+            failSettlement();
+            return restrictedOutcome(kind);
+          };
+          const pending = sender.send(groupA, { body, trustedDelivery: ctx });
+          await advance(8000);
+          expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+            reason: 'STATE_WRITE_FAILED',
+            currentChunkAcceptance: kind,
+            successCount: kind === 'refused' ? 0 : 1,
+            failureCount: kind === 'complete' ? 0 : 1,
+          });
+          const original = (await sender.drain())._unsafeUnwrapErr();
+          expect(sender.persistenceHealth()).toEqual({
+            state: 'blocked',
+            stopped: true,
+            pendingWrites: saved ? 1 : 2,
+          });
+          expect(sender.retryStateWrites().isErr()).toBe(true); // Actual failed repair, not an unchecked release.
+          const repairError = (await sender.drain())._unsafeUnwrapErr();
+          for (let i = 0; i < 20; i++)
+            expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(repairError);
+          expect(original).toMatchObject({ reason: 'DATABASE' });
+          expect(accounts.findByAccount(account)._unsafeUnwrap()).toMatchObject({
+            reservation: { deliveryId: ctx.deliveryId },
+            rateLimitNotBefore: 0,
+            pauseKind: 'none',
+          });
+          await advance(3_600_000);
+          db.exec('DROP TRIGGER fail_retained_settlement');
+          expect(sender.retryStateWrites().isOk()).toBe(true);
+          const repaired = accounts.findByAccount(account)._unsafeUnwrap();
+          expect(repaired).toMatchObject({
+            reservation: null,
+            pauseKind: 'challenge',
+            rateLimitNotBefore: initialTime + 5_000_000,
+            recoveryNotBefore: kind === 'unknown' ? initialTime + 60_000 : 0,
+          });
+          if (saved)
+            expect(checkpoint(ctx)).toMatchObject({
+              phase: kind === 'complete' || kind === 'refused' ? 'ready' : 'terminal',
+              nextChunk: kind === 'complete' ? 1 : 0,
+              acceptedChunks: kind === 'complete' ? 1 : 0,
+              successCount: kind === 'refused' ? 0 : 1,
+              failureCount: kind === 'complete' ? 0 : 1,
+              createdAt: initialTime,
+              expiresAt: initialTime + SIGNAL_CHECKPOINT_LIFETIME_MS,
+            });
+          expect(leases.find(account, groupA)._unsafeUnwrap() !== null).toBe(
+            saved && (kind === 'complete' || kind === 'refused'),
+          );
+          expect(sender.persistenceHealth()).toEqual({
+            state: 'healthy',
+            stopped: true,
+            pendingWrites: 0,
+          });
+          for (let i = 0; i < 3; i++) {
+            expect(sender.retryStateWrites().isOk()).toBe(true);
+            expect((await sender.drain()).isOk()).toBe(true);
+          }
+          expect(accounts.findByAccount(account)._unsafeUnwrap()).toEqual(repaired);
+          sender.readinessChanged();
+          renew();
+          expect((await sender.sendPreparedChunk(groupB, 'never reopen', context())).isErr()).toBe(
+            true,
+          );
+          expect(calls).toHaveLength(2);
+          expect(sends()).toHaveLength(1);
+          expect(queue.findById(ctx.queueItemId)._unsafeUnwrap()).toMatchObject({ attempts: 0 });
+          expect(vi.getTimerCount()).toBe(0);
+        },
+      );
+    }
+
+    it.each(['reply', 'background'] as const)(
+      'retains accepted prefix and prepared %s cursor on refused/UNKNOWN repair',
+      async (purpose) => {
+        const ctx = save('a'.repeat(2000) + 'tail', groupA, purpose);
+        await sender.sendPreparedChunk(groupA, 'a'.repeat(2000), ctx);
+        await advance(1000);
+        nextSend = () => {
+          failSettlement();
+          return restrictedOutcome(purpose === 'reply' ? 'refused' : 'unknown');
+        };
+        const pending = sender.sendPreparedChunk(groupA, 'tail', ctx);
+        await advance(8000);
+        expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+          acceptedChunks: 1,
+          successCount: purpose === 'reply' ? 1 : 2,
+          failureCount: 1,
+        });
+        db.exec('DROP TRIGGER fail_retained_settlement');
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect((await sender.drain()).isOk()).toBe(true);
+        expect(checkpoint(ctx)).toMatchObject({
+          nextChunk: 1,
+          acceptedChunks: 1,
+          successCount: purpose === 'reply' ? 1 : 2,
+          failureCount: 1,
+          phase: purpose === 'reply' ? 'ready' : 'terminal',
+        });
+        expect(calls).toHaveLength(4);
+        expect(sends()).toHaveLength(2);
+      },
+    );
+
+    it('publishes ordinary poison safely outside transactions, tolerates throwing/reentrant local hooks, and never equates preflight failure with poison', async () => {
+      const health: ReturnType<SignalSendCoordinator['persistenceHealth']>[] = [];
+      const reentrant: boolean[] = [];
+      const transactionStates: boolean[] = [];
+      sender = observedSender((value) => {
+        health.push(value);
+        transactionStates.push(db.inTransaction);
+        reentrant.push(sender.retryStateWrites().isErr());
+        throw new Error('local hook cannot corrupt state');
+      });
+      const ctx = context();
+      vi.spyOn(accounts, 'reserveSend').mockReturnValueOnce(err(new SignalStateError('DATABASE')));
+      expect(
+        (await sender.sendPreparedChunk(target, 'preflight', ctx))._unsafeUnwrapErr().reason,
+      ).toBe('STATE_WRITE_FAILED');
+      expect(sender.persistenceHealth()).toEqual({
+        state: 'healthy',
+        stopped: false,
+        pendingWrites: 0,
+      });
+      expect(health).toEqual([]);
+      nextSend = () => {
+        failSettlement();
+        return restrictedOutcome('complete');
+      };
+      const pending = sender.sendPreparedChunk(target, 'accepted', save('accepted'));
+      await advance(8000);
+      expect((await pending).isErr()).toBe(true);
+      expect(health.at(-1)).toEqual({ state: 'blocked', stopped: true, pendingWrites: 1 });
+      expect(Object.isFrozen(health.at(-1))).toBe(true);
+      expect(transactionStates.every((value) => !value)).toBe(true);
+      expect(reentrant.every(Boolean)).toBe(true);
+      expect(JSON.stringify(health)).not.toMatch(
+        /aaaaaaaa|bbbbbbbb|accepted|secret|cause|reservation|delivery|receipt/,
+      );
+      db.exec('DROP TRIGGER fail_retained_settlement');
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(health.at(-1)).toEqual({ state: 'healthy', stopped: true, pendingWrites: 0 });
+      expect(transactionStates.every((value) => !value)).toBe(true);
+      expect(calls.filter((call) => call.request.method === 'send')).toHaveLength(1);
+    });
+
+    it.each(['reply', 'background', 'explicit', 'progress'] as const)(
+      'repairs %s pre-reservation metadata hints ONLY, with no send/recovery/TTL renewal',
+      async (purpose) => {
+        const saved = purpose === 'reply' || purpose === 'background';
+        const ctx = saved ? save('text', groupA, purpose) : context(purpose);
+        db.exec(`CREATE TRIGGER fail_metadata_challenge BEFORE UPDATE OF challenge ON signal_account_state
+        BEGIN SELECT RAISE(ABORT, 'private metadata failure'); END`);
+        nextMetadata = () =>
+          remote(-6, [resultEntry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 5000 })]);
+        const pending = sender.sendPreparedChunk(groupA, 'text', ctx);
+        await advance(8000);
+        expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+          reason: 'STATE_WRITE_FAILED',
+          outcome: 'NOT_SENT',
+          currentChunkAcceptance: 'unwritten',
+        });
+        expect(accounts.findByAccount(account)._unsafeUnwrap()).toMatchObject({
+          rateLimitNotBefore: 0,
+          pauseKind: 'none',
+          reservation: null,
+        });
+        expect((await sender.drain()).isErr()).toBe(true);
+        await advance(3_600_000);
+        db.exec('DROP TRIGGER fail_metadata_challenge');
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect((await sender.drain()).isOk()).toBe(true);
+        expect(accounts.findByAccount(account)._unsafeUnwrap()).toMatchObject({
+          rateLimitNotBefore: initialTime + 5_000_000,
+          pauseKind: 'challenge',
+          recoveryNotBefore: 0,
+          reservation: null,
+        });
+        if (saved)
+          expect(checkpoint(ctx)).toMatchObject({
+            phase: 'ready',
+            nextChunk: 0,
+            createdAt: initialTime,
+            expiresAt: initialTime + SIGNAL_CHECKPOINT_LIFETIME_MS,
+          });
+        else expect(leases.find(account, groupA)._unsafeUnwrap()).toBeNull();
+        expect(calls).toHaveLength(1);
+        expect(sends()).toHaveLength(0);
+      },
+    );
+
+    it.each(['reply', 'explicit', 'progress'] as const)(
+      'commits purged %s cleanup once during repair without releasing a new foreign lease or resurrecting history',
+      async (purpose) => {
+        const ctx = purpose === 'reply' ? save('a'.repeat(2001), groupA) : context(purpose);
+        nextSend = () => {
+          failSettlement();
+          return restrictedOutcome('unknown');
+        };
+        const pending = sender.send(groupA, { body: 'a'.repeat(2001), trustedDelivery: ctx });
+        await advance(8000);
+        expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+          currentChunkAcceptance: 'unknown',
+          successCount: 1,
+          failureCount: 1,
+        });
+        queue.purge(['pending'])._unsafeUnwrap();
+        const foreign = save('foreign', groupA);
+        const lease = leases.acquire(account, groupA, foreign, Date.now())._unsafeUnwrap();
+        const before = checkpoint(foreign);
+        db.exec('DROP TRIGGER fail_retained_settlement');
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        const state = accounts.findByAccount(account)._unsafeUnwrap();
+        expect(state).toMatchObject({
+          reservation: null,
+          recoveryNotBefore: initialTime + 60_000,
+          rateLimitNotBefore: initialTime + 5_000_000,
+          pauseKind: 'challenge',
+        });
+        for (let i = 0; i < 3; i++) {
+          expect(sender.retryStateWrites().isOk()).toBe(true);
+          expect((await sender.drain()).isOk()).toBe(true);
+        }
+        expect(accounts.findByAccount(account)._unsafeUnwrap()).toEqual(state);
+        expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(lease);
+        expect(checkpoint(foreign)).toEqual(before);
+        expect(queue.findById(ctx.queueItemId)._unsafeUnwrap()).toBeNull();
+        expect(db.prepare('SELECT count(*) AS total FROM messages').get()).toEqual({ total: 0 });
+        expect(calls).toHaveLength(2);
+      },
+    );
+
+    it.each(['reservation', 'lease', 'checkpoint'] as const)(
+      'fails closed on a newer %s authority during repair instead of clearing the old error unchecked',
+      async (authority) => {
+        const ctx = save('text', groupA);
+        nextSend = () => {
+          failSettlement();
+          return sendResult();
+        };
+        const pending = sender.sendPreparedChunk(groupA, 'text', ctx);
+        await advance(8000);
+        await pending;
+        db.exec('DROP TRIGGER fail_retained_settlement');
+        if (authority === 'reservation')
+          db.prepare(
+            'UPDATE signal_account_state SET reservation_started_at = reservation_started_at + 1',
+          ).run();
+        if (authority === 'lease')
+          db.prepare("UPDATE signal_destination_leases SET lease_id = 'new-generation'").run();
+        if (authority === 'checkpoint')
+          db.prepare(
+            "UPDATE queue_items SET payload = json_set(payload, '$.__talond_signal_delivery_v1.failureCount', 1) WHERE id = ?",
+          ).run(ctx.queueItemId);
+        const before = queue.findById(ctx.queueItemId)._unsafeUnwrap();
+        const state = accounts.findByAccount(account)._unsafeUnwrap();
+        const lease = leases.find(account, groupA)._unsafeUnwrap();
+        const error = sender.retryStateWrites()._unsafeUnwrapErr();
+        expect(error).toMatchObject({ reason: 'CONFLICT' });
+        const settle = vi.spyOn(queue, 'settleSignalChunk');
+        await advance(60_000);
+        expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+        expect((await sender.drain())._unsafeUnwrapErr()).toBe(error);
+        expect(settle).not.toHaveBeenCalled();
+        expect(queue.findById(ctx.queueItemId)._unsafeUnwrap()).toEqual(before);
+        expect(accounts.findByAccount(account)._unsafeUnwrap()).toEqual(state);
+        expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(lease);
+        expect(calls).toHaveLength(2);
+      },
+    );
+
+    it('does not renew detection or overwrite any newer independent restriction when the same full reservation remains', async () => {
+      const ctx = save('text');
+      nextSend = () => {
+        failSettlement();
+        return restrictedOutcome('unknown');
+      };
+      const pending = sender.sendPreparedChunk(target, 'text', ctx);
+      await advance(8000);
+      await pending;
+      let state = accounts.findByAccount(account)._unsafeUnwrap()!;
+      state = accounts
+        .recordPause(
+          account,
+          state.revision,
+          { kind: 'rate_limit', notBefore: initialTime + 9_000_000 },
+          Date.now(),
+        )
+        ._unsafeUnwrap();
+      state = accounts
+        .recordPause(account, state.revision, { kind: 'challenge' }, Date.now())
+        ._unsafeUnwrap();
+      state = accounts
+        .recordPause(account, state.revision, { kind: 'recovery' }, Date.now())
+        ._unsafeUnwrap();
+      const fences = {
+        rateLimitNotBefore: state.rateLimitNotBefore,
+        recoveryNotBefore: state.recoveryNotBefore,
+      };
+      db.exec('DROP TRIGGER fail_retained_settlement');
+      await advance(3_600_000);
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(accounts.findByAccount(account)._unsafeUnwrap()).toMatchObject({
+        ...fences,
+        pauseKind: 'challenge',
+        reservation: null,
+      });
+      expect(checkpoint(ctx)).toMatchObject({
+        phase: 'terminal',
+        terminalOutcome: 'UNKNOWN',
+        successCount: 1,
+      });
+      expect(calls).toHaveLength(2);
+    });
+
+    it.each(['explicit', 'progress'] as const)(
+      'retains ONLY final %s lease cleanup after accepted settlement, with typed error identity and bounded repair',
+      async (purpose) => {
+        const ctx = context(purpose);
+        db.exec(`CREATE TRIGGER fail_invocation_cleanup BEFORE DELETE ON signal_destination_leases
+        BEGIN SELECT RAISE(ABORT, 'private cleanup failure'); END`);
+        const release = vi.spyOn(leases, 'release');
+        const pending = sender.sendPreparedChunk(groupA, 'text', ctx);
+        await advance(8000);
+        expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+          reason: 'STATE_WRITE_FAILED',
+          currentChunkAcceptance: 'complete',
+          successCount: 1,
+        });
+        const error = (await sender.drain())._unsafeUnwrapErr();
+        expect(accounts.findByAccount(account)._unsafeUnwrap()?.reservation).toBeNull();
+        expect(release).toHaveBeenCalledTimes(6);
+        db.exec('DROP TRIGGER fail_invocation_cleanup');
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect(release).toHaveBeenCalledTimes(7);
+        expect((await sender.drain()).isOk()).toBe(true);
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect(release).toHaveBeenCalledTimes(7);
+        expect(error).toMatchObject({ reason: 'DATABASE' });
+        expect(leases.find(account, groupA)._unsafeUnwrap()).toBeNull();
+        expect(calls).toHaveLength(2);
+      },
+    );
+
+    it.each(['quiesce', 'deadline'] as const)(
+      'repairs indeterminate physical authority after %s without fabricating purge or restarting send work',
+      async (exit) => {
+        const ctx = save('text', groupA);
+        readiness = { ...readiness, state: 'reconnecting' };
+        const pending = sender.sendPreparedChunk(groupA, 'text', ctx);
+        const before = queue.findById(ctx.queueItemId)._unsafeUnwrap();
+        const read = vi
+          .spyOn(queue, 'findById')
+          .mockReturnValue(err(new SignalStateError('DATABASE')));
+        if (exit === 'quiesce') sender.quiesce();
+        else await advance(30_000);
+        expect((await pending)._unsafeUnwrapErr().reason).toBe('STATE_WRITE_FAILED');
+        const error = (await sender.drain())._unsafeUnwrapErr();
+        expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+        read.mockRestore();
+        await advance(250);
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect((await sender.drain()).isOk()).toBe(true);
+        expect(queue.findById(ctx.queueItemId)._unsafeUnwrap()).toEqual(before);
+        expect(calls).toEqual([]);
+      },
+    );
+
+    it.each([
+      { timeout: 1000, before: 700, remaining: 300 },
+      { timeout: 120_000, before: 0, remaining: 30_000 },
+    ])(
+      'serializes concurrent repair/drains after forced UNKNOWN under request deadline $timeout and30s drain cap, without accepting a late success',
+      async ({ timeout, before, remaining }) => {
+        readiness = { ...readiness, config: { ...config, requestTimeoutMs: timeout } };
+        const ctx = save('text');
+        const hold = deferred<SignalRpcResult>();
+        nextSend = () => hold.promise;
+        const pending = sender.sendPreparedChunk(target, 'text', ctx);
+        await flush();
+        await advance(before);
+        failSettlement();
+        const drains = [sender.drain(), sender.drain()];
+        expect(sender.retryStateWrites().isErr()).toBe(true);
+        await advance(remaining);
+        expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+          reason: 'STATE_WRITE_FAILED',
+          currentChunkAcceptance: 'unknown',
+        });
+        const failures = await Promise.all(drains);
+        expect(failures[0]._unsafeUnwrapErr()).toBe(failures[1]._unsafeUnwrapErr());
+        const settle = vi.spyOn(queue, 'settleSignalChunk');
+        db.exec('DROP TRIGGER fail_retained_settlement');
+        await advance(250);
+        const repairs = await Promise.all(
+          Array.from({ length: 10 }, async () => sender.retryStateWrites()),
+        );
+        expect(repairs.every((value) => value.isOk())).toBe(true);
+        expect(settle).toHaveBeenCalledTimes(1);
+        const state = accounts.findByAccount(account)._unsafeUnwrap();
+        expect(state).toMatchObject({
+          reservation: null,
+          recoveryNotBefore: initialTime + before + remaining + 60_000,
+        });
+        expect(checkpoint(ctx)).toMatchObject({ phase: 'terminal', terminalOutcome: 'UNKNOWN' });
+        hold.resolve(sendResult());
+        await advance(60_000);
+        expect(
+          (await Promise.all([sender.drain(), sender.drain()])).every((value) => value.isOk()),
+        ).toBe(true);
+        expect(accounts.findByAccount(account)._unsafeUnwrap()).toEqual(state);
+        expect(settle).toHaveBeenCalledTimes(1);
+        expect(calls).toHaveLength(2);
+      },
+    );
+
+    it('keeps all 64 nonactive retained finish jobs charged, repairs every job independently, and withholds Ok while any one remains', async () => {
+      const contexts = Array.from({ length: 65 }, () => save('small', groupA));
+      readiness = { ...readiness, config: { ...config, allowedGroups: [] } };
+      db.exec(`CREATE TRIGGER fail_terminal_writes BEFORE UPDATE OF payload ON queue_items
+        BEGIN SELECT RAISE(ABORT, 'private finish failure'); END`);
+      const pending = contexts
+        .slice(0, 64)
+        .map((ctx) => sender.sendPreparedChunk(groupA, 'small', ctx));
+      expect(
+        (await sender.sendPreparedChunk(groupA, 'small', contexts[64]))._unsafeUnwrapErr().reason,
+      ).toBe('RPC_CAPACITY');
+      await advance(8000);
+      expect((await Promise.all(pending)).every((value) => value.isErr())).toBe(true);
+      expect(sender.persistenceHealth()).toEqual({
+        state: 'blocked',
+        stopped: true,
+        pendingWrites: 64,
+      });
+      expect((await sender.drain()).isErr()).toBe(true);
+      db.exec('DROP TRIGGER fail_terminal_writes');
+      db.exec(`CREATE TRIGGER fail_one_terminal BEFORE UPDATE OF payload ON queue_items WHEN OLD.id = '${contexts[0].queueItemId}'
+        BEGIN SELECT RAISE(ABORT, 'one remains'); END`);
+      expect(sender.retryStateWrites().isErr()).toBe(true);
+      expect(sender.persistenceHealth()).toEqual({
+        state: 'blocked',
+        stopped: true,
+        pendingWrites: 1,
+      });
+      for (const ctx of contexts.slice(1, 64))
+        expect(checkpoint(ctx)).toMatchObject({
+          phase: 'terminal',
+          terminalReason: 'TARGET_REFUSED',
+        });
+      expect(checkpoint(contexts[0]).phase).toBe('ready');
+      const error = (await sender.drain())._unsafeUnwrapErr();
+      expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+      db.exec('DROP TRIGGER fail_one_terminal');
+      await advance(250);
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(checkpoint(contexts[0])).toMatchObject({
+        phase: 'terminal',
+        terminalReason: 'TARGET_REFUSED',
+      });
+      expect(checkpoint(contexts[64]).phase).toBe('ready');
+      expect(calls).toEqual([]);
+    });
+
+    it('retains one full-size active ownership allocation separately from the inclusive 1MiB waiting/finish quota', async () => {
+      const body = 'a'.repeat(1_048_576);
+      const activeCtx = save(body, groupA);
+      const hold = deferred<SignalRpcResult>();
+      nextSend = () => hold.promise;
+      const active = sender.send(groupA, { body, trustedDelivery: activeCtx });
+      await flush();
+      const waitingCtx = save(body, groupB);
+      const waiting = sender.send(groupB, { body, trustedDelivery: waitingCtx });
+      expect(
+        (await sender.sendPreparedChunk(groupB, 'x', save('x', groupB)))._unsafeUnwrapErr().reason,
+      ).toBe('RPC_CAPACITY');
+      failSettlement();
+      hold.resolve(sendResult());
+      await advance(8000);
+      expect((await active).isErr()).toBe(true);
+      expect((await waiting).isErr()).toBe(true);
+      expect(sender.persistenceHealth()).toEqual({
+        state: 'blocked',
+        stopped: true,
+        pendingWrites: 1,
+      });
+      db.exec('DROP TRIGGER fail_retained_settlement');
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(checkpoint(activeCtx)).toMatchObject({
+        phase: 'ready',
+        nextChunk: 1,
+        acceptedChunks: 1,
+        successCount: 1,
+      });
+      expect(checkpoint(waitingCtx)).toMatchObject({ phase: 'ready', nextChunk: 0 });
+      expect(calls).toHaveLength(2);
+    });
+
+    it('retains an inclusive full-size nonactive terminal-write body after bounded failure, not an uncharged extra finish queue', async () => {
+      const body = 'a'.repeat(1_048_576);
+      const ctx = save(body, groupA);
+      const other = save('x', groupB);
+      readiness = { ...readiness, config: { ...config, allowedGroups: [] } };
+      db.exec(`CREATE TRIGGER fail_retained_terminal BEFORE UPDATE OF payload ON queue_items
+        BEGIN SELECT RAISE(ABORT, 'private finish failure'); END`);
+      const pending = sender.send(groupA, { body, trustedDelivery: ctx });
+      await flush();
+      expect((await sender.sendPreparedChunk(groupB, 'x', other))._unsafeUnwrapErr().reason).toBe(
+        'RPC_CAPACITY',
+      );
+      await advance(8000);
+      expect((await pending).isErr()).toBe(true);
+      expect(sender.persistenceHealth().pendingWrites).toBe(1);
+      db.exec('DROP TRIGGER fail_retained_terminal');
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(checkpoint(ctx)).toMatchObject({
+        phase: 'terminal',
+        terminalReason: 'TARGET_REFUSED',
+      });
+      expect(checkpoint(other).phase).toBe('ready');
+      expect(calls).toEqual([]);
+    });
+  });
+
+  describe('TASK018 repair authority and aggregate handoff controls', () => {
+    function failClear(): void {
+      db.exec(`CREATE TRIGGER fail_retained_clear BEFORE UPDATE OF reservation_delivery_id ON signal_account_state
+        WHEN NEW.reservation_delivery_id IS NULL
+        BEGIN SELECT RAISE(ABORT, 'private failure'); END`);
+    }
+
+    it.each(['observed-hints', 'transport-unknown'] as const)(
+      'preserves the existing conservative updatedAt floor after a real later device-check revision (%s)',
+      async (kind) => {
+        const ctx = save('text');
+        nextSend = () => {
+          failClear();
+          return kind === 'observed-hints'
+            ? sendResult([
+                resultEntry('SUCCESS'),
+                resultEntry('NETWORK_FAILURE', {
+                  retryAfterSeconds: 5000,
+                  token: 'discard-secret',
+                }),
+              ])
+            : err(new SignalRpcTransportError('TIMEOUT', true));
+        };
+        const pending = sender.sendPreparedChunk(target, 'text', ctx);
+        await advance(8000);
+        await pending;
+        await advance(3_600_000);
+        const state = accounts.findByAccount(account)._unsafeUnwrap()!;
+        const later = accounts
+          .startDeviceCheck(account, state.revision, Date.now())
+          ._unsafeUnwrap();
+        db.exec('DROP TRIGGER fail_retained_clear');
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        const repaired = accounts.findByAccount(account)._unsafeUnwrap();
+        expect(repaired).toMatchObject({
+          reservation: null,
+          lastDeviceCheckStart: later.lastDeviceCheckStart,
+          recoveryNotBefore: later.updatedAt + 60_000,
+          rateLimitNotBefore: kind === 'observed-hints' ? initialTime + 5_000_000 : 0,
+          pauseKind: kind === 'observed-hints' ? 'challenge' : 'recovery',
+        });
+        expect((await sender.drain()).isOk()).toBe(true);
+        await advance(3_600_000);
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect(accounts.findByAccount(account)._unsafeUnwrap()).toEqual(repaired);
+        expect(calls).toHaveLength(2);
+      },
+    );
+
+    it('rate-bounds repeated failed repairs to 250ms exponential backoff capped at10s without timers or error identity loss between slots', async () => {
+      nextSend = () => {
+        failClear();
+        return sendResult();
+      };
+      const pending = sender.sendPreparedChunk(target, 'text', save('text'));
+      const clear = vi.spyOn(queue, 'settleSignalChunk');
+      await advance(8000);
+      await pending;
+      expect(clear).toHaveBeenCalledTimes(6);
+      let expected = 6;
+      for (const delay of [250, 500, 1000, 2000, 4000, 8000, 10_000, 10_000]) {
+        const error = sender.retryStateWrites()._unsafeUnwrapErr();
+        expect(clear).toHaveBeenCalledTimes(++expected);
+        for (let i = 0; i < 25; i++)
+          expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+        await advance(delay - 1);
+        expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+        expect(clear).toHaveBeenCalledTimes(expected);
+        await advance(1);
+      }
+      db.exec('DROP TRIGGER fail_retained_clear');
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(calls).toHaveLength(2);
+    });
+
+    it('retains exact non-DATABASE error identity forever without retrying stale settlement authority', async () => {
+      const error = new SignalStateError('CONFLICT');
+      const settle = vi.spyOn(queue, 'settleSignalChunk').mockReturnValue(err(error));
+      expect(
+        (await sender.sendPreparedChunk(target, 'text', save('text')))._unsafeUnwrapErr(),
+      ).toMatchObject({ currentChunkAcceptance: 'complete', successCount: 1 });
+      expect((await sender.drain())._unsafeUnwrapErr()).toBe(error);
+      settle.mockRestore();
+      const count = vi.spyOn(queue, 'settleSignalChunk');
+      await advance(60_000);
+      expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+      expect((await sender.drain())._unsafeUnwrapErr()).toBe(error);
+      expect(count).not.toHaveBeenCalled();
+      expect(sender.persistenceHealth()).toEqual({
+        state: 'blocked',
+        stopped: true,
+        pendingWrites: 1,
+      });
+      expect(calls).toHaveLength(2);
+    });
+
+    it('cannot clear a newer invocation lease generation when repairing failed final cleanup', async () => {
+      const ctx = context('progress');
+      db.exec(`CREATE TRIGGER fail_retained_release BEFORE DELETE ON signal_destination_leases
+        BEGIN SELECT RAISE(ABORT, 'private failure'); END`);
+      const pending = sender.sendPreparedChunk(groupA, 'text', ctx);
+      await advance(8000);
+      await pending;
+      db.exec('DROP TRIGGER fail_retained_release');
+      db.prepare("UPDATE signal_destination_leases SET lease_id = 'new-owner-generation'").run();
+      const lease = leases.find(account, groupA)._unsafeUnwrap();
+      const error = sender.retryStateWrites()._unsafeUnwrapErr();
+      expect(error).toMatchObject({ reason: 'CONFLICT' });
+      await advance(60_000);
+      expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+      expect((await sender.drain())._unsafeUnwrapErr()).toBe(error);
+      expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(lease);
+      expect(accounts.findByAccount(account)._unsafeUnwrap()?.reservation).toBeNull();
+      expect(calls).toHaveLength(2);
+    });
+
+    it('does not double-advance or pretend handoff after a synthetic indeterminate outer-commit response', async () => {
+      const ctx = save('text');
+      let afterSubmission = false;
+      const original = accounts.transaction.bind(accounts);
+      vi.spyOn(accounts, 'transaction').mockImplementation((fn) => {
+        const value = original(fn);
+        if (
+          afterSubmission &&
+          !db.inTransaction &&
+          accounts.findByAccount(account)._unsafeUnwrap()?.reservation === null
+        ) {
+          afterSubmission = false;
+          throw new Error('simulate lost local commit response');
+        }
+        return value;
+      });
+      nextSend = () => {
+        afterSubmission = true;
+        return sendResult();
+      };
+      const pending = sender.sendPreparedChunk(target, 'text', ctx);
+      await advance(250);
+      expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+        reason: 'STATE_WRITE_FAILED',
+        currentChunkAcceptance: 'complete',
+        successCount: 1,
+      });
+      const error = (await sender.drain())._unsafeUnwrapErr();
+      expect(error).toMatchObject({ reason: 'CONFLICT' });
+      expect(checkpoint(ctx)).toMatchObject({
+        phase: 'delivered',
+        nextChunk: 1,
+        acceptedChunks: 1,
+        successCount: 1,
+      });
+      expect(accounts.findByAccount(account)._unsafeUnwrap()?.reservation).toBeNull();
+      await advance(60_000);
+      expect(sender.retryStateWrites()._unsafeUnwrapErr()).toBe(error);
+      expect((await sender.drain())._unsafeUnwrapErr()).toBe(error);
+      expect(checkpoint(ctx).successCount).toBe(1);
+      expect(calls).toHaveLength(2);
+    });
+
+    it('requires both the one active settlement AND independent nonactive finish jobs before any successful handoff', async () => {
+      const hold = deferred<SignalRpcResult>();
+      nextSend = () => hold.promise;
+      const activeCtx = save('active', groupA);
+      const active = sender.sendPreparedChunk(groupA, 'active', activeCtx);
+      await flush();
+      const a = save('a', groupB);
+      const b = save('b', groupB);
+      const first = sender.sendPreparedChunk(groupB, 'a', a);
+      const second = sender.sendPreparedChunk(groupB, 'b', b);
+      readiness = { ...readiness, config: { ...config, allowedGroups: ['QQ=='] } };
+      db.exec(`CREATE TRIGGER fail_finish_jobs BEFORE UPDATE OF payload ON queue_items WHEN OLD.id != '${activeCtx.queueItemId}'
+        BEGIN SELECT RAISE(ABORT, 'private failure'); END`);
+      sender.readinessChanged();
+      failClear();
+      hold.resolve(sendResult());
+      await advance(8000);
+      expect((await Promise.all([active, first, second])).every((result) => result.isErr())).toBe(
+        true,
+      );
+      expect(sender.persistenceHealth().pendingWrites).toBe(3);
+      expect((await sender.drain()).isErr()).toBe(true);
+      db.exec('DROP TRIGGER fail_retained_clear');
+      expect(sender.retryStateWrites().isErr()).toBe(true);
+      expect(checkpoint(activeCtx)).toMatchObject({
+        phase: 'delivered',
+        acceptedChunks: 1,
+        successCount: 1,
+      });
+      expect(accounts.findByAccount(account)._unsafeUnwrap()?.reservation).toBeNull();
+      expect(sender.persistenceHealth()).toEqual({
+        state: 'blocked',
+        stopped: true,
+        pendingWrites: 2,
+      });
+      expect((await sender.drain()).isErr()).toBe(true);
+      db.exec('DROP TRIGGER fail_finish_jobs');
+      await advance(250);
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect(
+        (await Promise.all([sender.drain(), sender.drain()])).every((value) => value.isOk()),
+      ).toBe(true);
+      for (const ctx of [a, b])
+        expect(checkpoint(ctx)).toMatchObject({
+          phase: 'terminal',
+          terminalReason: 'TARGET_REFUSED',
+        });
+      expect(checkpoint(activeCtx).successCount).toBe(1);
+      expect(calls).toHaveLength(2);
+    });
+
+    it('allows a real queue-recovery/new-consumer handoff only after Result repair and final drain, without substituting startup UNKNOWN', async () => {
+      const ctx = save('text');
+      nextSend = () => {
+        failClear();
+        return sendResult();
+      };
+      const pending = sender.sendPreparedChunk(target, 'text', ctx);
+      await advance(8000);
+      await pending;
+      expect((await sender.drain()).isErr()).toBe(true);
+      const before = checkpoint(ctx);
+      expect(before.phase).toBe('in_flight');
+      db.exec('DROP TRIGGER fail_retained_clear');
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      const settled = checkpoint(ctx);
+      expect(settled).toMatchObject({ phase: 'delivered', acceptedChunks: 1, successCount: 1 });
+      expect(queue.recoverSignalQueue(Date.now())._unsafeUnwrap()).toMatchObject({
+        reservationsClassified: 0,
+        delivered: 1,
+      });
+      expect(checkpoint(ctx)).toEqual(settled);
+      expect(accounts.findByAccount(account)._unsafeUnwrap()).toMatchObject({
+        reservation: null,
+        recoveryNotBefore: 0,
+      });
+      const old = sender;
+      sender = reconstruct();
+      expect(sender.persistenceHealth()).toEqual({
+        state: 'healthy',
+        stopped: false,
+        pendingWrites: 0,
+      });
+      expect((await old.sendPreparedChunk(groupB, 'old cannot reopen', context())).isErr()).toBe(
+        true,
+      );
+      expect(calls).toHaveLength(2); // Construction/recovery/repair/drain used NO RPC.
+      nextSend = () => sendResult();
+      expect(
+        (await sender.sendPreparedChunk(groupB, 'distinct new command', context())).isOk(),
+      ).toBe(true);
+      expect(sends()).toHaveLength(2); // Only this separate new consumer request adds a send.
+      expect(checkpoint(ctx)).toEqual(settled);
+    });
+  });
+
+  describe('TASK018 review R1: publication cannot outrun finalizer registration', () => {
+    type RepairResult = ReturnType<SignalSendCoordinator['retryStateWrites']>;
+    type DrainResult = Awaited<ReturnType<SignalSendCoordinator['drain']>>;
+
+    function publishingSender(
+      onChange: (health: ReturnType<SignalSendCoordinator['persistenceHealth']>) => void,
+    ): SignalSendCoordinator {
+      return new SignalSendCoordinator({
+        accounts,
+        leases,
+        queue,
+        readiness: () => readiness,
+        monotonicNow: () => performance.now(),
+        onPersistenceChange: onChange,
+        rpc: {
+          request: (request) => {
+            calls.push({
+              request,
+              wire: encodeSignalRpcRequest(request, 'finalizer')._unsafeUnwrap().toString('utf8'),
+              at: Date.now(),
+              reservation: accounts.findByAccount(account)._unsafeUnwrap()?.reservation,
+              checkpoint: undefined,
+            });
+            return Promise.resolve(
+              request.method === 'send' ? nextSend(request) : nextMetadata(request),
+            );
+          },
+        },
+      });
+    }
+    function failInvocationRelease(): void {
+      db.exec(`CREATE TRIGGER fail_finalizer_release BEFORE DELETE ON signal_destination_leases
+        BEGIN SELECT RAISE(ABORT, 'private invocation cleanup'); END`);
+    }
+
+    for (const purpose of ['explicit', 'progress'] as const) {
+      it.each(['cancel', 'quiesce'] as const)(
+        `tracks ${purpose} accepted-prefix finalization before a synchronous %s poison hook crosses the repair slot`,
+        async (exit) => {
+          let entered = false;
+          let repair: RepairResult | undefined;
+          let callbackDrain: Promise<DrainResult> | undefined;
+          let drainResult: DrainResult | undefined;
+          const callbackTransactions: boolean[] = [];
+          sender = publishingSender((health) => {
+            callbackTransactions.push(db.inTransaction);
+            if (health.state !== 'blocked' || entered) return;
+            entered = true;
+            vi.advanceTimersByTime(250);
+            read.mockRestore();
+            repair = sender.retryStateWrites();
+            callbackDrain = sender.drain();
+            void callbackDrain.then((result) => {
+              drainResult = result;
+            });
+          });
+          const ctx = context(purpose);
+          const pending = sender.send(groupA, {
+            body: 'a'.repeat(2000) + 'tail',
+            trustedDelivery: ctx,
+          });
+          await flush();
+          expect(sends()).toHaveLength(1);
+          const lease = leases.find(account, groupA)._unsafeUnwrap();
+          expect(lease?.deliveryId).toBe(ctx.deliveryId);
+          failInvocationRelease();
+          const read = vi
+            .spyOn(queue, 'findById')
+            .mockReturnValue(err(new SignalStateError('DATABASE')));
+          if (exit === 'cancel') expect(sender.cancelWaiter(ctx)).toBe(true);
+          else sender.quiesce();
+          await flush();
+          // Assertions stay outside the synchronous publication callback production catches.
+          expect(entered).toBe(true);
+          expect(repair?.isErr()).toBe(true);
+          expect(repair?._unsafeUnwrapErr()).toMatchObject({ reason: 'DATABASE' });
+          expect(drainResult?.isOk()).not.toBe(true);
+          expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(lease);
+          expect(callbackTransactions.every((value) => !value)).toBe(true);
+          await advance(8000);
+          expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+            reason: 'STATE_WRITE_FAILED',
+            acceptedChunks: 1,
+            successCount: 1,
+            failureCount: 0,
+            currentChunkAcceptance: 'unwritten',
+            outcome: 'PARTIAL',
+          });
+          expect(callbackDrain).toBeDefined();
+          expect((await callbackDrain)?._unsafeUnwrapErr()).toBe(repair?._unsafeUnwrapErr());
+          expect(sender.persistenceHealth()).toEqual({
+            state: 'blocked',
+            stopped: true,
+            pendingWrites: 2,
+          });
+          // Presence is repaired, but the independently failing REAL lease DELETE still gates handoff.
+          const releaseFailure = sender.retryStateWrites()._unsafeUnwrapErr();
+          expect(releaseFailure).toMatchObject({ reason: 'DATABASE' });
+          expect(sender.persistenceHealth().pendingWrites).toBe(1);
+          expect((await sender.drain())._unsafeUnwrapErr()).toBe(releaseFailure);
+          expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(lease);
+          db.exec('DROP TRIGGER fail_finalizer_release');
+          await advance(250);
+          expect(sender.retryStateWrites().isOk()).toBe(true);
+          for (let i = 0; i < 3; i++) {
+            expect((await sender.drain()).isOk()).toBe(true);
+            expect(sender.retryStateWrites().isOk()).toBe(true);
+          }
+          expect(leases.find(account, groupA)._unsafeUnwrap()).toBeNull();
+          expect(accounts.findByAccount(account)._unsafeUnwrap()).toMatchObject({
+            reservation: null,
+            recoveryNotBefore: 0,
+          });
+          sender.readinessChanged();
+          expect((await sender.sendPreparedChunk(groupB, 'cannot reopen', context())).isErr()).toBe(
+            true,
+          );
+          expect(calls).toHaveLength(2);
+          expect(
+            sends().map((call) => call.request.method === 'send' && call.request.params.message),
+          ).toEqual(['a'.repeat(2000)]);
+          expect(vi.getTimerCount()).toBe(0);
+        },
+      );
+    }
+
+    it.each(['quiesce-batch', 'poison-spawns-sibling'] as const)(
+      'drains every accepted-prefix finalizer under %s before publishing a successful handoff',
+      async (exit) => {
+        let entered = false;
+        let repair: RepairResult | undefined;
+        let callbackDrain: Promise<DrainResult> | undefined;
+        let drainResult: DrainResult | undefined;
+        sender = publishingSender((health) => {
+          if (health.state !== 'blocked' || entered) return;
+          entered = true;
+          vi.advanceTimersByTime(250);
+          read.mockRestore();
+          repair = sender.retryStateWrites();
+          callbackDrain = sender.drain();
+          void callbackDrain.then((result) => {
+            drainResult = result;
+          });
+        });
+        const a = context('explicit');
+        const b = context('progress');
+        const body = 'a'.repeat(2000) + 'tail';
+        const first = sender.send(groupA, { body, trustedDelivery: a });
+        const second = sender.send(groupB, { body, trustedDelivery: b });
+        await advance(1000);
+        expect(sends()).toHaveLength(2);
+        const leaseA = leases.find(account, groupA)._unsafeUnwrap();
+        const leaseB = leases.find(account, groupB)._unsafeUnwrap();
+        expect(leaseA?.deliveryId).toBe(a.deliveryId);
+        expect(leaseB?.deliveryId).toBe(b.deliveryId);
+        failInvocationRelease();
+        const originalRead = queue.findById.bind(queue);
+        const read = vi
+          .spyOn(queue, 'findById')
+          .mockImplementation((id) =>
+            id === a.queueItemId ? err(new SignalStateError('DATABASE')) : originalRead(id),
+          );
+        if (exit === 'quiesce-batch') sender.quiesce();
+        else expect(sender.cancelWaiter(a)).toBe(true); // Poison must track B's causally spawned finalizer too.
+        await flush();
+        expect(entered).toBe(true);
+        expect(repair?.isErr()).toBe(true);
+        expect(drainResult).toBeUndefined(); // B's independently failing actual cleanup is still executing.
+        expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(leaseA);
+        expect(leases.find(account, groupB)._unsafeUnwrap()).toEqual(leaseB);
+        await advance(8000);
+        for (const result of await Promise.all([first, second]))
+          expect(result._unsafeUnwrapErr()).toMatchObject({
+            acceptedChunks: 1,
+            successCount: 1,
+            currentChunkAcceptance: 'unwritten',
+            outcome: 'PARTIAL',
+          });
+        expect(callbackDrain).toBeDefined();
+        expect((await callbackDrain)?.isErr()).toBe(true);
+        expect(sender.persistenceHealth().pendingWrites).toBe(3);
+        expect(sender.retryStateWrites().isErr()).toBe(true);
+        expect(sender.persistenceHealth().pendingWrites).toBe(2);
+        expect((await sender.drain()).isErr()).toBe(true);
+        db.exec('DROP TRIGGER fail_finalizer_release');
+        await advance(250);
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect(
+          (await Promise.all([sender.drain(), sender.drain()])).every((result) => result.isOk()),
+        ).toBe(true);
+        expect(leases.find(account, groupA)._unsafeUnwrap()).toBeNull();
+        expect(leases.find(account, groupB)._unsafeUnwrap()).toBeNull();
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect(calls).toHaveLength(4);
+        expect(
+          sends().map((call) => call.request.method === 'send' && call.request.params.message),
+        ).toEqual(['a'.repeat(2000), 'a'.repeat(2000)]);
+        expect(vi.getTimerCount()).toBe(0);
+      },
+    );
+
+    it('keeps the existing active guard through reentrant quiesce publication and actual final lease-write backoff', async () => {
+      let entered = false;
+      let repair: RepairResult | undefined;
+      let callbackDrain: Promise<DrainResult> | undefined;
+      let drainResult: DrainResult | undefined;
+      sender = publishingSender((health) => {
+        if (!health.stopped || entered) return;
+        entered = true;
+        vi.advanceTimersByTime(250);
+        repair = sender.retryStateWrites();
+        callbackDrain = sender.drain();
+        void callbackDrain.then((result) => {
+          drainResult = result;
+        });
+      });
+      const hold = deferred<SignalRpcResult>();
+      nextSend = () => hold.promise;
+      const ctx = context('progress');
+      const pending = sender.sendPreparedChunk(groupA, 'active', ctx);
+      await flush();
+      const lease = leases.find(account, groupA)._unsafeUnwrap();
+      failInvocationRelease();
+      sender.quiesce();
+      await flush();
+      expect(entered).toBe(true);
+      expect(repair?._unsafeUnwrapErr()).toMatchObject({ reason: 'BUSY' });
+      expect(drainResult).toBeUndefined();
+      expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(lease);
+      hold.resolve(sendResult());
+      await flush();
+      expect(drainResult).toBeUndefined(); // Active classification finished; actual invocation cleanup has not.
+      await advance(8000);
+      expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+        reason: 'STATE_WRITE_FAILED',
+        currentChunkAcceptance: 'complete',
+        successCount: 1,
+      });
+      expect(callbackDrain).toBeDefined();
+      expect((await callbackDrain)?._unsafeUnwrapErr()).toMatchObject({ reason: 'DATABASE' });
+      expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(lease);
+      db.exec('DROP TRIGGER fail_finalizer_release');
+      await advance(250);
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect((await sender.drain()).isOk()).toBe(true);
+      expect(sender.retryStateWrites().isOk()).toBe(true);
+      expect(leases.find(account, groupA)._unsafeUnwrap()).toBeNull();
+      expect(accounts.findByAccount(account)._unsafeUnwrap()?.reservation).toBeNull();
+      expect(calls).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it.each(['explicit', 'progress'] as const)(
+      'preserves a new foreign lease after synchronous poison-hook purge during tracked %s prefix finalization',
+      async (purpose) => {
+        let entered = false;
+        let repair: RepairResult | undefined;
+        let callbackDrain: Promise<DrainResult> | undefined;
+        let purged: ReturnType<QueueRepository['purge']> | undefined;
+        let foreign: TrustedDeliveryContext | undefined;
+        let foreignLease: ReturnType<SignalDestinationLeaseRepository['acquire']> | undefined;
+        sender = publishingSender((health) => {
+          if (health.state !== 'blocked' || entered) return;
+          entered = true;
+          vi.advanceTimersByTime(250);
+          read.mockRestore();
+          purged = queue.purge(['pending']);
+          foreign = save('foreign', groupA);
+          foreignLease = leases.acquire(account, groupA, foreign, Date.now());
+          repair = sender.retryStateWrites();
+          callbackDrain = sender.drain();
+        });
+        const ctx = context(purpose);
+        const pending = sender.send(groupA, {
+          body: 'a'.repeat(2000) + 'tail',
+          trustedDelivery: ctx,
+        });
+        await flush();
+        expect(sends()).toHaveLength(1);
+        const oldLease = leases.find(account, groupA)._unsafeUnwrap();
+        const read = vi
+          .spyOn(queue, 'findById')
+          .mockReturnValue(err(new SignalStateError('DATABASE')));
+        expect(sender.cancelWaiter(ctx)).toBe(true);
+        await flush();
+        expect(entered).toBe(true);
+        expect(repair?.isErr()).toBe(true);
+        expect(purged?._unsafeUnwrap()).toBe(1);
+        expect(foreign).toBeDefined();
+        expect(foreignLease?._unsafeUnwrap().leaseId).not.toBe(oldLease?.leaseId);
+        expect((await pending)._unsafeUnwrapErr()).toMatchObject({
+          reason: 'STATE_WRITE_FAILED',
+          acceptedChunks: 1,
+          successCount: 1,
+          currentChunkAcceptance: 'unwritten',
+        });
+        expect((await callbackDrain)?.isErr()).toBe(true);
+        const release = vi.spyOn(leases, 'release');
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect((await sender.drain()).isOk()).toBe(true);
+        expect(sender.retryStateWrites().isOk()).toBe(true);
+        expect(release).not.toHaveBeenCalled();
+        expect(leases.find(account, groupA)._unsafeUnwrap()).toEqual(foreignLease?._unsafeUnwrap());
+        expect(queue.findById(ctx.queueItemId)._unsafeUnwrap()).toBeNull();
+        if (foreign !== undefined)
+          expect(checkpoint(foreign)).toMatchObject({
+            phase: 'ready',
+            nextChunk: 0,
+            successCount: 0,
+          });
+        expect(db.prepare('SELECT count(*) AS total FROM messages').get()).toEqual({ total: 0 });
+        expect(calls).toHaveLength(2);
+      },
+    );
+  });
 });
