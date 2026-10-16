@@ -44,6 +44,13 @@ export interface ImageIngestionRow {
   status: ImageIngestionStatus;
   /** Traceability only; the referenced queue item may already have been purged. */
   queue_item_id: string | null;
+  /**
+   * The admitted route: persona selected at Admission, persisted in the same
+   * transaction as the pending row. Completion (fresh, redelivery, or
+   * recovery) enqueues under this route — never under a re-resolved current
+   * binding, which could reroute or strand pending work.
+   */
+  persona_id: string | null;
   admitted_at: number;
   completed_at: number | null;
 }
@@ -158,8 +165,8 @@ export class ImageIngestionRepository extends BaseRepository {
     `);
 
     this.insertIngestionStmt = db.prepare(`
-      INSERT INTO image_ingestions (id, message_id, thread_id, status, queue_item_id, admitted_at, completed_at)
-      VALUES (@id, @message_id, @thread_id, 'pending', NULL, @admitted_at, NULL)
+      INSERT INTO image_ingestions (id, message_id, thread_id, status, queue_item_id, persona_id, admitted_at, completed_at)
+      VALUES (@id, @message_id, @thread_id, 'pending', NULL, @persona_id, @admitted_at, NULL)
     `);
 
     // Completion is written once. The `status = 'pending'` guard means a concurrent
@@ -257,10 +264,14 @@ export class ImageIngestionRepository extends BaseRepository {
    * The write is validated against the owning Message first: the Message must exist,
    * be inbound, and belong to the supplied thread. A cross-owner admission is
    * rejected rather than trusted, and nothing is written.
+   *
+   * `personaId` is the admitted route and is stored with the pending row so
+   * completion and recovery never have to re-resolve (or guess) it later.
    */
   createPending(input: {
     messageId: string;
     threadId: string;
+    personaId: string;
   }): Result<CreateIngestionResult, DbError> {
     const owner = this.readMessageOwner(input.messageId);
     if (owner.isErr()) {
@@ -286,6 +297,7 @@ export class ImageIngestionRepository extends BaseRepository {
         thread_id: input.threadId,
         status: 'pending',
         queue_item_id: null,
+        persona_id: input.personaId,
         admitted_at: this.now(),
         completed_at: null,
       };
