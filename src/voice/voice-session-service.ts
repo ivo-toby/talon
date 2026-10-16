@@ -2105,6 +2105,16 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const outputId = result.outputId;
     const isSafeFailure = result.kind === 'error' || result.kind === 'unknown';
     const content = this.backendResultContent(result);
+    const isTextlessRunningProgress =
+      result.kind === 'progress' &&
+      result.execution === 'running' &&
+      content.trim().length === 0 &&
+      result.output.delivery === 'not_requested';
+    if (isTextlessRunningProgress) {
+      if (stale) runtime.staleDelegationIds.add(delegation.value.id);
+      this.publishDelegation(delegation.value.sessionId, result.delegationId);
+      return;
+    }
     const command = isSafeFailure
       ? { kind: 'instruction' as const, delegationId: delegation.value.providerDelegationId, content, outputId }
       : { kind: 'commentary' as const, delegationId: delegation.value.providerDelegationId, content, outputId };

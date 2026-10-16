@@ -1555,6 +1555,93 @@ describe('browser voice lifecycle composition', () => {
     await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
   });
 
+  it('keeps textless execution progress undispatched until a later final result', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-textless-progress',
+        sequence: 1,
+        proposal: { providerDelegationId: 'provider-textless-progress', offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    const admitted = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const delegationId = admitted?.delegations[0]?.id;
+    expect(delegationId).toBeDefined();
+
+    const progress = harness.sink.executionStarted(delegationId!, 40);
+    expect(progress.isOk()).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const afterProgress = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(afterProgress?.outputs.find((output) => output.id === progress._unsafeUnwrap().outputId)).toMatchObject({
+      kind: 'progress',
+      lifecycle: { execution: 'running', delivery: 'not_requested' },
+    });
+    expect(harness.provider.sideband.commands).toEqual([]);
+    expect(harness.messages.findLatestByThread(afterProgress!.session.threadId, 10)._unsafeUnwrap()).toHaveLength(0);
+
+    const final = harness.sink.final(delegationId!, 'The final result is ready.', 50);
+    expect(final.isOk()).toBe(true);
+    await waitFor(() => harness.provider.sideband.commands.includes('The final result is ready.'));
+
+    const completed = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(completed?.delegations[0]).toMatchObject({ execution: 'succeeded' });
+    expect(completed?.outputs.find((output) => output.id === progress._unsafeUnwrap().outputId)?.lifecycle).toMatchObject({
+      execution: 'running',
+      delivery: 'not_requested',
+    });
+    expect(completed?.outputs.find((output) => output.id === final._unsafeUnwrap().outputId)?.lifecycle).toMatchObject({
+      execution: 'succeeded',
+      delivery: 'sent',
+    });
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+  });
+
+  it('marks a textless terminal result as an undeliverable failure', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const sessionId = created._unsafeUnwrap().session.id;
+    await harness.service.receiveProviderEvent({
+      sessionId,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-empty-final',
+        sequence: 1,
+        proposal: { providerDelegationId: 'provider-empty-final', offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    const admitted = harness.store.readSession(sessionId)._unsafeUnwrap();
+    const delegationId = admitted?.delegations[0]?.id;
+    expect(delegationId).toBeDefined();
+
+    const final = harness.sink.final(delegationId!, '', 40);
+    expect(final.isOk()).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const projection = harness.store.readSession(sessionId)._unsafeUnwrap();
+    expect(projection?.delegations[0]).toMatchObject({ execution: 'succeeded' });
+    expect(projection?.outputs.find((output) => output.id === final._unsafeUnwrap().outputId)).toMatchObject({
+      kind: 'final',
+      lifecycle: { execution: 'succeeded', delivery: 'failed' },
+    });
+    expect(harness.provider.sideband.commands).toEqual([]);
+    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
+  });
+
   it('retains final cumulative usage received while closing the provider session', async () => {
     const harness = createHarness();
     db = harness.db;

@@ -41,6 +41,90 @@ describe('safe provider error diagnostics', () => {
     });
   });
 
+  it.each([
+    ['UND_ERR_HEADERS_TIMEOUT', 'timeout'],
+    ['UND_ERR_BODY_TIMEOUT', 'timeout'],
+    ['ECONNRESET', 'network'],
+  ] as const)(
+    'prefers a nested transport code while retaining the outer HTTP status (%s)',
+    (code, category) => {
+      const error = JSON.parse(
+        JSON.stringify({
+          name: 'AI_APICallError',
+          statusCode: 502,
+          cause: { code },
+        }),
+      ) as unknown;
+      expect(extractProviderErrorDiagnostic(error, 'wrapper-execution')).toEqual({
+        category,
+        code,
+        httpStatus: 502,
+        stage: 'wrapper-execution',
+      });
+    },
+  );
+
+  it('preserves the outer HTTP status when the nested diagnostic is already serialized', () => {
+    const error = JSON.parse(
+      JSON.stringify({
+        name: 'AI_APICallError',
+        statusCode: 502,
+        cause: {
+          diagnostic: { category: 'timeout', code: 'UND_ERR_BODY_TIMEOUT' },
+        },
+      }),
+    ) as unknown;
+    expect(extractProviderErrorDiagnostic(error, 'wrapper-stream')).toEqual({
+      category: 'timeout',
+      code: 'UND_ERR_BODY_TIMEOUT',
+      httpStatus: 502,
+      stage: 'wrapper-stream',
+    });
+  });
+
+  it('keeps outer auth classification when a nested transport code is present', () => {
+    expect(
+      extractProviderErrorDiagnostic(
+        { name: 'AI_APICallError', statusCode: 401, cause: { code: 'ECONNRESET' } },
+        'wrapper-stream',
+      ),
+    ).toEqual({
+      category: 'auth',
+      code: 'ECONNRESET',
+      httpStatus: 401,
+      stage: 'wrapper-stream',
+    });
+  });
+
+  it('retains the deepest HTTP status through repeated generic API wrappers', () => {
+    expect(
+      extractProviderErrorDiagnostic(
+        { name: 'AI_APICallError', cause: { name: 'AI_APICallError', statusCode: 429 } },
+        'wrapper-stream',
+      ),
+    ).toEqual({
+      category: 'rate-limit',
+      code: 'AI_APICallError',
+      httpStatus: 429,
+      stage: 'wrapper-stream',
+    });
+  });
+
+  it('keeps outer auth classification for a nested diagnostic without a code', () => {
+    const error = JSON.parse(
+      JSON.stringify({
+        name: 'AI_APICallError',
+        statusCode: 401,
+        cause: { diagnostic: { category: 'timeout', stage: 'provider-process' } },
+      }),
+    ) as unknown;
+    expect(extractProviderErrorDiagnostic(error, 'wrapper-stream')).toEqual({
+      category: 'auth',
+      httpStatus: 401,
+      stage: 'provider-process',
+    });
+  });
+
   it('preserves only allowlisted serialized metadata across repeated wrapping', () => {
     const diagnostic = extractProviderErrorDiagnostic(
       JSON.parse(
@@ -109,6 +193,26 @@ describe('safe provider error diagnostics', () => {
     expect(extractProviderErrorDiagnostic(error, 'wrapper-execution')).toEqual({
       category: 'unknown',
       stage: 'wrapper-execution',
+    });
+  });
+
+  it('does not follow malicious nested accessors or cycles past the bounded outer evidence', () => {
+    const getter = () => {
+      throw new Error('SECRET_SENTINEL');
+    };
+    const cause = Object.defineProperty({}, 'code', { get: getter });
+    const error: { name: string; statusCode: number; cause: object; error?: object } = {
+      name: 'AI_APICallError',
+      statusCode: 503,
+      cause,
+    };
+    error.error = error;
+
+    expect(extractProviderErrorDiagnostic(error, 'wrapper-stream')).toEqual({
+      category: 'provider',
+      code: 'AI_APICallError',
+      httpStatus: 503,
+      stage: 'wrapper-stream',
     });
   });
 

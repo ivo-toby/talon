@@ -2431,7 +2431,9 @@ one durable owner/persona thread across calls. Prompt history is bounded by
 `DEFAULT_VOICE_HISTORY_ROWS` and `DEFAULT_VOICE_HISTORY_CHARACTERS`; durable
 voice rows have no automatic TTL cleanup, and old calls or messages from other
 channels are not imported. Talon stores bounded prompt fragments, output,
-usage, and lifecycle state in local SQLite, not raw audio. Cloud provider
+usage, and lifecycle state in local SQLite, not raw audio. Textless running
+progress is retained as lifecycle state without creating an empty delivery;
+terminal empty results remain delivery failures. Cloud provider
 retention is controlled by the provider account. See the [browser voice guide](docs/guides/voice.mdx)
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.

@@ -14,6 +14,8 @@ const codes = [
   'ENOTFOUND',
   'EAI_AGAIN',
   'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
   'TimeoutError',
   'AI_APICallError',
   'AI_ToolExecutionError',
@@ -52,6 +54,51 @@ function httpStatus(value: unknown): number | undefined {
     : undefined;
 }
 
+function hasPriorityStatus(status: number | undefined): boolean {
+  return status === 401 || status === 403 || status === 408 || status === 429 || status === 504;
+}
+
+function classify(code: (typeof codes)[number] | undefined, status: number | undefined): ProviderErrorDiagnostic['category'] {
+  return status === 401 || status === 403
+    ? 'auth'
+    : status === 429
+      ? 'rate-limit'
+      : status === 408 ||
+          status === 504 ||
+          code === 'ETIMEDOUT' ||
+          code === 'UND_ERR_CONNECT_TIMEOUT' ||
+          code === 'UND_ERR_HEADERS_TIMEOUT' ||
+          code === 'UND_ERR_BODY_TIMEOUT' ||
+          code === 'TimeoutError'
+        ? 'timeout'
+        : code === 'AI_ToolExecutionError'
+          ? 'tool'
+          : code && ['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)
+            ? 'network'
+            : 'provider';
+}
+
+function nestedError(value: object): Record<string, unknown> | undefined {
+  return (
+    record(dataProperty(value, 'cause')) ??
+    record(dataProperty(value, 'error')) ??
+    record(dataProperty(value, 'lastError'))
+  );
+}
+
+function mergePreservedDiagnostic(
+  diagnostic: ProviderErrorDiagnostic,
+  status: number | undefined,
+  stage: ProviderErrorDiagnostic['stage'] | undefined,
+): ProviderErrorDiagnostic {
+  return {
+    ...diagnostic,
+    ...(hasPriorityStatus(status) ? { category: classify(diagnostic.code, status) } : {}),
+    ...(status !== undefined ? { httpStatus: status } : {}),
+    ...(stage ? { stage } : {}),
+  };
+}
+
 /** Only bounded, allowlisted fields may cross the voice privacy boundary. */
 export function extractProviderErrorDiagnostic(
   value: unknown,
@@ -59,6 +106,9 @@ export function extractProviderErrorDiagnostic(
 ): ProviderErrorDiagnostic | undefined {
   let current = record(value);
   const seen = new Set<object>();
+  let preservedStatus: number | undefined;
+  let preservedStage: ProviderErrorDiagnostic['stage'] | undefined;
+  let preservedDiagnostic: ProviderErrorDiagnostic | undefined;
   for (let depth = 0; current && depth < 8 && !seen.has(current); depth++) {
     seen.add(current);
     const metadata = record(dataProperty(current, 'diagnostic'));
@@ -68,14 +118,39 @@ export function extractProviderErrorDiagnostic(
         const code = allowed(dataProperty(metadata, 'code'), codes);
         const status = httpStatus(dataProperty(metadata, 'httpStatus'));
         const safeStage = allowed(dataProperty(metadata, 'stage'), stages) ?? stage;
-        return {
-          category,
+        const effectiveStatus = preservedStatus ?? status;
+        const diagnostic: ProviderErrorDiagnostic = {
+          category:
+            code ||
+            hasPriorityStatus(effectiveStatus)
+              ? classify(code, effectiveStatus)
+              : category,
           ...(code ? { code } : {}),
           ...(status ? { httpStatus: status } : {}),
           ...(safeStage ? { stage: safeStage } : {}),
         };
+        if (code !== 'AI_APICallError') {
+          return {
+            ...diagnostic,
+            ...(preservedStatus !== undefined ? { httpStatus: preservedStatus } : {}),
+            ...(!diagnostic.stage && preservedStage ? { stage: preservedStage } : {}),
+          };
+        }
+        preservedStatus ??=
+          status ??
+          httpStatus(dataProperty(current, 'statusCode')) ??
+          httpStatus(dataProperty(current, 'status'));
+        preservedStage ??= safeStage;
+        preservedDiagnostic ??= diagnostic;
+        const nested = nestedError(current);
+        if (nested) {
+          current = nested;
+          continue;
+        }
+        return mergePreservedDiagnostic(preservedDiagnostic, preservedStatus, preservedStage);
       }
     }
+
     const code =
       allowed(dataProperty(current, 'code'), codes) ??
       allowed(dataProperty(current, 'name'), codes);
@@ -83,33 +158,36 @@ export function extractProviderErrorDiagnostic(
       httpStatus(dataProperty(current, 'statusCode')) ??
       httpStatus(dataProperty(current, 'status'));
     if (code || status) {
-      const category =
-        status === 401 || status === 403
-          ? 'auth'
-          : status === 429
-            ? 'rate-limit'
-            : status === 408 ||
-                status === 504 ||
-                code === 'ETIMEDOUT' ||
-                code === 'UND_ERR_CONNECT_TIMEOUT' ||
-                code === 'TimeoutError'
-              ? 'timeout'
-              : code === 'AI_ToolExecutionError'
-                ? 'tool'
-                : code && ['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)
-                  ? 'network'
-                  : 'provider';
-      return {
-        category,
+      const diagnostic: ProviderErrorDiagnostic = {
+        category: classify(code, preservedStatus ?? status),
         ...(code ? { code } : {}),
         ...(status ? { httpStatus: status } : {}),
         ...(stage ? { stage } : {}),
       };
+      if (code !== 'AI_APICallError') {
+        return {
+          ...diagnostic,
+          ...(preservedStatus !== undefined ? { httpStatus: preservedStatus } : {}),
+          ...(preservedStage ? { stage: preservedStage } : {}),
+        };
+      }
+      preservedStatus ??= status;
+      preservedStage ??= stage;
+      preservedDiagnostic ??= diagnostic;
+      const nested = nestedError(current);
+      if (nested) {
+        current = nested;
+        continue;
+      }
+      return mergePreservedDiagnostic(preservedDiagnostic, preservedStatus, preservedStage);
     }
-    current =
-      record(dataProperty(current, 'cause')) ??
-      record(dataProperty(current, 'error')) ??
-      record(dataProperty(current, 'lastError'));
+
+    const nested = nestedError(current);
+    if (!nested) break;
+    current = nested;
+  }
+  if (preservedDiagnostic) {
+    return mergePreservedDiagnostic(preservedDiagnostic, preservedStatus, preservedStage);
   }
   return stage ? { category: 'unknown', stage } : undefined;
 }
