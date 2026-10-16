@@ -13,10 +13,16 @@
  */
 
 import type pino from 'pino';
-import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
+import type {
+  ChannelConnector,
+  InboundEvent,
+  AgentOutput,
+  InboundAttachment,
+} from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
+import type { ImageSelectionSettings } from '../../../images/image-selection.js';
 import type {
   EmailConfig,
   ImapClient,
@@ -25,6 +31,12 @@ import type {
   SmtpTransport,
 } from './email-types.js';
 import { markdownToHtml } from './email-format.js';
+import {
+  DEFAULT_EMAIL_IMAGE_SETTINGS,
+  planEmailMedia,
+  planHasImageSlots,
+  stageEmailMedia,
+} from './email-media.js';
 import { createImapFlowClient } from './email-imap-client.js';
 import { createNodemailerTransport } from './email-smtp-transport.js';
 
@@ -198,6 +210,14 @@ export interface EmailConnectorOptions {
   smtpTransport?: SmtpTransport;
   /** Inject a custom IMAP client (defaults to the imapflow-backed client). */
   imapClient?: ImapClient;
+  /**
+   * Image ingestion limits (`images.maxInputBytes` / `images.maxPerMessage`).
+   * Partial: missing values fall back to the config-schema defaults mirrored
+   * in `DEFAULT_EMAIL_IMAGE_SETTINGS`. Kept optional so existing
+   * constructions keep working until the factory wires the operator's
+   * `images` settings through.
+   */
+  imageSettings?: Partial<ImageSelectionSettings>;
 }
 
 /**
@@ -227,6 +247,7 @@ export class EmailConnector implements ChannelConnector {
 
   private readonly smtpTransport: SmtpTransport;
   private readonly imapClient: ImapClient;
+  private readonly imageSettings: ImageSelectionSettings;
   /** Reply metadata keyed by externalThreadId (bounded to MAX_THREAD_META_ENTRIES). */
   private readonly threadMeta = new Map<string, ThreadReplyMeta>();
 
@@ -239,6 +260,10 @@ export class EmailConnector implements ChannelConnector {
     this.name = channelName;
     this.smtpTransport = options.smtpTransport ?? createDefaultSmtpTransport(config);
     this.imapClient = options.imapClient ?? createDefaultImapClient(config, logger);
+    this.imageSettings = {
+      ...DEFAULT_EMAIL_IMAGE_SETTINGS,
+      ...(options.imageSettings ?? {}),
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -445,6 +470,22 @@ export class EmailConnector implements ChannelConnector {
       return;
     }
 
+    // Attachment staging happens ONLY here, after BOTH authorization gates
+    // above. Denied or DMARC-failed emails returned before this point and
+    // staged no image bytes. Planning is pure (no bytes leave the parsed
+    // message); staging only hands the already-in-hand Buffers of SLOT-HOLDING
+    // items to the event — inline/related parts and absent/non-image MIME were
+    // excluded before slots and oversized payloads were rejected on their
+    // actual length (shared TASK-004 selection port).
+    const mediaPlan = planEmailMedia(email.attachments, this.imageSettings);
+    let attachments: InboundAttachment[] | undefined;
+    if (planHasImageSlots(mediaPlan)) {
+      const staged = stageEmailMedia(mediaPlan);
+      if (staged.length > 0) {
+        attachments = staged;
+      }
+    }
+
     // The thread anchor is the root of the conversation so that every reply
     // in a chain maps to the same externalThreadId.
     const externalThreadId = encodeThreadId(senderAddress, threadRootOf(email));
@@ -453,6 +494,16 @@ export class EmailConnector implements ChannelConnector {
     // Use the Message-ID as the idempotency key (stripped of angle brackets).
     const idempotencyKey = email.messageId.replace(/^<|>$/g, '');
 
+    // Body text is preserved verbatim (caption-equivalent). An attachments-
+    // only message still emits an event when its attachments consumed image
+    // slots; dispatch semantics otherwise match the pre-media flow.
+    //
+    // Raw hygiene: the buffers are carried TRANSIENTLY (parse → plan → stage).
+    // The `raw` object handed to the pipeline is metadata-only — attachment
+    // entries and their Buffers are stripped so nothing downstream that
+    // serializes or logs `raw` can leak pixels. Staged bytes travel ONLY in
+    // the explicit `attachments` field, whose persistence paths are unchanged.
+    const rawEmail = rawEmailMetadata(email);
     const event: InboundEvent = {
       channelType: this.type,
       channelName: this.name,
@@ -461,7 +512,8 @@ export class EmailConnector implements ChannelConnector {
       idempotencyKey,
       content: email.text,
       timestamp: email.timestamp,
-      raw: email,
+      raw: rawEmail,
+      ...(attachments !== undefined ? { attachments } : {}),
     };
 
     if (!this.handler) {
@@ -544,6 +596,18 @@ function replySubject(inboundSubject: string | undefined): string {
   const trimmed = inboundSubject?.trim() ?? '';
   if (!trimmed) return 'Re: message';
   return /^re:\s/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
+}
+
+/**
+ * Defensive copy of a ParsedEmail for `InboundEvent.raw` with the
+ * `attachments` field removed. Attachment Buffers are transient
+ * (parse → plan → stage) and must never be reachable through `raw` —
+ * staged bytes travel only in the explicit event `attachments` field.
+ */
+function rawEmailMetadata(email: ParsedEmail): Omit<ParsedEmail, 'attachments'> {
+  const copy: ParsedEmail = { ...email };
+  delete copy.attachments;
+  return copy;
 }
 
 // ---------------------------------------------------------------------------
