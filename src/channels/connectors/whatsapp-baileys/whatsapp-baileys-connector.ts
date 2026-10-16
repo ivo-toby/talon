@@ -27,12 +27,22 @@
  */
 
 import type pino from 'pino';
-import type { ChannelConnector, InboundEvent, AgentOutput } from '../../channel-types.js';
+import type { ChannelConnector, InboundEvent, AgentOutput, InboundAttachment } from '../../channel-types.js';
 import type { Result } from '../../../core/types/result.js';
 import { ok, err } from '../../../core/types/result.js';
 import { ChannelError } from '../../../core/errors/error-types.js';
 import { markdownToWhatsApp } from '../whatsapp-business/whatsapp-format.js';
 import { registerSafeRejectionMatcher } from '../../../daemon/unhandled-rejection-shield.js';
+import { selectImages } from '../../../images/image-selection.js';
+import {
+  resolveBaileysImageSettings,
+  unwrapMessageContent,
+  extractTextAndMediaCandidates,
+  fetchSelectedImageAttachments,
+  createBaileysMediaTransfer,
+  type BaileysImageIngestOptions,
+  type ResolvedBaileysImageSettings,
+} from './whatsapp-baileys-images.js';
 import type { WhatsAppBaileysConfig } from './whatsapp-baileys-types.js';
 import { isBaileysInternalRejection } from './whatsapp-baileys-rejection-matcher.js';
 
@@ -58,6 +68,13 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   readonly name: string;
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
+  /**
+   * Resolved bounded image-ingestion settings (TASK-007). The channel
+   * factory will pass the global `images` config block here; until then the
+   * documented schema defaults apply. `openMedia` defaults to the Baileys
+   * stream-mode download below.
+   */
+  private readonly imageMedia: ResolvedBaileysImageSettings;
   private running = false;
   private sock: BaileysSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -98,8 +115,12 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
     private readonly config: WhatsAppBaileysConfig,
     private readonly channelName: string,
     private readonly logger: pino.Logger,
+    imageMedia?: BaileysImageIngestOptions,
   ) {
     this.name = channelName;
+    this.imageMedia = resolveBaileysImageSettings(imageMedia, (message, signal) =>
+      this.openMediaWithBaileys(message, signal),
+    );
   }
 
   async start(): Promise<void> {
@@ -367,6 +388,83 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   }
 
   // ---------------------------------------------------------------------------
+  // Media download (TASK-007)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Default media opener: Baileys `downloadMediaMessage` in STREAM mode run
+   * inside a {@link createBaileysMediaTransfer}, pinned to the 7.0.0-rc.9
+   * source contract (inventory E4):
+   *
+   * - `type` is `'stream'` — the returned `Transform` is fed to the shared
+   *   bounded consumer, which destroys it on byte/deadline overflow. Buffer
+   *   mode is never used: it concatenates all chunks and cannot cap bytes
+   *   during consumption.
+   * - Cancellation is NOT threaded through Baileys' options: rc.9's
+   *   `getHttpStream` calls `fetch(url, { dispatcher, method, headers })`
+   *   and silently drops `options.signal` (messages-media.js:296–300). The
+   *   transfer adapter owns the real fetch instead: the shared message-
+   *   budget signal aborts the in-flight request (including any retry the
+   *   optional reupload ctx starts), and mid-body upstream failures are
+   *   consumed by the transfer and surfaced by destroying the returned
+   *   Transform — Baileys' own `fetched.pipe(output)` would otherwise emit
+   *   them as unconsumed `'error'` events (Node ≥ 24 pipe semantics).
+   * - `ctx.reuploadRequest` is wired to the socket's actual rc.9 member,
+   *   `updateMediaMessage` (messages-send.js:840) — `reuploadRequest` is
+   *   only the ctx FIELD name (messages.d.ts:79), never a socket member.
+   *   It is probed, not assumed; without it expired-media errors surface as
+   *   the closed `download_failed` transport reason. Note the retry branch
+   *   in `downloadMediaMessage` (messages.js:793–803) matches on
+   *   `error.status`, which `@hapi/boom` never sets (only
+   *   `output.statusCode`) — so with this pinned version the reupload retry
+   *   is unreachable and exists purely as forward-compatibility wiring; a
+   *   real-path test pins that behaviour.
+   *
+   * The Baileys module is imported lazily so the optional-dependency posture
+   * and the existing start() import path stay unchanged; an import failure
+   * rejects inside the opener and maps to `download_failed`.
+   */
+  private async openMediaWithBaileys(
+    message: unknown,
+    signal: AbortSignal,
+  ): Promise<import('node:stream').Readable> {
+    const baileys = await import('@whiskeysockets/baileys');
+    type DownloadArgs = Parameters<typeof baileys.downloadMediaMessage>;
+    type MediaContext = NonNullable<DownloadArgs[3]>;
+    type ReuploadRequest = MediaContext['reuploadRequest'];
+    // Loose structural view of the live socket: probe the REAL member
+    // `updateMediaMessage` — never a fabricated `reuploadRequest` socket
+    // property — before offering a reupload context.
+    const socket = this.sock as
+      | {
+          updateMediaMessage?: (
+            m: Parameters<ReuploadRequest>[0],
+          ) => ReturnType<ReuploadRequest>;
+        }
+      | null;
+    const updateMediaMessage = socket?.updateMediaMessage;
+    const ctx =
+      typeof updateMediaMessage === 'function'
+        ? ({
+            logger: this.logger,
+            reuploadRequest: (m: Parameters<ReuploadRequest>[0]) =>
+              updateMediaMessage.call(socket as object, m),
+          } as unknown as MediaContext)
+        : undefined;
+    // The message object is the opaque media handle: its mediaKey/url are
+    // never logged or echoed by this path.
+    const transfer = createBaileysMediaTransfer({
+      signal,
+      ...(this.imageMedia.fetch !== undefined ? { fetchImpl: this.imageMedia.fetch } : {}),
+    });
+    const stream = await transfer.run(() =>
+      baileys.downloadMediaMessage(message as DownloadArgs[0], 'stream', {}, ctx),
+    );
+    transfer.bindDownstream(stream);
+    return stream;
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 
@@ -454,20 +552,24 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       }
     }
 
-    // ── Extract text content ──────────────────────────────────────────
-    let text =
-      (msg.message['conversation'] as string | undefined) ??
-      (msg.message['extendedTextMessage'] as { text?: string } | undefined)?.text;
+    // ── Extract text + media candidates ──────────────────────────────
+    // Runs AFTER every authorization check above (self/group/trigger rules
+    // come before any media download — TASK-007). Unwrapping mirrors the
+    // pinned Baileys normalize contract (see whatsapp-baileys-images.ts).
+    const unwrapped = unwrapMessageContent(msg.message);
+    const { text: extractedText, candidates } = extractTextAndMediaCandidates(unwrapped);
+    let text = extractedText;
 
-    if (!text) {
-      this.logger.debug(
-        { channelName: this.name, jid, messageType: Object.keys(msg.message)[0] },
-        'whatsapp-baileys: skipping non-text message',
-      );
-      return;
-    }
+    // Selection is a pure decision (no downloads): stickers, non-image and
+    // absent-MIME documents are excluded here, before any trigger check can
+    // be followed by a media request, and overflow/declared-size rejections
+    // are decided without fetching.
+    const selection = selectImages(candidates, {
+      maxInputBytes: this.imageMedia.maxInputBytes,
+      maxPerMessage: this.imageMedia.maxPerMessage,
+    });
 
-    // ── Trigger word filter ───────────────────────────────────────────
+    // ── Trigger word filter (applies to media captions too) ───────────
     const triggerWords = this.config.triggerWords;
     if (triggerWords && triggerWords.length > 0) {
       const lower = text.toLowerCase();
@@ -477,11 +579,30 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
           { channelName: this.name, jid },
           'whatsapp-baileys: no trigger word matched, dropping',
         );
+        // Authorization failed BEFORE any media request: no download happens.
         return;
       }
       // Strip the trigger word and any leading whitespace after it.
       text = text.slice(matched.length).trimStart();
-      if (!text) return; // trigger word only, no actual message
+      // Trigger word only and no media slot: nothing to deliver. A media
+      // message whose caption was trigger-only still proceeds as image-only.
+      if (!text && selection.images.length === 0) return;
+    } else if (text === '' && selection.images.length === 0) {
+      // No caption and no media content type: keep the legacy behavior for
+      // video/audio/location/etc. (dropped, logged, never downloaded).
+      this.logger.debug(
+        { channelName: this.name, jid, messageType: Object.keys(msg.message)[0] },
+        'whatsapp-baileys: skipping non-text message',
+      );
+      return;
+    }
+
+    // ── Bounded media fetch (only once every check above passed) ──────
+    // Silent exclusions (sticker-only, non-image-document-only) leave no
+    // slot: the message stays a plain text event with no Attachments.
+    let attachments: InboundAttachment[] | undefined;
+    if (selection.images.length > 0) {
+      attachments = await fetchSelectedImageAttachments(msg, selection.images, this.imageMedia);
     }
 
     const rawTimestamp = msg.messageTimestamp;
@@ -505,6 +626,7 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
       senderId,
       idempotencyKey: msg.key.id,
       content: text,
+      ...(attachments !== undefined ? { attachments } : {}),
       timestamp: epochMs,
       raw: msg,
     };
