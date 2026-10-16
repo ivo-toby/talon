@@ -1018,6 +1018,271 @@ describe('QueueRepository', () => {
       ).toEqual({ kind: 'checkpoint', checkpoint: first });
     });
 
+    describe('ready terminalization lease cleanup', () => {
+      function permanentFailure(saved: SignalDeliveryCheckpoint, expired = false) {
+        return new SignalDeliveryError({
+          reason: expired ? 'CHECKPOINT_EXPIRED' : 'TARGET_REFUSED',
+          outcome: saved.acceptedChunks > 0 ? 'PARTIAL' : 'NOT_SENT',
+          acceptedChunks: saved.acceptedChunks,
+          currentChunkAcceptance: expired ? saved.currentChunkAcceptance : 'refused',
+          successCount: saved.successCount,
+          failureCount: saved.failureCount,
+          retryScope: 'none',
+        });
+      }
+
+      function attachRun(saved: SignalDeliveryCheckpoint): string {
+        const id = `run-${saved.queueItemId}`;
+        db.prepare(
+          "INSERT OR IGNORE INTO personas (id, name, created_at, updated_at) VALUES ('persona', 'persona', 1, 1)",
+        ).run();
+        db.prepare(
+          "INSERT INTO runs (id, thread_id, persona_id, provider_name, queue_item_id, status, created_at) VALUES (?, ?, 'persona', 'test', ?, 'running', 1)",
+        ).run(id, saved.threadId, saved.queueItemId);
+        return id;
+      }
+
+      describe.each(['TARGET_REFUSED', 'CHECKPOINT_EXPIRED'] as const)('%s', (reason) => {
+        it.each(['reply', 'background', 'explicit', 'progress'] as const)(
+          'terminalizes the waiter without changing a foreign %s owner or its active reservation',
+          (purpose) => {
+            const saved = prepare({ createdAt: 1_000_000, expiresAt: 87_400_000 });
+            const expired = reason === 'CHECKPOINT_EXPIRED';
+            const now = expired ? saved.expiresAt : saved.createdAt + 1_000;
+            const runId = attachRun(saved);
+            repo.deferSignalDelivery(saved, 1_000, saved.createdAt)._unsafeUnwrap();
+            const accounts = new SignalAccountStateRepository(db);
+            const leases = new SignalDestinationLeaseRepository(db);
+            const ownerItem = makeItem({ payload: '{"owner":true}' });
+            repo.enqueue(ownerItem)._unsafeUnwrap();
+            const owner = checkpoint(ownerItem.id, {
+              kind: purpose === 'background' ? 'background' : 'reply',
+              createdAt: now - 1,
+              expiresAt: now - 1 + SIGNAL_CHECKPOINT_LIFETIME_MS,
+            });
+            const ownerRunId = attachRun(owner);
+            if (purpose === 'reply' || purpose === 'background') {
+              repo.saveSignalCheckpoint(owner, now - 1)._unsafeUnwrap();
+              begin(owner, now - 1);
+            } else {
+              // Invocation owners have a guard rather than a saved retry checkpoint.
+              const context = {
+                queueItemId: owner.queueItemId,
+                deliveryId: owner.deliveryId,
+                purpose,
+              };
+              repo
+                .markSignalDeliveryStarted(
+                  { version: 1, ...context, startedAt: now - 1 },
+                  null,
+                  now,
+                )
+                ._unsafeUnwrap();
+              leases
+                .acquire(saved.accountUuid, saved.destination, context, now - 1)
+                ._unsafeUnwrap();
+              const state = accounts.getOrCreate(saved.accountUuid, now - 1)._unsafeUnwrap();
+              accounts
+                .reserveSend(saved.accountUuid, state.revision, context, now - 1)
+                ._unsafeUnwrap();
+            }
+            const leaseBefore = leases.find(saved.accountUuid, saved.destination)._unsafeUnwrap();
+            const accountBefore = accounts.findByAccount(saved.accountUuid)._unsafeUnwrap();
+            const ownerBefore = repo.findById(owner.queueItemId)._unsafeUnwrap();
+            const ownerRunBefore = db.prepare('SELECT * FROM runs WHERE id = ?').get(ownerRunId);
+            expect(accountBefore?.reservation?.queueItemId).toBe(owner.queueItemId);
+            expect(
+              repo.beginSignalChunk(saved, accountBefore!.revision, now)._unsafeUnwrapErr(),
+            ).toMatchObject({ reason: expired ? 'EXPIRED' : 'BUSY' });
+
+            const result = repo.terminateSignalDelivery(
+              saved,
+              permanentFailure(saved, expired),
+              now,
+            );
+            expect(result.isErr() ? result.error : undefined).toBeUndefined();
+            const terminal = result._unsafeUnwrap();
+            expect(terminal).toEqual({
+              ...saved,
+              phase: 'terminal',
+              currentChunkAcceptance: expired ? 'unwritten' : 'refused',
+              terminalReason: reason,
+              terminalOutcome: 'NOT_SENT',
+            });
+            const row = repo.findById(saved.queueItemId)._unsafeUnwrap()!;
+            expect(row).toMatchObject({
+              status: 'dead_letter',
+              error: reason,
+              attempts: 0,
+              max_attempts: 3,
+              claimed_at: null,
+              next_retry_at: null,
+            });
+            expect(JSON.parse(row.payload)).toEqual({
+              original: true,
+              [SIGNAL_DELIVERY_CHECKPOINT_KEY]: terminal,
+            });
+            expect(
+              db.prepare('SELECT status, error, ended_at FROM runs WHERE id = ?').get(runId),
+            ).toEqual({ status: 'failed', error: reason, ended_at: now });
+            expect(leases.find(saved.accountUuid, saved.destination)._unsafeUnwrap()).toEqual(
+              leaseBefore,
+            );
+            expect(accounts.findByAccount(saved.accountUuid)._unsafeUnwrap()).toEqual(
+              accountBefore,
+            );
+            expect(repo.findById(owner.queueItemId)._unsafeUnwrap()).toEqual(ownerBefore);
+            expect(db.prepare('SELECT * FROM runs WHERE id = ?').get(ownerRunId)).toEqual(
+              ownerRunBefore,
+            );
+            expect(repo.beginSignalChunk(saved, accountBefore!.revision, now).isErr()).toBe(true);
+          },
+        );
+
+        it.each(['none', 'owned'] as const)(
+          'terminalizes with %s lease and preserves accepted-tail counts',
+          (kind) => {
+            const saved = prepare();
+            const leases = new SignalDestinationLeaseRepository(db);
+            const accounts = new SignalAccountStateRepository(db);
+            const ready =
+              kind === 'none'
+                ? saved
+                : repo
+                    .settleSignalChunk(
+                      begin(saved),
+                      { kind: 'accepted', successCount: 2 },
+                      saved.createdAt + 1,
+                    )
+                    ._unsafeUnwrap();
+            const accountBefore = accounts.findByAccount(saved.accountUuid)._unsafeUnwrap();
+            expect(leases.find(saved.accountUuid, saved.destination)._unsafeUnwrap() === null).toBe(
+              kind === 'none',
+            );
+            const expired = reason === 'CHECKPOINT_EXPIRED';
+            const now = expired ? saved.expiresAt : saved.createdAt + 2;
+            const terminal = repo
+              .terminateSignalDelivery(ready, permanentFailure(ready, expired), now)
+              ._unsafeUnwrap();
+            expect(terminal).toEqual({
+              ...ready,
+              phase: 'terminal',
+              currentChunkAcceptance: expired ? 'unwritten' : 'refused',
+              terminalReason: reason,
+              terminalOutcome: kind === 'none' ? 'NOT_SENT' : 'PARTIAL',
+            });
+            expect(leases.find(saved.accountUuid, saved.destination)._unsafeUnwrap()).toBeNull();
+            expect(accounts.findByAccount(saved.accountUuid)._unsafeUnwrap()).toEqual(
+              accountBefore,
+            );
+            expect(repo.findById(saved.queueItemId)._unsafeUnwrap()).toMatchObject({
+              status: 'dead_letter',
+              error: reason,
+              attempts: 0,
+              next_retry_at: null,
+            });
+          },
+        );
+      });
+
+      it.each(['queueItemId', 'deliveryId', 'kind'] as const)(
+        'leaves a lease with only %s different untouched',
+        (field) => {
+          const saved = prepare();
+          const other = prepare();
+          const leases = new SignalDestinationLeaseRepository(db);
+          const context = {
+            queueItemId: field === 'queueItemId' ? other.queueItemId : saved.queueItemId,
+            deliveryId: field === 'deliveryId' ? 'different-delivery' : saved.deliveryId,
+            purpose: field === 'kind' ? ('explicit' as const) : saved.kind,
+          };
+          const lease = leases
+            .acquire(saved.accountUuid, saved.destination, context, saved.createdAt)
+            ._unsafeUnwrap();
+          const result = repo.terminateSignalDelivery(
+            saved,
+            permanentFailure(saved),
+            saved.createdAt + 1,
+          );
+          expect(result.isErr() ? result.error : undefined).toBeUndefined();
+          result._unsafeUnwrap();
+          expect(leases.validateOwner(lease)._unsafeUnwrap()).toEqual(lease);
+        },
+      );
+
+      it('rolls back terminal checkpoint, queue and run on a real lease lookup database failure', () => {
+        const saved = prepare();
+        const runId = attachRun(saved);
+        const before = repo.findById(saved.queueItemId)._unsafeUnwrap();
+        const runBefore = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+        db.exec('ALTER TABLE signal_destination_leases RENAME TO unavailable_leases');
+        const result = repo.terminateSignalDelivery(
+          saved,
+          permanentFailure(saved),
+          saved.createdAt + 1,
+        );
+        expect(result._unsafeUnwrapErr()).toBeInstanceOf(SignalStateError);
+        expect(result._unsafeUnwrapErr()).toMatchObject({ reason: 'DATABASE', cause: undefined });
+        expect(repo.findById(saved.queueItemId)._unsafeUnwrap()).toEqual(before);
+        expect(db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)).toEqual(runBefore);
+      });
+
+      it.each(['owned CAS', 'delete database', 'enclosing Result'] as const)(
+        'rolls back terminal checkpoint, queue, run and owned release on %s failure',
+        (fault) => {
+          const saved = prepare();
+          const ownership = begin(saved);
+          const ready = repo
+            .settleSignalChunk(
+              ownership,
+              { kind: 'deferred', failure: failure(saved) },
+              saved.createdAt + 1,
+            )
+            ._unsafeUnwrap();
+          const runId = attachRun(saved);
+          const leases = new SignalDestinationLeaseRepository(db);
+          const accounts = new SignalAccountStateRepository(db);
+          const before = repo.findById(saved.queueItemId)._unsafeUnwrap();
+          const runBefore = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+          const accountBefore = accounts.findByAccount(saved.accountUuid)._unsafeUnwrap();
+          const sentinel = new SignalStateError('CONFLICT');
+          const validation =
+            fault === 'owned CAS'
+              ? vi
+                  .spyOn(SignalDestinationLeaseRepository.prototype, 'validateOwner')
+                  .mockReturnValueOnce(err(sentinel))
+              : undefined;
+          if (fault === 'delete database')
+            db.exec(`CREATE TRIGGER fail_owned_release BEFORE DELETE ON signal_destination_leases
+            BEGIN SELECT RAISE(ABORT, 'private target and body'); END`);
+          try {
+            const terminate = () =>
+              repo.terminateSignalDelivery(ready, permanentFailure(ready), saved.createdAt + 2);
+            const result =
+              fault === 'enclosing Result'
+                ? runResultTransaction(
+                    (fn) => repo.transaction(fn),
+                    () => terminate().andThen(() => err(sentinel)),
+                  )
+                : terminate();
+            if (fault === 'delete database') {
+              expect(result._unsafeUnwrapErr()).toMatchObject({
+                reason: 'DATABASE',
+                cause: undefined,
+              });
+              expect(result._unsafeUnwrapErr().message).not.toMatch(/private|target|body/);
+            } else expect(result._unsafeUnwrapErr()).toBe(sentinel);
+          } finally {
+            validation?.mockRestore();
+          }
+          expect(repo.findById(saved.queueItemId)._unsafeUnwrap()).toEqual(before);
+          expect(db.prepare('SELECT * FROM runs WHERE id = ?').get(runId)).toEqual(runBefore);
+          expect(accounts.findByAccount(saved.accountUuid)._unsafeUnwrap()).toEqual(accountBefore);
+          expect(leases.validateOwner(ownership.lease)._unsafeUnwrap()).toEqual(ownership.lease);
+        },
+      );
+    });
+
     it('rolls back checkpoint, new lease, account budget and reservation on account CAS failure and enclosing Err', () => {
       const saved = prepare();
       const accounts = new SignalAccountStateRepository(db);
