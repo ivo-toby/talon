@@ -62,6 +62,12 @@ export interface SignalSendReadiness {
   readonly proof: SignalAccountProofSnapshot;
 }
 
+export interface SignalSendPersistenceHealth {
+  readonly state: 'healthy' | 'blocked';
+  readonly stopped: boolean;
+  readonly pendingWrites: number;
+}
+
 export interface SignalSendCoordinatorDependencies {
   /** All three repositories MUST use the same connection; recovery/dispatch has one owner/account. */
   readonly accounts: SignalAccountStateRepository;
@@ -74,6 +80,8 @@ export interface SignalSendCoordinatorDependencies {
   readonly now?: () => number;
   /** Finite nondecreasing elapsed milliseconds, independent of epoch time and consistent with timers. */
   readonly monotonicNow?: () => number;
+  /** Synchronous local nonthrowing hook, outside transactions. Health grants no send/replacement authority. */
+  readonly onPersistenceChange?: (health: SignalSendPersistenceHealth) => void;
 }
 
 interface Operation {
@@ -101,6 +109,15 @@ interface Active {
   requestDeadline?: number;
   forceRequest?: () => void;
 }
+interface RetainedWrite {
+  readonly write: () => Result<unknown, SignalQueueFailure>;
+  error?: SignalQueueFailure;
+  retryAt: number;
+  attempts: number;
+}
+const databaseFailure = (error: SignalQueueFailure): boolean =>
+  error instanceof SignalStateError && error.reason === 'DATABASE';
+
 const zero: SignalSendProgress = { acceptedChunks: 0, successCount: 0, failureCount: 0 };
 // Do not retain a whole saved checkpoint/body under a small waiting-text charge.
 const counts = (value: SignalSendProgress): SignalSendProgress => ({
@@ -163,7 +180,13 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
   private timer?: ReturnType<typeof setTimeout>;
   private active?: Active;
   private stopped = false;
-  private persistenceFailure?: SignalQueueFailure;
+  private fatalFailure?: SignalQueueFailure;
+  private readonly retained = new Map<Operation, RetainedWrite[]>();
+  // Retain the existing ONE active allocation, including exact full-checkpoint CAS/purge authority.
+  // All other waiting/finishing/retained operations share the original 64 / 1MiB text charge.
+  private retainedActive?: Operation;
+  private repairing = false;
+  private publishedHealth?: SignalSendPersistenceHealth;
   private readonly finishing = new Map<Promise<void>, Operation>();
   /** Monotonic elapsed limit for local drain/write retries. */
   private drainDeadline = Infinity;
@@ -232,6 +255,68 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     this.pump();
   }
 
+  persistenceHealth(): SignalSendPersistenceHealth {
+    return Object.freeze({
+      state: this.retained.size === 0 && this.fatalFailure === undefined ? 'healthy' : 'blocked',
+      stopped: this.stopped,
+      pendingWrites: [...this.retained.values()].reduce((total, jobs) => total + jobs.length, 0),
+    });
+  }
+
+  /** DB-only, one attempt per due retained stage; no timers, RPC, verification or admission restart.
+   * Keep this owner until this AND a subsequent drain are Ok. Non-DATABASE conflicts stay blocked. */
+  retryStateWrites(): Result<void, SignalQueueFailure> {
+    if (this.repairing || this.active !== undefined || this.finishing.size > 0)
+      return err(this.persistenceFailure ?? new SignalStateError('BUSY'));
+    this.repairing = true;
+    try {
+      for (const [operation, jobs] of this.retained) {
+        while (jobs.length > 0) {
+          const job = jobs[0];
+          if (
+            (job.error !== undefined && !databaseFailure(job.error)) ||
+            this.monotonicNow() < job.retryAt
+          )
+            break;
+          const result = job.write();
+          if (result.isErr() && !(result.error instanceof DeliveryCancelled)) {
+            job.error = result.error;
+            job.retryAt =
+              this.monotonicNow() + Math.min(250 * 2 ** Math.min(job.attempts++, 6), 10_000);
+            break;
+          }
+          jobs.shift();
+        }
+        if (jobs.length === 0) {
+          this.retained.delete(operation);
+          if (this.retainedActive === operation) this.retainedActive = undefined;
+        }
+      }
+      return this.persistenceFailure === undefined ? ok(undefined) : err(this.persistenceFailure);
+    } finally {
+      this.repairing = false;
+      this.publishHealth();
+    }
+  }
+
+  private get persistenceFailure(): SignalQueueFailure | undefined {
+    if (this.fatalFailure !== undefined) return this.fatalFailure;
+    for (const jobs of this.retained.values())
+      for (const job of jobs) if (job.error !== undefined) return job.error;
+    return undefined;
+  }
+
+  private publishHealth(): void {
+    const health = this.persistenceHealth();
+    if (isDeepStrictEqual(health, this.publishedHealth)) return;
+    this.publishedHealth = health;
+    try {
+      this.dependencies.onPersistenceChange?.(health);
+    } catch {
+      // Publication cannot change committed authority or discard a retained write.
+    }
+  }
+
   /** Irreversible admissions stop. Replacement must not recover/reuse this account until drain Ok. */
   quiesce(): void {
     this.stopped = true;
@@ -241,6 +326,7 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     this.waiting = [];
     for (const operation of waiting)
       this.finishWaiting(operation, err(failure('UNAVAILABLE', this.latestProgress(operation))));
+    this.publishHealth();
   }
 
   /** Drains RPC separately from unwritten cancellation. A failed state write is NOT idle:
@@ -270,8 +356,11 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     operation: Operation,
     result: Result<SignalChunkReceipt, SignalDeliveryError>,
   ): void {
-    operation.progress = this.latestProgress(operation);
-    const finished = this.finish(operation, result);
+    // Register before execution: finish can synchronously publish a hook that repairs/drains.
+    const finished = Promise.resolve().then(() => {
+      operation.progress = this.latestProgress(operation);
+      return this.finish(operation, result);
+    });
     this.finishing.set(finished, operation);
     void finished.then(() => {
       this.finishing.delete(finished);
@@ -293,7 +382,9 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
   }
 
   private hasCapacity(bytes: number): boolean {
-    const retained = [...this.waiting, ...this.finishing.values()];
+    const retained = [
+      ...new Set([...this.waiting, ...this.finishing.values(), ...this.retained.keys()]),
+    ].filter((operation) => operation !== this.retainedActive);
     return (
       retained.length < 64 &&
       retained.reduce((total, entry) => total + entry.bytes, 0) + bytes <= 1_048_576
@@ -566,9 +657,10 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
 
   private snapshot(
     operation: Operation,
+    at = this.now(),
   ): Result<SignalDeliveryCheckpoint | null, SignalQueueFailure> {
     return this.dependencies.queue
-      .inspectSignalDelivery(operation.context.queueItemId, this.now())
+      .inspectSignalDelivery(operation.context.queueItemId, at)
       .andThen((state) => {
         if (!operation.saved)
           return state.kind === 'checkpoint' ? err(new SignalStateError('CONFLICT')) : ok(null);
@@ -643,12 +735,13 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     if (selected.isErr()) return err(failure(selected.error.reason, operation.progress, false));
     const metadata = await this.request(createSignalTargetRequest(selected.value));
     if (metadata.isErr()) {
+      const detectedAt = this.now();
       const restrictions =
         metadata.error instanceof SignalRpcRemoteError
-          ? interpretSignalRestrictions(metadata.error, this.now())
+          ? interpretSignalRestrictions(metadata.error, detectedAt)
           : [];
-      const persisted = await this.retryWrite(() =>
-        this.atomic(() => this.recordRestrictions(restrictions)),
+      const persisted = await this.retryWrite(operation, () =>
+        this.atomic(() => this.recordRestrictions(restrictions, detectedAt)),
       );
       if (persisted.isErr()) {
         this.poison(persisted.error);
@@ -732,10 +825,14 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     const rpcResult = await this.request(
       this.sendRequest(latestSelection.value, operation.chunks[operation.index]),
     );
-    const classified = classifySignalSendResult(rpcResult, operation.progress, this.now());
-    const settled = await this.retryWrite(() =>
-      this.settle(operation, reservation, ownership, classified),
-    );
+    const detectedAt = this.now();
+    const classified = classifySignalSendResult(rpcResult, operation.progress, detectedAt);
+    const settled = await this.retryWrite(operation, () => {
+      const result = this.settle(operation, reservation, ownership, classified, detectedAt);
+      if (result.isOk()) operation.chunkAuthority = 'settled';
+      else if (result.error instanceof DeliveryCancelled) operation.chunkAuthority = 'cancelled';
+      return result;
+    });
     if (settled.isErr()) {
       if (settled.error instanceof DeliveryCancelled) operation.chunkAuthority = 'cancelled';
       else this.poison(settled.error);
@@ -756,6 +853,7 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     owner: SignalSendReservation,
     ownership: SignalChunkOwnership | undefined,
     classified: SignalSendClassification,
+    detectedAt: number,
   ): Result<void, SignalQueueFailure> {
     return this.atomic(() => {
       const current = this.dependencies.accounts.findByAccount(this.accountUuid);
@@ -767,7 +865,7 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
         ownership === undefined
           ? classified.restrictions
           : classified.restrictions.filter((pause) => pause.kind !== 'recovery');
-      const paused = this.recordRestrictions(pauses);
+      const paused = this.recordRestrictions(pauses, detectedAt);
       if (paused.isErr()) return err(paused.error);
       if (ownership !== undefined) {
         const result = classified.result;
@@ -779,7 +877,7 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
                 kind: result.error.retryScope === 'delivery_only' ? 'deferred' : 'terminal',
                 failure: result.error,
               },
-          this.now(),
+          detectedAt,
         );
         // This Err deliberately follows committed account cleanup inside TASK006. Carry it
         // as a VALUE through the outer transaction; all other errors still roll back.
@@ -791,7 +889,7 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
         this.accountUuid,
         paused.value.revision,
         owner,
-        this.now(),
+        detectedAt,
       );
       if (cleared.isErr()) return err(cleared.error);
       const row = this.dependencies.queue.findById(operation.context.queueItemId);
@@ -802,15 +900,16 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
 
   private recordRestrictions(
     pauses: readonly SignalPause[],
+    detectedAt: number,
   ): Result<SignalAccountState, SignalQueueFailure> {
-    let result = this.dependencies.accounts.getOrCreate(this.accountUuid, this.now());
+    let result = this.dependencies.accounts.getOrCreate(this.accountUuid, detectedAt);
     for (const pause of pauses)
       result = result.andThen((account) =>
         this.dependencies.accounts.recordPause(
           this.accountUuid,
           account.revision,
           pause,
-          this.now(),
+          detectedAt,
         ),
       );
     return result;
@@ -834,8 +933,16 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
         .findById(operation.context.queueItemId)
         .map((row) => row !== null);
       if (present.isErr()) {
-        this.poison(new SignalStateError('DATABASE'));
-        final = err(new SignalDeliveryError({ ...result.error, reason: 'STATE_WRITE_FAILED' }));
+        const error = new SignalStateError('DATABASE');
+        const observed = result.error;
+        const detectedAt = this.now();
+        this.retainWrite(
+          operation,
+          () => this.resolveFinalAuthority(operation, observed, detectedAt),
+          error,
+        );
+        this.poison(error);
+        final = err(new SignalDeliveryError({ ...observed, reason: 'STATE_WRITE_FAILED' }));
       } else if (!present.value) {
         operation.chunkAuthority = 'cancelled';
         final = err(
@@ -847,15 +954,20 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
         result.error.retryScope === 'none' &&
         result.error.currentChunkAcceptance === 'unwritten'
       ) {
-        const terminated = await this.retryWrite(() => {
-          const snapshot = this.snapshot(operation);
-          if (snapshot.isErr()) return err(snapshot.error);
-          return snapshot.value === null
-            ? ok(undefined)
-            : this.dependencies.queue
-                .terminateSignalDelivery(snapshot.value, result.error, this.now())
-                .map(() => undefined);
-        });
+        const detectedAt = this.now();
+        const terminated = await this.retryWrite(
+          operation,
+          () => {
+            const snapshot = this.snapshot(operation, detectedAt);
+            if (snapshot.isErr()) return err(snapshot.error);
+            return snapshot.value === null
+              ? ok(undefined)
+              : this.dependencies.queue
+                  .terminateSignalDelivery(snapshot.value, result.error, detectedAt)
+                  .map(() => undefined);
+          },
+          false,
+        );
         if (terminated.isErr()) {
           if (terminated.error instanceof DeliveryCancelled) {
             operation.chunkAuthority = 'cancelled';
@@ -878,15 +990,20 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     // Confirmed queue cancellation already cascaded this invocation's lease. A foreign
     // owner may now hold that key; never release it or treat its presence as failed cleanup.
     if (!operation.saved && ownedLease !== undefined && operation.chunkAuthority !== 'cancelled') {
-      const released = await this.retryWrite(() =>
-        this.atomic(() =>
-          this.dependencies.leases
-            .find(this.accountUuid, operation.destination)
-            .andThen((lease) =>
-              lease === null ? ok(undefined) : this.dependencies.leases.release(ownedLease),
-            ),
-        ),
-      );
+      const release = (): Result<void, SignalQueueFailure> =>
+        operation.chunkAuthority === 'cancelled'
+          ? ok(undefined)
+          : this.atomic(() =>
+              this.dependencies.leases
+                .find(this.accountUuid, operation.destination)
+                .andThen((lease) =>
+                  lease === null ? ok(undefined) : this.dependencies.leases.release(ownedLease),
+                ),
+            );
+      // Cleanup must not overtake an unresolved classification/presence decision.
+      const released = this.retained.has(operation)
+        ? (this.retainWrite(operation, release), ok(undefined))
+        : await this.retryWrite(operation, release);
       if (released.isErr()) {
         this.poison(released.error);
         final = final.isErr()
@@ -905,6 +1022,52 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
     }
     this.operations.delete(key(operation.context));
     operation.resolve(final);
+    if (this.retained.has(operation)) this.publishHealth();
+  }
+
+  private resolveFinalAuthority(
+    operation: Operation,
+    observed: SignalDeliveryError,
+    detectedAt: number,
+  ): Result<void, SignalQueueFailure> {
+    const present = this.dependencies.queue
+      .findById(operation.context.queueItemId)
+      .map((row) => row !== null);
+    if (present.isErr()) return err(new SignalStateError('DATABASE'));
+    if (!present.value) {
+      operation.chunkAuthority = 'cancelled';
+      return ok(undefined);
+    }
+    if (
+      operation.saved &&
+      operation.chunkAuthority === 'preflight' &&
+      observed.retryScope === 'none' &&
+      observed.currentChunkAcceptance === 'unwritten'
+    )
+      return this.snapshot(operation, detectedAt).andThen((snapshot) =>
+        snapshot === null
+          ? ok(undefined)
+          : this.dependencies.queue
+              .terminateSignalDelivery(snapshot, observed, detectedAt)
+              .map(() => undefined),
+      );
+    return ok(undefined);
+  }
+
+  private retainWrite(
+    operation: Operation,
+    write: RetainedWrite['write'],
+    error?: SignalQueueFailure,
+  ): void {
+    const jobs = this.retained.get(operation) ?? [];
+    jobs.push({
+      write,
+      error,
+      retryAt: this.monotonicNow() + (error === undefined ? 0 : 250),
+      attempts: 0,
+    });
+    this.retained.set(operation, jobs);
+    if (this.active?.operation === operation) this.retainedActive = operation;
   }
 
   private atomic<T>(operation: () => Result<T, SignalQueueFailure>): Result<T, SignalQueueFailure> {
@@ -916,7 +1079,9 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
   }
 
   private async retryWrite<T>(
+    operation: Operation,
     write: () => Result<T, SignalQueueFailure>,
+    retainConflict = true,
   ): Promise<Result<T, SignalQueueFailure>> {
     for (let attempt = 0; ; attempt++) {
       const result = write();
@@ -926,8 +1091,17 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
         result.error.reason !== 'DATABASE' ||
         attempt >= 5 ||
         this.monotonicNow() >= this.drainDeadline
-      )
+      ) {
+        if (
+          result.isErr() &&
+          !(result.error instanceof DeliveryCancelled) &&
+          (retainConflict || databaseFailure(result.error))
+        ) {
+          this.retainWrite(operation, write, result.error);
+          this.poison(result.error);
+        }
         return result;
+      }
       await new Promise<void>((resolve) =>
         setTimeout(
           resolve,
@@ -942,7 +1116,7 @@ export class SignalSendCoordinator implements SignalPreparedDelivery {
   }
 
   private poison(error: SignalQueueFailure): void {
-    this.persistenceFailure = error;
+    if (this.persistenceFailure === undefined) this.fatalFailure = error;
     this.quiesce();
   }
 
