@@ -177,7 +177,7 @@ describe('ImageIngestionRepository', () => {
   describe('createPending', () => {
     it('opens pending Ingestion stamped with the admission time', () => {
       const before = Date.now();
-      const result = repo.createPending({ messageId, threadId });
+      const result = repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       expect(result.isOk()).toBe(true);
       const { ingestion, created } = result._unsafeUnwrap();
       expect(created).toBe(true);
@@ -188,10 +188,21 @@ describe('ImageIngestionRepository', () => {
       expect(repo.findByMessage(messageId)._unsafeUnwrap()).toEqual(ingestion);
     });
 
-    it('adopts the existing row on repeated recovery without resetting it', () => {
-      const first = repo.createPending({ messageId, threadId })._unsafeUnwrap();
+    it('persists the admitted route with the pending row, in the database itself', () => {
+      const { ingestion } = repo
+        .createPending({ messageId, threadId, personaId: 'persona-route-9' })
+        ._unsafeUnwrap();
+      expect(ingestion.persona_id).toBe('persona-route-9');
+      const raw = db.prepare('SELECT persona_id FROM image_ingestions WHERE message_id = ?').get(messageId) as {
+        persona_id: string;
+      };
+      expect(raw.persona_id).toBe('persona-route-9');
+    });
 
-      const again = repo.createPending({ messageId, threadId })._unsafeUnwrap();
+    it('adopts the existing row on repeated recovery without resetting it', () => {
+      const first = repo.createPending({ messageId, threadId, personaId: 'persona-route-1' })._unsafeUnwrap();
+
+      const again = repo.createPending({ messageId, threadId, personaId: 'persona-route-1' })._unsafeUnwrap();
       expect(again.created).toBe(false);
       expect(again.ingestion.id).toBe(first.ingestion.id);
       // The admission clock must not move: redelivery cannot reset the budget.
@@ -201,17 +212,17 @@ describe('ImageIngestionRepository', () => {
     });
 
     it('adopts a completed row instead of reopening it', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       const queueItemId = insertQueueItem(threadId, messageId);
       repo.markComplete({ messageId, queueItemId });
 
-      const { ingestion, created } = repo.createPending({ messageId, threadId })._unsafeUnwrap();
+      const { ingestion, created } = repo.createPending({ messageId, threadId, personaId: 'persona-route-1' })._unsafeUnwrap();
       expect(created).toBe(false);
       expect(ingestion.status).toBe('completed');
     });
 
     it('blocks a second Ingestion owner for one message directly at the UNIQUE index', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       // UNIQUE (message_id) is the storage-level "one owner per message" guard:
       // even a writer that bypasses the repository cannot admit twice.
       expect(() =>
@@ -226,14 +237,14 @@ describe('ImageIngestionRepository', () => {
     });
 
     it('rejects an unknown message and writes nothing', () => {
-      const result = repo.createPending({ messageId: uuid(), threadId });
+      const result = repo.createPending({ messageId: uuid(), threadId, personaId: 'persona-route-1' });
       expect(result.isErr()).toBe(true);
       expect(String(result._unsafeUnwrapErr().message)).toMatch(/unknown message/i);
       expect(count('image_ingestions')).toBe(0);
     });
 
     it('rejects a cross-owner admission whose thread disagrees with its Message', () => {
-      const result = repo.createPending({ messageId, threadId: otherThreadId });
+      const result = repo.createPending({ messageId, threadId: otherThreadId, personaId: 'persona-route-1' });
       expect(result.isErr()).toBe(true);
       expect(String(result._unsafeUnwrapErr().message)).toMatch(/belongs to thread/i);
       expect(count('image_ingestions')).toBe(0);
@@ -241,7 +252,7 @@ describe('ImageIngestionRepository', () => {
 
     it('rejects an outbound message', () => {
       const outbound = insertMessage(threadId, 'outbound');
-      const result = repo.createPending({ messageId: outbound, threadId });
+      const result = repo.createPending({ messageId: outbound, threadId, personaId: 'persona-route-1' });
       expect(result.isErr()).toBe(true);
       expect(String(result._unsafeUnwrapErr().message)).toMatch(/outbound, not inbound/i);
     });
@@ -249,7 +260,7 @@ describe('ImageIngestionRepository', () => {
 
   describe('markComplete', () => {
     it('completes once with the queue item the Message was admitted as', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       const queueItemId = insertQueueItem(threadId, messageId);
 
       const result = repo.markComplete({ messageId, queueItemId });
@@ -263,7 +274,7 @@ describe('ImageIngestionRepository', () => {
     });
 
     it('reports alreadyCompleted and keeps the original queue item on repeats', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       const firstItem = insertQueueItem(threadId, messageId);
       repo.markComplete({ messageId, queueItemId: firstItem });
 
@@ -276,7 +287,7 @@ describe('ImageIngestionRepository', () => {
     });
 
     it('survives deletion of the queue item and is never inferred from queue existence', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       const queueItemId = insertQueueItem(threadId, messageId);
       repo.markComplete({ messageId, queueItemId });
 
@@ -303,12 +314,12 @@ describe('ImageIngestionRepository', () => {
     });
 
     it('errs on an empty queue item id', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       expect(repo.markComplete({ messageId, queueItemId: '' }).isErr()).toBe(true);
     });
 
     it('cannot be forced back to pending at the storage level', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       repo.markComplete({ messageId, queueItemId: insertQueueItem(threadId, messageId) });
       expect(() =>
         db.prepare(`UPDATE image_ingestions SET status = 'pending' WHERE message_id = ?`).run(messageId),
@@ -321,9 +332,9 @@ describe('ImageIngestionRepository', () => {
       const m1 = insertMessage(threadId);
       const m2 = insertMessage(threadId);
       const m3 = insertMessage(otherThreadId);
-      repo.createPending({ messageId: m1, threadId });
-      repo.createPending({ messageId: m2, threadId });
-      repo.createPending({ messageId: m3, threadId: otherThreadId });
+      repo.createPending({ messageId: m1, threadId, personaId: 'persona-route-1' });
+      repo.createPending({ messageId: m2, threadId, personaId: 'persona-route-1' });
+      repo.createPending({ messageId: m3, threadId: otherThreadId, personaId: 'persona-route-1' });
       repo.markComplete({ messageId: m2, queueItemId: insertQueueItem(threadId, m2) });
 
       const rows = repo.findPending({})._unsafeUnwrap();
@@ -334,8 +345,8 @@ describe('ImageIngestionRepository', () => {
     it('scopes by thread and never shows another thread row', () => {
       const mine = insertMessage(threadId);
       const theirs = insertMessage(otherThreadId);
-      repo.createPending({ messageId: mine, threadId });
-      repo.createPending({ messageId: theirs, threadId: otherThreadId });
+      repo.createPending({ messageId: mine, threadId, personaId: 'persona-route-1' });
+      repo.createPending({ messageId: theirs, threadId: otherThreadId, personaId: 'persona-route-1' });
 
       expect(repo.findPending({ threadId })._unsafeUnwrap().map((r) => r.message_id)).toEqual([mine]);
       expect(
@@ -345,8 +356,8 @@ describe('ImageIngestionRepository', () => {
 
     it('scopes by message and by both filters together', () => {
       const other = insertMessage(threadId);
-      repo.createPending({ messageId, threadId });
-      repo.createPending({ messageId: other, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
+      repo.createPending({ messageId: other, threadId, personaId: 'persona-route-1' });
 
       expect(repo.findPending({ messageId })._unsafeUnwrap().map((r) => r.message_id)).toEqual([
         messageId,
@@ -358,7 +369,7 @@ describe('ImageIngestionRepository', () => {
     it('bounds the sweep', () => {
       const ids = [insertMessage(threadId), insertMessage(threadId), insertMessage(threadId)];
       for (const id of ids) {
-        repo.createPending({ messageId: id, threadId });
+        repo.createPending({ messageId: id, threadId, personaId: 'persona-route-1' });
       }
       const limited = repo.findPending({ threadId, limit: 2 })._unsafeUnwrap();
       expect(limited).toHaveLength(2);
@@ -369,7 +380,7 @@ describe('ImageIngestionRepository', () => {
       // SQLite treats a negative LIMIT as unbounded, so an unchecked -1 would
       // select every pending row and break the documented bounded-sweep guarantee.
       for (let i = 0; i < 3; i += 1) {
-        repo.createPending({ messageId: insertMessage(threadId), threadId });
+        repo.createPending({ messageId: insertMessage(threadId), threadId, personaId: 'persona-route-1' });
       }
 
       for (const bad of [-1, -100, 0, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, 1.5]) {
@@ -389,7 +400,7 @@ describe('ImageIngestionRepository', () => {
     it('answers the sweep from the ledger alone, with no messages or queue join', () => {
       // Pending recovery must be independent of message history cutoffs, so the
       // plan may only ever touch the ledger table and its partial index.
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       const plan = db
         .prepare(
           `EXPLAIN QUERY PLAN
@@ -468,7 +479,7 @@ describe('ImageIngestionRepository', () => {
       // Routing decides the ledger: only the unrouted branch writes admission
       // records. A routed message gets Ingestion and no admission record; a
       // text-only message gets neither.
-      repo.createPending({ messageId, threadId })._unsafeUnwrap();
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' })._unsafeUnwrap();
       const routed = repo.findByMessage(messageId)._unsafeUnwrap() as ImageIngestionRow;
       expect(routed.status).toBe('pending');
       expect(repo.findAdmissionByMessage(messageId)._unsafeUnwrap()).toBeNull();
@@ -499,7 +510,7 @@ describe('ImageIngestionRepository', () => {
     });
 
     it('blocks an Ingestion row that leaves completed without a completion time', () => {
-      repo.createPending({ messageId, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
       expect(() =>
         db.prepare(`UPDATE image_ingestions SET status = 'completed' WHERE message_id = ?`).run(messageId),
       ).toThrow(/CHECK/i);
@@ -530,8 +541,8 @@ describe('ImageIngestionRepository', () => {
   describe('persistence across repository instances', () => {
     it('recovered processes see the same pending and completed rows', () => {
       const settled = insertMessage(threadId);
-      repo.createPending({ messageId, threadId });
-      repo.createPending({ messageId: settled, threadId });
+      repo.createPending({ messageId, threadId, personaId: 'persona-route-1' });
+      repo.createPending({ messageId: settled, threadId, personaId: 'persona-route-1' });
       repo.markComplete({ messageId: settled, queueItemId: insertQueueItem(threadId, settled) });
 
       const reopened = new ImageIngestionRepository(db);

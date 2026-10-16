@@ -100,12 +100,23 @@ export function registerChannels(
       }
     }
 
-    connector.onMessage((event: InboundEvent) => {
-      const pipelineResult = messagePipeline.handleInboundEvent(event);
-      if (pipelineResult.isErr()) {
+    // The pipeline is async: image-bearing events stage attachment bytes
+    // before atomic admission. Await its Result so failures are logged, and
+    // contain unexpected throws here so a connector never produces an
+    // unhandled rejection.
+    connector.onMessage(async (event: InboundEvent) => {
+      try {
+        const pipelineResult = await messagePipeline.handleInboundEvent(event);
+        if (pipelineResult.isErr()) {
+          logger.error(
+            { channelName: event.channelName, err: pipelineResult.error.message },
+            'channel-setup: inbound message pipeline failed',
+          );
+        }
+      } catch (cause) {
         logger.error(
-          { channelName: event.channelName, err: pipelineResult.error.message },
-          'channel-setup: inbound message pipeline failed',
+          { channelName: event.channelName, err: cause },
+          'channel-setup: inbound message pipeline threw',
         );
       }
     });
