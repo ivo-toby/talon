@@ -1056,11 +1056,12 @@ export class QueueRepository extends BaseRepository {
     const leases = new SignalDestinationLeaseRepository(this.db);
     return leases.find(checkpoint.accountUuid, checkpoint.destination).andThen((lease) => {
       if (lease === null) return ok(undefined);
+      // A ready waiter may terminate without ever owning this destination's lease.
       return lease.queueItemId === checkpoint.queueItemId &&
         lease.deliveryId === checkpoint.deliveryId &&
         lease.kind === checkpoint.kind
         ? leases.release(lease)
-        : err(new SignalStateError('CONFLICT'));
+        : ok(undefined);
     });
   }
 
