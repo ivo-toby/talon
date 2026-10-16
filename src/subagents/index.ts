@@ -33,5 +33,11 @@ export type {
   SubAgentResult,
   SubAgentRunFn,
   SubAgentServices,
+  FindingPersistence,
   LoadedSubAgent,
 } from './subagent-types.js';
+// Image service port handed to `SubAgentServices` (TASK-001 read port; the
+// TASK-011 Finding persistence port is `FindingPersistence` above).
+// Re-exported so runtime wiring (TASK-014) can type the injected adapters
+// without reaching into individual source files.
+export type { ImageAccess, ImageAccessRequest } from '../images/image-types.js';
