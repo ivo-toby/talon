@@ -1,3 +1,7 @@
+import {
+  extractProviderErrorDiagnostic,
+  type ProviderErrorDiagnostic,
+} from '../providers/openai-compatible/agent-cli/error-diagnostics.js';
 import { join } from 'node:path';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { v4 as uuidv4 } from 'uuid';
@@ -60,6 +64,7 @@ class AgentQueryAttemptError extends Error {
     message: string,
     readonly resumeSessionId: string | undefined,
     readonly sawEvents: boolean,
+    readonly diagnostic?: ProviderErrorDiagnostic,
   ) {
     super(message);
     this.name = 'AgentQueryAttemptError';
@@ -1007,8 +1012,17 @@ export class AgentRunner {
                         }
                         stream = strategy.run(queryInput);
                       } catch (cause) {
-                        const message = cause instanceof Error ? cause.message : String(cause);
-                        throw new AgentQueryAttemptError(message, resumeSessionId, false);
+                        const message = isVoiceTask
+                          ? this.toVoiceError(cause).message
+                          : cause instanceof Error
+                            ? cause.message
+                            : String(cause);
+                        throw new AgentQueryAttemptError(
+                          message,
+                          resumeSessionId,
+                          false,
+                          extractProviderErrorDiagnostic(cause),
+                        );
                       }
 
                       const iterator = stream[Symbol.asyncIterator]();
@@ -1041,7 +1055,7 @@ export class AgentRunner {
                               'agent-runner: run ended with provider error',
                             );
                             if (isVoiceTask) {
-                              throw new Error(VOICE_PROVIDER_ERROR_MESSAGE);
+                              throw this.toVoiceError(event);
                             }
                           }
                         } else if (event.type === 'tool_event') {
@@ -1135,7 +1149,7 @@ export class AgentRunner {
                           );
                         } else {
                           if (isVoiceTask) {
-                            throw new Error(VOICE_PROVIDER_ERROR_MESSAGE);
+                            throw this.toVoiceError(event);
                           }
                           throw new Error(event.message);
                         }
@@ -1204,7 +1218,12 @@ export class AgentRunner {
                     );
                     ignoredProviderToolUseIds.clear();
                     await Promise.allSettled(pendingProviderToolTasks);
-                    throw new AgentQueryAttemptError(error.message, resumeSessionId, sawEvents);
+                    throw new AgentQueryAttemptError(
+                      error.message,
+                      resumeSessionId,
+                      sawEvents,
+                      extractProviderErrorDiagnostic(error),
+                    );
                   } finally {
                     clearTimeout(timeoutId!);
                   }
@@ -1603,7 +1622,7 @@ export class AgentRunner {
             }
             this.ctx.repos.run.updateStatus(runId, 'failed', {
               ended_at: Date.now(),
-              error: error.message,
+              error: isVoiceTask ? this.voiceErrorDetail(error) : error.message,
             });
             // Mark A2A task as failed on agent execution error.
             if (isA2ATask && a2aTaskId) {
@@ -1628,7 +1647,7 @@ export class AgentRunner {
       if (!runFinalized) {
         this.ctx.repos.run.updateStatus(runId, 'failed', {
           ended_at: Date.now(),
-          error: error.message,
+          error: isVoiceTask ? this.voiceErrorDetail(error) : error.message,
         });
       }
       return err(error);
@@ -1642,14 +1661,31 @@ export class AgentRunner {
   }
 
   private toVoiceError(cause: unknown): Error {
-    const error = this.toError(cause);
-    if (
-      error.message === 'Agent query timed out before provider start' ||
-      /^Agent query timed out after [0-9.]+s$/.test(error.message)
-    ) {
-      return error;
+    let message: unknown;
+    try {
+      if (cause instanceof Error) {
+        message = Object.getOwnPropertyDescriptor(cause, 'message')?.value;
+      }
+    } catch {
+      // Error-like proxies must not escape the voice privacy boundary.
     }
-    return new Error(VOICE_PROVIDER_ERROR_MESSAGE);
+    if (
+      typeof message === 'string' &&
+      (message === 'Agent query timed out before provider start' ||
+        /^Agent query timed out after [0-9.]+s$/.test(message))
+    ) {
+      return Object.assign(new Error(message), {
+        diagnostic: { category: 'timeout', stage: 'agent-query' } satisfies ProviderErrorDiagnostic,
+      });
+    }
+    return Object.assign(new Error(VOICE_PROVIDER_ERROR_MESSAGE), {
+      diagnostic: extractProviderErrorDiagnostic(cause),
+    });
+  }
+
+  private voiceErrorDetail(error: Error): string {
+    const diagnostic = extractProviderErrorDiagnostic(error);
+    return diagnostic ? `${error.message} [${JSON.stringify(diagnostic)}]` : error.message;
   }
 
   private handleProviderToolEvent(

@@ -360,6 +360,12 @@ described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
 This setup skill does not install a PBX, provision keys or trunks, or place a
 paid call.
 
+Voice backend failures keep the user-facing error generic. For troubleshooting,
+inspect the failed run’s `error` field: when available it includes only allowlisted
+category, code, HTTP status and stage metadata. Provider messages, response bodies,
+headers and URLs are excluded. An `unknown` category or elapsed duration alone
+does not establish a timeout or root cause.
+
 If the operator supplies a current provider rate, `voice.usdPerMinute` makes
 the UI's voice amount a duration estimate. There is no default rate. Final
 provider usage remains `estimated`; a configured rate with known usage and an

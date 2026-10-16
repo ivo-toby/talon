@@ -913,7 +913,9 @@ describe('AgentRunner', () => {
       );
 
       const result = await runner.run(
-        makeQueueItem({ payload: { personaId: 'persona-001', content: 'VOICE_ROTATION_SENTINEL' } }),
+        makeQueueItem({
+          payload: { personaId: 'persona-001', content: 'VOICE_ROTATION_SENTINEL' },
+        }),
       );
 
       expect(result.isOk()).toBe(true);
@@ -2317,6 +2319,18 @@ describe('AgentRunner', () => {
       );
     });
 
+    it('sanitizes hostile Error proxies and copies only safe timeout metadata', () => {
+      const sanitize = (runner as unknown as { toVoiceError(value: unknown): Error }).toVoiceError.bind(runner);
+      const fail = () => { throw new Error('PRIVATE_SENTINEL'); };
+      expect(sanitize(new Proxy(new Error('PRIVATE_SENTINEL'), { getOwnPropertyDescriptor: fail })).message).toBe('Voice provider execution failed');
+      expect(sanitize(new Proxy(new Error('PRIVATE_SENTINEL'), { getPrototypeOf: fail })).message).toBe('Voice provider execution failed');
+      const timeout = Object.assign(new Error('Agent query timed out after 3s'), { cause: 'PRIVATE_SENTINEL', raw: 'PRIVATE_SENTINEL' });
+      const safe = sanitize(timeout);
+      expect(safe).not.toBe(timeout);
+      expect(safe.message).toBe(timeout.message);
+      expect(JSON.stringify(safe)).toBe('{"diagnostic":{"category":"timeout","stage":"agent-query"}}');
+    });
+
     it('sanitizes a voice provider error event before queue propagation', async () => {
       const request = makeVoiceBackendRequest(
         'voice-delegation-error-event',
@@ -2399,6 +2413,116 @@ describe('AgentRunner', () => {
       );
       expect(result._unsafeUnwrapErr().message).not.toContain('PRIVATE provider payload');
     });
+
+    it.each(['event', 'throw', 'sync'])(
+      'persists safe voice diagnostics for %s without exposing provider content',
+      async (failureMode) => {
+        const request = makeVoiceBackendRequest(
+          'voice-delegation-error-event',
+          'openai-compatible',
+          'gpt-4o',
+        );
+        const sink = {
+          executionStarted: vi.fn(() => ok(undefined)),
+          progress: vi.fn(() => ok(undefined)),
+          final: vi.fn(() => ok(undefined)),
+          failure: vi.fn(() => ok(undefined)),
+          unknown: vi.fn(() => ok(undefined)),
+        };
+        vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+          ok({
+            config: {
+              model: 'gpt-4o',
+              skills: [],
+              capabilities: { allow: [] },
+            },
+            systemPromptContent: 'You are a test bot.',
+            resolvedCapabilities: {
+              allow: ['channel.send:*', 'memory.access', 'schedule.manage'],
+              requireApproval: [],
+            },
+          } as any),
+        );
+        const failure = Object.assign(new Error('PRIVATE provider payload'), {
+          statusCode: 401,
+          diagnostic: { category: 'auth', httpStatus: 401, stage: 'wrapper-stream' },
+        });
+        async function* providerErrorStream() {
+          if (failureMode === 'throw') throw failure;
+          yield {
+            type: 'error' as const,
+            message: 'PRIVATE provider payload',
+            diagnostic: {
+              category: 'auth' as const,
+              httpStatus: 401,
+              stage: 'wrapper-stream' as const,
+              code: 'PRIVATE provider payload',
+              url: 'PRIVATE provider payload',
+            },
+          };
+        }
+        ctx.providerRegistry = {
+          get: vi.fn().mockReturnValue({
+            name: 'openai-compatible',
+            type: 'openai-compatible',
+            provider: {
+              name: 'openai-compatible',
+              skillLoaderTransport: 'stdio',
+              createExecutionStrategy: () => ({
+                type: 'sdk' as const,
+                supportsSessionResumption: false as const,
+                run: () => {
+                  if (failureMode === 'sync') throw failure;
+                  return providerErrorStream();
+                },
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({
+                inputTokens: 0,
+                metrics: { input_tokens: 0 },
+              }),
+            },
+            config: makeAgentRunnerProviderConfig({
+              command: 'openai-compatible',
+              contextWindowTokens: 1000,
+            }),
+          }),
+        } as any;
+        const gate = vi.fn(() => ok(undefined));
+        runner = new AgentRunner(ctx, {
+          voiceOutputSink: sink as any,
+          voiceExecutionGate: gate as any,
+        });
+
+        const result = await runner.run(
+          makeQueueItem({
+            type: 'collaboration',
+            payload: {
+              kind: 'voice_backend',
+              delegationId: request.delegationId,
+              sessionId: request.sessionId,
+              request,
+            },
+          }),
+        );
+
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr().message).toBe('Voice provider execution failed');
+        expect(ctx.repos.run.updateStatus).toHaveBeenCalledWith(
+          expect.any(String),
+          'failed',
+          expect.objectContaining({
+            error:
+              'Voice provider execution failed [{"category":"auth","httpStatus":401,"stage":"wrapper-stream"}]',
+          }),
+        );
+        expect(JSON.stringify(ctx.repos.run.updateStatus.mock.calls)).not.toContain(
+          'PRIVATE provider payload',
+        );
+        expect(JSON.stringify(result._unsafeUnwrapErr())).not.toContain('PRIVATE provider payload');
+      },
+    );
 
     it('sanitizes a thrown voice provider exception before queue propagation', async () => {
       const request = makeVoiceBackendRequest('voice-delegation-thrown-error');
@@ -2697,7 +2821,9 @@ describe('AgentRunner', () => {
       vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok(sentinel));
 
       const result = await runner.run(
-        makeQueueItem({ payload: { personaId: 'persona-001', content: 'VOICE_DB_RESTORE_PROMPT' } }),
+        makeQueueItem({
+          payload: { personaId: 'persona-001', content: 'VOICE_DB_RESTORE_PROMPT' },
+        }),
       );
 
       expect(result.isOk()).toBe(true);

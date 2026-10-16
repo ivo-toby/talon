@@ -2990,6 +2990,12 @@ Running autonomous agents across multiple channels means you lose visibility fas
 
 Talon uses the `@langfuse/otel` span processor to emit OpenTelemetry spans directly to Langfuse. Each agent run creates a trace with nested spans for generations, tool invocations, and retriever calls. When Langfuse is disabled (the default), a noop service replaces it — no Langfuse libraries are initialized and no network calls are made. If initialization fails when enabled, Talon logs a warning and falls back to the noop service rather than crashing, so `enabled: true` does not guarantee traces will be exported.
 
+Voice backend failures keep the user-facing error generic. For troubleshooting,
+inspect the failed run’s `error` field: when available it includes only allowlisted
+category, code, HTTP status and stage metadata. Provider messages, response bodies,
+headers and URLs are excluded. An `unknown` category or elapsed duration alone
+does not establish a timeout or root cause.
+
 Browser voice observations are content-free across the AgentRunner, provider tool
 events, host-tools bridge, and nested sub-agent spans. Server-owned correlation
 identifiers are bounded to 256 characters and allowlisted metadata to 4096
