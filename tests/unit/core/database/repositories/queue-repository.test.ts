@@ -15,11 +15,15 @@ import {
   SIGNAL_DELIVERY_REASONS,
 } from '../../../../../src/core/errors/error-types.js';
 import { runResultTransaction } from '../../../../../src/core/database/transaction.js';
-import { QueueRepository } from '../../../../../src/core/database/repositories/queue-repository.js';
+import {
+  QueueRepository,
+  type QueueStatus,
+} from '../../../../../src/core/database/repositories/queue-repository.js';
 import { BaseRepository } from '../../../../../src/core/database/repositories/base-repository.js';
 import { ThreadRepository } from '../../../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../../../src/core/database/repositories/channel-repository.js';
 import { createTestDb, uuid } from './helpers.js';
+import * as signalDeliveryState from '../../../../../src/queue/signal-delivery-state.js';
 import {
   SIGNAL_DELIVERY_CHECKPOINT_KEY,
   SIGNAL_DELIVERY_STARTED_KEY,
@@ -2283,6 +2287,589 @@ describe('QueueRepository', () => {
       const counts = repo.countByStatus()._unsafeUnwrap();
       expect(counts['pending']).toBeGreaterThanOrEqual(1);
       expect(counts['completed']).toBeUndefined();
+    });
+  });
+
+  describe('summarizeSavedSignalDeliveries', () => {
+    const statuses: readonly QueueStatus[] = [
+      'pending',
+      'failed',
+      'claimed',
+      'processing',
+      'completed',
+      'dead_letter',
+    ];
+
+    function prepare(overrides: Partial<SignalDeliveryCheckpoint> = {}): SignalDeliveryCheckpoint {
+      const item = makeItem();
+      repo.enqueue(item)._unsafeUnwrap();
+      const saved = checkpoint(item.id, overrides);
+      return repo.saveSignalCheckpoint(saved, saved.createdAt)._unsafeUnwrap();
+    }
+
+    function begin(saved: SignalDeliveryCheckpoint) {
+      const accounts = new SignalAccountStateRepository(db);
+      const account = accounts.getOrCreate(saved.accountUuid, saved.createdAt)._unsafeUnwrap();
+      return repo.beginSignalChunk(saved, account.revision, saved.createdAt)._unsafeUnwrap();
+    }
+
+    function deliver(): SignalDeliveryCheckpoint {
+      const saved = prepare({ chunks: ['firstsecond'] });
+      return repo
+        .settleSignalChunk(begin(saved), { kind: 'accepted', successCount: 1 }, saved.createdAt)
+        ._unsafeUnwrap();
+    }
+
+    function terminate(reason: (typeof SIGNAL_DELIVERY_REASONS)[number]): SignalDeliveryCheckpoint {
+      const saved = prepare();
+      return repo
+        .terminateSignalDelivery(
+          saved,
+          new SignalDeliveryError({
+            reason,
+            outcome: 'NOT_SENT',
+            acceptedChunks: 0,
+            currentChunkAcceptance: 'unwritten',
+            successCount: 0,
+            failureCount: 0,
+            retryScope: 'none',
+          }),
+          saved.createdAt,
+        )
+        ._unsafeUnwrap();
+    }
+
+    function setStatus(id: string, status: QueueStatus): void {
+      db.prepare('UPDATE queue_items SET status = ? WHERE id = ?').run(status, id);
+    }
+
+    function storedState(): unknown[] {
+      return [
+        'queue_items',
+        'runs',
+        'signal_account_state',
+        'signal_destination_leases',
+        'messages',
+        'audit_log',
+        'background_tasks',
+      ].map((table) => db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all());
+    }
+
+    it('counts real deferred, claimed and behind-head saved work when eligibility returns nothing', () => {
+      const head = prepare();
+      repo.deferSignalDelivery(head, 60_000, head.createdAt)._unsafeUnwrap();
+      const active = prepare({ kind: 'background' });
+      setStatus(active.queueItemId, 'claimed');
+      prepare();
+      const ordinary = makeItem();
+      repo.enqueue(ordinary)._unsafeUnwrap();
+      repo.fail(ordinary.id, 'ordinary failure', Date.now() + 60_000)._unsafeUnwrap();
+      expect(repo.findPending(head.createdAt)._unsafeUnwrap()).toEqual([]);
+      expect(repo.countByStatus()._unsafeUnwrap()).toMatchObject({
+        failed: 2,
+        claimed: 1,
+        pending: 1,
+      });
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 3,
+        terminal: 0,
+        reasons: [],
+      });
+    });
+
+    describe.each(['ready', 'in_flight', 'delivered'] as const)('%s phase', (phase) => {
+      it.each(['pending', 'failed', 'claimed', 'processing'] as const)(
+        'counts unfinished %s work even after expiry without performing recovery or writes',
+        (status) => {
+          const initial = phase === 'delivered' ? deliver() : prepare({ kind: 'background' });
+          const saved = phase === 'in_flight' ? begin(initial).checkpoint : initial;
+          setStatus(saved.queueItemId, status);
+          const before = storedState();
+          const changes = db.prepare('SELECT total_changes() AS count').get();
+          db.pragma('query_only = ON');
+          try {
+            expect(repo.summarizeSavedSignalDeliveries(saved.expiresAt + 1)._unsafeUnwrap()).toEqual({
+              pending: 1,
+              terminal: 0,
+              reasons: [],
+            });
+            expect(storedState()).toEqual(before);
+            expect(db.prepare('SELECT total_changes() AS count').get()).toEqual(changes);
+          } finally {
+            db.pragma('query_only = OFF');
+          }
+        },
+      );
+    });
+
+    it('keeps delivered local-finalization failures pending, excludes successful completion, then respects purge', () => {
+      const saved = deliver();
+      const localFailure = new SignalStateError('DATABASE');
+      expect(
+        repo
+          .finalizeSignalDelivery(saved, () => err(localFailure), saved.createdAt)
+          ._unsafeUnwrapErr(),
+      ).toBe(localFailure);
+      repo.deferSignalDelivery(saved, 60_000, saved.expiresAt + 1)._unsafeUnwrap();
+      expect(repo.summarizeSavedSignalDeliveries(saved.expiresAt + 2)._unsafeUnwrap()).toEqual({
+        pending: 1,
+        terminal: 0,
+        reasons: [],
+      });
+      repo.finalizeSignalDelivery(saved, () => ok(undefined), saved.expiresAt + 2)._unsafeUnwrap();
+      expect(repo.summarizeSavedSignalDeliveries(saved.expiresAt + 3)._unsafeUnwrap()).toEqual({
+        pending: 0,
+        terminal: 0,
+        reasons: [],
+      });
+      expect(repo.purge(['completed'])._unsafeUnwrap()).toBe(1);
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 0,
+        terminal: 0,
+        reasons: [],
+      });
+    });
+
+    it('groups all actual fixed terminal reasons deterministically until purge, never queue error text', () => {
+      for (const reason of [...SIGNAL_DELIVERY_REASONS].reverse()) terminate(reason);
+      terminate('UNKNOWN_ACCEPTANCE');
+      prepare();
+      const ordinary = makeItem();
+      repo.enqueue(ordinary)._unsafeUnwrap();
+      repo.markDeadLetter(ordinary.id, 'PRIVATE_BODY_AND_SIGNAL_ID')._unsafeUnwrap();
+      const summary = repo.summarizeSavedSignalDeliveries()._unsafeUnwrap();
+      expect(summary).toEqual({
+        pending: 1,
+        terminal: SIGNAL_DELIVERY_REASONS.length + 1,
+        reasons: SIGNAL_DELIVERY_REASONS.map((reason) => ({
+          reason,
+          count: reason === 'UNKNOWN_ACCEPTANCE' ? 2 : 1,
+        })),
+      });
+      expect(JSON.stringify(summary)).not.toMatch(/PRIVATE|aaaaaaaa|firstsecond|delivery-/);
+      expect(repo.purge(['dead_letter'])._unsafeUnwrap()).toBe(SIGNAL_DELIVERY_REASONS.length + 2);
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 1,
+        terminal: 0,
+        reasons: [],
+      });
+      repo.purge(['pending'])._unsafeUnwrap();
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 0,
+        terminal: 0,
+        reasons: [],
+      });
+    });
+
+    it.each(['PARTIAL', 'UNKNOWN'] as const)(
+      'counts actual %s chunk settlement without changing its reservation classification',
+      (outcome) => {
+        const saved = prepare();
+        const active = begin(saved);
+        const terminal = repo
+          .settleSignalChunk(
+            active,
+            {
+              kind: 'terminal',
+              failure: new SignalDeliveryError({
+                reason: outcome === 'PARTIAL' ? 'PARTIAL_ACCEPTANCE' : 'UNKNOWN_ACCEPTANCE',
+                outcome,
+                acceptedChunks: 0,
+                currentChunkAcceptance: outcome === 'PARTIAL' ? 'partial' : 'unknown',
+                successCount: outcome === 'PARTIAL' ? 1 : 0,
+                failureCount: 1,
+                retryScope: 'none',
+              }),
+            },
+            saved.createdAt,
+          )
+          ._unsafeUnwrap();
+        const before = storedState();
+        expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+          pending: 0,
+          terminal: 1,
+          reasons: [{ reason: terminal.terminalReason, count: 1 }],
+        });
+        expect(storedState()).toEqual(before);
+      },
+    );
+
+    it.each(statuses)('retains validated terminal work even with generic %s status', (status) => {
+      const saved = terminate('TARGET_REFUSED');
+      if (status === 'completed') repo.complete(saved.queueItemId)._unsafeUnwrap();
+      else setStatus(saved.queueItemId, status);
+      const before = storedState();
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 0,
+        terminal: 1,
+        reasons: [{ reason: 'TARGET_REFUSED', count: 1 }],
+      });
+      expect(storedState()).toEqual(before);
+    });
+
+    it.each([
+      ['ready', 'completed'],
+      ['in_flight', 'completed'],
+      ['ready', 'dead_letter'],
+      ['in_flight', 'dead_letter'],
+      ['delivered', 'dead_letter'],
+    ] as const)(
+      'refuses generic %s + %s inconsistency without repair or false totals',
+      (phase, status) => {
+        const initial = phase === 'delivered' ? deliver() : prepare();
+        const saved = phase === 'in_flight' ? begin(initial).checkpoint : initial;
+        if (status === 'completed') repo.complete(saved.queueItemId)._unsafeUnwrap();
+        else repo.markDeadLetter(saved.queueItemId, 'PRIVATE_BODY_AND_SIGNAL_ID')._unsafeUnwrap();
+        const before = storedState();
+        const failure = repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr();
+        expect(failure).toBeInstanceOf(SignalCheckpointError);
+        expect(failure).toMatchObject({ reason: 'INVALID', cause: undefined });
+        expect(failure.message).not.toMatch(/PRIVATE|aaaaaaaa|firstsecond|delivery-/);
+        expect(storedState()).toEqual(before);
+      },
+    );
+
+    it('refuses an unknown persisted queue status without exposing it or inventing a lifecycle state', () => {
+      const saved = terminate('TARGET_REFUSED');
+      db.pragma('ignore_check_constraints = ON');
+      db.prepare("UPDATE queue_items SET status = 'PRIVATE_BODY_AND_SIGNAL_ID' WHERE id = ?").run(
+        saved.queueItemId,
+      );
+      db.pragma('ignore_check_constraints = OFF');
+      const before = storedState();
+      const failure = repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr();
+      expect(failure).toBeInstanceOf(SignalCheckpointError);
+      expect(failure).toMatchObject({ reason: 'INVALID', cause: undefined });
+      expect(failure.message).not.toContain('PRIVATE');
+      expect(storedState()).toEqual(before);
+    });
+
+    it('can summarize ordinary legacy queues without Signal tables or a full run schema', () => {
+      const legacy = new Database(':memory:');
+      try {
+        legacy.exec(`CREATE TABLE queue_items (id TEXT PRIMARY KEY, thread_id TEXT, message_id TEXT, type TEXT, status TEXT,
+            attempts INTEGER, max_attempts INTEGER, next_retry_at INTEGER, error TEXT, payload TEXT, claimed_at INTEGER, created_at INTEGER, updated_at INTEGER);`);
+        const ordinary = new QueueRepository(legacy);
+        ordinary.enqueue(makeItem({ payload: 'not json' }))._unsafeUnwrap();
+        expect(ordinary.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+          pending: 0,
+          terminal: 0,
+          reasons: [],
+        });
+      } finally {
+        legacy.close();
+      }
+    });
+
+    it.each(statuses)(
+      'excludes ordinary and standalone invocation markers in %s status',
+      (status) => {
+        const ordinary = makeItem();
+        const invoked = makeItem();
+        repo.enqueue(ordinary)._unsafeUnwrap();
+        repo.enqueue(invoked)._unsafeUnwrap();
+        repo
+          .markSignalDeliveryStarted(
+            {
+              version: 1,
+              queueItemId: invoked.id,
+              deliveryId: 'explicit-operation',
+              purpose: 'explicit',
+              startedAt: 1,
+            },
+            null,
+            Date.now(),
+          )
+          ._unsafeUnwrap();
+        setStatus(ordinary.id, status);
+        setStatus(invoked.id, status);
+        const before = storedState();
+        expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+          pending: 0,
+          terminal: 0,
+          reasons: [],
+        });
+        expect(storedState()).toEqual(before);
+      },
+    );
+
+    it.each([
+      'not json',
+      'null',
+      '[]',
+      '42',
+      '"legacy"',
+      JSON.stringify({
+        text: SIGNAL_DELIVERY_STARTED_KEY,
+        nested: { [SIGNAL_DELIVERY_CHECKPOINT_KEY]: null },
+      }),
+    ])('preserves legacy ordinary payload bytes: %s', (payload) => {
+      repo.enqueue(makeItem({ payload }))._unsafeUnwrap();
+      const before = storedState();
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 0,
+        terminal: 0,
+        reasons: [],
+      });
+      expect(storedState()).toEqual(before);
+    });
+
+    it.each([
+      '{"__talond_sig',
+      String.raw`{"\u005f\u005ftalond_signal_delivery_v1":`,
+      JSON.stringify({ [SIGNAL_DELIVERY_CHECKPOINT_KEY]: null }),
+      JSON.stringify({ [SIGNAL_DELIVERY_CHECKPOINT_KEY]: { phase: 'ready' } }),
+      JSON.stringify({ [SIGNAL_DELIVERY_STARTED_KEY]: null }),
+      '[] /* __talond_signal_delivery_v1 */',
+    ])('returns actual safe typed error for invalid reserved payload: %s', (payload) => {
+      prepare(); // A valid saved row must not turn a later corrupt row into partial/healthy totals.
+      repo.enqueue(makeItem({ payload }))._unsafeUnwrap();
+      const before = storedState();
+      const failure = repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr();
+      expect(failure).toBeInstanceOf(SignalCheckpointError);
+      expect(failure).toMatchObject({ reason: 'INVALID', cause: undefined });
+      expect(storedState()).toEqual(before);
+    });
+
+    it.each(['completed', 'dead_letter'] as const)(
+      'does not hide corrupt reserved state in retained %s rows',
+      (status) => {
+        const saved = prepare();
+        db.prepare('UPDATE queue_items SET status = ?, payload = ? WHERE id = ?').run(
+          status,
+          JSON.stringify({ [SIGNAL_DELIVERY_CHECKPOINT_KEY]: null }),
+          saved.queueItemId,
+        );
+        const before = storedState();
+        expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr()).toBeInstanceOf(
+          SignalCheckpointError,
+        );
+        expect(storedState()).toEqual(before);
+      },
+    );
+
+    it('preserves the exact underlying validation error instance from real reserved bytes', () => {
+      repo
+        .enqueue(makeItem({ payload: JSON.stringify({ [SIGNAL_DELIVERY_CHECKPOINT_KEY]: null }) }))
+        ._unsafeUnwrap();
+      const inspect = vi.spyOn(signalDeliveryState, 'inspectSignalDeliveryState');
+      try {
+        const result = repo.summarizeSavedSignalDeliveries();
+        expect(inspect).toHaveBeenCalledOnce();
+        const underlying = inspect.mock.results[0]?.value;
+        expect(underlying).toBeDefined();
+        expect(result._unsafeUnwrapErr()).toBe(underlying?._unsafeUnwrapErr());
+      } finally {
+        inspect.mockRestore();
+      }
+    });
+
+    it('returns the codec size error rather than accepting a raw ready phase', () => {
+      const saved = prepare();
+      db.prepare('UPDATE queue_items SET payload = ? WHERE id = ?').run(
+        JSON.stringify({
+          [SIGNAL_DELIVERY_CHECKPOINT_KEY]: {
+            ...saved,
+            personaId: 'p'.repeat(SIGNAL_CHECKPOINT_MAX_BYTES),
+          },
+        }),
+        saved.queueItemId,
+      );
+      const before = storedState();
+      const failure = repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr();
+      expect(failure).toBeInstanceOf(SignalCheckpointError);
+      expect(failure).toMatchObject({ reason: 'TOO_LARGE', cause: undefined });
+      expect(storedState()).toEqual(before);
+    });
+
+    it.each(['queueItemId', 'threadId', 'runId', 'terminalReason'] as const)(
+      'validates checkpoint %s rather than trusting raw phase labels',
+      (field) => {
+        const saved = terminate('TARGET_REFUSED');
+        db.prepare('UPDATE queue_items SET payload = ? WHERE id = ?').run(
+          JSON.stringify({
+            [SIGNAL_DELIVERY_CHECKPOINT_KEY]: { ...saved, [field]: 'PRIVATE_BODY_AND_SIGNAL_ID' },
+          }),
+          saved.queueItemId,
+        );
+        const before = storedState();
+        const failure = repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr();
+        expect(failure).toBeInstanceOf(SignalCheckpointError);
+        expect(failure).toMatchObject({
+          reason: field === 'terminalReason' ? 'INVALID' : 'IDENTITY_MISMATCH',
+          cause: undefined,
+        });
+        expect(failure.message).not.toContain('PRIVATE');
+        expect(storedState()).toEqual(before);
+      },
+    );
+
+    it('retains active-run identity validation, but allows genuine completed delivered history', () => {
+      db.prepare(
+        "INSERT INTO personas (id, name, created_at, updated_at) VALUES ('persona', 'persona', 1, 1)",
+      ).run();
+      const item = makeItem();
+      repo.enqueue(item)._unsafeUnwrap();
+      db.prepare(
+        "INSERT INTO runs (id, thread_id, persona_id, provider_name, queue_item_id, status, created_at) VALUES ('owned-run', ?, 'persona', 'test', ?, 'running', 1)",
+      ).run(threadId, item.id);
+      const saved = checkpoint(item.id, { runId: 'owned-run', chunks: ['firstsecond'] });
+      repo.saveSignalCheckpoint(saved, saved.createdAt)._unsafeUnwrap();
+      db.prepare("UPDATE runs SET status = 'completed' WHERE id = 'owned-run'").run();
+      const before = storedState();
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr()).toMatchObject({
+        reason: 'IDENTITY_MISMATCH',
+      });
+      expect(storedState()).toEqual(before);
+      db.prepare("UPDATE runs SET status = 'running' WHERE id = 'owned-run'").run();
+      const delivered = repo
+        .settleSignalChunk(begin(saved), { kind: 'accepted', successCount: 1 }, saved.createdAt)
+        ._unsafeUnwrap();
+      repo
+        .finalizeSignalDelivery(
+          delivered,
+          () => {
+            db.prepare("UPDATE runs SET status = 'completed' WHERE id = 'owned-run'").run();
+            return ok(undefined);
+          },
+          saved.createdAt,
+        )
+        ._unsafeUnwrap();
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 0,
+        terminal: 0,
+        reasons: [],
+      });
+    });
+
+    it.each(['reservation', 'lease'] as const)(
+      'fails closed for markerless corruption backed by %s ownership',
+      (kind) => {
+        const saved = prepare();
+        const ownership = begin(saved);
+        if (kind === 'lease')
+          new SignalAccountStateRepository(db)
+            .clearReservation(
+              saved.accountUuid,
+              ownership.account.revision,
+              ownership.reservation,
+              saved.createdAt,
+            )
+            ._unsafeUnwrap();
+        db.prepare("UPDATE queue_items SET payload = 'damaged' WHERE id = ?").run(saved.queueItemId);
+        const before = storedState();
+        const failure = repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr();
+        expect(failure).toBeInstanceOf(SignalCheckpointError);
+        expect(failure).toMatchObject({ reason: 'INVALID' });
+        expect(storedState()).toEqual(before);
+      },
+    );
+
+    it('does not invent saved work from a post-purge orphan reservation or classify that reservation', () => {
+      const saved = prepare();
+      begin(saved);
+      repo.purge(['pending'])._unsafeUnwrap();
+      const before = storedState();
+      expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+        pending: 0,
+        terminal: 0,
+        reasons: [],
+      });
+      expect(storedState()).toEqual(before);
+      expect(new SignalAccountStateRepository(db).findReserved()._unsafeUnwrap()).toHaveLength(1);
+    });
+
+    it('reads own uncommitted rows on the repository connection without committing the enclosing Result', () => {
+      const sentinel = new SignalStateError('CONFLICT');
+      const before = storedState();
+      const result = runResultTransaction(
+        (fn) => repo.transaction(fn),
+        () => {
+          prepare();
+          expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+            pending: 1,
+            terminal: 0,
+            reasons: [],
+          });
+          return err(sentinel);
+        },
+      );
+      expect(result._unsafeUnwrapErr()).toBe(sentinel);
+      expect(storedState()).toEqual(before);
+    });
+
+    it('shares a consistent WAL snapshot while another connection commits, then reads the new snapshot', async () => {
+      const saved = deliver();
+      restartDirectory = mkdtempSync(join(tmpdir(), 'talon-summary-snapshot-'));
+      const filename = join(restartDirectory, 'queue.sqlite');
+      await db.backup(filename);
+      db.close();
+      db = new Database(filename);
+      db.pragma('journal_mode = WAL');
+      db.pragma('foreign_keys = ON');
+      repo = new QueueRepository(db);
+      const otherDb = new Database(filename);
+      otherDb.pragma('foreign_keys = ON');
+      try {
+        const other = new QueueRepository(otherDb);
+        repo.transaction(() => {
+          expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+            pending: 1,
+            terminal: 0,
+            reasons: [],
+          });
+          other.finalizeSignalDelivery(saved, () => ok(undefined), saved.createdAt)._unsafeUnwrap();
+          expect(other.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+            pending: 0,
+            terminal: 0,
+            reasons: [],
+          });
+          expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+            pending: 1,
+            terminal: 0,
+            reasons: [],
+          });
+        });
+        expect(repo.summarizeSavedSignalDeliveries()._unsafeUnwrap()).toEqual({
+          pending: 0,
+          terminal: 0,
+          reasons: [],
+        });
+      } finally {
+        otherDb.close();
+      }
+    });
+
+    it('does not advance the repository ordering clock', () => {
+      BaseRepository.__resetMonotonicClockForTests();
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(1_000);
+      try {
+        const first = repo.enqueue(makeItem())._unsafeUnwrap();
+        repo.summarizeSavedSignalDeliveries()._unsafeUnwrap();
+        const second = repo.enqueue(makeItem())._unsafeUnwrap();
+        expect(second.created_at).toBe(first.created_at + 1);
+      } finally {
+        clock.mockRestore();
+        BaseRepository.__resetMonotonicClockForTests();
+      }
+    });
+
+    it.each([-1, NaN, Infinity, 1.5])(
+      'returns typed INVALID_INPUT for invalid time %s even on an empty queue',
+      (now) => {
+        const failure = repo.summarizeSavedSignalDeliveries(now)._unsafeUnwrapErr();
+        expect(failure).toBeInstanceOf(SignalStateError);
+        expect(failure).toMatchObject({ reason: 'INVALID_INPUT', cause: undefined });
+      },
+    );
+
+    it('returns safe typed DATABASE on genuine SQLite read failure, not a healthy empty summary', () => {
+      prepare();
+      db.exec('ALTER TABLE queue_items RENAME TO unavailable_queue');
+      const failure = repo.summarizeSavedSignalDeliveries()._unsafeUnwrapErr();
+      expect(failure).toBeInstanceOf(SignalStateError);
+      expect(failure).toMatchObject({ reason: 'DATABASE', cause: undefined });
+      expect(failure.message).toBe('Signal state operation failed: DATABASE');
     });
   });
 });

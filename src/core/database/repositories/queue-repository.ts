@@ -16,6 +16,7 @@ import {
   DeliveryCancelled,
   SignalDeliveryError,
   SIGNAL_DELIVERY_REASONS,
+  type SignalDeliveryReason,
 } from '../../errors/error-types.js';
 import {
   SignalAccountStateRepository,
@@ -101,6 +102,13 @@ export type EnqueueInput = Pick<
   QueueItemRow,
   'id' | 'thread_id' | 'message_id' | 'type' | 'payload' | 'max_attempts'
 >;
+
+/** Safe current saved-work counts, not eligibility, send authority or a lifetime delivery total. */
+export interface SavedSignalDeliverySummary {
+  readonly pending: number;
+  readonly terminal: number;
+  readonly reasons: Array<{ readonly reason: SignalDeliveryReason; readonly count: number }>;
+}
 
 interface SignalQueueSnapshot {
   readonly row: QueueItemRow;
@@ -212,6 +220,55 @@ export class QueueRepository extends BaseRepository {
   /** Read before dispatch: a checkpoint wins over the invocation guard; invalid state never means ordinary. */
   inspectSignalDelivery(id: string, now: number): Result<SignalDeliveryState, SignalQueueFailure> {
     return this.signalAtomic(() => this.signalSnapshot(id, now, true).map(({ state }) => state));
+  }
+
+  /**
+   * Current retained saved work, including deferred/active/blocked/local-finalization rows.
+   * One read transaction on this connection; never recover, expire, claim or advance a clock.
+   * Stream IDs and validate one payload at a time: retained memory does not grow with history.
+   * Any invalid reserved state makes the entire summary unavailable, not partial/healthy zeros.
+   */
+  summarizeSavedSignalDeliveries(
+    now = Date.now(),
+  ): Result<SavedSignalDeliverySummary, SignalQueueFailure> {
+    return this.signalAtomic(() => {
+      if (!Number.isSafeInteger(now) || now < 0) return err(new SignalStateError('INVALID_INPUT'));
+      let pending = 0;
+      let terminal = 0;
+      const counts = new Map<SignalDeliveryReason, number>();
+      const rows = this.db.prepare<[], { id: string }>('SELECT id FROM queue_items').iterate();
+      for (const { id } of rows) {
+        // Reuse dispatch validation, including legacy ordinary compatibility and independent ownership.
+        const snapshot = this.signalSnapshot(id, now, true);
+        if (snapshot.isErr()) return err(snapshot.error);
+        const { row, state } = snapshot.value;
+        if (state.kind !== 'checkpoint') continue;
+        if (!this.signalActive(row) && row.status !== 'completed' && row.status !== 'dead_letter')
+          return err(new SignalCheckpointError('INVALID'));
+        const checkpoint = state.checkpoint;
+        if (checkpoint.phase === 'terminal') {
+          const reason = checkpoint.terminalReason;
+          if (reason === undefined) return err(new SignalCheckpointError('INVALID'));
+          terminal++;
+          counts.set(reason, (counts.get(reason) ?? 0) + 1);
+        } else if (checkpoint.phase === 'delivered' && row.status === 'completed') {
+          continue;
+        } else if (this.signalActive(row)) {
+          pending++;
+        } else {
+          // Generic complete/dead-letter calls can leave a codec-valid but inconsistent checkpoint.
+          return err(new SignalCheckpointError('INVALID'));
+        }
+      }
+      return ok({
+        pending,
+        terminal,
+        reasons: SIGNAL_DELIVERY_REASONS.flatMap((reason) => {
+          const count = counts.get(reason);
+          return count === undefined ? [] : [{ reason, count }];
+        }),
+      });
+    });
   }
 
   /** First preparation only. Idempotent for identical saved text, never replaces an existing checkpoint. */
