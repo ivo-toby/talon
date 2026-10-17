@@ -14,22 +14,27 @@ import type { ChannelRegistry } from '../../../src/channels/channel-registry.js'
 import type { TalondConfig, BindingConfig } from '../../../src/core/config/config-types.js';
 
 // Capture the handler channel-setup registers on the connector so the
-// async awaiting behavior can be exercised directly.
+// async awaiting behavior can be exercised directly, plus the factory
+// arguments so the images-settings passthrough can be asserted.
 const connectorCapture = vi.hoisted(() => ({
   handler: undefined as ((event: InboundEvent) => void | Promise<void>) | undefined,
+  factoryArgs: [] as unknown[][],
 }));
 
 vi.mock('../../../src/daemon/channel-factory.js', () => ({
-  createConnector: () => ({
-    type: 'telegram',
-    name: 'tg',
-    start: async () => {},
-    stop: async () => {},
-    send: async () => ok(undefined),
-    onMessage: (fn: (event: InboundEvent) => void | Promise<void>) => {
-      connectorCapture.handler = fn;
-    },
-  }),
+  createConnector: (...args: unknown[]) => {
+    connectorCapture.factoryArgs.push(args);
+    return {
+      type: 'telegram',
+      name: 'tg',
+      start: async () => {},
+      stop: async () => {},
+      send: async () => ok(undefined),
+      onMessage: (fn: (event: InboundEvent) => void | Promise<void>) => {
+        connectorCapture.handler = fn;
+      },
+    };
+  },
 }));
 
 const logger = pino({ level: 'silent' });
@@ -188,6 +193,7 @@ describe('registerChannels() inbound handler', () => {
     lines = [];
     log = pino({ level: 'info' }, { write: (chunk: unknown) => lines.push(String(chunk)) });
     connectorCapture.handler = undefined;
+    connectorCapture.factoryArgs.length = 0;
   });
 
   afterEach(() => {
@@ -199,11 +205,32 @@ describe('registerChannels() inbound handler', () => {
       {
         channels: [{ name: 'tg', type: 'telegram', enabled: true, config: {} }],
         personas: [],
+        images: {
+          maxInputBytes: 12_345_678,
+          maxPerMessage: 7,
+          maxPerInspection: 5,
+          maxEdge: 4096,
+          jpegQuality: 85,
+          retentionHours: 24,
+        },
       } as unknown as TalondConfig,
       { register: vi.fn() } as unknown as ChannelRegistry,
       { channelRepo, bindingRepo, personaRepo, messagePipeline: pipeline, logger: log },
     );
   }
+
+  it('forwards the validated images limits to the connector factory', async () => {
+    const pipeline = {
+      handleInboundEvent: vi.fn().mockResolvedValue(ok('enqueued')),
+    } as unknown as MessagePipeline;
+    register(pipeline);
+
+    expect(connectorCapture.factoryArgs).toHaveLength(1);
+    expect(connectorCapture.factoryArgs[0]![4]).toEqual({
+      maxInputBytes: 12_345_678,
+      maxPerMessage: 7,
+    });
+  });
 
   it('awaits the async pipeline Result and logs Err outcomes', async () => {
     const pipeline = {

@@ -66,6 +66,8 @@ interface Fixture {
   config: ImagesConfig;
   now: number;
   normalizeCalls: Array<{ source: Buffer; tempFilePath: string }>;
+  /** Structured log events captured from the coordinator's logger spy. */
+  logEvents: Array<{ level: 'info' | 'warn'; payload: Record<string, unknown> }>;
   normalize: NormalizeFn;
   coordinator: ImageIngestionCoordinator;
   threadId: string;
@@ -128,6 +130,19 @@ function setup(normalize?: NormalizeFn): Fixture {
   };
 
   const normalizeCalls: Fixture['normalizeCalls'] = [];
+  const logEvents: Fixture['logEvents'] = [];
+  const spyLogger = {
+    info: (payload: Record<string, unknown>): void => {
+      logEvents.push({ level: 'info', payload });
+    },
+    warn: (payload: Record<string, unknown>): void => {
+      logEvents.push({ level: 'warn', payload });
+    },
+    error: (): void => undefined,
+    debug: (): void => undefined,
+    trace: (): void => undefined,
+    fatal: (): void => undefined,
+  } as unknown as pino.Logger;
   const fixture = {
     db,
     store,
@@ -148,6 +163,7 @@ function setup(normalize?: NormalizeFn): Fixture {
     config,
     now: T0,
     normalizeCalls,
+    logEvents,
     normalize: normalize ?? successNormalize({ normalizeCalls }),
   } as Fixture;
 
@@ -162,7 +178,7 @@ function setup(normalize?: NormalizeFn): Fixture {
     threadRepo,
     channelRepo,
     imagesConfig: config,
-    logger: pino({ level: 'silent' }),
+    logger: spyLogger,
     now: () => fixture.now,
     normalize: (source, options) => fixture.normalize(source, options),
   });
@@ -1142,6 +1158,307 @@ describe('ImageIngestionCoordinator', () => {
       expect(image.rejection_reason).toBe('conversion_failed');
       expect(image.attempt_count).toBe(1);
       expect(f.normalizeCalls).toHaveLength(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Delivery settlement hygiene
+  // -------------------------------------------------------------------------
+
+  describe('delivery settlement hygiene', () => {
+    it('a rejecting normalizer does not leak an unhandled rejection (F5)', async () => {
+      // Regression: the drain instrumentation used `work.finally(...)`,
+      // which derives a SECOND promise that rejects alongside `work` with
+      // no handler attached — the daemon's process-level
+      // unhandledRejection handler (signal-handler.ts) exits on exactly
+      // that shape. Both settlement branches must be consumed.
+      const rejections: unknown[] = [];
+      const onRejection = (reason: unknown): void => {
+        rejections.push(reason);
+      };
+      process.on('unhandledRejection', onRejection);
+      try {
+        const local = setup(async () => {
+          throw new Error('normalizer exploded');
+        });
+        try {
+          const result = await local.coordinator.ingestMessage(local.makeRequest());
+          // The delivery itself resolves as a typed error, never rejects.
+          expect(result.isErr()).toBe(true);
+          // Give any orphan derived rejection a chance to surface.
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(rejections).toEqual([]);
+        } finally {
+          local.db.close();
+          fs.rmSync(local.tmpDir, { recursive: true, force: true });
+        }
+      } finally {
+        process.off('unhandledRejection', onRejection);
+      }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Shutdown retirement (F3)
+  // -------------------------------------------------------------------------
+
+  describe('shutdown retirement', () => {
+    it('a failed staging write with partial staging is cleaned on a terminal pre-admission exit (R3)', async () => {
+      // The staging write MATERIALIZES its directory, then fails. The
+      // delivery unwinds before admission (here: the admission lookup
+      // fails — the same unwind path the shutdown fence uses). That
+      // unwind must remove EVERY attempted staging id: the plan-level
+      // view marks the failed attempt rejected and would leak its
+      // partial directory.
+      const local = setup();
+      const originalWrite = local.store.writeStagingSource.bind(local.store);
+      local.store.writeStagingSource = async (imageId: string, bytes: Buffer) => {
+        await originalWrite(imageId, bytes); // partial directory on disk
+        return err({ code: 'io', retryable: false, message: 'simulated partial staging write' });
+      };
+      const spy = vi
+        .spyOn(local.ingestionRepo, 'resolveSourceMessage')
+        .mockReturnValue(err(new DbError('forced ledger failure')));
+
+      const result = await local.coordinator.ingestMessage(local.makeRequest());
+      expect(result.isErr()).toBe(true);
+      expect(spy).toHaveBeenCalledOnce();
+
+      // The FAILED attempt's materialized directory must not survive.
+      expect(stagingDeliveries(local)).toEqual([]);
+      expect(count(local.db, 'messages')).toBe(0);
+      expect(count(local.db, 'images')).toBe(0);
+
+      local.db.close();
+      fs.rmSync(local.tmpDir, { recursive: true, force: true });
+    });
+
+    it('a fenced delivery is rejected at the entry and never becomes drainable work (F2)', async () => {
+      // The entry gate runs BEFORE trackDeliveryWork: a delivery that
+      // arrives after the fence must never materialise as shutdown-drain
+      // work, must never touch the ledger, and must never stage bytes.
+      const local = setup();
+      local.coordinator.fenceAdmissions();
+
+      const inflight = local.coordinator.ingestMessage(local.makeRequest());
+      // Polled SYNCHRONOUSLY after the call: an untracked (fixed) delivery
+      // leaves the registry empty, while a delivery that entered tracking
+      // before its fence rejection would show up here as drain work.
+      expect(await local.coordinator.drainActiveIngestion(5)).toEqual({
+        drained: 0,
+        abandoned: 0,
+      });
+
+      const settled = await inflight;
+      expect(settled.isErr()).toBe(true);
+      expect(settled._unsafeUnwrapErr().message).toContain('source must resend');
+      expect(count(local.db, 'messages')).toBe(0);
+      expect(stagingDeliveries(local)).toEqual([]);
+    });
+
+    it('trackDeliveryWork keeps caller-visible rejections without orphaning a second one (F5)', async () => {
+      // White-box contract for the drain instrumentation: even if a tracked
+      // run unexpectedly REJECTS (public paths catch everything into typed
+      // errors), the rejection stays observable to the caller while the
+      // derived drain-settlement promise consumes BOTH branches. A derived
+      // `work.finally(...)` would orphan a second rejection, and
+      // signal-handler.ts exits the daemon on unclaimed rejections.
+      const rejections: unknown[] = [];
+      const onRejection = (reason: unknown): void => {
+        rejections.push(reason);
+      };
+      process.on('unhandledRejection', onRejection);
+      try {
+        const local = setup();
+        const helper = local.coordinator as unknown as {
+          trackDeliveryWork(
+            deliveryId: string,
+            run: () => Promise<unknown>,
+          ): Promise<unknown>;
+        };
+        await expect(
+          helper.trackDeliveryWork('delivery-orphan', () =>
+            Promise.reject(new Error('run rejected')),
+          ),
+        ).rejects.toThrow('run rejected');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(rejections).toEqual([]);
+      } finally {
+        process.off('unhandledRejection', onRejection);
+      }
+    });
+
+    it('a retired continuation unwinds at its guard re-check — durable rows untouched', async () => {
+      // The recovery table is authoritative: retirement must NOT resolve
+      // viable work. With the database still OPEN (stronger than the
+      // integration close-test), the retired continuation may not publish,
+      // may not mark, and may not enqueue.
+      let release: () => void = () => undefined;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const local = setup();
+      local.normalize = async (source, options) => {
+        local.normalizeCalls.push({ source, tempFilePath: options.tempFilePath });
+        await gate;
+        fs.writeFileSync(options.tempFilePath, Buffer.from('JPEG-OUT'));
+        return ok({
+          filePath: options.tempFilePath,
+          dimensions: { width: 10, height: 20 },
+          sourceDimensions: { width: 10, height: 20 },
+        });
+      };
+
+      const request = local.makeRequest();
+      const inflight = local.coordinator.ingestMessage(request);
+      await vi.waitFor(() => expect(local.normalizeCalls).toHaveLength(1));
+
+      local.coordinator.fenceAdmissions();
+      const drain = await local.coordinator.drainActiveIngestion(25);
+      expect(drain).toEqual({ drained: 0, abandoned: 1 });
+      // R2: this delivery was already admitted (suspended in Processing),
+      // so retirement claims no pre-admission staging — its retained
+      // source belongs to the recovery table.
+      expect(await local.coordinator.abandonActiveIngestion()).toEqual({
+        retired: 1,
+        stagingCleaned: 0,
+        stagingFailed: 0,
+      });
+
+      release();
+      const settled = await inflight;
+      expect(settled.isErr()).toBe(true);
+
+      // Exactly the pre-retirement shape: Processing Image, pending
+      // Ingestion, nothing enqueued, no published output.
+      const [image] = imagesOf(local, request.message.id);
+      expect(image.state).toBe('processing');
+      expect(
+        local.ingestionRepo.findByMessage(request.message.id)._unsafeUnwrap()?.status,
+      ).toBe('pending');
+      expect(queueRows(local)).toHaveLength(0);
+      expect(local.store.normalizedExists(local.threadId, image.id)).toBe(false);
+    });
+
+    it('retirement reports failed staging removals separately from cleaned (P2-2)', async () => {
+      // Honest retirement accounting (P2-2): a removeStagingDir failure
+      // must NOT be counted as cleaned. The failure surfaces in the
+      // return shape and in the sanitized retire log (ids/codes only,
+      // no filesystem paths); the directory falls back to the next-boot
+      // orphan sweep with its mtime grace window.
+      const local = setup();
+      let releaseWrite: () => void = () => undefined;
+      const writeSuspended = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const originalWrite = local.store.writeStagingSource.bind(local.store);
+      local.store.writeStagingSource = async (imageId: string, bytes: Buffer) => {
+        const res = await originalWrite(imageId, bytes); // dir materialized
+        await writeSuspended; // suspended AFTER its filesystem effect
+        return res;
+      };
+
+      const inflight = local.coordinator.ingestMessage(local.makeRequest());
+      await vi.waitFor(() => expect(stagingDeliveries(local)).toHaveLength(1));
+
+      local.coordinator.fenceAdmissions();
+      expect(await local.coordinator.drainActiveIngestion(5)).toEqual({
+        drained: 0,
+        abandoned: 1,
+      });
+
+      // Force the tracked removal to fail.
+      local.store.removeStagingDir = () =>
+        err({ code: 'io', retryable: false, message: 'device busy' });
+
+      const retired = await local.coordinator.abandonActiveIngestion(10);
+      expect(retired).toEqual({ retired: 1, stagingCleaned: 0, stagingFailed: 1 });
+
+      const retireLog = local.logEvents.find(
+        (e) => (e.payload as { op?: string }).op === 'shutdown_retire',
+      );
+      expect(retireLog).toBeDefined();
+      expect(retireLog!.payload).toMatchObject({
+        code: 'CONTINUATIONS_RETIRED',
+        stagingCleaned: 0,
+        stagingFailed: 1,
+      });
+      const details = retireLog!.payload.stagingFailureDetails as Array<{
+        imageId: string;
+        code: string;
+      }>;
+      expect(details).toHaveLength(1);
+      expect(details[0]!.code).toBe('io');
+      expect(typeof details[0]!.imageId).toBe('string');
+      // Sanitized evidence: no filesystem paths in the retire log.
+      expect(JSON.stringify(retireLog!.payload)).not.toContain(local.tmpDir);
+
+      // Release the suspended write: the delivery unwinds at the
+      // admission-boundary fence-exit; the uncleanable directory waits
+      // for the next-boot orphan sweep rather than being misreported.
+      releaseWrite();
+      const settled = await inflight;
+      expect(settled.isErr()).toBe(true);
+
+      local.db.close();
+      fs.rmSync(local.tmpDir, { recursive: true, force: true });
+    });
+
+    it('recovery stops resolving rows once continuations are retired', async () => {
+      // A retired process must not run next-boot recovery semantics
+      // halfway: pending rows keep their exact pre-recovery shape.
+      const local = setup();
+      const messageId = uuidv4();
+      const imageId = uuidv4();
+      local.messageRepo
+        .insert({
+          id: messageId,
+          thread_id: local.threadId,
+          direction: 'inbound',
+          content: 'crashed',
+          idempotency_key: `${local.channelId}:${messageId}`,
+          provider_id: 'user-1',
+          run_id: null,
+        })
+        ._unsafeUnwrap();
+      const source = local.ingestionRepo
+        .resolveSourceMessage({
+          channel: 'test-bot',
+          externalMessageId: `ext-${messageId}`,
+          externalChatId: 'ext-chat-1',
+        })
+        ._unsafeUnwrap();
+      local.imageRepo
+        .insert({
+          id: imageId,
+          messageId,
+          ordinal: 0,
+          threadId: local.threadId,
+          sourceRef: source.id,
+          state: 'processing',
+          expiresAt: local.now + RETENTION_MS,
+          processingDeadlineAt: local.now + IMAGE_PROCESSING_DEADLINE_MS,
+        })
+        ._unsafeUnwrap();
+      local.ingestionRepo
+        .createPending({ messageId, threadId: local.threadId, personaId: 'persona-1' })
+        ._unsafeUnwrap();
+
+      local.coordinator.fenceAdmissions();
+      expect(await local.coordinator.abandonActiveIngestion()).toEqual({
+        retired: 0,
+        stagingCleaned: 0,
+        stagingFailed: 0,
+      });
+
+      const report = await local.coordinator.recoverPending({});
+      expect(report.isOk()).toBe(true);
+      expect(report._unsafeUnwrap()).toEqual({ inspected: 0, enqueued: 0, skipped: 0, failed: 0 });
+
+      const [image] = imagesOf(local, messageId);
+      expect(image.state).toBe('processing');
+      expect(local.ingestionRepo.findByMessage(messageId)._unsafeUnwrap()?.status).toBe('pending');
+      expect(queueRows(local)).toHaveLength(0);
     });
   });
 });

@@ -130,8 +130,21 @@ function makeMockContext(configOverrides: Record<string, unknown> = {}): DaemonC
     backgroundAgentManager: { shutdown: vi.fn() } as any,
     contextAssembler: {} as any,
     hostToolsBridge: { path: '/tmp/host-tools.sock', start: vi.fn(), stop: vi.fn() } as any,
+    imageStore: {} as any,
+    imageIngestionCoordinator: {
+      fenceAdmissions: vi.fn(),
+      drainActiveIngestion: vi.fn().mockResolvedValue({ drained: 0, abandoned: 0 }),
+      abandonActiveIngestion: vi.fn().mockResolvedValue({ retired: 0, stagingCleaned: 0, stagingFailed: 0 }),
+    } as any,
+    imageAccess: {} as any,
+    imageLifecycle: {
+      start: vi.fn().mockResolvedValue({ completed: true, timedOut: false, report: null }),
+      stop: vi.fn().mockResolvedValue({ drained: true }),
+    } as any,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), child: vi.fn().mockReturnThis() } as any,
-  };
+    // Partial mock: only the fields exercised by reload/start/stop paths are
+    // populated; the assertion keeps the historical mock shape compiling.
+  } as unknown as DaemonContext;
 }
 
 function setupSuccessfulStart(configOverrides: Record<string, unknown> = {}) {

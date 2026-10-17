@@ -89,6 +89,13 @@ import type { ImageRejectionReason } from './image-types.js';
 /** Fixed normalization deadline for an entire message, from admission. */
 export const IMAGE_PROCESSING_DEADLINE_MS = 60_000;
 
+/**
+ * Bound for {@link ImageIngestionCoordinator.drainActiveIngestion} during
+ * daemon shutdown: delivery-owned ingestion must settle (or be terminally
+ * abandoned with audit) before the database closes.
+ */
+export const IMAGE_SHUTDOWN_DRAIN_TIMEOUT_MS = 15_000;
+
 /** Fixed normalization attempts per Image, from admission. */
 export const MAX_ATTEMPTS_PER_IMAGE = 3;
 
@@ -213,9 +220,50 @@ type PublishOutcome = { kind: 'committed' } | { kind: 'fenced' } | { kind: 'late
  * purpose: a crash must release ownership so the next delivery or restart
  * can resume from the committed ledger.
  */
+/** Thrown when the shutdown fence interrupts pre-admission staging (F2). */
+class StagingFencedAbort extends Error {}
+
+function fencedForShutdownError(): PipelineError {
+  return new PipelineError(
+    'image ingestion is fenced for shutdown: delivery rejected before admission; the source must resend (no durable admission exists to redeliver)',
+  );
+}
+
 export class ImageIngestionCoordinator implements ImageIngestionService {
   private readonly activeOwners = new Set<string>();
   private readonly normalize: typeof normalizeImage;
+  /**
+   * Shutdown fence (P1-2). Once set, no NEW delivery-owned ingestion may
+   * start; work already in flight is tracked in {@link activeDeliveries}
+   * so shutdown can drain it before the database closes. Purely additive
+   * to the shipped admission semantics: while unfenced (all normal
+   * operation) this changes nothing.
+   */
+  private admissionsFenced = false;
+  /**
+   * Set by {@link abandonActiveIngestion} when the shutdown drain bound
+   * elapses: an in-memory retirement of live continuations. Every guarded
+   * re-check observes it and unwinds WITHOUT ledger access, because the
+   * database may close while the continuation is still parked. Durable
+   * rows are left exactly as the recovery table expects (pending
+   * Ingestion, unmarked Processing Image, retained source) so next-boot
+   * recovery resolves them with canonical precedence (F3).
+   */
+  private continuationsRetired = false;
+  /** In-flight delivery-owned ingestion work, keyed by delivery message id. */
+  private readonly activeDeliveries = new Map<
+    string,
+    Promise<Result<ImageIngestionOutcome, PipelineError>>
+  >();
+  /**
+   * Pre-admission staging accounting (R2): the staging ids ATTEMPTED by
+   * each live delivery, and the in-flight store staging writes. Exposed
+   * to {@link abandonActiveIngestion} so suspended staging can be
+   * awaited (bounded) and its directories removed BEFORE the daemon
+   * closes the database.
+   */
+  private readonly liveStagedIds = new Map<string, string[]>();
+  private readonly pendingStagingWrites = new Map<Promise<unknown>, string>();
 
   constructor(private readonly deps: ImageIngestionDeps) {
     this.normalize = deps.normalize ?? normalizeImage;
@@ -229,11 +277,232 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
   async ingestMessage(
     request: ImageIngestionRequest,
   ): Promise<Result<ImageIngestionOutcome, PipelineError>> {
+    // Shutdown fence: after fenceAdmissions() returns, no new ingestion is
+    // admitted — this delivery is rejected BEFORE any staging write or
+    // ledger row. Redelivery disclosure (verified against the pipeline):
+    // this PipelineError surfaces through MessagePipeline to the channel
+    // callback, which merely LOGS it (channel-setup.ts); there is NO
+    // durable replay for a delivery rejected HERE, because fencing
+    // happens before the admission transaction — no message row and no
+    // queue item exist that a restart could re-deliver. The source must
+    // resend (webhook retries / client resend); poll-based connectors
+    // have already acked. The rejection lasts only for the shutdown
+    // window. Work admitted BEFORE fencing keeps its pending Ingestion
+    // row and IS recovered on the next boot per the recovery table.
+    if (this.admissionsFenced) {
+      return err(fencedForShutdownError());
+    }
+    // The WHOLE delivery is tracked from entry (F2): shutdown drain
+    // covers work still in pre-admission staging, not only Processing.
+    return this.trackDeliveryWork(request.message.id, () => this.runDelivery(request));
+  }
+
+  private async runDelivery(
+    request: ImageIngestionRequest,
+  ): Promise<Result<ImageIngestionOutcome, PipelineError>> {
     try {
       return await this.ingestInternal(request);
     } catch (cause) {
       return err(this.unexpectedError('image ingestion failed', cause));
     }
+  }
+
+  /**
+   * Fence new ingestion admissions for shutdown (P1-2, F2). Call BEFORE
+   * draining: after this returns, only work already tracked in
+   * {@link drainActiveIngestion} can still touch the ledger.
+   *
+   * Boundary guarantees for work tracked but not yet admitted:
+   * - Pre-admission staging re-checks the fence before EACH attachment's
+   *   staging write; a write already inside the store may still complete
+   *   its current filesystem call (await-granular, disclosed), but the
+   *   abort path removes every staged directory, so no staging residue
+   *   survives a fenced delivery.
+   * - The admission-transaction re-check shares NO await point with the
+   *   fence read: once fenced, no new durable admission can commit at all.
+   *
+   * Redelivery disclosure (verified against the pipeline and connectors):
+   * a delivery rejected here is NOT durably redelivered. Fencing precedes
+   * the admission transaction, so no Message row and no queue item exist
+   * that a restart could replay; the typed PipelineError only surfaces to
+   * the channel callback's log line (channel-setup.ts). Source-side replay
+   * (webhook retries, client resend) is best effort; poll-based
+   * connectors have already acked. The rejection lasts only for the
+   * shutdown window. Work admitted BEFORE fencing keeps its pending
+   * Ingestion row and IS recovered on the next boot per the recovery
+   * table.
+   */
+  fenceAdmissions(): void {
+    this.admissionsFenced = true;
+  }
+
+  get isFenced(): boolean {
+    return this.admissionsFenced;
+  }
+
+  /**
+   * Wait (bounded) for all in-flight delivery-owned ingestion to settle so
+   * the daemon can close the database without truncating an admission, a
+   * publication, or the commit-together enqueue. Returns how many settled
+   * and how many are still running when the bound elapsed.
+   */
+  async drainActiveIngestion(
+    timeoutMs: number = IMAGE_SHUTDOWN_DRAIN_TIMEOUT_MS,
+  ): Promise<{ drained: number; abandoned: number }> {
+    const startedAt = this.clock();
+    let drained = 0;
+    for (;;) {
+      const pending = [...this.activeDeliveries.values()];
+      if (pending.length === 0) {
+        return { drained, abandoned: 0 };
+      }
+      const remaining = timeoutMs - (this.clock() - startedAt);
+      if (remaining <= 0) {
+        return { drained, abandoned: pending.length };
+      }
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timeout = new Promise<'timed-out'>((resolve) => {
+        timer = setTimeout(() => resolve('timed-out'), remaining);
+        (timer as unknown as { unref?: () => void }).unref?.();
+      });
+      const settled = await Promise.race([
+        Promise.allSettled(pending).then(() => 'drained' as const),
+        timeout,
+      ]);
+      if (timer !== null) clearTimeout(timer);
+      if (settled === 'timed-out') {
+        return { drained, abandoned: this.activeDeliveries.size };
+      }
+      drained += pending.length;
+    }
+  }
+
+  /**
+   * Retire the continuations of ingestion work (F3, R1, R2). MUST be
+   * called UNCONDITIONALLY on every daemon teardown path BEFORE the
+   * database closes — no-op when nothing is live. Retirement may NOT be
+   * gated on the delivery-drain result: lifecycle-owned recovery is not
+   * tracked in {@link activeDeliveries}, so a conditional call would let
+   * a wedged recovery with zero deliveries skip retirement and resume
+   * against a closed database.
+   *
+   * The recovery table is AUTHORITATIVE: shutdown must not resolve viable
+   * work, so NO row is touched here at all — pending Ingestion rows,
+   * Processing Images, and retained sources stay exactly as they are for
+   * next-boot recovery with canonical precedence (expiry →
+   * deadline/attempts → remnant → retained source).
+   *
+   * What retirement DOES:
+   * - sets the retirement flag so every guarded re-check in a parked
+   *   continuation short-circuits to a typed error WITHOUT ledger access
+   *   (F3), and no new staging write may start (R2);
+   * - explicitly accounts for SUSPENDED pre-admission staging (R2):
+   *   awaits in-flight staging writes BOUNDED — staging writes are pure
+   *   filesystem and never touch the database, so this cannot deadlock
+   *   against closure — then removes every tracked PRE-ADMISSION staging
+   *   directory synchronously. Staging of already-ADMITTED work is
+   *   excluded: retained sources belong to the durable Processing rows
+   *   and the recovery table, and are never touched here. Removal here
+   *   is ATTEMPTED per directory and the outcome is REPORTED
+   *   (stagingCleaned vs stagingFailed) — this is "removal
+   *   attempted/completed for tracked ids", NOT a filesystem-quiescence
+   *   guarantee before closure. Anything not removed here has exactly
+   *   two eventual cleanup paths per the approved contract:
+   *   1. settlement fence-exit cleanup: a write that lands AFTER the
+   *      await bound (or after closure) is removed when its delivery
+   *      settles — the synchronous admission-boundary re-check rejects
+   *      before any ledger access and cleans every attempted staging id;
+   *   2. next-boot orphan sweep: a directory that escapes both (failed
+   *      removal, SIGKILL mid-write) is removed by the lifecycle
+   *      cleanup phase once its mtime exceeds the orphan grace window
+   *      and no Image row claims it.
+   *   Structured evidence only.
+   */
+  async abandonActiveIngestion(
+    timeoutMs: number = 5_000,
+  ): Promise<{ retired: number; stagingCleaned: number; stagingFailed: number }> {
+    const retired = this.activeDeliveries.size;
+    this.continuationsRetired = true;
+
+    const writes = [...this.pendingStagingWrites.entries()];
+    if (writes.length > 0) {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const bound = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, timeoutMs);
+        (timer as unknown as { unref?: () => void }).unref?.();
+      });
+      await Promise.race([
+        Promise.allSettled(writes.map(([op]) => op)),
+        bound,
+      ]);
+      if (timer !== null) clearTimeout(timer);
+    }
+
+    const toClean = new Set<string>();
+    for (const [op, imageId] of writes) {
+      this.pendingStagingWrites.delete(op);
+      toClean.add(imageId);
+    }
+    for (const ids of this.liveStagedIds.values()) {
+      for (const id of ids) {
+        toClean.add(id);
+      }
+    }
+    // Removal is ATTEMPTED synchronously for every tracked id and the
+    // per-directory Result is collected (P2-2): attempted/completed is
+    // reported honestly; a failed removal is NOT counted as cleaned.
+    // Failed or racy directories fall back to the two eventual cleanup
+    // paths documented above (settlement fence-exit cleanup, next-boot
+    // orphan sweep with mtime grace).
+    let stagingCleaned = 0;
+    const stagingFailures: Array<{ imageId: string; code: string }> = [];
+    for (const imageId of toClean) {
+      const removal = this.deps.store.removeStagingDir(imageId);
+      if (removal.isOk()) {
+        stagingCleaned += 1;
+      } else {
+        // Sanitized evidence only: staging UUID and stable error code —
+        // never filesystem paths or message text.
+        stagingFailures.push({ imageId, code: removal.error.code });
+      }
+    }
+
+    this.deps.logger.warn(
+      {
+        op: 'shutdown_retire',
+        code: 'CONTINUATIONS_RETIRED',
+        retired,
+        stagingCleaned,
+        stagingFailed: stagingFailures.length,
+        stagingFailureDetails: stagingFailures,
+      },
+      'image ingestion: continuations retired at the shutdown bound; tracked staging removal attempted before database closure (failures fall back to the next-boot orphan sweep); durable rows left untouched for next-boot recovery per the recovery table',
+    );
+    return { retired, stagingCleaned, stagingFailed: stagingFailures.length };
+  }
+
+  /**
+   * Track a delivery-owned work promise for shutdown drain. Instrumentation
+   * only — the returned promise is the same work with identical resolution.
+   */
+  private trackDeliveryWork(
+    messageId: string,
+    run: () => Promise<Result<ImageIngestionOutcome, PipelineError>>,
+  ): Promise<Result<ImageIngestionOutcome, PipelineError>> {
+    const work = run();
+    this.activeDeliveries.set(messageId, work);
+    const settle = (): void => {
+      this.activeDeliveries.delete(messageId);
+      this.liveStagedIds.delete(messageId);
+    };
+    // Consume BOTH settlement branches (F5): `work.finally(...)` derives a
+    // SECOND promise that rejects alongside `work`, and nothing re-attaches
+    // to it — an orphan rejection would trip the process-level
+    // unhandledRejection handler (signal-handler.ts), which exits the
+    // daemon on unclaimed rejections. `then(settle, settle)` settles the
+    // derived promise on either path.
+    void work.then(settle, settle);
+    return work;
   }
 
   /**
@@ -252,6 +521,11 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
       }
       const report: RecoveryReport = { inspected: 0, enqueued: 0, skipped: 0, failed: 0 };
       for (const row of pending.value) {
+        if (this.continuationsRetired) {
+          // Shutdown retirement (F3): stop resolving; remaining pending
+          // rows keep their exact pre-recovery shape for the next boot.
+          break;
+        }
         report.inspected++;
         // Recovery claims the same exclusive per-message ownership as the
         // delivery paths before touching any work.
@@ -304,12 +578,32 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
     // Staging happens BEFORE the admission transaction: nothing is awaited
     // inside SQLite transactions, and rolled-back admission or duplicate
     // delivery must clean these newly downloaded bytes.
-    const plans = await this.planAndStageAttachments(request.attachments);
-    const cleanupNewStaging = (): void => {
-      for (const plan of plans) {
-        if (plan.rejectionReason === null) {
-          this.deps.store.removeStagingDir(plan.imageId);
+    const stagedIds: string[] = [];
+    // R2: expose this delivery's attempted staging ids to retirement so
+    // abandonActiveIngestion can remove them before the database closes.
+    this.liveStagedIds.set(request.message.id, stagedIds);
+    let plans: AttachmentPlan[];
+    try {
+      plans = await this.planAndStageAttachments(request.attachments, stagedIds);
+    } catch (cause) {
+      if (cause instanceof StagingFencedAbort) {
+        // The fence raced in-flight staging (F2): remove every directory
+        // staged so far and reject the delivery — no durable admission is
+        // created, the source must resend after restart.
+        for (const stagedId of stagedIds) {
+          this.deps.store.removeStagingDir(stagedId);
         }
+        return err(fencedForShutdownError());
+      }
+      throw cause;
+    }
+    const cleanupNewStaging = (): void => {
+      // R3: remove EVERY staging directory this delivery ATTEMPTED, not
+      // only the plans that succeeded. A write that created its directory
+      // and then returned Err leaves partial staging residue that must not
+      // survive any terminal unwind. removeStagingDir is idempotent.
+      for (const stagedId of stagedIds) {
+        this.deps.store.removeStagingDir(stagedId);
       }
     };
 
@@ -322,6 +616,14 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
     const expiresAt = now + this.retentionMs();
     const deadlineAt = now + IMAGE_PROCESSING_DEADLINE_MS;
 
+    // Fence re-check at the admission boundary (F2): this check and the
+    // synchronous ledger transaction share NO await point, so once
+    // fenceAdmissions() has returned, no NEW durable admission can commit.
+    if (this.admissionsFenced) {
+      cleanupNewStaging();
+      return err(fencedForShutdownError());
+    }
+
     const admission = runLedgerTransaction(this.deps.ingestionRepo, () =>
       this.admit(request, deadlineAt, expiresAt, plans),
     );
@@ -331,6 +633,10 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
       cleanupNewStaging();
       return err(this.dbErrorToPipeline(admission.error, 'image admission failed'));
     }
+    // Past the commit point the staged sources belong to the DURABLE
+    // Processing work (recovery-table retained sources). Retirement must
+    // no longer claim them, so the pre-admission accounting ends here.
+    this.liveStagedIds.delete(request.message.id);
 
     const outcome = admission.value;
     if (outcome.kind === 'unrouted') {
@@ -378,6 +684,7 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
       return ok('duplicate');
     }
     try {
+      // The delivery is already tracked from entry by ingestMessage (F2).
       return await this.processAndFinish(outcome.messageId, 'enqueued');
     } finally {
       this.activeOwners.delete(outcome.messageId);
@@ -531,6 +838,10 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
    * resolved Images are never normalized again.
    */
   private async processPendingImages(messageId: string): Promise<Result<void, PipelineError>> {
+    if (this.continuationsRetired) {
+      // Shutdown retirement (F3): short-circuit before any ledger access.
+      return err(new PipelineError('image processing retired for shutdown'));
+    }
     const imagesResult = this.deps.imageRepo.findByMessage(messageId);
     if (imagesResult.isErr()) {
       return err(this.dbErrorToPipeline(imagesResult.error, 'read pending images'));
@@ -742,6 +1053,12 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
     threadId: string,
     capAttempts: boolean,
   ): Result<'proceed' | 'expired' | 'exhausted' | 'resolved', PipelineError> {
+    if (this.continuationsRetired) {
+      // Shutdown retirement (F3): the database may already be closed.
+      // Unwind without ANY ledger access; durable rows stay untouched for
+      // next-boot recovery under the canonical table precedence.
+      return err(new PipelineError('image processing retired for shutdown'));
+    }
     const found = this.deps.imageRepo.findById(imageId);
     if (found.isErr()) {
       return err(this.dbErrorToPipeline(found.error, 're-read image under guard'));
@@ -968,6 +1285,10 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
     threadId: string,
     completionPayload: Record<string, unknown>,
   ): Result<{ enqueued: boolean }, PipelineError> {
+    if (this.continuationsRetired) {
+      // Shutdown retirement (F3): short-circuit before any ledger access.
+      return err(new PipelineError('image processing retired for shutdown'));
+    }
     const images = this.deps.imageRepo.findByMessage(messageId);
     if (images.isErr()) {
       return err(this.dbErrorToPipeline(images.error, 'refresh image availability'));
@@ -1032,6 +1353,7 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
    */
   private async planAndStageAttachments(
     attachments: readonly InboundAttachment[],
+    stagedIds: string[],
   ): Promise<AttachmentPlan[]> {
     const plans: AttachmentPlan[] = [];
     for (let ordinal = 0; ordinal < attachments.length; ordinal++) {
@@ -1057,7 +1379,32 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
         continue;
       }
       const imageId = randomUUID();
-      const staged = await this.deps.store.writeStagingSource(imageId, bytes.value);
+      // Fence boundary check immediately before each staging write (F2).
+      // Await-granular best effort: a store write whose synchronous prefix
+      // already ran when the fence landed is removed by the abort cleanup
+      // below, so no staging directory survives a fenced delivery.
+      // Retirement observes the same boundary: a retired process is on
+      // its way to closure and must not start new filesystem work.
+      if (this.admissionsFenced || this.continuationsRetired) {
+        throw new StagingFencedAbort();
+      }
+      stagedIds.push(imageId);
+      const writeOp = this.deps.store.writeStagingSource(imageId, bytes.value);
+      // R2: register the in-flight staging write so retirement can await
+      // it (bounded) and remove its directory even when this call is
+      // suspended at the retire step.
+      this.pendingStagingWrites.set(writeOp, imageId);
+      let staged: Awaited<ReturnType<ImageStore['writeStagingSource']>>;
+      try {
+        staged = await writeOp;
+      } finally {
+        this.pendingStagingWrites.delete(writeOp);
+      }
+      // No post-write abort needed: even when this write COMPLETED after
+      // fencing/retirement (e.g. only released after the database
+      // closed), the synchronous admission-boundary re-check rejects the
+      // delivery before ANY ledger access, and its cleanup removes every
+      // attempted staging id — filesystem-only, safe post-closure (R3).
       if (staged.isErr()) {
         this.deps.logger.warn(
           { ordinal, imageId, code: staged.error.code },
