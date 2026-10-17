@@ -46,6 +46,8 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   BindingRepository: vi.fn().mockImplementation(() => ({})),
   MemoryRepository: vi.fn().mockImplementation(() => ({})),
   A2ATaskRepository: vi.fn().mockImplementation(() => ({})),
+  ImageRepository: vi.fn().mockImplementation(() => ({})),
+  ImageIngestionRepository: vi.fn().mockImplementation(() => ({})),
 }));
 
 vi.mock('../../../src/core/database/repositories/audit-repository.js', () => ({
@@ -96,6 +98,27 @@ vi.mock('../../../src/channels/channel-setup.js', () => ({
 
 vi.mock('../../../src/pipeline/message-pipeline.js', () => ({
   MessagePipeline: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock('../../../src/images/image-store.js', () => ({
+  ImageStore: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock('../../../src/images/image-ingestion.js', () => ({
+  ImageIngestionCoordinator: vi.fn().mockImplementation(() => ({
+    recoverPending: vi.fn().mockResolvedValue(ok({ inspected: 0, enqueued: 0, skipped: 0, failed: 0 })),
+  })),
+}));
+
+vi.mock('../../../src/images/image-service.js', () => ({
+  ImageService: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock('../../../src/images/image-lifecycle.js', () => ({
+  ImageLifecycleManager: vi.fn().mockImplementation(() => ({
+    start: vi.fn(),
+    stop: vi.fn().mockResolvedValue(undefined),
+  })),
 }));
 
 vi.mock('../../../src/queue/queue-manager.js', () => ({
@@ -168,7 +191,13 @@ import { SkillLoader } from '../../../src/skills/skill-loader.js';
 import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
+import { MessagePipeline } from '../../../src/pipeline/message-pipeline.js';
 import { BackgroundTaskRepository } from '../../../src/core/database/repositories/index.js';
+import { ImageStore } from '../../../src/images/image-store.js';
+import { ImageIngestionCoordinator } from '../../../src/images/image-ingestion.js';
+import { ImageService } from '../../../src/images/image-service.js';
+import { RepositoryAuditStore } from '../../../src/core/database/repositories/audit-repository.js';
+import { ImageLifecycleManager } from '../../../src/images/image-lifecycle.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
 import { createDiscardLogger } from './helpers.js';
@@ -277,6 +306,14 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
       },
     },
     subagents: {},
+    images: {
+      maxInputBytes: 10_485_760,
+      maxPerMessage: 5,
+      maxPerInspection: 5,
+      maxEdge: 4096,
+      jpegQuality: 85,
+      retentionHours: 24,
+    },
     ...overrides,
   };
 }
@@ -594,6 +631,12 @@ describe('bootstrap', () => {
       expect(ctx.repos.run).toBeDefined();
       expect(ctx.repos.binding).toBeDefined();
       expect(ctx.repos.memory).toBeDefined();
+      expect(ctx.repos.image).toBeDefined();
+      expect(ctx.repos.imageIngestion).toBeDefined();
+      expect(ctx.imageStore).toBeDefined();
+      expect(ctx.imageIngestionCoordinator).toBeDefined();
+      expect(ctx.imageAccess).toBeDefined();
+      expect(ctx.imageLifecycle).toBeDefined();
       expect(ctx.channelRegistry).toBeDefined();
       expect(ctx.queueManager).toBeDefined();
       expect(ctx.scheduler).toBeDefined();
@@ -684,7 +727,9 @@ describe('bootstrap', () => {
       // Bootstrap may augment langfuse config with auto-resolved release version (F9).
       // Use objectContaining to verify the base config is passed through unchanged.
       expect(createObservabilityService).toHaveBeenCalledWith(
-        expect.objectContaining(config.langfuse as Record<string, unknown>),
+        expect.objectContaining(
+          (config as { langfuse: Record<string, unknown> }).langfuse,
+        ),
         logger,
       );
       expect(result._unsafeUnwrap().observability).toBe(observability);
@@ -1223,6 +1268,59 @@ describe('bootstrap', () => {
       await bootstrap('/config.yaml', logger);
 
       expect(registerChannels).toHaveBeenCalledOnce();
+    });
+
+    it('wires the image subsystem into the pipeline and does not start the lifecycle', async () => {
+      setupSuccessfulMocks();
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+
+      // Store is rooted at the data dir; the port and lifecycle share it.
+      expect(ImageStore).toHaveBeenCalledWith('/tmp/test-data');
+      const imageServiceDeps = vi.mocked(ImageService).mock.calls.at(-1)![0];
+      expect(imageServiceDeps).toEqual(
+        expect.objectContaining({
+          imageRepo: ctx.repos.image,
+          store: ctx.imageStore,
+        }),
+      );
+      // P2-7: read-triggered mutations audit through the SAME shared
+      // AuditStore instance (built over the audit repository).
+      const auditStoreInstances = vi
+        .mocked(RepositoryAuditStore)
+        .mock.results.map((r) => r.value);
+      expect(auditStoreInstances).toContain(imageServiceDeps.auditStore);
+      expect(RepositoryAuditStore).toHaveBeenCalledWith(ctx.repos.audit);
+      expect(ImageIngestionCoordinator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queueManager: ctx.queueManager,
+          imageRepo: ctx.repos.image,
+          ingestionRepo: ctx.repos.imageIngestion,
+          store: ctx.imageStore,
+          imagesConfig: expect.objectContaining({ retentionHours: 24 }),
+        }),
+      );
+      expect(ImageLifecycleManager).toHaveBeenCalledWith(
+        expect.objectContaining({
+          coordinator: ctx.imageIngestionCoordinator,
+          imageRepo: ctx.repos.image,
+          store: ctx.imageStore,
+          dataDir: '/tmp/test-data',
+        }),
+      );
+
+      // The pipeline receives the coordinator as its image ingestion service
+      // (8th constructor argument), so image-bearing inbound events admit
+      // durable Images.
+      const pipelineArgs = vi.mocked(MessagePipeline).mock.calls[0]!;
+      expect(pipelineArgs[7]).toBe(ctx.imageIngestionCoordinator);
+
+      // Bootstrap must NOT start the lifecycle; the daemon orchestrator
+      // starts it before channels come up.
+      expect(ctx.imageLifecycle.start).not.toHaveBeenCalled();
     });
 
     it('binds the session summarizer with the manifest maxTokens budget', async () => {

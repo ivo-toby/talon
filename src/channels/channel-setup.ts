@@ -47,12 +47,20 @@ export function registerChannels(
 ): void {
   const { channelRepo, bindingRepo, personaRepo, messagePipeline, logger } = deps;
 
+  // Image intake limits for the image-capable connectors, from the validated
+  // top-level `images` section. Connectors without image intake ignore it.
+  const imageSettings = {
+    maxInputBytes: config.images.maxInputBytes,
+    maxPerMessage: config.images.maxPerMessage,
+  };
+
   for (const channelConfig of config.channels.filter((channel) => channel.enabled)) {
     const connector = createConnector(
       channelConfig.type,
       channelConfig.name,
       channelConfig.config,
       logger,
+      imageSettings,
     );
     if (connector === null) {
       logger.warn(

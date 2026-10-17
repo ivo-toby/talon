@@ -33,6 +33,8 @@ import {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  ImageRepository,
+  ImageIngestionRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
@@ -77,6 +79,10 @@ import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import { ImageStore } from '../images/image-store.js';
+import { ImageIngestionCoordinator } from '../images/image-ingestion.js';
+import { ImageService } from '../images/image-service.js';
+import { ImageLifecycleManager } from '../images/image-lifecycle.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -167,11 +173,28 @@ export async function bootstrap(
     binding: new BindingRepository(db),
     memory: new MemoryRepository(db),
     a2aTask: new A2ATaskRepository(db),
+    image: new ImageRepository(db),
+    imageIngestion: new ImageIngestionRepository(db),
   };
 
   // 5. Audit logger
   const auditStore = new RepositoryAuditStore(repos.audit);
   const auditLogger = new AuditLogger(logger, auditStore);
+
+  // 5a. Durable image subsystem (TASK-010). The store and the ImageAccess
+  //     port implementation need no running services, so they are built here;
+  //     the ingestion coordinator and the recovery/retention lifecycle join
+  //     once the queue manager exists (step 12). The lifecycle is started by
+  //     the daemon orchestrator, never here.
+  const imageStore = new ImageStore(dataDir);
+  const imageAccess = new ImageService({
+    imageRepo: repos.image,
+    store: imageStore,
+    logger,
+    // P2-7: read-triggered durable transitions and deletions audit through
+    // the same store as the lifecycle sweep.
+    auditStore,
+  });
 
   // 6. Thread workspace
   const threadWorkspace = new ThreadWorkspace(dataDir);
@@ -324,6 +347,10 @@ export async function bootstrap(
         messages: repos.message,
         runs: repos.run,
         queue: repos.queue,
+        // Runtime ImageAccess port for later consumers (vision sub-agent,
+        // lookup, descriptor projections). Findings/inspection-limit wiring
+        // is a separate task; vision still rejects until it lands.
+        images: imageAccess,
         logger,
       },
       logger,
@@ -548,6 +575,31 @@ export async function bootstrap(
   // 12. Queue manager
   const queueManager = new QueueManager(repos.queue, repos.thread, config.queue, logger);
 
+  // 12a. Image ingestion coordinator + recovery/retention lifecycle.
+  // The coordinator re-resolves pending admissions against the original
+  // durable admission clock; the lifecycle drives it at startup (via the
+  // daemon orchestrator) and at most every 60 seconds, then expires and
+  // cleans up owned content. Neither is started here.
+  const imageIngestionCoordinator = new ImageIngestionCoordinator({
+    messageRepo: repos.message,
+    imageRepo: repos.image,
+    ingestionRepo: repos.imageIngestion,
+    queueManager,
+    store: imageStore,
+    threadRepo: repos.thread,
+    channelRepo: repos.channel,
+    imagesConfig: config.images,
+    logger,
+  });
+  const imageLifecycle = new ImageLifecycleManager({
+    coordinator: imageIngestionCoordinator,
+    imageRepo: repos.image,
+    store: imageStore,
+    dataDir,
+    auditStore,
+    logger,
+  });
+
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
     executionEnvManager = new ExecutionEnvManager({
@@ -607,6 +659,9 @@ export async function bootstrap(
   );
 
   // 15. Message pipeline and channel registration
+  // The pipeline receives the ingestion coordinator so image-bearing inbound
+  // events admit durable Images; text-only events take the exact same path
+  // as before.
   const router = new ChannelRouter(repos.binding, logger);
   const messagePipeline = new MessagePipeline(
     repos.message,
@@ -616,6 +671,7 @@ export async function bootstrap(
     router,
     auditLogger,
     logger,
+    imageIngestionCoordinator,
   );
 
   registerChannels(config, channelRegistry, {
@@ -674,6 +730,10 @@ export async function bootstrap(
     logger,
     a2aServer,
     a2aTaskMapper,
+    imageStore,
+    imageIngestionCoordinator,
+    imageAccess,
+    imageLifecycle,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
