@@ -25,6 +25,12 @@ import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
 import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-access.js';
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
 import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/background-agent.js';
+import {
+  ImageLookupHandler,
+  type ImageLookupAccess,
+  type ImageLookupArgs,
+  type ImageLookupFindings,
+} from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
 import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
@@ -62,6 +68,16 @@ interface RegisteredBridgeAuth {
   personaId: string;
 }
 
+/**
+ * Runtime services `image.lookup` needs, injected by the final daemon wiring
+ * (TASK-019). Persona repository and loader come from the daemon context; only
+ * the thread-scoped Image and Finding reads are injected here.
+ */
+export interface ImageLookupServices {
+  images: ImageLookupAccess;
+  findings: ImageLookupFindings;
+}
+
 export class HostToolsBridge {
   private server: net.Server | null = null;
   private readonly socketPath: string;
@@ -80,8 +96,12 @@ export class HostToolsBridge {
   private subagentHandler: SubAgentInvokeHandler | null = null;
   private backgroundAgentHandler: BackgroundAgentHandler | null = null;
   private executionEnvHandler: ExecutionEnvHandler | null = null;
+  private imageLookupHandler: ImageLookupHandler | null = null;
 
-  constructor(private readonly ctx: DaemonContext) {
+  constructor(
+    private readonly ctx: DaemonContext,
+    imageLookupServices?: ImageLookupServices,
+  ) {
     this.socketPath = resolve(join(ctx.dataDir, 'host-tools.sock'));
 
     this.scheduleHandler = new ScheduleManageHandler({
@@ -194,6 +214,20 @@ export class HostToolsBridge {
     if (ctx.executionEnvManager) {
       this.executionEnvHandler = new ExecutionEnvHandler({
         executionEnvManager: ctx.executionEnvManager,
+        logger: ctx.logger,
+      });
+    }
+
+    // image.lookup is read-only and model-free, but it still needs real
+    // thread-scoped Image/Finding reads. Until the final wiring (TASK-019)
+    // supplies them the handler stays null and dispatch fails explicitly
+    // rather than fabricating an empty result.
+    if (imageLookupServices) {
+      this.imageLookupHandler = new ImageLookupHandler({
+        images: imageLookupServices.images,
+        findings: imageLookupServices.findings,
+        personaRepository: ctx.repos.persona,
+        personaLoader: ctx.personaLoader,
         logger: ctx.logger,
       });
     }
@@ -669,6 +703,17 @@ export class HostToolsBridge {
           };
         }
         return this.executionEnvHandler.execute(args as unknown as ExecutionEnvArgs, context);
+
+      case 'image.lookup':
+        if (!this.imageLookupHandler) {
+          return {
+            requestId: context.requestId ?? 'unknown',
+            tool,
+            status: 'error',
+            error: 'Image lookup service not initialized',
+          };
+        }
+        return this.imageLookupHandler.execute(args as unknown as ImageLookupArgs, context);
 
       default:
         return {
