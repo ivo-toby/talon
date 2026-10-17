@@ -33,13 +33,18 @@ import { rowToQueueItem } from './queue-mapper.js';
  *
  * Key invariants:
  * - Items within a thread are processed in FIFO (oldest-first) order.
- * - Only one item per thread may be claimed at a time (no interleaved runs).
- *   Exception: a collaboration item may be claimed for a thread that already
- *   has an in-flight item, to prevent persona_send await_reply deadlocks.
+ * - Ordinary dispatches exclude their thread through handler and state settlement,
+ *   even if the durable row is completed or purged before the dispatch returns.
+ *   Exception: a collaboration item may bypass an active thread to prevent
+ *   persona_send await_reply deadlocks.
  * - Ordinary provider failures increment attempts; saved delivery never does.
  * - Items that exhaust max attempts are moved to the dead-letter queue.
  */
 export class QueueProcessor {
+  // Per-instance live ownership, not a durable/cross-process claim. A handler may
+  // complete or purge its row before its remaining work and local retries settle.
+  private readonly activeOrdinaryThreads = new Set<string>();
+
   constructor(
     private readonly queueRepo: QueueRepository,
     private readonly retryStrategy: typeof calculateBackoff,
@@ -53,8 +58,8 @@ export class QueueProcessor {
    * Claims and processes the next available item for any eligible thread.
    *
    * Iterates through threads that have pending/retryable items and attempts
-   * to claim the oldest one. A thread is skipped if it already has a
-   * claimed or processing item (preventing interleaved runs).
+   * to claim the oldest one. Ordinary work is skipped if its thread has a live
+   * ordinary dispatch or a claimed/processing row (preventing interleaved runs).
    *
    * The caller-supplied `handler` receives the claimed item and must return
    * a Result. If the handler succeeds the item is completed; if it fails
@@ -106,14 +111,13 @@ export class QueueProcessor {
       // per-thread single-inflight invariant.
       const oldestIsCollaboration = oldestPendingTypeByThread.get(threadId) === 'collaboration';
 
-      // Whether to claim only a collaboration item — determined below only
-      // when the thread is confirmed to be in-flight.
+      // Whether to claim only collaboration — when durable or live ownership
+      // still excludes ordinary work on this thread.
       let claimCollaborationOnly = false;
 
       if (!oldestIsCollaboration) {
-        // Enforce the "no interleaved runs" invariant: skip threads that already
-        // have a claimed or processing item in flight — unless we can bypass by
-        // claiming a collaboration item specifically.
+        // Durable inflight rows and full live ordinary dispatches both exclude
+        // ordinary work; only a specifically claimed collaboration may bypass.
         const inflightResult = this.queueRepo.hasInflightItem(threadId);
         if (inflightResult.isErr()) {
           this.logger.error(
@@ -122,7 +126,7 @@ export class QueueProcessor {
           );
           continue;
         }
-        if (inflightResult.value) {
+        if (inflightResult.value || this.activeOrdinaryThreads.has(threadId)) {
           // Thread is busy. Check whether a collaboration item is pending
           // further back in the queue — if so we can bypass the block and claim
           // just the collaboration item to avoid deadlock.
@@ -136,9 +140,8 @@ export class QueueProcessor {
         }
       }
 
-      // Re-check inflight status immediately before the type-filtered claim to
-      // guard against a TOCTOU race: if the thread finished between the initial
-      // check and now, skip the bypass so we don't jump a regular FIFO item.
+      // Re-check both ownership sources before a type-filtered claim. SQL
+      // completion alone cannot disable bypass while the ordinary tail is live.
       if (claimCollaborationOnly) {
         const inflightRecheckResult = this.queueRepo.hasInflightItem(threadId);
         if (inflightRecheckResult.isErr()) {
@@ -148,19 +151,19 @@ export class QueueProcessor {
           );
           continue;
         }
-        if (!inflightRecheckResult.value) {
-          // Thread is no longer in-flight; do not bypass the regular FIFO item.
+        if (!inflightRecheckResult.value && !this.activeOrdinaryThreads.has(threadId)) {
+          // Neither owner remains; do not bypass the regular FIFO item.
           claimCollaborationOnly = false;
         }
       }
 
-      // Atomically claim the next item for this thread.
-      // When the thread is in-flight and we must unblock a collaboration item,
-      // use the type-filtered claim so we don't accidentally claim the regular
-      // pending item that is blocked behind the in-flight one.
-      const claimResult = claimCollaborationOnly
-        ? this.queueRepo.claimNextCollaboration(threadId)
-        : this.queueRepo.claimNext(threadId);
+      // Head collaboration also requires a type-filtered claim: saved wall-time
+      // eligibility may change after discovery. An unfiltered claim could then
+      // select ordinary work through the collaboration-only admission path.
+      const claimResult =
+        claimCollaborationOnly || oldestIsCollaboration
+          ? this.queueRepo.claimNextCollaboration(threadId)
+          : this.queueRepo.claimNext(threadId);
       if (claimResult.isErr()) {
         this.logger.error(
           { err: claimResult.error, threadId },
@@ -175,68 +178,76 @@ export class QueueProcessor {
         continue;
       }
 
-      const item = rowToQueueItem(row);
-      this.logger.info({ itemId: item.id, threadId, type: item.type }, 'queue item claimed');
-
-      // Inspect persisted bytes before mapping/caller state can hide a reserved replay boundary.
-      const inspection = await this.retryStateWrite(() =>
-        this.queueRepo.inspectSignalDelivery(item.id, Date.now()),
-      );
-      if (inspection.isErr()) {
-        if (inspection.error instanceof SignalCheckpointError) {
-          await this.retryStateWrite(() => this.queueRepo.rejectSignalReplay(item.id, Date.now()));
-        }
-        return item;
-      }
-      const state = inspection.value;
-      if (state.kind === 'invoked') {
-        await this.retryStateWrite(() => this.queueRepo.rejectSignalReplay(item.id, Date.now()));
-        return item;
-      }
-      if (
-        state.kind === 'checkpoint' &&
-        (state.checkpoint.phase === 'in_flight' || state.checkpoint.phase === 'terminal')
-      ) {
-        // Only quiesced recovery may classify interrupted ownership. Keep the claim out of polling.
-        this.logger.warn({ itemId: item.id }, 'saved delivery requires quiesced recovery');
-        return item;
-      }
-      if (
-        state.kind === 'checkpoint' &&
-        state.checkpoint.phase === 'ready' &&
-        state.checkpoint.expiresAt <= Date.now()
-      ) {
-        await this.retryStateWrite(() => this.deferOrTerminate(state.checkpoint));
-        return item;
-      }
-
-      let handlerResult: Result<void, Error>;
+      // Claim/admission and live ownership are synchronous up to the first await.
+      // Collaboration owns no ordinary slot, so its cleanup cannot release one.
+      const ordinaryDispatch = row.type !== 'collaboration';
+      if (ordinaryDispatch) this.activeOrdinaryThreads.add(threadId);
       try {
-        handlerResult =
-          state.kind === 'checkpoint'
-            ? savedDeliveryHandler === undefined
-              ? ok(undefined)
-              : await savedDeliveryHandler(item, state.checkpoint)
-            : await handler(item);
-      } catch (caught) {
-        // Preserve typed identity. Unknown throws never become remote diagnostic strings.
-        handlerResult = err(caught instanceof Error ? caught : new Error('Queue handler failed'));
-      }
+        const item = rowToQueueItem(row);
+        this.logger.info({ itemId: item.id, threadId, type: item.type }, 'queue item claimed');
 
-      const transition = await this.retryStateWrite(
-        () =>
-          handlerResult.isErr()
-            ? state.kind === 'checkpoint'
-              ? this.fail(item.id, handlerResult.error, true)
-              : this.fail(item.id, handlerResult.error)
-            : this.settleSuccess(item.id, state.kind === 'checkpoint'),
-        handlerResult.isErr() ? handlerResult.error : undefined,
-      );
-      if (transition.isErr() && !(transition.error instanceof DeliveryCancelled)) {
-        this.logger.warn({ itemId: item.id }, 'queue state transition refused; no work replayed');
-      }
+        // Inspect persisted bytes before mapping/caller state can hide a reserved replay boundary.
+        const inspection = await this.retryStateWrite(() =>
+          this.queueRepo.inspectSignalDelivery(item.id, Date.now()),
+        );
+        if (inspection.isErr()) {
+          if (inspection.error instanceof SignalCheckpointError) {
+            await this.retryStateWrite(() => this.queueRepo.rejectSignalReplay(item.id, Date.now()));
+          }
+          return item;
+        }
+        const state = inspection.value;
+        if (state.kind === 'invoked') {
+          await this.retryStateWrite(() => this.queueRepo.rejectSignalReplay(item.id, Date.now()));
+          return item;
+        }
+        if (
+          state.kind === 'checkpoint' &&
+          (state.checkpoint.phase === 'in_flight' || state.checkpoint.phase === 'terminal')
+        ) {
+          // Only quiesced recovery may classify interrupted ownership. Keep the claim out of polling.
+          this.logger.warn({ itemId: item.id }, 'saved delivery requires quiesced recovery');
+          return item;
+        }
+        if (
+          state.kind === 'checkpoint' &&
+          state.checkpoint.phase === 'ready' &&
+          state.checkpoint.expiresAt <= Date.now()
+        ) {
+          await this.retryStateWrite(() => this.deferOrTerminate(state.checkpoint));
+          return item;
+        }
 
-      return item;
+        let handlerResult: Result<void, Error>;
+        try {
+          handlerResult =
+            state.kind === 'checkpoint'
+              ? savedDeliveryHandler === undefined
+                ? ok(undefined)
+                : await savedDeliveryHandler(item, state.checkpoint)
+              : await handler(item);
+        } catch (caught) {
+          // Preserve typed identity. Unknown throws never become remote diagnostic strings.
+          handlerResult = err(caught instanceof Error ? caught : new Error('Queue handler failed'));
+        }
+
+        const transition = await this.retryStateWrite(
+          () =>
+            handlerResult.isErr()
+              ? state.kind === 'checkpoint'
+                ? this.fail(item.id, handlerResult.error, true)
+                : this.fail(item.id, handlerResult.error)
+              : this.settleSuccess(item.id, state.kind === 'checkpoint'),
+          handlerResult.isErr() ? handlerResult.error : undefined,
+        );
+        if (transition.isErr() && !(transition.error instanceof DeliveryCancelled)) {
+          this.logger.warn({ itemId: item.id }, 'queue state transition refused; no work replayed');
+        }
+
+        return item;
+      } finally {
+        if (ordinaryDispatch) this.activeOrdinaryThreads.delete(threadId);
+      }
     }
 
     return null;
