@@ -2,7 +2,7 @@
 // static deploy files that have drifted from the current codebase entry points.
 // Skip until Docker hardening is prioritised.
 import { describe, it, expect, beforeAll } from 'vitest';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { resolve } from 'path';
 import yaml from 'js-yaml';
 
@@ -12,6 +12,7 @@ import yaml from 'js-yaml';
 
 const DEPLOY_DIR = resolve(import.meta.dirname, '../../../deploy');
 const CONFIG_DIR = resolve(import.meta.dirname, '../../../config');
+const ROOT = resolve(import.meta.dirname, '../../..');
 
 function readDeploy(file: string): string {
   return readFileSync(resolve(DEPLOY_DIR, file), 'utf8');
@@ -19,6 +20,10 @@ function readDeploy(file: string): string {
 
 function readConfig(file: string): string {
   return readFileSync(resolve(CONFIG_DIR, file), 'utf8');
+}
+
+function readRepoFile(file: string): string {
+  return readFileSync(resolve(ROOT, file), 'utf8');
 }
 
 /**
@@ -63,6 +68,57 @@ function extractAllInstructions(content: string, instruction: string): string[] 
 }
 
 /**
+ * Return the body of one Dockerfile stage: its FROM line through the line
+ * before the next FROM (or end of file). Empty string when the stage does
+ * not exist, so assertions fail with a clear "no match" instead of
+ * accidentally matching text from a sibling stage.
+ */
+function stageBody(content: string, stageName: string): string {
+  const lines = content.split('\n');
+  const fromStage = new RegExp(`^FROM\\s+\\S+\\s+AS\\s+${stageName}\\b`, 'i');
+  const startIdx = lines.findIndex((line) => fromStage.test(line));
+  if (startIdx === -1) return '';
+  let endIdx = lines.length;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    if (/^FROM\s+\S+/i.test(lines[i]!)) {
+      endIdx = i;
+      break;
+    }
+  }
+  return lines.slice(startIdx, endIdx).join('\n');
+}
+
+/**
+ * Locate a top-level test group in a describe-based test file.
+ * Returns { found, topLevel }: found means a `describe('<title>'` line
+ * exists at column 0; topLevel means that declaration sits OUTSIDE any
+ * describe()/describe.skip() block. Depth is tracked over column-0
+ * declarations and column-0 `});` closers, so a group moved INSIDE a
+ * skipped block (even at column 0) is reported as nested.
+ */
+function topLevelGroup(
+  source: string,
+  title: string,
+): { found: boolean; topLevel: boolean } {
+  const escaped = title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const target = new RegExp(`^describe\\s*\\(\\s*'${escaped}`);
+  let depth = 0;
+  let found = false;
+  let topLevel = false;
+  for (const line of source.split('\n')) {
+    if (!found && target.test(line)) {
+      found = true;
+      topLevel = depth === 0;
+      depth += 1;
+      continue;
+    }
+    if (/^describe(\.skip)?\(/.test(line)) depth += 1;
+    if (/^}\);?$/.test(line)) depth = Math.max(0, depth - 1);
+  }
+  return { found, topLevel };
+}
+
+/**
  * Parse systemd unit file sections into a map of key->value pairs per section.
  */
 function parseSystemdUnit(content: string): Record<string, Record<string, string[]>> {
@@ -94,7 +150,185 @@ function parseSystemdUnit(content: string): Record<string, Record<string, string
 }
 
 // ---------------------------------------------------------------------------
-// Dockerfile (talond)
+// Image packaging contract (TASK-021) — ACTIVE GROUPS, do not skip.
+//
+// The describe.skip blocks below cover legacy deployment hardening that
+// predates the image feature. The groups here guard two packaging contracts
+// that silently no-op failures would break:
+//   1. the builder stage must receive templates/ BEFORE `npm run build`,
+//      otherwise the build script's template copy silently omits every tool
+//      instruction from the released image;
+//   2. each production target must load Sharp and normalize a tiny JPEG at
+//      build time (npm optionalDependencies resolve per-platform, so a host
+//      probe is never arm64 proof — the gate must live in the image).
+// ---------------------------------------------------------------------------
+
+describe('deploy/Dockerfile — image packaging (tool instructions + Sharp gate)', () => {
+  let dockerfile: string;
+  let builder: string;
+  let production: string;
+
+  beforeAll(() => {
+    dockerfile = readDeploy('Dockerfile');
+    builder = stageBody(dockerfile, 'builder');
+    production = stageBody(dockerfile, 'production');
+  });
+
+  it('builder stage copies templates/ into the image', () => {
+    expect(builder).toMatch(/^COPY\s+templates\/?\s+\.\/templates\//im);
+  });
+
+  it('templates/ copy happens BEFORE `npm run build` in the builder stage', () => {
+    const copyIdx = builder.search(/^COPY\s+templates\/?\s+\.\/templates\//im);
+    const buildIdx = builder.search(/^RUN\s+npm\s+run\s+build\b/im);
+    expect(copyIdx).toBeGreaterThanOrEqual(0);
+    expect(buildIdx).toBeGreaterThanOrEqual(0);
+    expect(copyIdx).toBeLessThan(buildIdx);
+  });
+
+  it('production stage installs production deps with npm ci --omit=dev', () => {
+    expect(production).toMatch(/^RUN\s+npm\s+ci\s+--omit=dev\b/im);
+  });
+
+  it('production stage runs a Sharp native normalization gate after npm ci --omit=dev', () => {
+    const installIdx = production.search(/^RUN\s+npm\s+ci\s+--omit=dev\b/im);
+    const gateIdx = production.search(/^RUN\s+node\b.*\bsharp\b.*\.jpeg\(/im);
+    expect(installIdx).toBeGreaterThanOrEqual(0);
+    expect(gateIdx).toBeGreaterThanOrEqual(0);
+    expect(gateIdx).toBeGreaterThan(installIdx);
+  });
+
+  it('the native gate performs a two-stage awaited decode (re-encode round trip), not a header-only check', () => {
+    const gateLine = production
+      .split('\n')
+      .find((line) => /^RUN\s+node\b.*\bsharp\b.*\.jpeg\(/i.test(line));
+    expect(gateLine).toBeDefined();
+    const gate = gateLine!;
+    expect(gate).toContain('--input-type=module');
+    // Stage 1: create and encode a tiny JPEG…
+    expect(gate).toMatch(/width:\s*8\s*,\s*height:\s*8/);
+    expect(gate).toMatch(/\.jpeg\(\{quality:\s*85\}\)/);
+    // …into a FIRST buffer (exactly one creation call).
+    expect((gate.match(/sharp\(\{create:/g) ?? []).length).toBe(1);
+    // Stage 2: AWAITED re-encode of the first buffer — sharp's metadata() is
+    // header-only access, so the gate must force a real pixel decode by
+    // converting the JPEG again (two toBuffer() round trips, second one fed
+    // from the first buffer).
+    expect((gate.match(/await\s+sharp\(jpeg\)\.jpeg\(\{quality:\s*85\}\)\.toBuffer\(\)/g) ?? []).length).toBe(1);
+    expect((gate.match(/toBuffer\(\)/g) ?? []).length).toBe(2);
+    // Validation targets the SECOND buffer: nonempty…
+    expect(gate).toMatch(/reencoded\.length\s*===\s*0/);
+    expect((gate.match(/await\s+sharp\(reencoded\)\.metadata\(\)/g) ?? []).length).toBe(1);
+    // …format jpeg, correct decoded dimensions…
+    expect(gate).toMatch(/meta\.format\s*!==\s*"jpeg"/);
+    expect(gate).toMatch(/meta\.width\s*!==\s*8/);
+    expect(gate).toMatch(/meta\.height\s*!==\s*8/);
+    // …and the gate aborts the image build when the native binding is broken.
+    expect(gate).toContain('process.exit(1)');
+    // Logs the architecture the gate actually executed on, so build logs
+    // carry per-target proof rather than a host probe.
+    expect(gate).toContain('process.arch');
+  });
+
+  it('production stage is glibc node:24-slim (musl is not claimed)', () => {
+    const stages = parseDockerfileStages(dockerfile);
+    const productionStage = stages.find((s) => s.name === 'production');
+    expect(productionStage?.base).toBe('node:24-slim');
+  });
+
+  it('instruction packaging stays at the full dist/ tree copied from builder', () => {
+    // dist/templates/tool-instructions/ reaches the runtime inside the dist
+    // tree; copying a narrower path would silently drop the instructions.
+    expect(production).toMatch(/^COPY\s+--from=builder\s+\/build\/dist\b/im);
+  });
+});
+
+describe('dockerfile.test.ts active-group integrity', () => {
+  it('keeps the image packaging groups top-level and unskipped', () => {
+    // Guards the TASK-021 regression itself: moving the packaging checks
+    // into a skipped state must fail, not silently pass. Counting
+    // declarations is NOT enough — converting a group to describe.skip or
+    // nesting a (column-0) group inside an existing describe.skip block both
+    // leave the counts unchanged. So the guard parses structure: each named
+    // packaging group must be a top-level describe() call, i.e. outside any
+    // describe/describe.skip block ancestry (tracked by a depth counter).
+    const source = readRepoFile('tests/unit/deploy/dockerfile.test.ts');
+    const titles = [
+      'deploy/Dockerfile — image packaging (tool instructions + Sharp gate)',
+      'packaged tool instructions reach the build output',
+      '.github/workflows/release.yaml — per-target native gate execution',
+    ];
+    for (const title of titles) {
+      const { found, topLevel } = topLevelGroup(source, title);
+      expect(found, `describe('${title}') must exist as a top-level group in this file`).toBe(true);
+      expect(topLevel, `describe('${title}') must not be nested inside any describe/describe.skip block`).toBe(true);
+    }
+  });
+});
+
+describe('packaged tool instructions reach the build output', () => {
+  it('npm build script stages templates into dist/templates/tool-instructions', () => {
+    const pkg = JSON.parse(readRepoFile('package.json')) as {
+      scripts: Record<string, string>;
+    };
+    expect(pkg.scripts.build).toContain('dist/templates/tool-instructions');
+    expect(pkg.scripts.build).toContain('templates/tool-instructions/');
+  });
+
+  it('dist/templates/tool-instructions/image.read.md exists and matches the source template byte-for-byte', () => {
+    const packagedPath = resolve(ROOT, 'dist/templates/tool-instructions/image.read.md');
+    const sourcePath = resolve(ROOT, 'templates/tool-instructions/image.read.md');
+    expect(existsSync(packagedPath), 'run `npm run build` first').toBe(true);
+    expect(readFileSync(packagedPath).equals(readFileSync(sourcePath))).toBe(true);
+  });
+
+  it('subagent.invoke.md (referenced by image.read.md) is packaged identically too', () => {
+    const packagedPath = resolve(ROOT, 'dist/templates/tool-instructions/subagent.invoke.md');
+    const sourcePath = resolve(ROOT, 'templates/tool-instructions/subagent.invoke.md');
+    expect(existsSync(packagedPath), 'run `npm run build` first').toBe(true);
+    expect(readFileSync(packagedPath).equals(readFileSync(sourcePath))).toBe(true);
+    // image.read.md tells the model to run Inspections via subagent_invoke;
+    // if that reference disappears this contract needs re-reading. (Read
+    // the packaged image.read.md itself, not the subagent.invoke.md that
+    // the byte comparison above already validated.)
+    expect(readFileSync(resolve(ROOT, 'dist/templates/tool-instructions/image.read.md'), 'utf8')).toContain(
+      'subagent_invoke',
+    );
+  });
+});
+
+describe('.github/workflows/release.yaml — per-target native gate execution', () => {
+  type WorkflowStep = { uses?: string; with?: Record<string, unknown> };
+  let talonImageStep: WorkflowStep | undefined;
+
+  beforeAll(() => {
+    const workflow = yaml.load(readRepoFile('.github/workflows/release.yaml')) as {
+      jobs: Record<string, { steps?: WorkflowStep[] }>;
+    };
+    const steps = workflow.jobs['build-and-push-image']?.steps ?? [];
+    talonImageStep = steps.find((step) => step.uses?.startsWith('docker/build-push-action'));
+  });
+
+  it('builds the Talon image from deploy/Dockerfile (the stage carrying the native gate)', () => {
+    expect(talonImageStep?.with?.['file']).toBe('deploy/Dockerfile');
+  });
+
+  it('executes the Dockerfile build for both glibc release targets linux/amd64 and linux/arm64', () => {
+    const platforms = String(talonImageStep?.with?.['platforms'] ?? '')
+      .split(',')
+      .map((p) => p.trim());
+    expect(platforms).toContain('linux/amd64');
+    expect(platforms).toContain('linux/arm64');
+  });
+
+  it('pushes the verified multiarch image', () => {
+    expect(talonImageStep?.with?.['push']).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dockerfile (talond) — legacy skipped checks (do not re-enable here;
+// image packaging is covered by the active groups above)
 // ---------------------------------------------------------------------------
 
 describe.skip('deploy/Dockerfile (talond)', () => {
