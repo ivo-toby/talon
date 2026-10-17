@@ -35,6 +35,7 @@ import {
   A2ATaskRepository,
   ImageRepository,
   ImageIngestionRepository,
+  FindingRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
@@ -64,6 +65,8 @@ import { ModelResolver } from '../subagents/model-resolver.js';
 import {
   buildSubAgentModelChain,
   runSubAgentModelChain,
+  validateVisionModelChain,
+  VISION_SUBAGENT_NAME,
 } from '../subagents/subagent-model-chain.js';
 import { ClaudeCodeProvider } from '../providers/claude-code-provider.js';
 import { GeminiCliProvider } from '../providers/gemini-cli-provider.js';
@@ -176,6 +179,13 @@ export async function bootstrap(
     image: new ImageRepository(db),
     imageIngestion: new ImageIngestionRepository(db),
   };
+
+  // Canonical Finding ledger (TASK-011 contract). Deliberately NOT part of
+  // `repos`/DaemonContext: Findings are written only by the vision sub-agent
+  // through the SubAgentServices bundle below, so no consumer needs the
+  // repository on the context yet. Keeping it local avoids implying that
+  // foreground agents can persist Findings without an Inspection.
+  const findingRepository = new FindingRepository(db);
 
   // 5. Audit logger
   const auditStore = new RepositoryAuditStore(repos.audit);
@@ -327,6 +337,35 @@ export async function bootstrap(
     }
   }
 
+  // Fail-closed vision chain gate (TASK-014). Validated against the MERGED
+  // agent map — built-in, then cwd/subagents, then dataDir/subagents — so a
+  // custom manifest that replaces the built-in vision sub-agent with a
+  // text-only model (claude-code, codex-sandbox, or any other non-inference
+  // adapter) fails startup here instead of silently degrading an Inspection
+  // into a text-only answer. Custom cwd/dataDir manifests bypass the
+  // config-load check in config-schema.ts, so this merged-chain validation is
+  // the only gate that sees them. Runs before any channel work: an invalid
+  // vision chain must never reach a running pipeline. When no `vision`
+  // sub-agent is present at all (built-in load failure surfaced as a warning
+  // above), persona assignment fails explicitly at invoke time with
+  // "Unknown sub-agent" — other sub-agents keep working.
+  const visionAgent = mergedAgentMap.get(VISION_SUBAGENT_NAME);
+  if (visionAgent) {
+    const visionChainResult = validateVisionModelChain(
+      visionAgent,
+      config.subagents?.[VISION_SUBAGENT_NAME],
+    );
+    if (visionChainResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Invalid vision model chain: ${visionChainResult.error.message}`,
+          visionChainResult.error,
+        ),
+      );
+    }
+  }
+
   let modelResolver: ModelResolver | null = null;
   if (mergedAgentMap.size > 0) {
     const agentMap = mergedAgentMap;
@@ -347,10 +386,16 @@ export async function bootstrap(
         messages: repos.message,
         runs: repos.run,
         queue: repos.queue,
-        // Runtime ImageAccess port for later consumers (vision sub-agent,
-        // lookup, descriptor projections). Findings/inspection-limit wiring
-        // is a separate task; vision still rejects until it lands.
+        // Runtime ImageAccess port for the vision sub-agent (and later
+        // lookup/descriptor consumers). Reaching these services is NOT a
+        // capability grant: a persona still needs `subagent.invoke` plus an
+        // explicit assignment before the runner dispatches to `vision`.
         images: imageAccess,
+        // Canonical Finding ledger — every successful Inspection is persisted
+        // here against the trusted run/thread/image provenance.
+        findings: findingRepository,
+        // Inspection ceiling from the validated `images` config section.
+        imageInspectionLimits: { maxPerInspection: config.images.maxPerInspection },
         logger,
       },
       logger,
