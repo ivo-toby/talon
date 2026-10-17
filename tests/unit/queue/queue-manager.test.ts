@@ -719,3 +719,246 @@ describe('QueueManager', () => {
     });
   });
 });
+
+describe('QueueManager — full ordinary dispatch ownership', () => {
+  let db: Database.Database;
+  let repo: QueueRepository;
+  let manager: QueueManager;
+  let threadId: string;
+  let releaseTail: () => void;
+  let tail: Promise<void>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    BaseRepository.__resetMonotonicClockForTests();
+    db = createTestDb();
+    repo = new QueueRepository(db);
+    manager = new QueueManager(repo, new ThreadRepository(db), DEFAULT_CONFIG, createTestLogger());
+    threadId = seedThread(db);
+    tail = new Promise<void>((resolve) => {
+      releaseTail = resolve;
+    });
+  });
+
+  afterEach(async () => {
+    manager.stopProcessing();
+    releaseTail();
+    await vi.advanceTimersByTimeAsync(0);
+    await manager.quiesceAndDrainClaims();
+    vi.useRealTimers();
+    db.close();
+  });
+
+  it.each([2, 5])(
+    'holds an early-completed ordinary tail across actual polls and both collaboration bypasses (concurrency %s)',
+    async (concurrencyLimit) => {
+      manager = new QueueManager(
+        repo,
+        new ThreadRepository(db),
+        { ...DEFAULT_CONFIG, concurrencyLimit },
+        createTestLogger(),
+      );
+      const first = manager.enqueue(threadId, 'message', {})._unsafeUnwrap();
+      const handled: string[] = [];
+      manager.startProcessing(async (item) => {
+        handled.push(item.id);
+        if (item.id === first.id) {
+          repo.complete(item.id)._unsafeUnwrap();
+          await tail;
+        }
+        return ok(undefined);
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(repo.findById(first.id)._unsafeUnwrap()?.status).toBe('completed');
+      expect(repo.hasInflightItem(threadId)._unsafeUnwrap()).toBe(false);
+
+      const headCollaboration = manager.enqueue(threadId, 'collaboration', {})._unsafeUnwrap();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handled).toEqual([first.id, headCollaboration.id]);
+      const second = manager.enqueue(threadId, 'message', {})._unsafeUnwrap();
+      const third = manager.enqueue(threadId, 'schedule', {})._unsafeUnwrap();
+      const behindCollaboration = manager.enqueue(threadId, 'collaboration', {})._unsafeUnwrap();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handled).toEqual([first.id, headCollaboration.id, behindCollaboration.id]);
+      expect(repo.findById(behindCollaboration.id)._unsafeUnwrap()?.status).toBe('completed');
+
+      // A completed collaboration must not release the still-live ordinary owner.
+      // Real progress on another seeded channel proves a subsequent poll had capacity.
+      const other = manager.enqueue(seedThread(db), 'message', {})._unsafeUnwrap();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handled).toEqual([first.id, headCollaboration.id, behindCollaboration.id, other.id]);
+      expect(repo.findById(other.id)._unsafeUnwrap()?.status).toBe('completed');
+      for (const item of [second, third])
+        expect(repo.findById(item.id)._unsafeUnwrap()).toMatchObject({
+          status: 'pending',
+          attempts: 0,
+          max_attempts: 3,
+          claimed_at: null,
+        });
+
+      releaseTail();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(handled).toEqual([
+        first.id,
+        headCollaboration.id,
+        behindCollaboration.id,
+        other.id,
+        second.id,
+        third.id,
+      ]);
+      for (const item of [first, second, third])
+        expect(repo.findById(item.id)._unsafeUnwrap()).toMatchObject({
+          status: 'completed',
+          attempts: 0,
+        });
+    },
+  );
+
+  it.each([
+    'purge-ok',
+    'purge-cancel-return',
+    'purge-cancel-throw',
+    'completed-err',
+    'completed-throw',
+  ] as const)(
+    'excludes later ordinary work until the original %s handler actually settles',
+    async (outcome) => {
+      const first = manager.enqueue(threadId, 'message', {})._unsafeUnwrap();
+      const failure = outcome.startsWith('purge-cancel')
+        ? new DeliveryCancelled()
+        : new Error('held handler failure');
+      const handled: string[] = [];
+      manager.startProcessing(async (item) => {
+        handled.push(item.id);
+        if (item.id !== first.id) return ok(undefined);
+        if (outcome.startsWith('purge')) repo.purge(['claimed'])._unsafeUnwrap();
+        else repo.complete(item.id)._unsafeUnwrap();
+        await tail;
+        if (outcome.endsWith('throw')) throw failure;
+        return outcome.endsWith('return') || outcome.endsWith('err') ? err(failure) : ok(undefined);
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      const second = manager.enqueue(threadId, 'message', {})._unsafeUnwrap();
+      const other = manager.enqueue(seedThread(db), 'message', {})._unsafeUnwrap();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handled).toEqual([first.id, other.id]);
+      expect(repo.findById(other.id)._unsafeUnwrap()?.status).toBe('completed');
+      expect(repo.findById(second.id)._unsafeUnwrap()).toMatchObject({
+        status: 'pending',
+        attempts: 0,
+        claimed_at: null,
+      });
+      releaseTail();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handled).toEqual([first.id, other.id, second.id]);
+      expect(repo.findById(second.id)._unsafeUnwrap()?.status).toBe('completed');
+      if (outcome.startsWith('purge')) expect(repo.findById(first.id)._unsafeUnwrap()).toBeNull();
+      else
+        expect(repo.findById(first.id)._unsafeUnwrap()).toMatchObject({
+          status: 'completed',
+          attempts: 0,
+        });
+    },
+  );
+
+  it.each(['complete', 'purge'] as const)(
+    'retains ordinary ownership and full drain during local completion-write retry after public %s',
+    async (disposition) => {
+      const first = manager.enqueue(threadId, 'message', {})._unsafeUnwrap();
+      db.exec(
+        "CREATE TRIGGER lifetime_complete_failure BEFORE UPDATE ON queue_items WHEN NEW.status = 'completed' BEGIN SELECT RAISE(ABORT, 'synthetic local write failure'); END",
+      );
+      const handled: string[] = [];
+      manager.startProcessing(async (item) => {
+        handled.push(item.id);
+        return ok(undefined);
+      });
+      try {
+        await vi.advanceTimersByTimeAsync(500);
+        expect(handled).toEqual([first.id]);
+        expect(repo.findById(first.id)._unsafeUnwrap()?.status).toBe('claimed');
+        db.exec('DROP TRIGGER lifetime_complete_failure');
+        if (disposition === 'complete') repo.complete(first.id)._unsafeUnwrap();
+        else repo.purge(['claimed'])._unsafeUnwrap();
+        const second = manager.enqueue(threadId, 'message', {})._unsafeUnwrap();
+        const other = manager.enqueue(seedThread(db), 'message', {})._unsafeUnwrap();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(handled).toEqual([first.id, other.id]);
+        expect(repo.findById(other.id)._unsafeUnwrap()?.status).toBe('completed');
+        expect(repo.findById(second.id)._unsafeUnwrap()?.status).toBe('pending');
+        const drain = manager.quiesceAndDrainClaims();
+        expect(manager.quiesceAndDrainClaims()).toBe(drain);
+        let drained = false;
+        const observed = drain.then(() => {
+          drained = true;
+        });
+        manager.stopProcessing();
+        manager.resumeClaims();
+        await vi.advanceTimersByTimeAsync(499);
+        expect(drained).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        await observed;
+        expect(drained).toBe(true);
+        expect(handled).toEqual([first.id, other.id]);
+        manager.startProcessing(async (item) => {
+          handled.push(item.id);
+          return ok(undefined);
+        });
+        await vi.advanceTimersByTimeAsync(500);
+        expect(repo.findById(second.id)._unsafeUnwrap()?.status).toBe('pending');
+        manager.resumeClaims();
+        await vi.advanceTimersByTimeAsync(500);
+        expect(repo.findById(second.id)._unsafeUnwrap()?.status).toBe('completed');
+        expect(handled).toEqual([first.id, other.id, second.id]);
+      } finally {
+        db.exec('DROP TRIGGER IF EXISTS lifetime_complete_failure');
+        await vi.advanceTimersByTimeAsync(1000);
+      }
+    },
+  );
+
+  it.each([2, 5])(
+    'counts early-completed handler tails against all %s configured slots',
+    async (concurrencyLimit) => {
+      manager = new QueueManager(
+        repo,
+        new ThreadRepository(db),
+        { ...DEFAULT_CONFIG, concurrencyLimit },
+        createTestLogger(),
+      );
+      const active = Array.from({ length: concurrencyLimit }, () =>
+        manager.enqueue(seedThread(db), 'message', {})._unsafeUnwrap(),
+      );
+      const handled: string[] = [];
+      manager.startProcessing(async (item) => {
+        handled.push(item.id);
+        repo.complete(item.id)._unsafeUnwrap();
+        if (active.some((held) => held.id === item.id)) await tail;
+        return ok(undefined);
+      });
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handled).toEqual(active.map((item) => item.id));
+      const next = manager.enqueue(seedThread(db), 'message', {})._unsafeUnwrap();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handled).toHaveLength(concurrencyLimit);
+      expect(repo.findById(next.id)._unsafeUnwrap()?.status).toBe('pending');
+      const drain = manager.quiesceAndDrainClaims();
+      let drained = false;
+      const observed = drain.then(() => {
+        drained = true;
+      });
+      manager.resumeClaims();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(drained).toBe(false);
+      releaseTail();
+      await vi.advanceTimersByTimeAsync(0);
+      await observed;
+      expect(drained).toBe(true);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(repo.findById(next.id)._unsafeUnwrap()?.status).toBe('pending');
+      manager.resumeClaims();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(repo.findById(next.id)._unsafeUnwrap()?.status).toBe('completed');
+    },
+  );
+});

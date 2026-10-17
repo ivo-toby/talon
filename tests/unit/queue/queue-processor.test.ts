@@ -1282,3 +1282,300 @@ describe('QueueProcessor', () => {
     });
   });
 });
+
+describe('QueueProcessor — full ordinary dispatch ownership', () => {
+  let db: Database.Database;
+  let repo: QueueRepository;
+  let processor: QueueProcessor;
+  let threadId: string;
+  let releaseTail: () => void;
+  let tail: Promise<void>;
+  let dispatch: Promise<QueueItem | null> | undefined;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    BaseRepository.__resetMonotonicClockForTests();
+    db = createTestDb();
+    repo = new QueueRepository(db);
+    const logger = createTestLogger();
+    processor = new QueueProcessor(
+      repo,
+      calculateBackoff,
+      new DeadLetterHandler(repo, logger),
+      logger,
+    );
+    threadId = seedThread(db);
+    dispatch = undefined;
+    tail = new Promise<void>((resolve) => {
+      releaseTail = resolve;
+    });
+  });
+
+  afterEach(async () => {
+    releaseTail();
+    await vi.advanceTimersByTimeAsync(2000);
+    await dispatch;
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    db.close();
+  });
+
+  it('linearizes ownership before inspection can complete the row and yield to a concurrent admission', async () => {
+    const first = enqueueItem(repo, threadId);
+    const second = enqueueItem(repo, threadId);
+    const other = enqueueItem(repo, seedThread(db));
+    const inspect = repo.inspectSignalDelivery.bind(repo);
+    vi.spyOn(repo, 'inspectSignalDelivery').mockImplementationOnce((id, now) => {
+      const result = inspect(id, now);
+      repo.complete(id)._unsafeUnwrap();
+      return result;
+    });
+    const handled: string[] = [];
+    const handler = async (item: QueueItem) => {
+      handled.push(item.id);
+      if (item.id === first) await tail;
+      return ok(undefined);
+    };
+    dispatch = processor.processNext(handler);
+    // No await between these two public admissions: inspection has already left SQL inflight.
+    const concurrent = processor.processNext(handler);
+    expect((await concurrent)?.id).toBe(other);
+    expect(handled).toEqual([first, other]);
+    expect(repo.findById(second)._unsafeUnwrap()).toMatchObject({
+      status: 'pending',
+      claimed_at: null,
+    });
+    releaseTail();
+    expect((await dispatch)?.id).toBe(first);
+    expect((await processor.processNext(handler))?.id).toBe(second);
+    expect(handled).toEqual([first, other, second]);
+  });
+
+  it('holds ownership across an unresolved pre-handler inspection retry even if SQL is completed', async () => {
+    const first = enqueueItem(repo, threadId);
+    const closedDb = createTestDb();
+    const closedRepo = new QueueRepository(closedDb);
+    closedDb.close();
+    const actualReadFailure = closedRepo.inspectSignalDelivery(first, Date.now());
+    expect(actualReadFailure.isErr()).toBe(true);
+    vi.spyOn(repo, 'inspectSignalDelivery').mockReturnValueOnce(actualReadFailure);
+    const handled: string[] = [];
+    const handler = async (item: QueueItem) => {
+      handled.push(item.id);
+      return ok(undefined);
+    };
+    dispatch = processor.processNext(handler);
+    expect(handled).toEqual([]);
+    repo.complete(first)._unsafeUnwrap();
+    const second = enqueueItem(repo, threadId);
+    const other = enqueueItem(repo, seedThread(db));
+    expect((await processor.processNext(handler))?.id).toBe(other);
+    expect(handled).toEqual([other]);
+    expect(repo.findById(second)._unsafeUnwrap()?.status).toBe('pending');
+    await vi.advanceTimersByTimeAsync(1500);
+    expect((await dispatch)?.id).toBe(first);
+    expect((await processor.processNext(handler))?.id).toBe(second);
+    expect(handled).toEqual([other, first, second]);
+  });
+
+  it('retains a saved ordinary dispatch after actual atomic Signal finalization until its awaited tail returns', async () => {
+    const first = enqueueItem(repo, threadId);
+    const now = Date.now();
+    const account = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+    const checkpoint = repo
+      .saveSignalCheckpoint(
+        {
+          version: 1,
+          queueItemId: first,
+          deliveryId: `delivery-${first}`,
+          kind: 'background',
+          personaId: 'persona',
+          threadId,
+          channelName: 'signal-test',
+          accountUuid: account,
+          destination: `signal:v1:${account}:self`,
+          body: 'original',
+          chunks: ['original'],
+          nextChunk: 0,
+          phase: 'ready',
+          currentChunkAcceptance: 'unwritten',
+          acceptedChunks: 0,
+          successCount: 0,
+          failureCount: 0,
+          createdAt: now,
+          expiresAt: now + SIGNAL_CHECKPOINT_LIFETIME_MS,
+        },
+        now,
+      )
+      ._unsafeUnwrap();
+    const handled: string[] = [];
+    const ordinary = async (item: QueueItem) => {
+      handled.push(item.id);
+      return ok(undefined);
+    };
+    const saved = async (_item: QueueItem, latest: SignalDeliveryCheckpoint) => {
+      const accounts = new SignalAccountStateRepository(db);
+      const state = accounts.getOrCreate(account, Date.now())._unsafeUnwrap();
+      const owner = repo.beginSignalChunk(latest, state.revision, Date.now())._unsafeUnwrap();
+      const delivered = repo
+        .settleSignalChunk(owner, { kind: 'accepted', successCount: 1 }, Date.now())
+        ._unsafeUnwrap();
+      const finalized = repo.finalizeSignalDelivery(delivered, () => ok(undefined), Date.now());
+      await tail;
+      return finalized;
+    };
+    dispatch = processor.processNext(ordinary, saved);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(repo.findById(first)._unsafeUnwrap()).toMatchObject({
+      status: 'completed',
+      attempts: 0,
+      claimed_at: null,
+    });
+    expect(repo.inspectSignalDelivery(first, Date.now())._unsafeUnwrap()).toMatchObject({
+      kind: 'checkpoint',
+      checkpoint: { deliveryId: checkpoint.deliveryId, phase: 'delivered' },
+    });
+    const second = enqueueItem(repo, threadId);
+    const other = enqueueItem(repo, seedThread(db));
+    expect((await processor.processNext(ordinary, saved))?.id).toBe(other);
+    expect(handled).toEqual([other]);
+    expect(repo.findById(second)._unsafeUnwrap()?.status).toBe('pending');
+    releaseTail();
+    expect((await dispatch)?.id).toBe(first);
+    expect((await processor.processNext(ordinary, saved))?.id).toBe(second);
+    expect(handled).toEqual([other, second]);
+  });
+
+  it.each(['live early-completed', 'durable claimed'] as const)(
+    'never borrows a discovered head collaboration bypass when saved eligibility rewinds (%s owner)',
+    async (ownership) => {
+      const first = enqueueItem(repo, threadId);
+      const handled: string[] = [];
+      const ordinary = async (item: QueueItem) => {
+        handled.push(item.id);
+        if (item.id === first) {
+          if (ownership === 'live early-completed') repo.complete(first)._unsafeUnwrap();
+          await tail;
+        }
+        return ok(undefined);
+      };
+      dispatch = processor.processNext(ordinary);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(handled).toEqual([first]);
+      expect(repo.hasInflightItem(threadId)._unsafeUnwrap()).toBe(ownership === 'durable claimed');
+
+      const collaboration = enqueueItem(repo, threadId, { type: 'collaboration' });
+      const now = Date.now();
+      const account = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+      const checkpoint = repo
+        .saveSignalCheckpoint(
+          {
+            version: 1,
+            queueItemId: collaboration,
+            deliveryId: `delivery-${collaboration}`,
+            kind: 'background',
+            personaId: 'persona',
+            threadId,
+            channelName: 'signal-test',
+            accountUuid: account,
+            destination: `signal:v1:${account}:self`,
+            body: 'saved collaboration',
+            chunks: ['saved collaboration'],
+            nextChunk: 0,
+            phase: 'ready',
+            currentChunkAcceptance: 'unwritten',
+            acceptedChunks: 0,
+            successCount: 0,
+            failureCount: 0,
+            createdAt: now,
+            expiresAt: now + SIGNAL_CHECKPOINT_LIFETIME_MS,
+          },
+          now,
+        )
+        ._unsafeUnwrap();
+      const due = repo.deferSignalDelivery(checkpoint, 1000, now)._unsafeUnwrap();
+      const second = enqueueItem(repo, threadId);
+      const other = enqueueItem(repo, seedThread(db));
+      vi.setSystemTime(due);
+      const findPending = repo.findPending.bind(repo);
+      const discovered: string[] = [];
+      vi.spyOn(repo, 'findPending').mockImplementationOnce(() => {
+        const actual = findPending();
+        if (actual.isOk()) discovered.push(...actual.value.map((row) => row.id));
+        // Discovery was real and due; actual SQL claiming must re-evaluate saved wall eligibility.
+        vi.setSystemTime(due - 1000);
+        return actual;
+      });
+      const savedCalls: string[] = [];
+      const saved = async (item: QueueItem, latest: SignalDeliveryCheckpoint) => {
+        savedCalls.push(item.id);
+        const accounts = new SignalAccountStateRepository(db);
+        const state = accounts.getOrCreate(account, Date.now())._unsafeUnwrap();
+        const owner = repo.beginSignalChunk(latest, state.revision, Date.now())._unsafeUnwrap();
+        const delivered = repo
+          .settleSignalChunk(owner, { kind: 'accepted', successCount: 1 }, Date.now())
+          ._unsafeUnwrap();
+        return repo.finalizeSignalDelivery(delivered, () => ok(undefined), Date.now());
+      };
+      expect((await processor.processNext(ordinary, saved))?.id).toBe(other);
+      expect(discovered).toEqual([collaboration, second, other]);
+      expect(savedCalls).toEqual([]);
+      expect(handled).toEqual([first, other]);
+      expect(repo.findById(second)._unsafeUnwrap()).toMatchObject({
+        status: 'pending',
+        claimed_at: null,
+        attempts: 0,
+      });
+      expect(repo.findById(collaboration)._unsafeUnwrap()).toMatchObject({
+        status: 'failed',
+        next_retry_at: due,
+        attempts: 0,
+      });
+      vi.setSystemTime(due);
+      expect((await processor.processNext(ordinary, saved))?.id).toBe(collaboration);
+      expect(savedCalls).toEqual([collaboration]);
+      expect(repo.findById(collaboration)._unsafeUnwrap()?.status).toBe('completed');
+      expect(await processor.processNext(ordinary, saved)).toBeNull();
+      expect(repo.findById(second)._unsafeUnwrap()?.status).toBe('pending');
+      releaseTail();
+      expect((await dispatch)?.id).toBe(first);
+      expect((await processor.processNext(ordinary, saved))?.id).toBe(second);
+      expect(handled).toEqual([first, other, second]);
+      expect(repo.findById(second)._unsafeUnwrap()?.status).toBe('completed');
+    },
+  );
+
+  it.each(['return', 'throw'] as const)(
+    'releases each ordinary %s failure after settlement without changing maxAttempts=3 or backoff',
+    async (mode) => {
+      const first = enqueueItem(repo, threadId);
+      const failure = new Error('original ordinary failure');
+      const fail = vi.spyOn(processor, 'fail');
+      const handled: string[] = [];
+      const handler = async (item: QueueItem) => {
+        handled.push(item.id);
+        if (mode === 'throw') throw failure;
+        return err(failure);
+      };
+      for (let attempt = 0; attempt < 3; attempt++) {
+        expect((await processor.processNext(handler))?.id).toBe(first);
+        expect(fail.mock.calls[attempt]).toEqual([first, failure]);
+        expect(repo.findById(first)._unsafeUnwrap()).toMatchObject({
+          status: attempt === 2 ? 'dead_letter' : 'failed',
+          max_attempts: 3,
+          attempts: attempt === 2 ? 2 : attempt + 1,
+          error: 'original ordinary failure',
+        });
+        if (attempt < 2) {
+          const retryAt = repo.findById(first)._unsafeUnwrap()?.next_retry_at;
+          expect(retryAt).toBeGreaterThan(Date.now());
+          expect(await processor.processNext(handler)).toBeNull();
+          await vi.advanceTimersByTimeAsync(3000);
+        }
+      }
+      const second = enqueueItem(repo, threadId);
+      expect((await processor.processNext(async () => ok(undefined)))?.id).toBe(second);
+      expect(handled).toEqual([first, first, first]);
+    },
+  );
+});
