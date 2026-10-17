@@ -205,6 +205,10 @@ import { ImageLifecycleManager } from '../../../src/images/image-lifecycle.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
 import { FindingRepository } from '../../../src/core/database/repositories/index.js';
+import {
+  DaemonImageContextSource,
+  ImageLookupAccessAdapter,
+} from '../../../src/daemon/image-context-source.js';
 import { createDiscardLogger } from './helpers.js';
 import { createObservabilityService } from '../../../src/observability/langfuse/index.js';
 
@@ -642,6 +646,8 @@ describe('bootstrap', () => {
       expect(ctx.imageIngestionCoordinator).toBeDefined();
       expect(ctx.imageAccess).toBeDefined();
       expect(ctx.imageLifecycle).toBeDefined();
+      // ADR-0002 context reads are wired, not left optional.
+      expect(ctx.imageContextSource).toBeDefined();
       expect(ctx.channelRegistry).toBeDefined();
       expect(ctx.queueManager).toBeDefined();
       expect(ctx.scheduler).toBeDefined();
@@ -754,12 +760,42 @@ describe('bootstrap', () => {
 
       expect(result.isOk()).toBe(true);
       expect(HostToolsBridge).toHaveBeenCalledOnce();
-      // Verify bridge was constructed with the context object.
+      // Verify bridge was constructed with the context object AND the real
+      // image lookup services — without the second argument `image_lookup`
+      // stays disabled for every persona.
       expect(HostToolsBridge).toHaveBeenCalledWith(
         expect.objectContaining({ dataDir: '/tmp/test-data' }),
+        expect.objectContaining({
+          images: expect.any(Object),
+          findings: expect.any(Object),
+        }),
       );
       const ctx = result._unsafeUnwrap();
       expect(ctx.hostToolsBridge).toBeDefined();
+    });
+
+    it('wires the Image/Finding context sources over the shipped image services', async () => {
+      setupSuccessfulMocks();
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+
+      // The same ADR-0002 port the AgentRunner is constructed with, and the
+      // same Finding ledger the bridge reads, are built from this context's
+      // repositories — no separate in-memory state.
+      expect(ctx.imageContextSource).toBeInstanceOf(DaemonImageContextSource);
+      const [, lookupServices] = vi.mocked(HostToolsBridge).mock.calls[0]! as [
+        unknown,
+        { images: unknown; findings: unknown },
+      ];
+      expect(lookupServices.images).toBeInstanceOf(ImageLookupAccessAdapter);
+      // The Finding ledger handed to the bridge is the canonical repository,
+      // not a per-tool copy (constructed exactly once per bootstrap).
+      expect(lookupServices.findings).toBeTypeOf('object');
+      expect(lookupServices.findings).not.toBeNull();
+      expect(FindingRepository).toHaveBeenCalledOnce();
     });
 
     it('constructs background task persistence and background agent manager', async () => {

@@ -123,7 +123,11 @@ export class TalondDaemon {
     await this.mcpRegistry.startAll();
 
     // 3. Create the agent runner and start the host-tools bridge.
-    this.agentRunner = new AgentRunner(this.ctx);
+    // ADR-0002: the runner needs the refreshed Image/Finding source so live
+    // descriptors, fresh-session replay, and rotation projections are real.
+    this.agentRunner = new AgentRunner(this.ctx, {
+      imageContextSource: this.ctx.imageContextSource,
+    });
     this.ctx.hostToolsBridge.start();
 
     // 3a. Run the durable-image startup recovery + retention pass and AWAIT
@@ -584,7 +588,9 @@ export class TalondDaemon {
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
-    this.agentRunner = new AgentRunner(this.ctx);
+    this.agentRunner = new AgentRunner(this.ctx, {
+      imageContextSource: this.ctx.imageContextSource,
+    });
 
     // Update config snapshot.
     (this.ctx as { config: TalondConfig }).config = newConfig;

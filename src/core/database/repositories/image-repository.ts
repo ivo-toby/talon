@@ -113,6 +113,41 @@ export interface FindImagesOptions {
   limit?: number;
 }
 
+/**
+ * Keyset position in a thread's Image page.
+ *
+ * `(receivedAt DESC, id ASC)` is the one ordering every inventory and lookup
+ * sorts by, so an anchor is the pair that identifies the last delivered row.
+ */
+export interface ImageThreadPageAnchor {
+  receivedAt: number;
+  imageId: string;
+}
+
+/** Options for one thread-scoped keyset Image page read. */
+export interface FindImageThreadPageOptions {
+  threadId: string;
+  /**
+   * Restrict to these states. Defaults to every state; lookups narrow to the
+   * non-Processing states because Processing is internal to Ingestion.
+   */
+  states?: readonly ImageState[];
+  /** Maximum rows. Defaults to `DEFAULT_IMAGE_LIMIT`. */
+  limit?: number;
+  /**
+   * Keyset position: return only the rows strictly after this anchor in
+   * `(received_at DESC, id ASC)` order. Absent or null means the first page.
+   */
+  before?: ImageThreadPageAnchor | null;
+}
+
+/** One keyset page of a thread's Image rows. */
+export interface ImageThreadPage {
+  images: ImageRow[];
+  /** Anchor to pass as `before` for the next page, or null when exhausted. */
+  nextAnchor: ImageThreadPageAnchor | null;
+}
+
 interface MessageOwnerRow {
   thread_id: string;
   direction: 'inbound' | 'outbound';
@@ -196,6 +231,7 @@ export class ImageRepository extends BaseRepository {
   private readonly findByMessageStmt: Database.Statement;
   private readonly findThreadAllStmt: Database.Statement;
   private readonly findThreadStatesStmt = new Map<number, Database.Statement>();
+  private readonly findThreadPageStmt = new Map<number, Database.Statement>();
   private readonly findThreadProcessingStmt: Database.Statement;
   private readonly findExpirableStmt: Database.Statement;
   private readonly incrementAttemptsStmt: Database.Statement;
@@ -418,6 +454,85 @@ export class ImageRepository extends BaseRepository {
     } catch (cause) {
       return err(this.fail('find images by thread', cause));
     }
+  }
+
+  /**
+   * Returns one keyset page of a thread's Images, newest receipt first.
+   *
+   * The keyset condition keeps rows strictly after `(before.receivedAt, before.id)`
+   * in `(received_at DESC, id ASC)` order, so pages never repeat or skip an Image
+   * no matter how many share a receipt millisecond. One extra row is fetched to
+   * decide exhaustion, which is why `nextAnchor` is null exactly when the result
+   * is exhausted rather than when a page happens to be short.
+   *
+   * Like every other thread read, this never joins `messages`, so a history
+   * cutoff or retention purge cannot hide an Image from a page.
+   */
+  findThreadPage(options: FindImageThreadPageOptions): Result<ImageThreadPage, DbError> {
+    const states = options.states ?? [];
+    const limit = options.limit ?? DEFAULT_IMAGE_LIMIT;
+    if (!Number.isInteger(limit) || limit <= 0) {
+      return err(
+        new DbError(
+          `findThreadPage requires a positive integer limit, got ${String(options.limit)}`,
+        ),
+      );
+    }
+
+    try {
+      const stmt = this.threadPageStmt(states);
+      const bindings: Record<string, unknown> = {
+        thread_id: options.threadId,
+        before_received: options.before?.receivedAt ?? null,
+        before_id: options.before?.imageId ?? null,
+        // Exhaustion probe: one row beyond the requested page.
+        limit: limit + 1,
+      };
+      states.forEach((state, index) => {
+        bindings[`st${index}`] = state;
+      });
+
+      const rows = stmt.all(bindings) as ImageRow[];
+      const hasMore = rows.length > limit;
+      const pageRows = hasMore ? rows.slice(0, limit) : rows;
+      const last = pageRows[pageRows.length - 1];
+      return ok({
+        images: pageRows.map(mapImageRow),
+        nextAnchor:
+          hasMore && last !== undefined ? { receivedAt: last.received_at, imageId: last.id } : null,
+      });
+    } catch (cause) {
+      return err(this.fail('find image thread page', cause));
+    }
+  }
+
+  /**
+   * Prepared statement for a keyset page, cached per state-filter arity.
+   * Only placeholder names are generated, never values.
+   */
+  private threadPageStmt(states: readonly ImageState[]): Database.Statement {
+    const cached = this.findThreadPageStmt.get(states.length);
+    if (cached) {
+      return cached;
+    }
+    const stateFilter =
+      states.length === 0
+        ? ''
+        : `AND state IN (${states.map((_state, index) => `$st${index}`).join(', ')})`;
+    const stmt = this.db.prepare(`
+      SELECT * FROM images
+      WHERE thread_id = @thread_id
+        ${stateFilter}
+        AND (
+          @before_received IS NULL
+          OR received_at < @before_received
+          OR (received_at = @before_received AND id > @before_id)
+        )
+      ORDER BY received_at DESC, id ASC
+      LIMIT @limit
+    `);
+    this.findThreadPageStmt.set(states.length, stmt);
+    return stmt;
   }
 
   /**

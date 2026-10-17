@@ -86,6 +86,10 @@ import { ImageStore } from '../images/image-store.js';
 import { ImageIngestionCoordinator } from '../images/image-ingestion.js';
 import { ImageService } from '../images/image-service.js';
 import { ImageLifecycleManager } from '../images/image-lifecycle.js';
+import {
+  DaemonImageContextSource,
+  ImageLookupAccessAdapter,
+} from './image-context-source.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -204,6 +208,23 @@ export async function bootstrap(
     // P2-7: read-triggered durable transitions and deletions audit through
     // the same store as the lifecycle sweep.
     auditStore,
+  });
+
+  // ADR-0002 context reads over the same records: the agent runner, context
+  // assembler, and context roller get refreshed Image descriptors and canonical
+  // Findings through `imageContextSource`, and `image_lookup` gets its
+  // thread-scoped page reads through the lookup adapter. Both delegate every
+  // availability decision to the ImageService above.
+  const imageContextSource = new DaemonImageContextSource({
+    imageRepo: repos.image,
+    imageAccess,
+    findings: findingRepository,
+    logger,
+  });
+  const imageLookupAccess = new ImageLookupAccessAdapter({
+    imageRepo: repos.image,
+    imageAccess,
+    logger,
   });
 
   // 6. Thread workspace
@@ -779,9 +800,13 @@ export async function bootstrap(
     imageIngestionCoordinator,
     imageAccess,
     imageLifecycle,
+    imageContextSource,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
-  const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
+  const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext, {
+    images: imageLookupAccess,
+    findings: findingRepository,
+  });
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;
