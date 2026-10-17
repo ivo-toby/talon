@@ -27,6 +27,12 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import { MCP_TO_INTERNAL } from './tool-filter.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
 import { TALOND_BRIDGE_SECRET_ENV } from './host-tools-bridge-auth.js';
+import {
+  IMAGE_LOOKUP_OPERATIONS,
+  IMAGE_LOOKUP_DEFAULT_LIMIT,
+  IMAGE_LOOKUP_MIN_LIMIT,
+  IMAGE_LOOKUP_MAX_LIMIT,
+} from './host-tools/image-lookup.js';
 
 /** Tool name mapping from MCP (underscores) to handler (dots). Derived from HOST_TOOL_REGISTRY. */
 const TOOL_NAME_MAP = Object.fromEntries(MCP_TO_INTERNAL);
@@ -207,6 +213,134 @@ class SocketClient {
     this.socket?.end();
   }
 }
+
+// ---------------------------------------------------------------------------
+// image_lookup — four operation-specific input schemas
+//
+// `image.lookup` has four operations with different field sets, so the tool
+// declares one JSON Schema branch per operation under `oneOf`. Each branch
+// pins its own `operation` value, its own required fields, and
+// `additionalProperties: false`, which is what keeps the accepted input set
+// exactly equal to the handler's own tables.
+//
+// There is deliberately NO thread, persona, run, path, URL, or provenance
+// field anywhere in these schemas. The thread comes from the trusted
+// ToolExecutionContext the daemon injects, and an extra field is rejected
+// rather than ignored (here at the schema, and again in the handler).
+// ---------------------------------------------------------------------------
+
+/** Pagination bounds, shared by the two listing operations. */
+const IMAGE_LOOKUP_LIMIT_SCHEMA = {
+  type: 'integer' as const,
+  minimum: IMAGE_LOOKUP_MIN_LIMIT,
+  maximum: IMAGE_LOOKUP_MAX_LIMIT,
+  description: `Maximum entries to return. Default: ${IMAGE_LOOKUP_DEFAULT_LIMIT}, allowed ${IMAGE_LOOKUP_MIN_LIMIT}\u2013${IMAGE_LOOKUP_MAX_LIMIT}.`,
+};
+
+const IMAGE_LOOKUP_CURSOR_SCHEMA = {
+  type: 'string' as const,
+  description:
+    'Opaque cursor taken from a previous result\'s `nextCursor`. Bound to the operation, filter, and thread that issued it \u2014 do not edit it or reuse it for another operation, filter, or thread. Omit for the first page.',
+};
+
+/** Opaque Image/Finding identifiers: plain tokens, never paths or URLs. */
+const IMAGE_LOOKUP_IMAGE_ID_SCHEMA = {
+  type: 'string' as const,
+  description:
+    'Image ID from an Image descriptor in the current thread. An opaque token \u2014 never a file path or URL.',
+};
+
+const IMAGE_LOOKUP_FINDING_ID_SCHEMA = {
+  type: 'string' as const,
+  description:
+    'Finding ID from a `list_findings` result. An opaque token \u2014 never a file path or URL.',
+};
+
+/** `list_images` \u2014 `{ images, nextCursor }` */
+export const IMAGE_LOOKUP_LIST_IMAGES_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    operation: { type: 'string' as const, enum: ['list_images'] as const },
+    limit: IMAGE_LOOKUP_LIMIT_SCHEMA,
+    cursor: IMAGE_LOOKUP_CURSOR_SCHEMA,
+  },
+  required: ['operation'] as const,
+  additionalProperties: false as const,
+};
+
+/** `get_image` \u2014 `{ image }` */
+export const IMAGE_LOOKUP_GET_IMAGE_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    operation: { type: 'string' as const, enum: ['get_image'] as const },
+    imageId: IMAGE_LOOKUP_IMAGE_ID_SCHEMA,
+  },
+  required: ['operation', 'imageId'] as const,
+  additionalProperties: false as const,
+};
+
+/** `list_findings` \u2014 `{ findings, nextCursor }` */
+export const IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    operation: { type: 'string' as const, enum: ['list_findings'] as const },
+    imageId: {
+      ...IMAGE_LOOKUP_IMAGE_ID_SCHEMA,
+      description:
+        'Optional filter: only Findings whose Inspection referenced this current-thread Image ID.',
+    },
+    limit: IMAGE_LOOKUP_LIMIT_SCHEMA,
+    cursor: IMAGE_LOOKUP_CURSOR_SCHEMA,
+  },
+  required: ['operation'] as const,
+  additionalProperties: false as const,
+};
+
+/** `get_finding` \u2014 `{ finding }` */
+export const IMAGE_LOOKUP_GET_FINDING_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    operation: { type: 'string' as const, enum: ['get_finding'] as const },
+    findingId: IMAGE_LOOKUP_FINDING_ID_SCHEMA,
+  },
+  required: ['operation', 'findingId'] as const,
+  additionalProperties: false as const,
+};
+
+/** The four operation-specific input schemas, in `IMAGE_LOOKUP_OPERATIONS` order. */
+export const IMAGE_LOOKUP_OPERATION_SCHEMAS = [
+  IMAGE_LOOKUP_LIST_IMAGES_SCHEMA,
+  IMAGE_LOOKUP_GET_IMAGE_SCHEMA,
+  IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA,
+  IMAGE_LOOKUP_GET_FINDING_SCHEMA,
+] as const;
+
+const IMAGE_LOOKUP_TOOL = {
+  name: 'image_lookup',
+  description:
+    'Discovers the Images in the CURRENT thread and reads Findings their Inspections already saved. Text only \u2014 it never returns pixels, file paths, or URLs, never calls a model, and never downloads anything. Four operations: `list_images` (current descriptors, newest first, including Rejected/Unavailable; still-processing Images are omitted), `get_image` (the CURRENT descriptor of one Image \u2014 use this instead of trusting a descriptor quoted in an earlier turn), `list_findings` (saved Findings, optionally filtered by imageId), `get_finding` (one exact saved Finding with its answer and extracted text). Reading a saved Finding through this tool does NOT run a new Inspection. The thread is taken from the trusted run context and cannot be supplied here.',
+  inputSchema: {
+    type: 'object' as const,
+    // Union of every accepted field, so converters that only read top-level
+    // `properties` still see the complete allowlist and reject everything else.
+    properties: {
+      operation: {
+        type: 'string' as const,
+        enum: [...IMAGE_LOOKUP_OPERATIONS],
+        description: 'Operation to perform.',
+      },
+      imageId: IMAGE_LOOKUP_IMAGE_ID_SCHEMA,
+      findingId: IMAGE_LOOKUP_FINDING_ID_SCHEMA,
+      limit: IMAGE_LOOKUP_LIMIT_SCHEMA,
+      cursor: IMAGE_LOOKUP_CURSOR_SCHEMA,
+    },
+    required: ['operation'] as const,
+    additionalProperties: false as const,
+    // Per-operation requirements: exactly one branch matches, because each one
+    // pins its own `operation` value and allows only its own fields.
+    oneOf: IMAGE_LOOKUP_OPERATION_SCHEMAS,
+  },
+};
 
 /** MCP tool definitions with JSON schemas. */
 const TOOLS = [
@@ -542,6 +676,7 @@ const TOOLS = [
     description: 'List all personas available for delegation via persona_send',
     inputSchema: { type: 'object' as const, properties: {}, required: [] },
   },
+  IMAGE_LOOKUP_TOOL,
   {
     name: 'background_agent',
     description: 'Starts and manages background agent workers. You have access to specialized agent profiles — always call action "profiles" first to discover what is available before spawning. When asked about your capabilities, available agents, or what you can delegate, call "profiles" to list them.',
@@ -589,6 +724,40 @@ function getEnvRequired(name: string): string {
     throw new Error(`Missing required environment variable: ${name}`);
   }
   return value;
+}
+
+/** All MCP tool definitions in declaration order (exported for contract tests). */
+export const HOST_TOOL_DEFINITIONS = TOOLS;
+
+/**
+ * Gates one MCP tool call before it reaches the bridge.
+ *
+ * Only an exact MCP tool name present in the persona's allowed set may
+ * dispatch. Internal dot-notation names (`image.lookup`) are never in the
+ * allowed set and never resolve through {@link TOOL_NAME_MAP}, so offering an
+ * internal name cannot reach the same handler through a second, unfiltered
+ * path. The bridge re-checks the persona capability independently for either
+ * spelling.
+ */
+export function gateMcpToolCall(
+  allowedSet: ReadonlySet<string>,
+  name: string,
+): { ok: true; handlerName: string } | { ok: false; error: string } {
+  if (!allowedSet.has(name)) {
+    return { ok: false, error: `Tool "${name}" is not allowed for this persona` };
+  }
+
+  const handlerName = TOOL_NAME_MAP[name];
+  if (!handlerName) {
+    return { ok: false, error: `Unknown tool: ${name}` };
+  }
+
+  return { ok: true, handlerName };
+}
+
+/** Tools the persona may see, in declaration order (exported for contract tests). */
+export function listExposedTools(allowedSet: ReadonlySet<string>): typeof TOOLS {
+  return TOOLS.filter((t) => allowedSet.has(t.name));
 }
 
 /**
@@ -648,7 +817,7 @@ async function main(): Promise<void> {
   // Determine which tools this persona may use. Only tools whose MCP names
   // appear in TALOND_ALLOWED_TOOLS are listed and callable.
   const allowedSet = parseAllowedTools();
-  const filteredTools = TOOLS.filter((t) => allowedSet.has(t.name));
+  const filteredTools = listExposedTools(allowedSet);
 
   console.error('[host-tools-mcp] Starting with socket:', socketPath);
   console.error(
@@ -684,37 +853,25 @@ async function main(): Promise<void> {
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const normalizedTool = TOOL_NAME_MAP[name] || name;
 
-    // Enforce tool restrictions: reject calls to tools not in the allowed set.
-    if (!allowedSet.has(name)) {
+    // Enforce tool restrictions. Only an exact MCP name in the allowed set may
+    // dispatch; unknown names and internal dot-notation names are refused here
+    // and re-checked independently by the bridge.
+    const gate = gateMcpToolCall(allowedSet, name);
+    if (!gate.ok) {
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({
-              error: `Tool "${name}" is not allowed for this persona`,
-            }),
+            text: JSON.stringify({ error: gate.error }),
           },
         ],
         isError: true,
       };
     }
 
-    const handlerName = TOOL_NAME_MAP[name];
-    if (!handlerName) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              error: `Unknown tool: ${name}`,
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
+    const handlerName = gate.handlerName;
+    const normalizedTool = gate.handlerName;
 
     try {
       const result = await client.sendRequest(
@@ -787,7 +944,16 @@ async function main(): Promise<void> {
   console.error('[host-tools-mcp] MCP server ready');
 }
 
-main().catch((err) => {
-  console.error('[host-tools-mcp] Fatal error:', err);
-  process.exit(1);
-});
+// Only start the server when executed directly, not when imported for testing.
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
+const isEntrypoint =
+  typeof process.argv[1] === 'string' &&
+  fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+
+if (isEntrypoint) {
+  main().catch((err) => {
+    console.error('[host-tools-mcp] Fatal error:', err);
+    process.exit(1);
+  });
+}
