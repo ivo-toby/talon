@@ -46,7 +46,7 @@ import type { BackgroundAgentManager } from '../subagents/background/background-
 import type { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import type { ProviderRegistry } from '../providers/provider-registry.js';
 import type { ContextRoller } from './context-roller.js';
-import type { ContextAssembler } from './context-assembler.js';
+import type { ContextAssembler, ImageContextSource } from './context-assembler.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
@@ -131,4 +131,10 @@ export interface DaemonContext {
   readonly imageIngestionCoordinator: ImageIngestionCoordinator;
   readonly imageAccess: ImageAccess;
   readonly imageLifecycle: ImageLifecycleManager;
+  /**
+   * Refreshed Image/Finding reads for ADR-0002 context replay (live
+   * descriptors, thread inventory, canonical Findings). Passed to AgentRunner
+   * at construction; ContextRoller receives it per rotation call.
+   */
+  readonly imageContextSource: ImageContextSource;
 }

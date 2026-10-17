@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type Database from 'better-sqlite3';
 import { ImageRepository } from '../../../../../src/core/database/repositories/image-repository.js';
-import type { ImageRow, InsertImageInput } from '../../../../../src/core/database/repositories/image-repository.js';
+import type { ImageRow, ImageState, InsertImageInput } from '../../../../../src/core/database/repositories/image-repository.js';
 import { ThreadRepository } from '../../../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../../../src/core/database/repositories/channel-repository.js';
 import { MessageRepository } from '../../../../../src/core/database/repositories/message-repository.js';
@@ -521,6 +521,176 @@ describe('ImageRepository', () => {
       const stored = reopened.findById(row.id)._unsafeUnwrap() as ImageRow;
       expect(stored.state).toBe('unavailable');
       expect(stored.unavailability_reason).toBe('expired');
+    });
+  });
+
+  
+  // -------------------------------------------------------------------------
+  // findThreadPage — keyset pagination for the image_lookup tool
+  // -------------------------------------------------------------------------
+
+  describe('findThreadPage', () => {
+    const BASE = 1_700_000_000_000;
+
+    let ordinalSeq = 0;
+
+    /** Seed one Image with an explicit receipt so ordering is deterministic. */
+    function seed(
+      id: string,
+      receivedAt: number,
+      overrides: { threadId?: string; state?: ImageState } = {},
+    ): void {
+      ordinalSeq += 1;
+      insertRaw({
+        id,
+        ordinal: ordinalSeq,
+        thread_id: overrides.threadId ?? threadId,
+        state: overrides.state ?? 'available',
+        // The ledger's CHECK constraint requires exactly one reason per
+        // terminal state, so the seed stays legal for every state.
+        rejection_reason: overrides.state === 'rejected' ? 'size_limit' : null,
+        unavailability_reason: overrides.state === 'unavailable' ? 'expired' : null,
+        received_at: receivedAt,
+        updated_at: receivedAt,
+      });
+    }
+
+    function idsOf(result: ReturnType<typeof repo.findThreadPage>): string[] {
+      return result._unsafeUnwrap().images.map((image) => image.id);
+    }
+
+    it('pages one thread newest-receipt-first, ids ascending on ties', () => {
+      seed('img-old', BASE);
+      seed('img-mid-a', BASE + 1000);
+      seed('img-mid-b', BASE + 1000);
+      seed('img-new', BASE + 2000);
+      // Another thread's Image must never surface in this thread's page.
+      seed('img-other-thread', BASE + 3000, { threadId: otherThreadId });
+
+      const page = repo.findThreadPage({ threadId, limit: 10 });
+
+      expect(page.isOk()).toBe(true);
+      // received_at DESC, then id ASC on ties.
+      expect(idsOf(page)).toEqual(['img-new', 'img-mid-a', 'img-mid-b', 'img-old']);
+      expect(page._unsafeUnwrap().images.every((row) => row.thread_id === threadId)).toBe(true);
+    });
+
+    it('walks every Image exactly once with the returned anchors', () => {
+      for (let i = 0; i < 5; i += 1) {
+        seed(`img-${i}`, BASE + i * 100);
+      }
+      // A tie on received_at inside the walked set: same receipt, id between
+      // existing anchors, so a page boundary can land on the tiebreaker.
+      seed('img-2-tie', BASE + 200);
+
+      const walked: string[] = [];
+      let before: { receivedAt: number; imageId: string } | null = null;
+      for (let guard = 0; guard < 20; guard += 1) {
+        const page = repo.findThreadPage({ threadId, limit: 2, before });
+        expect(page.isOk()).toBe(true);
+        const value = page._unsafeUnwrap();
+        walked.push(...value.images.map((row) => row.id));
+        if (value.nextAnchor === null) {
+          expect(guard).toBeLessThan(20);
+          break;
+        }
+        before = value.nextAnchor;
+      }
+
+      expect(walked).toEqual(['img-4', 'img-3', 'img-2', 'img-2-tie', 'img-1', 'img-0']);
+    });
+
+    it('treats the anchor as exclusive so a page boundary never repeats a row', () => {
+      seed('img-a', BASE);
+      seed('img-b', BASE + 100);
+      seed('img-c', BASE + 100);
+
+      const first = repo.findThreadPage({ threadId, limit: 1 });
+      expect(idsOf(first)).toEqual(['img-b']);
+      expect(first._unsafeUnwrap().nextAnchor).toEqual({
+        receivedAt: BASE + 100,
+        imageId: 'img-b',
+      });
+
+      const second = repo.findThreadPage({
+        threadId,
+        limit: 10,
+        before: first._unsafeUnwrap().nextAnchor,
+      });
+      expect(idsOf(second)).toEqual(['img-c', 'img-a']);
+    });
+
+    it('reports exhaustion only when an older row actually exists', () => {
+      seed('img-only', BASE);
+
+      const exact = repo.findThreadPage({ threadId, limit: 1 });
+      expect(idsOf(exact)).toEqual(['img-only']);
+      expect(exact._unsafeUnwrap().nextAnchor).toBeNull();
+
+      seed('img-older', BASE - 1);
+      const truncated = repo.findThreadPage({ threadId, limit: 1 });
+      expect(idsOf(truncated)).toEqual(['img-only']);
+      expect(truncated._unsafeUnwrap().nextAnchor).toEqual({
+        receivedAt: BASE,
+        imageId: 'img-only',
+      });
+    });
+
+    it('defaults to every state and honours an explicit state filter', () => {
+      seed('img-available', BASE + 300);
+      seed('img-processing', BASE + 200, { state: 'processing' });
+      seed('img-rejected', BASE + 100, { state: 'rejected' });
+      seed('img-unavailable', BASE + 50, { state: 'unavailable' });
+
+      // No filter: every state stays addressable, including the Processing
+      // rows that readers normally hide.
+      const all = repo.findThreadPage({ threadId, limit: 10 });
+      expect(idsOf(all)).toEqual([
+        'img-available',
+        'img-processing',
+        'img-rejected',
+        'img-unavailable',
+      ]);
+
+      const visible = repo.findThreadPage({
+        threadId,
+        limit: 10,
+        states: ['available', 'rejected', 'unavailable'],
+      });
+      expect(idsOf(visible)).toEqual(['img-available', 'img-rejected', 'img-unavailable']);
+
+      const processingOnly = repo.findThreadPage({
+        threadId,
+        limit: 10,
+        states: ['processing'],
+      });
+      expect(idsOf(processingOnly)).toEqual(['img-processing']);
+    });
+
+    it('keeps a thread with no Images an empty page rather than an error', () => {
+      const empty = repo.findThreadPage({ threadId: otherThreadId, limit: 5 });
+
+      expect(empty.isOk()).toBe(true);
+      expect(empty._unsafeUnwrap().images).toEqual([]);
+      expect(empty._unsafeUnwrap().nextAnchor).toBeNull();
+    });
+
+    it('rejects a non-positive or fractional limit instead of unbounded reads', () => {
+      seed('img-x', BASE);
+
+      for (const limit of [0, -1, 1.5, Number.NaN]) {
+        const result = repo.findThreadPage({ threadId, limit });
+        expect(result.isErr()).toBe(true);
+        expect(String(result._unsafeUnwrapErr().message)).toMatch(/positive integer limit/i);
+      }
+    });
+
+    it('is stable across new repository instances on the same database', () => {
+      seed('img-persist', BASE);
+
+      const reopened = new ImageRepository(db);
+      const page = reopened.findThreadPage({ threadId, limit: 5 });
+      expect(idsOf(page)).toEqual(['img-persist']);
     });
   });
 });
