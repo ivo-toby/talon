@@ -23,6 +23,7 @@ import { addChannelCommand } from './commands/add-channel.js';
 import { addPersonaCommand } from './commands/add-persona.js';
 import { addSkillCommand } from './commands/add-skill.js';
 import { queuePurgeCommand } from './commands/queue-purge.js';
+import { signalResumeCommand } from './commands/signal-resume.js';
 import { chatCommand } from './commands/chat.js';
 import { listChannelsCommand } from './commands/list-channels.js';
 import { listPersonasCommand } from './commands/list-personas.js';
@@ -170,13 +171,36 @@ program
   .command('add-channel')
   .description('Add a channel connector to talond.yaml')
   .requiredOption('--name <name>', 'Unique channel name (e.g. my-telegram)')
-  .requiredOption('--type <type>', 'Connector type (e.g. telegram, slack, discord)')
+  .requiredOption('--type <type>', 'Connector type (e.g. telegram, slack, discord, signal)')
   .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
-  .action(async (opts: { name: string; type: string; config: string }) => {
+  .option('--signal-config <json>', 'Operator-supplied Signal config JSON (both account modes; no provisioning)')
+  .option('--show-tool-calls <boolean>', 'Signal channel-level notices: true or false (personal forbids true)')
+  .action(async (opts: { name: string; type: string; config: string; signalConfig?: string; showToolCalls?: string }) => {
+    let signalConfig: unknown;
+    let showToolCalls: boolean | undefined;
+    if (opts.type === 'signal') {
+      try {
+        signalConfig = opts.signalConfig === undefined ? undefined : JSON.parse(opts.signalConfig);
+      } catch {
+        console.error('Error: Invalid Signal configuration JSON');
+        process.exit(1);
+        return;
+      }
+      if (opts.showToolCalls !== undefined) {
+        if (opts.showToolCalls !== 'true' && opts.showToolCalls !== 'false') {
+          console.error('Error: Signal --show-tool-calls must be true or false');
+          process.exit(1);
+          return;
+        }
+        showToolCalls = opts.showToolCalls === 'true';
+      }
+    }
     await addChannelCommand({
       name: opts.name,
       type: opts.type,
       configPath: opts.config,
+      signalConfig,
+      showToolCalls,
     });
   });
 
@@ -268,6 +292,27 @@ program
       timeoutMs: parseInt(opts.timeout, 10),
       statuses: opts.statuses?.split(',').map((s) => s.trim()),
       all: opts.all,
+    });
+  });
+
+program
+  .command('signal-resume')
+  .configureOutput({ outputError: (_message, write): void => { write('Error: Invalid Signal resume arguments\n'); } })
+  .description('Verify externally resolved Signal challenge via local operator IPC; never send or replay')
+  .requiredOption('--channel <name>', 'Named Signal channel')
+  .option('--external-challenge-resolved', 'Fresh operator assertion that the challenge was resolved externally')
+  .option('--ipc-dir <path>', 'Local daemon IPC directory', 'data/ipc/daemon')
+  .option('--timeout <ms>', 'Response timeout in milliseconds (1-120000)', '5000')
+  .action(async (opts: { channel: string; externalChallengeResolved?: boolean; ipcDir: string; timeout: string }) => {
+    const timeoutMs = parseCliDecimalInteger(opts.timeout);
+    if (timeoutMs === null || timeoutMs < 1 || timeoutMs > 120000) {
+      console.error('Error: Signal --timeout must be an integer from 1 to 120000');
+      process.exit(1);
+      return;
+    }
+    await signalResumeCommand({
+      channel: opts.channel, externalChallengeResolved: opts.externalChallengeResolved,
+      ipcDir: opts.ipcDir, timeoutMs,
     });
   });
 

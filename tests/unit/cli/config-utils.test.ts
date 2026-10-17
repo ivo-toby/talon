@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { validateName, readConfig, writeConfigAtomic, type YamlDocument } from '../../../src/cli/config-utils.js';
+import { SignalConfigSchema } from '../../../src/channels/connectors/signal/signal-config.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -125,5 +126,28 @@ describe('writeConfigAtomic', () => {
     await expect(
       writeConfigAtomic(path.join(tmpDir, 'nonexistent-dir', 'talond.yaml'), {}),
     ).rejects.toThrow(/Error writing/);
+  });
+});
+
+// Config I/O remains schema-neutral: actual admission belongs to addChannel/config load.
+describe('Signal YAML config I/O', () => {
+  it('preserves canonical default-deny Signal config and unrelated document fields', async () => {
+    const p = await writeYaml('custom:\n  keep: [one, two]\nchannels: []\n');
+    const original = await readConfig(p);
+    const config = SignalConfigSchema.parse({
+      accountMode: 'dedicated', socketPath: '/run/signal/bridge.sock',
+      account: 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb',
+      accountUuid: 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb', deviceId: 1,
+      allowedDmPeers: [], allowedGroups: [], allowedSenders: [],
+    });
+    const doc: YamlDocument = {
+      ...original, channels: [{ name: 'signal-dedicated', type: 'signal', enabled: true, config }],
+    };
+    await writeConfigAtomic(p, doc);
+    expect(await readConfig(p)).toEqual(doc);
+    expect((await readConfig(p)).channels?.[0]?.config).toMatchObject({
+      allowedDmPeers: [], allowedGroups: [], allowedSenders: [],
+    });
+    expect(await fs.readdir(tmpDir)).toEqual(['talond.yaml']);
   });
 });

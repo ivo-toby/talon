@@ -106,4 +106,5 @@ export async function queuePurgeCommand(options: {
 
   const data = response.data as { purged?: number; statuses?: string[] } | undefined;
   console.log(`Purged ${data?.purged ?? 0} queue items.`);
+  console.log('Selected saved delivery work is cancelled, not replayed; an already submitted chunk may still arrive.');
 }

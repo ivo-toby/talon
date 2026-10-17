@@ -11,7 +11,12 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import writeFileAtomic from 'write-file-atomic';
 
-import { DaemonResponseSchema } from './daemon-ipc.js';
+import {
+  DaemonResponseSchema, DaemonCommandSchema, SignalResumeRequestSchema,
+  SignalManagementError, parseSignalResumeResponse,
+} from './daemon-ipc.js';
+import type { SignalResumeData } from './daemon-ipc.js';
+import { err, type Result } from '../core/types/result.js';
 import type { DaemonCommand, DaemonCommandType, DaemonResponse } from './daemon-ipc.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 
@@ -64,6 +69,22 @@ export class DaemonIpcClient {
     this.pollIntervalMs = opts.pollIntervalMs ?? 100;
   }
 
+  /** One fresh operator assertion, one local command write, no retry/reassertion. */
+  async signalResume(payload: unknown): Promise<Result<SignalResumeData, SignalManagementError>> {
+    const parsed = SignalResumeRequestSchema.safeParse(payload);
+    if (!parsed.success || !Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 120000)
+      return err(new SignalManagementError('INVALID_REQUEST'));
+    const command: DaemonCommand = { id: randomUUID(), command: 'signal-resume', payload: parsed.data };
+    try {
+      const response = await this.send(command);
+      return response === null
+        ? err(new SignalManagementError('TIMEOUT'))
+        : parseSignalResumeResponse(response, command.id);
+    } catch (cause) {
+      return err(cause instanceof SignalManagementError ? cause : new SignalManagementError('UNAVAILABLE'));
+    }
+  }
+
   /**
    * Builds a {@link DaemonCommand} with a freshly generated UUID and sends it.
    *
@@ -97,6 +118,8 @@ export class DaemonIpcClient {
    *          without a valid matching response appearing.
    */
   async send(command: DaemonCommand): Promise<DaemonResponse | null> {
+    if (command.command === 'signal-resume' && !DaemonCommandSchema.safeParse(command).success)
+      throw new SignalManagementError('INVALID_REQUEST');
     // --- Write command ---
     try {
       await ensureOwnerOnlyDir(this.opts.inputDir);
@@ -113,7 +136,7 @@ export class DaemonIpcClient {
     const deadline = Date.now() + this.timeoutMs;
 
     while (Date.now() < deadline) {
-      const response = await this.checkOutputDir(command.id);
+      const response = await this.checkOutputDir(command.id, command.command === 'signal-resume');
       if (response !== null) {
         return response;
       }
@@ -134,7 +157,7 @@ export class DaemonIpcClient {
    *
    * @returns The validated response, or `null` if not found.
    */
-  private async checkOutputDir(commandId: string): Promise<DaemonResponse | null> {
+  private async checkOutputDir(commandId: string, signalResume = false): Promise<DaemonResponse | null> {
     let entries: string[];
     try {
       entries = await fs.readdir(this.opts.outputDir);
@@ -148,6 +171,14 @@ export class DaemonIpcClient {
       try {
         const raw = await fs.readFile(filepath, 'utf8');
         const parsed = JSON.parse(raw) as unknown;
+        if (signalResume && typeof parsed === 'object' && parsed !== null &&
+            'commandId' in parsed && parsed.commandId === commandId) {
+          const result = parseSignalResumeResponse(parsed, commandId);
+          if (result.isErr()) {
+            await fs.unlink(filepath).catch(() => undefined);
+            throw result.error;
+          }
+        }
         const validated = DaemonResponseSchema.safeParse(parsed);
 
         if (validated.success && validated.data.commandId === commandId) {
@@ -155,7 +186,8 @@ export class DaemonIpcClient {
           await fs.unlink(filepath).catch(() => undefined);
           return validated.data;
         }
-      } catch {
+      } catch (cause) {
+        if (cause instanceof SignalManagementError) throw cause;
         // Skip unreadable or non-matching files — try the next one.
       }
     }
