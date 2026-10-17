@@ -120,3 +120,125 @@ describe('result type shapes', () => {
     expect(result).toHaveProperty('completedAt');
   });
 });
+
+// Real entrypoint/argv checks. Every subprocess uses only its own disposable config/env.
+import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, beforeEach } from 'vitest';
+import { readConfig } from '../../../src/cli/config-utils.js';
+import { SignalConfigSchema } from '../../../src/channels/connectors/signal/signal-config.js';
+
+let fixture: string;
+beforeEach(() => { fixture = mkdtempSync(join(tmpdir(), 'signal-cli-argv-')); });
+afterEach(() => { rmSync(fixture, { recursive: true, force: true }); });
+function cli(args: string[]): ReturnType<typeof spawnSync> {
+  return spawnSync(process.execPath, ['--import', createRequire(import.meta.url).resolve('tsx'), resolve('src/cli/index.ts'), ...args], {
+    cwd: fixture, encoding: 'utf8', timeout: 15000,
+    env: { ...process.env, TALOND_ENV_FILE: join(fixture, 'missing.env'), TALOND_CONFIG_PATH: join(fixture, 'talond.yaml') },
+  });
+}
+// Pinned 0.14.9 ListDevicesCommand.java:47-67 / ManagerImpl.java:483-504:
+// operator-supplied device metadata, not invented RPC current-device flags.
+const setup = {
+  accountMode: 'personal', socketPath: '/run/signal/bridge.sock',
+  account: 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb', accountUuid: 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb',
+  deviceId: 3, deviceCreatedTimestamp: 200, allowedDmPeers: [], allowedSenders: [], allowedGroups: [],
+  triggerPrefix: '!ask', requestTimeoutMs: 1000, reconnectBaseMs: 100, reconnectMaxMs: 100,
+};
+
+describe('actual source CLI Signal registration and argv', () => {
+  it.each([{ args: ['--help'] }, { args: ['signal-resume', '--help'] }])('registers Signal management in help: %j', ({ args }) => {
+    const result = cli(args);
+    expect(result.status).toBe(0);
+    expect(String(result.stdout)).toContain('signal-resume');
+    if (args.length > 1) expect(String(result.stdout)).toContain('--external-challenge-resolved');
+  });
+  it('documents the actual JSON admission option', () => {
+    const result = cli(['add-channel', '--help']);
+    expect(result.status).toBe(0);
+    expect(String(result.stdout)).toContain('--signal-config <json>');
+    expect(String(result.stdout)).toContain('--show-tool-calls <boolean>');
+  });
+  it.each(['personal', 'dedicated'])('passes full %s JSON to gated A and preserves its normalized config', async (accountMode) => {
+    const config = join(fixture, 'talond.yaml');
+    writeFileSync(config, 'custom: keep\nchannels: []\n');
+    const input = { ...setup, accountMode };
+    const result = cli(['add-channel', '--name', 'signal-main', '--type', 'signal', '--signal-config', JSON.stringify(input), '--show-tool-calls', 'false']);
+    expect(result.status, String(result.stderr)).toBe(0);
+    expect((await readConfig(config)).channels).toEqual([{
+      name: 'signal-main', type: 'signal', enabled: true, config: SignalConfigSchema.parse(input), showToolCalls: false,
+    }]);
+    expect(String(result.stdout)).not.toContain(setup.accountUuid);
+  });
+  it.each(['{"PRIVATE_BODY":', JSON.stringify({ ...setup, deviceId: '3PRIVATE' }), JSON.stringify({ ...setup, requestTimeoutMs: '1000PRIVATE' })])('refuses malformed JSON/numeric strings without mutation or private diagnostics', (input) => {
+    const config = join(fixture, 'talond.yaml');
+    writeFileSync(config, 'channels: []\n');
+    const before = readFileSync(config);
+    const result = cli(['add-channel', '--name', 'signal-main', '--type', 'signal', '--signal-config', input]);
+    expect(result.status).toBe(1);
+    expect(String(result.stderr)).not.toMatch(/PRIVATE|SyntaxError| at /);
+    expect(readFileSync(config)).toEqual(before);
+  });
+});
+
+import { readdirSync } from 'node:fs';
+
+describe('real Signal resume argv refusal and config policy', () => {
+  it.each([
+    { args: ['--channel', 'signal-main'] },
+    { args: ['--external-challenge-resolved'] },
+    { args: ['--channel', 'signal-main', '--external-challenge-resolved=false'] },
+    { args: ['--channel', 'signal-main', '--external-challenge-resolved=PRIVATE_TOKEN'] },
+    { args: ['--channel', 'PRIVATE/socket', '--external-challenge-resolved'] },
+    ...['10PRIVATE', '1.5', '-1', '0', '120001', '9007199254740992'].map((timeout) => ({ args: ['--channel', 'signal-main', '--external-challenge-resolved', '--timeout', timeout] })),
+  ])('rejects before IPC with fixed private diagnostics: %j', ({ args }) => {
+    const result = cli(['signal-resume', ...args, '--ipc-dir', join(fixture, 'ipc')]);
+    expect(result.status).toBe(1);
+    expect(String(result.stderr)).not.toMatch(/PRIVATE| at /);
+    expect(readdirSync(fixture)).toEqual([]);
+  });
+  it.each([
+    { accountMode: 'personal', notice: 'true', success: false },
+    { accountMode: 'dedicated', notice: 'true', success: true },
+    { accountMode: 'personal', notice: 'PRIVATE_BOOLEAN', success: false },
+  ])('passes channel-level policy to A without notice defaults: %j', async ({ accountMode, notice, success }) => {
+    const config = join(fixture, 'named.yaml');
+    writeFileSync(config, 'channels: []\n');
+    const result = cli(['add-channel', '--config', config, '--name', 'named-signal', '--type', 'signal', '--signal-config', JSON.stringify({ ...setup, accountMode }), '--show-tool-calls', notice]);
+    expect(result.status).toBe(success ? 0 : 1);
+    expect(String(result.stderr)).not.toContain('PRIVATE');
+    if (success) expect((await readConfig(config)).channels?.[0]).toHaveProperty('showToolCalls', true);
+    else expect(readFileSync(config, 'utf8')).toBe('channels: []\n');
+  });
+  it('retains ordinary placeholder behavior and config environment selection', async () => {
+    const config = join(fixture, 'talond.yaml');
+    writeFileSync(config, 'custom: keep\nchannels: []\n');
+    const result = cli(['add-channel', '--name', 'ordinary', '--type', 'telegram']);
+    expect(result.status).toBe(0);
+    expect((await readConfig(config)).channels?.[0]?.config).toEqual({ botToken: '${TELEGRAM_BOT_TOKEN}', pollingTimeoutSec: 30 });
+  });
+});
+
+import { DaemonCommandSchema } from '../../../src/ipc/daemon-ipc.js';
+
+it.each([64, 65, 256])('F2 actual CLI admits then submits the identical %s-character channel without truncation', async (length) => {
+  const channel = 'n'.repeat(length);
+  const config = join(fixture, 'talond.yaml');
+  writeFileSync(config, 'channels: []\n');
+  const admitted = cli(['add-channel', '--name', channel, '--type', 'signal', '--signal-config', JSON.stringify(setup)]);
+  expect(admitted.status, String(admitted.stderr)).toBe(0);
+  expect((await readConfig(config)).channels?.[0]?.name).toBe(channel);
+  const resumed = cli(['signal-resume', '--channel', channel, '--external-challenge-resolved', '--ipc-dir', join(fixture, 'ipc'), '--timeout', '1']);
+  expect(resumed.status).toBe(1); // no daemon fixture here: timeout, never false success
+  expect(String(resumed.stderr)).toContain('TIMEOUT');
+  const input = join(fixture, 'ipc', 'input');
+  const files = readdirSync(input).filter((file) => file.endsWith('.json'));
+  expect(files).toHaveLength(1);
+  const command = DaemonCommandSchema.parse(JSON.parse(readFileSync(join(input, files[0]!), 'utf8')));
+  expect(command.command).toBe('signal-resume');
+  expect(command.payload).toEqual({ channel, externalChallengeResolved: true });
+  expect(String(resumed.stdout)).not.toContain('verified');
+});

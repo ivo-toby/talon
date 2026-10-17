@@ -14,7 +14,7 @@ import { randomUUID } from 'node:crypto';
 import writeFileAtomic from 'write-file-atomic';
 
 import type { DaemonCommand, DaemonResponse } from '../../ipc/daemon-ipc.js';
-import { DaemonResponseSchema } from '../../ipc/daemon-ipc.js';
+import { DaemonResponseSchema, parseSignalStatusData } from '../../ipc/daemon-ipc.js';
 import type { DaemonStatusData } from '../cli-types.js';
 
 // ---------------------------------------------------------------------------
@@ -81,6 +81,7 @@ export async function statusCommand(options: {
   }
 
   displayStatus((response.data ?? {}) as Partial<DaemonStatusData>);
+  displaySignalStatus(response.data?.signal);
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +190,32 @@ function displayStatus(data: Partial<DaemonStatusData>): void {
     console.log(`Token usage (24h): ${totalInput} in (${inputTokens} new + ${cacheReadTokens} cache-read + ${cacheWriteTokens} cache-write) / ${outputTokens} out`);
     console.log(`Estimated cost (24h): $${costUsd.toFixed(4)}`);
   }
+}
+
+function displaySignalStatus(value: unknown): void {
+  const parsed = parseSignalStatusData(value);
+  if (parsed.isErr()) {
+    console.log('Signal status: unavailable');
+    return;
+  }
+  const { saved, channels } = parsed.value;
+  if (saved === undefined) console.log('Signal saved: unavailable');
+  else {
+    console.log(`Signal saved: pending=${saved.pending} terminal=${saved.terminal}`);
+    for (const entry of saved.reasons) console.log(`  ${entry.reason}=${entry.count}`);
+  }
+  if (channels === undefined) console.log('Signal connectors: unavailable');
+  else for (const channel of channels) {
+    console.log(`Signal ${channel.channel}: receive=${channel.state} reason=${channel.reason ?? 'none'} outbound=${channel.outboundSuspended ? 'suspended' : 'not-suspended (not send authority)'}`);
+    console.log(`  sender=${channel.sender?.state ?? 'unavailable'} stopped=${channel.sender?.stopped ?? 'unknown'} pending-writes=${channel.sender?.pendingWrites ?? 'unknown'}`);
+    console.log(`  verification=${channel.verification?.state ?? 'unavailable'} reason=${channel.verification?.reason ?? 'none'} draining=${channel.draining} persistence-blocked=${channel.persistenceBlocked}`);
+    if (channel.buffers === undefined) console.log('  buffers: unavailable');
+    else for (const kind of ['proof', 'receipt', 'alias'] as const) {
+      const counts = channel.buffers[kind];
+      console.log(`  ${kind}: held=${counts.held} dropped=${counts.dropped}`);
+    }
+  }
+  console.log('Signal: inspect partial/unknown deliveries; no automatic replay. For pre-acceptance input loss, resend expired commands after recovery.');
 }
 
 /** Formats a duration in ms into a human-readable string. */

@@ -2,10 +2,12 @@
  * `talonctl add-channel` command.
  *
  * Adds a new channel connector entry to talond.yaml. The entry is appended
- * to the `channels` array with the given name and type, and a placeholder
- * `config` object that the user can fill in.
+ * to the `channels` array with the given name and type. Ordinary channels
+ * receive placeholders; Signal requires operator-supplied canonical config.
  */
 
+import { ChannelConfigSchema } from '../../core/config/config-schema.js';
+import { ConfigError } from '../../core/errors/error-types.js';
 import {
   DEFAULT_CONFIG_PATH,
   VALID_CHANNEL_TYPES,
@@ -22,6 +24,10 @@ export interface AddChannelOptions {
   name: string;
   type: string;
   configPath?: string;
+  /** Untrusted operator setup input; required for Signal, never used as a placeholder. */
+  signalConfig?: unknown;
+  /** Signal channel-level notice policy, validated by ChannelConfigSchema. */
+  showToolCalls?: boolean;
 }
 
 export interface AddChannelEntry {
@@ -29,6 +35,7 @@ export interface AddChannelEntry {
   type: string;
   config: Record<string, unknown>;
   enabled: true;
+  showToolCalls?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -61,7 +68,21 @@ export async function addChannel(options: AddChannelOptions): Promise<AddChannel
   }
 
   // Read existing config.
-  const doc = await readConfig(configPath);
+  const doc = await readConfig(configPath).catch((error: unknown) => {
+    if (options.type === 'signal') {
+      throw new ConfigError('Signal config file not found, unreadable, or invalid YAML');
+    }
+    throw error;
+  });
+
+  // YAML timestamp/binary scalar objects discard attached properties when serialized.
+  if (
+    options.type === 'signal' &&
+    (typeof doc !== 'object' || doc === null ||
+      (Object.getPrototypeOf(doc) !== Object.prototype && Object.getPrototypeOf(doc) !== null))
+  ) {
+    throw new ConfigError('Signal config file not found, unreadable, or invalid YAML');
+  }
 
   // Ensure channels array exists.
   if (!Array.isArray(doc.channels)) {
@@ -71,23 +92,54 @@ export async function addChannel(options: AddChannelOptions): Promise<AddChannel
   // Check for duplicate channel name.
   const duplicate = doc.channels.find((c) => c.name === options.name);
   if (duplicate) {
+    if (options.type === 'signal') {
+      throw new ConfigError(
+        'A channel with that name already exists. Choose a different name or edit the existing entry directly.',
+      );
+    }
     throw new Error(
       `A channel named "${options.name}" already exists in "${configPath}". Choose a different name or edit the existing entry directly.`,
     );
   }
 
-  // Build and append the new channel entry.
-  const entry: AddChannelEntry = {
-    name: options.name,
-    type: options.type,
-    config: buildPlaceholderConfig(options.type),
-    enabled: true,
-  };
+  // Signal must pass the same normalization and channel-level policy as daemon config.
+  // Never expose Zod issues, unknown input keys, or operator identities in errors.
+  let entry: AddChannelEntry;
+  if (options.type === 'signal') {
+    const parsed = ChannelConfigSchema.safeParse({
+      name: options.name,
+      type: 'signal',
+      config: options.signalConfig,
+      showToolCalls: options.showToolCalls,
+    });
+    if (!parsed.success) {
+      throw new ConfigError('Invalid Signal configuration');
+    }
+    entry = {
+      name: options.name,
+      type: 'signal',
+      config: parsed.data.config,
+      enabled: true,
+      ...(parsed.data.showToolCalls === undefined ? {} : { showToolCalls: parsed.data.showToolCalls }),
+    };
+  } else {
+    entry = {
+      name: options.name,
+      type: options.type,
+      config: buildPlaceholderConfig(options.type),
+      enabled: true,
+    };
+  }
 
   doc.channels.push(entry);
 
   // Write atomically.
-  await writeConfigAtomic(configPath, doc);
+  await writeConfigAtomic(configPath, doc).catch((error: unknown) => {
+    if (options.type === 'signal') {
+      throw new ConfigError('Unable to write Signal config file');
+    }
+    throw error;
+  });
 
   return entry;
 }
@@ -105,7 +157,11 @@ export async function addChannelCommand(options: AddChannelOptions): Promise<voi
   try {
     const entry = await addChannel(options);
     console.log(`Added channel "${entry.name}" (type: ${entry.type}) to "${options.configPath ?? DEFAULT_CONFIG_PATH}".`);
-    console.log(`Edit "${options.configPath ?? DEFAULT_CONFIG_PATH}" to fill in the channel credentials.`);
+    if (entry.type === 'signal') {
+      console.log('Signal configuration validated; runtime socket/account/device verification is still required.');
+    } else {
+      console.log(`Edit "${options.configPath ?? DEFAULT_CONFIG_PATH}" to fill in the channel credentials.`);
+    }
   } catch (error) {
     console.error(`Error: ${(error as Error).message}`);
     process.exit(1);
@@ -122,6 +178,8 @@ export async function addChannelCommand(options: AddChannelOptions): Promise<voi
  */
 export function buildPlaceholderConfig(type: string): Record<string, unknown> {
   switch (type) {
+    case 'signal':
+      throw new ConfigError('Signal requires operator-supplied configuration');
     case 'telegram':
       return { botToken: '${TELEGRAM_BOT_TOKEN}', pollingTimeoutSec: 30 };
     case 'slack':
