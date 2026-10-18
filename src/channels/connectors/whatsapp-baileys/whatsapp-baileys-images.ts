@@ -666,9 +666,14 @@ export async function fetchSelectedImageAttachments(
         });
         if (fetched.isOk()) {
           const image = fetched.value;
+          // Declared metadata stays absent when the channel declared none (an
+          // ordinary `imageMessage` has no filename). The ingestion
+          // coordinator coerces absence to SQL NULL; an empty string would
+          // violate the Image ledger's nonempty filename/mime_type CHECKs and
+          // roll back the whole admission transaction.
           const attachment: Attachment = {
-            filename: image.filename ?? '',
-            mimeType: image.mimeType ?? '',
+            ...(image.filename !== undefined ? { filename: image.filename } : {}),
+            ...(image.mimeType !== undefined ? { mimeType: image.mimeType } : {}),
             data: image.bytes,
             size: image.size,
           };

@@ -17,10 +17,16 @@ import type { ImageRejectionReason } from '../images/image-types.js';
  * A file attachment that may accompany an inbound or outbound message.
  * `data` is either a raw Buffer (when loaded into memory) or a filesystem path
  * (when the file has been written to the thread's attachments directory).
+ *
+ * `filename` and `mimeType` are DECLARED metadata: many channels deliver
+ * photos without either (a Baileys `imageMessage` carries no filename at all).
+ * Absent stays absent — connectors must not manufacture an empty string, and
+ * downstream ledger writers coerce absence to NULL rather than to `''`, which
+ * the Image ledger's nonempty CHECK constraints reject.
  */
 export interface Attachment {
-  filename: string;
-  mimeType: string;
+  filename?: string;
+  mimeType?: string;
   data: Buffer | string;
   size: number;
 }

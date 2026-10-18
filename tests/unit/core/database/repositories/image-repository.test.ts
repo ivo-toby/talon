@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type Database from 'better-sqlite3';
 import { ImageRepository } from '../../../../../src/core/database/repositories/image-repository.js';
-import type { ImageRow, ImageState, InsertImageInput } from '../../../../../src/core/database/repositories/image-repository.js';
+import type {
+  ImageExpirableCursor,
+  ImageRow,
+  ImageState,
+  InsertImageInput,
+} from '../../../../../src/core/database/repositories/image-repository.js';
 import { ThreadRepository } from '../../../../../src/core/database/repositories/thread-repository.js';
 import { ChannelRepository } from '../../../../../src/core/database/repositories/channel-repository.js';
 import { MessageRepository } from '../../../../../src/core/database/repositories/message-repository.js';
@@ -394,6 +399,85 @@ describe('ImageRepository', () => {
       expect(repo.findExpirable({ now: 1_700_001_000_000, limit: 1 })._unsafeUnwrap().map((r) => r.id)).toEqual([
         'exp-past',
       ]);
+    });
+
+    it('returns the same first page with no cursor, an explicit null, and an undefined cursor', () => {
+      repo.insert(makeInput({ id: 'cur-2', ordinal: 1, expiresAt: 1_700_000_500_000 }));
+      repo.insert(makeInput({ id: 'cur-1', ordinal: 2, expiresAt: 1_700_000_500_000 }));
+      const now = 1_700_001_000_000;
+
+      // Callers that do not paginate are unaffected by the new parameter.
+      const plain = repo.findExpirable({ now })._unsafeUnwrap().map((r) => r.id);
+      expect(plain).toEqual(['cur-1', 'cur-2']);
+      expect(repo.findExpirable({ now, after: null })._unsafeUnwrap().map((r) => r.id)).toEqual(plain);
+      expect(
+        repo.findExpirable({ now, after: undefined })._unsafeUnwrap().map((r) => r.id),
+      ).toEqual(plain);
+    });
+
+    it('pages the expirable set with a cursor that never repeats or skips a row', () => {
+      // Two expiry instants with several rows each, so the id tie-break decides
+      // within a page: the order is (expires_at ASC, id ASC).
+      const older = 1_700_000_500_000;
+      const newer = 1_700_001_000_000;
+      repo.insert(makeInput({ id: 'kb-3', ordinal: 1, expiresAt: older }));
+      repo.insert(makeInput({ id: 'kb-1', ordinal: 2, expiresAt: older }));
+      repo.insert(makeInput({ id: 'kb-2', ordinal: 3, expiresAt: older }));
+      repo.insert(makeInput({ id: 'kb-6', ordinal: 4, expiresAt: newer }));
+      repo.insert(makeInput({ id: 'kb-4', ordinal: 5, expiresAt: newer }));
+      // Terminal rows and future expiries stay out of the set on every page.
+      repo.insert(
+        makeInput({
+          id: 'kb-dead',
+          ordinal: 6,
+          expiresAt: older,
+          state: 'rejected',
+          rejectionReason: 'animated',
+        }),
+      );
+      repo.insert(makeInput({ id: 'kb-later', ordinal: 7, expiresAt: 1_700_002_000_000 }));
+
+      const now = 1_700_001_000_000;
+      const expected = ['kb-1', 'kb-2', 'kb-3', 'kb-4', 'kb-6'];
+
+      const seen: string[] = [];
+      let after: ImageExpirableCursor | null = null;
+      // The guard proves termination rather than relying on it: the loop must
+      // reach an empty page on its own.
+      for (let page = 0; page < 10; page += 1) {
+        const rows = repo
+          .findExpirable({ now, limit: 2, ...(after === null ? {} : { after }) })
+          ._unsafeUnwrap();
+        if (rows.length === 0) {
+          break;
+        }
+        expect(rows.length).toBeLessThanOrEqual(2);
+        seen.push(...rows.map((r) => r.id));
+        const last = rows[rows.length - 1]!;
+        after = { expiresAt: last.expires_at, id: last.id };
+      }
+
+      expect(seen).toEqual(expected);
+      expect(new Set(seen).size).toBe(expected.length);
+    });
+
+    it('returns an empty page once the cursor passes the last candidate', () => {
+      repo.insert(makeInput({ id: 'end-1', ordinal: 1, expiresAt: 1_700_000_500_000 }));
+      const now = 1_700_001_000_000;
+
+      const page = repo.findExpirable({ now })._unsafeUnwrap();
+      expect(page.map((r) => r.id)).toEqual(['end-1']);
+
+      const last = page[0]!;
+      expect(
+        repo
+          .findExpirable({ now, after: { expiresAt: last.expires_at, id: last.id } })
+          ._unsafeUnwrap(),
+      ).toEqual([]);
+      // A cursor at the newest possible position is likewise past everything.
+      expect(
+        repo.findExpirable({ now, after: { expiresAt: now, id: 'zzz' } })._unsafeUnwrap(),
+      ).toEqual([]);
     });
   });
 

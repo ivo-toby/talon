@@ -15,8 +15,13 @@
  *    coordinator's fenced publication.
  * 2. **Retention** — Available Images past `expires_at` are durably marked
  *    `Unavailable(expired)` (a recorded terminal reason is never replaced)
- *    and their normalized file is removed. Failed deletions are audited and
- *    retried on the next pass.
+ *    and their normalized file is removed. The phase keyset-pages through the
+ *    WHOLE expirable set within the pass, so a backlog larger than one page
+ *    does not wait for later sweeps, and a page it cannot transition is stepped
+ *    past rather than blocking the rows behind it. A failed expiry transition is
+ *    logged (warn), counted in `failures`, and retried by the next pass; a failed
+ *    file deletion is also counted in `failures` but is AUDITED
+ *    (`image.cleanup.failed`), and the cleanup phase retries the file.
  * 3. **Cleanup** — staging directories are removed when they can no longer
  *    be live work: unknown orphans older than a full processing deadline
  *    (filesystem-driven, so cleanup survives arbitrary restart counts), and
@@ -56,7 +61,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type pino from 'pino';
 import type { AuditEntry, AuditStore } from '../core/logging/audit-logger.js';
-import type { ImageRepository } from '../core/database/repositories/image-repository.js';
+import { DEFAULT_SWEEP_LIMIT } from '../core/database/repositories/image-repository.js';
+import type { ImageExpirableCursor, ImageRepository } from '../core/database/repositories/image-repository.js';
 import type { ImageStore } from './image-store.js';
 import {
   IMAGE_PROCESSING_DEADLINE_MS,
@@ -91,6 +97,13 @@ export const IMAGE_STARTUP_RECOVERY_TIMEOUT_MS = 30_000;
  * bound for that window while the process is alive.
  */
 export const ORPHAN_STAGING_GRACE_MS = IMAGE_PROCESSING_DEADLINE_MS;
+
+/**
+ * Rows loaded per retention query. The retention phase pages through the whole
+ * expirable set inside one pass (see {@link ImageLifecycleManager}), so this
+ * bounds a single query, never the amount of expired work a pass can resolve.
+ */
+const RETENTION_BATCH_LIMIT = DEFAULT_SWEEP_LIMIT;
 
 /** A complete lifecycle pass, injectable for deterministic drain tests. */
 export type ImagePassRunner = () => Promise<ImagePassReport>;
@@ -472,49 +485,83 @@ export class ImageLifecycleManager {
    * pass above (its guards are fenced against publication), so this sweep
    * only handles rows still recorded as available. Expiry always wins over
    * file_missing because this is the only transition that records a reason.
+   *
+   * The phase walks the WHOLE expirable set inside ONE pass by keyset-paging
+   * `findExpirable` {@link RETENTION_BATCH_LIMIT} rows at a time, so a backlog
+   * larger than one page is fully expired by a single run (startup and every
+   * scheduled sweep share this behavior). The cursor advances to the last row of
+   * EVERY page, whichever way those rows resolved — skipped (Processing rows
+   * owned by the recovery pass), transitioned, or FAILED to transition — because
+   * paging past examined rows is what keeps a blocked page (a full page of
+   * Processing rows, or of rows whose expiry transition keeps failing) from
+   * starving everything behind it. A row whose transition failed stays expirable
+   * and is retried by the NEXT pass; this pass never retries it.
+   *
+   * Termination: an empty page ends the drain. The keyset condition is strictly
+   * past the anchor and `expires_at` is immutable (expiry is stamped at
+   * Admission and never extended by access, retry, or restart), so the anchor
+   * moves forward on every page and no row is ever visited twice.
    */
   private retentionPass(report: ImagePassReport): void {
     const now = this.clock();
-    let rows;
-    try {
-      const found = this.deps.imageRepo.findExpirable({ now });
-      if (found.isErr()) {
+    let after: ImageExpirableCursor | null = null;
+
+    for (;;) {
+      let rows;
+      try {
+        const found = this.deps.imageRepo.findExpirable({
+          now,
+          limit: RETENTION_BATCH_LIMIT,
+          ...(after !== null ? { after } : {}),
+        });
+        if (found.isErr()) {
+          report.failures++;
+          this.deps.logger.error(
+            { op: 'image_retention_find', code: found.error.code },
+            'image retention sweep could not load expirable Images',
+          );
+          return;
+        }
+        rows = found.value;
+      } catch (cause) {
         report.failures++;
         this.deps.logger.error(
-          { op: 'image_retention_find', code: found.error.code },
-          'image retention sweep could not load expirable Images',
+          { op: 'image_retention_find', code: errorCode(cause) },
+          'image retention sweep failed',
         );
         return;
       }
-      rows = found.value;
-    } catch (cause) {
-      report.failures++;
-      this.deps.logger.error(
-        { op: 'image_retention_find', code: errorCode(cause) },
-        'image retention sweep failed',
-      );
-      return;
-    }
 
-    for (const row of rows) {
-      if (row.state !== 'available') {
-        // Processing rows go through the recovery pass; terminal rows
-        // cannot appear in the expirable set.
-        continue;
+      // An empty page ends the drain. The anchor is taken from the last row of
+      // the page BEFORE its rows are handled, so it advances no matter how each
+      // row resolved and the next query can never return this page again.
+      const last = rows[rows.length - 1];
+      if (last === undefined) {
+        return;
       }
-      const marked = this.deps.imageRepo.markUnavailable(row.id, 'expired');
-      if (marked.isErr()) {
-        report.failures++;
-        this.deps.logger.warn(
-          { imageId: row.id, op: 'image_retention_expire', code: marked.error.code },
-          'image retention sweep: expiry transition failed; will retry next sweep',
-        );
-        continue;
+      after = { expiresAt: last.expires_at, id: last.id };
+
+      for (const row of rows) {
+        if (row.state !== 'available') {
+          // Processing rows go through the recovery pass; terminal rows
+          // cannot appear in the expirable set. The cursor already moved past
+          // them, so they cannot block the rows behind them.
+          continue;
+        }
+        const marked = this.deps.imageRepo.markUnavailable(row.id, 'expired');
+        if (marked.isErr()) {
+          report.failures++;
+          this.deps.logger.warn(
+            { imageId: row.id, op: 'image_retention_expire', code: marked.error.code },
+            'image retention sweep: expiry transition failed; will retry next sweep',
+          );
+          continue;
+        }
+        report.expired++;
+        this.audit('image.retention.expired', { imageId: row.id });
+        const removed = this.deleteNormalizedFile(row.thread_id, row.id);
+        if (!removed) report.failures++;
       }
-      report.expired++;
-      this.audit('image.retention.expired', { imageId: row.id });
-      const removed = this.deleteNormalizedFile(row.thread_id, row.id);
-      if (!removed) report.failures++;
     }
   }
 

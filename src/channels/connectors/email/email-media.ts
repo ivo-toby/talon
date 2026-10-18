@@ -230,8 +230,8 @@ const EXTENSION_BY_MIME: Readonly<Record<string, string>> = Object.freeze({
 
 /**
  * Payload Attachment: the sanitized declared filename when the sender
- * supplied a usable one, else a neutral MIME-derived hint (`Attachment.filename`
- * is a required string). MIME comes from the declared, normalized, already
+ * supplied a usable one, else a neutral MIME-derived hint (the Image ledger
+ * stores a declared filename as NULL or a nonempty value, never `''`). MIME comes from the declared, normalized, already
  * eligibility-checked value, and `size` is the ACTUAL byte length — never the
  * sender-declared `size` field.
  */

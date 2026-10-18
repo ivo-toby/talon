@@ -9,7 +9,9 @@
  * hygiene, and the pinned E4 `downloadMediaMessage(message, 'stream', {},
  * ctx?)` invocation of the default opener (cancellation lives in the media
  * transfer adapter, not in Baileys' options, because rc.9 drops
- * `options.signal`). The REAL Baileys download path against a stubbed
+ * `options.signal`). Declared metadata that the channel never sent stays
+ * ABSENT on the payload Attachment — never an empty string, which the Image
+ * ledger's nonempty `filename`/`mime_type` CHECK constraints reject. The REAL Baileys download path against a stubbed
  * transport is exercised in `whatsapp-baileys-media-transfer.test.ts`.
  */
 
@@ -178,6 +180,24 @@ describe('extractTextAndMediaCandidates', () => {
     ]);
   });
 
+  it('omits both filename and MIME keys for an ordinary imageMessage', () => {
+    // A real photo `imageMessage` carries no filename at all and may carry no
+    // mimetype either; extraction must not invent either field.
+    const { text, candidates } = extractTextAndMediaCandidates({
+      imageMessage: {
+        url: 'https://mmg.example/encrypted-media',
+        mediaKey: 'SUPER-SECRET-MEDIA-KEY',
+        fileLength: 11,
+        width: 640,
+        height: 480,
+      },
+    });
+    expect(text).toBe('');
+    expect(candidates).toEqual([{ origin: 'photo', declaredSize: 11 }]);
+    expect('mimeType' in candidates[0]!).toBe(false);
+    expect('filename' in candidates[0]!).toBe(false);
+  });
+
   it('reads Long-like uint64 fileLength values', () => {
     const { candidates } = extractTextAndMediaCandidates({
       imageMessage: { fileLength: { low: 300000, high: 0, unsigned: true } },
@@ -340,6 +360,30 @@ describe('fetchSelectedImageAttachments — bounded transport behavior', () => {
     expect(Buffer.isBuffer(payload.data)).toBe(true);
     expect(payload.size).toBe(bytes.byteLength);
     expect(payload.mimeType).toBe('image/jpeg');
+  });
+
+  it('leaves declared filename and MIME ABSENT for a photo that declared neither', async () => {
+    // Empty strings here are a defect: the Image ledger stores declared
+    // metadata as NULL or a nonempty value, and '' fails the nonempty CHECK,
+    // rolling back the whole admission transaction.
+    const bytes = Buffer.from('image-bytes');
+    const openMedia = vi.fn(async (): Promise<Readable> => Readable.from([bytes]));
+    const { candidates } = extractTextAndMediaCandidates({
+      imageMessage: { url: 'https://mmg.example/encrypted-media', mediaKey: 'KEY', fileLength: 9 },
+    });
+    const selection = selectImages(candidates, { maxInputBytes: 1000, maxPerMessage: 5 });
+    const result = await fetchSelectedImageAttachments({}, selection.images, settings({}, openMedia));
+
+    expect(openMedia).toHaveBeenCalledTimes(1);
+    expect(result).toHaveLength(1);
+    const payload = result[0]!;
+    expect(isRejection(payload)).toBe(false);
+    if (isRejection(payload)) return;
+    expect('filename' in payload).toBe(false);
+    expect('mimeType' in payload).toBe(false);
+    expect(Object.keys(payload).sort()).toEqual(['data', 'size']);
+    expect(Buffer.isBuffer(payload.data)).toBe(true);
+    expect(payload.size).toBe(bytes.byteLength);
   });
 
   it('normalizes case and strips MIME parameters end to end', async () => {
@@ -640,8 +684,32 @@ describe('connector media path — outcomes and preservation', () => {
     if (isRejection(attachment)) return;
     expect(Buffer.isBuffer(attachment.data)).toBe(true);
     // The payload carries no mediaKey/url — credentials stay out of outcomes.
-    expect(Object.keys(attachment).sort()).toEqual(['data', 'filename', 'mimeType', 'size']);
+    // `filename` is absent, not '': an imageMessage declares no filename.
+    expect(Object.keys(attachment).sort()).toEqual(['data', 'mimeType', 'size']);
     expect(openMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it('photo declaring neither filename nor MIME delivers a payload Attachment with both ABSENT', async () => {
+    const openMedia = trackingOpener();
+    const c = makeConnector({}, { openMedia });
+    const received: InboundEvent[] = [];
+    c.onMessage(async (e) => { received.push(e); });
+
+    await handle(c, mediaMsg({
+      imageMessage: {
+        url: 'https://mmg.example/encrypted-media',
+        mediaKey: 'SUPER-SECRET-MEDIA-KEY',
+        fileLength: 11,
+      },
+    }));
+
+    expect(received).toHaveLength(1);
+    const attachment = received[0]!.attachments![0]!;
+    expect(isRejection(attachment)).toBe(false);
+    if (isRejection(attachment)) return;
+    expect('filename' in attachment).toBe(false);
+    expect('mimeType' in attachment).toBe(false);
+    expect(attachment.size).toBe(11);
   });
 
   it('retains the caption alongside the downloaded image', async () => {

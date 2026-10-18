@@ -25,6 +25,7 @@ import Database from 'better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import pino from 'pino';
 import { ok, err, type Result } from 'neverthrow';
 import { v4 as uuidv4 } from 'uuid';
@@ -54,6 +55,12 @@ import {
   type ImageIngestionRequest,
 } from '../../src/images/image-ingestion.js';
 import { ImageLifecycleManager } from '../../src/images/image-lifecycle.js';
+import {
+  extractTextAndMediaCandidates,
+  fetchSelectedImageAttachments,
+  resolveBaileysImageSettings,
+} from '../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-images.js';
+import { selectImages } from '../../src/images/image-selection.js';
 
 // ---------------------------------------------------------------------------
 // Runtime scaffolding (fake daemon processes over a shared data directory)
@@ -993,5 +1000,128 @@ describe('image ingestion runtime — crash/restart durability', () => {
     expect(p2.store.normalizedExists(world.threadId, imageId)).toBe(false);
 
     p2.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Connector → ledger metadata path
+// ---------------------------------------------------------------------------
+//
+// The Baileys photo path is exercised END TO END: real candidate extraction,
+// real selection, the real bounded-fetch attachment builder, then a real
+// ingestion Coordinator on a real migrated SQLite database. An ordinary
+// `imageMessage` declares NO filename, so the ledger must receive NULL — an
+// empty string here violates the nonempty `filename`/`mime_type` CHECK
+// constraints and rolls back the whole admission transaction — the defect
+// these tests pin (review comment 4307138453).
+
+describe('image ingestion runtime — declared metadata from the Baileys connector', () => {
+  let world: World;
+
+  beforeEach(() => {
+    world = makeWorld();
+  });
+
+  afterEach(() => {
+    fs.rmSync(world.dataDir, { recursive: true, force: true });
+  });
+
+  /** Build Attachments exactly the way the Baileys connector does. */
+  async function connectorAttachments(content: Record<string, unknown>): Promise<InboundAttachment[]> {
+    const { candidates } = extractTextAndMediaCandidates(content);
+    const selection = selectImages(candidates, {
+      maxInputBytes: IMAGES_CONFIG.maxInputBytes,
+      maxPerMessage: IMAGES_CONFIG.maxPerMessage,
+    });
+    const opener = async (): Promise<Readable> => Readable.from([Buffer.from('PHOTO-BYTES')]);
+    return fetchSelectedImageAttachments(
+      { key: { id: 'wam-1' } },
+      selection.images,
+      resolveBaileysImageSettings({ openMedia: opener }, opener),
+    );
+  }
+
+  function requestFor(externalId: string, attachments: readonly InboundAttachment[]): ImageIngestionRequest {
+    return {
+      channelId: world.channelId,
+      channelName: 'test-bot',
+      externalMessageId: externalId,
+      externalChatId: 'ext-chat-1',
+      threadId: world.threadId,
+      message: {
+        id: uuidv4(),
+        content: '',
+        senderId: 'user-1',
+        idempotencyKey: externalId,
+      },
+      attachments,
+      personaId: 'persona-1',
+    };
+  }
+
+  it('admits a downloaded photo that declared NO filename and NO MIME (NULL columns, message enqueued)', async () => {
+    const p = world.open();
+    const attachments = await connectorAttachments({
+      imageMessage: {
+        url: 'https://mmg.example/encrypted-media',
+        mediaKey: 'SUPER-SECRET-MEDIA-KEY',
+        fileLength: 11,
+      },
+    });
+
+    expect(attachments).toHaveLength(1);
+    // Absent, never ''.
+    expect('filename' in attachments[0]!).toBe(false);
+    expect('mimeType' in attachments[0]!).toBe(false);
+
+    const request = requestFor('ext-meta-absent', attachments);
+    const outcome = await p.coordinator.ingestMessage(request);
+    expect(outcome._unsafeUnwrap()).toBe('enqueued');
+
+    const image = imageOf(p, request.message.id);
+    expect(image.state).toBe('available');
+    expect(image.filename).toBeNull();
+    // Nothing was declared, so the only MIME the ledger can know is the
+    // normalized output format recorded at publication.
+    expect(image.mime_type).toBe('image/jpeg');
+    expect(p.normalizeCalls).toEqual(['PHOTO-BYTES']);
+    expect(ingestionOf(p, request.message.id)?.status).toBe('completed');
+
+    // The message reached the queue — the defect dropped it with the rollback.
+    const rows = queueRows(p, world);
+    expect(rows).toHaveLength(1);
+    const payload = JSON.parse(rows[0]!.payload) as Record<string, unknown>;
+    expect(payload.messageId ?? payload.message_id).toBe(request.message.id);
+    expect(p.store.normalizedExists(world.threadId, image.id)).toBe(true);
+
+    p.close();
+  });
+
+  it('preserves a declared filename and MIME on the admitted ledger row (control)', async () => {
+    const p = world.open();
+    const attachments = await connectorAttachments({
+      documentMessage: {
+        mimetype: 'image/png',
+        fileName: 'diagram.png',
+        fileLength: 11,
+      },
+    });
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]!.filename).toBe('diagram.png');
+    expect(attachments[0]!.mimeType).toBe('image/png');
+
+    const request = requestFor('ext-meta-declared', attachments);
+    const outcome = await p.coordinator.ingestMessage(request);
+    expect(outcome._unsafeUnwrap()).toBe('enqueued');
+
+    const image = imageOf(p, request.message.id);
+    expect(image.state).toBe('available');
+    // A declared nonempty filename survives to the ledger unchanged.
+    expect(image.filename).toBe('diagram.png');
+    expect(image.mime_type).toBe('image/jpeg'); // normalized output format
+    expect(queueRows(p, world)).toHaveLength(1);
+
+    p.close();
   });
 });
