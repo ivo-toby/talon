@@ -91,6 +91,7 @@ integration, or automation is safe without your configuration and review.
 - **Per-thread memory** — Each conversation thread gets its own workspace with transcript, working memory, and artifacts
 - **Skills** — Modular prompt and tool bundles with lazy loading (metadata-only in system prompt, full content on demand)
 - **MCP integration** — Connect external MCP tool servers via stdio, HTTP, or SSE; Talon applies persona policy to its own host-tools bridge
+- **Image understanding** — Upload photos on Telegram, WhatsApp, or email; a configurable vision sub-agent answers questions about them and saves textual Findings. The main agent stays text-only. See [Images](#images)
 
 ### Provider choice
 
@@ -1480,6 +1481,7 @@ The runner wraps `providerOptions` under the active model entry's provider name 
 | `session-observer`   | `claude-sonnet-4-6`         | Generate dated, prioritized observations for long-term memory |
 | `session-reflector`  | `claude-sonnet-4-6`         | Consolidate observations when log grows too large             |
 | `spark-coder`        | `gpt-5.4-spark`             | Fast single-shot code generation (requires `OPENAI_API_KEY`)  |
+| `vision`             | `claude-haiku-4-5-20251001` | One-shot multimodal Inspection of thread Images (see [Images](#images)) |
 
 Sub-agents are loaded from three locations at startup (later overrides earlier):
 
@@ -1612,6 +1614,27 @@ This sub-agent is called automatically by the **rolling context window** (see be
 | **Output**                | `{ files: [{ path, content, action }], explanation }` |
 
 This sub-agent is only loaded when `OPENAI_API_KEY` is set in the environment. Pairs well with the `execution_env` host tool for a generate → test → fix loop where the parent agent orchestrates between spark-coder (fast generation) and Sprites (sandboxed execution).
+
+#### `vision`
+
+**Problem:** Personas often use text-only models, and providers retain prior inputs in a session. Sending every uploaded picture into the main agent's history is expensive, and it does not work at all for text-only personas.
+
+**Solution:** Pixels go only to this dedicated sub-agent, in a single multimodal request. The main agent receives Image metadata and textual Findings instead. Every persona gets the same Inspection interface regardless of its own vision support, and image-token history never enters the main agent's session ([ADR-0001](docs/adr/0001-vision-subagent.md)).
+
+|                           |                                                                                                    |
+| ------------------------- | ---------------------------------------------------------------------------------------------------- |
+| **Model**                 | Claude Haiku 4.5 (Anthropic) — override under `subagents.vision.model`                             |
+| **Required capabilities** | none (gated by persona assignment + `subagent.invoke`)                                             |
+| **Timeout**               | 60s                                                                                                  |
+| **Input**                 | `{ imageIds: string[], question: string }`                                                          |
+| **Output**                | `{ findingId, imageIds, answer, extractedText, uncertainty, model, usage }`                         |
+
+Two rules distinguish it from the other sub-agents:
+
+- **Vision-capable chain only.** Every entry in the chain must be `anthropic`, `openai`, `google`, or `ollama`. Config load rejects a text-only override (`claude-code`, `codex-sandbox`) rather than skipping it, and startup revalidates the entire effective chain — including the built-in manifest fallback — before any channel work. Missing credentials stay an explicit invocation error; an Inspection is never rerouted to the foreground model.
+- **All-or-nothing input validation.** A nonempty `question` plus 1 to `images.maxPerInspection` distinct, current-thread, successfully-processed Image IDs. Unknown, cross-thread, duplicate, still-processing, Rejected or Unavailable IDs, and too many IDs, fail the **whole** call before any model request. Paths and URLs are never accepted, and the list is never truncated.
+
+Failover keeps every image part: each retry is an independent request carrying the question and all images, rechecking availability and honouring timeouts. If the chain is exhausted, no Finding is created — Talon never drops pixels to manufacture an answer. See [Images](#images).
 
 ### Rolling Context Window
 
@@ -1767,6 +1790,247 @@ npx talonctl run-subagent --name session-summarizer --input '{"transcript": "Use
 6. Test with `talonctl run-subagent --name your-agent --input '{}'`
 
 Custom sub-agents override built-in ones if they share the same name (dataDir takes precedence over cwd, which takes precedence over built-in).
+
+---
+
+## Images
+
+You can send Talon pictures and ask about them. Talon stores an **Image** record
+for each accepted upload, normalizes it to a bounded JPEG, and answers questions
+about it through the **vision** sub-agent, which saves a textual **Finding**.
+
+The important design point: **the main agent never sees pixels.** Pixels go only
+to the vision sub-agent. The main agent gets text — Image descriptors (ID,
+dimensions, filename, receipt and expiry, state, selected EXIF) and saved
+Findings — so image support works identically for text-only personas and keeps
+image-token history out of the main session
+([ADR-0001](docs/adr/0001-vision-subagent.md)). Pixel bytes, base64 payloads and
+download credentials never enter main-agent prompts, stored messages, queue
+content, summaries, or logs.
+
+### Enabling it
+
+Running an **Inspection** takes exactly two things: the `vision` assignment on the
+persona plus the existing `subagent.invoke` capability. The vision manifest
+declares `requiredCapabilities: []`, so an Inspection needs no image capability of
+its own. `image.read:thread` is a **separate, independent** grant for model-free
+text lookup — recommended, not part of Inspection. **Existing personas do not gain
+image ability automatically** when you upgrade; each grant is explicit.
+
+```yaml
+personas:
+  - name: assistant
+    subagents:
+      - vision            # 1. assignment: allows Inspections
+    capabilities:
+      allow:
+        - subagent.invoke:*   # 2. the tool call itself
+        - image.read:thread   # separate grant: text lookup of Images/Findings
+```
+
+- **`vision` in `subagents`** — without it, `subagent_invoke` with `name:
+  vision` is denied.
+- **`subagent.invoke:*`** — the existing permission for the invoke tool.
+- **`image.read:thread`** — exposes `image_lookup`: model-free, text-only
+discovery of this thread's Images and Findings. It needs no vision assignment, no
+invoke permission, no credential, and never calls a model or downloads anything,
+so it is safe to grant where you would not grant vision. Grant it together with
+vision so the persona can re-read an existing Finding instead of paying for a
+repeat Inspection.
+
+Uploading still works with none of the above — images are ingested, described,
+and stored — but the persona cannot ask what they show.
+
+### What is accepted
+
+Supported input formats: **JPEG, static PNG, static WebP.** Anything animated is
+rejected explicitly, including WebP frame information and PNG/APNG
+animation-control data, even when the decoder could read a single frame.
+
+| Delivered item                                            | Outcome                          | Uses a slot |
+| --------------------------------------------------------- | -------------------------------- | ----------- |
+| Photo, ordinary image message, image-MIME document/email   | Evaluated as an Image            | Yes         |
+| Unsupported image MIME, including HEIC and SVG             | Rejected / `unsupported_mime`    | Yes         |
+| Document or email part with absent or non-image MIME       | Excluded silently                | No          |
+| Email part marked inline, or related CID content           | Excluded silently                | No          |
+| Platform sticker, including a static WebP sticker          | Excluded silently                | No          |
+| Another size/thumbnail of the same photo                   | Not another Image                | No          |
+
+Ordinary WebP **documents** are eligible; Talon does not guess whether they were
+stickers. Telegram album members stay separate messages. A document's filename
+never establishes its MIME type.
+
+**Channels:** Telegram photos and image-MIME documents, WhatsApp Business and
+Baileys images and documents, and email image attachments. Existing sender, chat,
+bot, group and trigger policies are unchanged; an eligible image-only message can
+start a run, and captions and text are preserved. Email attachments are parsed
+before sender/DMARC authorization, but only authorized parts are normalized.
+
+### Settings
+
+```
+images:
+  maxInputBytes: 10485760   # 10 MiB per Image
+  maxPerMessage: 5          # upload slots per message
+  maxPerInspection: 5       # Image IDs per Inspection
+  maxEdge: 4096             # longest normalized edge, pixels
+  jpegQuality: 85           # 1-100
+  retentionHours: 24        # normalized FILE retention only
+```
+
+`maxPerMessage` and `maxPerInspection` are independent — raising one does not
+raise the other. Declared sizes are never trusted alone: actual bytes are checked
+during download and again before staging or conversion.
+
+**Email has a lower practical limit.** Email's unchanged 10 MiB whole-message cap
+covers encoding, headers, body and every part combined, so base64 leaves roughly
+**7.5 MiB or less** for a single decoded image once other overhead is counted.
+Oversized whole emails keep the existing pre-ingestion skipping behaviour. When a
+large photo must arrive, send it as its own email, or use Telegram/WhatsApp.
+
+### Normalization
+
+Accepted input is converted to **metadata-free JPEG**: EXIF is read first,
+orientation applied, the image scaled to fit inside `maxEdge` preserving aspect
+ratio (never cropped, never upscaled), alpha flattened onto white, then encoded
+at `jpegQuality`. Decoder input limits stay enabled and a conversion that trips
+one is `conversion_failed`.
+
+Normalized files live in the thread workspace and are deleted when they expire:
+
+```
+data/threads/<thread_id>/attachments/images/<image_id>.jpg
+```
+
+### Retention, and what outlives the file
+
+**Retention is file-only.** After `retentionHours` (default 24) the normalized
+JPEG is removed — checked at startup and on a sweep at most every 60 seconds —
+and the Image becomes `Unavailable / expired`.
+
+**Not deleted by retention:** Image records, **GPS and other EXIF**, Findings, and
+conversation text. These persist until separately deleted. Retention also does not
+govern anything your model provider retains.
+
+So a thread's personal data outlives its pictures. In groups admitted by the
+existing connector group/trigger settings, extracted metadata is exposed the same
+way as any other reply — **there is no separate image or GPS group switch.** GPS
+and OCR-derived personal data can therefore appear in group responses and remains
+after the file is gone. Only enable image handling in groups where that is
+acceptable.
+
+**Expiry is absolute.** Looking at an Image, asking about it, retrying, or
+restarting the daemon never extends it. Because queue backlog or backoff can push
+a run back, a message's first run may already see its own images as expired.
+Re-upload is the only recovery, and it creates a **new Image ID** with a fresh
+deadline — Findings stay attached to the old ID.
+
+### Metadata
+
+Dimensions and selected EXIF are exposed automatically: GPS
+latitude/longitude/altitude, capture time with its recorded offset, camera
+make/model, and original orientation. Missing values stay **unknown** — Talon does
+not invent a location or a timezone, and EXIF location is kept distinct from a
+model's guess about where something was shot.
+
+Telegram and WhatsApp frequently strip EXIF from *photos*. When metadata matters,
+send the **original as a document** or attach it to an **email** — this improves
+the odds but cannot guarantee preservation.
+
+### Asking about an image
+
+An **Inspection** is one question about one or more Images, answered in a single
+multimodal request:
+
+```json
+{
+  "name": "vision",
+  "input": {
+    "imageIds": ["img-0001", "img-0002"],
+    "question": "What error message is shown, and what does it say to do next?"
+  }
+}
+```
+
+A successful Inspection returns and **saves** a Finding: `{ findingId, imageIds,
+answer, extractedText, uncertainty, model, usage }`. Findings are canonical rows
+in SQLite, survive failed runs, context rotation, and file expiry, and are
+attributable model output — pass `uncertainty` through rather than treating an
+answer as ground truth.
+
+**`image_lookup`** reads that stored state without any model call
+(`image.read:thread`):
+
+| Operation       | Fields beyond `operation`                       | Returns                                             |
+| --------------- | ----------------------------------------------- | ---------------------------------------------------- |
+| `list_images`   | `limit`, `cursor`                               | `{ images, nextCursor }` — current descriptors        |
+| `get_image`     | `imageId`                                       | `{ image }` — current state of one Image              |
+| `list_findings` | `imageId` (filter), `limit`, `cursor`           | `{ findings, nextCursor }`                            |
+| `get_finding`   | `findingId`                                     | `{ finding }` — the exact saved Finding                |
+
+`list_images` deliberately includes Rejected and Unavailable Images — their
+metadata and Findings survive the missing file. Images still processing are
+omitted. Lists page 20 at a time (`limit` 1–100), newest first, with an opaque
+`nextCursor` bound to the operation, filter and thread; reuse it unchanged, and
+`null` means exhausted. Unknown, cross-thread, and still-processing IDs all
+return the same not-found error.
+
+### What the model sees, and when
+
+- **Live message** — the descriptors for the current message are appended to what
+every provider receives, in source order. Stored message and queue text is
+  unchanged.
+- **Fresh sessions and context rotation** — get the fuller inventory and Finding
+  projections. Resumed sessions do **not** get the full inventory repeated on
+every text-only turn; they use `image_lookup` for older Images and current state
+  ([ADR-0002](docs/adr/0002-image-context-placement.md)).
+- **Budgets** — 20 newest non-Processing descriptors (max 1,000 characters each,
+  8,000 total) and 10 newest Findings (max 2,000 characters each, 8,000 total),
+  shared between live and fresh sections. Omitted items stay reachable through
+  `image_lookup`; a persona without that tool gets a neutral notice and is never
+told about a tool it cannot use.
+- **Descriptors in history are stale snapshots.** A descriptor from an earlier
+  turn shows what was true then; its state and expiry may have lapsed.
+  `get_image` reports current state.
+
+### Failure reasons
+
+Rejection reasons are a closed list — no connector-specific values:
+
+| Reason                    | Meaning                                                        |
+| ------------------------- | -------------------------------------------------------------- |
+| `unsupported_mime`        | Eligible image MIME outside the supported formats               |
+| `count_limit`             | More eligible attachments than the message's upload slots       |
+| `size_limit`              | Declared or actual bytes exceed the per-Image limit             |
+| `animated`                | Animated image, including APNG                                  |
+| `download_failed`         | Channel media fetch failed or timed out                         |
+| `conversion_failed`       | Input could not be decoded or normalized                        |
+| `processing_interrupted`  | Recovery found no usable source before the processing deadline  |
+| `processing_failed`       | Operational retries exhausted, or the deadline elapsed          |
+
+Unavailability has exactly two reasons: `expired` and `file_missing`. Both mean
+re-upload, and both preserve metadata and existing Findings.
+
+Rejections are permanent for that Image; an Inspection or provider failure never
+turns an Available Image into a Rejected one.
+
+### Timing you will notice
+
+- **Head-of-line delay, bounded per connector.** A sequential connector waits for
+  each image-bearing message before delivering anything else **on that connector**
+  — including messages for other chats. Connectors that download media (Telegram,
+  WhatsApp) get a fixed 60-second remote-fetch budget per message **plus** a
+  separate 60-second normalization deadline, so up to ~120 seconds. **Email has no
+  remote-fetch budget at all**: IMAP delivers the whole message within the 10 MiB
+  cap and the attachments are decoded before the connector sees them, so there is
+  nothing to download and only the shared 60-second normalization deadline applies
+  (on top of ordinary IMAP polling latency). Either way, at most 3 attempts per
+  Image.
+- **Attempts and deadlines survive restart.** Neither redelivery nor a restart
+  resets them, and a crash consumes its started attempt.
+- **No arrival-ordering promise.** Overlapping callbacks and recovered messages
+  may enqueue in completion order; Talon does not promise cross-handoff ordering
+  for image-bearing messages.
 
 ---
 
@@ -2492,6 +2756,7 @@ Each conversation thread gets a persistent workspace:
 data/threads/<thread_id>/
   memory/          # human-editable notes (CLAUDE.md, etc.)
   attachments/     # ingested inbound files
+    images/        # normalized JPEGs (deleted at retention; records survive)
   artifacts/       # agent output files
   ipc/
     input/         # host -> container messages

@@ -134,6 +134,54 @@ If it doesn't work:
 journalctl --user -u talond -f
 ```
 
+## Images (optional)
+
+Email image attachments are ingested automatically. To let the bound persona
+answer what a picture shows it needs exactly two things — existing personas gain
+neither on upgrade:
+
+```bash
+npx talonctl set-capabilities --persona <persona> --add subagent.invoke:*
+```
+
+plus `vision` in that persona's `subagents` list in `talond.yaml`. The shipped
+`vision` manifest declares `requiredCapabilities: []`, so no image capability is
+part of an Inspection. Pixels go only to the `vision` sub-agent; the persona stays
+text-only.
+
+Separately, `image.read:thread` is an **independent** model-free lookup grant for
+the thread's Images and saved Findings (`image_lookup`) — recommended, not required
+for Inspections.
+
+Email-specific behaviour, which differs sharply from chat channels:
+
+- **Only attached images count.** A part must carry an image MIME type. Parts with
+  an absent or non-image MIME are excluded silently and use no upload slot.
+- **Inline and CID images are never ingested.** A part marked inline, or
+  classified as related CID content (`cid:` imagery inside an HTML body), is
+  excluded silently — even a genuine photo. Ask the user to **attach** the file.
+- **The practical size limit is far below `images.maxInputBytes`.** Email's
+  unchanged 10 MiB cap applies to the **whole message** — encoding, headers, body
+  and every part combined. Base64 leaves roughly **7.5 MiB or less** for one
+  decoded image once overhead is counted, so a photo that fits the 10 MiB image
+  setting can still be lost. Oversized whole emails keep the existing pre-ingestion
+  skipping behaviour: Talon never sees them.
+- **Authorization still gates everything.** Mail is fetched and MIME-parsed before
+  sender checks so parts can be classified, but parts from an unauthorized sender
+  are never normalized into Images.
+- Normalized files are deleted after `images.retentionHours` (default 24h).
+  Image records, GPS/EXIF and saved Findings persist beyond that. Mail is the
+  recommended channel when metadata matters, because attached originals are less
+  likely to be recompressed than chat photos — but preservation is still not
+  guaranteed; missing values stay unknown.
+- **Polling is sequential, but email performs no image fetch.** The bytes are
+  already in hand: IMAP retrieves the whole message within the 10 MiB input cap and
+  decodes the attachments before the connector plans any media, so there is nothing
+  left to download and **the remote-fetch budget never applies to email**. While an
+  image-bearing mail is normalized, this connector delivers nothing else, and the
+  only image deadline is the shared 60-second normalization one (at most 3 attempts
+  per Image) — plus ordinary IMAP polling latency, which is not an image budget.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -143,6 +191,8 @@ journalctl --user -u talond -f
 | Gmail: "Application-specific password required" | Enable 2FA, then create an app password |
 | Long delay before response | Default polling is 30s; lower `pollingIntervalMs` for faster response |
 | Bot replies to spam | Add `allowedSenders` to config |
+| Attachment ignored | Inline and `cid:` body images are excluded by design; ask the user to attach the file as a regular attachment with an image MIME type |
+| Large photo never arrives | Email's 10 MiB cap covers the whole encoded message, so base64 leaves roughly 7.5 MiB or less per decoded image. Send it as its own email, or use Telegram/WhatsApp |
 | HTML formatting broken | Talon sends HTML emails; check if email client renders HTML |
 
 ## Config Reference
