@@ -161,6 +161,42 @@ npx talonctl env-check
 npx talonctl doctor
 ```
 
+## Images (optional)
+
+WhatsApp images and image-MIME documents are ingested automatically, under the
+same sender and access rules as text. To let the bound persona answer what a
+picture shows it needs exactly two things — existing personas gain neither on
+upgrade:
+
+```bash
+npx talonctl set-capabilities --persona <persona> --add subagent.invoke:*
+```
+
+plus `vision` in that persona's `subagents` list in `talond.yaml`. The shipped
+`vision` manifest declares `requiredCapabilities: []`, so no image capability is
+part of an Inspection. Pixels go only to the `vision` sub-agent; the persona stays
+text-only.
+
+Separately, `image.read:thread` is an **independent** model-free lookup grant for
+the thread's Images and saved Findings (`image_lookup`) — recommended, not required
+for Inspections.
+
+WhatsApp-specific behaviour worth warning the user about:
+
+- **Photos lose EXIF.** WhatsApp recompresses photos, so GPS and capture time are
+  typically gone. When metadata matters, ask the user to send the **document**
+  (uncompressed) variant — this helps but cannot guarantee preservation.
+- **Supported formats are JPEG, static PNG, and static WebP.** A GIF or HEIC
+  attachment is rejected `unsupported_mime`; an animated WebP or APNG is rejected
+  `animated`. Platform stickers are excluded silently and use no upload slot.
+- **Up to 5 images per message** by default (`images.maxPerMessage`); overflow is
+  rejected `count_limit` without a download.
+- **Media handling is awaited per message** — a fixed 60-second fetch budget plus
+  a separate 60-second normalization deadline, at most 3 attempts per Image, not
+  reset by restart.
+- Normalized files are deleted after `images.retentionHours` (default 24h).
+  Image records, GPS/EXIF and saved Findings persist beyond that.
+
 ## Troubleshooting
 
 | Problem | Fix |
