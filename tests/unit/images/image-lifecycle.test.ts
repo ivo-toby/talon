@@ -21,10 +21,14 @@ import { createTestDb } from '../queue/helpers.js';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
 import { MessageRepository } from '../../../src/core/database/repositories/message-repository.js';
-import { ImageRepository, type ImageRow } from '../../../src/core/database/repositories/image-repository.js';
+import {
+  DEFAULT_SWEEP_LIMIT,
+  ImageRepository,
+  type ImageRow,
+} from '../../../src/core/database/repositories/image-repository.js';
 import { ImageIngestionRepository } from '../../../src/core/database/repositories/image-ingestion-repository.js';
 import type { AuditEntry, AuditStore } from '../../../src/core/logging/audit-logger.js';
-import { PipelineError } from '../../../src/core/errors/index.js';
+import { DbError, PipelineError } from '../../../src/core/errors/index.js';
 import type {
   ImageIngestionCoordinator,
   RecoverPendingOptions,
@@ -216,6 +220,11 @@ function writeNormalized(f: LifecycleFixture, imageId: string, bytes: Buffer = B
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, bytes);
   return target;
+}
+
+/** Logger sink that keeps rendered lines so failure warnings can be counted. */
+function captureWarnings(lines: string[]): ImageLifecycleDeps['logger'] {
+  return pino({ level: 'warn' }, { write: (line: string) => lines.push(line) });
 }
 
 // ---------------------------------------------------------------------------
@@ -886,6 +895,213 @@ describe('ImageLifecycleManager', () => {
       expect(second.expired).toBe(0);
       expect(second.cleaned).toBe(0);
       expect(fs.existsSync(target)).toBe(false);
+    });
+
+    // One repository query returns at most DEFAULT_SWEEP_LIMIT rows, so the
+    // retention phase must keep paging. These tests deliberately exceed that
+    // limit (150 > 100) against REAL SQLite rows and REAL files, and cover the
+    // case where a FULL page of rows cannot be transitioned at all: it must be
+    // stepped past, not retried forever and not a wall in front of the tail.
+    describe('pages the whole expirable backlog inside ONE pass', () => {
+      const BACKLOG = 150;
+      const FULL_PAGE = DEFAULT_SWEEP_LIMIT;
+
+      function seedExpiredBatch(count: number, expiresAt: number): ImageRow[] {
+        const rows: ImageRow[] = [];
+        for (let i = 0; i < count; i += 1) {
+          const row = f.seedImage({ available: true, expiresAt });
+          writeNormalized(f, row.id);
+          rows.push(row);
+        }
+        return rows;
+      }
+
+      /** Processing rows are recovery work, so retention can never transition them. */
+      function seedProcessingBatch(count: number, expiresAt: number): ImageRow[] {
+        const rows: ImageRow[] = [];
+        for (let i = 0; i < count; i += 1) {
+          rows.push(f.seedImage({ expiresAt }));
+        }
+        return rows;
+      }
+
+      function expirableIds(): Set<string> {
+        return new Set(f.imageRepo.findExpirable({ now: f.now })._unsafeUnwrap().map((r) => r.id));
+      }
+
+      it('expires every one of 150 expired Available Images in a single runPass and removes all files', async () => {
+        const images = seedExpiredBatch(BACKLOG, f.now - 1);
+        const targets = images.map((row) => f.store.normalizedPath(f.threadId, row.id)._unsafeUnwrap());
+        expect(targets.every((target) => fs.existsSync(target))).toBe(true);
+        // Sanity: the backlog really exceeds one repository batch.
+        expect(f.imageRepo.findExpirable({ now: f.now })._unsafeUnwrap()).toHaveLength(100);
+
+        const report = await f.makeManager().runPass();
+
+        expect(report.expired).toBe(BACKLOG);
+        expect(expirableIds().size).toBe(0);
+        for (const image of images) {
+          const row = f.imageRepo.findById(image.id)._unsafeUnwrap()!;
+          expect(row.state).toBe('unavailable');
+          expect(row.unavailability_reason).toBe('expired');
+        }
+        expect(targets.filter((target) => fs.existsSync(target))).toEqual([]);
+        expect(f.auditEntries.filter((e) => e.action === 'image.retention.expired')).toHaveLength(
+          BACKLOG,
+        );
+      });
+
+      it('continues past Processing rows that share the expirable batches', async () => {
+        // Processing rows sort to the head of the ordering (earliest expiry), so
+        // a reader that stopped at the first untransitionable page would leave
+        // the tail behind.
+        const processing = [
+          f.seedImage({ expiresAt: f.now - 10_000 }),
+          f.seedImage({ expiresAt: f.now - 10_000 }),
+          f.seedImage({ expiresAt: f.now - 10_000 }),
+        ];
+        const available = seedExpiredBatch(BACKLOG, f.now - 1);
+
+        const report = await f.makeManager().runPass();
+
+        expect(report.expired).toBe(BACKLOG);
+        for (const image of available) {
+          expect(f.imageRepo.findById(image.id)._unsafeUnwrap()!.state).toBe('unavailable');
+          expect(f.store.normalizedExists(f.threadId, image.id)).toBe(false);
+        }
+        // The recovery pass owns Processing rows: untouched, still expirable.
+        for (const image of processing) {
+          expect(f.imageRepo.findById(image.id)._unsafeUnwrap()!.state).toBe('processing');
+        }
+        expect(expirableIds()).toEqual(new Set(processing.map((row) => row.id)));
+      });
+
+      it('a file-deletion failure does not block later entries and does not loop forever', async () => {
+        const blocker = f.seedImage({ available: true, expiresAt: f.now - 10_000 });
+        const blockerTarget = writeNormalized(f, blocker.id);
+        seedExpiredBatch(BACKLOG, f.now - 1);
+
+        // The blocker's removal always fails; every other file is really
+        // removed. The transition itself still succeeds, so the row leaves
+        // the expirable set and the drain keeps moving.
+        const originalRemove = f.store.removeFile.bind(f.store);
+        f.store.removeFile = (p: string) =>
+          p === blockerTarget
+            ? err({ code: 'io', retryable: true, message: 'EACCES (simulated)' })
+            : originalRemove(p);
+
+        const report = await f.makeManager().runPass();
+
+        // The blocker never blocks the drain: all 151 rows expired in ONE pass.
+        expect(report.expired).toBe(BACKLOG + 1);
+        expect(report.failures).toBe(1); // the simulated deletion failure
+        expect(expirableIds().size).toBe(0);
+        const blockerRow = f.imageRepo.findById(blocker.id)._unsafeUnwrap()!;
+        expect(blockerRow.state).toBe('unavailable');
+        expect(blockerRow.unavailability_reason).toBe('expired');
+        expect(f.auditEntries).toContainEqual({
+          action: 'image.cleanup.failed',
+          details: { imageId: blocker.id, kind: 'expired_output', code: 'io' },
+        });
+        // Every OTHER file is really gone, and the blocker's file is retried by
+        // the cleanup phase of the same pass once retention moved on.
+        expect(fs.existsSync(blockerTarget)).toBe(false);
+        expect(report.cleaned).toBe(1);
+      });
+
+      it('does not starve the tail behind a FULL page of Processing rows', async () => {
+        // Regression: the blocked head page is EXACTLY one repository batch
+        // (DEFAULT_SWEEP_LIMIT Processing rows expiring first), so the available
+        // backlog behind it is reachable only by paging past examined rows.
+        expect(DEFAULT_SWEEP_LIMIT).toBe(100);
+        const blocked = seedProcessingBatch(FULL_PAGE, f.now - 10_000);
+        const tail = seedExpiredBatch(BACKLOG, f.now - 1);
+        // The first page is entirely blocked work.
+        expect(f.imageRepo.findExpirable({ now: f.now })._unsafeUnwrap()).toHaveLength(FULL_PAGE);
+
+        const report = await f.makeManager().runPass();
+
+        expect(report.expired).toBe(BACKLOG);
+        for (const image of tail) {
+          const row = f.imageRepo.findById(image.id)._unsafeUnwrap()!;
+          expect(row.state).toBe('unavailable');
+          expect(row.unavailability_reason).toBe('expired');
+          expect(f.store.normalizedExists(f.threadId, image.id)).toBe(false);
+        }
+        expect(
+          f.auditEntries.filter((entry) => entry.action === 'image.retention.expired'),
+        ).toHaveLength(BACKLOG);
+        // The blocked page stays untouched Processing work and is still expirable.
+        for (const image of blocked) {
+          expect(f.imageRepo.findById(image.id)._unsafeUnwrap()!.state).toBe('processing');
+        }
+        expect(expirableIds()).toEqual(new Set(blocked.map((row) => row.id)));
+      });
+
+      it('does not starve the tail behind a FULL page of failed expiry transitions', async () => {
+        // Same shape, but the head page fails its transition: those rows stay
+        // AVAILABLE and stay expirable, so the cursor has to step past them for
+        // this pass and the next pass has to retry them.
+        const blocked = seedExpiredBatch(FULL_PAGE, f.now - 10_000);
+        const tail = seedExpiredBatch(BACKLOG, f.now - 1);
+        const blockedIds = new Set(blocked.map((row) => row.id));
+
+        const originalMark = f.imageRepo.markUnavailable.bind(f.imageRepo);
+        f.imageRepo.markUnavailable = (id, reason) =>
+          reason === 'expired' && blockedIds.has(id)
+            ? err(new DbError('simulated ledger failure (CANARY)'))
+            : originalMark(id, reason);
+
+        const lines: string[] = [];
+        const report = await f.makeManager({ logger: captureWarnings(lines) }).runPass();
+
+        // The failing page is stepped past: the tail fully expires in ONE pass.
+        expect(report.expired).toBe(BACKLOG);
+        for (const image of tail) {
+          const row = f.imageRepo.findById(image.id)._unsafeUnwrap()!;
+          expect(row.state).toBe('unavailable');
+          expect(row.unavailability_reason).toBe('expired');
+        }
+        // Each blocked row is reported exactly ONCE — the page is never re-read.
+        expect(lines.filter((line) => line.includes('expiry transition failed'))).toHaveLength(
+          FULL_PAGE,
+        );
+        expect(report.failures).toBe(FULL_PAGE);
+        for (const image of blocked) {
+          const row = f.imageRepo.findById(image.id)._unsafeUnwrap()!;
+          expect(row.state).toBe('available');
+          expect(row.unavailability_reason).toBeNull();
+        }
+        expect(expirableIds()).toEqual(blockedIds);
+        // The canary message never reaches audit evidence.
+        expect(JSON.stringify(f.auditEntries)).not.toContain('CANARY');
+
+        // The failed rows are retried by the NEXT pass, not this one.
+        f.imageRepo.markUnavailable = originalMark;
+        const retry = await f.makeManager().runPass();
+        expect(retry.expired).toBe(FULL_PAGE);
+        expect(expirableIds().size).toBe(0);
+      });
+
+      it('terminates on an empty page when no row can transition', async () => {
+        // Nothing but failures: the drain still ends, by walking the keyset to an
+        // empty page instead of re-reading the failing one.
+        const stuck = seedExpiredBatch(25, f.now - 1);
+        const stuckIds = new Set(stuck.map((row) => row.id));
+        const originalMark = f.imageRepo.markUnavailable.bind(f.imageRepo);
+        f.imageRepo.markUnavailable = (id, reason) =>
+          reason === 'expired' && stuckIds.has(id)
+            ? err(new DbError('simulated ledger failure (CANARY)'))
+            : originalMark(id, reason);
+
+        const lines: string[] = [];
+        const report = await f.makeManager({ logger: captureWarnings(lines) }).runPass();
+
+        expect(lines.filter((line) => line.includes('expiry transition failed'))).toHaveLength(25);
+        expect(report.expired).toBe(0);
+        expect(report.failures).toBe(25);
+        expect(expirableIds()).toEqual(stuckIds);
+      });
     });
   });
 

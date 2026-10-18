@@ -461,7 +461,7 @@ export function photoPayloadMimeType(filePath: string): string {
  * Payload filename: the sanitized DECLARED name first (documents), then the
  * sanitized last segment of the server-assigned path (credential-free — the
  * bot token lives in the URL prefix, never in `file_path`), then a neutral
- * origin word. `Attachment.filename` is a required string, so a neutral
+ * origin word. Telegram always has a server-assigned path, so a neutral
  * fallback beats fabricating an extension.
  */
 function payloadFilename(

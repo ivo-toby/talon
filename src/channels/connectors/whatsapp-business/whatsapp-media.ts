@@ -430,9 +430,9 @@ function eligibleMimeType(
 
 /**
  * Payload filename: the sanitized DECLARED name when the channel supplied a
- * usable one, then a neutral origin word. `Attachment.filename` is a required
- * string, and a media URL is never consulted for a name (it is pre-signed and
- * carries no usable display name).
+ * usable one, then a neutral origin word (the Image ledger stores a declared
+ * filename as NULL or a nonempty value, never `''`). A media URL is never
+ * consulted for a name (it is pre-signed and carries no usable display name).
  */
 function payloadFilename(entry: { filename?: string }, mime: string | undefined): string {
   if (entry.filename !== undefined) {

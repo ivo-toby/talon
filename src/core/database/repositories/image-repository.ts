@@ -124,6 +124,20 @@ export interface ImageThreadPageAnchor {
   imageId: string;
 }
 
+/**
+ * Keyset position in the expirable ordering `(expires_at ASC, id ASC)`.
+ *
+ * The retention sweep walks the expirable set page by page with this anchor, so
+ * it can step past rows it examined but could not transition (Processing rows
+ * owned by recovery, or rows whose transition failed) instead of refetching the
+ * same blocked page. `expiresAt` is the immutable receipt-based expiry of the
+ * last examined row, which is why the anchor can never drift.
+ */
+export interface ImageExpirableCursor {
+  expiresAt: number;
+  id: string;
+}
+
 /** Options for one thread-scoped keyset Image page read. */
 export interface FindImageThreadPageOptions {
   threadId: string;
@@ -280,11 +294,19 @@ export class ImageRepository extends BaseRepository {
     `);
 
     // Expiry takes precedence over any other unavailability, so candidates are every
-    // Image whose content has not already gone terminal.
+    // Image whose content has not already gone terminal. The optional keyset cursor
+    // keeps rows strictly after `(expires_at, id)` in the same ordering the page
+    // walks; a NULL cursor (the default) is the first page, so callers that do not
+    // paginate are unaffected.
     this.findExpirableStmt = db.prepare(`
       SELECT * FROM images
       WHERE state IN ('processing', 'available')
         AND expires_at <= @now
+        AND (
+          @after_expires_at IS NULL
+          OR expires_at > @after_expires_at
+          OR (expires_at = @after_expires_at AND id > @after_id)
+        )
       ORDER BY expires_at ASC, id ASC
       LIMIT @limit
     `);
@@ -552,18 +574,28 @@ export class ImageRepository extends BaseRepository {
   }
 
   /**
-   * Returns Images whose expiry has elapsed but whose state is not yet terminal.
+   * Returns one keyset page of Images whose expiry has elapsed but whose state is
+   * not yet terminal, in `(expires_at ASC, id ASC)` order.
    *
    * Expiry is inclusive: an Image whose `expires_at` equals `now` is already past
    * retention. Callers resolve each one with `markUnavailable(id, 'expired')`.
+   *
+   * `after` is the keyset anchor of the previous page's LAST row, so a caller can
+   * page through the whole set even when the head never leaves it — a row this
+   * reader cannot transition stays a candidate and must not block the tail.
+   * Omitted or null means the first page, which is the historical behavior.
+   * Because `expires_at` is immutable (neither access nor retry moves it), the
+   * cursor strictly advances and repeated pages never repeat or skip a row.
    */
   findExpirable(
-    options: { now?: number; limit?: number } = {},
+    options: { now?: number; limit?: number; after?: ImageExpirableCursor | null } = {},
   ): Result<ImageRow[], DbError> {
     try {
       const rows = this.findExpirableStmt.all({
         now: options.now ?? this.now(),
         limit: options.limit ?? DEFAULT_SWEEP_LIMIT,
+        after_expires_at: options.after?.expiresAt ?? null,
+        after_id: options.after?.id ?? null,
       }) as ImageRow[];
       return ok(rows.map(mapImageRow));
     } catch (cause) {
