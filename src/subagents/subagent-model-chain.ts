@@ -5,7 +5,11 @@ import type { LanguageModel } from 'ai';
 import type pino from 'pino';
 import type { SubAgentsConfig } from '../core/config/config-types.js';
 import { SubAgentError } from '../core/errors/index.js';
-import type { ModelResolver } from './model-resolver.js';
+import {
+  INFERENCE_PROVIDERS,
+  isInferenceProvider,
+  type ModelResolver,
+} from './model-resolver.js';
 import { wrapProviderOptions } from './provider-options.js';
 import type {
   LoadedSubAgent,
@@ -66,6 +70,48 @@ export function buildSubAgentModelChain(
       source: 'manifest' as const,
     },
   ];
+}
+
+/**
+ * Name of the built-in vision sub-agent whose chain must be vision-capable.
+ * Config-load validation and startup validation both key off this name.
+ */
+export const VISION_SUBAGENT_NAME = 'vision';
+
+/**
+ * Validates the complete vision model chain of an actually loaded sub-agent:
+ * the configured override entries plus the implicit manifest fallback, exactly
+ * as {@link buildSubAgentModelChain} will resolve them at run time.
+ *
+ * Vision permits only the inference adapters (anthropic/openai/google/ollama):
+ * claude-code and codex-sandbox stay text-only and may never appear in the
+ * vision chain, whether via an explicit override or via the manifest model.
+ * Intended as a startup check (before any Inspection work) and at config load
+ * for the configured overrides.
+ */
+export function validateVisionModelChain(
+  agent: LoadedSubAgent,
+  override?: SubAgentsConfig[string],
+): Result<void, SubAgentError> {
+  const chain = buildSubAgentModelChain(agent, override);
+  const textOnly = chain.filter((entry) => !isInferenceProvider(entry.provider));
+
+  if (textOnly.length === 0) {
+    return ok(undefined);
+  }
+
+  const offending = textOnly
+    .map((entry) => `${entry.provider}/${entry.name} (${entry.source})`)
+    .join(', ');
+
+  return err(
+    new SubAgentError(
+      `Sub-agent "${agent.manifest.name}" is the vision sub-agent and may only use ` +
+        `vision-capable inference providers (${INFERENCE_PROVIDERS.join(', ')}): ` +
+        `text-only chain entries found: ${offending}. ` +
+        'Remove the text-only entries from subagents.vision and the vision manifest so no image part reaches a text-only model.',
+    ),
+  );
 }
 
 export async function runSubAgentModelChain(

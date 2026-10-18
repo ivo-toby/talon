@@ -14,7 +14,12 @@ import type { Result } from 'neverthrow';
 import type { LanguageModel } from 'ai';
 import type { JSONObject } from '@ai-sdk/provider';
 import type pino from 'pino';
-import type { SubAgentError } from '../core/errors/error-types.js';
+import type { SubAgentError, DbError } from '../core/errors/error-types.js';
+import type { ImageAccess } from '../images/image-types.js';
+import type {
+  CreateFindingInput,
+  FindingRecord,
+} from '../core/database/repositories/finding-repository.js';
 import type { MemoryRepository } from '../core/database/repositories/memory-repository.js';
 import type { ScheduleRepository } from '../core/database/repositories/schedule-repository.js';
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
@@ -69,6 +74,23 @@ export interface SubAgentManifest {
 // ---------------------------------------------------------------------------
 
 /**
+ * Persistence port for the canonical Finding ledger (TASK-011 contract).
+ *
+ * Structurally satisfied by `FindingRepository`; kept deliberately narrow so
+ * Inspection can be built and tested with a deterministic fake and no
+ * database. The real repository is wired as a service alongside the Image
+ * access port when runtime integration lands (TASK-014).
+ *
+ * A successful `create` is the only durable record of a successful
+ * Inspection: callers must treat an `Err` as a failed Inspection that stored
+ * nothing, never as a success.
+ */
+export interface FindingPersistence {
+  /** Atomically persists one Finding plus every source association, or nothing. */
+  create(input: CreateFindingInput): Result<FindingRecord, DbError>;
+}
+
+/**
  * Repository and infrastructure services injected into a sub-agent at runtime.
  *
  * All repositories are provided — the capability check happens at the runner
@@ -93,6 +115,27 @@ export interface SubAgentServices {
   runs: RunRepository;
   /** Durable message queue. */
   queue: QueueRepository;
+  /**
+   * Read port over the current thread's Images (TASK-001 `ImageAccess`
+   * contract). Optional until runtime wiring supplies the concrete adapter
+   * (TASK-014); the vision sub-agent rejects invocations when it is absent
+   * rather than guessing a file location.
+   */
+  images?: ImageAccess;
+  /**
+   * Canonical Finding ledger port (TASK-011 contract, structurally satisfied
+   * by `FindingRepository`). Optional until runtime wiring; vision rejects
+   * invocation when it is absent so a successful Inspection can never be
+   * unrecorded.
+   */
+  findings?: FindingPersistence;
+  /**
+   * Image Inspection ceilings from the validated `images` config section.
+   * Vision enforces `maxPerInspection` as the maximum number of distinct
+   * current-thread Image IDs per Inspection and falls back to the config
+   * schema default (5) when this is not wired yet. Optional until TASK-014.
+   */
+  imageInspectionLimits?: { maxPerInspection: number };
   /** Structured logger scoped to the sub-agent. */
   logger: pino.Logger;
 }
@@ -113,6 +156,14 @@ export interface SubAgentContext {
   threadId: string;
   /** The persona that triggered (or owns) this sub-agent run. */
   personaId: string;
+  /**
+   * Trusted run identity of the invoking daemon run, forwarded from the
+   * host-tool `ToolExecutionContext`. Supplied by Talon only — never read
+   * from model-authored sub-agent input and never guessed from an active
+   * run. Optional for existing subagents; sub-agents that record run
+   * provenance (vision Findings) require it and must fail when absent.
+   */
+  runId?: string;
   /** Assembled system prompt built from the sub-agent's prompt fragments. */
   systemPrompt: string;
   /** Resolved AI SDK model instance ready for generation. */

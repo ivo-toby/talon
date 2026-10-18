@@ -103,6 +103,11 @@ personas:
       - memory-groomer
       - memory-retriever
       - file-searcher
+      # Add `vision` to let this persona answer questions about uploaded images.
+      # It is a one-shot multimodal sub-agent, so it costs an extra model call
+      # per Inspection. Existing personas need this listed explicitly — adding
+      # it is not implied by `subagent.invoke:*`.
+      - vision
     capabilities:
       allow:
         - channel.send:telegram
@@ -110,6 +115,12 @@ personas:
         - memory.access:*
         - subagent.invoke:*
         - subagent.background
+        # Text-only discovery of this thread's Images and saved Findings
+        # (exposed to the model as `image_lookup`). Needs no vision assignment,
+        # no `subagent.invoke`, no model credential, and never calls a model.
+        # Grant it alongside the `vision` assignment above so the persona can
+        # re-read existing Findings instead of paying for a repeat Inspection.
+        - image.read:thread
       requireApproval:
         - fs.write:workspace
     mounts:
@@ -484,6 +495,77 @@ langfuse:
 #         timeoutMs: 60000
 #         # No providerOptions on the fallback — Claude does not accept
 #         # chat_template_kwargs and would silently drop them.
+#
+# The `vision` sub-agent has one extra rule: every entry in its chain must be a
+# vision-capable inference provider — anthropic, openai, google, or ollama.
+# Config loading rejects a text-only override such as claude-code or
+# codex-sandbox instead of skipping it, and startup revalidates the whole
+# effective chain including the built-in manifest fallback before any channel
+# work begins. Missing credentials stay an explicit Invocation error; an
+# Inspection is never rerouted to the foreground model.
+#
+# subagents:
+#   vision:
+#     model:
+#       - provider: anthropic
+#         name: claude-sonnet-4-6
+#         timeoutMs: 60000
+#       - provider: openai          # failover keeps every image part
+#         name: gpt-5.4
+#         timeoutMs: 60000
+#
+# Each failover is an independent request carrying the question and all image
+# parts, rechecking availability and honoring the configured timeout. If no entry
+# answers, no Finding is created — Talon never drops pixels to manufacture a
+# successful answer. A model that rejects image parts is an ordinary request
+# failure.
+
+# ---------------------------------------------------------------------------
+# Images
+# ---------------------------------------------------------------------------
+#
+# Inbound image ingestion and normalization (Telegram photos/documents, WhatsApp
+# Business and Baileys images/documents, email image attachments). Pixels are
+# only ever sent to the `vision` sub-agent; the main agent receives text
+# descriptors and saved Findings. See docs/adr/0001-vision-subagent.md.
+#
+# Defaults shown below match the built-in values — omit the entire block to
+# accept them. Byte, count and edge settings are positive integers; JPEG
+# quality is an integer from 1 to 100; retention is a positive number of hours
+# (fractional values such as 0.5 are valid).
+#
+# `maxPerMessage` (upload slots per message) and `maxPerInspection` (Image IDs
+# per vision call) are independent settings — raising one does not raise the
+# other.
+#
+# Declared sizes are never trusted alone: actual bytes are checked during
+# download and again before staging or conversion.
+#
+# EMAIL HAS A LOWER PRACTICAL LIMIT than these numbers. Email's unchanged 10 MiB
+# whole-message cap covers encoding, headers, body and every part combined, so
+# base64 leaves roughly 7.5 MiB or less for one decoded image once other
+# overhead is counted. Oversized whole emails keep the existing pre-ingestion
+# skipping behaviour. Attach original images as a separate email, or use
+# Telegram/WhatsApp, when a large photo must arrive.
+#
+images:
+  maxInputBytes: 10485760   # 10 MiB per Image; actual bytes, not declared
+  maxPerMessage: 5          # upload slots per message; overflow -> count_limit
+  maxPerInspection: 5       # distinct current-thread Image IDs per Inspection
+  maxEdge: 4096             # longest normalized edge in px; aspect kept, no upscale
+  jpegQuality: 85           # 1-100
+  retentionHours: 24        # NORMALIZED FILE retention only — see below
+#
+# Retention is FILE-ONLY. After retentionHours the normalized JPEG is deleted
+# (startup and a sweep at most every 60 seconds), and the Image becomes
+# Unavailable/expired. Image records, GPS/EXIF, Findings and conversation text
+# are NOT deleted by this setting and persist until separately deleted. It also
+# does not govern anything your model provider retains.
+#
+# These lifecycle limits are fixed constants, not configuration: 60 seconds per
+# message for remote media fetch (including retries), a separate 60-second
+# normalization deadline per message, at most 3 attempts per Image, and sweeps
+# at most every 60 seconds. Neither redelivery nor a restart resets them.
 
 logLevel: info
 dataDir: data

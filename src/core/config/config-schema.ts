@@ -11,6 +11,13 @@
 
 import { z } from 'zod';
 import { isUnsafeCodexSandboxToken } from '../../subagents/codex-sandbox-protocol.js';
+import {
+  INFERENCE_PROVIDERS,
+  SUBSCRIPTION_CLI_PROVIDERS,
+  SANDBOXED_SUBSCRIPTION_PROVIDERS,
+  isInferenceProvider,
+} from '../../subagents/model-resolver.js';
+import { VISION_SUBAGENT_NAME } from '../../subagents/subagent-model-chain.js';
 
 import {
   MAX_HOPS,
@@ -430,13 +437,12 @@ export const A2AConfigSchema = z.object({
 // Sub-agent overrides
 // ---------------------------------------------------------------------------
 
+// Provider names come from the model-resolver classifications so config and
+// resolution can never drift apart.
 const SubAgentModelProviderSchema = z.enum([
-  'anthropic',
-  'openai',
-  'google',
-  'ollama',
-  'claude-code',
-  'codex-sandbox',
+  ...INFERENCE_PROVIDERS,
+  ...SUBSCRIPTION_CLI_PROVIDERS,
+  ...SANDBOXED_SUBSCRIPTION_PROVIDERS,
 ]);
 
 const ClaudeCodeSubAgentCliSchema = z.object({
@@ -502,6 +508,37 @@ export const SubAgentOverrideSchema = z.object({
 export const SubAgentsConfigSchema = z.record(z.string(), SubAgentOverrideSchema);
 
 // ---------------------------------------------------------------------------
+// Images
+// ---------------------------------------------------------------------------
+
+/**
+ * Limits and retention for image ingestion and normalization.
+ *
+ * Byte, count, and edge settings are positive integers; JPEG quality is an
+ * integer from 1 to 100; retention is a positive number of hours. The upload
+ * slot count (`maxPerMessage`) and the Inspection reference limit
+ * (`maxPerInspection`) are independent settings.
+ */
+export const ImagesConfigSchema = z.object({
+  /** Maximum input bytes per Image; actual bytes are checked, not just declared ones. */
+  maxInputBytes: z.number().int().min(1).default(10_485_760),
+  /** Upload slots per message; eligible Attachments beyond this are Rejected/count_limit. */
+  maxPerMessage: z.number().int().min(1).default(5),
+  /** Maximum distinct current-thread Image IDs per Inspection. */
+  maxPerInspection: z.number().int().min(1).default(5),
+  /** Longest edge of a Normalized file in pixels; aspect ratio is preserved. */
+  maxEdge: z.number().int().min(1).default(4096),
+  /** JPEG quality for Normalized files. */
+  jpegQuality: z.number().int().min(1).max(100).default(85),
+  /**
+   * How long Normalized files are retained; Image records and metadata survive.
+   * Positive hours — fractional values are meaningful (e.g. 0.5), so this is the
+   * one Images setting that is not required to be an integer.
+   */
+  retentionHours: z.number().positive().default(24),
+});
+
+// ---------------------------------------------------------------------------
 // Root config
 // ---------------------------------------------------------------------------
 
@@ -526,6 +563,7 @@ export const TalondConfigSchema = z
     subagentSandbox: SubAgentSandboxConfigSchema.default(() => SubAgentSandboxConfigSchema.parse({})),
     subagents: SubAgentsConfigSchema.default({}),
     a2a: A2AConfigSchema.default(() => A2AConfigSchema.parse({})),
+    images: ImagesConfigSchema.default(() => ImagesConfigSchema.parse({})),
     logLevel: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
     dataDir: z.string().default('data'),
   })
@@ -541,6 +579,25 @@ export const TalondConfigSchema = z
           message:
             `subagents.${subAgentName} selects codex-sandbox, but ` +
             'subagentSandbox.codex is disabled. Enable the contained runner first.',
+        });
+      }
+
+      // The vision sub-agent is the only consumer of image parts; every
+      // configured vision override entry must be a vision-capable inference
+      // adapter. Classification is reused from the model-resolver — no
+      // second provider allowlist here.
+      if (subAgentName === VISION_SUBAGENT_NAME) {
+        override.model.forEach((model, modelIndex) => {
+          if (!isInferenceProvider(model.provider)) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['subagents', subAgentName, 'model', modelIndex, 'provider'],
+              message:
+                `subagents.${VISION_SUBAGENT_NAME} is the vision sub-agent and may only use ` +
+                `vision-capable inference providers (${INFERENCE_PROVIDERS.join(', ')}); ` +
+                `"${model.provider}" is text-only and must stay out of the vision chain.`,
+            });
+          }
         });
       }
     }

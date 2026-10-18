@@ -4306,3 +4306,341 @@ describe('AgentRunner', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Image-aware foreground context (ADR-0002)
+//
+// Live current-message descriptors ride the provider prompt once, per
+// attempt; full inventory + Finding projections are built ONLY for fresh
+// sessions (via the assembler) and rotation (via the roller). Lookup hint
+// exposure comes from the actual capability-filtered tool set.
+// ---------------------------------------------------------------------------
+
+import { LIVE_IMAGE_SECTION_HEADER, type ImageContextSource } from '../../../src/daemon/context-assembler.js';
+import type { ImageDescriptor } from '../../../src/images/image-types.js';
+import type { Finding } from '../../../src/images/finding-types.js';
+
+function makeDescriptor(
+  overrides: Partial<ImageDescriptor> & { imageId: string },
+): ImageDescriptor {
+  return {
+    threadId: 'thread-001',
+    messageId: 'msg-001',
+    ordinal: 0,
+    receivedAt: 1_700_000_000_000,
+    expiresAt: 1_700_000_003_600_000,
+    state: 'available',
+    mimeType: 'image/png',
+    ...overrides,
+  };
+}
+
+function makeFindingRecord(overrides: Partial<Finding> & { findingId: string }): Finding {
+  return {
+    threadId: 'thread-001',
+    runId: 'run-001',
+    imageIds: ['img-a'],
+    question: 'What is in this image?',
+    answer: 'A sunset over the harbour.',
+    createdAt: 1_700_000_000_000,
+    modelName: 'vision-model-1',
+    ...overrides,
+  };
+}
+
+function makeImageSource(
+  overrides: Partial<ImageContextSource> = {},
+): ImageContextSource & {
+  resolveMessageDescriptors: ReturnType<typeof vi.fn>;
+  listThreadDescriptors: ReturnType<typeof vi.fn>;
+  listThreadFindings: ReturnType<typeof vi.fn>;
+} {
+  return {
+    resolveMessageDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+    listThreadDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+    listThreadFindings: vi.fn().mockResolvedValue([] as Finding[]),
+    ...overrides,
+  } as any;
+}
+
+describe('AgentRunner image-aware context (ADR-0002)', () => {
+  let ctx: DaemonContext;
+  let imageSource: ReturnType<typeof makeImageSource>;
+  let runner: AgentRunner;
+
+  beforeEach(() => {
+    ctx = makeMockContext();
+    imageSource = makeImageSource();
+    runner = new AgentRunner(ctx, { imageContextSource: imageSource });
+    vi.clearAllMocks();
+    mockQuery.mockReset();
+    mockQuery.mockReturnValue(makeAgentStream());
+  });
+
+  it('appends live Image descriptors to the provider prompt without altering stored queue text', async () => {
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-second', ordinal: 1 }),
+      makeDescriptor({ imageId: 'img-first', ordinal: 0, filename: 'first.png' }),
+    ]);
+    const item = makeQueueItem({ messageId: 'msg-001' });
+
+    const result = await runner.run(item);
+
+    expect(result.isOk()).toBe(true);
+    expect(imageSource.resolveMessageDescriptors).toHaveBeenCalledWith({
+      threadId: 'thread-001',
+      messageId: 'msg-001',
+    });
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toContain('Hello agent');
+    expect(prompt).toContain(LIVE_IMAGE_SECTION_HEADER);
+    // Source order is preserved via ordinal even when the port returns shuffled rows.
+    expect(prompt.indexOf('img img-first ')).toBeLessThan(prompt.indexOf('img img-second '));
+    expect(prompt).toContain('file="first.png"');
+    // The live prompt carries only this message's descriptors, not an inventory.
+    expect(prompt).not.toContain('Image inventory:');
+    // Stored queue text stays exactly as persisted.
+    expect(item.payload.content).toBe('Hello agent');
+  });
+
+  it('builds the fresh-session inventory and Findings projection through the assembler', async () => {
+    const inventory = [
+      makeDescriptor({ imageId: 'img-current', ordinal: 0 }),
+      makeDescriptor({ imageId: 'img-older', ordinal: 0, messageId: 'msg-older' }),
+    ];
+    const findings = [makeFindingRecord({ findingId: 'find-1' })];
+    imageSource.resolveMessageDescriptors.mockResolvedValue([inventory[0]]);
+    imageSource.listThreadDescriptors.mockResolvedValue(inventory);
+    imageSource.listThreadFindings.mockResolvedValue(findings);
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    // Findings queries carry no message-cutoff parameter: they are
+    // independent of the message rotation boundary by construction.
+    expect(imageSource.listThreadFindings).toHaveBeenCalledWith('thread-001');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      expect.objectContaining({
+        excludeMessageId: 'msg-001',
+        images: expect.objectContaining({
+          live: expect.objectContaining({ imageIds: ['img-current'], selectedCount: 1 }),
+          inventoryDescriptors: inventory,
+          findings,
+          imageLookupExposed: false,
+        }),
+      }),
+    );
+  });
+
+  it('does not query image lists on resumed text-only turns', async () => {
+    vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resume-session');
+    const item = makeQueueItem();
+
+    await runner.run(item);
+
+    expect(imageSource.resolveMessageDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadFindings).not.toHaveBeenCalled();
+    expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+  });
+
+  it('injects live descriptors but no inventory on a resumed first-image turn', async () => {
+    vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resume-session');
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-new' }),
+    ]);
+    imageSource.listThreadDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-new' }),
+      makeDescriptor({ imageId: 'img-ancient', messageId: 'msg-ancient' }),
+    ]);
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toContain('img img-new ');
+    expect(prompt).not.toContain('img img-ancient ');
+    expect(prompt).not.toContain('Image inventory:');
+    // Resumed turns never rebuild fresh history.
+    expect(imageSource.listThreadDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadFindings).not.toHaveBeenCalled();
+    expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds live descriptors on every provider attempt of a retry', async () => {
+    vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-session');
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-retry' }),
+    ]);
+    mockQuery
+      .mockImplementationOnce(() => {
+        throw new Error('Session not found');
+      })
+      .mockReturnValueOnce(makeAgentStream());
+
+    const result = await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    const first = mockQuery.mock.calls[0]![0] as { prompt: string };
+    const second = mockQuery.mock.calls[1]![0] as { prompt: string };
+    expect(first.prompt).toContain('img img-retry ');
+    expect(second.prompt).toContain('img img-retry ');
+    expect(imageSource.resolveMessageDescriptors).toHaveBeenCalledTimes(2);
+    expect(imageSource.resolveMessageDescriptors).toHaveBeenNthCalledWith(2, {
+      threadId: 'thread-001',
+      messageId: 'msg-001',
+    });
+  });
+
+  it('keeps scheduled runs free of image context', async () => {
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-nope' }),
+    ]);
+
+    await runner.run(makeQueueItem({ type: 'schedule', messageId: 'msg-001' }));
+
+    expect(imageSource.resolveMessageDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadFindings).not.toHaveBeenCalled();
+    expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+  });
+
+  it('replays inventory and Findings on a fresh session for a message without a messageId', async () => {
+    // Review r1 P2-3: background-agent completion notices enqueue
+    // foreground message items with no messageId. Fresh-session replay must
+    // not depend on live association: the inventory + Findings projection
+    // is still rebuilt with an EMPTY live block.
+    const inventory = [makeDescriptor({ imageId: 'img-older', messageId: 'msg-older' })];
+    const findings = [makeFindingRecord({ findingId: 'find-late' })];
+    imageSource.listThreadDescriptors.mockResolvedValue(inventory);
+    imageSource.listThreadFindings.mockResolvedValue(findings);
+
+    await runner.run(makeQueueItem());
+
+    expect(imageSource.resolveMessageDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadDescriptors).toHaveBeenCalledWith('thread-001');
+    expect(imageSource.listThreadFindings).toHaveBeenCalledWith('thread-001');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      expect.objectContaining({
+        images: expect.objectContaining({
+          live: expect.objectContaining({ text: '', imageIds: [], selectedCount: 0 }),
+          inventoryDescriptors: inventory,
+          findings,
+          imageLookupExposed: false,
+        }),
+      }),
+    );
+    // No live block is injected into the prompt for an image-less message.
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+  });
+
+  it('derives image_lookup exposure from the actual filtered tool set', async () => {
+    vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+      ok({
+        config: { model: 'claude-sonnet-4-20250514', skills: [], capabilities: { allow: ['image.read'] } },
+        systemPromptContent: 'You are a test bot.',
+        resolvedCapabilities: {
+          allow: ['image.read:thread', 'channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      } as any),
+    );
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      expect.objectContaining({
+        images: expect.objectContaining({ imageLookupExposed: true }),
+      }),
+    );
+  });
+
+  it('degrades to a descriptor-less prompt when live resolution rejects', async () => {
+    imageSource.resolveMessageDescriptors.mockRejectedValue(new Error('images db down'));
+
+    const result = await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-001', messageId: 'msg-001' }),
+      expect.stringContaining('live image descriptor resolution failed'),
+    );
+  });
+
+  it('assembles without image projections when inventory queries reject', async () => {
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-live' }),
+    ]);
+    imageSource.listThreadDescriptors.mockRejectedValue(new Error('inventory read failed'));
+
+    const result = await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    // The live block still rides the prompt; only history projection degrades.
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toContain('img img-live ');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      { excludeMessageId: 'msg-001' },
+    );
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-001' }),
+      expect.stringContaining('image context fetch failed'),
+    );
+  });
+
+  it('passes the image rotation context to the legacy roller when wired', async () => {
+    ctx.contextRoller = {
+      checkAndRotate: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    mockQuery.mockReturnValue(
+      makeAgentStream({
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 80_000,
+          cache_creation_input_tokens: 2_000,
+        },
+      }),
+    );
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+      'thread-001',
+      'persona-001',
+      expect.objectContaining({ rawMetric: 80_000, rawMetricName: 'cache_read_input_tokens' }),
+      0.4,
+      'session-summarizer',
+      expect.objectContaining({ source: imageSource, imageLookupExposed: false }),
+    );
+  });
+
+  it('runs without any image source wired exactly as before', async () => {
+    const plainRunner = new AgentRunner(ctx);
+
+    const result = await plainRunner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      { excludeMessageId: 'msg-001' },
+    );
+  });
+});

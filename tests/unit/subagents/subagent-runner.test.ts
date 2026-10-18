@@ -5,7 +5,9 @@ import {
   type SubAgentInvokeContext,
 } from '../../../src/subagents/subagent-runner.js';
 import type { LoadedSubAgent, SubAgentServices } from '../../../src/subagents/subagent-types.js';
+import type { ImageAccess } from '../../../src/images/image-types.js';
 import type { ModelResolver } from '../../../src/subagents/model-resolver.js';
+import type { SubAgentsConfig } from '../../../src/core/config/config-types.js';
 import { SubAgentError } from '../../../src/core/errors/index.js';
 import type pino from 'pino';
 import type { ObservabilityService } from '../../../src/observability/langfuse/observability-types.js';
@@ -24,6 +26,7 @@ function makeAgent(overrides: Partial<LoadedSubAgent> = {}): LoadedSubAgent {
       requiredCapabilities: ['memory.access'],
       rootPaths: [],
       timeoutMs: 30_000,
+      requiresEnv: [],
     },
     promptContents: ['You are a test agent.', 'Be helpful.'],
     run: vi.fn().mockResolvedValue(ok({ summary: 'Done', data: {} })),
@@ -75,18 +78,7 @@ function makeRunner(
   agents: Map<string, LoadedSubAgent> = new Map(),
   resolver: ModelResolver = mockResolver,
   observability: ObservabilityService | undefined = undefined,
-  subagentOverrides: Record<
-    string,
-    {
-      model: Array<{
-        provider: string;
-        name: string;
-        maxTokens?: number;
-        timeoutMs?: number;
-        providerOptions?: Record<string, unknown>;
-      }>;
-    }
-  > = {},
+  subagentOverrides: Record<string, SubAgentsConfig[string]> = {},
 ): SubAgentRunner {
   return new SubAgentRunner(
     agents,
@@ -189,6 +181,50 @@ describe('SubAgentRunner', () => {
     expect(callArgs[0].systemPrompt).toBe('You are a test agent.\n\nBe helpful.');
     expect(callArgs[0].maxOutputTokens).toBe(2048);
     expect(callArgs[1]).toEqual({ key: 'value' });
+  });
+
+  it('forwards the trusted runId from the invoke context into the sub-agent context', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents);
+
+    const result = await runner.execute(
+      'test-agent',
+      { key: 'value' },
+      makeContext({ runId: 'run-42' }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.runId).toBe('run-42');
+  });
+
+  it('leaves runId undefined when the caller supplies none (existing subagents stay compatible)', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents);
+
+    const result = await runner.execute('test-agent', { key: 'value' }, makeContext());
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.runId).toBeUndefined();
+  });
+
+  it('never takes run identity from model-authored sub-agent input', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents);
+
+    const result = await runner.execute(
+      'test-agent',
+      { runId: 'model-authored-run', run_id: 'snake-run' },
+      makeContext(),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.runId).toBeUndefined();
   });
 
   it('rejects unknown sub-agent name', async () => {
@@ -799,5 +835,52 @@ describe('SubAgentRunner', () => {
       const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
       expect(ctx.providerOptions).toBeUndefined();
     });
+  });
+});
+
+describe('image/Finding service forwarding (TASK-013)', () => {
+  it('forwards injected Image/Finding services into the sub-agent context', async () => {
+    const images: ImageAccess = {
+      resolveImage: vi.fn(),
+      getAvailability: vi.fn(),
+      fetchInspectionBytes: vi.fn(),
+    };
+    const findings = { create: vi.fn() };
+    const services = {
+      ...mockServices,
+      images,
+      findings,
+      imageInspectionLimits: { maxPerInspection: 3 },
+    } as unknown as SubAgentServices;
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = new SubAgentRunner(agents, mockResolver, services, mockLogger, undefined, {});
+
+    const result = await runner.execute(
+      'test-agent',
+      { question: 'What is here?', imageIds: ['img-1'] },
+      makeContext({ runId: 'run-9' }),
+    );
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.services.images).toBe(images);
+    expect(ctx.services.findings).toBe(findings);
+    expect(ctx.services.imageInspectionLimits).toEqual({ maxPerInspection: 3 });
+    expect(ctx.runId).toBe('run-9');
+  });
+
+  it('leaves image/Finding services absent when not wired (existing subagents unaffected)', async () => {
+    const agent = makeAgent();
+    const agents = new Map([['test-agent', agent]]);
+    const runner = makeRunner(agents);
+
+    const result = await runner.execute('test-agent', { question: 'q' }, makeContext());
+
+    expect(result.isOk()).toBe(true);
+    const ctx = (agent.run as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(ctx.services.images).toBeUndefined();
+    expect(ctx.services.findings).toBeUndefined();
+    expect(ctx.services.imageInspectionLimits).toBeUndefined();
   });
 });

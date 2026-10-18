@@ -50,9 +50,39 @@ describe('SubAgentInvokeHandler', () => {
       expect.objectContaining({
         threadId: 't1',
         personaId: 'p1',
+        runId: 'r1',
         traceparent: '00-trace-parent-01',
       }),
     );
+  });
+
+  it('passes only the trusted runId from the tool context, never one from model-authored input', async () => {
+    const execute = vi.fn().mockResolvedValue(ok({ summary: 'Done' }));
+    const handler = new SubAgentInvokeHandler({
+      runner: { execute } as any,
+      personaLoader: {
+        getByName: vi.fn().mockReturnValue(
+          ok({
+            config: { subagents: ['test-agent'] },
+            resolvedCapabilities: { allow: ['subagent.invoke'], requireApproval: [] },
+          }),
+        ),
+      } as any,
+      personaRepository: { findById: vi.fn().mockReturnValue(ok({ name: 'bot' })) } as any,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      { name: 'test-agent', input: { runId: 'model-authored-run' } },
+      { runId: 'trusted-run-7', threadId: 't1', personaId: 'p1' },
+    );
+
+    expect(result.status).toBe('success');
+    const invokeCtx = execute.mock.calls[0][2];
+    expect(invokeCtx.runId).toBe('trusted-run-7');
+    // The model-authored value stays inside the opaque input payload and is
+    // never promoted to the invoke context's run identity.
+    expect(execute.mock.calls[0][1]).toEqual({ runId: 'model-authored-run' });
   });
 
   it('returns error when runner rejects', async () => {

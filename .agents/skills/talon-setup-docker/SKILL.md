@@ -342,6 +342,32 @@ Once boot is verified, anything else uses `talonctl`:
 - **Bind persona ↔ channel** — `talonctl bind --persona <p> --channel <c>`.
 - **Adjust capabilities** — `talonctl set-capabilities --persona <p> --show`
   to see current, then `--add` or `--remove`.
+- **Enable image handling** — an Inspection needs exactly two things: `vision`
+  listed under the persona's `subagents` key in `talond.yaml` (there is no
+  `talonctl` flag for persona sub-agent assignment) plus the existing
+  `subagent.invoke` capability. The shipped `vision` manifest declares
+  `requiredCapabilities: []`, so no image capability is part of an Inspection.
+  `image.read:thread` is an **independent** grant: it exposes `image_lookup`, the
+  model-free reader for the thread's Images and saved Findings, needs no vision
+  assignment and never calls a model, and is recommended (so a persona can re-read
+  an existing Finding instead of paying for a repeat Inspection) rather than
+  required. None of it is automatic on upgrade. Uploads are ingested and described
+  regardless. Pixels go only to the `vision` sub-agent; the persona itself stays
+  text-only, so a text-only foreground model still supports images. Only
+  `anthropic`, `openai`, `google`, and `ollama` may appear in a vision chain — a
+  text-only override such as `claude-code` or `codex-sandbox` is rejected at
+  config load, not silently skipped.
+
+  The published image bundles Sharp and proves it at build time: each release
+  target (linux/amd64 and linux/arm64, both glibc) loads Sharp and normalizes a
+  tiny JPEG during its build, so image support needs no extra packages inside the
+  container. That gate is architecture-specific — a custom base image or a
+  musl/Alpine variant is not covered by it, so re-run the same check before
+  claiming image support there. Normalized JPEGs live under `dataDir`
+  (`threads/<thread_id>/attachments/images/`), so the `talond-data` volume must
+  persist across restarts or Inspections lose their files. Retention deletes only
+  the JPEG, after `images.retentionHours` (default 24h); Image records, GPS/EXIF
+  and Findings persist until separately deleted and can appear in replies.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   GitHub, Atlassian, Gmail, Slack, etc. are documented in

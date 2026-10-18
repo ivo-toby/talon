@@ -1,0 +1,16 @@
+-- Ingestion route: the persona selected AT ADMISSION, persisted atomically
+-- with the pending Ingestion row.
+--
+-- Why: redelivery and recovery must enqueue the committed message under the
+-- route that was chosen when it was admitted. Resolving the CURRENT binding
+-- at completion time would reroute a pending message when a binding changes
+-- and strand it pending forever when a binding is removed — neither is a
+-- durable completion. The route is written in the same synchronous admission
+-- transaction as the Message, Images, and Ingestion, so a message is never
+-- durable without its route.
+--
+-- Nullable: this is an additive column and SQLite ALTER TABLE cannot add a
+-- NOT NULL column without a default. Every pending row written after this
+-- migration carries its route; a row without one (pre-migration data) cannot
+-- be recovered — completion refuses to guess a route.
+ALTER TABLE image_ingestions ADD COLUMN persona_id TEXT;

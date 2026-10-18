@@ -1,0 +1,86 @@
+{
+  "packages": [
+    {
+      "package": "sharp",
+      "version": "0.34.5",
+      "integrity": "sha512-Ou9I5Ft9WNcCbXrU9cMgPBcCK8LiwLqcbywW3t4oDV37n1pzpuNLsYiAV8eODnjbtQlSDwZ2cUEeQz4E54Hltg==",
+      "cache": "/tmp/talon-image-contracts/sharp/0.34.5",
+      "tarball": "https://registry.npmjs.org/sharp/-/sharp-0.34.5.tgz",
+      "provenance": "Official npm registry; existing dependencies use package-lock.json versions, new dependencies use the explicitly researched versions."
+    },
+    {
+      "package": "exifr",
+      "version": "7.1.3",
+      "integrity": "sha512-g/aje2noHivrRSLbAUtBPWFbxKdKhgj/xr1vATDdUXPOFYJlQ62Ft0oy+72V6XLIpDJfHs6gXLbBLAolqOXYRw==",
+      "cache": "/tmp/talon-image-contracts/exifr/7.1.3",
+      "tarball": "https://registry.npmjs.org/exifr/-/exifr-7.1.3.tgz",
+      "provenance": "Official npm registry; existing dependencies use package-lock.json versions, new dependencies use the explicitly researched versions."
+    },
+    {
+      "package": "@whiskeysockets/baileys",
+      "version": "7.0.0-rc.9",
+      "integrity": "sha512-YFm5gKXfDP9byCXCW3OPHKXLzrAKzolzgVUlRosHHgwbnf2YOO3XknkMm6J7+F0ns8OA0uuSBhgkRHTDtqkacw==",
+      "cache": "/tmp/talon-image-contracts/whiskeysockets-baileys/7.0.0-rc.9",
+      "tarball": "https://registry.npmjs.org/@whiskeysockets/baileys/-/baileys-7.0.0-rc.9.tgz",
+      "provenance": "Official npm registry; existing dependencies use package-lock.json versions, new dependencies use the explicitly researched versions."
+    },
+    {
+      "package": "mailparser",
+      "version": "3.9.37",
+      "integrity": "sha512-LwoESPoMWwKfwvWmS9j4dUGepyB0B1e3PoiECMVjNO9U7aidyJjyh13IuGwKG7wMRrEVgncvFgAz1k0AX5dCIA==",
+      "cache": "/tmp/talon-image-contracts/mailparser/3.9.37",
+      "tarball": "https://registry.npmjs.org/mailparser/-/mailparser-3.9.37.tgz",
+      "provenance": "Official npm registry; existing dependencies use package-lock.json versions, new dependencies use the explicitly researched versions."
+    },
+    {
+      "package": "ai",
+      "version": "6.0.143",
+      "integrity": "sha512-wVDb7StQ1EPQ9GDAOmi1AsuAXQRSii+zZT2sFK+MCisH4vV7XNEAdzXL+sKsUAFhhq+EtVFWWlB4mCk4hcoIMw==",
+      "cache": "/tmp/talon-image-contracts/ai/6.0.143",
+      "tarball": "https://registry.npmjs.org/ai/-/ai-6.0.143.tgz",
+      "provenance": "Official npm registry; existing dependencies use package-lock.json versions, new dependencies use the explicitly researched versions."
+    },
+    {
+      "package": "@ai-sdk/provider-utils",
+      "version": "4.0.21",
+      "integrity": "sha512-MtFUYI1/8mgDvRmaBDjbLJPFFrMG777AvSgyIFQtZHIMzm88R/12vYBBpnk7pfiWLFE1DSZzY4WDYzGbKAcmiw==",
+      "cache": "/tmp/talon-image-contracts/ai-sdk-provider-utils/4.0.21",
+      "tarball": "https://registry.npmjs.org/@ai-sdk/provider-utils/-/provider-utils-4.0.21.tgz",
+      "provenance": "Official npm registry; existing dependencies use package-lock.json versions, new dependencies use the explicitly researched versions."
+    }
+  ],
+  "documents": {
+    "telegram-api": "https://core.telegram.org/bots/api",
+    "png3": "https://www.w3.org/TR/png-3/",
+    "mailparser": "https://nodemailer.com/extras/mailparser",
+    "whatsapp-media": "https://developers.facebook.com/docs/whatsapp/cloud-api/reference/media/"
+  },
+  "otherPrimaryReferences": {
+    "meta-request": "https://www.postman.com/meta/whatsapp-business-platform/request/ptjyi84/retrieve-media-url",
+    "meta-v13-response-image": "https://whatsappbusiness.com/wp-content/uploads/2026/03/image4.png"
+  },
+  "limitations": [
+    "Meta current response reference returned an unavailable page; primary v13 response example was read visually. Re-verify the configured API version before implementing the Business media mapper.",
+    "Primary URLs and npm version/integrity pins are the lasting references. The optional /tmp source caches record where sources were read; they can be regenerated and are not prerequisites for workers."
+  ],
+  "nativeVerification": {
+    "sharpVersion": "0.34.5",
+    "declarationRead": "package.json:146–170",
+    "declaredLinuxTargets": [
+      "glibc-x64",
+      "glibc-arm64",
+      "musl-x64",
+      "musl-arm64"
+    ],
+    "talonReleaseRead": [
+      "deploy/Dockerfile:12–32",
+      ".github/workflows/release.yaml:44–49"
+    ],
+    "currentReleaseTargets": [
+      "linux/amd64 (node:24-slim)",
+      "linux/arm64 (node:24-slim)"
+    ],
+    "requiredProof": "Production-stage require('sharp') and tiny JPEG normalization on each released target; future musl target needs the same check.",
+    "proofStatus": "Declared packages/source inspected; target container checks are implementation gates, not executed research claims."
+  }
+}

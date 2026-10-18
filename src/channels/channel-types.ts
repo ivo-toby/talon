@@ -7,6 +7,7 @@
 
 import type { Result } from '../core/types/result.js';
 import type { ChannelError } from '../core/errors/error-types.js';
+import type { ImageRejectionReason } from '../images/image-types.js';
 
 // ---------------------------------------------------------------------------
 // Attachment
@@ -16,13 +17,58 @@ import type { ChannelError } from '../core/errors/error-types.js';
  * A file attachment that may accompany an inbound or outbound message.
  * `data` is either a raw Buffer (when loaded into memory) or a filesystem path
  * (when the file has been written to the thread's attachments directory).
+ *
+ * `filename` and `mimeType` are DECLARED metadata: many channels deliver
+ * photos without either (a Baileys `imageMessage` carries no filename at all).
+ * Absent stays absent — connectors must not manufacture an empty string, and
+ * downstream ledger writers coerce absence to NULL rather than to `''`, which
+ * the Image ledger's nonempty CHECK constraints reject.
  */
 export interface Attachment {
-  filename: string;
-  mimeType: string;
+  filename?: string;
+  mimeType?: string;
   data: Buffer | string;
   size: number;
 }
+
+// ---------------------------------------------------------------------------
+// Inbound attachment (payload or closed rejection)
+// ---------------------------------------------------------------------------
+
+/**
+ * A metadata-only outcome for a delivered Attachment that the connector could
+ * not hand over as a payload — for example an unsupported image MIME, a slot
+ * overflow, or a failed media fetch.
+ *
+ * Rejections carry no bytes, paths, staging references, or credentials; they
+ * exist so the pipeline can record a closed Rejected Image in source order
+ * instead of silently losing the delivered item. The reason vocabulary is the
+ * shared Image rejection list (`IMAGE_REJECTION_REASONS`), so connectors must
+ * not invent channel-specific reasons.
+ *
+ * Payload `Attachment`s are identified by the absence of `kind`.
+ */
+export interface InboundAttachmentRejection {
+  /** Discriminates this arm from a payload `Attachment`. */
+  readonly kind: 'rejected';
+  /** Closed rejection reason, never a channel-specific value. */
+  rejectionReason: ImageRejectionReason;
+  /** Declared filename when the channel supplied one. */
+  filename?: string;
+  /** Declared MIME type when the channel supplied one; a filename never establishes MIME. */
+  mimeType?: string;
+  /** Declared size in bytes when the channel supplied one. */
+  size?: number;
+  /** Zero-based position of the delivered item, preserving source order. */
+  sourcePosition: number;
+}
+
+/**
+ * One inbound Attachment: either the delivered payload or a metadata-only
+ * rejection. Array position in {@link InboundEvent.attachments} is source order
+ * for both arms. Outbound Attachments keep requiring a payload.
+ */
+export type InboundAttachment = Attachment | InboundAttachmentRejection;
 
 // ---------------------------------------------------------------------------
 // Actions (interactive elements)
@@ -81,8 +127,11 @@ export interface InboundEvent {
   idempotencyKey: string;
   /** Plain text content of the message. */
   content: string;
-  /** Any file attachments included with the message. */
-  attachments?: Attachment[];
+  /**
+   * Attachments delivered with the message, in source order. Each entry is
+   * either the delivered payload or a metadata-only rejection outcome.
+   */
+  attachments?: InboundAttachment[];
   /** Original provider payload — preserved for debugging and audit purposes. */
   raw?: unknown;
   /** Unix epoch milliseconds when the event was received. */

@@ -15,11 +15,21 @@ import type {
   TelegramConfig,
   TelegramUpdate,
   TelegramUser,
-  TelegramMessage,
+  TelegramMessageEntity,
   TelegramSendResult,
   TelegramUpdatesResult,
+  TelegramFileResult,
 } from './telegram-types.js';
 import { markdownToTelegram } from './telegram-format.js';
+import type { InboundAttachment } from '../../channel-types.js';
+import type { ImageSelectionSettings } from '../../../images/image-selection.js';
+import {
+  DEFAULT_TELEGRAM_IMAGE_SETTINGS,
+  fetchTelegramMedia,
+  planHasImageSlots,
+  planTelegramMedia,
+  type OpenedTelegramFile,
+} from './telegram-media.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -32,6 +42,24 @@ const INITIAL_BACKOFF_MS = 1_000;
 const MAX_BACKOFF_MS = 60_000;
 /** Timeout for the getMe identity resolution call, in milliseconds. */
 const GET_ME_TIMEOUT_MS = 10_000;
+
+// ---------------------------------------------------------------------------
+// Connector options
+// ---------------------------------------------------------------------------
+
+/**
+ * Optional connector dependencies injected by the channel factory.
+ * Kept optional so existing constructions keep working until the factory
+ * wires the operator's `images` settings through.
+ */
+export interface TelegramConnectorOptions {
+  /**
+   * Image ingestion limits (`images.maxInputBytes` / `images.maxPerMessage`).
+   * Partial: missing values fall back to the config-schema defaults mirrored
+   * in `DEFAULT_TELEGRAM_IMAGE_SETTINGS`.
+   */
+  imageSettings?: Partial<ImageSelectionSettings>;
+}
 
 // ---------------------------------------------------------------------------
 // TelegramConnector
@@ -62,12 +90,19 @@ export class TelegramConnector implements ChannelConnector {
   /** Promise tracking the active poll loop (used for clean shutdown). */
   private pollLoopPromise?: Promise<void>;
 
+  private readonly imageSettings: ImageSelectionSettings;
+
   constructor(
     private readonly config: TelegramConfig,
     private readonly channelName: string,
     private readonly logger: pino.Logger,
+    options?: TelegramConnectorOptions,
   ) {
     this.name = channelName;
+    this.imageSettings = {
+      ...DEFAULT_TELEGRAM_IMAGE_SETTINGS,
+      ...(options?.imageSettings ?? {}),
+    };
   }
 
   /** The bot's own Telegram user ID, resolved during start() via getMe. */
@@ -314,15 +349,44 @@ export class TelegramConnector implements ChannelConnector {
 
   /**
    * Normalise a TelegramUpdate into an InboundEvent and invoke the handler.
-   * Updates without a text message (e.g. photos, stickers) are dropped.
+   *
+   * Text messages and photo/document messages (with or without a caption)
+   * are candidates; captions and caption_entities feed the SAME mention and
+   * trigger rules as text. Every sender/chat/bot/group/trigger check runs
+   * BEFORE any separate media request: a message denied here never triggers
+   * a getFile or file download. Media handling produces at most one photo
+   * Image candidate per message (album members are separate updates); see
+   * `telegram-media.ts` for the selection/download contract.
    */
   private async handleUpdate(update: TelegramUpdate): Promise<void> {
     const message = update.message;
-
-    if (!message?.text) {
+    if (message === undefined) {
       this.logger.debug(
         { channelName: this.name, updateId: update.update_id },
-        'telegram update has no text, skipping',
+        'telegram update has no message, skipping',
+      );
+      return;
+    }
+
+    // Effective text source: message.text, or the caption of a media message.
+    const text = typeof message.text === 'string' ? message.text : undefined;
+    const caption = typeof message.caption === 'string' ? message.caption : undefined;
+    const sourceText = text ?? caption;
+    const entities = text !== undefined ? message.entities : message.caption_entities;
+
+    // Media planning is PURE (no requests): it decides whether the update has
+    // slot-consuming image media (selected OR closed-rejected) via the shared
+    // port. Media excluded WITHOUT a slot (stickers, documents with an absent
+    // or non-image declared MIME) does NOT admit an empty message: an
+    // uncaptioned PDF-only update stays dropped, matching the pre-media
+    // behavior. Captioned messages are always retained.
+    const mediaPlan = planTelegramMedia(message, this.imageSettings);
+    const hasImageSlots = planHasImageSlots(mediaPlan);
+
+    if (sourceText === undefined && !hasImageSlots) {
+      this.logger.debug(
+        { channelName: this.name, updateId: update.update_id },
+        'telegram update has no text, caption, or image media, skipping',
       );
       return;
     }
@@ -371,26 +435,36 @@ export class TelegramConnector implements ChannelConnector {
       return;
     }
 
+    // hasImageSlots (above) also enforces: a media message whose media is
+    // entirely EXCLUDED (sticker, non-image document) must not rescue an
+    // otherwise-empty stripped caption; it then behaves exactly like the old
+    // text-only flow.
     // Apply mention/trigger filter and resolve final message text.
-    let content = message.text;
+    let content = sourceText ?? '';
 
     if (isGroup) {
       // In groups the bot only responds when @mentioned by username or when a
       // triggerWord matches. Strip the matched prefix before forwarding.
-      const result = this.extractGroupContent(message);
-      if (!result) {
+      const result = this.extractGroupContent(sourceText ?? '', entities ?? []);
+      if (result === null) {
         this.logger.debug(
           { channelName: this.name, chatId },
           'telegram group message has no @mention or trigger word, dropping',
         );
         return;
       }
+      if (result === '' && !hasImageSlots) {
+        // Mention/trigger-only text message with no image: nothing to run on.
+        return;
+      }
       content = result;
     } else {
-      // In DMs, apply triggerWords filter if configured.
+      // In DMs, apply triggerWords filter if configured. A media message with
+      // no caption cannot match a trigger word and is dropped BEFORE any
+      // media download; without triggerWords, media-only messages pass.
       const triggerWords = this.config.triggerWords;
       if (triggerWords && triggerWords.length > 0) {
-        const lower = content.toLowerCase();
+        const lower = (sourceText ?? '').toLowerCase();
         const matched = triggerWords.find((tw) => lower.startsWith(tw.toLowerCase()));
         if (!matched) {
           this.logger.debug(
@@ -399,8 +473,28 @@ export class TelegramConnector implements ChannelConnector {
           );
           return;
         }
-        content = content.slice(matched.length).trimStart();
-        if (!content) return;
+        content = (sourceText ?? '').slice(matched.length).trimStart();
+        if (!content && !hasImageSlots) return;
+      }
+    }
+
+    if (!this.handler) {
+      this.logger.warn(
+        { channelName: this.name },
+        'telegram connector received message but no handler is registered',
+      );
+      return;
+    }
+
+    // Separate media downloads happen ONLY here, after every authorization
+    // and trigger check above. Denied messages never reach this call.
+    let attachments: InboundAttachment[] | undefined;
+    if (hasImageSlots) {
+      const fetched = await fetchTelegramMedia(mediaPlan, {
+        openFile: (fileId, signal) => this.openTelegramFile(fileId, signal),
+      });
+      if (fetched.length > 0) {
+        attachments = fetched;
       }
     }
 
@@ -415,15 +509,8 @@ export class TelegramConnector implements ChannelConnector {
       content,
       timestamp: message.date * 1000, // Telegram sends seconds; we want ms
       raw: update,
+      ...(attachments !== undefined ? { attachments } : {}),
     };
-
-    if (!this.handler) {
-      this.logger.warn(
-        { channelName: this.name },
-        'telegram connector received message but no handler is registered',
-      );
-      return;
-    }
 
     try {
       await this.handler(event);
@@ -436,20 +523,24 @@ export class TelegramConnector implements ChannelConnector {
   }
 
   /**
-   * For group messages: check if the text contains the bot's @mention (detected
-   * via Telegram entities for precision) or starts with a configured trigger word.
-   * Returns the stripped content on match, or null if neither condition is met.
+   * For group messages: check if the text/caption contains the bot's @mention
+   * (detected via Telegram entities for precision) or starts with a configured
+   * trigger word.
+   *
+   * Returns the stripped content on a match — possibly the empty string when
+   * the mention/trigger WAS the whole caption (an image-bearing message may
+   * still proceed) — or null when neither condition matched.
    */
-  private extractGroupContent(message: TelegramMessage): string | null {
-    const text = message.text;
-    if (!text) return null;
-
+  private extractGroupContent(
+    text: string,
+    entities: readonly TelegramMessageEntity[],
+  ): string | null {
     const botUsername = this._botUsername;
 
     // Use Telegram entities for exact @mention detection — avoids false
     // positives like "@talon" matching "@talon2".
-    if (botUsername && message.entities) {
-      for (const entity of message.entities) {
+    if (botUsername && entities.length > 0) {
+      for (const entity of entities) {
         if (entity.type === 'mention') {
           const mentionText = text.slice(entity.offset, entity.offset + entity.length);
           if (mentionText.toLowerCase() === `@${botUsername.toLowerCase()}`) {
@@ -457,7 +548,7 @@ export class TelegramConnector implements ChannelConnector {
             const stripped = (
               text.slice(0, entity.offset) + text.slice(entity.offset + entity.length)
             ).trim();
-            return stripped || null;
+            return stripped;
           }
         }
       }
@@ -469,8 +560,7 @@ export class TelegramConnector implements ChannelConnector {
       const lower = text.toLowerCase();
       const matched = triggerWords.find((tw) => lower.startsWith(tw.toLowerCase()));
       if (matched) {
-        const stripped = text.slice(matched.length).trimStart();
-        return stripped || null;
+        return text.slice(matched.length).trimStart();
       }
     }
 
@@ -494,6 +584,49 @@ export class TelegramConnector implements ChannelConnector {
    */
   private apiUrl(method: string): string {
     return `https://api.telegram.org/bot${this.config.botToken}/${method}`;
+  }
+
+  /**
+   * Resolve a `file_id` via getFile (inventory E2 envelope) and open the raw
+   * byte download at the returned `file_path`.
+   *
+   * The token lives only inside these URLs: every thrown error is FIXED text
+   * with no URL, no `file_path`, and no cause object, so nothing token-bearing
+   * can reach the transport's closed errors, durable results, or logs.
+   */
+  private async openTelegramFile(fileId: string, signal: AbortSignal): Promise<OpenedTelegramFile> {
+    const params = new URLSearchParams({ file_id: fileId });
+    const lookupResponse = await fetch(`${this.apiUrl('getFile')}?${params.toString()}`, {
+      signal,
+    });
+    let lookup: TelegramFileResult;
+    try {
+      lookup = (await lookupResponse.json()) as TelegramFileResult;
+    } catch {
+      throw new Error('telegram getFile response could not be parsed');
+    }
+    const filePath = lookup.ok === true ? lookup.result?.file_path : undefined;
+    if (typeof filePath !== 'string' || filePath.length === 0) {
+      // Fixed text: the API `description` is server-controlled text and is
+      // deliberately not echoed.
+      throw new Error('telegram getFile returned no downloadable file path');
+    }
+
+    const downloadResponse = await fetch(
+      `https://api.telegram.org/file/bot${this.config.botToken}/${filePath}`,
+      { signal },
+    );
+    if (!downloadResponse.ok || downloadResponse.body === null) {
+      throw new Error('telegram file download could not be opened');
+    }
+    // The global fetch body and the `node:stream/web` ReadableStream the
+    // transport accepts are two structurally identical declarations of the
+    // same runtime class; the transport performs the same cast at its own
+    // boundary (see image-transport.ts `WebReadableInput`).
+    return {
+      stream: downloadResponse.body as unknown as OpenedTelegramFile['stream'],
+      filePath,
+    };
   }
 
   /**
