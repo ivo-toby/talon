@@ -207,13 +207,15 @@ export function classifySignalSendResult(
       restrictions,
     });
   }
-  if (successes > 0) return failed('PARTIAL_ACCEPTANCE', 'PARTIAL', 'partial', counts);
-
   const reason: SignalDeliveryReason = restrictions.some((hint) => hint.kind === 'challenge')
     ? 'CHALLENGE_REQUIRED'
     : restrictions.some((hint) => hint.kind === 'rate_limit')
       ? 'RATE_LIMITED'
-      : 'RECIPIENT_REFUSED';
+      : successes > 0
+        ? 'PARTIAL_ACCEPTANCE'
+        : 'RECIPIENT_REFUSED';
+  if (successes > 0) return failed(reason, 'PARTIAL', 'partial', counts);
+
   const retryScope = evidence.results.every((entry) => entry.type === 'RATE_LIMIT_FAILURE')
     ? 'delivery_only'
     : 'none';

@@ -686,3 +686,309 @@ describe('actual TASK006 checkpoint terminal conformance', () => {
     },
   );
 });
+
+describe.each([empty, previous])(
+  'mixed restriction wire conformance with prior progress %j',
+  (progress) => {
+    // Pinned JsonSendMessageResult.java:10-48 and CommandHandler.java:249-290.
+    // These exercise the public parser/classifier, not Broadcast or a live bridge.
+    it.each([
+      {
+        name: 'ordinary mixed rate without a server deadline',
+        code: undefined,
+        results: [entry('SUCCESS'), entry('RATE_LIMIT_FAILURE')],
+        reason: 'RATE_LIMITED',
+        restrictions: [{ kind: 'rate_limit', notBefore: now + 900_000 }],
+        notBefore: now + 900_000,
+      },
+      {
+        name: 'ordinary mixed rate retaining the longest independent delay',
+        code: undefined,
+        results: [
+          entry('SUCCESS'),
+          entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 5000 }),
+          entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 2000 }),
+        ],
+        reason: 'RATE_LIMITED',
+        restrictions: [{ kind: 'rate_limit', notBefore: now + 5_000_000 }],
+        notBefore: now + 5_000_000,
+      },
+      {
+        name: 'ordinary mixed challenge without any rate deadline',
+        code: undefined,
+        results: [entry('SUCCESS'), entry('IDENTITY_FAILURE', { token: 'secret-token' })],
+        reason: 'CHALLENGE_REQUIRED',
+        restrictions: [{ kind: 'challenge' }],
+        notBefore: undefined,
+      },
+      {
+        name: 'ordinary mixed rate and challenge preserving both hints',
+        code: undefined,
+        results: [
+          entry('SUCCESS'),
+          entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 5000, token: 'secret-token' }),
+          entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 2000 }),
+        ],
+        reason: 'CHALLENGE_REQUIRED',
+        restrictions: [
+          { kind: 'rate_limit', notBefore: now + 5_000_000 },
+          { kind: 'challenge' },
+        ],
+        notBefore: now + 5_000_000,
+      },
+      {
+        name: 'remote rate code with mixed recipient results',
+        code: -5,
+        results: [entry('SUCCESS'), entry('IDENTITY_FAILURE')],
+        reason: 'RATE_LIMITED',
+        restrictions: [{ kind: 'rate_limit', notBefore: now + 900_000 }],
+        notBefore: now + 900_000,
+      },
+      {
+        name: 'remote challenge code without any rate deadline',
+        code: -6,
+        results: [entry('SUCCESS'), entry('IDENTITY_FAILURE')],
+        reason: 'CHALLENGE_REQUIRED',
+        restrictions: [{ kind: 'challenge' }],
+        notBefore: undefined,
+      },
+      {
+        name: 'remote challenge code beside independent mixed rate delays',
+        code: -6,
+        results: [
+          entry('SUCCESS'),
+          entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 5000 }),
+          entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 2000 }),
+        ],
+        reason: 'CHALLENGE_REQUIRED',
+        restrictions: [
+          { kind: 'rate_limit', notBefore: now + 5_000_000 },
+          { kind: 'challenge' },
+        ],
+        notBefore: now + 5_000_000,
+      },
+      {
+        name: 'ordinary recipient-only partial without an account restriction',
+        code: undefined,
+        results: [entry('SUCCESS'), entry('IDENTITY_FAILURE')],
+        reason: 'PARTIAL_ACCEPTANCE',
+        restrictions: [],
+        notBefore: undefined,
+      },
+      {
+        name: 'remote recipient-only partial without an account restriction',
+        code: -1,
+        results: [entry('SUCCESS'), entry('IDENTITY_FAILURE')],
+        reason: 'PARTIAL_ACCEPTANCE',
+        restrictions: [],
+        notBefore: undefined,
+      },
+    ])('preserves the partial receipt and exposes the safe reason: $name', (testCase) => {
+      const response = { timestamp: 123456789, results: testCase.results };
+      const frame = parseSignalRpcFrame(
+        Buffer.from(
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 'mixed-fixture',
+            ...(testCase.code === undefined
+              ? { result: response }
+              : {
+                  error: {
+                    code: testCase.code,
+                    message: 'private-message',
+                    data: { response, privateField: 'private-data' },
+                  },
+                }),
+          }),
+        ),
+      )._unsafeUnwrap();
+      if (frame.kind === 'notification') throw new Error('Expected send response');
+      const input: SignalRpcResult =
+        frame.kind === 'failure'
+          ? err(frame.error)
+          : ok({ kind: 'send', evidence: parseSignalSendEvidence(frame.value) });
+      const originalInput = JSON.stringify(input);
+      const classified = classifySignalSendResult(input, progress, now);
+      const failed = classified.result._unsafeUnwrapErr();
+      expect(failed).toBeInstanceOf(SignalDeliveryError);
+      expect(failed).toMatchObject({
+        outcome: 'PARTIAL',
+        currentChunkAcceptance: 'partial',
+        acceptedChunks: progress.acceptedChunks,
+        successCount: progress.successCount + 1,
+        failureCount: progress.failureCount + testCase.results.length - 1,
+        retryScope: 'none',
+        providerRetryable: false,
+      });
+      expect(failed.notBefore).toBe(testCase.notBefore);
+      expect(classified.restrictions).toEqual(testCase.restrictions);
+      expect(Object.isFrozen(classified.restrictions)).toBe(true);
+      expect(classified.restrictions.every(Object.isFrozen)).toBe(true);
+      expect(JSON.stringify(input)).toBe(originalInput);
+      expect(failed.cause).toBeUndefined();
+      expect(JSON.stringify({ input, classified })).not.toMatch(
+        /private-message|private-data|secret-token|cccccccc|123456789|recipientAddress|"timestamp":/,
+      );
+      const accountUuid = 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb';
+      const checkpoint = parseSignalDeliveryCheckpoint(
+        {
+          version: 1,
+          queueItemId: 'queue-1',
+          deliveryId: 'delivery-1',
+          kind: 'reply',
+          personaId: 'persona-1',
+          threadId: 'thread-1',
+          channelName: 'signal-test',
+          accountUuid,
+          destination: `signal:v1:${accountUuid}:self`,
+          body: 'one two three',
+          chunks: ['one', 'two', 'three'],
+          nextChunk: progress.acceptedChunks,
+          phase: 'terminal',
+          acceptedChunks: failed.acceptedChunks,
+          currentChunkAcceptance: failed.currentChunkAcceptance,
+          successCount: failed.successCount,
+          failureCount: failed.failureCount,
+          terminalReason: failed.reason,
+          terminalOutcome: failed.outcome,
+          createdAt: 1000,
+          expiresAt: 1000 + SIGNAL_CHECKPOINT_LIFETIME_MS,
+        },
+        { queueItemId: 'queue-1', now },
+      )._unsafeUnwrap();
+      expect(checkpoint).toMatchObject({
+        nextChunk: progress.acceptedChunks,
+        acceptedChunks: progress.acceptedChunks,
+        currentChunkAcceptance: 'partial',
+        successCount: progress.successCount + 1,
+        failureCount: progress.failureCount + testCase.results.length - 1,
+        terminalOutcome: 'PARTIAL',
+        terminalReason: testCase.reason,
+      });
+      expect(failed.reason).toBe(testCase.reason);
+    });
+
+    it.each([
+      {
+        name: 'unknown result type',
+        results: [entry('FUTURE_RESULT')],
+        timestamp: 100,
+        reason: 'INVALID_RESPONSE',
+        failures: 1,
+      },
+      {
+        name: 'malformed address',
+        results: [entry('IDENTITY_FAILURE', { recipientAddress: {} })],
+        timestamp: 100,
+        reason: 'INVALID_RESPONSE',
+        failures: 1,
+      },
+      {
+        name: 'malformed delay',
+        results: [entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 'invalid' })],
+        timestamp: 100,
+        reason: 'INVALID_RESPONSE',
+        failures: 1,
+      },
+      {
+        name: 'network failure',
+        results: [entry('NETWORK_FAILURE')],
+        timestamp: 100,
+        reason: 'NETWORK_FAILURE',
+        failures: 2,
+      },
+      {
+        name: 'malformed timestamp',
+        results: [],
+        timestamp: -1,
+        reason: 'INVALID_RESPONSE',
+        failures: 1,
+      },
+    ])('retains UNKNOWN precedence and every restriction for $name', (testCase) => {
+      for (const code of [undefined, -6]) {
+        const response = {
+          timestamp: testCase.timestamp,
+          results: [
+            entry('SUCCESS'),
+            entry('RATE_LIMIT_FAILURE', { retryAfterSeconds: 5000, token: 'secret-token' }),
+            ...testCase.results,
+          ],
+        };
+        const frame = parseSignalRpcFrame(
+          Buffer.from(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: 'uncertain-fixture',
+              ...(code === undefined
+                ? { result: response }
+                : { error: { code, message: 'private-message', data: { response } } }),
+            }),
+          ),
+        )._unsafeUnwrap();
+        if (frame.kind === 'notification') throw new Error('Expected send response');
+        const input: SignalRpcResult =
+          frame.kind === 'failure'
+            ? err(frame.error)
+            : ok({ kind: 'send', evidence: parseSignalSendEvidence(frame.value) });
+        const classified = classifySignalSendResult(input, progress, now);
+        expect(classified.result._unsafeUnwrapErr()).toMatchObject({
+          reason: testCase.reason,
+          outcome: 'UNKNOWN',
+          currentChunkAcceptance: 'unknown',
+          acceptedChunks: progress.acceptedChunks,
+          successCount: progress.successCount + 1,
+          failureCount: progress.failureCount + testCase.failures,
+          retryScope: 'none',
+          notBefore: now + 5_000_000,
+        });
+        expect(classified.restrictions).toEqual([
+          { kind: 'rate_limit', notBefore: now + 5_000_000 },
+          { kind: 'challenge' },
+          { kind: 'recovery' },
+        ]);
+      }
+    });
+
+    it.each([false, true])(
+      'keeps ordinary all-success receipts unchanged with independent hints=%s',
+      (hints) => {
+        const frame = parseSignalRpcFrame(
+          Buffer.from(
+            JSON.stringify({
+              jsonrpc: '2.0',
+              id: 'accepted-fixture',
+              result: {
+                timestamp: 100,
+                results: [
+                  entry(
+                    'SUCCESS',
+                    hints ? { token: 'secret-token', retryAfterSeconds: 5000 } : {},
+                  ),
+                ],
+              },
+            }),
+          ),
+        )._unsafeUnwrap();
+        if (frame.kind !== 'result') throw new Error('Expected ordinary result');
+        const classified = classifySignalSendResult(
+          ok({ kind: 'send', evidence: parseSignalSendEvidence(frame.value) }),
+          progress,
+          now,
+        );
+        expect(classified.result._unsafeUnwrap()).toEqual({
+          acceptance: 'complete',
+          successCount: 1,
+          failureCount: 0,
+        });
+        expect(classified.restrictions).toEqual(
+          hints
+            ? [{ kind: 'rate_limit', notBefore: now + 5_000_000 }, { kind: 'challenge' }]
+            : [],
+        );
+        expect(JSON.stringify(classified)).not.toMatch(
+          /secret-token|cccccccc|recipientAddress|timestamp/,
+        );
+      },
+    );
+  },
+);
