@@ -93,6 +93,23 @@ YAML config validated by Zod schema in `config-schema.ts`. Supports `${ENV_VAR}`
 
 Tests in `tests/` using vitest. Coverage thresholds: 80% (branches, functions, lines, statements). Test structure mirrors source: `tests/unit/queue/`, `tests/unit/channels/`, etc.
 
+Default Vitest resolution aliases the exact `@anthropic-ai/claude-agent-sdk`
+import to `tests/fixtures/claude-agent-sdk-denied.ts` and rejects real SDK package
+paths at resolve/load/transform, with inlining before native externalization.
+Supported `test.setupFiles` imports `tests/fixtures/claude-agent-sdk-native-guard.ts`
+before test collection in each actual worker. Its SDK-specific Node LOAD hook
+rejects decoded SDK paths before native evaluation, including encoded identities
+and the worker's pre-RPC native shortcut. Keep the denial fixture dependency-free
+and refusal-only. SDK tests must provide explicit synthetic mocks; bypass/unmock
+reaches fixed refusal, not the real SDK. This does not repair Vitest's concurrent
+manual-mock semantics.
+Keep the native hook idempotent and installed for the worker's lifetime; do not
+deregister it after a test file. Already-evaluated modules are not retroactively
+protected, and arbitrary child processes/threads do not automatically inherit
+this fence. It is not OS isolation or general subprocess/network control.
+Preserve normal local IPC/network fixtures and production SDK/CLI behavior;
+synthetic unit checks are not live-provider or production-security proof.
+
 ### Local Runtime Smoke Testing
 
 Use this when a task needs proof that `talond` actually boots and the terminal

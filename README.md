@@ -2917,6 +2917,22 @@ The test suite includes:
 - **Integration tests** — IPC round-trips, queue durability, channel registry lifecycle
 - **End-to-end tests** — Full message flow from inbound to outbound with real SQLite
 
+The default Vitest configuration aliases `@anthropic-ai/claude-agent-sdk` to an
+inert refusal fixture and rejects real SDK package paths at resolve/load/transform,
+with inlining before native externalization. Its supported `test.setupFiles`
+imports `tests/fixtures/claude-agent-sdk-native-guard.ts` before test collection
+in each actual worker. That SDK-specific Node LOAD hook rejects decoded SDK
+paths before native evaluation, including encoded identities and the worker's
+pre-RPC native shortcut. SDK unit tests must supply explicit synthetic mocks;
+an unmocked or bypassed mock reaches fixed refusal, not the authenticated SDK.
+This does not change Vitest's concurrent manual-mock semantics.
+The native hook is idempotent and retained for that worker's lifetime, not
+removed after a test file. It does not retroactively protect already-evaluated
+modules or automatically fence arbitrary child processes/threads, and is not
+OS isolation or general subprocess/network control. Normal local IPC/network
+fixtures and production SDK/CLI behavior are unchanged; synthetic unit checks
+are not live-provider or production-security evidence.
+
 ### Lint and Format
 
 ```bash
