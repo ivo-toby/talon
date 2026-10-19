@@ -199,6 +199,14 @@ When adding or changing a feature (new channel, new tool, new config option, cha
 
 Do not consider a feature complete until the docs match the code. PR reviewers should check for doc drift.
 
+Voice descendants reuse the selected persona's capability policy. Approval-gated
+capability families are removed before child registration and enforced again at
+the shared host-tools bridge if denial metadata is omitted. Current backend
+results remain durable after authority expiry or hangup, while expired authority
+suppresses speech until claimed work reaches terminal cleanup. SIP raw-body reads
+have an absolute five-second timeout; trickle bytes do not extend it, and
+terminal request paths clean up listeners and release pending capacity.
+
 ### Offload work
 
 If you can, offload coding tasks to GPT-5.3-codex-high using the codex skill, only do this for well defined, tightly scoped tasks.

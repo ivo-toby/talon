@@ -1039,17 +1039,17 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         let speechRequested = false;
         if (!activeOwnerError && !suppressSpeech) {
           try {
-            const sent = await runtime.sideband.send({
+            const sent = await this.sendAuthorizedSideband(runtime, session.id, {
               kind: 'instruction',
               delegationId: null,
               content: text,
               outputId: output.id,
             });
-            if (sent.isOk()) {
+            if (sent.isOk() && sent.value) {
               speechRequested = true;
-            } else {
+            } else if (sent.isErr()) {
               this.options.logger?.warn(
-                { sessionId: session.id, cause: sent.error },
+                { sessionId: session.id },
                 'voice notification speech delivery failed; retaining text notification',
               );
             }
@@ -1556,8 +1556,9 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       if (!skipped.value) continue;
       this.publishDelegation(sessionId, skipped.value.delegation.id);
       if (skipped.value.clearedActive) this.publishSession(skipped.value.session);
-      await sendClarification(
-        runtime.sideband,
+      await this.sendClarification(
+        runtime,
+        sessionId,
         delegation.providerDelegationId,
         'The transcript changed before that request could start. Please repeat it.',
       );
@@ -1698,11 +1699,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     if (!projection.value) return err(new PolicyError('Voice session was not found'));
     const session = projection.value.session;
     if (projection.value.delegations.some((delegation) => delegation.providerDelegationId === proposal.providerDelegationId)) {
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I already received that request. Please make a new request if you still need help.');
+      await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'I already received that request. Please make a new request if you still need help.');
       return ok(undefined);
     }
     if (session.status !== 'connected') {
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The previous request is still being handled.');
+      await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'The previous request is still being handled.');
       return ok(undefined);
     }
     if (session.deadlineAt <= this.now()) {
@@ -1721,8 +1722,9 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const contextResult = contextInspection.context;
     if (!contextResult) {
       this.logContextRejection(runtime, contextInspection.reason);
-      await sendClarification(
-        runtime.sideband,
+      await this.sendClarification(
+        runtime,
+        sessionId,
         proposal.providerDelegationId,
         'I could not capture a reliable transcript for that request. Please repeat it briefly.',
       );
@@ -1731,7 +1733,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const boundedContext = contextResult;
     const currentPolicy = this.currentPolicy(session.owner, session);
     if (currentPolicy.isErr()) {
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'This request is not currently permitted.');
+      await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'This request is not currently permitted.');
       return ok(undefined);
     }
     const eligibility = this.options.policy.checkExecution({
@@ -1741,7 +1743,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
       now: this.now(),
     });
     if (eligibility.isErr() || !eligibility.value.eligible) {
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'This request is no longer permitted.');
+      await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'This request is no longer permitted.');
       return ok(undefined);
     }
     const activeDelegation = findPendingDelegation(session, projection.value.delegations);
@@ -1750,7 +1752,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         activeDelegation.contextVersion === boundedContext.version &&
         activeDelegation.contextDigest === boundedContext.digest
       ) {
-        await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The previous request is still being handled.');
+        await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'The previous request is still being handled.');
         return ok(undefined);
       }
       const replacement = this.supersedePendingDelegation(
@@ -1760,11 +1762,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         boundedContext,
       );
       if (replacement.isErr()) {
-        await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I could not safely update that request. Please repeat it.');
+        await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'I could not safely update that request. Please repeat it.');
         return ok(undefined);
       }
       if (replacement.value.outcome !== 'replaced') {
-        await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The previous request has already started. Please wait for its result.');
+        await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'The previous request has already started. Please wait for its result.');
         return ok(undefined);
       }
       this.publishDelegation(sessionId, replacement.value.original.id);
@@ -1799,7 +1801,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         status: 'rejected',
         providerDelegationId: proposal.providerDelegationId,
       });
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'I could not safely queue that request. Please repeat it.');
+      await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'I could not safely queue that request. Please repeat it.');
       return ok(undefined);
     }
     const latest = this.options.store.readSession(sessionId);
@@ -1826,7 +1828,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         skippedAt: this.now(),
       });
       if (skipped.isOk()) this.publishDelegation(sessionId, request.delegationId);
-      await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The voice session changed before that request could start. Please try again.');
+      await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'The voice session changed before that request could start. Please try again.');
       return ok(undefined);
     }
     let activeSession = latest.value.session;
@@ -1854,11 +1856,11 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
             skippedAt: this.now(),
           });
           if (skipped.isOk()) this.publishDelegation(sessionId, request.delegationId);
-          await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The voice session changed before that request could start. Please try again.');
+          await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'The voice session changed before that request could start. Please try again.');
           return ok(undefined);
         }
         if (racedDelegation.value.status === 'skipped' || racedDelegation.value.status === 'superseded') {
-          await sendClarification(runtime.sideband, proposal.providerDelegationId, 'The voice session changed before that request could start. Please try again.');
+          await this.sendClarification(runtime, sessionId, proposal.providerDelegationId, 'The voice session changed before that request could start. Please try again.');
           return ok(undefined);
         }
         ownsActiveDelegation = false;
@@ -2082,13 +2084,56 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const content = completed
       ? 'The earlier request finished after your correction. Its result was retained, but it was not used as the answer. Please repeat the corrected request.'
       : 'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.';
-    const sent = await runtime.sideband.send({
+    const sent = await this.sendAuthorizedSideband(runtime, delegation.sessionId, {
       kind: 'instruction',
       delegationId: delegation.providerDelegationId,
       content,
       outputId: randomUUID(),
     });
-    if (sent.isOk()) runtime.staleNoticeSent.add(delegation.id);
+    if (sent.isOk() && sent.value) runtime.staleNoticeSent.add(delegation.id);
+  }
+
+  /** Send only while this exact runtime still has an active voice authority. */
+  private async sendAuthorizedSideband(
+    runtime: SessionRuntime,
+    sessionId: VoiceSessionId,
+    command: Parameters<LiveVoiceSideband['send']>[0],
+  ): Promise<VoiceResult<boolean>> {
+    const latest = this.options.store.findSession(sessionId);
+    if (latest.isErr()) return err(latest.error);
+    if (
+      !latest.value ||
+      latest.value.status !== 'connected' ||
+      latest.value.deadlineAt <= this.now() ||
+      runtime.closing ||
+      this.runtimes.get(sessionId) !== runtime ||
+      this.ensureRuntimeOwnerActive(runtime, latest.value.owner)
+    ) {
+      return ok(false);
+    }
+    try {
+      const sent = await runtime.sideband.send(command);
+      return sent.isErr() ? err(sent.error) : ok(true);
+    } catch {
+      return err(new PolicyError('Voice sideband delivery failed'));
+    }
+  }
+
+  private async sendClarification(
+    runtime: SessionRuntime,
+    sessionId: VoiceSessionId,
+    providerDelegationId: string,
+    content: string,
+  ): Promise<void> {
+    const sent = await this.sendAuthorizedSideband(runtime, sessionId, {
+      kind: 'instruction',
+      delegationId: providerDelegationId,
+      content,
+      outputId: randomUUID(),
+    });
+    if (sent.isErr()) {
+      this.options.logger?.warn({ sessionId }, 'voice clarification speech delivery failed');
+    }
   }
 
   private async handleBackendResult(result: VoiceBackendResult): Promise<void> {
@@ -2118,7 +2163,7 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     const command = isSafeFailure
       ? { kind: 'instruction' as const, delegationId: delegation.value.providerDelegationId, content, outputId }
       : { kind: 'commentary' as const, delegationId: delegation.value.providerDelegationId, content, outputId };
-    let sent: VoiceResult<void>;
+    let sent: VoiceResult<boolean>;
     if (stale) {
       this.telemetry?.record({
         callId: delegation.value.sessionId,
@@ -2128,13 +2173,13 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
         providerDelegationId: delegation.value.providerDelegationId,
         outputId,
       });
-      sent = ok(undefined);
+      sent = ok(false);
     } else if (content.length > 0) {
-      sent = await runtime.sideband.send(command);
+      sent = await this.sendAuthorizedSideband(runtime, delegation.value.sessionId, command);
       this.telemetry?.record({
         callId: delegation.value.sessionId,
         stage: 'output_offered',
-        status: sent.isOk() ? 'sent' : 'failed',
+        status: sent.isOk() && sent.value ? 'sent' : sent.isOk() ? 'unknown' : 'failed',
         delegationId: delegation.value.id,
         providerDelegationId: delegation.value.providerDelegationId,
         outputId,
@@ -2154,7 +2199,12 @@ export class DurableVoiceSessionService implements VoiceSessionServiceContract {
     }
     const lifecycle: VoiceOutputLifecycle = {
       ...result.output,
-      delivery: stale ? 'not_requested' : sent.isOk() ? 'sent' : 'failed',
+      delivery:
+        stale || (sent.isOk() && !sent.value)
+          ? 'not_requested'
+          : sent.isOk()
+            ? 'sent'
+            : 'failed',
     };
     this.options.store.recordOutputLifecycle({
       delegationId: result.delegationId,
@@ -2612,20 +2662,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-/** Sends a clarification using only the provider-owned delegation identity. */
-async function sendClarification(
-  sideband: LiveVoiceSideband,
-  providerDelegationId: string,
-  content: string,
-): Promise<void> {
-  await sideband.send({
-    kind: 'instruction',
-    delegationId: providerDelegationId,
-    content,
-    outputId: randomUUID(),
-  });
 }
 
 function contextRejectionReason(reason: string | undefined): VoiceContextRejectionReason {

@@ -32,7 +32,7 @@ import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
 import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/background-agent.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
-import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
+import { filterVoiceMcpTools, isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
@@ -408,7 +408,17 @@ export class HostToolsBridge {
       const dispatchTool = async (toolObservation: ObservationHandle): Promise<ToolCallResult> => {
         return await this.dispatchLogger.run(dispatchPrivacy, async () => {
           const registered = this.bridgeAuthByRunId.get(context.runId);
-          if (registered?.deniedToolNames.has(normalizedTool)) {
+          const resolvedCaps = this.resolvePersonaCapabilities(
+            authenticatedContext.personaId,
+            authenticatedContext.voiceObservation,
+          );
+          const deniedToolNames = new Set(registered?.deniedToolNames);
+          if (isVoiceObservationContext(authenticatedContext.voiceObservation)) {
+            for (const deniedTool of filterVoiceMcpTools(resolvedCaps).deniedMcpTools) {
+              deniedToolNames.add(TOOL_NAME_MAP[deniedTool] ?? deniedTool);
+            }
+          }
+          if (deniedToolNames.has(normalizedTool)) {
             const toolResult: ToolCallResult = {
               requestId: context.requestId ?? 'unknown',
               tool: normalizedTool,
@@ -431,10 +441,6 @@ export class HostToolsBridge {
           // Even if the MCP server somehow exposes a disallowed tool, the bridge
           // will reject it here. Uses fail-closed semantics — if the persona
           // cannot be resolved, no tools are allowed.
-          const resolvedCaps = this.resolvePersonaCapabilities(
-            authenticatedContext.personaId,
-            authenticatedContext.voiceObservation,
-          );
           if (!isToolAllowed(normalizedTool, resolvedCaps)) {
             const toolResult: ToolCallResult = {
               requestId: context.requestId ?? 'unknown',

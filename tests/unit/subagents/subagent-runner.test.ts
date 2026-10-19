@@ -249,6 +249,33 @@ describe('SubAgentRunner', () => {
     expect(result.isOk()).toBe(true);
   });
 
+  it('rejects voice sub-agents when a required capability is approval-gated', async () => {
+    const agent = makeAgent({
+      manifest: {
+        ...makeAgent().manifest,
+        requiredCapabilities: ['custom.voice_action'],
+      },
+    });
+    const runner = makeRunner(new Map([['test-agent', agent]]));
+    const ctx = makeContext({
+      personaCapabilities: {
+        allow: ['custom.voice_action'],
+        requireApproval: ['custom.voice_action'],
+      },
+      voiceObservation: createVoiceObservationContext({
+        callId: 'voice-call-approval',
+        runId: 'voice-run-approval',
+        threadId: 'thread-1',
+      }),
+    });
+
+    const result = await runner.execute('test-agent', {}, ctx);
+
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('custom.voice_action');
+    expect(agent.run).not.toHaveBeenCalled();
+  });
+
   it('respects timeout on slow sub-agents', async () => {
     const slowRun = vi
       .fn()

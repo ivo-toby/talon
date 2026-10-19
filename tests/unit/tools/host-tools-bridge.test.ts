@@ -801,6 +801,48 @@ describe('HostToolsBridge', () => {
       expect((response.result as any)?.error).toContain('requires approval');
     });
 
+    it('rechecks approval-gated voice capabilities when descendant deny metadata is omitted', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValueOnce(ok({
+        config: { skills: [] },
+        systemPromptContent: 'Voice profile.',
+        personalityContent: null,
+        resolvedCapabilities: {
+          allow: ['memory.access'],
+          requireApproval: ['memory.access'],
+        },
+      }) as any);
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.registerRunAuthentication({
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        bridgeSecret: validBridgeSecret,
+        voiceObservation: createVoiceObservationContext({
+          callId: 'voice-call-bridge-recheck',
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+        }),
+      });
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'memory_access',
+        args: { operation: 'list' },
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-voice-bridge-recheck',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('error');
+      expect((response.result as any)?.error).toContain('requires approval');
+    });
+
     it('dispatches schedule.manage create and returns success', async () => {
       bridge = new HostToolsBridge(mockCtx);
       registerActiveRunAuth();

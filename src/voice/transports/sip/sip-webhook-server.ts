@@ -22,6 +22,7 @@ export const SIP_WEBHOOK_DEFAULT_PATH = '/voice/sip/webhook';
 export const SIP_WEBHOOK_MAX_BODY_BYTES = 256 * 1024;
 export const SIP_WEBHOOK_DEFAULT_TIMESTAMP_TOLERANCE_SECONDS = 300;
 export const SIP_WEBHOOK_MAX_PENDING_REQUESTS = 32;
+export const SIP_WEBHOOK_BODY_TIMEOUT_MS = 5_000;
 
 export interface SipWebhookServerConfig {
   readonly enabled?: boolean;
@@ -309,29 +310,48 @@ async function readBoundedBody(
     const chunks: Buffer[] = [];
     let size = 0;
     let settled = false;
-    const fail = (failure: WebhookFailure): void => {
-      if (settled) return;
-      settled = true;
-      resolveBody(err(failure));
-    };
-    request.on('data', (chunk: Buffer | string) => {
+    const onData = (chunk: Buffer | string): void => {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       size += buffer.length;
       if (size > maxBytes) {
-        request.destroy();
-        fail(new WebhookFailure('body'));
+        fail(new WebhookFailure('body'), true);
         return;
       }
       chunks.push(buffer);
-    });
-    request.once('error', () => fail(new WebhookFailure('body')));
-    request.once('aborted', () => fail(new WebhookFailure('body')));
-    request.once('end', () => {
-      if (!settled) {
-        settled = true;
-        resolveBody(ok(Buffer.concat(chunks)));
-      }
-    });
+    };
+    const onError = (): void => fail(new WebhookFailure('body'));
+    const onAborted = (): void => fail(new WebhookFailure('body'));
+    const onClose = (): void => fail(new WebhookFailure('body'));
+    const onEnd = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveBody(ok(Buffer.concat(chunks)));
+    };
+    const cleanup = (): void => {
+      clearTimeout(timeout);
+      request.removeListener('data', onData);
+      request.removeListener('error', onError);
+      request.removeListener('aborted', onAborted);
+      request.removeListener('close', onClose);
+      request.removeListener('end', onEnd);
+    };
+    const fail = (failure: WebhookFailure, destroy = false): void => {
+      if (settled) return;
+      settled = true;
+      if (destroy) request.destroy();
+      cleanup();
+      resolveBody(err(failure));
+    };
+    const timeout = setTimeout(
+      () => fail(new WebhookFailure('body'), true),
+      SIP_WEBHOOK_BODY_TIMEOUT_MS,
+    );
+    request.on('data', onData);
+    request.once('error', onError);
+    request.once('aborted', onAborted);
+    request.once('close', onClose);
+    request.once('end', onEnd);
   });
 }
 
