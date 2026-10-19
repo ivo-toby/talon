@@ -19,12 +19,16 @@ secret values.
 
 ## Pre-flight
 
-Check the current configuration without printing secrets:
+Use the operator's actual config path. The examples below use
+`CONFIG_PATH=talond.yaml`; replace it when the deployment uses another path and
+pass `--config "$CONFIG_PATH"` on every supported command. Keep secret fields
+environment-backed and do not paste `config-show` output.
 
 ```bash
-npx talonctl list-personas
-npx talonctl list-providers
-npx talonctl config-show
+CONFIG_PATH=talond.yaml
+npx talonctl list-personas --config "$CONFIG_PATH"
+npx talonctl list-providers --config "$CONFIG_PATH"
+npx talonctl config-show --config "$CONFIG_PATH"
 ```
 
 Choose the persona first. Its configured provider must be enabled; the
@@ -41,7 +45,8 @@ Ask: **"Which existing persona should browser voice use?"**
 
 ## Configure the auth slots
 
-Add environment-backed entries to `auth.providers` in `config/talond.yaml`.
+Add environment-backed entries to `auth.providers` in the operator config at
+`$CONFIG_PATH`.
 Put values in the operator's environment or `.env`; use placeholders in YAML:
 
 ```yaml
@@ -124,13 +129,37 @@ public `Host` and `Origin` headers and send `X-Forwarded-Proto: https`; this is
 required for secure cookie and same-origin decisions. `publicHost` contributes
 the matching `https://` origin but does not change the listener address.
 
+## Optional incoming SIP
+
+If the transport choice is not already specified, ask one separate question:
+**"Do you also want to enable the incoming SIP boundary?"** Leave
+`voice.sip.enabled` false unless the operator explicitly chooses it. If the
+answer is yes, stop the browser-only walkthrough and follow
+the [ordered incoming SIP/Asterisk guide](../../../docs/guides/voice-asterisk.mdx)
+from start to finish. It covers the operator-owned provider contact and trunk,
+Ed25519 key and signer environment, `publicKeys`/`endpointMappings`, separate
+webhook and live-provider secrets, the two listener proxy routes, local echo,
+network/media checks, and the bounded provider test. This skill must not invent
+a provider contact, install a PBX, provision a trunk, or place a paid call.
+
+Use the same actual config path throughout. `talonctl` defaults to
+`talond.yaml` (or the `TALOND_CONFIG_PATH` value), while
+`config/talond.example.yaml` is only a repository example. The guide's
+validation commands are:
+
+```bash
+npx talonctl doctor --config "$CONFIG_PATH"
+npx talonctl env-check --config "$CONFIG_PATH"
+npx talonctl config-show --config "$CONFIG_PATH"
+```
+
 ## Validate
 
 Run the normal configuration checks after editing:
 
 ```bash
-npx talonctl doctor --config talond.yaml
-npx talonctl env-check
+npx talonctl doctor --config "$CONFIG_PATH"
+npx talonctl env-check --config "$CONFIG_PATH"
 ```
 
 Restart the daemon after changing voice or provider configuration, then open

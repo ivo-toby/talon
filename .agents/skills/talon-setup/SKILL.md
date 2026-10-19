@@ -28,6 +28,8 @@ conversational wizard. Ask one question at a time, act on the answer, move on.
 - **Detect state first.** Skip steps that are already done.
 - **Use talonctl commands.** Never edit talond.yaml directly except system prompts and task prompts.
 - **No secrets.** Never ask for or write actual tokens. Use `${ENV_VAR}` references in config and MCP `headers` / `env` values only.
+- **Inspect locally.** Keep secret-bearing fields environment-backed; do not
+  treat `config-show` as a universal redaction boundary or paste its output.
 - **Show what you do.** When running commands, show the output.
 
 ## Available talonctl commands
@@ -60,7 +62,7 @@ All config mutations go through these commands:
 | `npx talonctl set-capabilities --persona <p> --remove <labels>` | Remove capabilities from persona |
 | `npx talonctl set-capabilities --persona <p> --show` | Show persona's current capabilities |
 | `npx talonctl env-check` | Audit env var placeholders |
-| `npx talonctl config-show` | Show effective config (secrets masked) |
+| `npx talonctl config-show` | Show effective config for local inspection; do not paste output |
 | `npx talonctl remove-channel --name <n>` | Remove a channel |
 | `npx talonctl remove-persona --name <n>` | Remove a persona |
 | `npx talonctl migrate` | Run database migrations |
@@ -368,6 +370,16 @@ requires an explicit operator decision and an authenticated Asterisk setup
 described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
 This setup skill does not install a PBX, provision keys or trunks, or place a
 paid call.
+
+If the transport choice is not already specified, ask separately: **"Do you
+want to enable the incoming SIP boundary now?"** Continue only for an explicit
+choice. Follow the guide's ordered
+steps for the provider-assigned PJSIP contact, Ed25519 signer and permissions,
+server-owned endpoint mapping, separate webhook/live-provider secrets, proxy
+routes, local echo, media/NAT checks, and one bounded provider test. Do not
+invent provider domains or credentials. Use the deployment's actual config
+path; the CLI default is `talond.yaml` (or `TALOND_CONFIG_PATH`), while
+`config/talond.example.yaml` is only a repository example.
 
 Voice backend failures keep the user-facing error generic. For troubleshooting,
 inspect the failed run’s `error` field: when available it includes only allowlisted

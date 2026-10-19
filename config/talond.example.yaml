@@ -405,7 +405,7 @@ voice:
   allowedOrigins: []
   # Incoming SIP is a separate, disabled-by-default boundary. It accepts an
   # existing provider-created GPT-Live session and reuses the normal persona,
-  # queue, and backend path. The reference Asterisk setup is documented in
+  # queue, and backend path. The ordered operator setup is documented in
   # docs/guides/voice-asterisk.mdx; no keys, webhook secret, trunk, or owner
   # mapping belongs in this example.
   sip:

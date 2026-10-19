@@ -101,9 +101,13 @@ voice channel. Startup rejects a conflicting ordinary channel configuration and
 does not overwrite an existing non-voice `browser-voice` database row.
 
 For the incoming SIP authority and reference Asterisk setup, see the
-[Asterisk guide](voice-asterisk.mdx). SIP delivery authentication and caller
-authentication are separate: Talon verifies the Standard Webhooks raw bytes
-first, then requires a server-mapped, call-bound Ed25519 endpoint assertion.
+[ordered Asterisk operator guide](voice-asterisk.mdx). SIP delivery
+authentication and caller authentication are separate: Talon verifies the
+Talon Standard Webhooks raw bytes first, then requires a server-mapped,
+call-bound Ed25519 endpoint assertion. The provider path has no browser cookie,
+browser CSRF, SSO, or Basic-auth login. That guide covers the operator-owned
+key, signer, PJSIP, proxy, local echo, and bounded provider-test steps; this
+repository does not install a PBX or provision a provider trunk.
 Missing, duplicate, expired, revoked, altered, or unmapped assertions are
 denied; Caller ID and ordinary SIP headers never grant authority. After the
 durable decision and attempt marker are recorded, Talon accepts the existing
@@ -120,6 +124,13 @@ the external URL. It does not change the listener address. Keep the default
 loopback `host` when the proxy shares the daemon's network namespace; for a
 remote proxy, configure `host` to the address that proxy can reach. Origin,
 authentication, and CSRF checks still apply to every listener address.
+
+The browser and SIP listeners are independent. Route `/voice/` to
+`voice.host:voice.port` and `voice.sip.path` to `voice.sip.host:voice.sip.port`;
+do not send a SIP webhook to the browser listener. The browser login grant is
+fixed at 15 minutes by default or 365 days when the explicit remember option is
+selected. `voice.maxSessionLifetimeMs` is a separate live-call limit (15
+minutes by default), and SIP does not use a browser login grant.
 
 ## Login and session flow
 

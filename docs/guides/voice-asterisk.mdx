@@ -1,6 +1,6 @@
 ---
 title: Incoming SIP with Asterisk
-description: Reference-only authenticated incoming SIP boundary for Talon
+description: Operator setup for Talon's authenticated incoming SIP boundary
 ---
 
 # Incoming SIP with Asterisk
@@ -18,6 +18,12 @@ and time bounds. Caller ID, `From`, `To`, and ordinary SIP headers never choose
 an owner, persona, capability, or provider session. A duplicated, altered,
 missing, expired, revoked, or unmapped assertion is denied.
 
+The provider HTTP path is authenticated by Talon's Standard Webhooks HMAC
+(`webhook-id`, `webhook-timestamp`, and `webhook-signature`) using
+`voice.sip.standardWebhookSecretRef`. It has no browser cookie, browser CSRF,
+SSO, or Basic-auth login flow; those are separate browser concerns and must not
+be added to the provider webhook route.
+
 The reference files are [the restricted dialplan](../../examples/voice/asterisk/extensions.conf.example),
 [the PJSIP shape](../../examples/voice/asterisk/pjsip.conf.example), and [the
 native Ed25519 AGI signer](../../scripts/voice/asterisk-sign-call.mjs). The
@@ -29,6 +35,334 @@ shell/AGI arguments and never logs the assertion or key. The caller channel
 copies the assertion to a single-level inherited variable before `Dial`; the
 outgoing `b()` pre-dial handler removes any inherited
 `X-Talon-Voice-Assertion` and adds exactly one locally generated assertion.
+
+## Deployment boundary
+
+This page is an operator walkthrough around those reference files. It does not
+install Asterisk, create a provider project, provision a SIP trunk, generate
+credentials, or publish a turnkey Compose stack. The example files contain
+placeholders by design. Asterisk, the reverse proxy, the provider account, and
+the key store remain operator-owned deployment components.
+
+The provider side must already document an incoming SIP or Live transport
+setup that emits `live.transport.incoming` with `data.type: sip` and a
+`data.session_id`. Obtain the provider-assigned SIP contact, authentication
+values, transport requirements, and media requirements from that provider's
+account or official setup material. Put the assigned contact in the Asterisk
+PJSIP AOR; do not guess a hostname, derive it from the Talon webhook URL, or
+copy the placeholder in `pjsip.conf.example`. If the provider does not publish
+the contact and trunk procedure for the account, stop at the offline checks
+below rather than inventing an API or domain.
+
+Use the actual Talon config path selected by the deployment. `talonctl` defaults
+to `talond.yaml` and also honors `TALOND_CONFIG_PATH`; the repository's
+`config/talond.example.yaml` is an example source, not automatically the live
+config. The same path must be passed to every validation command.
+
+## Ordered operator setup
+
+### 1. Confirm the Talon owner, persona, and provider
+
+Choose an existing Talon owner and persona for the call. The selected persona's
+provider, model, capabilities, skills, MCP servers, and approval policy remain
+authoritative for SIP backend work. Approval-gated capabilities cannot run
+through voice because there is no interactive approval channel.
+
+Before editing, inspect the effective configuration locally. Keep all secret
+fields environment-backed and do not paste `config-show` output:
+
+```bash
+npx talonctl list-personas --config talond.yaml
+npx talonctl list-providers --config talond.yaml
+npx talonctl config-show --config talond.yaml
+```
+
+Replace `talond.yaml` with the deployment's actual path. Keep the browser
+access token, live provider API key, and SIP webhook secret in separate
+environment-backed `auth.providers` entries. The browser access token is only
+for browser login; the live API key is used by the live provider; the webhook
+secret authenticates provider delivery. None of those values is the Asterisk
+caller assertion key.
+
+### 2. Create and place the caller-signing key
+
+Generate an Ed25519 key pair with the operator's approved key-management
+process. Keep the private key on the Asterisk host, readable only by the
+Asterisk service account (for example, a 0600 file owned by that account).
+The reference signer reads a private-key file through
+`TALON_SIP_PRIVATE_KEY_FILE`; it does not accept key material or a caller
+subject in command arguments and never logs the assertion.
+
+Put only the public key in Talon's `voice.sip.publicKeys`. The map key is the
+operator-selected key ID in `TALON_SIP_KEY_ID`; the value is either a PEM
+`PUBLIC KEY` or base64url-encoded DER SPKI public key. A key ID can be revoked
+with `voice.sip.revokedKeyIds` without changing the endpoint mapping.
+
+### 3. Configure Talon and its separate secrets
+
+Add the webhook and live-provider entries to the operator config. Keep actual
+values in the environment or secret manager:
+
+```yaml
+auth:
+  providers:
+    openai:
+      apiKey: ${OPENAI_API_KEY}
+    openai-webhook:
+      apiKey: ${OPENAI_STANDARD_WEBHOOK_SECRET}
+
+voice:
+  # Browser voice is independent; keep this false for a SIP-only deployment.
+  enabled: false
+  liveApiKeyRef: openai
+  persona: operator-selected-persona-name
+  sip:
+    enabled: true
+    host: 127.0.0.1
+    # Choose a stable local port when the proxy must route to it. Port 0 is
+    # the schema default and is unsuitable for a fixed proxy upstream.
+    port: 8789
+    path: /voice/sip/webhook
+    standardWebhookSecretRef: openai-webhook
+    issuer: operator-selected-issuer
+    audience: operator-selected-audience
+    publicKeys:
+      operator-key-1: |
+        -----BEGIN PUBLIC KEY-----
+        REPLACE_WITH_OPERATOR_PUBLIC_KEY
+        -----END PUBLIC KEY-----
+    endpointMappings:
+      operator-selected-endpoint-subject:
+        ownerId: operator-selected-stable-principal
+        personaId: operator-selected-persona-database-uuid
+```
+
+The `operator-selected-endpoint-subject` key must exactly match the value
+returned by Asterisk's `CHANNEL(endpoint)` for the authenticated endpoint.
+`ownerId` is an operator-chosen stable principal for the mapped caller. Keep it
+stable across calls and revisions; it is not derived from caller ID. If the
+operator intentionally wants SIP to share the browser voice durable thread,
+`voice:<voice persona name>` (for example, `voice:assistant`) is a valid choice,
+but that sharing is optional and is not a required runtime owner format.
+`personaId` is the persisted database ID for the configured persona, not its
+display name and not the `voice.persona` config string. `talonctl list-personas`
+prints names only; read the matching ID from the configured SQLite database
+with a read-only query such as:
+
+```bash
+sqlite3 -readonly /path/to/actual-talond.sqlite 'SELECT id, name FROM personas ORDER BY name;'
+```
+
+Using the same stable owner and persona ID as browser voice intentionally shares
+that durable history; choose another stable principal when SIP history should
+remain separate.
+
+Substitute the deployment's actual `storage.path`. Do not derive either value
+from caller ID or ordinary SIP headers. `issuer`, `audience`, and the public-key
+ID must match the signer environment exactly. The complete field defaults and
+limits are in the [voice configuration reference](../reference/config-schema.mdx).
+
+If browser voice is enabled as well, keep its `voice.host`/`voice.port` and
+the SIP `voice.sip.host`/`voice.sip.port` as separate listener upstreams. A
+browser login grant (15 minutes by default or 365 days when the explicit
+remember option is selected) is unrelated to `voice.maxSessionLifetimeMs`,
+which defaults to a 15-minute live-call lifetime. SIP has no browser login.
+
+Validate the config and referenced environment names before restarting:
+
+```bash
+npx talonctl doctor --config talond.yaml
+npx talonctl env-check --config talond.yaml
+npx talonctl config-show --config talond.yaml
+```
+
+Use `config-show` only for local inspection after all secret-bearing fields use
+environment-backed references. It is not a universal redaction boundary for
+direct secret fields; never use `--show-secrets` or paste its output into a
+ticket or operator transcript.
+
+### 4. Install the signer in the Asterisk runtime
+
+Copy the repository signer to an absolute path that the Asterisk service can
+execute, such as the operator's chosen `/opt/talon/...` location. The path in
+the example dialplan is illustrative; it is not installed by Talon. Use the
+Node 24 runtime required by the deployment (including the Asterisk service's
+`PATH`) and make the file executable.
+
+Provide these variables to the Asterisk AGI process through its service
+environment or equivalent process manager, never as dialplan arguments:
+
+```text
+TALON_SIP_PRIVATE_KEY_FILE=/operator-secret-path/sip-ed25519-private.pem
+TALON_SIP_ISSUER=operator-selected-issuer
+TALON_SIP_KEY_ID=operator-key-1
+TALON_SIP_AUDIENCE=operator-selected-audience
+```
+
+The private key file must be readable by the Asterisk account and by no other
+unneeded account. Restrict the service environment and backup permissions as
+you would for the provider's SIP password. Restart or reload the Asterisk
+service only through the operator's normal change process after installing the
+signer; Talon does not manage that service.
+
+### 5. Apply the restricted Asterisk references
+
+Copy the relevant contexts from the [dialplan reference](../../examples/voice/asterisk/extensions.conf.example)
+and the endpoint shape from the [PJSIP reference](../../examples/voice/asterisk/pjsip.conf.example)
+into the operator-owned Asterisk configuration. Replace every placeholder:
+
+- The authenticated caller PJSIP endpoint (and any provider leg that the
+  operator deliberately routes to it) must land in the restricted
+  `talon-incoming` context; anonymous or unrelated SIP endpoints must not.
+- `TALON_SIP_ENDPOINT_SUBJECT` must come from `CHANNEL(endpoint)` and must be
+  one of the keys in `voice.sip.endpointMappings`.
+- `TALON_SIP_CALL_BINDING` must come from `CHANNEL(uniqueid)` for the current
+  call. The signer creates a fresh nonce and a maximum 60-second assertion.
+- The provider-assigned SIP contact belongs in the PJSIP AOR's `contact=`.
+  It is a provider value obtained from the provider account or official
+  onboarding material, not a Talon URL or a value to infer from this guide.
+- The provider's documented username, password, transport, codec, and media
+  settings belong in Asterisk's secret/configuration system. They do not go in
+  Talon's YAML, `publicKeys`, or the reference files.
+
+Choose the caller extension in an operator-owned context. For example, route
+extension `700` to the reference `s@talon-incoming` context, and keep a
+separate local-only extension `600` for the echo check:
+
+```asterisk
+[operator-voice]
+; Enable only for the explicitly approved provider test in step 8:
+; exten => 700,1,Goto(talon-incoming,s,1)
+exten => 600,1,Answer()
+ same => n,Echo()
+ same => n,Hangup()
+```
+
+Set the authenticated caller endpoint's context to this operator-owned
+context, or use equivalent routing in the deployment. The `600` path must
+never enter `talon-incoming` or its provider `Dial`; use it only to verify the
+local caller-to-Asterisk media loop. Keep `700` disabled or unrouted until the
+explicitly approved provider test in step 8.
+
+Keep the outgoing `b(talon-outgoing-assertion^s^1)` hook. It removes inherited
+assertion headers and adds exactly one locally generated assertion for the
+outgoing leg, so a caller cannot reuse a parent leg's proof.
+
+### 6. Route the two HTTP paths separately
+
+If a reverse proxy fronts Talon, route the browser path `/voice/` to the
+browser listener and `voice.sip.path` (normally `/voice/sip/webhook`) to the
+SIP listener. For example, with the sample fixed local ports, the browser
+upstream may be `127.0.0.1:8787` and the SIP upstream `127.0.0.1:8789`.
+Choose ports that are free in the deployment; these values are examples, not
+defaults. The SIP listener defaults to loopback and port 0 until the operator
+sets them.
+
+The browser route uses HTTPS, `Host`, `Origin`, `X-Forwarded-Proto: https`,
+browser cookies, and CSRF checks. The SIP route uses Talon's Standard Webhooks
+headers and exact raw request bytes; it does not use browser cookies, browser
+CSRF, SSO, or Basic auth. Do not rewrite the SIP body, change its encoding, or
+route retries to a different path. Publish the proxy's webhook endpoint only
+through the provider's documented callback/private-link arrangement. Keep the
+daemon's SIP port private and allow only the proxy-to-daemon upstream; when
+the proxy is outside the daemon's network namespace, bind `voice.sip.host` to
+an address that the proxy can reach.
+
+### 7. Validate the local path and echo before a provider route
+
+Start Talon with `voice.sip.enabled: true` only after the offline checks pass.
+Confirm the daemon logs the SIP listener on the configured host and port. Use
+the authenticated caller endpoint to dial the local-only `600` extension from
+step 5. This exercises only the caller-to-Asterisk and Asterisk-to-echo media
+path; it never enters `talon-incoming` or the provider `Dial`. The echo proves
+the operator-owned local echo route and media path only. Before enabling the
+provider route, finish the static checks for the configured endpoint mapping,
+signer environment, key-file path, and key-file permissions. Do not treat the
+local echo or static checks as execution of the signer or outgoing provider
+hook; the approved provider test in step 8 relies on its provider delivery and
+durable admission status.
+
+1. The local echo proves the authenticated endpoint reaches the operator-owned
+   local echo context and the local media path completes without a provider
+   trunk; it does not enter `talon-incoming`.
+2. The static check confirms the operator-owned `CHANNEL(endpoint)` mapping,
+   call-binding configuration, signer environment names, and private-key file
+   path and permissions are ready for the approved provider test.
+3. The static dialplan review confirms the outgoing
+   `b(talon-outgoing-assertion^s^1)` hook remains on the provider `Dial` path;
+   the Asterisk CLI checks below confirm the loaded endpoint and dialplan
+   configuration without enabling the provider route.
+
+The local echo and static checks do not prove provider webhook delivery,
+provider SIP header preservation on a real trunk, Live session acceptance, or
+billing. A hand-written `curl` request to the webhook is also insufficient
+because it cannot supply a valid provider event and independently verified
+caller assertion. Keep the provider route disabled until the local checks are
+recorded and the step 8 approval is given.
+
+For the Asterisk CLI checks below, use the corresponding official Asterisk
+operator documentation for the installed release:
+
+```text
+pjsip show endpoints
+pjsip show endpoint <operator-endpoint>
+dialplan show talon-incoming
+```
+
+See [Making a Phone Call](https://docs.asterisk.org/Deployment/Basic-PBX-Functionality/Making-a-Phone-Call/)
+and the [Asterisk PJSIP troubleshooting guide](https://docs.asterisk.org/Configuration/Channel-Drivers/SIP/Configuring-res_pjsip/Asterisk-PJSIP-Troubleshooting-Guide/)
+for the CLI and transport diagnostics. The commands and links do not establish
+that a particular provider trunk is compatible.
+
+### 8. Run one bounded provider test only with explicit approval
+
+After the local echo succeeds, obtain an explicit operator decision that the
+provider route may be enabled and that any provider charge is acceptable. Set
+a short call-duration cap in the provider/PBX controls, disable unattended
+retries, enable only the chosen provider extension (for example, `700`), and
+make one operator-initiated test call. Keep the local-only `600` echo route
+available for offline checks but never route it through the provider. Recheck
+the static dialplan hook and endpoint mapping from step 7. The provider
+webhook delivery HTTP status and the deployment's existing durable SIP status
+can confirm an accepted and verified admission, delivery/session identifiers,
+reservation outcome, and close status when those fields are exposed. Inspect
+available daemon and PBX technical logs for startup or error details only; do
+not assume they contain delivery identifiers or durable admission state, and
+do not log raw headers or assertion values. Stop the call at the approved
+limit, disable the temporary route, and rotate any test credential if the
+operator's change process requires it.
+
+The Talon `voice.maxSessionLifetimeMs` limit bounds the live session; it does
+not grant permission to place a paid call or replace a provider/PBX call cap.
+Provider billing, trunk compatibility, SIP header preservation, and RTP media
+are deployment facts to record separately from Talon's offline checks.
+
+## Troubleshooting network and media
+
+- **No webhook reaches Talon:** verify the provider's documented callback URL,
+  the proxy route and method, the configured `voice.sip.path`, and that the
+  proxy can reach the configured `voice.sip.host`/`port`. Keep the raw
+  `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers and body
+  unchanged. A signature failure is usually a wrong secret, timestamp, or
+  body rewrite; do not disable verification to diagnose it.
+- **Webhook is accepted but caller authority is denied:** compare the exact
+  Asterisk `CHANNEL(endpoint)` subject, `TALON_SIP_ISSUER`,
+  `TALON_SIP_AUDIENCE`, `TALON_SIP_KEY_ID`, public key, and endpoint mapping.
+  Check assertion expiry, nonce reuse, and revocation. Caller ID and ordinary
+  SIP headers cannot repair a missing mapping.
+- **Asterisk signals but there is no audio:** the HTTP proxy carries webhook
+  delivery only; it does not carry RTP. Check the endpoint's transport,
+  `direct_media` setting, negotiated `opus` codec, the provider's required RTP
+  range, and the Asterisk host's NAT/firewall rules for signaling and media.
+  Confirm that external address and local-network settings match the actual
+  NAT topology rather than copying values from this guide. Use `pjsip show
+  endpoint <operator-endpoint>` and the installed Asterisk release's PJSIP
+  logger/troubleshooting procedure with assertion values redacted, then compare
+  the provider's media requirements.
+- **The provider contact or credentials fail:** recheck the provider account's
+  assigned SIP contact, username, password, transport, and codec requirements.
+  Talon does not issue or infer those values. Replace only the operator-owned
+  PJSIP placeholders and repeat the offline/local checks before any paid test.
 
 Example configuration is intentionally incomplete and contains no usable key,
 webhook secret, trunk, or owner mapping:
@@ -74,12 +408,10 @@ tombstones remain and continue to deny new admission when storage saturates.
 The raw-body read also has an absolute 5-second timeout; trickle bytes do not
 extend it, and timed-out requests release their listeners and pending capacity.
 
-This is an offline authority, persistence, and existing-session integration
-boundary. TASK-37 implements the GPT-Live `/accept` and `/attach` flow and the
-ordinary Talon delegation path described above; its checks use fake provider
-HTTP/WebSocket and backend transports. This work still does not install
-Asterisk, provision keys, enable a Live project or trunk, prove custom-header
-preservation on a real trunk, bridge media, or place/accept a paid call. Actual
-Asterisk configuration, issuer/key and principal mapping, project/trunk
-routing, SIP header/media compatibility, and provider billing remain
-unverified deployment concerns.
+The Talon implementation covers the offline authority, persistence, and
+existing-session `/accept`/`/attach` boundary with fake provider HTTP/WebSocket
+and backend transports. It does not install Asterisk, provision keys, enable a
+Live project or trunk, prove custom-header preservation on a real trunk, bridge
+media, or place/accept a paid call. Actual Asterisk configuration, issuer/key
+and principal mapping, project/trunk routing, SIP header/media compatibility,
+and provider billing remain operator verification concerns.
