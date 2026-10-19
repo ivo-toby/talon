@@ -348,18 +348,25 @@ When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
 voice channel. Startup rejects a conflicting ordinary channel configuration and
 does not overwrite an existing non-voice `browser-voice` database row.
 
-Incoming SIP is independently disabled by default. Its Standard Webhooks
-secret authenticates the provider delivery only. Each accepted event also
-requires a separately verified Ed25519 assertion from an authenticated Asterisk
-endpoint mapped by `endpointMappings`; Caller ID and ordinary SIP headers are
-never used as authority. The raw request is capped at 256 KiB and verified
-before JSON parsing. Durable admission retains at most 10,000 call decisions,
+Incoming SIP is independently disabled by default and has its own listener;
+`voice.sip.port: 0` chooses an ephemeral port, so a fixed reverse-proxy
+upstream requires an operator-selected port. Its Standard Webhooks secret
+authenticates the provider delivery through Talon's Standard Webhooks HMAC
+only. The provider path has no browser cookie, browser CSRF, SSO, or Basic-auth
+login. Each accepted event also requires a separately verified Ed25519
+assertion from an authenticated Asterisk endpoint mapped by `endpointMappings`;
+Caller ID and ordinary SIP headers are never used as authority. The raw request
+is capped at 256 KiB and verified before JSON parsing. Durable admission
+retains at most 10,000 call decisions,
 50,000 delivery receipts, and 10,000 grants, with unknown/pending replay
 tombstones retained indefinitely. After the durable attempt marker, Talon
 makes one `POST /v1/live/sessions/{data.session_id}/accept`, attaches the same
 existing session, and never creates a new Live session for SIP. Ambiguous
 accept or missing close finalization remains unknown/incomplete and is never
-retried automatically. See [Incoming SIP with Asterisk](../guides/voice-asterisk.mdx).
+retried automatically. Follow the [ordered Incoming SIP with Asterisk
+operator guide](../guides/voice-asterisk.mdx) for provider/PJSIP setup,
+signer permissions, separate proxy routing, local echo, and the bounded test
+boundary.
 
 When `usdPerMinute` is configured, voice cost is estimated from cumulative
 provider-reported seconds. Final provider usage does not confirm billing, so

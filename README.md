@@ -1908,7 +1908,7 @@ npx talonctl add-mcp --skill web-search --name tavily \
 | `remove-channel`    | Remove a channel and its bindings                                      |
 | `remove-persona`    | Remove a persona, its directory, and bindings                          |
 | `env-check`         | Audit Talon config and MCP definitions for missing env vars            |
-| `config-show`       | Display resolved config with secrets masked                            |
+| `config-show`       | Display resolved config for local inspection; do not paste output      |
 
 `env-check` also accepts `--skills-dir <path>` (default `skills`). It reports
 variable names and set/missing status only; it never prints values.
@@ -2458,7 +2458,8 @@ event-identified native input/output transcript deltas with valid explicit
 missing or legacy timing remains fail-closed at capture.
 
 Incoming SIP is a separate disabled-by-default boundary under `voice.sip`. It
-verifies the raw Standard Webhooks delivery before parsing. The signed
+verifies Talon's Standard Webhooks HMAC delivery before parsing. The provider
+path has no browser cookie, browser CSRF, SSO, or Basic-auth login. The signed
 `webhook-id` identifies the delivery for deduplication; the body event `id` is
 validated independently and need not match it. The receiver then requires a
 distinct server-verified Ed25519 caller assertion mapped from an authenticated
@@ -2471,8 +2472,11 @@ The raw-body read has an absolute 5-second timeout, so trickle bytes do not
 extend it; terminal request paths clean up listeners and release pending
 capacity.
 See the [incoming SIP/Asterisk guide](docs/guides/voice-asterisk.mdx)
-for the reference-only signer and configuration; this does not install a PBX,
-provision keys, or place a paid call.
+for the ordered operator setup, reference signer, proxy routing, local echo,
+and bounded provider-test boundary. This does not install a PBX, provision
+keys, or place a paid call. Browser login retention and the live-call lifetime
+remain separate controls; the guide and [voice configuration reference](docs/reference/config-schema.mdx)
+describe both.
 
 On page load, the browser first checks the cookie with the read-only
 `GET /voice/auth/session` endpoint and only then attempts to read the optional
@@ -2593,7 +2597,8 @@ Complex SQL patterns (UNION, subqueries, CTEs, INTERSECT, EXCEPT) are rejected t
 
 - Credentials use `${ENV_VAR}` references in `talond.yaml` and MCP `headers` / `env` fields — never hardcoded
 - Environment variables loaded from `.env` file at startup
-- `talonctl config-show` masks all secret values in output
+- Keep secret-bearing fields environment-backed; `config-show` is not a
+  universal redaction boundary, so do not paste its output
 - `talonctl env-check` audits config and MCP references without printing values
 
 ### `requireApproval` configuration

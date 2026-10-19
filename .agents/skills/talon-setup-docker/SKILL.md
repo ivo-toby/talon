@@ -57,7 +57,8 @@ docker ps --filter name=talond --format '{{.Names}} {{.Status}}'    # daemon run
   `cat .env`.
 - `config/talond.yaml` *should* only contain `${ENV_VAR}` placeholders,
   but some users hand-paste literal keys. Don't `cat` it either. When
-  the daemon is running, use `talonctl config-show` (auto-masked). Until
+  the daemon is running, use `talonctl config-show` only for local inspection;
+  direct secret fields can still be visible, so never paste its output. Until
   then, inspect specific sections you need with `grep -A` for the keys
   you're checking, and never display lines that match `apiKey:`,
   `botToken:`, `password:`, `secret`, or `token:` patterns with a
@@ -66,7 +67,7 @@ docker ps --filter name=talond --format '{{.Names}} {{.Status}}'    # daemon run
 If you need to *show* a config snippet to the user, use:
 
 ```bash
-talonctl config-show 2>/dev/null         # post-boot, masked
+talonctl config-show 2>/dev/null         # post-boot, local only; do not paste
 # OR pre-boot, redact inline:
 sed -E 's/^(  *(apiKey|botToken|.*[Tt]oken|.*[Ss]ecret|password): )(.+)$/\1***MASKED***/' config/talond.yaml
 ```
@@ -106,7 +107,7 @@ installed `talonctl` if `./install.sh` has been run):
 |---------|---------|
 | `talonctl status` | Daemon health, active runs, queue depth |
 | `talonctl doctor` | Validate config + environment |
-| `talonctl config-show` | Show current config (secrets masked) |
+| `talonctl config-show` | Show current config for local inspection; do not paste output |
 | `talonctl env-check` | List config and MCP env references (names/status only) |
 | `talonctl list-channels` | Configured channels |
 | `talonctl add-channel --name <n> --type <t>` | Add a channel |
@@ -363,6 +364,19 @@ requires an explicit operator decision and an authenticated Asterisk setup
 described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
 This setup skill does not install a PBX, provision keys or trunks, or place a
 paid call.
+
+If the transport choice is not already specified, ask separately: **"Do you
+want to enable the incoming SIP boundary now?"** Continue only for an explicit
+choice. Follow the guide's ordered
+steps for the provider-assigned PJSIP contact, Ed25519 signer and permissions,
+server-owned endpoint mapping, separate webhook/live-provider secrets, proxy
+routes to the two listeners, local echo, media/NAT checks, and one bounded
+provider test. The Docker bundle does not contain a working PBX or provider
+trunk; do not invent provider domains or credentials. Keep the signer private
+key and Asterisk environment outside the Talon container unless the operator
+has deliberately designed that deployment boundary. The linked guide shows
+`npx talonctl` for a source checkout; in this Docker bundle use the host
+`talonctl` wrapper and its configured container path instead.
 
 The browser login form leaves `Keep me signed in for one year` unchecked. The
 default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the
