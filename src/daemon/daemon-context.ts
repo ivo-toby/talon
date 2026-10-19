@@ -49,6 +49,16 @@ import type { ObservabilityService } from '../observability/langfuse/observabili
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
 import type { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import type { DurableVoiceStore } from '../voice/voice-store.js';
+import type { DurableVoiceBackendBridge } from '../voice/voice-backend-bridge.js';
+import type { VoiceOutputSink } from '../voice/voice-output-sink.js';
+import type { VoicePolicy } from '../voice/voice-policy.js';
+import type { DurableVoiceSessionService, IndexedVoiceAuth } from '../voice/voice-session-service.js';
+import type { LiveVoiceProvider, VoiceTransport } from '../voice/voice-types.js';
+import type { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import type { SipIngressService } from '../voice/transports/sip/sip-ingress-service.js';
+import type { SipWebhookServer } from '../voice/transports/sip/sip-webhook-server.js';
+import type { VoiceTelemetry } from '../voice/voice-telemetry.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -116,4 +126,20 @@ export interface DaemonContext {
   readonly toolInstructions: Map<string, string>;
   readonly a2aServer: A2AServer | null;
   readonly a2aTaskMapper: A2ATaskMapper | null;
+  /** Optional browservoice runtime; absent when config.voice.enabled is false. */
+  readonly voiceStore: DurableVoiceStore | null;
+  readonly voicePolicy: VoicePolicy | null;
+  readonly voiceAuth: IndexedVoiceAuth | null;
+  readonly voiceBackendBridge: DurableVoiceBackendBridge | null;
+  readonly voiceOutputSink: VoiceOutputSink | null;
+  readonly voiceSessionService: DurableVoiceSessionService | null;
+  readonly voiceProvider: LiveVoiceProvider | null;
+  readonly voiceTransport: VoiceTransport | null;
+  readonly voiceServer: BrowserVoiceServer | null;
+  /** Optional incoming SIP runtime; absent unless voice.sip.enabled is true. */
+  readonly voiceSipIngress?: SipIngressService | null;
+  readonly voiceSipWebhookServer?: SipWebhookServer | null;
+  readonly voiceTelemetry: VoiceTelemetry | null;
+  readonly voiceRuntimeConfig?: { current: TalondConfig };
+  readonly voiceGeneration?: { value: number };
 }

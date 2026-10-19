@@ -1,0 +1,18 @@
+; Reference only. Configure an authenticated PJSIP endpoint and restricted
+; context before allowing a provider trunk to reach this extension.
+
+[talon-incoming]
+exten => s,1,NoOp(Talon authenticated incoming SIP boundary)
+ same => n,Set(TALON_SIP_ENDPOINT_SUBJECT=${CHANNEL(endpoint)})
+ same => n,ExecIf($["${TALON_SIP_ENDPOINT_SUBJECT}" = ""]?Hangup(603))
+ same => n,Set(TALON_SIP_CALL_BINDING=${CHANNEL(uniqueid)})
+ same => n,AGI(/opt/talon/scripts/voice/asterisk-sign-call.mjs)
+ same => n,Set(_TALON_VOICE_ASSERTION=${TALON_VOICE_ASSERTION})
+ same => n,Dial(PJSIP/talon-live,,b(talon-outgoing-assertion^s^1))
+ same => n,Hangup()
+
+[talon-outgoing-assertion]
+exten => s,1,NoOp(Replace inherited caller assertion before outgoing leg)
+ same => n,Set(PJSIP_HEADER(remove,X-Talon-Voice-Assertion)=)
+ same => n,Set(PJSIP_HEADER(add,X-Talon-Voice-Assertion)=${TALON_VOICE_ASSERTION})
+ same => n,Return()

@@ -1,3 +1,7 @@
+import {
+  extractProviderErrorDiagnostic,
+  type ProviderErrorDiagnostic,
+} from './openai-compatible/agent-cli/error-diagnostics.js';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -115,7 +119,7 @@ type WrapperEvent =
         cacheReadTokens?: number;
       };
     }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; diagnostic?: ProviderErrorDiagnostic };
 
 export class OpenAiCompatibleProvider implements AgentProvider {
   readonly name: ProviderName;
@@ -404,7 +408,11 @@ export class OpenAiCompatibleProvider implements AgentProvider {
           };
         } else if (event.type === 'error') {
           sawErrorEvent = true;
-          yield { type: 'error', message: event.message };
+          yield {
+            type: 'error',
+            message: event.message,
+            diagnostic: extractProviderErrorDiagnostic(event),
+          };
         }
       }
 
@@ -419,6 +427,7 @@ export class OpenAiCompatibleProvider implements AgentProvider {
         yield {
           type: 'error',
           message: `OpenAI-compatible wrapper timed out after ${invocation.timeoutMs}ms`,
+          diagnostic: { category: 'timeout', stage: 'provider-process' },
         };
       } else if (exitCode !== 0 && !sawErrorEvent) {
         const stderr = Buffer.concat(stderrChunks).toString('utf8').trim();

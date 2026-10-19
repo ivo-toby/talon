@@ -1,10 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import pino from 'pino';
+import { ok } from '../../../src/core/types/result.js';
 import { ChannelRepository } from '../../../src/core/database/repositories/channel-repository.js';
 import { PersonaRepository } from '../../../src/core/database/repositories/persona-repository.js';
 import { BindingRepository } from '../../../src/core/database/repositories/binding-repository.js';
-import { reconcileBindings } from '../../../src/channels/channel-setup.js';
+import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
+import { ChannelRegistry } from '../../../src/channels/channel-registry.js';
+import {
+  BROWSER_VOICE_CHANNEL_NAME,
+  registerVoiceChannel,
+  registerVoiceConnector,
+  reconcileBindings,
+} from '../../../src/channels/channel-setup.js';
+import type { ChannelConnector } from '../../../src/channels/channel-types.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
 import type { BindingConfig } from '../../../src/core/config/config-types.js';
 
@@ -131,5 +140,193 @@ describe('reconcileBindings()', () => {
 
     const result = bindingRepo.findDefaultForChannel(channelId);
     expect(result._unsafeUnwrap()).toBeNull();
+  });
+});
+
+describe('registerVoiceChannel()', () => {
+  it('persists only sanitized logical metadata and is idempotent', () => {
+    const db = createTestDb();
+    const channelRepo = new ChannelRepository(db);
+
+    const first = registerVoiceChannel({ channelRepo, logger });
+    const second = registerVoiceChannel({ channelRepo, logger });
+
+    expect(first.isOk()).toBe(true);
+    expect(second.isOk()).toBe(true);
+    expect(second._unsafeUnwrap()).toBe(first._unsafeUnwrap());
+    const row = db
+      .prepare('SELECT type, name, config, credentials_ref, enabled FROM channels WHERE name = ?')
+      .get(BROWSER_VOICE_CHANNEL_NAME) as {
+      type: string;
+      name: string;
+      config: string;
+      credentials_ref: string | null;
+      enabled: number;
+    };
+    expect(row).toEqual({
+      type: 'voice',
+      name: BROWSER_VOICE_CHANNEL_NAME,
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+    });
+    db.close();
+  });
+
+  it('binds the logical voice channel to the configured voice persona', () => {
+    const db = createTestDb();
+    const channelRepo = new ChannelRepository(db);
+    const bindingRepo = new BindingRepository(db);
+    const personaRepo = new PersonaRepository(db);
+    const personaId = uuid();
+    personaRepo.insert({
+      id: personaId,
+      name: 'voice-persona',
+      model: 'model',
+      system_prompt_file: null,
+      skills: '[]',
+      capabilities: '{}',
+      mounts: '[]',
+      max_concurrent: null,
+    });
+
+    const registered = registerVoiceChannel({
+      channelRepo,
+      bindingRepo,
+      personaId,
+      logger,
+    });
+
+    expect(registered.isOk()).toBe(true);
+    expect(bindingRepo.findDefaultForChannel(registered._unsafeUnwrap())._unsafeUnwrap()).toMatchObject({
+      persona_id: personaId,
+      is_default: 1,
+    });
+    db.close();
+  });
+
+  it('rejects a persisted ordinary channel without changing its metadata or binding', () => {
+    const db = createTestDb();
+    try {
+      const channelRepo = new ChannelRepository(db);
+      const bindingRepo = new BindingRepository(db);
+      const personaRepo = new PersonaRepository(db);
+      const ordinaryPersonaId = uuid();
+      const voicePersonaId = uuid();
+      channelRepo.insert({
+        id: uuid(),
+        type: 'terminal',
+        name: BROWSER_VOICE_CHANNEL_NAME,
+        config: '{"port":17700}',
+        credentials_ref: 'fixture-ref',
+        enabled: 1,
+      });
+      personaRepo.insert({
+        id: ordinaryPersonaId,
+        name: 'ordinary-persona',
+        model: 'model',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{}',
+        mounts: '[]',
+        max_concurrent: null,
+      });
+      personaRepo.insert({
+        id: voicePersonaId,
+        name: 'voice-persona',
+        model: 'model',
+        system_prompt_file: null,
+        skills: '[]',
+        capabilities: '{}',
+        mounts: '[]',
+        max_concurrent: null,
+      });
+      const channel = channelRepo.findByName(BROWSER_VOICE_CHANNEL_NAME)._unsafeUnwrap()!;
+      bindingRepo.insert({
+        id: uuid(),
+        channel_id: channel.id,
+        thread_id: null,
+        persona_id: ordinaryPersonaId,
+        is_default: 1,
+      });
+
+      const registered = registerVoiceChannel({
+        channelRepo,
+        bindingRepo,
+        personaId: voicePersonaId,
+        logger,
+      });
+
+      expect(registered.isErr()).toBe(true);
+      expect(channelRepo.findByName(BROWSER_VOICE_CHANNEL_NAME)._unsafeUnwrap()).toMatchObject({
+        type: 'terminal',
+        config: '{"port":17700}',
+        credentials_ref: 'fixture-ref',
+      });
+      expect(bindingRepo.findDefaultForChannel(channel.id)._unsafeUnwrap()).toMatchObject({
+        persona_id: ordinaryPersonaId,
+      });
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('registerVoiceConnector()', () => {
+  function connectorDeps(db: Database.Database, registry: ChannelRegistry) {
+    const channelRepo = new ChannelRepository(db);
+    const registered = registerVoiceChannel({ channelRepo, logger });
+    expect(registered.isOk()).toBe(true);
+    return {
+      channelRepo,
+      channelRegistry: registry,
+      threadRepository: new ThreadRepository(db),
+      sessionService: {
+        notifyThread: async () =>
+          ok({ sessionId: 'session-1', notificationId: 'notification-1', speechRequested: false }),
+      },
+      logger,
+    };
+  }
+
+  it('rejects an incompatible registry connector without replacing it', () => {
+    const db = createTestDb();
+    try {
+      const registry = new ChannelRegistry(logger);
+      const ordinaryConnector = {
+        type: 'terminal',
+        name: BROWSER_VOICE_CHANNEL_NAME,
+        start: async () => undefined,
+        stop: async () => undefined,
+        onMessage: () => undefined,
+        send: async () => ok(undefined),
+        format: (markdown: string) => markdown,
+      } as ChannelConnector;
+      registry.register(ordinaryConnector);
+
+      const result = registerVoiceConnector(connectorDeps(db, registry));
+
+      expect(result.isErr()).toBe(true);
+      expect(registry.get(BROWSER_VOICE_CHANNEL_NAME)).toBe(ordinaryConnector);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps an existing browser voice connector idempotent', () => {
+    const db = createTestDb();
+    try {
+      const registry = new ChannelRegistry(logger);
+      const deps = connectorDeps(db, registry);
+      const first = registerVoiceConnector(deps);
+      const connector = registry.get(BROWSER_VOICE_CHANNEL_NAME);
+      const second = registerVoiceConnector(deps);
+
+      expect(first.isOk()).toBe(true);
+      expect(second.isOk()).toBe(true);
+      expect(registry.get(BROWSER_VOICE_CHANNEL_NAME)).toBe(connector);
+    } finally {
+      db.close();
+    }
   });
 });

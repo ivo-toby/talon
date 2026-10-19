@@ -27,6 +27,11 @@ import type {
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { SubAgentsConfig } from '../core/config/config-types.js';
 import { runSubAgentModelChain } from './subagent-model-chain.js';
+import {
+  createVoiceSafeLogger,
+  observeVoiceSafely,
+  type VoiceObservationContext,
+} from '../observability/langfuse/voice-observation.js';
 
 // ---------------------------------------------------------------------------
 // Invoke context
@@ -42,8 +47,9 @@ export interface SubAgentInvokeContext {
   personaSubagents: string[];
   personaCapabilities: ResolvedCapabilities;
   traceparent?: string;
+  /** Server-owned context; never populated from a bridge request. */
+  voiceObservation?: VoiceObservationContext;
 }
-
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -105,13 +111,21 @@ export class SubAgentRunner {
         return value;
       };
 
-      const result = ctx.traceparent
-        ? await this.observability.observeWithTraceparent(
-            ctx.traceparent,
-            observationInput,
-            observeFn,
-          )
-        : await this.observability.observe(observationInput, observeFn);
+      const result = ctx.voiceObservation
+        ? await observeVoiceSafely({
+            service: this.observability,
+            traceparent: ctx.traceparent,
+            input: observationInput,
+            context: ctx.voiceObservation,
+            callback: observeFn,
+          })
+        : ctx.traceparent
+          ? await this.observability.observeWithTraceparent(
+              ctx.traceparent,
+              observationInput,
+              observeFn,
+            )
+          : await this.observability.observe(observationInput, observeFn);
 
       return ok(result);
     } catch (error) {
@@ -146,6 +160,7 @@ export class SubAgentRunner {
     const unsatisfied = this.findUnsatisfiedCapabilities(
       agent.manifest.requiredCapabilities,
       ctx.personaCapabilities,
+      ctx.voiceObservation !== undefined,
     );
     if (unsatisfied.length > 0) {
       return err(
@@ -157,17 +172,20 @@ export class SubAgentRunner {
 
     const systemPrompt = agent.promptContents.join('\n\n');
     const childLogger = createChildLogger(this.logger, {
-      tool: `subagent:${name}`,
+      tool: ctx.voiceObservation ? 'voice-subagent' : `subagent:${name}`,
       threadId: ctx.threadId,
       persona: ctx.personaId,
     });
+    const modelChainLogger = ctx.voiceObservation
+      ? createVoiceSafeLogger(childLogger)
+      : childLogger;
     const chainResult = await runSubAgentModelChain({
-      name,
+      name: ctx.voiceObservation ? 'voice-subagent' : name,
       agent,
       input,
       override: this.subagentOverrides[name],
       modelResolver: this.modelResolver,
-      logger: childLogger,
+      logger: modelChainLogger,
       createContext: ({ model, entry, abortSignal, providerOptions }) => ({
         threadId: ctx.threadId,
         personaId: ctx.personaId,
@@ -175,8 +193,12 @@ export class SubAgentRunner {
         model,
         maxOutputTokens: entry.maxTokens,
         rootPaths: agent.manifest.rootPaths,
-        services: { ...this.services, logger: childLogger },
-        telemetry: { isEnabled: !(this.observability instanceof NoopObservabilityService) },
+        services: { ...this.services, logger: modelChainLogger },
+        telemetry: {
+          isEnabled:
+            ctx.voiceObservation === undefined &&
+            !(this.observability instanceof NoopObservabilityService),
+        },
         abortSignal,
         providerOptions,
       }),
@@ -200,15 +222,23 @@ export class SubAgentRunner {
   private findUnsatisfiedCapabilities(
     required: string[],
     capabilities: ResolvedCapabilities,
+    voiceExecution = false,
   ): string[] {
-    const allLabels = [...capabilities.allow, ...capabilities.requireApproval];
-
-    // Build a set of capability prefixes the persona has
     const personaPrefixes = new Set<string>();
-    for (const label of allLabels) {
+    const approvalPrefixes = new Set<string>();
+    const labels = voiceExecution
+      ? capabilities.allow
+      : [...capabilities.allow, ...capabilities.requireApproval];
+    for (const label of labels) {
       const prefix = extractCapabilityPrefix(label);
       if (prefix !== null) {
         personaPrefixes.add(prefix);
+      }
+    }
+    if (voiceExecution) {
+      for (const label of capabilities.requireApproval) {
+        const prefix = extractCapabilityPrefix(label);
+        if (prefix !== null) approvalPrefixes.add(prefix);
       }
     }
 
@@ -221,7 +251,7 @@ export class SubAgentRunner {
         unsatisfied.push(req);
         continue;
       }
-      if (!personaPrefixes.has(reqPrefix)) {
+      if (!personaPrefixes.has(reqPrefix) || approvalPrefixes.has(reqPrefix)) {
         unsatisfied.push(req);
       }
     }

@@ -23,7 +23,12 @@ import { bootstrap } from './daemon-bootstrap.js';
 import { AgentRunner } from './agent-runner.js';
 import { writePidFile, removePidFile } from './lifecycle.js';
 import { WatchdogNotifier } from './watchdog.js';
-import { registerChannels, injectSiblingBotIds } from '../channels/channel-setup.js';
+import {
+  registerChannels,
+  registerVoiceConnector,
+  injectSiblingBotIds,
+  BROWSER_VOICE_CHANNEL_NAME,
+} from '../channels/channel-setup.js';
 
 import type { DaemonContext } from './daemon-context.js';
 import type { DaemonState, DaemonHealth } from './daemon-types.js';
@@ -98,7 +103,7 @@ export class TalondDaemon {
         startupTimeoutMs: codexRunner.startupTimeoutMs,
       });
       if (runnerReady.isErr()) {
-        return this.failStartup(runnerReady.error);
+        return this.failStartup(runnerReady.error, 'Failed to start Codex sandbox runner dependency');
       }
       this.logger.info(
         { endpoint: new URL(codexRunner.endpoint).origin },
@@ -123,7 +128,10 @@ export class TalondDaemon {
     await this.mcpRegistry.startAll();
 
     // 3. Create the agent runner and start the host-tools bridge.
-    this.agentRunner = new AgentRunner(this.ctx);
+    this.agentRunner = new AgentRunner(this.ctx, {
+      voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
+    });
     this.ctx.hostToolsBridge.start();
 
     // 4. Start channel connectors (non-fatal).
@@ -139,6 +147,30 @@ export class TalondDaemon {
 
     // Inject sibling bot IDs for multi-connector self-filtering.
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
+
+    if (this.ctx.voiceServer && this.ctx.config.voice?.enabled) {
+      try {
+        await this.ctx.voiceServer.start(this.ctx.config.voice.host, this.ctx.config.voice.port);
+      } catch (cause) {
+        return this.failStartup(
+          cause instanceof Error ? cause : new Error(String(cause)),
+          'Failed to start browser voice server',
+        );
+      }
+    }
+    if (this.ctx.voiceSipWebhookServer && this.ctx.config.voice?.sip?.enabled) {
+      try {
+        await this.ctx.voiceSipWebhookServer.start(
+          this.ctx.config.voice.sip.host,
+          this.ctx.config.voice.sip.port,
+        );
+      } catch (cause) {
+        return this.failStartup(
+          cause instanceof Error ? cause : new Error(String(cause)),
+          'Failed to start incoming SIP webhook server',
+        );
+      }
+    }
 
     // 5. Start queue processing.
     this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
@@ -213,6 +245,15 @@ export class TalondDaemon {
 
       this.ctx.scheduler.stop();
 
+      await this.ctx.voiceSessionService?.shutdown();
+      this.ctx.voiceSipIngress?.closeAdmission();
+      try {
+        await this.ctx.voiceServer?.stop();
+        await this.ctx.voiceSipWebhookServer?.stop();
+      } catch (cause) {
+        this.logger.warn({ cause }, 'daemon: failed to stop voice servers');
+      }
+
       if (this.mcpRegistry !== null) {
         await this.mcpRegistry.stopAll();
         this.mcpRegistry = null;
@@ -255,13 +296,42 @@ export class TalondDaemon {
     this.logger.info('daemon: stopped');
   }
 
-  private async failStartup(cause: Error): Promise<Result<void, DaemonError>> {
+  private async failStartup(
+    cause: Error,
+    message = 'Failed to start daemon',
+  ): Promise<Result<void, DaemonError>> {
     const context = this.ctx;
     this.ctx = null;
     this.agentRunner = null;
     this._state = 'error';
 
     if (context !== null) {
+      try {
+        await context.channelRegistry.stopAll();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop channel connectors after startup failure',
+        );
+      }
+      context.scheduler.stop();
+      try {
+        await context.voiceSessionService?.shutdown();
+        await context.voiceServer?.stop();
+        context.voiceSipIngress?.closeAdmission();
+        await context.voiceSipWebhookServer?.stop();
+      } catch (cleanupCause) {
+        this.logger.warn(
+          { cleanupCause },
+          'daemon: failed to stop voice runtime after startup failure',
+        );
+      }
+      if (this.mcpRegistry !== null) {
+        await this.mcpRegistry.stopAll();
+        this.mcpRegistry = null;
+      }
+      context.queueManager.stopProcessing();
+      context.hostToolsBridge.stop();
       try {
         await context.backgroundAgentManager?.shutdown();
       } catch (cleanupCause) {
@@ -289,7 +359,7 @@ export class TalondDaemon {
     }
 
     return err(
-      new DaemonError(`Failed to start Codex sandbox runner dependency: ${cause.message}`, cause),
+      new DaemonError(`${message}: ${cause.message}`, cause),
     );
   }
 
@@ -347,6 +417,68 @@ export class TalondDaemon {
     const newConfig = configResult.value;
     const oldConfig = this.ctx.config;
 
+    // Freeze voice admission and invalidate browser auth before personas,
+    // skills, or MCP definitions become mutable. This preserves the policy
+    // generation captured by every existing delegation.
+    const voiceReload = this.ctx.voiceSessionService;
+    const voiceConfigChanged = JSON.stringify(oldConfig.voice) !== JSON.stringify(newConfig.voice);
+    const sipReload = this.ctx.voiceSipIngress;
+    const sipConfigChanged = JSON.stringify(oldConfig.voice?.sip) !== JSON.stringify(newConfig.voice?.sip);
+    if (voiceReload) {
+      voiceReload.closeAdmission();
+      voiceReload.bumpGeneration();
+      if (this.ctx.voiceGeneration) this.ctx.voiceGeneration.value += 1;
+    }
+    if (sipReload) {
+      sipReload.closeAdmission();
+      if (sipConfigChanged) {
+        try {
+          await this.ctx.voiceSipWebhookServer?.stop();
+        } catch (cause) {
+          this.logger.warn({ cause }, 'daemon: reload — failed to stop old SIP webhook server');
+        }
+      }
+      const revoked = sipReload.revokeAllAuthority();
+      if (revoked.isErr()) {
+        return err(new DaemonError('Failed to revoke incoming SIP authority', revoked.error));
+      }
+    }
+    const invalidated = this.ctx.voiceAuth?.invalidateRuntime();
+    if (invalidated?.isErr()) {
+      if (sipReload && !sipConfigChanged) sipReload.openAdmission();
+      return err(new DaemonError('Failed to revoke browser voice authentication', invalidated.error));
+    }
+    if (voiceReload) {
+      await voiceReload.shutdown();
+      if (voiceConfigChanged) {
+        try {
+          await this.ctx.voiceServer?.stop();
+        } catch (cause) {
+          this.logger.warn({ cause }, 'daemon: reload — failed to stop old browser voice server');
+        }
+      }
+    }
+    if (this.ctx.voiceAuth && !newConfig.voice?.enabled) this.ctx.voiceAuth.disable();
+
+    if (this.ctx.voiceAuth && newConfig.voice?.enabled) {
+      const voiceAccessToken = resolveVoiceAccessToken(newConfig);
+      const voicePersonaName = newConfig.voice.persona ?? newConfig.personas[0]?.name;
+      if (!voiceAccessToken || !voicePersonaName) {
+        this.ctx.voiceAuth.disable();
+        if (sipReload && !sipConfigChanged) sipReload.openAdmission();
+        return err(new DaemonError('Failed to reload browser voice authentication'));
+      }
+      const rebound = this.ctx.voiceAuth.rebind(
+        voiceAccessToken,
+        `voice:${voicePersonaName}`,
+      );
+      if (rebound.isErr()) {
+        this.ctx.voiceAuth.disable();
+        if (sipReload && !sipConfigChanged) sipReload.openAdmission();
+        return err(new DaemonError('Failed to reload browser voice authentication', rebound.error));
+      }
+    }
+
     this.logger.info({ configPath: effectivePath }, 'daemon: applying hot-reload');
 
     // Log level — apply immediately.
@@ -392,6 +524,8 @@ export class TalondDaemon {
     // Reload personas.
     const personaReload = await this.ctx.personaLoader.loadFromConfig(newConfig.personas);
     if (personaReload.isErr()) {
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
+      if (sipReload && !sipConfigChanged) sipReload.openAdmission();
       return err(new DaemonError(`Failed to reload personas: ${personaReload.error.message}`));
     }
 
@@ -402,6 +536,8 @@ export class TalondDaemon {
       this.ctx.dataDir,
     );
     if (loadedSkillsResult.isErr()) {
+      if (voiceReload && !voiceConfigChanged) voiceReload.openAdmission();
+      if (sipReload && !sipConfigChanged) sipReload.openAdmission();
       return err(
         new DaemonError(`Failed to reload skills: ${loadedSkillsResult.error.message}`),
       );
@@ -441,6 +577,21 @@ export class TalondDaemon {
       messagePipeline: this.ctx.messagePipeline,
       logger: this.logger,
     });
+    if ((newConfig.voice?.enabled || newConfig.voice?.sip?.enabled) && this.ctx.voiceSessionService) {
+      const voiceConnector = registerVoiceConnector({
+        channelRegistry: this.ctx.channelRegistry,
+        channelRepo: this.ctx.repos.channel,
+        threadRepository: this.ctx.repos.thread,
+        sessionService: this.ctx.voiceSessionService,
+        logger: this.logger,
+      }, BROWSER_VOICE_CHANNEL_NAME);
+      if (voiceConnector.isErr()) {
+        this.logger.error(
+          { cause: voiceConnector.error },
+          'daemon: reload — failed to register browser voice connector',
+        );
+      }
+    }
     try {
       await this.ctx.channelRegistry.startAll();
       this.logger.info('daemon: all channel connectors started');
@@ -453,10 +604,32 @@ export class TalondDaemon {
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
-    this.agentRunner = new AgentRunner(this.ctx);
+    this.agentRunner = new AgentRunner(this.ctx, {
+      voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
+      voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
+    });
 
     // Update config snapshot.
     (this.ctx as { config: TalondConfig }).config = newConfig;
+    if (this.ctx.voiceRuntimeConfig) this.ctx.voiceRuntimeConfig.current = newConfig;
+    if (
+      voiceReload &&
+      !voiceConfigChanged &&
+      (newConfig.voice?.enabled || newConfig.voice?.sip?.enabled)
+    ) {
+      voiceReload.openAdmission();
+    } else if (voiceReload && voiceConfigChanged) {
+      this.logger.warn('daemon: reload — browser voice configuration changed; restart required to rebuild its provider and auth runtime');
+    } else if (!voiceReload && newConfig.voice?.enabled) {
+      this.logger.warn('daemon: reload — browser voice was enabled; restart required to initialize its provider and auth runtime');
+    }
+    if (sipReload && !sipConfigChanged && newConfig.voice?.sip?.enabled) {
+      sipReload.openAdmission();
+    } else if (sipReload && sipConfigChanged) {
+      this.logger.warn('daemon: reload — incoming SIP configuration changed; restart required to rebuild its verifier and webhook runtime');
+    } else if (!sipReload && newConfig.voice?.sip?.enabled) {
+      this.logger.warn('daemon: reload — incoming SIP was enabled; restart required to initialize its verifier and webhook runtime');
+    }
 
     this.logger.info('daemon: hot-reload complete');
     return ok(undefined);
@@ -633,4 +806,14 @@ export class TalondDaemon {
     if (changed.length > 0)
       this.logger.info({ changed: changed }, 'daemon: reload — personas changed');
   }
+}
+
+function resolveVoiceAccessToken(config: TalondConfig): string | undefined {
+  const voice = config.voice;
+  if (!voice?.enabled) return undefined;
+  return (
+    voice.accessToken ??
+    config.auth.providers[voice.accessTokenRef]?.apiKey ??
+    config.auth.apiKey
+  );
 }

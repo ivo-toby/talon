@@ -29,7 +29,9 @@ vi.mock('../../../src/daemon/lifecycle.js', () => ({
 }));
 
 vi.mock('../../../src/channels/channel-setup.js', () => ({
+  BROWSER_VOICE_CHANNEL_NAME: 'browser-voice',
   registerChannels: vi.fn(),
+  registerVoiceConnector: vi.fn().mockReturnValue(ok(undefined)),
   injectSiblingBotIds: vi.fn(),
 }));
 
@@ -55,7 +57,7 @@ import { TalondDaemon } from '../../../src/daemon/daemon.js';
 import { bootstrap } from '../../../src/daemon/daemon-bootstrap.js';
 import { loadConfig } from '../../../src/core/config/config-loader.js';
 import { writePidFile, removePidFile } from '../../../src/daemon/lifecycle.js';
-import { injectSiblingBotIds } from '../../../src/channels/channel-setup.js';
+import { injectSiblingBotIds, registerVoiceConnector } from '../../../src/channels/channel-setup.js';
 import { DaemonError } from '../../../src/core/errors/index.js';
 import {
   CodexSandboxRunnerReadinessError,
@@ -665,6 +667,169 @@ describe('TalondDaemon', () => {
       await daemon.reload();
 
       expect(injectSiblingBotIds).toHaveBeenCalledOnce();
+    });
+
+    it('keeps SIP-only voice admission and connector registration active on reload', async () => {
+      const voiceSessionService = {
+        closeAdmission: vi.fn(),
+        bumpGeneration: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+        openAdmission: vi.fn(),
+      };
+      const voiceSipIngress = {
+        closeAdmission: vi.fn(),
+        revokeAllAuthority: vi.fn().mockReturnValue(ok(0)),
+        openAdmission: vi.fn(),
+      };
+      const config = {
+        ...makeMockContext().config,
+        voice: {
+          enabled: false,
+          sip: { enabled: true, host: '127.0.0.1', port: 8787 },
+        },
+      } as any;
+      const ctx = setupSuccessfulBootstrap({
+        config,
+        voiceSessionService: voiceSessionService as any,
+        voiceSipIngress: voiceSipIngress as any,
+      });
+      await daemon.start('/config.yaml');
+      vi.mocked(registerVoiceConnector).mockClear();
+      vi.mocked(loadConfig).mockReturnValue(ok(config));
+
+      const result = await daemon.reload();
+
+      expect(result.isOk()).toBe(true);
+      expect(registerVoiceConnector).toHaveBeenCalledOnce();
+      expect(voiceSessionService.openAdmission).toHaveBeenCalledOnce();
+      expect(voiceSipIngress.openAdmission).toHaveBeenCalledOnce();
+    });
+
+    it('rebinds the effective indirect voice credential after durable invalidation', async () => {
+      const voiceAuth = {
+        invalidateRuntime: vi.fn().mockReturnValue(ok(undefined)),
+        rebind: vi.fn().mockReturnValue(ok(undefined)),
+        disable: vi.fn(),
+      };
+      const voiceSessionService = {
+        closeAdmission: vi.fn(),
+        bumpGeneration: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+        openAdmission: vi.fn(),
+      };
+      const oldConfig = {
+        ...makeMockContext().config,
+        auth: {
+          mode: 'api_key',
+          providers: { voice: { apiKey: 'old-indirect-secret' } },
+        },
+        personas: [],
+        voice: {
+          enabled: true,
+          persona: 'assistant',
+          accessTokenRef: 'voice',
+        },
+      } as any;
+      const ctx = setupSuccessfulBootstrap({
+        config: oldConfig,
+        voiceAuth: voiceAuth as any,
+        voiceSessionService: voiceSessionService as any,
+        voiceGeneration: { value: 0 },
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = {
+        ...oldConfig,
+        auth: {
+          ...oldConfig.auth,
+          providers: { voice: { apiKey: 'new-indirect-secret' } },
+        },
+      };
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig));
+
+      const result = await daemon.reload();
+
+      expect(result.isOk()).toBe(true);
+      expect(voiceAuth.invalidateRuntime).toHaveBeenCalledOnce();
+      expect(voiceAuth.rebind).toHaveBeenCalledWith('new-indirect-secret', 'voice:assistant');
+      expect(voiceAuth.disable).not.toHaveBeenCalled();
+      expect(voiceSessionService.openAdmission).toHaveBeenCalledOnce();
+    });
+
+    it('aborts before persona reload when durable voice invalidation fails', async () => {
+      const voiceAuth = {
+        invalidateRuntime: vi.fn().mockReturnValue(err(new Error('database unavailable'))),
+        rebind: vi.fn().mockReturnValue(ok(undefined)),
+        disable: vi.fn(),
+      };
+      const voiceSessionService = {
+        closeAdmission: vi.fn(),
+        bumpGeneration: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+        openAdmission: vi.fn(),
+      };
+      const config = {
+        ...makeMockContext().config,
+        auth: { mode: 'api_key', providers: { voice: { apiKey: 'secret' } } },
+        personas: [],
+        voice: { enabled: true, persona: 'assistant', accessTokenRef: 'voice' },
+      } as any;
+      const ctx = setupSuccessfulBootstrap({
+        config,
+        voiceAuth: voiceAuth as any,
+        voiceSessionService: voiceSessionService as any,
+        voiceGeneration: { value: 0 },
+      });
+      await daemon.start('/config.yaml');
+      vi.mocked(loadConfig).mockReturnValue(ok(config));
+
+      const result = await daemon.reload();
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('Failed to revoke browser voice authentication');
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(voiceAuth.rebind).not.toHaveBeenCalled();
+      expect(voiceAuth.disable).not.toHaveBeenCalled();
+    });
+
+    it('disables voice authentication when durable credential rebind fails', async () => {
+      const voiceAuth = {
+        invalidateRuntime: vi.fn().mockReturnValue(ok(undefined)),
+        rebind: vi.fn().mockReturnValue(err(new Error('database unavailable'))),
+        disable: vi.fn(),
+      };
+      const voiceSessionService = {
+        closeAdmission: vi.fn(),
+        bumpGeneration: vi.fn(),
+        shutdown: vi.fn().mockResolvedValue(undefined),
+        openAdmission: vi.fn(),
+      };
+      const config = {
+        ...makeMockContext().config,
+        auth: { mode: 'api_key', providers: { voice: { apiKey: 'secret' } } },
+        personas: [],
+        voice: { enabled: true, persona: 'assistant', accessTokenRef: 'voice' },
+      } as any;
+      const ctx = setupSuccessfulBootstrap({
+        config,
+        voiceAuth: voiceAuth as any,
+        voiceSessionService: voiceSessionService as any,
+        voiceGeneration: { value: 0 },
+      });
+      await daemon.start('/config.yaml');
+
+      const newConfig = {
+        ...config,
+        auth: { ...config.auth, providers: { voice: { apiKey: 'rotated-secret' } } },
+      };
+      vi.mocked(loadConfig).mockReturnValue(ok(newConfig));
+
+      const result = await daemon.reload();
+
+      expect(result.isErr()).toBe(true);
+      expect(voiceAuth.disable).toHaveBeenCalledOnce();
+      expect(ctx.personaLoader.loadFromConfig).not.toHaveBeenCalled();
+      expect(voiceSessionService.openAdmission).not.toHaveBeenCalled();
     });
   });
 

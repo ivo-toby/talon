@@ -38,21 +38,33 @@ import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.j
 
 import { ChannelRegistry } from '../channels/channel-registry.js';
 import { ChannelRouter } from '../channels/channel-router.js';
-import { registerChannels } from '../channels/channel-setup.js';
+import {
+  registerChannels,
+  registerVoiceChannel,
+  registerVoiceConnector,
+  BROWSER_VOICE_CHANNEL_NAME,
+} from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
-import { QueueManager } from '../queue/queue-manager.js';
+import {
+  createQueueDiagnosticResolver,
+  QueueManager,
+} from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
 import { migrateLegacySchedules } from '../scheduler/legacy-schedule-migration.js';
 import { DaemonError } from '../core/errors/error-types.js';
+import { PolicyError } from '../core/errors/index.js';
 import { AuditLogger } from '../core/logging/audit-logger.js';
 import { RepositoryAuditStore } from '../core/database/repositories/audit-repository.js';
 import { PersonaLoader } from '../personas/persona-loader.js';
+import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import { SkillLoader } from '../skills/skill-loader.js';
 import { SkillResolver } from '../skills/skill-resolver.js';
 import { ThreadWorkspace } from '../memory/thread-workspace.js';
 import { SessionTracker } from '../sandbox/session-tracker.js';
 
 import { HostToolsBridge } from '../tools/host-tools-bridge.js';
+import { filterVoiceMcpTools } from '../tools/tool-filter.js';
+import { hasOAuthMcpAuth } from '../mcp/resolve-mcp-servers.js';
 import { BackgroundAgentManager } from '../subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import { SpritesClient } from '../execution-env/sprites-client.js';
@@ -69,14 +81,54 @@ import { CodexCliProvider } from '../providers/codex-cli-provider.js';
 import { OpenAiCompatibleProvider } from '../providers/openai-compatible-provider.js';
 import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider-registry.js';
 import { recoverFromCrash } from './lifecycle.js';
-import { ContextRoller } from './context-roller.js';
+import {
+  ContextRoller,
+  normalizeContextRollerDiagnostics,
+} from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
 import type { DaemonContext } from './daemon-context.js';
 import { loadToolInstructions } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
+import {
+  createVoiceObservationContext,
+  createVoiceSafeLogger,
+  observeVoiceSafely,
+} from '../observability/langfuse/voice-observation.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import { VoiceRepository } from '../core/database/repositories/voice-repository.js';
+import { VoiceAuthRepository } from '../core/database/repositories/voice-auth-repository.js';
+import { DurableVoiceStore } from '../voice/voice-store.js';
+import { DurableVoiceBackendBridge, type VoiceExecutionGateInput } from '../voice/voice-backend-bridge.js';
+import { VoiceOutputSink } from '../voice/voice-output-sink.js';
+import { getVoiceNativeToolNames, VoicePolicy } from '../voice/voice-policy.js';
+import {
+  BrowserVoiceTransport,
+  IndexedVoiceAuth,
+  DurableVoiceSessionService,
+} from '../voice/voice-session-service.js';
+import { reconcileVoiceSessions } from '../voice/voice-session-reconciler.js';
+import { OpenAiLiveVoiceProvider } from '../voice/providers/openai-live-provider.js';
+import {
+  createVoiceAdapterSelection,
+  VoiceCallAdmission,
+} from '../voice/voice-adapters.js';
+import { createVoiceAuthorization } from '../voice/voice-authorization.js';
+import { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import { VoiceSipRepository } from '../core/database/repositories/voice-sip-repository.js';
+import { ConfiguredSipAuthorizationResolver } from '../voice/transports/sip/sip-authorization.js';
+import { SipIngressService, type SipCallControlResult } from '../voice/transports/sip/sip-ingress-service.js';
+import { SipTransport } from '../voice/transports/sip/sip-transport.js';
+import { SipWebhookServer } from '../voice/transports/sip/sip-webhook-server.js';
+import { VoiceTelemetry } from '../voice/voice-telemetry.js';
+import type {
+  VoiceOwnerContext,
+  VoicePolicySnapshot,
+  VoiceResult,
+  VoiceSessionRecord,
+  VoiceTransport,
+} from '../voice/voice-types.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -472,39 +524,66 @@ export async function bootstrap(
         threadId,
         personaId,
         input,
+        diagnostics,
       ) => {
-        const result = await runSubAgentModelChain({
-          name: summarizerName,
-          agent: summarizerAgent,
-          input,
-          override: overrideConfig,
-          modelResolver,
-          logger,
-          createContext: ({ model, entry, abortSignal, providerOptions }) => ({
-            threadId,
-            personaId,
-            model,
-            systemPrompt: summarizerPrompt,
-            maxOutputTokens: entry.maxTokens,
-            rootPaths: [],
-            services: {
-              memory: repos.memory,
-              schedules: repos.schedule,
-              personas: repos.persona,
-              channels: repos.channel,
-              threads: repos.thread,
-              messages: repos.message,
-              runs: repos.run,
-              queue: repos.queue,
-              logger,
-            },
-            telemetry: { isEnabled: !(observability instanceof NoopObservabilityService) },
-            abortSignal,
-            providerOptions,
-          }),
-        });
+        const resolvedDiagnostics = normalizeContextRollerDiagnostics(diagnostics);
+        const isVoiceOrUnknown = resolvedDiagnostics.privacy !== 'nonvoice';
+        const modelChainLogger = isVoiceOrUnknown ? createVoiceSafeLogger(logger) : logger;
+        const voiceObservation = isVoiceOrUnknown
+          ? resolvedDiagnostics.voiceObservation ??
+            createVoiceObservationContext({ threadId, personaId })
+          : undefined;
+        const run = async (): Promise<Result<import('../subagents/subagent-types.js').SubAgentResult, import('../core/errors/index.js').SubAgentError>> => {
+          const result = await runSubAgentModelChain({
+            name: summarizerName,
+            agent: summarizerAgent,
+            input,
+            override: overrideConfig,
+            modelResolver,
+            logger: modelChainLogger,
+            createContext: ({ model, entry, abortSignal, providerOptions }) => ({
+              threadId,
+              personaId,
+              model,
+              systemPrompt: summarizerPrompt,
+              maxOutputTokens: entry.maxTokens,
+              rootPaths: [],
+              services: {
+                memory: repos.memory,
+                schedules: repos.schedule,
+                personas: repos.persona,
+                channels: repos.channel,
+                threads: repos.thread,
+                messages: repos.message,
+                runs: repos.run,
+                queue: repos.queue,
+                logger: modelChainLogger,
+              },
+              telemetry: {
+                isEnabled:
+                  !isVoiceOrUnknown && !(observability instanceof NoopObservabilityService),
+              },
+              abortSignal,
+              providerOptions,
+            }),
+          });
 
-        return result.map((value) => value.result);
+          return result.map((value) => value.result);
+        };
+
+        if (!voiceObservation) return await run();
+
+        return await observeVoiceSafely({
+          service: observability,
+          input: {
+            type: 'agent',
+            name: `context-roller:${summarizerName}`,
+            input,
+            metadata: { threadId, personaId, summarizer: summarizerName },
+          },
+          context: voiceObservation,
+          callback: async () => await run(),
+        });
       };
 
       boundSummarizers.set(summarizerName, boundSummarizer);
@@ -539,14 +618,458 @@ export async function bootstrap(
     }
   }
 
-  // 10. Crash recovery
+  // 10. Voice durability and startup reconciliation must run before generic
+  // queue crash recovery. Voice queue rows are excluded from the generic
+  // reset, so an uncertain provider effect can never be replayed by polling.
+  const voiceStore = new DurableVoiceStore(db, repos.queue, new VoiceRepository(db));
+  const voiceReconciliation = reconcileVoiceSessions(voiceStore, {
+    usdPerMinute: config.voice?.usdPerMinute,
+  });
+  if (voiceReconciliation.isErr()) {
+    await cleanupBootstrapFailure(db, observability, logger);
+    return err(
+      new DaemonError(
+        `Failed to reconcile browser voice state: ${voiceReconciliation.error.message}`,
+        voiceReconciliation.error,
+      ),
+    );
+  }
+  if (
+    voiceReconciliation.value.unknownDelegations.length > 0 ||
+    voiceReconciliation.value.skippedDelegations.length > 0
+  ) {
+    logger.warn(
+      {
+        unknown: voiceReconciliation.value.unknownDelegations.length,
+        skipped: voiceReconciliation.value.skippedDelegations.length,
+      },
+      'bootstrap: reconciled browser voice state without replay',
+    );
+  }
+
+  let voicePolicy: VoicePolicy | null = null;
+  let voiceAuth: IndexedVoiceAuth | null = null;
+  let voiceBackendBridge: DurableVoiceBackendBridge | null = null;
+  let voiceOutputSink: VoiceOutputSink | null = null;
+  let voiceSessionService: DurableVoiceSessionService | null = null;
+  let voiceProvider: OpenAiLiveVoiceProvider | null = null;
+  let voiceTransport: VoiceTransport | null = null;
+  let voiceSipTransport: SipTransport | null = null;
+  let voiceServer: BrowserVoiceServer | null = null;
+  let voiceSipIngress: SipIngressService | null = null;
+  let voiceSipWebhookServer: SipWebhookServer | null = null;
+  let voiceTelemetry: VoiceTelemetry | null = null;
+  let voiceChannelId: string | null = null;
+  const voiceRuntimeConfig = { current: config };
+  const voiceGeneration = { value: 0 };
+  const daemonContextRef: {
+    current?: Pick<DaemonContext, 'loadedSkills'>;
+  } = {};
+  if (config.voice?.enabled || config.voice?.sip?.enabled) {
+    const voicePersonaName = config.voice.persona ?? config.personas[0]?.name;
+    if (!voicePersonaName) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          'voice.persona is required when browser voice or incoming SIP is enabled',
+        ),
+      );
+    }
+    const loadedVoicePersona = personaLoader.getByName(voicePersonaName);
+    if (loadedVoicePersona.isErr() || !loadedVoicePersona.value) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Voice persona not found: ${voicePersonaName}`,
+          loadedVoicePersona.isErr() ? loadedVoicePersona.error : undefined,
+        ),
+      );
+    }
+    const voicePersonaRow = repos.persona.findByName(voicePersonaName);
+    if (voicePersonaRow.isErr() || !voicePersonaRow.value) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Voice persona not found: ${voicePersonaName}`,
+          voicePersonaRow.isErr() ? voicePersonaRow.error : undefined,
+        ),
+      );
+    }
+    const voicePersonaId = voicePersonaRow.value.id;
+
+    const voiceProviderName =
+      loadedVoicePersona.value.config.provider ?? config.agentRunner.defaultProvider;
+    const voiceProviderEntry = providerRegistry.get(voiceProviderName);
+    if (!voiceProviderEntry) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Voice provider "${voiceProviderName}" is not enabled`,
+        ),
+      );
+    }
+    const voiceAccessToken =
+      config.voice.accessToken ??
+      config.auth.providers[config.voice.accessTokenRef]?.apiKey ??
+      config.auth.apiKey;
+    if (config.voice.enabled && !voiceAccessToken) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('voice.accessToken or its configured auth provider is required'));
+    }
+
+    voiceTelemetry = new VoiceTelemetry({ observability });
+
+    const providerTypes = new Map<string, string>();
+    for (const [name, providerConfig] of Object.entries(config.agentRunner.providers)) {
+      providerTypes.set(name, providerConfig.type ?? name);
+    }
+    const provenMcpServers = new Set<string>();
+    voicePolicy = new VoicePolicy({
+      providerTypes,
+      provenMcpServers,
+    });
+    if (config.voice.enabled) {
+      const voiceAuthRepository = new VoiceAuthRepository(db);
+      voiceAuth = new IndexedVoiceAuth({
+        accessToken: voiceAccessToken!,
+        ownerId: `voice:${voicePersonaName}`,
+        repository: voiceAuthRepository,
+      });
+      if (voiceAuth.initializationResult.isErr()) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(new DaemonError('Failed to initialize browser voice authentication'));
+      }
+    }
+    const voiceBackendModel = loadedVoicePersona.value.config.model;
+    const voiceLiveModel = config.voice.model ?? 'gpt-live-1';
+    const captureVoicePolicy = (owner: VoiceOwnerContext): VoiceResult<VoicePolicySnapshot> => {
+      const currentConfig = voiceRuntimeConfig.current;
+      const personaName = currentConfig.voice?.persona ?? voicePersonaName;
+      const currentPersona = personaLoader.getByName(personaName);
+      if (currentPersona.isErr()) return err(currentPersona.error);
+      if (!currentPersona.value) return err(new DaemonError(`Voice persona not found: ${personaName}`));
+      const persona = currentPersona.value;
+      const currentPersonaRow = repos.persona.findByName(personaName);
+      if (currentPersonaRow.isErr()) return err(currentPersonaRow.error);
+      if (!currentPersonaRow.value) {
+        return err(new DaemonError(`Voice persona not found: ${personaName}`));
+      }
+      const currentProvider =
+        persona.config.provider ?? currentConfig.agentRunner.defaultProvider;
+      const currentModel = persona.config.model;
+      const currentProviderEntry = providerRegistry.get(currentProvider);
+      if (!currentProviderEntry) {
+        return err(new DaemonError(`Voice provider "${currentProvider}" is not enabled`));
+      }
+      const personaSkills = (
+        daemonContextRef.current?.loadedSkills ?? loadedSkills.value
+      ).filter((skill) => persona.config.skills.includes(skill.manifest.name));
+      let personaRuntimeContext;
+      try {
+        personaRuntimeContext = buildPersonaRuntimeContext({
+          loadedPersona: persona,
+          resolvedSkills: personaSkills,
+          skillResolver,
+          logger,
+        });
+      } catch (cause) {
+        return err(
+          new DaemonError(
+            `Failed to resolve voice persona runtime context: ${String(cause)}`,
+            cause instanceof Error ? cause : undefined,
+          ),
+        );
+      }
+      const allowedMcpServerNames = Object.keys(personaRuntimeContext.mcpServers);
+      provenMcpServers.clear();
+      for (const serverName of allowedMcpServerNames) provenMcpServers.add(serverName);
+      const voiceTools = filterVoiceMcpTools(persona.resolvedCapabilities);
+      const nativeToolsDisabled = hasOAuthMcpAuth(personaRuntimeContext.mcpServers);
+      return voicePolicy!.capture({
+        generation: voiceGeneration.value,
+        ownerId: owner.ownerId,
+        personaId: currentPersonaRow.value.id,
+        providerName: currentProvider,
+        modelName: currentModel,
+        voiceName: currentConfig.voice?.voice ?? config.voice.voice,
+        capabilityNames: [
+          ...persona.resolvedCapabilities.allow,
+          ...persona.resolvedCapabilities.requireApproval,
+        ],
+        allowedToolNames: voiceTools.allowedMcpTools,
+        allowedMcpServerNames,
+        nativeToolNames: getVoiceNativeToolNames(
+          currentProviderEntry.type,
+          nativeToolsDisabled,
+        ),
+        requireApproval: false,
+        loginRevision: owner.loginRevision,
+      });
+    };
+    const currentVoicePolicy = (
+      owner: VoiceOwnerContext,
+      _session: VoiceSessionRecord,
+    ): VoiceResult<VoicePolicySnapshot> =>
+      captureVoicePolicy(owner);
+    const voiceInstructions = [
+      `You are the live speech interface for the Talon persona "${voicePersonaName}".`,
+      'Speech role: handle greetings and clarification locally. Delegate substantive tasks, questions, memory, and current data to the Talon backend. Wait for a verified backend result before claiming completion; an acknowledgement is not a completion. Respect backend refusals and uncertainty.',
+      'Delegation contract: send admitted transcript context to the selected persona backend, preserve its result, and report only verified outcomes to the speaker.',
+      config.voice.instructions,
+    ].join('\n\n');
+    const liveAuth = config.auth.providers[config.voice.liveApiKeyRef];
+    voiceProvider = new OpenAiLiveVoiceProvider({
+      apiKey: liveAuth?.apiKey,
+      baseUrl: liveAuth?.baseURL,
+      maxCharacters: config.voice.maxContextChars,
+      telemetry: voiceTelemetry,
+      logger,
+    });
+    const browserVoiceTransport = config.voice.enabled ? new BrowserVoiceTransport() : null;
+    voiceSipTransport = config.voice.sip?.enabled ? new SipTransport() : null;
+    voiceTransport = browserVoiceTransport ?? voiceSipTransport;
+    if (!voiceTransport) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('No voice transport is enabled'));
+    }
+    const browserAdapterSelection = browserVoiceTransport
+      ? createVoiceAdapterSelection({ transport: browserVoiceTransport, engine: voiceProvider })
+      : null;
+    const sipAdapterSelection = voiceSipTransport
+      ? createVoiceAdapterSelection({ transport: voiceSipTransport, engine: voiceProvider })
+      : null;
+    if (browserAdapterSelection?.isErr() || sipAdapterSelection?.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('Configured voice transport and engine capabilities are not proven'));
+    }
+    const voiceAdapterSelection = browserAdapterSelection ?? sipAdapterSelection;
+    if (!voiceAdapterSelection || voiceAdapterSelection.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('Configured voice adapter selection is unavailable'));
+    }
+    const voiceCallAdmission = new VoiceCallAdmission(config.voice.maxConcurrentSessions, {
+      maxSessionCreations: config.voice.maxSessionCreations,
+      sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
+    });
+    const voiceAuthorization = voiceAuth
+      ? createVoiceAuthorization({
+          resolve: (owner) => voiceAuth!.resolveResult(owner).map((session) => session?.owner),
+          revoke: (owner) => {
+            const resolved = voiceAuth!.resolveResult(owner);
+            if (resolved.isErr()) return err(resolved.error);
+            if (!resolved.value) return err(new PolicyError('Voice grant is missing or revoked'));
+            return voiceAuth!.revoke(resolved.value);
+          },
+        })
+      : undefined;
+    const voiceChannel = registerVoiceChannel(
+      {
+        channelRepo: repos.channel,
+        bindingRepo: repos.binding,
+        personaId: voicePersonaId,
+        logger,
+      },
+      BROWSER_VOICE_CHANNEL_NAME,
+    );
+    if (voiceChannel.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError(`Failed to register browser voice channel: ${voiceChannel.error.message}`));
+    }
+    voiceChannelId = voiceChannel.value;
+    const voiceExecutionGate = (input: VoiceExecutionGateInput): VoiceResult<void> => {
+      const sessionResult = voiceStore.findSession(input.request.sessionId);
+      if (sessionResult.isErr()) return err(sessionResult.error);
+      if (!sessionResult.value) return err(new PolicyError('Voice session was not found'));
+      if (
+        sessionResult.value.transport === 'sip'
+          ? !voiceSipIngress?.isProviderSessionActive(
+              sessionResult.value.providerSessionId ?? '',
+              input.owner,
+              Date.now(),
+            )
+          : !voiceAuth?.resolve(input.owner)
+      ) {
+        return err(new PolicyError('Voice login is no longer active'));
+      }
+      const current = captureVoicePolicy(input.owner);
+      if (current.isErr()) return err(current.error);
+      const eligible = voicePolicy!.checkExecution({
+        session: sessionResult.value,
+        admitted: input.request.policy,
+        current: current.value,
+        now: Date.now(),
+      });
+      if (eligible.isErr()) return err(eligible.error);
+      if (!eligible.value.eligible) {
+        return err(new PolicyError(`Voice execution denied: ${eligible.value.reason ?? 'policy_changed'}`));
+      }
+      return ok(undefined);
+    };
+    voiceBackendBridge = new DurableVoiceBackendBridge(voiceStore, repos.queue, {
+      executionGate: voiceExecutionGate,
+      telemetry: voiceTelemetry,
+      logger,
+    });
+    voiceOutputSink = new VoiceOutputSink(voiceStore, (result) => {
+      voiceBackendBridge?.notifyResult(result);
+    }, { telemetry: voiceTelemetry });
+    const configuredVoiceTransports = new Map<string, VoiceTransport>();
+    if (browserVoiceTransport) configuredVoiceTransports.set('webrtc', browserVoiceTransport);
+    if (voiceSipTransport) configuredVoiceTransports.set('sip', voiceSipTransport);
+    const configuredVoiceSelections = new Map<string, typeof voiceAdapterSelection.value>();
+    if (browserAdapterSelection?.isOk()) {
+      configuredVoiceSelections.set('webrtc', browserAdapterSelection.value);
+    }
+    if (sipAdapterSelection?.isOk()) {
+      configuredVoiceSelections.set('sip', sipAdapterSelection.value);
+    }
+    voiceSessionService = new DurableVoiceSessionService({
+      store: voiceStore,
+      provider: voiceProvider,
+      transport: voiceTransport,
+      backendBridge: voiceBackendBridge,
+      policy: voicePolicy,
+      threadRepository: repos.thread,
+      messageRepository: repos.message,
+      channelId: voiceChannel.value,
+      personaId: voicePersonaId,
+      providerName: voiceProviderName,
+      modelName: voiceBackendModel,
+      liveModelName: voiceLiveModel,
+      instructions: voiceInstructions,
+      voiceName: config.voice.voice,
+      generation: (): number => voiceGeneration.value,
+      capturePolicy: captureVoicePolicy,
+      currentPolicy: currentVoicePolicy,
+      isOwnerActive: (owner): boolean =>
+        voiceAuth ? voiceAuth.resolve(owner) !== undefined : true,
+      authorization: voiceAuthorization,
+      adapterSelection: voiceAdapterSelection.value,
+      transports: configuredVoiceTransports,
+      adapterSelections: configuredVoiceSelections,
+      isIncomingOwnerActive: (owner, providerSessionId): boolean =>
+        voiceSipIngress?.isProviderSessionActive(providerSessionId, owner) ?? false,
+      onIncomingAccepted: (callId): VoiceResult<boolean> => {
+        const accepted = voiceSipIngress?.markAccepted(callId);
+        if (!accepted) return err(new PolicyError('Incoming SIP ingress is unavailable'));
+        return accepted;
+      },
+      onIncomingClosed: (callId): void => {
+        const closed = voiceSipIngress?.markClosed(callId);
+        if (closed?.isErr()) {
+          logger.warn({ callId, cause: closed.error }, 'voice: failed to record SIP closure');
+        }
+      },
+      callAdmission: voiceCallAdmission,
+      maxSessionLifetimeMs: config.voice.maxSessionLifetimeMs,
+      maxContextChars: config.voice.maxContextChars,
+      usdPerMinute: config.voice.usdPerMinute,
+      telemetry: voiceTelemetry,
+      logger,
+    });
+    if (config.voice.enabled) {
+      const publicOrigins = [...config.voice.allowedOrigins];
+      if (config.voice.publicHost) publicOrigins.push(`https://${config.voice.publicHost}`);
+      voiceServer = new BrowserVoiceServer(
+        {
+          accessToken: voiceAccessToken!,
+          host: config.voice.host,
+          port: config.voice.port,
+          staticDirectory: join(import.meta.dirname, '../voice/web'),
+          allowedOrigins: publicOrigins.length > 0 ? publicOrigins : undefined,
+          allowedTransportTypes: config.voice.allowedTransportTypes,
+          maxConcurrentSessions: config.voice.maxConcurrentSessions,
+          maxSessionCreations: config.voice.maxSessionCreations,
+          sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
+          heartbeatIntervalMs: config.voice.heartbeatIntervalMs,
+        },
+        { sessionService: voiceSessionService, auth: voiceAuth!, telemetry: voiceTelemetry, logger },
+      );
+    }
+    logger.info(
+      { persona: voicePersonaName, provider: voiceProviderName },
+      'bootstrap: browser voice runtime initialized',
+    );
+  }
+
+  // Incoming SIP is an independent, disabled-by-default boundary. It may be
+  // enabled without browser voice, but it never infers caller identity from
+  // the provider delivery or ordinary SIP headers.
+  if (config.voice?.sip?.enabled) {
+    const sipConfig = config.voice.sip;
+    const sipResolver = new ConfiguredSipAuthorizationResolver({
+      issuer: sipConfig.issuer,
+      audience: sipConfig.audience,
+      publicKeys: sipConfig.publicKeys,
+      endpointMappings: sipConfig.endpointMappings,
+      revokedIssuers: sipConfig.revokedIssuers,
+      revokedKeyIds: sipConfig.revokedKeyIds,
+    });
+    voiceSipIngress = new SipIngressService({
+      repository: new VoiceSipRepository(db),
+      authorization: sipResolver,
+      deliveryReplayWindowMs: sipConfig.deliveryReplayWindowMs,
+      acceptCall: async (input): Promise<SipCallControlResult> => {
+        if (!voiceSessionService) return { outcome: 'unknown' as const };
+        const accepted = await voiceSessionService.acceptIncomingSession({
+          callId: input.callId,
+          providerSessionId: input.providerSessionId,
+          owner: {
+            ownerId: input.grant.owner_id,
+            loginRevision: input.grant.revision,
+          },
+          personaId: input.grant.persona_id,
+          admissionExpiresAt: input.grant.expires_at * 1_000,
+        });
+        if (accepted.isOk()) return { outcome: 'accepted' as const };
+        return classifySipAcceptanceFailure(accepted.error);
+      },
+    });
+    const standardWebhookSecret =
+      sipConfig.standardWebhookSecret ??
+      config.auth.providers[sipConfig.standardWebhookSecretRef]?.apiKey ??
+      config.auth.apiKey;
+    voiceSipWebhookServer = new SipWebhookServer({
+      enabled: true,
+      host: sipConfig.host,
+      port: sipConfig.port,
+      path: sipConfig.path,
+      standardWebhookSecret,
+      maxRequestBytes: sipConfig.maxRequestBytes,
+      timestampToleranceSeconds: sipConfig.timestampToleranceSeconds,
+    }, { ingress: voiceSipIngress });
+    const reconciledSip = voiceSipIngress.reconcileInterruptedAttempts();
+    if (reconciledSip.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Failed to reconcile incoming SIP state: ${reconciledSip.error.message}`,
+          reconciledSip.error,
+        ),
+      );
+    }
+    logger.info(
+      { host: sipConfig.host, port: sipConfig.port, path: sipConfig.path },
+      'bootstrap: incoming SIP ingress initialized',
+    );
+  }
+
+  // 11. Generic recovery follows voice reconciliation and excludes voice rows.
   recoverFromCrash(repos.queue, logger);
 
-  // 11. Channel registry
+  // 12. Channel registry
   const channelRegistry = new ChannelRegistry(logger);
 
-  // 12. Queue manager
-  const queueManager = new QueueManager(repos.queue, repos.thread, config.queue, logger);
+  // 13. Queue manager. Voice rows must claim through the durable bridge.
+  const queueDiagnosticResolver = createQueueDiagnosticResolver(repos.thread, repos.channel);
+  const queueManager = new QueueManager(
+    repos.queue,
+    repos.thread,
+    config.queue,
+    logger,
+    voiceBackendBridge?.claimQueueItem.bind(voiceBackendBridge),
+    queueDiagnosticResolver,
+  );
 
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
@@ -581,6 +1104,8 @@ export async function bootstrap(
       // types — without this, background runs receive raw
       // `auth: { kind: 'oauth2' }` entries and the MCP server 401s.
       oauthTokenStore,
+      threadRepository: repos.thread,
+      channelRepository: repos.channel,
       logger,
       observability,
     });
@@ -625,6 +1150,21 @@ export async function bootstrap(
     messagePipeline,
     logger,
   });
+  if (voiceSessionService && voiceChannelId) {
+    const voiceConnector = registerVoiceConnector({
+      channelRegistry,
+      channelRepo: repos.channel,
+      threadRepository: repos.thread,
+      sessionService: voiceSessionService,
+      logger,
+    });
+    if (voiceConnector.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(`Failed to register browser voice connector: ${voiceConnector.error.message}`),
+      );
+    }
+  }
 
   // 16. A2A server (internal-only, no port binding in M1)
   const loadedPersonaList = personaLoadResult.value;
@@ -674,16 +1214,58 @@ export async function bootstrap(
     logger,
     a2aServer,
     a2aTaskMapper,
+    voiceStore,
+    voicePolicy,
+    voiceAuth,
+    voiceBackendBridge,
+    voiceOutputSink,
+    voiceSessionService,
+    voiceProvider,
+    voiceTransport,
+    voiceServer,
+    voiceSipIngress,
+    voiceSipWebhookServer,
+    voiceTelemetry,
+    voiceRuntimeConfig,
+    voiceGeneration,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;
+  daemonContextRef.current = ctx;
 
   logger.info('bootstrap: context ready');
 
   return ok(ctx);
+}
+
+function classifySipAcceptanceFailure(error: unknown): SipCallControlResult {
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly reason?: unknown;
+    readonly status?: unknown;
+  };
+  // A durable registration failure means the provider may already have
+  // accepted the call. Keep the outcome unknown so no retry or false terminal
+  // rejection can orphan an active provider session.
+  if (candidate.code === 'DB_ERROR') return { outcome: 'unknown' };
+  if (candidate.reason === 'http') {
+    const status = typeof candidate.status === 'number' ? candidate.status : undefined;
+    return status !== undefined && status >= 400 && status < 500 && ![408, 409, 429].includes(status)
+      ? { outcome: 'rejected' }
+      : { outcome: 'unknown' };
+  }
+  if (
+    candidate.reason === 'invalid_request' ||
+    candidate.reason === 'unsupported_transport' ||
+    candidate.reason === 'configuration'
+  ) {
+    return { outcome: 'rejected' };
+  }
+  if (candidate.reason !== undefined) return { outcome: 'unknown' };
+  return { outcome: 'rejected' };
 }
 
 async function cleanupBootstrapFailure(
