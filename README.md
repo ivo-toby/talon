@@ -2417,6 +2417,9 @@ deprecated compatibility fields and are ignored. Voice inherits the selected
 persona's normal capability and skill/MCP policy. A capability in
 `requireApproval` remains unavailable to voice because there is no interactive
 approval channel; grant only tools that can run without approval.
+The selected persona policy remains authoritative for voice descendants:
+approval-gated capability families are removed before child registration and
+enforced again at the shared host-tools bridge if denial metadata is omitted.
 
 When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
 voice channel. Startup rejects a conflicting ordinary channel configuration and
@@ -2434,7 +2437,9 @@ channels are not imported. Talon stores bounded prompt fragments, output,
 usage, and lifecycle state in local SQLite, not raw audio. Textless running
 progress is retained as lifecycle state without creating an empty delivery;
 terminal empty results remain delivery failures. Cloud provider
-retention is controlled by the provider account. See the [browser voice guide](docs/guides/voice.mdx)
+retention is controlled by the provider account. Completed backend results remain
+durable after authority expiry or hangup, while expired authority suppresses
+speech until claimed work reaches terminal cleanup. See the [browser voice guide](docs/guides/voice.mdx)
 and [voice config reference](docs/reference/config-schema.mdx) for limits,
 cost status, and validation boundaries.
 
@@ -2462,6 +2467,9 @@ choose the owner or persona. The durable receiver bounds raw requests and
 pending work, reserves delivery/session/grant decisions atomically, persists an
 attempt marker before the one existing-session accept callback, attaches the
 same Live sideband, and leaves timeouts or crashes as unknown without retry.
+The raw-body read has an absolute 5-second timeout, so trickle bytes do not
+extend it; terminal request paths clean up listeners and release pending
+capacity.
 See the [incoming SIP/Asterisk guide](docs/guides/voice-asterisk.mdx)
 for the reference-only signer and configuration; this does not install a PBX,
 provision keys, or place a paid call.

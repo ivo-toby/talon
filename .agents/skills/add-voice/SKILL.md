@@ -103,6 +103,12 @@ are unavailable because voice has no interactive approval channel, and unproven 
 old `voice.allowedToolNames` and `voice.allowedMcpServerNames` fields are
 ignored; leave them empty for compatibility.
 
+The selected persona policy also governs voice descendants. Approval-gated
+capability families are removed before child registration and enforced again at
+the shared host-tools bridge if denial metadata is missing. Current backend
+results remain in durable history after authority expiry or hangup, while the
+expired session cannot speak them.
+
 When `voice.enabled` is true, `browser-voice` is reserved for Talon's internal
 voice channel. A conflicting ordinary channel configuration is rejected at
 startup, and an existing non-voice `browser-voice` database row is not

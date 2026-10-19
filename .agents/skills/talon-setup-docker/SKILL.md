@@ -344,6 +344,10 @@ its backend model, ordinary tools, skills, and configured MCP servers. The
 separate `voice.model` is the live audio model. Approval-gated capabilities are
 unavailable because voice has no interactive approval channel, and the legacy
 `voice.allowedToolNames` / `voice.allowedMcpServerNames` fields are ignored.
+The selected persona policy is also enforced for voice descendants at child
+registration and again at the shared host-tools bridge. Completed backend
+results remain in durable history after authority expiry or hangup, but are not
+spoken after the session loses authority.
 
 The starter bundle's published `127.0.0.1:8788` port is for OAuth callbacks;
 it does not publish browser voice. The voice listener defaults to loopback. To

@@ -160,6 +160,7 @@ export class SubAgentRunner {
     const unsatisfied = this.findUnsatisfiedCapabilities(
       agent.manifest.requiredCapabilities,
       ctx.personaCapabilities,
+      ctx.voiceObservation !== undefined,
     );
     if (unsatisfied.length > 0) {
       return err(
@@ -221,15 +222,23 @@ export class SubAgentRunner {
   private findUnsatisfiedCapabilities(
     required: string[],
     capabilities: ResolvedCapabilities,
+    voiceExecution = false,
   ): string[] {
-    const allLabels = [...capabilities.allow, ...capabilities.requireApproval];
-
-    // Build a set of capability prefixes the persona has
     const personaPrefixes = new Set<string>();
-    for (const label of allLabels) {
+    const approvalPrefixes = new Set<string>();
+    const labels = voiceExecution
+      ? capabilities.allow
+      : [...capabilities.allow, ...capabilities.requireApproval];
+    for (const label of labels) {
       const prefix = extractCapabilityPrefix(label);
       if (prefix !== null) {
         personaPrefixes.add(prefix);
+      }
+    }
+    if (voiceExecution) {
+      for (const label of capabilities.requireApproval) {
+        const prefix = extractCapabilityPrefix(label);
+        if (prefix !== null) approvalPrefixes.add(prefix);
       }
     }
 
@@ -242,7 +251,7 @@ export class SubAgentRunner {
         unsatisfied.push(req);
         continue;
       }
-      if (!personaPrefixes.has(reqPrefix)) {
+      if (!personaPrefixes.has(reqPrefix) || approvalPrefixes.has(reqPrefix)) {
         unsatisfied.push(req);
       }
     }

@@ -85,6 +85,13 @@ sent to the live provider. Approval-gated capabilities are unavailable because
 voice has no interactive approval channel, and unproven MCP servers fail
 closed.
 
+The selected persona policy remains authoritative for voice descendants.
+Approval-gated capability families are removed before child registration and
+checked again at the shared host-tools bridge if a descendant omits denial
+metadata. If current session authority expires or is revoked, completed backend
+results remain in the durable session history while commentary and instruction
+speech is suppressed.
+
 The old `voice.allowedToolNames` and `voice.allowedMcpServerNames` fields are
 deprecated compatibility fields and are ignored. Do not use them to grant
 voice access. The selected persona's normal capability policy is authoritative.
@@ -103,6 +110,10 @@ durable decision and attempt marker are recorded, Talon accepts the existing
 `data.session_id` once, attaches its Live sideband, and sends delegations
 through the ordinary backend queue. An ambiguous accept remains unknown and
 is never retried automatically.
+
+The SIP raw-body read has an absolute five-second timeout. Trickle bytes do not
+extend it; timeout, abort, and other terminal paths clean up request listeners
+and release pending admission capacity.
 
 `publicHost` adds `https://<publicHost>` to the allowed origins and documents
 the external URL. It does not change the listener address. Keep the default

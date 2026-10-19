@@ -1,8 +1,12 @@
 import { createHmac } from 'node:crypto';
+import { EventEmitter } from 'node:events';
+import { request as httpRequest } from 'node:http';
 import { describe, expect, it, vi, afterEach } from 'vitest';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ok } from '../../../../../src/core/types/result.js';
 import {
   SipWebhookServer,
+  SIP_WEBHOOK_BODY_TIMEOUT_MS,
   SIP_WEBHOOK_DEFAULT_PATH,
   __private,
 } from '../../../../../src/voice/transports/sip/sip-webhook-server.js';
@@ -292,5 +296,189 @@ describe('SipWebhookServer', () => {
     expect(responses.every((response) => response.status === 202)).toBe(true);
     await send('after-release');
     expect(ingress.ingest).toHaveBeenCalledTimes(33);
+    expect((server as unknown as { pendingRequests: number }).pendingRequests).toBe(0);
+  });
+
+  it('times out an incomplete raw body, cleans listeners, and releases capacity', async () => {
+    vi.useFakeTimers();
+    try {
+      const server = new SipWebhookServer(
+        { enabled: true, standardWebhookSecret: secret, port: 0 },
+        { ingress: fakeIngress() as never },
+      );
+      const request = Object.assign(new EventEmitter(), {
+        method: 'POST',
+        url: SIP_WEBHOOK_DEFAULT_PATH,
+        headers: {
+          'webhook-id': 'timeout-delivery',
+          'webhook-timestamp': String(Math.floor(Date.now() / 1_000)),
+          'webhook-signature': 'v1,invalid',
+        },
+        destroy: vi.fn(),
+      }) as unknown as IncomingMessage & { destroy: ReturnType<typeof vi.fn> };
+      const response = {
+        setHeader: vi.fn(),
+        writeHead: vi.fn(),
+        end: vi.fn(),
+      } as unknown as ServerResponse;
+
+      const pending = (server as unknown as {
+        handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void>;
+      }).handleRequest(request, response);
+      request.emit('data', Buffer.from('{"partial":'));
+      await vi.advanceTimersByTimeAsync(4_999);
+      request.emit('data', Buffer.from('"still-open"'));
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+
+      expect(request.destroy).toHaveBeenCalledOnce();
+      expect(request.listenerCount('data')).toBe(0);
+      expect(request.listenerCount('error')).toBe(0);
+      expect(request.listenerCount('aborted')).toBe(0);
+      expect(request.listenerCount('close')).toBe(0);
+      expect(request.listenerCount('end')).toBe(0);
+      expect((server as unknown as { pendingRequests: number }).pendingRequests).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('closes an actual incomplete upload at the deadline and accepts the next signed request', async () => {
+    const ingress = fakeIngress();
+    const logger = { error: vi.fn(), warn: vi.fn(), info: vi.fn() };
+    const server = new SipWebhookServer(
+      { enabled: true, standardWebhookSecret: secret, port: 0 },
+      { ingress: ingress as never, logger },
+    );
+    activeServers.push(server);
+    await server.start();
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const client = httpRequest({
+        host: '127.0.0.1',
+        port: server.port,
+        path: SIP_WEBHOOK_DEFAULT_PATH,
+        method: 'POST',
+        headers: {
+          'webhook-id': 'actual-timeout',
+          'webhook-timestamp': timestamp,
+          'webhook-signature': 'v1,invalid',
+          'content-type': 'application/json',
+        },
+      });
+      let clientError: NodeJS.ErrnoException | undefined;
+      const clientClosed = new Promise<void>((resolve) => {
+        client.once('error', (cause: NodeJS.ErrnoException) => {
+          clientError = cause;
+        });
+        client.once('close', () => resolve());
+      });
+      client.write('{"partial":');
+      for (let attempt = 0; attempt < 20 && (server as unknown as { pendingRequests: number }).pendingRequests === 0; attempt += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      expect((server as unknown as { pendingRequests: number }).pendingRequests).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(SIP_WEBHOOK_BODY_TIMEOUT_MS);
+      await clientClosed;
+      expect(clientError?.code === undefined || clientError.code === 'ECONNRESET').toBe(true);
+      expect((server as unknown as { pendingRequests: number }).pendingRequests).toBe(0);
+      expect(logger.error).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const deliveryId = 'after-actual-timeout';
+    const timestamp = String(Math.floor(Date.now() / 1_000));
+    const body = event('evt-after-actual-timeout');
+    const response = await fetch(`http://127.0.0.1:${server.port}${SIP_WEBHOOK_DEFAULT_PATH}`, {
+      method: 'POST',
+      headers: {
+        'webhook-id': deliveryId,
+        'webhook-timestamp': timestamp,
+        'webhook-signature': signature(deliveryId, timestamp, body),
+        'content-type': 'application/json',
+      },
+      body,
+    });
+    expect(response.status).toBe(202);
+    expect(ingress.ingest).toHaveBeenCalledOnce();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
+  it('recovers all 32 timed-out body slots and admits a signed delivery', async () => {
+    vi.useFakeTimers();
+    try {
+      const ingress = fakeIngress();
+      const server = new SipWebhookServer(
+        { enabled: true, standardWebhookSecret: secret, port: 0 },
+        { ingress: ingress as never },
+      );
+      const handleRequest = (server as unknown as {
+        handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void>;
+      }).handleRequest.bind(server);
+      const makeRequest = (deliveryId: string, webhookSignature: string) => {
+        const request = Object.assign(new EventEmitter(), {
+          method: 'POST',
+          url: SIP_WEBHOOK_DEFAULT_PATH,
+          headers: {
+            'webhook-id': deliveryId,
+            'webhook-timestamp': String(Math.floor(Date.now() / 1_000)),
+            'webhook-signature': webhookSignature,
+          },
+          destroy: vi.fn(),
+          resume: vi.fn(),
+        }) as unknown as IncomingMessage & {
+          destroy: ReturnType<typeof vi.fn>;
+          resume: ReturnType<typeof vi.fn>;
+        };
+        const response = {
+          setHeader: vi.fn(),
+          writeHead: vi.fn(),
+          end: vi.fn(),
+        } as unknown as ServerResponse;
+        return { request, response };
+      };
+
+      const pending = Array.from({ length: 32 }, (_, index) => {
+        const fixture = makeRequest(`timeout-${index}`, 'v1,invalid');
+        return { ...fixture, promise: handleRequest(fixture.request, fixture.response) };
+      });
+      expect((server as unknown as { pendingRequests: number }).pendingRequests).toBe(32);
+
+      const saturated = makeRequest('timeout-32', 'v1,invalid');
+      await handleRequest(saturated.request, saturated.response);
+      expect(saturated.response.writeHead).toHaveBeenCalledWith(
+        429,
+        expect.objectContaining({ 'content-type': 'application/json; charset=utf-8' }),
+      );
+      expect(saturated.request.resume).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(SIP_WEBHOOK_BODY_TIMEOUT_MS);
+      await Promise.all(pending.map(({ promise }) => promise));
+      expect((server as unknown as { pendingRequests: number }).pendingRequests).toBe(0);
+      for (const { request } of pending) expect(request.destroy).toHaveBeenCalledOnce();
+
+      const deliveryId = 'after-timeout-recovery';
+      const timestamp = String(Math.floor(Date.now() / 1_000));
+      const body = event('evt-after-timeout-recovery');
+      const recovered = makeRequest(deliveryId, signature(deliveryId, timestamp, body));
+      recovered.request.headers['webhook-timestamp'] = timestamp;
+      const recoveredPromise = handleRequest(recovered.request, recovered.response);
+      recovered.request.emit('data', Buffer.from(body, 'utf8'));
+      recovered.request.emit('end');
+      await recoveredPromise;
+
+      expect(recovered.response.writeHead).toHaveBeenCalledWith(
+        202,
+        expect.objectContaining({ 'content-type': 'application/json; charset=utf-8' }),
+      );
+      expect(ingress.ingest).toHaveBeenCalledOnce();
+      expect((server as unknown as { pendingRequests: number }).pendingRequests).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

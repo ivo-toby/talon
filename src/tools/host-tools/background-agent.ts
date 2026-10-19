@@ -13,7 +13,7 @@ import type { ProviderRegistry } from '../../providers/provider-registry.js';
 import { buildPersonaRuntimeContext } from '../../personas/persona-runtime-context.js';
 import type { BackgroundTask } from '../../subagents/background/background-agent-types.js';
 import { BackgroundAgentError } from '../../core/errors/error-types.js';
-import { filterAllowedMcpTools } from '../tool-filter.js';
+import { filterAllowedMcpTools, filterVoiceMcpTools } from '../tool-filter.js';
 import { resolveToolInstructions } from '../tool-instructions.js';
 import { buildTimeContext } from '../../core/time-context.js';
 import type { VoiceObservationContext } from '../../observability/langfuse/voice-observation.js';
@@ -263,9 +263,17 @@ export class BackgroundAgentHandler {
         : undefined;
     const resolvedProvider =
       explicitProvider ?? personaBackgroundProvider ?? personaProviderIfAvailable;
-    const allowedMcpTools = filterAllowedMcpTools(
-      loadedPersona.resolvedCapabilities ?? { allow: [], requireApproval: [] },
+    const resolvedCapabilities = loadedPersona.resolvedCapabilities ?? {
+      allow: [],
+      requireApproval: [],
+    };
+    const voiceToolAccess = context.voiceObservation
+      ? filterVoiceMcpTools(resolvedCapabilities)
+      : undefined;
+    const allowedMcpTools = (
+      voiceToolAccess?.allowedMcpTools ?? filterAllowedMcpTools(resolvedCapabilities)
     ).filter((toolName) => toolName !== 'background_agent');
+    const deniedMcpTools = voiceToolAccess?.deniedMcpTools;
     const sandbox = args.sandbox ?? loadedPersona.config.executionEnv?.sandboxDefault ?? false;
 
     if (sandbox && !allowedMcpTools.includes('execution_env')) {
@@ -318,6 +326,7 @@ export class BackgroundAgentHandler {
       channelName: channelResult.value.name,
       provider: resolvedProvider,
       allowedMcpTools,
+      ...(deniedMcpTools ? { deniedMcpTools } : {}),
       sandbox,
       executionEnvDefaults: loadedPersona.config.executionEnv,
       ...(profileName ? { profileName } : {}),

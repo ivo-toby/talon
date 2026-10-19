@@ -250,6 +250,49 @@ describe('BackgroundAgentHandler', () => {
     );
   });
 
+  it('derives voice worker access and denials from the selected profile', async () => {
+    const { handler, backgroundAgentManager, deps } = createHandler();
+    deps.personaLoader.getByName = vi.fn().mockReturnValue(
+      ok({
+        config: { skills: [] },
+        systemPromptContent: 'Voice worker profile.',
+        personalityContent: null,
+        resolvedCapabilities: {
+          allow: ['memory.access', 'channel.send:*'],
+          requireApproval: ['memory.access'],
+        },
+      }),
+    );
+    const voiceObservation = createVoiceObservationContext({
+      callId: 'voice-call-profile',
+      runId: 'voice-run-profile',
+      threadId: 'thread-1',
+      personaId: 'persona-1',
+    });
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'Run the selected voice profile.' },
+      {
+        runId: 'run-profile',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-profile',
+        voiceObservation,
+      },
+    );
+
+    expect(result.status).toBe('success');
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedMcpTools: expect.arrayContaining(['channel_send', 'channel_list', 'channel_broadcast']),
+        deniedMcpTools: ['memory_access'],
+      }),
+    );
+    expect(backgroundAgentManager.spawn.mock.calls[0]?.[0].allowedMcpTools).not.toContain(
+      'memory_access',
+    );
+  });
+
   it('uses lazy skill loading — system prompt contains skill index not full skill content', async () => {
     const { handler, backgroundAgentManager } = createHandler();
 

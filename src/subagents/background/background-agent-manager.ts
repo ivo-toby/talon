@@ -79,6 +79,8 @@ export interface SpawnBackgroundAgentInput {
   /** Server-owned context inherited from a voice run; never supplied by the worker. */
   voiceObservation?: VoiceObservationContext;
   allowedMcpTools: string[];
+  /** Voice-only host-tool families that remain approval-gated. */
+  deniedMcpTools?: string[];
   sandbox?: boolean;
   controlDirectory?: string;
   executionEnvDefaults?: PersonaExecutionEnvConfig;
@@ -438,6 +440,9 @@ export class BackgroundAgentManager {
       threadId: input.threadId,
       personaId: input.workerPersonaId,
       bridgeSecret,
+      ...(voiceObservation && input.deniedMcpTools
+        ? { deniedToolNames: input.deniedMcpTools }
+        : {}),
       ...(childTraceparent ? { traceparent: childTraceparent } : {}),
       ...(voiceObservation ? { voiceObservation } : {}),
     });

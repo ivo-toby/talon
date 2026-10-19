@@ -348,6 +348,10 @@ capabilities, skills, and configured MCP servers are reused by voice. The
 separate `voice.model` is the live audio model. Approval-gated capabilities are
 unavailable because voice has no interactive approval channel, and the legacy
 `voice.allowedToolNames` / `voice.allowedMcpServerNames` fields are ignored.
+The selected persona policy is also enforced for voice descendants at child
+registration and again at the shared host-tools bridge. Completed backend
+results remain in durable history after authority expiry or hangup, but are not
+spoken after the session loses authority.
 
 The listener defaults to loopback. For a non-local browser, put HTTPS in front
 of it. If the reverse proxy runs in another VM, container, or network
