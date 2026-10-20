@@ -248,6 +248,7 @@ describe('PersonaConfigSchema', () => {
       expect(result.data.queryTimeoutMinutes).toBe(10);
       expect(result.data.maxConcurrent).toBeUndefined();
       expect(result.data.executionEnv).toBeUndefined();
+      expect(result.data.nativeTools).toBe(true);
       expect(Object.keys(result.data)).not.toContain('reasoningEffort');
     }
   });
@@ -1136,6 +1137,60 @@ describe('TalondConfigSchema', () => {
     if (result.success) {
       expect((result.data as Record<string, unknown>)['unknownField']).toBeUndefined();
     }
+  });
+
+  describe('TalondConfigSchema — nativeTools provider validation', () => {
+    it('accepts nativeTools: false with an openai-compatible provider', () => {
+      const parsed = TalondConfigSchema.parse({
+        personas: [{ name: 'public-bot', provider: 'local-llm', nativeTools: false }],
+        agentRunner: {
+          defaultProvider: 'local-llm',
+          providers: {
+            'local-llm': { enabled: true, type: 'openai-compatible', command: 'node' },
+          },
+        },
+      });
+      expect(parsed.personas[0]!.nativeTools).toBe(false);
+    });
+
+    it('rejects nativeTools: false when the foreground provider resolves to codex-cli', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'public-bot', provider: 'codex-work', nativeTools: false }],
+          agentRunner: {
+            defaultProvider: 'codex-work',
+            providers: {
+              'codex-work': { enabled: true, type: 'codex-cli', command: 'codex' },
+            },
+          },
+        }),
+      ).toThrow(/nativeTools: false is not supported by provider \\"codex-work\\"/i);
+    });
+
+    it('rejects nativeTools: false when the backgroundProvider is codex-cli', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'public-bot', nativeTools: false, backgroundProvider: 'codex-cli' }],
+          backgroundAgent: {
+            providers: {
+              'codex-cli': { enabled: true, command: 'codex' },
+            },
+          },
+        }),
+      ).toThrow(/nativeTools: false is not supported by backgroundProvider \\"codex-cli\\"/i);
+    });
+
+    it('allows codex-cli for personas that keep native tools', () => {
+      expect(() =>
+        TalondConfigSchema.parse({
+          personas: [{ name: 'coder', provider: 'codex-cli' }],
+          agentRunner: {
+            defaultProvider: 'codex-cli',
+            providers: { 'codex-cli': { enabled: true, command: 'codex' } },
+          },
+        }),
+      ).not.toThrow();
+    });
   });
 
   describe('TalondConfigSchema — backgroundProvider cross-validation', () => {

@@ -90,4 +90,25 @@ describe('BackgroundAgentProcess', () => {
     expect(result.isOk()).toBe(true);
     expect(result._unsafeUnwrap().stdout).toBe('gemini-env-ok');
   });
+
+  it('does not inherit process.env when inheritEnv is false', async () => {
+    process.env.TALON_TEST_DAEMON_SECRET = 'leak-me';
+    try {
+      const processWrapper = new BackgroundAgentProcess({
+        command: '/bin/sh',
+        args: ['-c', 'printf "[%s][%s]" "$TALON_TEST_DAEMON_SECRET" "$ALLOWED"'],
+        cwd: '/tmp',
+        stdin: '',
+        timeoutMs: 5_000,
+        env: { ALLOWED: 'yes' },
+        inheritEnv: false,
+      });
+
+      const result = await processWrapper.start()._unsafeUnwrap().completion;
+
+      expect(result._unsafeUnwrap().stdout).toBe('[][yes]');
+    } finally {
+      delete process.env.TALON_TEST_DAEMON_SECRET;
+    }
+  });
 });

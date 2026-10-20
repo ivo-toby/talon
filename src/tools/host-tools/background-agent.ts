@@ -186,6 +186,20 @@ export class BackgroundAgentHandler {
     const timeContext = buildTimeContext();
 
     const loadedPersona = loadedPersonaResult.value;
+
+    // A persona that opted out of native tools must not regain them by
+    // delegating to a profile that still has them. Fail closed if the
+    // caller's config cannot be loaded.
+    const callerResult = profileName
+      ? this.deps.personaLoader.getByName(personaRowResult.value.name)
+      : loadedPersonaResult;
+    const callerNativeToolsDisabled =
+      callerResult.isErr() ||
+      !callerResult.value ||
+      callerResult.value.config.nativeTools === false;
+    const disableNativeTools =
+      callerNativeToolsDisabled || loadedPersona.config.nativeTools === false;
+
     const workerPersonaRowResult = profileName
       ? this.deps.personaRepository.findByName(targetPersonaName)
       : personaRowResult;
@@ -312,6 +326,7 @@ export class BackgroundAgentHandler {
       allowedMcpTools,
       sandbox,
       executionEnvDefaults: loadedPersona.config.executionEnv,
+      ...(disableNativeTools ? { disableNativeTools: true } : {}),
       ...(profileName ? { profileName } : {}),
       ...(resolvedModel ? { model: resolvedModel } : {}),
       ...(resolvedReasoningEffort ? { reasoningEffort: resolvedReasoningEffort } : {}),
