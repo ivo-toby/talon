@@ -140,6 +140,14 @@ export const PersonaConfigSchema = z.object({
   mounts: z.array(MountConfigSchema).default([]),
   maxConcurrent: z.number().int().min(1).optional(),
   executionEnv: PersonaExecutionEnvSchema.optional(),
+  /**
+   * When false, provider-native shell and filesystem tools (Bash/Read/Write,
+   * Mastra workspace tools, Gemini core tools) are disabled for every run of
+   * this persona — foreground and background, regardless of OAuth MCP usage.
+   * Set this for any persona that talks to untrusted users. Providers that
+   * cannot disable their native tools (codex-cli) are rejected at load time.
+   */
+  nativeTools: z.boolean().default(true),
 });
 
 // ---------------------------------------------------------------------------
@@ -608,6 +616,35 @@ export const TalondConfigSchema = z
             value.backgroundAgent.providers[persona.backgroundProvider],
             'backgroundProvider',
           );
+        }
+      }
+
+      if (persona.nativeTools === false) {
+        const checks: Array<[string, string | undefined, 'provider' | 'backgroundProvider']> = [
+          [
+            persona.provider ?? value.agentRunner.defaultProvider,
+            value.agentRunner.providers[persona.provider ?? value.agentRunner.defaultProvider]?.type,
+            'provider',
+          ],
+        ];
+        if (persona.backgroundProvider) {
+          checks.push([
+            persona.backgroundProvider,
+            value.backgroundAgent.providers[persona.backgroundProvider]?.type,
+            'backgroundProvider',
+          ]);
+        }
+        for (const [providerName, providerType, field] of checks) {
+          if ((providerType ?? providerName) === 'codex-cli') {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['personas', index, field === 'provider' ? 'nativeTools' : field],
+              message:
+                `persona "${persona.name}": nativeTools: false is not supported by ${field} ` +
+                `"${providerName}" (type "codex-cli"), which cannot disable its built-in shell ` +
+                'and filesystem tools. Use claude-code, gemini-cli, or openai-compatible.',
+            });
+          }
         }
       }
 

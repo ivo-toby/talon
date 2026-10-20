@@ -332,7 +332,7 @@ export class CodexCliProvider implements AgentProvider {
   private async *runForeground(input: AgentRunInput): AsyncIterable<AgentStreamEvent> {
     if (input.disableNativeShellAndFilesystemTools) {
       throw new BackgroundAgentError(
-        'OAuth-authenticated MCP servers require native shell and filesystem tools to be disabled, but the codex-cli provider cannot disable those built-in tools. Use claude-code, gemini-cli, or openai-compatible for this persona.',
+        'Native shell and filesystem tools must be disabled for this run (persona nativeTools: false or OAuth-authenticated MCP servers), but the codex-cli provider cannot disable those built-in tools. Use claude-code, gemini-cli, or openai-compatible for this persona.',
       );
     }
     const homeDir = this.buildForegroundHome(input.threadId);
@@ -430,7 +430,7 @@ export class CodexCliProvider implements AgentProvider {
     if (input.disableNativeShellAndFilesystemTools) {
       return err(
         new BackgroundAgentError(
-          'OAuth-authenticated MCP servers require native shell and filesystem tools to be disabled, but the codex-cli provider cannot disable those built-in tools. Use claude-code, gemini-cli, or openai-compatible for this persona.',
+          'Native shell and filesystem tools must be disabled for this run (persona nativeTools: false or OAuth-authenticated MCP servers), but the codex-cli provider cannot disable those built-in tools. Use claude-code, gemini-cli, or openai-compatible for this persona.',
         ),
       );
     }

@@ -243,6 +243,11 @@ For OpenAI-compatible — replace the `claude-code:` block under
 Apply the same change to `backgroundAgent.providers` (or set
 `backgroundAgent.enabled: false` if you don't need background work).
 
+The openai-compatible wrapper does not inherit the container's environment.
+If the agent's workspace shell needs a variable (e.g. `GH_TOKEN`), add
+`envPassthrough: [GH_TOKEN]` under `options`. For personas that talk to
+untrusted users, set `nativeTools: false` on the persona instead.
+
 #### Replace `auth.providers`
 
 For Claude, the default block is fine.

@@ -93,6 +93,13 @@ personas:
     # backgroundProvider.
     # backgroundProvider: claude-code
     # backgroundModel: claude-sonnet-4-6
+    # Provider-native shell/filesystem tools (Bash/Read/Write, Mastra workspace
+    # tools, Gemini core tools) run with the daemon's host authority and are NOT
+    # confined to the thread workspace. Set nativeTools: false for any persona
+    # that talks to untrusted users (public bots). Applies to foreground and
+    # background runs, including background profiles this persona delegates to.
+    # codex-cli cannot disable its native tools and is rejected at config load.
+    # nativeTools: true
     systemPromptFile: personas/assistant/system.md
     skills: []
     subagents:
@@ -208,6 +215,11 @@ agentRunner:
         # fallback only — explicit positive per-server caps still apply.
         # Defaults to 4000 when the key is omitted.
         toolOutputCap: 4000
+        # The wrapper and its workspace shell do NOT inherit the daemon's
+        # environment. Only PATH/HOME/locale/TMP vars (plus proxy/TLS vars for
+        # the wrapper itself) are passed. List extra variables the workspace
+        # shell needs here — every listed value is readable by the model.
+        # envPassthrough: [GH_TOKEN]
         # Per-MCP-server caps and timeouts live in skills/<skill>/mcp/<server>.json
         # (see README "Per-server MCP request timeout and tool-output cap");
         # they are not daemon-level settings. An explicit per-server value

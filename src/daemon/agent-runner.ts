@@ -712,7 +712,11 @@ export class AgentRunner {
                   // strips the field and merges Authorization into headers.
                   // Failure here surfaces with a "run talonctl auth-mcp …"
                   // message so the operator can fix it without restarting.
-                  const disableNativeShellAndFilesystemTools = hasOAuthMcpAuth(mcpServers);
+                  // Native shell/filesystem tools run with host authority and are not
+                  // confined to the thread workspace. Disable them when the persona opts
+                  // out (untrusted-user personas) or when OAuth credentials are mounted.
+                  const disableNativeShellAndFilesystemTools =
+                    loadedPersona.config.nativeTools === false || hasOAuthMcpAuth(mcpServers);
                   const resolvedMcpServers = await resolveMcpServers(mcpServers, {
                     tokenStore: this.ctx.oauthTokenStore,
                   });

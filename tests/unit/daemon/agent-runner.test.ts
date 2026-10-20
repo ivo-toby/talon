@@ -399,6 +399,34 @@ describe('AgentRunner', () => {
       expect(mockQuery).toHaveBeenCalledOnce();
     });
 
+    it('keeps provider-native tools when the persona does not opt out', async () => {
+      await runner.run(makeQueueItem());
+
+      const options = mockQuery.mock.calls[0]![0].options as Record<string, unknown>;
+      expect(options).not.toHaveProperty('tools');
+    });
+
+    it('disables provider-native shell/filesystem tools when persona.nativeTools is false', async () => {
+      vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+        ok({
+          config: {
+            model: 'claude-sonnet-4-20250514',
+            skills: [],
+            capabilities: { allow: [] },
+            nativeTools: false,
+          },
+          systemPromptContent: 'You are a public bot.',
+          resolvedCapabilities: { allow: ['memory.access'], requireApproval: [] },
+        } as any),
+      );
+
+      const result = await runner.run(makeQueueItem());
+
+      expect(result.isOk()).toBe(true);
+      const options = mockQuery.mock.calls[0]![0].options as Record<string, unknown>;
+      expect(options.tools).toEqual(['WebSearch', 'WebFetch']);
+    });
+
     it('stores session ID when result includes one', async () => {
       const item = makeQueueItem();
 

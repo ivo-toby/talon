@@ -466,6 +466,67 @@ describe('BackgroundAgentHandler', () => {
     expect(backgroundAgentManager.getResult).not.toHaveBeenCalled();
   });
 
+  describe('nativeTools opt-out', () => {
+    const ctx = { runId: 'run-1', threadId: 'thread-1', personaId: 'persona-1', requestId: 'req-1' };
+
+    function persona(nativeTools?: boolean) {
+      return {
+        config: { skills: [], ...(nativeTools === undefined ? {} : { nativeTools }) },
+        systemPromptContent: 'Prompt.',
+        personalityContent: '',
+        resolvedCapabilities: { allow: ['subagent.background'], requireApproval: [] },
+      };
+    }
+
+    function loaderFor(map: Record<string, ReturnType<typeof persona> | undefined>) {
+      return {
+        getByName: vi.fn((name: string) => ok(map[name])),
+        listNames: vi.fn().mockReturnValue(Object.keys(map)),
+      };
+    }
+
+    it('does not disable native tools for a persona without opt-out', async () => {
+      const { handler, backgroundAgentManager } = createHandler({
+        personaLoader: loaderFor({ TestBot: persona() }),
+      });
+      await handler.execute({ action: 'spawn', prompt: 'go' }, ctx);
+      expect(backgroundAgentManager.spawn.mock.calls[0][0]).not.toHaveProperty('disableNativeTools');
+    });
+
+    it('disables native tools when the spawning persona opted out', async () => {
+      const { handler, backgroundAgentManager } = createHandler({
+        personaLoader: loaderFor({ TestBot: persona(false) }),
+      });
+      await handler.execute({ action: 'spawn', prompt: 'go' }, ctx);
+      expect(backgroundAgentManager.spawn.mock.calls[0][0].disableNativeTools).toBe(true);
+    });
+
+    it('caller opt-out survives delegation to a profile that allows native tools', async () => {
+      const { handler, backgroundAgentManager } = createHandler({
+        personaLoader: loaderFor({ TestBot: persona(false), coder: persona(true) }),
+      });
+      const result = await handler.execute({ action: 'spawn', prompt: 'go', profile: 'coder' }, ctx);
+      expect(result.status).toBe('success');
+      expect(backgroundAgentManager.spawn.mock.calls[0][0].disableNativeTools).toBe(true);
+    });
+
+    it('profile opt-out applies even when the caller allows native tools', async () => {
+      const { handler, backgroundAgentManager } = createHandler({
+        personaLoader: loaderFor({ TestBot: persona(true), public: persona(false) }),
+      });
+      await handler.execute({ action: 'spawn', prompt: 'go', profile: 'public' }, ctx);
+      expect(backgroundAgentManager.spawn.mock.calls[0][0].disableNativeTools).toBe(true);
+    });
+
+    it('fails closed when the caller persona config cannot be loaded', async () => {
+      const { handler, backgroundAgentManager } = createHandler({
+        personaLoader: loaderFor({ coder: persona(true) }),
+      });
+      await handler.execute({ action: 'spawn', prompt: 'go', profile: 'coder' }, ctx);
+      expect(backgroundAgentManager.spawn.mock.calls[0][0].disableNativeTools).toBe(true);
+    });
+  });
+
   describe('profile parameter', () => {
     it('spawns with profile persona when a valid profile name is given', async () => {
       const profilePersona = {

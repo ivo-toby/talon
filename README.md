@@ -1239,8 +1239,9 @@ the token bundle. DCR-issued token
 bundles are stored under `<dataDir>/mcp-auth/` with mode `0600`; the daemon
 picks up a new bundle on the next agent run, with no restart required.
 
-When a persona uses an OAuth-authenticated HTTP/SSE MCP server, Talon disables
-the provider's native shell and filesystem tools. Provider web search/fetch,
+When a persona uses an OAuth-authenticated HTTP/SSE MCP server, or sets
+`nativeTools: false` (see [Provider-native tools](#provider-native-tools)),
+Talon disables the provider's native shell and filesystem tools. Provider web search/fetch,
 Talon's capability-gated host tools, and configured MCP servers remain
 available. Codex CLI cannot disable its native tools, so those runs fail closed
 with a provider-switch message. This limits model-visible tool access; it is
@@ -2368,6 +2369,47 @@ side effects in its audit log. That limits what Talon exposes through its MCP
 bridge; it does not sandbox a provider runtime or make an external model or
 MCP server safe by itself. Docker container isolation for agent sandboxing is
 planned as an additional layer.
+
+### Provider-native tools
+
+Besides Talon's host tools, each provider runtime brings its own shell and
+filesystem tools: Claude Code's Bash/Read/Write/Glob/Grep, Gemini CLI's core
+tools, Codex CLI's shell, and the openai-compatible wrapper's Mastra workspace
+tools (`list_files`, `read_file`, `grep`, `execute_command`). They run on the
+host as the daemon's Unix user. The thread workspace is their *starting*
+directory, not a boundary, so they can reach other threads' workspaces, the
+SQLite database, channel auth state and `.env`.
+
+For any persona that talks to untrusted users (for example a public WhatsApp
+bot), turn them off:
+
+```yaml
+personas:
+  - name: public-bot
+    provider: ollama
+    nativeTools: false
+```
+
+`nativeTools: false` (default `true`) disables these tools for every run of
+the persona, both foreground and background. A background agent spawned by
+the persona inherits the restriction even if it uses a `profile` that allows
+native tools. Provider web search/fetch, Talon host tools allowed by
+`capabilities`, and configured MCP servers remain available. `codex-cli`
+cannot disable its built-in tools, so a persona that combines it with
+`nativeTools: false` (as `provider` or `backgroundProvider`) is rejected at
+config load.
+
+**openai-compatible environment.** The openai-compatible wrapper and its
+workspace shell are started with an allowlisted environment instead of the
+daemon's full environment. They receive `PATH`, `HOME`, user, locale, `TERM`
+and temp-dir variables; the wrapper additionally gets proxy and TLS-trust
+variables, which are not forwarded to the shell. Provider API keys are
+delivered through config and are not exposed as environment variables. If the
+workspace shell needs more (for example `GH_TOKEN` for `gh`), list the names
+under the provider's `options.envPassthrough`. Every listed value is readable
+by the model. This only applies to environment variables: with native tools
+enabled, secrets on disk or in other processes remain reachable, so use
+`nativeTools: false` for untrusted users.
 
 ### Host-Tools MCP Bridge
 

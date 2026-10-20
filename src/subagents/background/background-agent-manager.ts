@@ -69,6 +69,11 @@ export interface SpawnBackgroundAgentInput {
   sandbox?: boolean;
   controlDirectory?: string;
   executionEnvDefaults?: PersonaExecutionEnvConfig;
+  /**
+   * Disable provider-native shell and filesystem tools for this run. Set when
+   * the spawning persona or the worker profile has `nativeTools: false`.
+   */
+  disableNativeTools?: boolean;
 }
 
 interface BackgroundAgentManagerDeps {
@@ -307,7 +312,8 @@ export class BackgroundAgentManager {
         cause instanceof Error ? cause : undefined,
       ));
     }
-    const disableNativeShellAndFilesystemTools = hasOAuthMcpAuth(workerMcpServers);
+    const disableNativeShellAndFilesystemTools =
+      input.disableNativeTools === true || hasOAuthMcpAuth(workerMcpServers);
 
     const invocationResult = providerEntry.provider.prepareBackgroundInvocation({
       prompt: input.prompt,
@@ -380,6 +386,7 @@ export class BackgroundAgentManager {
       cwd: invocation.cwd,
       stdin: invocation.stdin,
       env: this.buildProviderEnv(taskId, invocation.env, sandboxContext),
+      ...(invocation.inheritEnv === false ? { inheritEnv: false } : {}),
       timeoutMs: invocation.timeoutMs,
     });
 
