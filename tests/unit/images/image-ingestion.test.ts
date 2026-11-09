@@ -598,6 +598,37 @@ describe('ImageIngestionCoordinator', () => {
   }
 
   describe('recovery precedence', () => {
+    // Recovery table row: "Outcomes resolved, not enqueued".
+    it('enqueues resolved outcomes exactly once after the enqueue transaction failed, without re-normalizing', async () => {
+      const spy = vi
+        .spyOn(f.queueManager, 'enqueueWithCommit')
+        .mockReturnValueOnce(err(new DbError('forced enqueue failure')) as never);
+      const request = f.makeRequest();
+
+      const first = await f.coordinator.ingestMessage(request);
+      expect(first.isErr()).toBe(true);
+      const [image] = imagesOf(f, request.message.id);
+      expect(image.state).toBe('available');
+      expect(ingestionOf(f, request.message.id)?.status).not.toBe('completed');
+      expect(queueRows(f)).toHaveLength(0);
+      spy.mockRestore();
+
+      const normalizedBefore = f.normalizeCalls.length;
+      const report = await f.coordinator.recoverPending({});
+      expect(report._unsafeUnwrap()).toMatchObject({ inspected: 1, enqueued: 1 });
+      expect(f.normalizeCalls.length).toBe(normalizedBefore);
+      expect(queueRows(f)).toHaveLength(1);
+      expect(ingestionOf(f, request.message.id)?.status).toBe('completed');
+
+      // A later redelivery is a duplicate and adds no second queue item.
+      const again = await f.coordinator.ingestMessage({
+        ...request,
+        message: { ...request.message, id: uuidv4() },
+      });
+      expect(again._unsafeUnwrap()).toBe('duplicate');
+      expect(queueRows(f)).toHaveLength(1);
+    });
+
     it('expiry wins over exhausted attempts and a retained source', async () => {
       const { messageId } = seedCrashedAdmission({
         attempts: MAX_ATTEMPTS_PER_IMAGE,

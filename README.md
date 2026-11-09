@@ -1843,7 +1843,7 @@ and stored — but the persona cannot ask what they show.
 
 ### What is accepted
 
-Supported input formats: **JPEG, static PNG, static WebP.** Anything animated is
+Supported input formats: **JPEG, static PNG, static WebP** (the non-standard `image/jpg` and `image/pjpeg` labels count as JPEG). Anything animated is
 rejected explicitly, including WebP frame information and PNG/APNG
 animation-control data, even when the decoder could read a single frame.
 

@@ -28,8 +28,8 @@ time.
   Saved Findings are kept even after the image file expires, and a repeat
   Inspection costs a model call and can produce a second, competing answer.
 - **A descriptor from an earlier message is a stale snapshot.** Its state and
-  expiry may already have lapsed. Re-read current state with `get_image` before
-  claiming an image is available.
+  expiry may already have lapsed. If you have `image_lookup`, re-read current
+  state with `get_image` before claiming an image is available.
 - **When an image is Unavailable** (`expired` or `file_missing`) it is gone from
   your side; ask the user to re-upload it. A re-upload gets a new Image ID and a
   fresh deadline, while Findings stay attached to the old ID. Do not retry an

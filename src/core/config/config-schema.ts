@@ -532,9 +532,10 @@ export const ImagesConfigSchema = z.object({
   jpegQuality: z.number().int().min(1).max(100).default(85),
   /**
    * Maximum decoded source pixels (width × height); larger sources are
-   * Rejected/size_limit before decoding (decompression-bomb guard).
+   * Rejected/size_limit before decoding (decompression-bomb guard). Capped at
+   * sharp's own default limit (16383 × 16383) so config can never raise it.
    */
-  maxInputPixels: z.number().int().min(1).default(100_000_000),
+  maxInputPixels: z.number().int().min(1).max(268_402_689).default(100_000_000),
   /**
    * Maximum bytes of a Normalized file. Larger encodes are retried at lower
    * quality, then a smaller edge; the default keeps the base64 form under the

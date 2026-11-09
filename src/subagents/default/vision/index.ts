@@ -433,6 +433,26 @@ export async function run(
   if (services.isErr()) return err(services.error);
   const { images, findings, runId } = services.value;
 
+  // 1b. The Finding must be recordable before any model is billed. Only
+  //     foreground runs have a `runs` row; a background agent's task ID does
+  //     not, so its Inspection would pay for every chain entry and then fail.
+  const recordable = findings.canRecordForRun(runId, ctx.threadId);
+  if (recordable.isErr()) {
+    return err(
+      new SubAgentError(
+        `Vision could not check where to record its Finding: ${recordable.error.message}`,
+      ),
+    );
+  }
+  if (!recordable.value) {
+    return err(
+      new SubAgentError(
+        'Vision Inspection is only available inside a foreground run of this thread ' +
+          '(background agents and other contexts cannot record Findings); no model was called.',
+      ),
+    );
+  }
+
   // 2. Input validation: whole call fails before any Image load or request.
   const maxPerInspection =
     ctx.services.imageInspectionLimits?.maxPerInspection ?? DEFAULT_MAX_PER_INSPECTION;

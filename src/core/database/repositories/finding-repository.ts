@@ -408,6 +408,13 @@ export class FindingRepository extends BaseRepository {
     }
   }
 
+  /** True when `runId` exists in `runs` and belongs to `threadId`. */
+  canRecordForRun(runId: string, threadId: string): Result<boolean, DbError> {
+    const owner = this.readRunOwner(runId);
+    if (owner.isErr()) return err(owner.error);
+    return ok(owner.value !== null && owner.value.thread_id === threadId);
+  }
+
   private readRunOwner(runId: string): Result<RunOwnerRow | null, DbError> {
     try {
       const row = this.runOwnerStmt.get(runId) as RunOwnerRow | undefined;

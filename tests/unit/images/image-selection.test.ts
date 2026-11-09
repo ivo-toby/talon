@@ -58,6 +58,13 @@ function simulateDownloads(result: ImageSelectionResult): number[] {
   return fetches;
 }
 
+describe('JPEG MIME aliases', () => {
+  it('normalizes image/jpg and image/pjpeg to image/jpeg', () => {
+    expect(normalizeMimeType('image/jpg')).toBe('image/jpeg');
+    expect(normalizeMimeType('IMAGE/PJPEG; charset=binary')).toBe('image/jpeg');
+  });
+});
+
 describe('normalizeMimeType', () => {
   it('lowercases and strips MIME parameters', () => {
     expect(normalizeMimeType('IMAGE/PNG')).toBe('image/png');

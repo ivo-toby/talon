@@ -988,6 +988,11 @@ describe('ImagesConfigSchema', () => {
     expect(ImagesConfigSchema.safeParse({ maxInputBytes: '10485760' }).success).toBe(false);
   });
 
+  it('caps maxInputPixels at sharp\'s own default limit', () => {
+    expect(ImagesConfigSchema.safeParse({ maxInputPixels: 268_402_689 }).success).toBe(true);
+    expect(ImagesConfigSchema.safeParse({ maxInputPixels: 268_402_690 }).success).toBe(false);
+  });
+
   it('rejects zero, negative, and fractional maxInputPixels and maxNormalizedBytes', () => {
     for (const key of ['maxInputPixels', 'maxNormalizedBytes']) {
       expect(ImagesConfigSchema.safeParse({ [key]: 0 }).success).toBe(false);

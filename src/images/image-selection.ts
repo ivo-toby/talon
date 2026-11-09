@@ -52,6 +52,15 @@ export const SUPPORTED_IMAGE_MIME_TYPES = Object.freeze([
 const SUPPORTED_MIME_SET: ReadonlySet<string> = new Set<string>(SUPPORTED_IMAGE_MIME_TYPES);
 
 /**
+ * Non-standard JPEG labels some mail clients and Android apps still send.
+ * They normalize to `image/jpeg`; the decoder confirms the real format.
+ */
+const MIME_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  'image/jpg': 'image/jpeg',
+  'image/pjpeg': 'image/jpeg',
+});
+
+/**
  * Why a delivered item is silently excluded before slot assignment. This is a
  * selection-local diagnostic vocabulary, NOT the durable Image rejection
  * vocabulary: excluded items create no Image and never reach durable output.
@@ -213,7 +222,8 @@ const MIME_TOKEN = /^[a-z0-9!#$%&'*+.^_`|~{}-]+$/;
  * `IMAGE/JPEG;charset=binary` → `image/jpeg`. An empty or parameter-only
  * value, or any value whose type/subtype is not a well-formed token pair
  * (for example a URL-bearing `image/...`-like string), normalizes to
- * `undefined` (absent MIME) and is never retained.
+ * `undefined` (absent MIME) and is never retained. Non-standard JPEG labels
+ * (`image/jpg`, `image/pjpeg`) normalize to `image/jpeg`.
  */
 export function normalizeMimeType(mime: string | undefined): string | undefined {
   if (typeof mime !== 'string') {
@@ -232,7 +242,8 @@ export function normalizeMimeType(mime: string | undefined): string | undefined 
   if (!MIME_TOKEN.test(type) || !MIME_TOKEN.test(subtype)) {
     return undefined;
   }
-  return `${type}/${subtype}`;
+  const normalized = `${type}/${subtype}`;
+  return MIME_ALIASES[normalized] ?? normalized;
 }
 
 /** True when the normalized MIME is one of the accepted input formats. */

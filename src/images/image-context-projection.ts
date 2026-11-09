@@ -127,19 +127,41 @@ function descriptorOptionalSegments(descriptor: ImageDescriptor): string[] {
   return segments;
 }
 
+/** Longest EXIF text value rendered into a descriptor. */
+const MAX_EXIF_TEXT_CHARS = 64;
+
+/**
+ * EXIF text is sender-controlled. Strip anything that could break out of
+ * the quoted, line-oriented descriptor (control characters, quotes,
+ * brackets), collapse whitespace and cap the length, so a crafted camera
+ * name cannot forge another descriptor line.
+ */
+function exifText(value: string): string {
+  const cleaned = value
+    // eslint-disable-next-line no-control-regex -- stripping control characters is the point
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029"[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > MAX_EXIF_TEXT_CHARS ? cleaned.slice(0, MAX_EXIF_TEXT_CHARS) : cleaned;
+}
+
 function descriptorExifSegment(exif: ImageExifMetadata | undefined): string | undefined {
   if (exif === undefined) {
     return undefined;
   }
   const parts: string[] = [];
   if (exif.capturedAt !== undefined) {
-    parts.push(`capture="${exif.capturedAt}"`);
+    parts.push(`capture="${exifText(exif.capturedAt)}"`);
   }
   if (exif.capturedAtOffset !== undefined) {
-    parts.push(`offset="${exif.capturedAtOffset}"`);
+    parts.push(`offset="${exifText(exif.capturedAtOffset)}"`);
   }
   if (exif.cameraMake !== undefined || exif.cameraModel !== undefined) {
-    parts.push(`camera="${[exif.cameraMake, exif.cameraModel].filter(Boolean).join(' ')}"`);
+    const camera = [exif.cameraMake, exif.cameraModel]
+      .filter((v): v is string => typeof v === 'string' && v.length > 0)
+      .map(exifText)
+      .join(' ');
+    parts.push(`camera="${camera}"`);
   }
   if (exif.orientation !== undefined) {
     parts.push(`orientation=${exif.orientation}`);

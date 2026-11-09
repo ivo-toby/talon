@@ -85,6 +85,20 @@ describe('FindingRepository', () => {
     db.close();
   });
 
+  describe('canRecordForRun', () => {
+    it('is true for a run that belongs to the thread', () => {
+      expect(repo.canRecordForRun(runId, threadId)._unsafeUnwrap()).toBe(true);
+    });
+
+    it('is false for a run in another thread', () => {
+      expect(repo.canRecordForRun(otherRunId, threadId)._unsafeUnwrap()).toBe(false);
+    });
+
+    it('is false for an id with no runs row (e.g. a background task id)', () => {
+      expect(repo.canRecordForRun(uuid(), threadId)._unsafeUnwrap()).toBe(false);
+    });
+  });
+
   function insertRun(thread: string, runs: RunRepository): string {
     const id = uuid();
     const personaRow = db.prepare('SELECT id FROM personas LIMIT 1').get() as { id: string };

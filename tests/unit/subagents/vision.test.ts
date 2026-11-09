@@ -196,11 +196,16 @@ class FakeImageAccess implements ImageAccess {
  */
 interface FindingLedger {
   create: Mock;
+  canRecordForRun: Mock;
   entries: Array<Record<string, unknown>>;
 }
 
 function makeFindingLedger(failWith?: DbError): FindingLedger {
-  const ledger: FindingLedger = { create: vi.fn(), entries: [] };
+  const ledger: FindingLedger = {
+    create: vi.fn(),
+    canRecordForRun: vi.fn(() => ok(true)),
+    entries: [],
+  };
   ledger.create = vi.fn((input: Record<string, unknown>) => {
     if (failWith) return err(failWith);
     ledger.entries.push({ ...input });
@@ -1161,6 +1166,38 @@ describe('vision failure paths', () => {
     expect(findings.entries).toHaveLength(0);
   });
 
+  it('refuses before any model call when the run cannot record a Finding (e.g. a background agent)', async () => {
+    const images = new FakeImageAccess();
+    images.addAvailable('img-a', jpegBytes('A'));
+    const findings = makeFindingLedger();
+    findings.canRecordForRun = vi.fn(() => ok(false));
+    const context = makeContext({ services: makeServices({ images, findings }) });
+    scriptSuccess({ answer: 'never produced' });
+
+    const result = await visionRun(context, { question: 'q', imageIds: ['img-a'] });
+
+    expect(result.isErr()).toBe(true);
+    if (result.isErr()) {
+      expect(result.error.message).toContain('only available inside a foreground run');
+    }
+    expect(findings.canRecordForRun).toHaveBeenCalledWith(context.runId, context.threadId);
+    expect(generateTextMock).not.toHaveBeenCalled();
+    expect(findings.create).not.toHaveBeenCalled();
+  });
+
+  it('fails closed before any model call when the recordability check itself errors', async () => {
+    const images = new FakeImageAccess();
+    images.addAvailable('img-a', jpegBytes('A'));
+    const findings = makeFindingLedger();
+    findings.canRecordForRun = vi.fn(() => err(new DbError('db locked')));
+    const context = makeContext({ services: makeServices({ images, findings }) });
+
+    const result = await visionRun(context, { question: 'q', imageIds: ['img-a'] });
+
+    expect(result.isErr()).toBe(true);
+    expect(generateTextMock).not.toHaveBeenCalled();
+  });
+
   it('fails the Inspection when the Finding write THROWS (no Finding, propagated failure)', async () => {
     const images = new FakeImageAccess();
     images.addAvailable('img-a', jpegBytes('A'));
@@ -1169,6 +1206,7 @@ describe('vision failure paths', () => {
       create: vi.fn(() => {
         throw new Error('sqlite crash <detail-W>');
       }),
+      canRecordForRun: vi.fn(() => ok(true)),
       entries: [],
     };
     const context = makeContext({ services: makeServices({ images, findings }) });

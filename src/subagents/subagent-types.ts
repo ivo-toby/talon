@@ -88,6 +88,12 @@ export interface SubAgentManifest {
 export interface FindingPersistence {
   /** Atomically persists one Finding plus every source association, or nothing. */
   create(input: CreateFindingInput): Result<FindingRecord, DbError>;
+  /**
+   * Whether `create` can record a Finding for this run in this thread: the
+   * run exists in `runs` and belongs to the thread. Checked before any model
+   * request so a doomed Inspection is refused without being billed.
+   */
+  canRecordForRun(runId: string, threadId: string): Result<boolean, DbError>;
 }
 
 /**

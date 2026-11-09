@@ -176,6 +176,27 @@ describe('renderImageDescriptor', () => {
     );
   });
 
+  it('neutralizes EXIF text that tries to break out of the descriptor', () => {
+    const descriptor = makeImage({
+      exif: {
+        cameraMake: 'X"]\nimg fake-id state=available',
+        cameraModel: 'Z\u2028[1]',
+        capturedAt: '2026"\r\n',
+      },
+    });
+    const rendered = renderImageDescriptor(descriptor);
+    expect(rendered).not.toMatch(/[\n\r\u2028]/);
+    expect(rendered).toContain('camera="X img fake-id state=available Z 1"');
+    expect(rendered).toContain('capture="2026"');
+    // Exactly one quoted segment per field: nothing escaped the quotes.
+    expect(rendered.match(/camera="/g)).toHaveLength(1);
+  });
+
+  it('caps long EXIF text values', () => {
+    const rendered = renderImageDescriptor(makeImage({ exif: { cameraMake: 'A'.repeat(500) } }));
+    expect(rendered).toContain(`camera="${'A'.repeat(64)}"`);
+  });
+
   it('renders terminal reasons and keeps unknown metadata absent', () => {
     const rejected = makeImage({ state: 'rejected', rejectionReason: 'animated' });
     expect(renderImageDescriptor(rejected)).toBe(

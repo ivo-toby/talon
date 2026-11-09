@@ -399,10 +399,10 @@ setup, mention that:
 - On a sequential connector an image-bearing message delays other traffic on that
   connector — Telegram polling is the example, waiting up to ~120 seconds (a fixed
   60-second remote-fetch budget plus a separate 60-second normalization deadline).
-  WhatsApp is not sequential: Baileys launches inbound handlers concurrently and
-  Business accepts concurrent webhook requests, so it does not block its connector,
-  though a downloaded WhatsApp image still carries the same per-message 60-second
-  fetch + 60-second normalization budgets. Email does no remote fetch — its bytes
+  WhatsApp handles each chat in order but chats in parallel, so a text sent right
+  after a photo waits for that photo while other chats keep flowing; a downloaded
+  WhatsApp image still carries the same per-message 60-second fetch + 60-second
+  normalization budgets. Email does no remote fetch — its bytes
   already arrived with the message — so only the shared 60-second normalization
   deadline applies there.
 
