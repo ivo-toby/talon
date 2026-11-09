@@ -479,8 +479,17 @@ export class TalondDaemon {
       );
     }
 
-    const newConfig = configResult.value;
     const oldConfig = this.ctx.config;
+    // Image settings are fixed for the life of the process: the ingestion
+    // coordinator, normalizer, retention timer and vision limits captured them
+    // at bootstrap. Keep the running values so rebuilt connectors cannot select
+    // or fetch under limits the coordinator would then reject.
+    const newConfig: TalondConfig = { ...configResult.value, images: oldConfig.images };
+    if (JSON.stringify(oldConfig.images) !== JSON.stringify(configResult.value.images)) {
+      this.logger.warn(
+        'daemon: reload — images config changed; restart required to apply (running limits kept)',
+      );
+    }
 
     this.logger.info({ configPath: effectivePath }, 'daemon: applying hot-reload');
 

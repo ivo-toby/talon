@@ -9,13 +9,17 @@
  * driven by REAL parser output, not invented shapes:
  *
  * - `multipart/related` CID part  → contentDisposition 'inline' + related=true
+ *   → excluded (embedded in the HTML body)
+ * - Apple Mail photo: `inline; filename=` inside multipart/mixed → NO related
+ *   flag → ordinary, eligible
  * - Content-ID with `attachment` disposition OUTSIDE multipart/related →
  *   contentId/cid present but NO related flag → ordinary, eligible.
  *
  * Guarantees exercised here:
  * 1. Authorization BEFORE staging: a denied sender or failed DMARC produces
  *    ZERO events and ZERO attachment payloads, even for image-only mail.
- * 2. Inline/related parts and absent/non-image MIME are excluded BEFORE
+ * 2. Related (HTML-embedded) parts, filename-less inline parts and
+ *    absent/non-image MIME are excluded BEFORE
  *    slots (no Image, no event `attachments` field).
  * 3. Shared selection caps (maxPerMessage, maxInputBytes measured on the
  *    ACTUAL Buffer length) govern what is staged; slots never backfill.
@@ -216,6 +220,30 @@ const MIME_CID_BUT_ORDINARY = [
   '',
 ].join('\r\n');
 
+/** Apple Mail (macOS/iOS) style: an attached photo sent with
+ *  `Content-Disposition: inline; filename=...` inside multipart/mixed. */
+const MIME_APPLE_MAIL_INLINE_PHOTO = [
+  'From: alice@example.com',
+  'To: bot@example.com',
+  'Subject: receipt',
+  'Message-ID: <e5-apple@example.com>',
+  'MIME-Version: 1.0',
+  'Content-Type: multipart/mixed; boundary="AM"',
+  '',
+  '--AM',
+  'Content-Type: text/plain',
+  '',
+  'see attached',
+  '--AM',
+  'Content-Type: image/jpeg; name="IMG_1234.jpeg"',
+  'Content-Disposition: inline; filename="IMG_1234.jpeg"',
+  'Content-Transfer-Encoding: base64',
+  '',
+  b64('JPGDATA-APPLE'),
+  '--AM--',
+  '',
+].join('\r\n');
+
 /** PDF attachment + inline HTML part + image part with NO Content-Disposition. */
 const MIME_MIXED_EXCLUSIONS = [
   'From: alice@example.com',
@@ -357,9 +385,25 @@ describe('mapParsedMail attachment forwarding (minimal E5 fields)', () => {
 // ---------------------------------------------------------------------------
 
 describe('isInlineOrRelatedEmailAttachment', () => {
-  it('excludes disposition=inline (case/whitespace tolerant)', () => {
-    expect(isInlineOrRelatedEmailAttachment(attachment({ contentDisposition: 'inline' }))).toBe(true);
-    expect(isInlineOrRelatedEmailAttachment(attachment({ contentDisposition: ' Inline ' }))).toBe(true);
+  it('excludes disposition=inline without a filename (case/whitespace tolerant)', () => {
+    const noName = (disposition: string): EmailAttachment => {
+      const a = attachment({ contentDisposition: disposition });
+      delete a.filename;
+      return a;
+    };
+    expect(isInlineOrRelatedEmailAttachment(noName('inline'))).toBe(true);
+    expect(isInlineOrRelatedEmailAttachment(noName(' Inline '))).toBe(true);
+    expect(
+      isInlineOrRelatedEmailAttachment(attachment({ contentDisposition: 'inline', filename: '  ' })),
+    ).toBe(true);
+  });
+
+  it('keeps disposition=inline WITH a filename eligible (Apple Mail photo attachments)', () => {
+    expect(
+      isInlineOrRelatedEmailAttachment(
+        attachment({ contentDisposition: 'inline', filename: 'IMG_1234.jpeg' }),
+      ),
+    ).toBe(false);
   });
 
   it('excludes related=true even when the disposition says attachment', () => {
@@ -378,6 +422,19 @@ describe('isInlineOrRelatedEmailAttachment', () => {
     const cidOnly = mapParsedMail(await simpleParser(MIME_CID_BUT_ORDINARY), 2);
     expect(isInlineOrRelatedEmailAttachment(inline.attachments?.[0] as EmailAttachment)).toBe(true);
     expect(isInlineOrRelatedEmailAttachment(cidOnly.attachments?.[0] as EmailAttachment)).toBe(false);
+  });
+
+  it('stages a REAL Apple Mail inline photo attachment', async () => {
+    const parsed = await simpleParser(MIME_APPLE_MAIL_INLINE_PHOTO);
+    const at = parsed.attachments[0] as unknown as Record<string, unknown>;
+    expect(at.contentDisposition).toBe('inline');
+    expect(at).not.toHaveProperty('related');
+    const email = mapParsedMail(parsed, 9);
+    const plan = planEmailMedia(email.attachments, settings());
+    expect(planHasImageSlots(plan)).toBe(true);
+    const staged = stageEmailMedia(plan);
+    expect(staged).toHaveLength(1);
+    expect(staged[0]).toMatchObject({ filename: 'IMG_1234.jpeg', mimeType: 'image/jpeg' });
   });
 });
 
@@ -406,7 +463,11 @@ describe('planEmailMedia / stageEmailMedia', () => {
   it('excludes inline, related, non-image and absent-MIME parts BEFORE slots', () => {
     const plan = planEmailMedia(
       [
-        attachment({ contentDisposition: 'inline', filename: 'inline.png', contentType: 'image/png' }),
+        (() => {
+          const a = attachment({ contentDisposition: 'inline', contentType: 'image/png' });
+          delete a.filename;
+          return a;
+        })(),
         attachment({ related: true, filename: 'related.png', contentType: 'image/png' }),
         attachment({ contentType: 'application/pdf', filename: 'doc.pdf' }),
         (() => {
@@ -507,7 +568,11 @@ describe('planEmailMedia / stageEmailMedia', () => {
       [
         attachment({ contentType: 'application/pdf', filename: 'doc.pdf' }),
         attachment({ filename: 'one.jpg', content: Buffer.from('1') }),
-        attachment({ contentDisposition: 'inline', filename: 'inline.png', contentType: 'image/png' }),
+        (() => {
+          const a = attachment({ contentDisposition: 'inline', contentType: 'image/png' });
+          delete a.filename;
+          return a;
+        })(),
         attachment({ filename: 'two.png', contentType: 'image/png', content: Buffer.from('2') }),
       ],
       settings(),
@@ -783,7 +848,7 @@ describe('raw hygiene — buffers never travel through event.raw', () => {
         attachments: [
           attachment({ filename: 'ok.jpg', content: Buffer.from('STAGED') }),
           attachment({ filename: 'huge.jpg', content: Buffer.alloc(2_000, 0x4a), size: 2_000 }),
-          attachment({ contentDisposition: 'inline', contentType: 'image/png', content: Buffer.from('INLINE') }),
+          attachment({ contentDisposition: 'inline', related: true, contentType: 'image/png', content: Buffer.from('INLINE') }),
           attachment({ contentType: 'application/pdf', filename: 'doc.pdf', content: Buffer.from('PDFBYTES') }),
         ],
       }),
@@ -844,7 +909,7 @@ describe('EmailConnector event composition with attachments', () => {
       makeEmail({
         text: 'just text',
         attachments: [
-          attachment({ contentDisposition: 'inline', contentType: 'image/png' }),
+          attachment({ contentDisposition: 'inline', related: true, contentType: 'image/png' }),
           attachment({ contentType: 'application/pdf', filename: 'report.pdf' }),
         ],
       }),

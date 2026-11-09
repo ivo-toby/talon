@@ -34,6 +34,7 @@ import { ChannelError } from '../../../core/errors/error-types.js';
 import { markdownToWhatsApp } from '../whatsapp-business/whatsapp-format.js';
 import { registerSafeRejectionMatcher } from '../../../daemon/unhandled-rejection-shield.js';
 import { selectImages } from '../../../images/image-selection.js';
+import { KeyedSerialQueue } from '../../keyed-serial-queue.js';
 import {
   resolveBaileysImageSettings,
   unwrapMessageContent,
@@ -68,6 +69,8 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
   readonly name: string;
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
+  /** Per-chat ordering for concurrently fired upsert handlers. */
+  private readonly chatQueue = new KeyedSerialQueue();
   /**
    * Resolved bounded image-ingestion settings (TASK-007). The channel
    * factory will pass the global `images` config block here; until then the
@@ -282,7 +285,12 @@ export class WhatsAppBaileysConnector implements ChannelConnector {
         sock.ev.on('messages.upsert', ({ messages, type }) => {
           if (type !== 'notify') return;
           for (const msg of messages) {
-            this.handleInboundMessage(msg as unknown as InboundWAMessage).catch(
+            const inbound = msg as unknown as InboundWAMessage;
+            // Serialize per chat: a text sent after a photo must not reach the
+            // pipeline while the photo is still downloading/normalizing.
+            this.chatQueue
+              .run(inbound.key.remoteJid ?? '', () => this.handleInboundMessage(inbound))
+              .catch(
               (handlerErr: unknown) => {
                 this.logger.error(
                   { err: handlerErr, channelName: this.name },

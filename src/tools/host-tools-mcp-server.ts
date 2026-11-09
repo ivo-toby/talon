@@ -217,11 +217,13 @@ class SocketClient {
 // ---------------------------------------------------------------------------
 // image_lookup — four operation-specific input schemas
 //
-// `image.lookup` has four operations with different field sets, so the tool
-// declares one JSON Schema branch per operation under `oneOf`. Each branch
-// pins its own `operation` value, its own required fields, and
-// `additionalProperties: false`, which is what keeps the accepted input set
-// exactly equal to the handler's own tables.
+// `image.lookup` has four operations with different field sets. The schema
+// is one flat object holding the union of accepted fields: provider tool APIs
+// (Anthropic in particular) reject `oneOf`/`anyOf`/`allOf` at the top level of
+// a tool input schema, which would fail every request that exposes the tool.
+// Per-operation field rules are stated in the description and enforced by the
+// handler's ALLOWED_FIELDS table, which rejects any field outside the
+// operation's own set.
 //
 // There is deliberately NO thread, persona, run, path, URL, or provenance
 // field anywhere in these schemas. The thread comes from the trusted
@@ -256,69 +258,10 @@ const IMAGE_LOOKUP_FINDING_ID_SCHEMA = {
     'Finding ID from a `list_findings` result. An opaque token \u2014 never a file path or URL.',
 };
 
-/** `list_images` \u2014 `{ images, nextCursor }` */
-export const IMAGE_LOOKUP_LIST_IMAGES_SCHEMA = {
-  type: 'object' as const,
-  properties: {
-    operation: { type: 'string' as const, enum: ['list_images'] as const },
-    limit: IMAGE_LOOKUP_LIMIT_SCHEMA,
-    cursor: IMAGE_LOOKUP_CURSOR_SCHEMA,
-  },
-  required: ['operation'] as const,
-  additionalProperties: false as const,
-};
-
-/** `get_image` \u2014 `{ image }` */
-export const IMAGE_LOOKUP_GET_IMAGE_SCHEMA = {
-  type: 'object' as const,
-  properties: {
-    operation: { type: 'string' as const, enum: ['get_image'] as const },
-    imageId: IMAGE_LOOKUP_IMAGE_ID_SCHEMA,
-  },
-  required: ['operation', 'imageId'] as const,
-  additionalProperties: false as const,
-};
-
-/** `list_findings` \u2014 `{ findings, nextCursor }` */
-export const IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA = {
-  type: 'object' as const,
-  properties: {
-    operation: { type: 'string' as const, enum: ['list_findings'] as const },
-    imageId: {
-      ...IMAGE_LOOKUP_IMAGE_ID_SCHEMA,
-      description:
-        'Optional filter: only Findings whose Inspection referenced this current-thread Image ID.',
-    },
-    limit: IMAGE_LOOKUP_LIMIT_SCHEMA,
-    cursor: IMAGE_LOOKUP_CURSOR_SCHEMA,
-  },
-  required: ['operation'] as const,
-  additionalProperties: false as const,
-};
-
-/** `get_finding` \u2014 `{ finding }` */
-export const IMAGE_LOOKUP_GET_FINDING_SCHEMA = {
-  type: 'object' as const,
-  properties: {
-    operation: { type: 'string' as const, enum: ['get_finding'] as const },
-    findingId: IMAGE_LOOKUP_FINDING_ID_SCHEMA,
-  },
-  required: ['operation', 'findingId'] as const,
-  additionalProperties: false as const,
-};
-
-/** The four operation-specific input schemas, in `IMAGE_LOOKUP_OPERATIONS` order. */
-export const IMAGE_LOOKUP_OPERATION_SCHEMAS = [
-  IMAGE_LOOKUP_LIST_IMAGES_SCHEMA,
-  IMAGE_LOOKUP_GET_IMAGE_SCHEMA,
-  IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA,
-  IMAGE_LOOKUP_GET_FINDING_SCHEMA,
-] as const;
-
 const IMAGE_LOOKUP_TOOL = {
   name: 'image_lookup',
   description:
-    'Discovers the Images in the CURRENT thread and reads Findings their Inspections already saved. Text only \u2014 it never returns pixels, file paths, or URLs, never calls a model, and never downloads anything. Four operations: `list_images` (current descriptors, newest first, including Rejected/Unavailable; still-processing Images are omitted), `get_image` (the CURRENT descriptor of one Image \u2014 use this instead of trusting a descriptor quoted in an earlier turn), `list_findings` (saved Findings, optionally filtered by imageId), `get_finding` (one exact saved Finding with its answer and extracted text). Reading a saved Finding through this tool does NOT run a new Inspection. The thread is taken from the trusted run context and cannot be supplied here.',
+    'Discovers the Images in the CURRENT thread and reads Findings their Inspections already saved. Text only \u2014 it never returns pixels, file paths, or URLs, never calls a model, and never downloads anything. Four operations: `list_images` (current descriptors, newest first, including Rejected/Unavailable; still-processing Images are omitted), `get_image` (the CURRENT descriptor of one Image \u2014 use this instead of trusting a descriptor quoted in an earlier turn), `list_findings` (saved Findings, optionally filtered by imageId), `get_finding` (one exact saved Finding with its answer and extracted text). Reading a saved Finding through this tool does NOT run a new Inspection. The thread is taken from the trusted run context and cannot be supplied here. Fields per operation (any other field is rejected): `list_images` takes optional `limit` and `cursor`; `get_image` requires `imageId`; `list_findings` takes optional `imageId`, `limit`, and `cursor`; `get_finding` requires `findingId`.',
   inputSchema: {
     type: 'object' as const,
     // Union of every accepted field, so converters that only read top-level
@@ -336,9 +279,6 @@ const IMAGE_LOOKUP_TOOL = {
     },
     required: ['operation'] as const,
     additionalProperties: false as const,
-    // Per-operation requirements: exactly one branch matches, because each one
-    // pins its own `operation` value and allows only its own fields.
-    oneOf: IMAGE_LOOKUP_OPERATION_SCHEMAS,
   },
 };
 

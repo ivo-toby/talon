@@ -194,6 +194,11 @@ WhatsApp-specific behaviour worth warning the user about:
 - **Media handling is awaited per message** — a fixed 60-second fetch budget plus
   a separate 60-second normalization deadline, at most 3 attempts per Image, not
   reset by restart.
+- **Messages in one chat are handled in order.** A text sent right after a photo
+  waits until the photo is processed, so the agent sees the image first. Other
+  chats are not held up.
+- Changing the `images` block needs a daemon restart; `talonctl reload` keeps
+  the running values.
 - Normalized files are deleted after `images.retentionHours` (default 24h).
   Image records, GPS/EXIF and saved Findings persist beyond that.
 

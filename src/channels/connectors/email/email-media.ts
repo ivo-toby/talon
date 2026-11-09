@@ -21,9 +21,15 @@
  * Classification follows the ACTUAL MailParser 3.9.37 attachment shape
  * (contract inventory E5):
  *
- * - `contentDisposition === 'inline'` OR `related === true` (a CID part under
- *   a `multipart/related` ancestor) → flagged `inlineRelated` and silently
- *   excluded BEFORE slots — inline photos included, no slot, no Image.
+ * - `related === true` (a CID part under a `multipart/related` ancestor, i.e.
+ *   embedded in the HTML body) → flagged `inlineRelated` and silently
+ *   excluded BEFORE slots — no slot, no Image.
+ * - `contentDisposition === 'inline'` WITHOUT a filename → also excluded.
+ * - `contentDisposition === 'inline'` WITH a filename outside
+ *   `multipart/related` is an ordinary attachment. Apple Mail (macOS/iOS)
+ *   sends attached photos this way (`inline; filename=IMG_1234.jpeg` inside
+ *   multipart/mixed), so excluding on disposition alone would silently drop
+ *   the most common way those users email a photo.
  * - A Content-ID header ALONE does not exclude: an ordinary attachment with
  *   `Content-ID` but `attachment` disposition outside `multipart/related`
  *   carries `contentId`/`cid` and NO `related` flag in the actual parser
@@ -77,21 +83,27 @@ export const DEFAULT_EMAIL_IMAGE_SETTINGS: ImageSelectionSettings = Object.freez
 // ---------------------------------------------------------------------------
 
 /**
- * True when the parsed part is inline or related CID content per the ACTUAL
- * mailparser fields: normalized `contentDisposition === 'inline'` or
- * `related === true`. Content-ID presence is irrelevant here on purpose —
- * mailparser sets `related` only for CID parts under a `multipart/related`
- * ancestor, and that flag (or the inline disposition) is what excludes the
- * part; a normal `attachment`-disposition part with a Content-ID stays
- * eligible.
+ * True when the parsed part is embedded content rather than an attachment,
+ * per the ACTUAL mailparser fields:
+ *
+ * - `related === true` — mailparser sets this only for CID parts under a
+ *   `multipart/related` ancestor (images the HTML body references);
+ * - `contentDisposition === 'inline'` with no filename.
+ *
+ * An inline part WITH a filename outside multipart/related stays eligible:
+ * that is how Apple Mail attaches photos. Content-ID presence is irrelevant
+ * on purpose; a normal attachment with a Content-ID stays eligible too.
  */
 export function isInlineOrRelatedEmailAttachment(attachment: EmailAttachment): boolean {
+  if (attachment.related === true) return true;
   // Webhook entries are operator-controlled: a non-string disposition is
   // treated as absent (never inline) instead of throwing on `.trim()`.
   const rawDisposition = attachment.contentDisposition;
   const disposition =
     typeof rawDisposition === 'string' ? rawDisposition.trim().toLowerCase() : undefined;
-  return disposition === 'inline' || attachment.related === true;
+  if (disposition !== 'inline') return false;
+  const filename = typeof attachment.filename === 'string' ? attachment.filename.trim() : '';
+  return filename.length === 0;
 }
 
 // ---------------------------------------------------------------------------

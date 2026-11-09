@@ -261,6 +261,63 @@ describe('whatsappMediaCaption', () => {
 // Connector media ingestion (stubbed fetch)
 // ---------------------------------------------------------------------------
 
+describe('WhatsAppConnector per-sender ordering across concurrent webhooks', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('hands a later text to the pipeline only after the earlier photo, without blocking other senders', async () => {
+    installFetch();
+    const connector = new WhatsAppConnector(defaultConfig(), 'test-whatsapp', silentLogger());
+    let releasePhoto!: () => void;
+    const photoGate = new Promise<void>((r) => {
+      releasePhoto = r;
+    });
+    const order: string[] = [];
+    connector.onMessage(async (event) => {
+      if ((event.attachments?.length ?? 0) > 0) {
+        order.push('photo:start');
+        await photoGate; // pipeline still normalizing the photo
+        order.push('photo:end');
+        return;
+      }
+      order.push(`text:${event.content}`);
+    });
+
+    const photo = connector.feedWebhook(
+      makePayload(makeMessage('image', { id: MEDIA_ID, mime_type: 'image/jpeg' })),
+    );
+    const text = connector.feedWebhook(
+      makePayload({
+        id: 'wamid.MSG2',
+        from: '447700900000',
+        timestamp: '1700000001',
+        type: 'text',
+        text: { body: 'what is this?' },
+      }),
+    );
+    const otherSender = connector.feedWebhook(
+      makePayload({
+        id: 'wamid.MSG3',
+        from: '447700900999',
+        timestamp: '1700000002',
+        type: 'text',
+        text: { body: 'unrelated' },
+      }),
+    );
+
+    await otherSender;
+    await vi.waitFor(() => expect(order).toContain('photo:start'));
+    expect(order).not.toContain('text:what is this?');
+    expect(order).toContain('text:unrelated');
+
+    releasePhoto();
+    await Promise.all([photo, text]);
+    expect(order.indexOf('photo:end')).toBeLessThan(order.indexOf('text:what is this?'));
+    await connector.stop();
+  });
+});
+
 describe('WhatsAppConnector media ingestion', () => {
   let connector: WhatsAppConnector;
   let fetchStub: FetchStub;

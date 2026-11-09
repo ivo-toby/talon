@@ -1852,7 +1852,7 @@ animation-control data, even when the decoder could read a single frame.
 | Photo, ordinary image message, image-MIME document/email   | Evaluated as an Image            | Yes         |
 | Unsupported image MIME, including HEIC and SVG             | Rejected / `unsupported_mime`    | Yes         |
 | Document or email part with absent or non-image MIME       | Excluded silently                | No          |
-| Email part marked inline, or related CID content           | Excluded silently                | No          |
+| Email CID part embedded in the HTML body, or inline part with no filename | Excluded silently | No |
 | Platform sticker, including a static WebP sticker          | Excluded silently                | No          |
 | Another size/thumbnail of the same photo                   | Not another Image                | No          |
 
@@ -2028,9 +2028,12 @@ turns an Available Image into a Rejected one.
   Image.
 - **Attempts and deadlines survive restart.** Neither redelivery nor a restart
   resets them, and a crash consumes its started attempt.
-- **No arrival-ordering promise.** Overlapping callbacks and recovered messages
-  may enqueue in completion order; Talon does not promise cross-handoff ordering
-  for image-bearing messages.
+- **Per-chat ordering on WhatsApp.** Both WhatsApp connectors hand a chat's
+  messages to the pipeline one at a time, so a text sent right after a photo waits
+  until the photo has been downloaded and normalized. Other chats are not held
+  up. Messages recovered after a restart may still enqueue in completion order.
+- **Image settings need a restart.** `talonctl reload` keeps the running
+  `images` limits and logs a warning when they changed.
 
 ---
 

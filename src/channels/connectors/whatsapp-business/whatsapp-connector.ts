@@ -34,6 +34,7 @@ import type {
 } from './whatsapp-types.js';
 import { markdownToWhatsApp } from './whatsapp-format.js';
 import { WhatsAppWebhookServer } from './whatsapp-webhook-server.js';
+import { KeyedSerialQueue } from '../../keyed-serial-queue.js';
 import type { ImageSelectionSettings } from '../../../images/image-selection.js';
 import type { MediaStream } from '../../../images/image-transport.js';
 import {
@@ -83,6 +84,8 @@ export class WhatsAppConnector implements ChannelConnector {
   readonly name: string;
 
   private handler?: (event: InboundEvent) => void | Promise<void>;
+  /** Per-sender ordering: webhook requests are handled concurrently. */
+  private readonly chatQueue = new KeyedSerialQueue();
   private running = false;
   private webhookServer: WhatsAppWebhookServer | null = null;
 
@@ -286,7 +289,11 @@ export class WhatsAppConnector implements ChannelConnector {
         const messages = value.messages ?? [];
 
         for (const message of messages) {
-          await this.handleMessage(message, value.contacts ?? []);
+          // Serialize per sender across concurrent webhook requests, so a text
+          // sent after a photo waits until the photo has been handed off.
+          await this.chatQueue.run(message.from, () =>
+            this.handleMessage(message, value.contacts ?? []),
+          );
         }
       }
     }

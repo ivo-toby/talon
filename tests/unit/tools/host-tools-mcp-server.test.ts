@@ -5,9 +5,9 @@
  * helpers — no socket, no spawn, no daemon — and pin the `image_lookup`
  * schema contract:
  *
- *  - four operation-specific input schemas (list_images, get_image,
- *    list_findings, get_finding), each pinning its own `operation` value, its
- *    own required fields, and `additionalProperties: false`;
+ *  - one flat input schema (the union of accepted fields, with
+ *    `additionalProperties: false`) and NO top-level oneOf/anyOf/allOf, which
+ *    provider tool APIs reject; per-operation rules live in the handler;
  *  - bounded pagination (`limit` 1–100, default 20) and an opaque `cursor`;
  *  - no thread, path, URL, provenance, persona, or run field anywhere in the
  *    accepted input (the thread comes from the trusted run context);
@@ -17,11 +17,6 @@
 import { describe, it, expect } from 'vitest';
 import {
   HOST_TOOL_DEFINITIONS,
-  IMAGE_LOOKUP_LIST_IMAGES_SCHEMA,
-  IMAGE_LOOKUP_GET_IMAGE_SCHEMA,
-  IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA,
-  IMAGE_LOOKUP_GET_FINDING_SCHEMA,
-  IMAGE_LOOKUP_OPERATION_SCHEMAS,
   gateMcpToolCall,
   listExposedTools,
 } from '../../../src/tools/host-tools-mcp-server.js';
@@ -66,69 +61,29 @@ describe('image_lookup tool definition', () => {
     ]);
   });
 
-  it('carries four oneOf branches matching the four operation schemas', () => {
-    expect(tool.inputSchema.oneOf).toHaveLength(4);
-    expect(tool.inputSchema.oneOf).toEqual(IMAGE_LOOKUP_OPERATION_SCHEMAS);
+  it('bounds pagination: limit 1-100', () => {
+    expect(tool.inputSchema.properties.limit.minimum).toBe(1);
+    expect(tool.inputSchema.properties.limit.maximum).toBe(100);
   });
 
-  describe('operation schemas', () => {
-    it('list_images: optional bounded limit and cursor only', () => {
-      expect(IMAGE_LOOKUP_LIST_IMAGES_SCHEMA.type).toBe('object');
-      expect(IMAGE_LOOKUP_LIST_IMAGES_SCHEMA.additionalProperties).toBe(false);
-      expect(IMAGE_LOOKUP_LIST_IMAGES_SCHEMA.required).toEqual(['operation']);
-      expect(Object.keys(IMAGE_LOOKUP_LIST_IMAGES_SCHEMA.properties).sort()).toEqual([
-        'cursor',
-        'limit',
-        'operation',
-      ]);
-      expect(IMAGE_LOOKUP_LIST_IMAGES_SCHEMA.properties.operation.enum).toEqual(['list_images']);
-      expect(IMAGE_LOOKUP_LIST_IMAGES_SCHEMA.properties.limit.minimum).toBe(1);
-      expect(IMAGE_LOOKUP_LIST_IMAGES_SCHEMA.properties.limit.maximum).toBe(100);
-    });
-
-    it('get_image: exactly imageId, no pagination fields', () => {
-      expect(IMAGE_LOOKUP_GET_IMAGE_SCHEMA.additionalProperties).toBe(false);
-      expect(IMAGE_LOOKUP_GET_IMAGE_SCHEMA.required).toEqual(['operation', 'imageId']);
-      expect(Object.keys(IMAGE_LOOKUP_GET_IMAGE_SCHEMA.properties).sort()).toEqual([
-        'imageId',
-        'operation',
-      ]);
-      expect(IMAGE_LOOKUP_GET_IMAGE_SCHEMA.properties.operation.enum).toEqual(['get_image']);
-    });
-
-    it('list_findings: optional imageId filter plus bounded pagination', () => {
-      expect(IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA.additionalProperties).toBe(false);
-      expect(IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA.required).toEqual(['operation']);
-      expect(Object.keys(IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA.properties).sort()).toEqual([
-        'cursor',
-        'imageId',
-        'limit',
-        'operation',
-      ]);
-      expect(IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA.properties.limit.minimum).toBe(1);
-      expect(IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA.properties.limit.maximum).toBe(100);
-      expect(IMAGE_LOOKUP_LIST_FINDINGS_SCHEMA.properties.operation.enum).toEqual([
-        'list_findings',
-      ]);
-    });
-
-    it('get_finding: exactly findingId, no pagination fields', () => {
-      expect(IMAGE_LOOKUP_GET_FINDING_SCHEMA.additionalProperties).toBe(false);
-      expect(IMAGE_LOOKUP_GET_FINDING_SCHEMA.required).toEqual(['operation', 'findingId']);
-      expect(Object.keys(IMAGE_LOOKUP_GET_FINDING_SCHEMA.properties).sort()).toEqual([
-        'findingId',
-        'operation',
-      ]);
-      expect(IMAGE_LOOKUP_GET_FINDING_SCHEMA.properties.operation.enum).toEqual(['get_finding']);
-    });
-
-    it('pins each operation to a single branch (no cross-operation field leakage)', () => {
-      const expected = ['list_images', 'get_image', 'list_findings', 'get_finding'];
-      IMAGE_LOOKUP_OPERATION_SCHEMAS.forEach((branch, index) => {
-        expect(branch.properties.operation.enum).toEqual([expected[index]]);
-      });
-    });
+  it("states each operation's fields in the description", () => {
+    expect(tool.description).toContain('`get_image` requires `imageId`');
+    expect(tool.description).toContain('`get_finding` requires `findingId`');
   });
+
+  // Provider tool APIs (Anthropic: "input_schema does not support oneOf,
+  // allOf, or anyOf at the top level") reject top-level combinators, which
+  // fails every request that exposes the tool, not just calls to it.
+  it.each(HOST_TOOL_DEFINITIONS.map((t) => [t.name, t] as const))(
+    '%s has no top-level oneOf/anyOf/allOf',
+    (_name, def) => {
+      const schema = (def as { inputSchema: Record<string, unknown> }).inputSchema;
+      expect(schema.type).toBe('object');
+      for (const key of ['oneOf', 'anyOf', 'allOf']) {
+        expect(schema).not.toHaveProperty(key);
+      }
+    },
+  );
 
   // Recursively collects any denylisted key in a schema tree. Entries are
   // compared case-insensitively, so the denylist itself is stored lowercased:

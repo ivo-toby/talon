@@ -170,9 +170,10 @@ Email-specific behaviour, which differs sharply from chat channels:
 
 - **Only attached images count.** A part must carry an image MIME type. Parts with
   an absent or non-image MIME are excluded silently and use no upload slot.
-- **Inline and CID images are never ingested.** A part marked inline, or
-  classified as related CID content (`cid:` imagery inside an HTML body), is
-  excluded silently — even a genuine photo. Ask the user to **attach** the file.
+- **Images embedded in the HTML body are never ingested.** Related CID content
+  (`cid:` imagery inside an HTML body) and inline parts without a filename are
+  excluded silently. An inline part **with** a filename counts as a normal
+  attachment — that is how Apple Mail (macOS/iOS) attaches photos.
 - **The practical size limit is far below `images.maxInputBytes`.** Email's
   unchanged 10 MiB cap applies to the **whole message** — encoding, headers, body
   and every part combined. Base64 leaves roughly **7.5 MiB or less** for one
@@ -207,7 +208,7 @@ Email-specific behaviour, which differs sharply from chat channels:
 | Bot replies to spam | Add `allowedSenders` to config, and set `requireDmarcPass: true` so forged From headers are rejected |
 | Bot ignores mail that looks legitimate | With `requireDmarcPass: true`, mail without a `dmarc=pass` result from `trustedAuthServId` is dropped; set `trustedAuthServId` to the value from the message's `ARC-Authentication-Results` header and check the logs for "failed DMARC check" |
 | HTML formatting broken | Talon sends HTML emails; check if email client renders HTML |
-| Attachment ignored | Inline and `cid:` body images are excluded by design; ask the user to attach the file as a regular attachment with an image MIME type |
+| Attachment ignored | `cid:` images embedded in the HTML body (and filename-less inline parts) are excluded by design; ask the user to attach the file as a regular attachment with an image MIME type |
 | Large photo never arrives | Email's 10 MiB cap covers the whole encoded message, so base64 leaves roughly 7.5 MiB or less per decoded image. Send it as its own email, or use Telegram/WhatsApp |
 | Image missing on a DMARC-gated mailbox | Parts from a sender that fails the DMARC check are never normalized into Images; see the `requireDmarcPass` / `trustedAuthServId` notes above |
 

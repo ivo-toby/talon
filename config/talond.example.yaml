@@ -548,6 +548,9 @@ langfuse:
 # skipping behaviour. Attach original images as a separate email, or use
 # Telegram/WhatsApp, when a large photo must arrive.
 #
+# Changing this block needs a daemon restart; `talonctl reload` keeps the
+# running values and logs a warning.
+#
 images:
   maxInputBytes: 10485760   # 10 MiB per Image; actual bytes, not declared
   maxPerMessage: 5          # upload slots per message; overflow -> count_limit
