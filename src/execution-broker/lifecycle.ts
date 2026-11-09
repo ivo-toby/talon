@@ -391,6 +391,12 @@ export class ExecutionBroker {
           );
           return;
         }
+        if (pending.controller.signal.aborted) {
+          // Constraint: whoever aborted this exec (timeout, revoke, or a
+          // terminal sibling) owns the outcome. A real backend fails its exec
+          // when aborted; that error must not outrun the timeout result.
+          return;
+        }
         void endLease(
           err(
             new ExecutionBrokerError(

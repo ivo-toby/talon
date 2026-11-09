@@ -206,6 +206,57 @@ describe('timeout', () => {
   });
 });
 
+describe('backend that fails its exec when aborted (as a real Docker client does)', () => {
+  function rejectOnAbort({ signal }: { signal: AbortSignal }): Promise<RawExecOutput> {
+    return new Promise<RawExecOutput>((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+    });
+  }
+
+  // A real daemon needs real time to remove a container; the abort error arrives first.
+  function slowRemove(backend: InMemoryContainerBackend): void {
+    const original = backend.removeContainer.bind(backend);
+    backend.removeContainer = async (containerId: string) => {
+      await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      return original(containerId);
+    };
+  }
+
+  it('reports a timeout as timedOut, not as BACKEND_FAILURE', async () => {
+    vi.useFakeTimers();
+    const { backend, broker, input } = await leased();
+    backend.setExecHandler(rejectOnAbort);
+    slowRemove(backend);
+
+    const pending = broker.execute(input);
+    await vi.advanceTimersByTimeAsync(5_001);
+    await vi.advanceTimersByTimeAsync(100);
+    const result = (await pending)._unsafeUnwrap();
+
+    expect(result).toMatchObject({ timedOut: true, cancelled: false, exitCode: null });
+    expect(backend.liveContainers()).toEqual([]);
+    expect((await broker.execute(input))._unsafeUnwrapErr().brokerCode).toBe('LEASE_REVOKED');
+  });
+
+  it('reports a revoke as cancelled, not as BACKEND_FAILURE', async () => {
+    const { backend, broker, input, leaseId } = await leased();
+    slowRemove(backend);
+    const started = deferred<AbortSignal>();
+    backend.setExecHandler((call) => {
+      started.resolve(call.signal);
+      return rejectOnAbort(call);
+    });
+
+    const pending = broker.execute(input);
+    await started.promise;
+    (await broker.revoke(leaseId))._unsafeUnwrap();
+    const result = (await pending)._unsafeUnwrap();
+
+    expect(result).toMatchObject({ cancelled: true, timedOut: false, exitCode: null });
+    expect(backend.liveContainers()).toEqual([]);
+  });
+});
+
 describe('cancellation via revoke', () => {
   it('resolves a running execute as cancelled, aborts it, and removes the container', async () => {
     const { backend, broker, input, leaseId } = await leased();
