@@ -21,6 +21,11 @@ import { EmailConnector } from '../channels/connectors/email/email-connector.js'
 import type { EmailConfig } from '../channels/connectors/email/email-types.js';
 import { TerminalConnector } from '../channels/connectors/terminal/terminal-connector.js';
 import type { TerminalConfig } from '../channels/connectors/terminal/terminal-types.js';
+import {
+  SignalConnector,
+  type SignalConnectorDependencies,
+} from '../channels/connectors/signal/signal-connector.js';
+import { parseSignalConfig } from '../channels/connectors/signal/signal-config.js';
 
 /**
  * Creates a channel connector instance for the given type.
@@ -29,15 +34,23 @@ import type { TerminalConfig } from '../channels/connectors/terminal/terminal-ty
  * @param name   - Instance name from config.
  * @param config - Channel-specific configuration object.
  * @param logger - Pino logger.
- * @returns The constructed connector, or null if the type is unknown.
+ * @param signal - Shared Signal dependencies (one generation registry, one SQLite connection).
+ *                 Required for `signal`; Signal instances are never created without them.
+ * @returns The constructed connector, or null if the type is unknown or cannot be built.
  */
 export function createConnector(
   type: string,
   name: string,
   config: Record<string, unknown>,
   logger: pino.Logger,
+  signal?: SignalConnectorDependencies,
 ): ChannelConnector | null {
   switch (type) {
+    case 'signal': {
+      if (signal === undefined) return null;
+      const parsed = parseSignalConfig(config);
+      return parsed.isOk() ? new SignalConnector(parsed.value, name, logger, signal) : null;
+    }
     case 'telegram':
       return new TelegramConnector(config as unknown as TelegramConfig, name, logger);
     case 'slack':

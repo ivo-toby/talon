@@ -12,6 +12,7 @@ import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import type { ChannelRegistry } from '../../../src/channels/channel-registry.js';
 import { ok } from 'neverthrow';
+import type { SignalToolExecutionRegistry } from '../../../src/tools/host-tools/signal-tool-execution.js';
 
 // Mock createDatabase so it doesn't try to open a real file for the readonly connection.
 // Returns an err() result so the bridge falls back to the main ctx.db connection.
@@ -831,6 +832,185 @@ describe('HostToolsBridge', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('Signal generation sealing', () => {
+    const generation = {
+      runId: 'run-001',
+      threadId: 'thread-001',
+      personaId: 'persona-001',
+      bridgeSecret: validBridgeSecret,
+    };
+    const channelSendRequest = (id: string) => ({
+      id,
+      tool: 'channel_send',
+      args: { body: 'hello', externalChatId: 'signal:v1:aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb:self' },
+      bridgeSecret: validBridgeSecret,
+      context: {
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        requestId: id,
+      },
+    });
+    const channelHandler = (instance: HostToolsBridge): { execute: (...args: unknown[]) => unknown } =>
+      (instance as unknown as { channelHandler: { execute: (...args: unknown[]) => unknown } })
+        .channelHandler;
+
+    it('resolves Ok promptly when the generation never admitted a channel continuation', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.start();
+      await waitForSocket(bridge.path);
+      registerActiveRunAuth();
+
+      const sealed = await Promise.race([
+        bridge.sealSignalGeneration(generation),
+        new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 500)),
+      ]);
+
+      expect(sealed).not.toBe('timeout');
+      expect(sealed).toEqual(expect.objectContaining({ isOk: expect.any(Function) }));
+      expect((sealed as { isOk: () => boolean }).isOk()).toBe(true);
+    });
+
+    it('waits for an admitted channel send to settle and refuses later admissions', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.start();
+      await waitForSocket(bridge.path);
+      registerActiveRunAuth();
+
+      let release: ((value: unknown) => void) | undefined;
+      const execute = vi
+        .spyOn(channelHandler(bridge), 'execute')
+        .mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+      const admitted = sendRequest(bridge.path, channelSendRequest('admitted'));
+      await vi.waitFor(() => expect(execute).toHaveBeenCalledOnce());
+
+      let settled = false;
+      const sealing = bridge.sealSignalGeneration(generation).then((result) => {
+        settled = true;
+        return result;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(settled).toBe(false);
+
+      const refused = await sendRequest(bridge.path, channelSendRequest('late'));
+      expect(refused.result).toEqual(expect.objectContaining({ status: 'error' }));
+      expect(execute).toHaveBeenCalledOnce();
+
+      release?.({ requestId: 'admitted', tool: 'channel.send', status: 'success', result: {} });
+      expect((await sealing).isOk()).toBe(true);
+      expect((await admitted).id).toBe('admitted');
+    });
+
+    it('does not seal the run for a generation with a different bridge secret', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.start();
+      await waitForSocket(bridge.path);
+      registerActiveRunAuth();
+
+      const rejected = await bridge.sealSignalGeneration({
+        ...generation,
+        bridgeSecret: 'stale-secret',
+      });
+      expect(rejected.isErr()).toBe(true);
+
+      const execute = vi.spyOn(channelHandler(bridge), 'execute').mockResolvedValue({
+        requestId: 'after',
+        tool: 'channel.send',
+        status: 'success',
+        result: {},
+      });
+      await sendRequest(bridge.path, channelSendRequest('after'));
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+    it('keeps waiting for a channel send whose tool response already timed out', async () => {
+      vi.useFakeTimers();
+      try {
+        bridge = new HostToolsBridge(mockCtx);
+        registerActiveRunAuth();
+        let release: ((value: unknown) => void) | undefined;
+        const execute = vi
+          .spyOn(channelHandler(bridge), 'execute')
+          .mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+        const socket = { write: vi.fn() } as unknown as ReturnType<typeof createConnection>;
+
+        const handled = (bridge as unknown as { handleRequest: (line: string, s: unknown) => Promise<void> })
+          .handleRequest(JSON.stringify(channelSendRequest('timed-out')), socket);
+        for (let attempt = 0; attempt < 20 && execute.mock.calls.length === 0; attempt++) {
+          await Promise.resolve();
+        }
+        expect(execute).toHaveBeenCalledOnce();
+
+        // Default host-tool budget (5 minutes): the response times out while the handler still runs.
+        await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+        await handled;
+        expect((socket.write as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toContain('Request timeout');
+
+        let settled = false;
+        const sealing = bridge.sealSignalGeneration(generation).then((result) => {
+          settled = true;
+          return result;
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(settled).toBe(false);
+
+        release?.({ requestId: 'timed-out', tool: 'channel.send', status: 'success', result: {} });
+        expect((await sealing).isOk()).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('opens a fresh channel gate when the same run re-registers with a new bridge secret (fresh-session retry)', async () => {
+      bridge = new HostToolsBridge(mockCtx);
+      bridge.start();
+      await waitForSocket(bridge.path);
+      registerActiveRunAuth();
+      const execute = vi.spyOn(channelHandler(bridge), 'execute').mockResolvedValue({
+        requestId: 'x',
+        tool: 'channel.send',
+        status: 'success',
+        result: {},
+      });
+
+      // Attempt one: sealed and drained before the retry, exactly as AgentRunner does.
+      expect((await bridge.sealSignalGeneration(generation)).isOk()).toBe(true);
+      const refused = await sendRequest(bridge.path, channelSendRequest('sealed'));
+      expect(refused.result).toEqual(expect.objectContaining({ status: 'error' }));
+      expect(execute).not.toHaveBeenCalled();
+
+      // Attempt two: the same runId with a new secret is a new generation.
+      const retried = { ...generation, bridgeSecret: 'bridge-secret-002' };
+      bridge.registerRunAuthentication(retried);
+      const sent = await sendRequest(bridge.path, {
+        ...channelSendRequest('retry'),
+        bridgeSecret: retried.bridgeSecret,
+      });
+
+      expect(sent.result).toEqual(expect.objectContaining({ status: 'success' }));
+      expect(execute).toHaveBeenCalledOnce();
+
+      // The new generation seals independently, and the old secret can no longer seal it.
+      expect((await bridge.sealSignalGeneration(generation)).isErr()).toBe(true);
+      expect((await bridge.sealSignalGeneration(retried)).isOk()).toBe(true);
+      const refusedAgain = await sendRequest(bridge.path, {
+        ...channelSendRequest('after-seal'),
+        bridgeSecret: retried.bridgeSecret,
+      });
+      expect(refusedAgain.result).toEqual(expect.objectContaining({ status: 'error' }));
+      expect(execute).toHaveBeenCalledOnce();
+    });
+
+    it('passes the shared Signal execution registry to the channel send and broadcast handlers', () => {
+      const executions = { invoke: vi.fn() } as unknown as SignalToolExecutionRegistry;
+      mockCtx.signalRuntime = { executions, sealAndDrain: vi.fn() } as unknown as DaemonContext['signalRuntime'];
+      bridge = new HostToolsBridge(mockCtx);
+
+      expect((bridge as unknown as { channelHandler: { deps: { signalExecutions?: unknown } } }).channelHandler.deps.signalExecutions).toBe(executions);
+      expect((bridge as unknown as { channelBroadcastHandler: { deps: { signalExecutions?: unknown } } }).channelBroadcastHandler.deps.signalExecutions).toBe(executions);
     });
   });
 });

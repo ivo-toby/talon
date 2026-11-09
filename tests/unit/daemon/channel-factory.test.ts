@@ -52,6 +52,9 @@ import { WhatsAppConnector } from '../../../src/channels/connectors/whatsapp-bus
 import { WhatsAppBaileysConnector } from '../../../src/channels/connectors/whatsapp-baileys/whatsapp-baileys-connector.js';
 import { EmailConnector } from '../../../src/channels/connectors/email/email-connector.js';
 import { TerminalConnector } from '../../../src/channels/connectors/terminal/terminal-connector.js';
+import { SignalConnector } from '../../../src/channels/connectors/signal/signal-connector.js';
+import { SignalConfigSchema } from '../../../src/channels/connectors/signal/signal-config.js';
+import { SignalDeviceRegistry } from '../../../src/channels/connectors/signal/signal-device-registry.js';
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -141,5 +144,43 @@ describe('createConnector', () => {
     const connector = createConnector('', name, config, logger);
 
     expect(connector).toBeNull();
+  });
+});
+
+describe('createConnector signal', () => {
+  const signalRaw = {
+    accountMode: 'dedicated',
+    socketPath: '/run/talon-signal/bridge.sock',
+    account: '+12025550123',
+    accountUuid: 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb',
+    deviceId: 1,
+  };
+
+  function wiring(): Parameters<typeof createConnector>[4] {
+    const config = SignalConfigSchema.parse(signalRaw);
+    return {
+      accounts: {} as never,
+      leases: {} as never,
+      queue: {} as never,
+      registry: SignalDeviceRegistry.create(1, [config])._unsafeUnwrap(),
+    };
+  }
+
+  it('creates the real SignalConnector when the shared Signal wiring is supplied', () => {
+    const connector = createConnector('signal', 'signal-main', signalRaw, pino({ level: 'silent' }), wiring());
+
+    expect(connector).toBeInstanceOf(SignalConnector);
+    expect(connector?.type).toBe('signal');
+    expect(connector?.name).toBe('signal-main');
+  });
+
+  it('refuses to create a Signal connector without shared Signal wiring', () => {
+    expect(createConnector('signal', 'signal-main', signalRaw, pino({ level: 'silent' }))).toBeNull();
+  });
+
+  it('refuses a Signal config that fails the typed schema', () => {
+    expect(
+      createConnector('signal', 'signal-main', { ...signalRaw, deviceId: 0 }, pino({ level: 'silent' }), wiring()),
+    ).toBeNull();
   });
 });

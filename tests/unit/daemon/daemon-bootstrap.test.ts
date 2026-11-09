@@ -9,6 +9,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ok, err } from 'neverthrow';
+import { SignalToolExecutionRegistry } from '../../../src/tools/host-tools/signal-tool-execution.js';
+import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type pino from 'pino';
 
 // ---------------------------------------------------------------------------
@@ -92,6 +94,7 @@ vi.mock('../../../src/channels/channel-router.js', () => ({
 
 vi.mock('../../../src/channels/channel-setup.js', () => ({
   registerChannels: vi.fn(),
+  signalRepositoriesFor: vi.fn(() => ({ accounts: {}, leases: {} })),
 }));
 
 vi.mock('../../../src/pipeline/message-pipeline.js', () => ({
@@ -124,6 +127,7 @@ vi.mock('../../../src/tools/host-tools-bridge.js', () => ({
     path: '/tmp/host-tools.sock',
     start: vi.fn(),
     stop: vi.fn(),
+    sealSignalGeneration: vi.fn().mockResolvedValue({ isOk: () => true, isErr: () => false }),
   })),
 }));
 
@@ -168,6 +172,7 @@ import { SkillLoader } from '../../../src/skills/skill-loader.js';
 import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
+import { QueueManager } from '../../../src/queue/queue-manager.js';
 import { BackgroundTaskRepository } from '../../../src/core/database/repositories/index.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
@@ -300,6 +305,22 @@ function makeMockDb() {
  * Sets up mocks for a fully successful bootstrap.
  * Returns the mock DB for assertions.
  */
+const realSetTimeout = globalThis.setTimeout;
+
+/** Advances fake timers in steps until the promise settles (bootstrap awaits real I/O first). */
+async function settleWithFakeTimers<T>(promise: Promise<T>): Promise<T> {
+  let done = false;
+  void promise.then(
+    () => { done = true; },
+    () => { done = true; },
+  );
+  for (let step = 0; step < 600 && !done; step++) {
+    await vi.advanceTimersByTimeAsync(500);
+    await new Promise<void>((resolve) => realSetTimeout(resolve, 5));
+  }
+  return promise;
+}
+
 function setupSuccessfulMocks() {
   const config = makeConfig();
   const db = makeMockDb();
@@ -313,6 +334,10 @@ function setupSuccessfulMocks() {
   vi.mocked(createDatabase).mockReturnValue(ok(db as any));
   vi.mocked(runMigrations).mockReturnValue(ok(1));
   vi.mocked(createObservabilityService).mockResolvedValue(observability as any);
+  vi.mocked(recoverFromCrash).mockReset();
+  vi.mocked(recoverFromCrash).mockReturnValue(
+    ok({ ordinaryReset: 0, interruptedInvocations: [] }) as never,
+  );
 
   // Restore constructor mocks in case previous tests overrode them.
   vi.mocked(PersonaLoader).mockImplementation(() => ({
@@ -695,6 +720,86 @@ describe('bootstrap', () => {
       await bootstrap('/config.yaml', logger);
 
       expect(recoverFromCrash).toHaveBeenCalledOnce();
+    });
+
+    it('drains and seals through the REAL HostToolsBridge the context carries', async () => {
+      setupSuccessfulMocks();
+      const actual = await vi.importActual<typeof import('../../../src/tools/host-tools-bridge.js')>(
+        '../../../src/tools/host-tools-bridge.js',
+      );
+      vi.mocked(HostToolsBridge).mockImplementationOnce(
+        ((context: DaemonContext) => new actual.HostToolsBridge(context)) as never,
+      );
+
+      const ctx = (await bootstrap('/config.yaml', logger))._unsafeUnwrap();
+      const generation = { runId: 'run-real', threadId: 'thread-real', personaId: 'persona-real', bridgeSecret: 'secret-1' };
+      ctx.hostToolsBridge.registerRunAuthentication(generation);
+
+      expect((await ctx.signalRuntime!.sealAndDrain(generation)).isOk()).toBe(true);
+      // A generation that does not match the registered run is refused: the seal is the real one.
+      const mismatched = await ctx.signalRuntime!.sealAndDrain({ ...generation, bridgeSecret: 'other' });
+      expect(mismatched.isErr()).toBe(true);
+    });
+
+    it('retries only recovery after an Err and starts nothing until it succeeds', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        setupSuccessfulMocks();
+        vi.mocked(recoverFromCrash)
+          .mockReturnValueOnce(err(new Error('db busy')) as never)
+          .mockReturnValueOnce(err(new Error('db busy')) as never);
+        vi.mocked(QueueManager).mockClear();
+
+        const result = await settleWithFakeTimers(bootstrap('/config.yaml', logger));
+
+        expect(result.isOk()).toBe(true);
+        expect(recoverFromCrash).toHaveBeenCalledTimes(3);
+        expect(QueueManager).toHaveBeenCalledOnce();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('fails bootstrap without channels, queue or bridge when recovery keeps failing', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const { db } = setupSuccessfulMocks();
+        vi.mocked(recoverFromCrash).mockReturnValue(err(new Error('db busy')) as never);
+        vi.mocked(QueueManager).mockClear();
+        vi.mocked(registerChannels).mockClear();
+        vi.mocked(HostToolsBridge).mockClear();
+
+        const result = await settleWithFakeTimers(bootstrap('/config.yaml', logger));
+
+        expect(result.isErr()).toBe(true);
+        expect(recoverFromCrash).toHaveBeenCalledTimes(5);
+        expect(QueueManager).not.toHaveBeenCalled();
+        expect(registerChannels).not.toHaveBeenCalled();
+        expect(HostToolsBridge).not.toHaveBeenCalled();
+        expect(db.close).toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('shares one Signal execution registry and drain port with the context and bridge', async () => {
+      setupSuccessfulMocks();
+
+      const result = await bootstrap('/config.yaml', logger);
+      const ctx = result._unsafeUnwrap();
+
+      expect(ctx.signalRuntime?.executions).toBeInstanceOf(SignalToolExecutionRegistry);
+      const bridgeCtx = vi.mocked(HostToolsBridge).mock.calls[0]![0] as DaemonContext;
+      expect(bridgeCtx.signalRuntime).toBe(ctx.signalRuntime);
+
+      // A non-Signal generation has nothing admitted: the drain resolves Ok through the bridge.
+      const generation = { runId: 'run-x', threadId: 'thread-x', personaId: 'persona-x', bridgeSecret: 's' };
+      const drained = await ctx.signalRuntime!.sealAndDrain(generation);
+      expect(drained.isOk()).toBe(true);
+      const bridge = vi.mocked(HostToolsBridge).mock.results[0]!.value as { sealSignalGeneration: ReturnType<typeof vi.fn> };
+      expect(bridge.sealSignalGeneration).toHaveBeenCalledWith(generation);
     });
 
     it('creates HostToolsBridge and attaches it to context', async () => {

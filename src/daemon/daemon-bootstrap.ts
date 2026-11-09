@@ -38,7 +38,7 @@ import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.j
 
 import { ChannelRegistry } from '../channels/channel-registry.js';
 import { ChannelRouter } from '../channels/channel-router.js';
-import { registerChannels } from '../channels/channel-setup.js';
+import { registerChannels, signalRepositoriesFor } from '../channels/channel-setup.js';
 import { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { QueueManager } from '../queue/queue-manager.js';
 import { Scheduler } from '../scheduler/scheduler.js';
@@ -71,7 +71,8 @@ import { ProviderRegistry, type ProviderFactoryMap } from '../providers/provider
 import { recoverFromCrash } from './lifecycle.js';
 import { ContextRoller } from './context-roller.js';
 import { ContextAssembler } from './context-assembler.js';
-import type { DaemonContext } from './daemon-context.js';
+import type { DaemonContext, SignalRunGeneration } from './daemon-context.js';
+import { SignalToolExecutionRegistry } from '../tools/host-tools/signal-tool-execution.js';
 import { loadToolInstructions } from '../tools/tool-instructions.js';
 import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
@@ -539,8 +540,19 @@ export async function bootstrap(
     }
   }
 
-  // 10. Crash recovery
-  recoverFromCrash(repos.queue, logger);
+  // 10. Crash recovery. The Result is the gate: on Err nothing may accept sends or claim work, so no
+  // channel, Signal connector or queue loop is created. Only recovery is retried (bounded); if it keeps
+  // failing, bootstrap fails and the next process start retries it.
+  const recovered = await recoverWithRetry(repos.queue, logger);
+  if (recovered.isErr()) {
+    await cleanupBootstrapFailure(db, observability, logger);
+    return err(
+      new DaemonError(
+        'Queue crash recovery failed; startup aborted before channels and claims',
+        recovered.error,
+      ),
+    );
+  }
 
   // 11. Channel registry
   const channelRegistry = new ChannelRegistry(logger);
@@ -618,12 +630,34 @@ export async function bootstrap(
     logger,
   );
 
+  // Signal runtime: one execution registry shared by the bridge's channel tools, the runner's
+  // generation lifecycle and the signal connectors. All of them use the daemon's single SQLite connection.
+  const signalExecutions = new SignalToolExecutionRegistry({
+    queue: repos.queue,
+    runs: repos.run,
+    personas: personaLoader,
+  });
+  // The bridge is constructed after this point; the drain port resolves it lazily per call.
+  const signalBridge: { current: HostToolsBridge | null } = { current: null };
+  const signalRuntime = {
+    executions: signalExecutions,
+    sealAndDrain: (generation: SignalRunGeneration): Promise<Result<void, Error>> =>
+      signalBridge.current === null
+        ? Promise.resolve(ok(undefined))
+        : signalBridge.current.sealSignalGeneration(generation),
+  };
+
   registerChannels(config, channelRegistry, {
     channelRepo: repos.channel,
     bindingRepo: repos.binding,
     personaRepo: repos.persona,
     messagePipeline,
     logger,
+    signal: {
+      ...signalRepositoriesFor(db),
+      queue: repos.queue,
+      generation: 1,
+    },
   });
 
   // 16. A2A server (internal-only, no port binding in M1)
@@ -674,9 +708,11 @@ export async function bootstrap(
     logger,
     a2aServer,
     a2aTaskMapper,
+    signalRuntime,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
   const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
+  signalBridge.current = hostToolsBridge;
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;
@@ -684,6 +720,24 @@ export async function bootstrap(
   logger.info('bootstrap: context ready');
 
   return ok(ctx);
+}
+
+/** Bounded recovery attempts at bootstrap and the backoff between them (doubling, capped). */
+export const BOOTSTRAP_RECOVERY_ATTEMPTS = 5;
+const BOOTSTRAP_RECOVERY_BACKOFF_MS = 250;
+
+async function recoverWithRetry(
+  queueRepo: QueueRepository,
+  logger: pino.Logger,
+): Promise<ReturnType<typeof recoverFromCrash>> {
+  let result = recoverFromCrash(queueRepo, logger);
+  for (let attempt = 1; attempt < BOOTSTRAP_RECOVERY_ATTEMPTS && result.isErr(); attempt++) {
+    await new Promise<void>((resolve) =>
+      setTimeout(resolve, BOOTSTRAP_RECOVERY_BACKOFF_MS * 2 ** (attempt - 1)),
+    );
+    result = recoverFromCrash(queueRepo, logger);
+  }
+  return result;
 }
 
 async function cleanupBootstrapFailure(
