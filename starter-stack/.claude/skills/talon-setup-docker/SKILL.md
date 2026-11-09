@@ -311,6 +311,38 @@ Once boot is verified, anything else uses `talonctl`:
 - **Bind persona ↔ channel** — `talonctl bind --persona <p> --channel <c>`.
 - **Adjust capabilities** — `talonctl set-capabilities --persona <p> --show`
   to see current, then `--add` or `--remove`.
+- **Enable image handling** — an Inspection needs exactly two things: `vision`
+  listed under the persona's `subagents` key in `talond.yaml` (there is no
+  `talonctl` flag for persona sub-agent assignment) plus the existing
+  `subagent.invoke` capability. The shipped `vision` manifest declares
+  `requiredCapabilities: []`, so no image capability is part of an Inspection.
+  `image.read:thread` is an **independent** grant: it exposes `image_lookup`, the
+  model-free reader for the thread's Images and saved Findings, needs no vision
+  assignment and never calls a model, and is recommended (so a persona can re-read
+  an existing Finding instead of paying for a repeat Inspection) rather than
+  required. None of it is automatic on upgrade. Uploads are ingested and described
+  regardless. Pixels go only to the `vision` sub-agent; the persona itself stays
+  text-only, so a text-only foreground model still supports images. Only
+  `anthropic`, `openai`, `google`, and `ollama` may appear in a vision chain — a
+  text-only override such as `claude-code` or `codex-sandbox` is rejected at
+  config load, not silently skipped.
+
+  The published image bundles Sharp and proves it at build time: each release
+  target (linux/amd64 and linux/arm64, both glibc) loads Sharp and normalizes a
+  tiny JPEG during its build, so image support needs no extra packages inside the
+  container. That gate is architecture-specific — a custom base image or a
+  musl/Alpine variant is not covered by it, so re-run the same check before
+  claiming image support there. Normalized JPEGs live under `dataDir`
+  (`threads/<thread_id>/attachments/images/`), so the `talond-data` volume must
+  persist across restarts or Inspections lose their files. Retention deletes only
+  the JPEG, after `images.retentionHours` (default 24h); Image records, GPS/EXIF
+  and Findings persist until separately deleted and can appear in replies.
+  Inspections work from normal messages and scheduled tasks, not from background
+  agents. The `images:` block's defaults suit most setups; `maxInputPixels`
+  (default 100 MP) guards against decompression bombs and `maxNormalizedBytes`
+  (default 3.75 MB) should be lowered if the vision provider has a smaller
+  per-image limit. Changing `images` needs a container restart — `talonctl
+  reload` keeps the running values.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
 - **Use GitHub CLI** — the image includes `gh`; set `GH_TOKEN` in `.env` only
   when authenticated GitHub access is needed. Use a fine-grained token with
@@ -319,6 +351,32 @@ Once boot is verified, anything else uses `talonctl`:
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
+
+When an MCP server returns large results or makes slow calls, add per-server
+limits with `--timeout-ms` (integer ≥ 1000; omitted → Mastra 60 000 ms default;
+outer query timeout still wins) and `--tool-output-cap` (integer ≥ 0; `0`
+disables excerpting for that server only; precedence: server > provider >
+4 000; provider-level `0` disables only the fallback). These are stored under
+`config` in the skill's MCP JSON as `timeoutMs` / `toolOutputCap`. Only the
+Mastra / OpenAI-compatible provider honors them; native Claude, Gemini, and
+Codex CLI runs omit the metadata, so the limits have no effect there. They
+bound MCP model-history injection, not network bytes: when any effective MCP
+cap is positive, MCP results (also zero-cap servers) stay in a run-local
+in-memory store retrievable via `fetch_tool_output` in up to 8 000
+content-character slices (framing additional) when available — a discovered
+MCP tool that already owns that reserved name takes it and the synthetic
+recovery is skipped; with all effective MCP caps at `0` no wrapper/recovery
+is injected. Built-in file/shell tools are unchanged.
+For an existing server, edit only the two numeric keys under `config` in the
+mounted skill JSON directly (preserving name/URL/transport/headers/env/auth)
+— `add-mcp` rejects duplicate names. The repository Glean definition
+(`skills/glean/mcp/glean.json`) pre-sets `timeoutMs: 180000` /
+`toolOutputCap: 12000`, but that file is git-ignored and NOT packaged in the
+Docker image or either starter bundle; a rebuild does not update a Glean JSON
+you already copied into your mounted `skills/` tree. Add or replace the two
+keys under `config` in your existing copy (preserve your real URL/auth); any
+release claiming bundled Glean limit defaults is a release blocker until
+packaging bundles the skill.
 
 Each mutation modifies `config/talond.yaml`. The daemon **does not
 auto-reload** — after a mutation, tell the user to apply it:

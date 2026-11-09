@@ -47,6 +47,9 @@ Rules that decide whether the call runs at all:
   Inspection. Too many is an error, not a silent cut: split the work into
   separate Inspections.
 - One question per Inspection. Ask one thing and let it answer that thing.
+- Inspections only work in a normal or scheduled run. A background agent's
+  Inspection is refused; read saved Findings instead, or leave the question for
+  the foreground conversation.
 
 A successful Inspection returns the Finding and also saves it: `{ findingId,
 imageIds, answer, extractedText, uncertainty, model, usage }`. Report the

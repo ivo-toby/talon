@@ -337,6 +337,12 @@ Once boot is verified, anything else uses `talonctl`:
   persist across restarts or Inspections lose their files. Retention deletes only
   the JPEG, after `images.retentionHours` (default 24h); Image records, GPS/EXIF
   and Findings persist until separately deleted and can appear in replies.
+  Inspections work from normal messages and scheduled tasks, not from background
+  agents. The `images:` block's defaults suit most setups; `maxInputPixels`
+  (default 100 MP) guards against decompression bombs and `maxNormalizedBytes`
+  (default 3.75 MB) should be lowered if the vision provider has a smaller
+  per-image limit. Changing `images` needs a container restart — `talonctl
+  reload` keeps the running values.
 - **Schedule tasks** — `talonctl add-schedule …` (see `/manage-schedules`).
 - **Use GitHub CLI** — the image includes `gh`; set `GH_TOKEN` in `.env` only
   when authenticated GitHub access is needed. Use a fine-grained token with

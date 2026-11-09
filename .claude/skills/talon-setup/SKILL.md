@@ -316,6 +316,14 @@ setup, mention that:
 - Normalized image files are deleted after `images.retentionHours` (default 24h),
   but Image records, GPS/EXIF and Findings persist until separately deleted and
   may appear in replies — including in admitted group chats.
+- Inspections work from normal messages and scheduled tasks, not from background
+  agents (those are refused before any model is called).
+- The defaults in the `images:` block suit most setups. If the operator wants to
+  tune it: `maxInputPixels` (default 100 MP, a decompression-bomb guard, max
+  ~268 MP) and `maxNormalizedBytes` (default 3.75 MB; lower it if the vision
+  provider has a smaller per-image limit — oversized images are re-encoded smaller
+  automatically). Any `images` change needs a daemon restart; `talonctl reload`
+  keeps the running values. See `config/talond.example.yaml`.
 - On a sequential connector an image-bearing message delays other traffic on that
   connector — Telegram polling is the example, waiting up to ~120 seconds (a fixed
   60-second remote-fetch budget plus a separate 60-second normalization deadline).

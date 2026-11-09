@@ -1880,6 +1880,10 @@ images:
   retentionHours: 24        # normalized FILE retention only
 ```
 
+Changing any `images` setting needs a daemon restart; `talonctl reload` keeps the
+running values and logs a warning. Lower `maxNormalizedBytes` if your vision
+provider accepts smaller images than Anthropic's 5 MB.
+
 `maxPerMessage` and `maxPerInspection` are independent — raising one does not
 raise the other. Declared sizes are never trusted alone: actual bytes are checked
 during download and again before staging or conversion.
@@ -1964,6 +1968,11 @@ answer, extractedText, uncertainty, model, usage }`. Findings are canonical rows
 in SQLite, survive failed runs, context rotation, and file expiry, and are
 attributable model output — pass `uncertainty` through rather than treating an
 answer as ground truth.
+
+Inspections run only inside a **foreground run** of the thread (a message or a
+scheduled task). A background agent cannot Inspect: its call is refused before
+any model is billed, because there is no foreground run to attach the Finding to.
+It can still read existing Findings with `image_lookup`.
 
 **`image_lookup`** reads that stored state without any model call
 (`image.read:thread`):
