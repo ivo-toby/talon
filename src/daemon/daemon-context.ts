@@ -10,6 +10,7 @@
  */
 
 import type pino from 'pino';
+import type { Result } from 'neverthrow';
 import type Database from 'better-sqlite3';
 import type { AgentRunnerProviderConfig, TalondConfig } from '../core/config/config-types.js';
 import type {
@@ -49,6 +50,7 @@ import type { ObservabilityService } from '../observability/langfuse/observabili
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
 import type { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import type { SignalToolExecutionRegistry } from '../tools/host-tools/signal-tool-execution.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -76,6 +78,14 @@ export interface DaemonRepos {
 // DaemonContext
 // ---------------------------------------------------------------------------
 
+/** Exact authenticated provider-attempt generation. Secrets remain in process/MCP env only. */
+export interface SignalRunGeneration {
+  readonly runId: string;
+  readonly threadId: string;
+  readonly personaId: string;
+  readonly bridgeSecret: string;
+}
+
 /**
  * Immutable runtime context populated during bootstrap.
  *
@@ -93,6 +103,35 @@ export interface DaemonContext {
   readonly dataDir: string;
   readonly repos: DaemonRepos;
   readonly channelRegistry: ChannelRegistry;
+  /** TASK012 injects this SAME registry into the authenticated bridge handlers, backed by this
+   * context's queue/run/persona graph. Required on ALL dispatch, not just Signal origins.
+   * Absence supports legacy ordinary callers only; it grants no Signal send/replay authority. */
+  readonly signalRuntime?: {
+    readonly executions: SignalToolExecutionRegistry;
+    /**
+     * Seal and drain one authenticated provider-attempt generation.
+     *
+     * When called: by AgentRunner once per foreground run, idempotently (the runner caches the first
+     * promise). It is awaited before any Signal reply is saved, on provider failure/timeout paths,
+     * and in the run's finally. It is never called for background-notification runs.
+     *
+     * Ok: new admission for this exact generation (runId, threadId, personaId, bridgeSecret) is sealed
+     * AND every admitted original dispatch/continuation has settled, including timeout losers and
+     * retained producer repair Results. Ok certifies settled lifetime only, NOT tool success.
+     *
+     * Err or throw: settlement is NOT certified. The implementation must not close, recover or replay
+     * anything on failure, and must stay idempotent. A newer generation must not be sealed by stale
+     * cleanup. The runner retries the call up to SIGNAL_STATE_RETRY_MAX_ATTEMPTS (8) times with capped
+     * backoff (250 ms doubling to 10 s), under an overall 60 s deadline. A call still pending at the
+     * deadline counts as Err, and later results are ignored. Exhaustion returns a typed
+     * SignalGenerationDrainError (reason DRAIN_EXHAUSTED) with no causes, so the queue item takes its
+     * normal retry/dead-letter path. If a Signal tool was already invoked, the failure is terminal for
+     * provider replay (NonRetryableRunError).
+     *
+     * Not implemented by the current HostToolsBridge. There is no no-op production fallback.
+     */
+    readonly sealAndDrain: (generation: SignalRunGeneration) => Promise<Result<void, Error>>;
+  };
   readonly queueManager: QueueManager;
   readonly scheduler: Scheduler;
   readonly personaLoader: PersonaLoader;

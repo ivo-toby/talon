@@ -27,6 +27,8 @@ import type { MessageRepository } from '../../core/database/repositories/message
 import type { ThreadRepository, ThreadRow } from '../../core/database/repositories/thread-repository.js';
 import type { ToolExecutionContext } from './channel-send.js';
 import { ToolError } from '../../core/errors/error-types.js';
+import { signalToolFailure, stopsSignalBroadcastAccount, type SignalToolFailure, type SignalToolExecutionRegistry } from './signal-tool-execution.js';
+import { parseSignalExternalId } from '../../channels/connectors/signal/signal-identities.js';
 
 export interface ChannelBroadcastArgs {
   /** Message content in Markdown format. */
@@ -41,7 +43,7 @@ export interface ChannelBroadcastSuccess {
   /** Channels skipped because the binding has no thread_id. */
   skipped: Array<{ channelName: string; reason: 'no_thread_binding' }>;
   /** Channels where connector.send returned an error. */
-  failed: Array<{ channelName: string; reason: 'send_failed'; message: string }>;
+  failed: Array<{ channelName: string; reason: 'send_failed'; message: string; signal?: SignalToolFailure }>;
 }
 
 export class ChannelBroadcastHandler {
@@ -56,6 +58,7 @@ export class ChannelBroadcastHandler {
   constructor(
     private readonly deps: {
       channelRegistry: ChannelRegistry;
+      signalExecutions?: SignalToolExecutionRegistry;
       bindingRepository: Pick<BindingRepository, 'findByPersona'>;
       channelRepository: Pick<ChannelRepository, 'findById'>;
       threadRepository: Pick<ThreadRepository, 'findById' | 'findByExternalId' | 'insert'>;
@@ -96,6 +99,7 @@ export class ChannelBroadcastHandler {
     let delivered = 0;
     const skipped: ChannelBroadcastSuccess['skipped'] = [];
     const failed: ChannelBroadcastSuccess['failed'] = [];
+    const restrictedAccounts = new Map<string, Error>();
 
     for (const binding of bindingsResult.value) {
       const channelResult = this.deps.channelRepository.findById(binding.channel_id);
@@ -120,7 +124,7 @@ export class ChannelBroadcastHandler {
       const threadResult = this.deps.threadRepository.findById(binding.thread_id);
       if (threadResult.isErr() || !threadResult.value) {
         this.deps.logger.warn(
-          { requestId, bindingId: binding.id, threadId: binding.thread_id, err: threadResult.isErr() ? threadResult.error : undefined, channelName: channel.name },
+          { requestId, bindingId: binding.id, threadId: binding.thread_id, err: channel.type !== 'signal' && threadResult.isErr() ? threadResult.error : undefined, channelName: channel.name },
           'channel.broadcast: skipping binding — thread row missing',
         );
         continue;
@@ -133,18 +137,48 @@ export class ChannelBroadcastHandler {
           { requestId, channelName: channel.name },
           'channel.broadcast: connector not registered for channel',
         );
-        failed.push({ channelName: channel.name, reason: 'send_failed', message: `connector not registered for channel "${channel.name}"` });
+        failed.push(channel.type === 'signal'
+          ? { channelName: channel.name, reason: 'send_failed', message: 'Signal connector unavailable.', signal: signalToolFailure() }
+          : { channelName: channel.name, reason: 'send_failed', message: `connector not registered for channel "${channel.name}"` });
         continue;
       }
 
-      const sendResult = await connector.send(thread.external_id, output);
-      if (sendResult.isErr()) {
-        this.deps.logger.warn(
-          { requestId, channelName: channel.name, threadId: thread.id, externalChatId: thread.external_id, err: sendResult.error },
-          'channel.broadcast: connector.send failed — continuing with remaining bindings',
-        );
-        failed.push({ channelName: channel.name, reason: 'send_failed', message: sendResult.error.message });
-        continue;
+      const isSignal = channel.type === 'signal' || connector.type === 'signal';
+      if (isSignal) {
+        const target = parseSignalExternalId(thread.external_id);
+        const accountUuid = target.isOk() ? target.value.accountUuid : undefined;
+        const restriction = accountUuid === undefined ? undefined : restrictedAccounts.get(accountUuid);
+        const sent = restriction !== undefined ? undefined
+          : await this.deps.signalExecutions?.invoke(context, connector, thread.external_id, output);
+        const failure = restriction ?? (sent?.isErr() ? sent.error : undefined);
+        if (sent === undefined || sent.isErr()) {
+          if (failure !== undefined && accountUuid !== undefined && stopsSignalBroadcastAccount(failure))
+            restrictedAccounts.set(accountUuid, failure);
+          // The restriction belongs to the earlier operation; this target was never invoked.
+          const safe: SignalToolFailure = restriction === undefined ? signalToolFailure(failure) : {
+            ...signalToolFailure(restriction),
+            outcome: 'NOT_SENT',
+            acceptedChunks: 0,
+            currentChunkAcceptance: 'unwritten',
+            successCount: 0,
+            failureCount: 0,
+            action: 'later_explicit_call',
+          };
+          this.deps.logger.warn({ requestId, channelName: channel.name, reason: safe.reason }, 'channel.broadcast: Signal operation refused');
+          failed.push({ channelName: channel.name, reason: 'send_failed',
+            message: 'Signal send failed; inspect the structured outcome before another explicit call.', signal: safe });
+          continue;
+        }
+      } else {
+        const sendResult = await connector.send(thread.external_id, output);
+        if (sendResult.isErr()) {
+          this.deps.logger.warn(
+            { requestId, channelName: channel.name, threadId: thread.id, externalChatId: thread.external_id, err: sendResult.error },
+            'channel.broadcast: connector.send failed — continuing with remaining bindings',
+          );
+          failed.push({ channelName: channel.name, reason: 'send_failed', message: sendResult.error.message });
+          continue;
+        }
       }
 
       this.persistOutboundMessage({
@@ -154,6 +188,7 @@ export class ChannelBroadcastHandler {
         thread,
         content: args.content,
         runThreadId: context.threadId,
+        signal: isSignal,
       });
       delivered += 1;
     }
@@ -179,6 +214,7 @@ export class ChannelBroadcastHandler {
     thread: ThreadRow;
     content: string;
     runThreadId: string;
+    signal?: boolean;
   }): void {
     const idempotencyRequestId = input.requestId === 'unknown' ? randomUUID() : input.requestId;
     const insertResult = this.deps.messageRepository.insert({
@@ -192,7 +228,7 @@ export class ChannelBroadcastHandler {
     });
     if (insertResult.isErr()) {
       this.deps.logger.warn(
-        { requestId: input.requestId, runId: input.runId, threadId: input.thread.id, err: insertResult.error },
+        { requestId: input.requestId, runId: input.runId, threadId: input.thread.id, err: input.signal ? undefined : insertResult.error },
         'channel.broadcast: delivered message but failed to persist outbound context',
       );
       return;

@@ -1418,4 +1418,47 @@ describe('BackgroundAgentManager', () => {
       }),
     );
   });
+  it('keeps the actual worker task/status/content identity separate from the spawner in queued notifications', async () => {
+    const manager = createManager();
+    const taskId = (
+      await manager.spawn({
+        ...spawnInput,
+        personaId: 'origin-bound-persona',
+        workerPersonaId: 'notification-worker',
+      })
+    )._unsafeUnwrap();
+    completionResolve?.(
+      ok({
+        stdout: '**Original worker** 😀',
+        stderr: '',
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      }),
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    const task = repository.findById(taskId)._unsafeUnwrap();
+    expect(task).toMatchObject({
+      personaId: 'notification-worker',
+      status: 'completed',
+      output: '**Original worker** 😀',
+    });
+    const calls = vi.mocked(queueManager.enqueue).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toEqual([
+      'thread-1',
+      'collaboration',
+      {
+        personaId: 'notification-worker',
+        kind: 'background_task_notification',
+        taskId,
+        providerName: 'claude-code',
+        status: 'completed',
+        content: expect.stringContaining('Output summary: **Original worker** 😀'),
+      },
+    ]);
+    expect(calls[1][1]).toBe('message');
+    expect(calls[1][2].content).toBe(calls[0][2].content);
+    expect(calls[1][2]).not.toHaveProperty('kind');
+  });
 });

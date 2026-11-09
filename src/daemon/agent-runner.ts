@@ -4,7 +4,37 @@ import { v4 as uuidv4 } from 'uuid';
 import { ok, err, type Result } from 'neverthrow';
 import { z } from 'zod';
 
-import type { DaemonContext } from './daemon-context.js';
+import type { DaemonContext, SignalRunGeneration } from './daemon-context.js';
+import {
+  inspectSignalDeliveryState,
+  parseSignalQueuePayload,
+} from '../queue/signal-delivery-state.js';
+import { SignalCheckpointError } from '../queue/signal-delivery-checkpoint.js';
+import {
+  ConfigError,
+  DbError,
+  DeliveryCancelled,
+  DeliveryDeferredError,
+  NonRetryableRunError,
+  SignalDeliveryError,
+} from '../core/errors/error-types.js';
+import { SignalStateError } from '../core/database/repositories/signal-account-state-repository.js';
+import { runResultTransaction } from '../core/database/transaction.js';
+import { SignalInvocationGuard, type SignalExecutionFailure } from './signal-invocation-guard.js';
+import {
+  SignalReplyDelivery,
+  type SignalReplyIdentity,
+  type SignalReplyPreparation,
+} from './signal-reply-delivery.js';
+import { SignalConnector } from '../channels/connectors/signal/signal-connector.js';
+import { parseSignalConfig } from '../channels/connectors/signal/signal-config.js';
+import {
+  SignalIdentityError,
+  parseSignalExternalId,
+} from '../channels/connectors/signal/signal-identities.js';
+import { selectSignalTarget } from '../channels/connectors/signal/signal-target.js';
+import { rowToQueueItem } from '../queue/queue-mapper.js';
+import type { SignalToolExecutionRegistration } from '../tools/host-tools/signal-tool-execution.js';
 import type { AssembledContext } from './context-assembler.js';
 import type { QueueItem } from '../queue/queue-types.js';
 import { filterAllowedMcpTools } from '../tools/tool-filter.js';
@@ -29,16 +59,51 @@ import type {
 import type { StartedObservationHandle } from '../observability/langfuse/observability-types.js';
 import { generateBridgeSecret, TALOND_BRIDGE_SECRET_ENV } from '../tools/host-tools-bridge-auth.js';
 
+interface SignalRunResult {
+  readonly runId: string;
+  readonly usage: AgentUsage;
+  readonly sessionId?: string;
+}
+
 /** Default maximum time (ms) a provider query (SDK or CLI) may run before being aborted. */
 const DEFAULT_QUERY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Bounded Signal state retries: capped exponential backoff (250 ms doubling to 10 s), then a typed
+ * Err so the queue applies its ordinary retry/dead-letter policy. Matches the design's state-write
+ * backoff. Total wait before exhaustion is about 26 s across 8 attempts.
+ */
+const SIGNAL_STATE_RETRY_MAX_ATTEMPTS = 8;
+/**
+ * Generation drain bound: the port is called at most SIGNAL_STATE_RETRY_MAX_ATTEMPTS times with the
+ * same backoff, and the whole drain (including a call that never settles) must finish within this
+ * overall deadline. A port that cannot certify settlement yields a typed Err, never a hang.
+ */
+const SIGNAL_DRAIN_DEADLINE_MS = 60_000;
+
+/** Typed Err returned when a generation drain cannot be certified settled. Carries no causes. */
+export class SignalGenerationDrainError extends Error {
+  readonly reason = 'DRAIN_EXHAUSTED' as const;
+  constructor() {
+    super('Signal generation drain did not settle');
+    this.name = 'SignalGenerationDrainError';
+  }
+}
+
+function signalRetryDelay(attempt: number): Promise<void> {
+  return new Promise<void>((resolve) =>
+    setTimeout(resolve, Math.min(250 * 2 ** Math.min(attempt, 6), 10_000)),
+  );
+}
 
 class AgentQueryAttemptError extends Error {
   constructor(
     message: string,
     readonly resumeSessionId: string | undefined,
     readonly sawEvents: boolean,
+    cause: unknown,
   ) {
-    super(message);
+    super(message, { cause });
     this.name = 'AgentQueryAttemptError';
   }
 }
@@ -64,9 +129,72 @@ export class AgentRunner {
    * back through the channel connector.
    */
   async run(item: QueueItem): Promise<Result<void, Error>> {
+    if (this.ctx.signalRuntime !== undefined) {
+      if (typeof this.ctx.signalRuntime.sealAndDrain !== 'function')
+        return err(new NonRetryableRunError());
+      const entered = await this.retrySignalState(() =>
+        SignalInvocationGuard.enter(this.ctx.repos.queue, item.id),
+      );
+      if (entered.isErr()) return err(entered.error);
+      if (entered.value.kind === 'checkpoint') return this.createSignalDelivery().deliver(item.id);
+      const guard = entered.value.guard;
+      try {
+        const current = await this.retrySignalState(() => this.ctx.repos.queue.findById(item.id));
+        if (current.isErr()) return err(current.error);
+        if (current.value === null) return err(new DeliveryCancelled());
+        const payload = parseSignalQueuePayload(current.value.payload);
+        if (payload.isErr()) return err(payload.error);
+        const threadId = current.value.thread_id;
+        const thread = await this.retrySignalState(() => this.ctx.repos.thread.findById(threadId));
+        if (thread.isErr()) return err(thread.error);
+        if (thread.value === null) return err(new DeliveryCancelled());
+        const channelId = thread.value.channel_id;
+        const channel = await this.retrySignalState(() =>
+          this.ctx.repos.channel.findById(channelId),
+        );
+        if (channel.isErr()) return err(channel.error);
+        if (channel.value === null) return err(new NonRetryableRunError());
+        // Use the authoritative queue graph, never the dispatch caller's stale payload/thread.
+        return await this.runExecution(
+          { ...rowToQueueItem(current.value), payload: payload.value },
+          guard,
+        );
+      } finally {
+        guard.close();
+      }
+    }
+    // Legacy ordinary callers can omit composition; reserved evidence is NEVER an ordinary turn.
+    const parsed = parseSignalQueuePayload(
+      typeof item.payload === 'string' ? item.payload : JSON.stringify(item.payload),
+    );
+    if (parsed.isErr()) return err(parsed.error);
+    const state = inspectSignalDeliveryState(parsed.value, item.id, Date.now(), true);
+    if (this.ctx.signalRuntime === undefined) {
+      if (state.isErr()) return err(state.error);
+      if (state.value.kind !== 'ordinary') return err(new SignalCheckpointError('INVALID'));
+      const thread = this.ctx.repos.thread.findById(item.threadId);
+      if (thread.isErr()) return err(thread.error);
+      if (thread.value !== null) {
+        const channel = this.ctx.repos.channel.findById(thread.value.channel_id);
+        if (channel.isErr()) return err(channel.error);
+        if (
+          channel.value !== null &&
+          (channel.value.type === 'signal' ||
+            this.ctx.channelRegistry.get(channel.value.name)?.type === 'signal')
+        )
+          return err(new NonRetryableRunError());
+      }
+    }
+    return this.runExecution(item);
+  }
+
+  private async runExecution(
+    item: QueueItem,
+    guard?: SignalInvocationGuard,
+  ): Promise<Result<void, Error>> {
     const backgroundTaskNotification = this.parseBackgroundTaskNotification(item);
     if (backgroundTaskNotification) {
-      return this.deliverBackgroundTaskNotification(item.threadId, backgroundTaskNotification);
+      return this.deliverBackgroundTaskNotification(item, backgroundTaskNotification, guard);
     }
 
     // Detect A2A task collaboration items and flag for special handling.
@@ -81,6 +209,21 @@ export class AgentRunner {
         : null;
     const isA2ATask = a2aTaskId !== null;
     const isScheduleTask = item.type === 'schedule';
+    // Schedules/A2A use explicit tools, never an implicit origin final. Their synthetic/source
+    // destinations must not become a new Signal-only permission gate for delegated work.
+    const pinnedSignalOrigin =
+      !isA2ATask && !isScheduleTask && this.isSignalOrigin(item.threadId)
+        ? this.signalOrigin(item)
+        : undefined;
+    if (pinnedSignalOrigin?.isErr()) return err(pinnedSignalOrigin.error);
+    if (guard !== undefined && pinnedSignalOrigin?.isOk()) {
+      const checked = this.resolveSignalReply({
+        ...pinnedSignalOrigin.value,
+        deliveryId: 'origin-policy',
+        kind: 'reply',
+      });
+      if (checked.isErr()) return err(checked.error);
+    }
 
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {
@@ -281,7 +424,7 @@ export class AgentRunner {
 
     const content = typeof item.payload.content === 'string' ? item.payload.content : '';
     let runFinalized = false;
-    const bridgeSecret = generateBridgeSecret();
+    let bridgeSecret = generateBridgeSecret();
     this.ctx.hostToolsBridge.registerRunAuthentication?.({
       runId,
       threadId: item.threadId,
@@ -304,7 +447,43 @@ export class AgentRunner {
       provider: providerEntry.provider.name,
     };
 
+    // Signal origins buffer all text into one final reply (never a mid-run flush).
+    const signalBufferedReply =
+      !isA2ATask &&
+      !isScheduleTask &&
+      (pinnedSignalOrigin !== undefined || this.isSignalOrigin(item.threadId));
+    let registration: SignalToolExecutionRegistration | undefined;
+    let deliveryAttempted = false;
+    let generatedSignalResult: SignalRunResult | undefined;
+    let signalDelivery = this.createSignalDelivery();
+    let generation: SignalRunGeneration = Object.freeze({
+      runId,
+      threadId: item.threadId,
+      personaId,
+      bridgeSecret,
+    });
+    let drainPromise: Promise<Result<void, SignalGenerationDrainError>> | undefined;
+    // Idempotent per run: every call site observes the same settlement, never a second port call.
+    const sealAndDrain = (): Promise<Result<void, SignalGenerationDrainError>> => {
+      if (guard === undefined) return Promise.resolve(ok(undefined));
+      return (drainPromise ??= this.drainSignalGeneration(generation));
+    };
     try {
+      if (guard !== undefined) {
+        const attached = guard.attachRunId(runId);
+        if (attached.isErr()) throw attached.error;
+        const runtime = this.ctx.signalRuntime;
+        if (runtime === undefined) throw new NonRetryableRunError();
+        const registered = runtime.executions.register({
+          runId,
+          threadId: item.threadId,
+          personaId,
+          queueItemId: item.id,
+          guard,
+        });
+        if (registered.isErr()) throw registered.error;
+        registration = registered.value;
+      }
       await this.ctx.observability.observe(
         {
           type: 'agent',
@@ -519,12 +698,15 @@ export class AgentRunner {
               externalId &&
               !isScheduleTask
             ) {
-              const waitingResult = await connector.send(externalId, {
-                body: 'Thinking...',
-              });
+              const waitingResult =
+                pinnedSignalOrigin !== undefined || this.isSignalOrigin(item.threadId)
+                  ? await this.sendSignalNotice(item, guard, 'Thinking...')
+                  : await connector.send(externalId, { body: 'Thinking...' });
               if (waitingResult.isErr()) {
                 this.ctx.logger.debug(
-                  { err: waitingResult.error },
+                  pinnedSignalOrigin !== undefined || this.isSignalOrigin(item.threadId)
+                    ? { reason: 'NOTICE_REFUSED' }
+                    : { err: waitingResult.error },
                   'agent-runner: waiting notification failed',
                 );
               }
@@ -684,6 +866,9 @@ export class AgentRunner {
 
                   let outputText = '';
                   let fullOutputText = '';
+                  // Signal buffering: a tool call between text blocks marks a separator, emitted
+                  // only before the next text block so the reply never has a trailing separator.
+                  let signalSeparatorPending = false;
                   let resultSessionId: string | undefined;
                   let usage: AgentUsage = {
                     inputTokens: 0,
@@ -742,7 +927,7 @@ export class AgentRunner {
                         stream = strategy.run(queryInput);
                       } catch (cause) {
                         const message = cause instanceof Error ? cause.message : String(cause);
-                        throw new AgentQueryAttemptError(message, resumeSessionId, false);
+                        throw new AgentQueryAttemptError(message, resumeSessionId, false, cause);
                       }
 
                       const iterator = stream[Symbol.asyncIterator]();
@@ -755,6 +940,9 @@ export class AgentRunner {
                         const event = next.value;
                         sawEvents = true;
                         if (event.type === 'text') {
+                          if (signalSeparatorPending && fullOutputText.length > 0)
+                            fullOutputText += '\n\n';
+                          signalSeparatorPending = false;
                           outputText += event.content;
                           fullOutputText += event.content;
                         } else if (event.type === 'result') {
@@ -780,6 +968,7 @@ export class AgentRunner {
                             event.messageType === 'tool_use' ||
                             event.messageType === 'server_tool_use' ||
                             event.messageType === 'mcp_tool_use';
+                          if (isToolUse && signalBufferedReply) signalSeparatorPending = true;
                           if (
                             isToolUse &&
                             item.type !== 'schedule' &&
@@ -788,14 +977,16 @@ export class AgentRunner {
                             externalId
                           ) {
                             // Flush preceding text first, then show tool description (issue #102 + #108).
-                            if (outputText) {
+                            if (
+                              outputText &&
+                              pinnedSignalOrigin === undefined &&
+                              !this.isSignalOrigin(item.threadId)
+                            ) {
                               const flushResult = await connector.send(externalId, {
                                 body: outputText,
                               });
                               if (flushResult.isErr()) {
-                                throw new Error(
-                                  `channel send failed: ${flushResult.error.message}`,
-                                );
+                                throw this.channelSendError(flushResult.error);
                               }
                               outputText = '';
                               fullOutputText += '\n\n';
@@ -809,12 +1000,23 @@ export class AgentRunner {
                                 event.messageType === 'mcp_tool_use' && event.serverName
                                   ? `mcp__${event.serverName}__${event.tool ?? ''}`
                                   : (event.tool ?? '');
-                              const toolCallResult = await connector.send(externalId, {
-                                body: formatToolCall(toolCallId),
-                              });
+                              const toolCallResult =
+                                pinnedSignalOrigin !== undefined ||
+                                this.isSignalOrigin(item.threadId)
+                                  ? await this.sendSignalNotice(
+                                      item,
+                                      guard,
+                                      formatToolCall(toolCallId),
+                                    )
+                                  : await connector.send(externalId, {
+                                      body: formatToolCall(toolCallId),
+                                    });
                               if (toolCallResult.isErr()) {
                                 this.ctx.logger.warn(
-                                  { runId, error: toolCallResult.error.message },
+                                  pinnedSignalOrigin !== undefined ||
+                                    this.isSignalOrigin(item.threadId)
+                                    ? { runId, reason: 'NOTICE_REFUSED' }
+                                    : { runId, error: toolCallResult.error.message },
                                   'agent-runner: tool call message send failed, continuing',
                                 );
                               }
@@ -878,8 +1080,14 @@ export class AgentRunner {
                     await Promise.race([queryPromise, timeoutPromise]);
                   } catch (cause) {
                     // Abort the in-flight provider stream to prevent leaked work
-                    if (activeIterator?.return) {
-                      activeIterator.return(undefined).catch(() => {});
+                    const returning = activeIterator?.return?.(undefined);
+                    if (guard !== undefined) {
+                      // Seal new authenticated admission BEFORE waiting for timeout losers.
+                      const draining = sealAndDrain();
+                      await Promise.allSettled([queryPromise, returning]);
+                      await draining;
+                    } else {
+                      returning?.catch(() => {});
                     }
                     this.finishProviderToolObservations(
                       activeProviderToolObservations,
@@ -892,7 +1100,9 @@ export class AgentRunner {
                     ignoredProviderToolUseIds.clear();
                     await Promise.allSettled(pendingProviderToolTasks);
                     const message = cause instanceof Error ? cause.message : String(cause);
-                    throw new AgentQueryAttemptError(message, resumeSessionId, sawEvents);
+                    throw cause instanceof AgentQueryAttemptError
+                      ? cause
+                      : new AgentQueryAttemptError(message, resumeSessionId, sawEvents, cause);
                   } finally {
                     clearTimeout(timeoutId!);
                   }
@@ -926,7 +1136,12 @@ export class AgentRunner {
 
                   return {
                     outputText,
-                    fullOutputText: fullOutputText.replace(/\n\n$/, ''),
+                    fullOutputText:
+                      !isA2ATask &&
+                      !isScheduleTask &&
+                      (pinnedSignalOrigin !== undefined || this.isSignalOrigin(item.threadId))
+                        ? fullOutputText
+                        : fullOutputText.replace(/\n\n$/, ''),
                     resultSessionId,
                     usage,
                     lastStepUsage,
@@ -956,7 +1171,23 @@ export class AgentRunner {
               ranOnResumedCodexSession =
                 existingSessionId !== undefined && providerEntry.type === 'codex-cli';
             } catch (cause) {
-              if (strategy.type === 'sdk' && this.shouldRetryFreshSession(cause)) {
+              await sealAndDrain();
+              const classified =
+                guard === undefined
+                  ? undefined
+                  : await this.classifySignalFailure(guard, this.toError(cause));
+              if (classified?.isErr()) throw classified.error;
+              if (classified?.isOk() && classified.value.kind === 'checkpoint')
+                throw this.toError(cause);
+              const failure =
+                classified?.isOk() && classified.value.kind === 'failure'
+                  ? classified.value.error
+                  : this.toError(cause);
+              if (
+                strategy.type === 'sdk' &&
+                !this.isSignalFailure(failure) &&
+                this.shouldRetryFreshSession(cause)
+              ) {
                 this.ctx.sessionTracker.rotateSession(item.threadId);
                 this.ctx.logger.warn(
                   {
@@ -966,13 +1197,31 @@ export class AgentRunner {
                   },
                   'agent-sdk: resumed session failed before any events, retrying fresh session',
                 );
+                if (guard !== undefined) {
+                  // Old credentials are sealed and settled before a new provider attempt is admitted.
+                  bridgeSecret = generateBridgeSecret();
+                  generation = Object.freeze({
+                    runId,
+                    threadId: item.threadId,
+                    personaId,
+                    bridgeSecret,
+                  });
+                  drainPromise = undefined;
+                  this.ctx.hostToolsBridge.registerRunAuthentication?.(generation);
+                }
                 ({ outputText, fullOutputText, resultSessionId, usage, lastStepUsage } =
                   await executeAgentQuery(undefined));
               } else {
-                throw cause;
+                throw failure;
               }
             }
 
+            const drained = await sealAndDrain();
+            if (drained.isErr()) throw drained.error;
+            // Empty or whitespace-only final text has no reply to save: complete like other channels.
+            const savedSignalReply = signalBufferedReply && fullOutputText.trim().length > 0;
+            if (savedSignalReply)
+              generatedSignalResult = { runId, usage, sessionId: resultSessionId };
             // Store session ID for future conversation resumption (memory + DB).
             // A2A items execute for a different persona on the source thread, so
             // persisting their session ID would contaminate the source thread state.
@@ -993,7 +1242,7 @@ export class AgentRunner {
                   model,
                 );
               }
-              this.ctx.repos.run.updateSessionId(runId, resultSessionId);
+              if (!savedSignalReply) this.ctx.repos.run.updateSessionId(runId, resultSessionId);
             }
 
             // Stop typing indicator.
@@ -1013,13 +1262,15 @@ export class AgentRunner {
             );
 
             // Persist token usage to the run record.
-            const tokenResult = this.ctx.repos.run.updateTokens(runId, {
-              input_tokens: usage.inputTokens,
-              output_tokens: usage.outputTokens,
-              cache_read_tokens: usage.cacheReadTokens ?? 0,
-              cache_write_tokens: usage.cacheWriteTokens ?? 0,
-              cost_usd: usage.totalCostUsd ?? 0,
-            });
+            const tokenResult = savedSignalReply
+              ? ok(undefined)
+              : this.ctx.repos.run.updateTokens(runId, {
+                  input_tokens: usage.inputTokens,
+                  output_tokens: usage.outputTokens,
+                  cache_read_tokens: usage.cacheReadTokens ?? 0,
+                  cache_write_tokens: usage.cacheWriteTokens ?? 0,
+                  cost_usd: usage.totalCostUsd ?? 0,
+                });
             if (tokenResult.isErr()) {
               this.ctx.logger.error(
                 { runId, err: tokenResult.error },
@@ -1057,21 +1308,45 @@ export class AgentRunner {
                 { runId, outputLength: fullOutputText.length },
                 'agent-sdk: skipping outbound reply for schedule item (agent must use channel.send to deliver)',
               );
-            } else if (connector !== undefined && externalId && outputText) {
+            } else if (savedSignalReply) {
+              if (guard === undefined) throw new NonRetryableRunError();
+              const origin = pinnedSignalOrigin ?? this.signalOrigin(item);
+              if (origin.isErr()) throw origin.error;
+              generatedSignalResult = { runId, usage, sessionId: resultSessionId };
+              signalDelivery = this.createSignalDelivery(generatedSignalResult);
+              // Observe generation once outside SQL, even when delivery is deferred.
+              runObservation.update({
+                output: { text: fullOutputText },
+                metadata: { resultSessionId: resultSessionId ?? null },
+                trace: { output: fullOutputText },
+              });
+              const prepared = await this.prepareSignalReply(
+                { ...origin.value, deliveryId: uuidv4(), kind: 'reply', body: fullOutputText },
+                guard,
+                generatedSignalResult,
+              );
+              if (prepared.isErr())
+                throw await this.classifyUnsentSignalPreparation(item.id, prepared.error);
+              signalDelivery = prepared.value;
+              deliveryAttempted = true;
+              const delivered = await signalDelivery.deliver(item.id, guard);
+              if (delivered.isErr()) throw delivered.error;
+              runFinalized = true;
+            } else if (!signalBufferedReply && connector !== undefined && externalId && outputText) {
               // Send remaining text (final block). Intermediate blocks were flushed
               // during the stream when tool_use events were encountered (issue #102).
               const sendResult = await connector.send(externalId, {
                 body: outputText,
               });
               if (sendResult.isErr()) {
-                throw new Error(`channel send failed: ${sendResult.error.message}`);
+                throw this.channelSendError(sendResult.error);
               }
             }
 
             // Persist the outbound message BEFORE context rotation so that a fast
             // user reply cannot be inserted ahead of the assistant turn in the DB.
             // The message is stored immediately after delivery (issue #164).
-            if (!isA2ATask && !isScheduleTask) {
+            if (!isA2ATask && !isScheduleTask && !savedSignalReply) {
               this.ctx.repos.message.insert({
                 id: uuidv4(),
                 thread_id: item.threadId,
@@ -1086,10 +1361,9 @@ export class AgentRunner {
             // Check if context needs rotation (rolling window).
             // Runs AFTER connector.send() and message.insert() so the user receives
             // their response immediately — context rotation may invoke a summarizer
-            // LLM call that takes 5-15 s. The queue item stays in-flight (claimed)
-            // until run() returns, so the next item for this thread cannot be
-            // picked up until rotation completes, preserving per-thread ordering.
-            // (issue #164)
+            // LLM call that takes 5-15 s. QueueProcessor retains live ordinary-dispatch
+            // ownership through handler and state settlement, even when Signal has already
+            // completed its SQL row. The next ordinary item waits for rotation (issue #164).
             if (this.ctx.contextRoller && enabledContextManagement && !isScheduleTask) {
               // Gate rotation on per-step usage when the provider reports
               // it; cumulative `usage` across a multi-tool agent loop can
@@ -1219,63 +1493,505 @@ export class AgentRunner {
               }
             }
 
-            runObservation.update({
-              output: {
-                text: fullOutputText,
-              },
-              metadata: {
-                resultSessionId: resultSessionId ?? null,
-              },
-              trace: {
-                output: fullOutputText,
-              },
-            });
+            if (!savedSignalReply)
+              runObservation.update({
+                output: {
+                  text: fullOutputText,
+                },
+                metadata: {
+                  resultSessionId: resultSessionId ?? null,
+                },
+                trace: {
+                  output: fullOutputText,
+                },
+              });
 
-            this.ctx.repos.run.updateStatus(runId, 'completed', {
-              ended_at: Date.now(),
-            });
+            if (!savedSignalReply)
+              this.ctx.repos.run.updateStatus(runId, 'completed', {
+                ended_at: Date.now(),
+              });
             runFinalized = true;
           } catch (cause) {
             if (typingInterval) clearInterval(typingInterval);
-            const error = this.toError(cause);
-            this.ctx.repos.run.updateStatus(runId, 'failed', {
-              ended_at: Date.now(),
-              error: error.message,
-            });
-            // Mark A2A task as failed on agent execution error.
-            if (isA2ATask && a2aTaskId) {
-              this.ctx.repos.a2aTask
-                .markFailed(a2aTaskId, 'EXECUTION_ERROR', error.message)
-                .mapErr((e) => {
-                  this.ctx.logger.warn(
-                    { a2aTaskId, runId, err: e.message },
-                    'agent-runner: failed to mark A2A task as failed',
-                  );
-                });
-            }
-            runFinalized = true;
-            throw error;
+            throw this.toError(cause);
           }
         },
       );
 
       return ok(undefined);
     } catch (cause) {
-      const error = this.toError(cause);
-      if (!runFinalized) {
-        this.ctx.repos.run.updateStatus(runId, 'failed', {
-          ended_at: Date.now(),
-          error: error.message,
-        });
+      await sealAndDrain();
+      let error = this.toError(cause);
+      if (guard !== undefined) {
+        const classified = await this.classifySignalFailure(guard, error);
+        if (classified.isErr()) return err(classified.error);
+        if (classified.value.kind === 'checkpoint') {
+          return deliveryAttempted ? err(error) : await signalDelivery.deliver(item.id, guard);
+        }
+        error = classified.value.error;
       }
+      if (generatedSignalResult !== undefined && !(error instanceof DeliveryCancelled)) {
+        // A refused/latching origin has no checkpoint, but the completed provider usage is real.
+        // Keep only this SQL write; never rerun generation or invoke a sender to repair it.
+        const result = generatedSignalResult;
+        const recorded = await this.retrySignalState(() => this.persistSignalRunResult(result));
+        if (recorded.isErr()) return err(recorded.error);
+      }
+      if (!runFinalized && !(error instanceof DeliveryCancelled)) {
+        const failure = { ended_at: Date.now(), error: error.message };
+        if (generatedSignalResult !== undefined) {
+          const settled = await this.retrySignalState(() =>
+            this.failUnpreparedSignalRun(item.id, runId, failure),
+          );
+          if (settled.isErr()) return err(settled.error);
+        } else {
+          this.ctx.repos.run.updateStatus(runId, 'failed', failure);
+        }
+      }
+      if (isA2ATask && a2aTaskId) this.failA2ATask(a2aTaskId, 'EXECUTION_ERROR', error.message);
       return err(error);
     } finally {
+      // The run's own result is already decided; an unsettled drain is reported, never awaited forever.
+      const drainedAtExit = await sealAndDrain();
+      if (drainedAtExit.isErr())
+        this.ctx.logger.warn({ runId }, 'agent-runner: Signal generation drain did not settle');
+      registration?.close();
       this.ctx.hostToolsBridge.unregisterRunAuthentication?.(runId);
     }
   }
 
   private toError(cause: unknown): Error {
+    if (cause instanceof AgentQueryAttemptError && this.isSignalFailure(cause.cause))
+      return cause.cause;
     return cause instanceof Error ? cause : new Error(String(cause));
+  }
+
+  private isSignalFailure(
+    cause: unknown,
+  ): cause is
+    | SignalDeliveryError
+    | DeliveryDeferredError
+    | NonRetryableRunError
+    | DeliveryCancelled
+    | SignalCheckpointError
+    | DbError {
+    return (
+      cause instanceof SignalDeliveryError ||
+      cause instanceof DeliveryDeferredError ||
+      cause instanceof NonRetryableRunError ||
+      cause instanceof DeliveryCancelled ||
+      cause instanceof SignalCheckpointError ||
+      cause instanceof DbError
+    );
+  }
+
+  private channelSendError(error: Error): Error {
+    return this.isSignalFailure(error) ? error : new Error(`channel send failed: ${error.message}`);
+  }
+
+  private async retrySignalState<T, E extends Error>(
+    operation: () => Result<T, E>,
+  ): Promise<Result<T, E>> {
+    for (let attempt = 0; ; attempt++) {
+      const result = operation();
+      if (
+        result.isOk() ||
+        !(result.error instanceof DbError) ||
+        (result.error instanceof SignalStateError && result.error.reason !== 'DATABASE') ||
+        attempt + 1 >= SIGNAL_STATE_RETRY_MAX_ATTEMPTS
+      )
+        return result;
+      await signalRetryDelay(attempt);
+    }
+  }
+
+  private async drainSignalGeneration(
+    generation: SignalRunGeneration,
+  ): Promise<Result<void, SignalGenerationDrainError>> {
+    const deadline = Date.now() + SIGNAL_DRAIN_DEADLINE_MS;
+    for (let attempt = 0; attempt < SIGNAL_STATE_RETRY_MAX_ATTEMPTS; attempt++) {
+      // Keep the actual handler/guard/generation. Never classify live work or expose raw causes.
+      if (await this.sealAndDrainOnce(generation, deadline)) return ok(undefined);
+      if (Date.now() >= deadline) break;
+      await signalRetryDelay(attempt);
+    }
+    return err(new SignalGenerationDrainError());
+  }
+
+  /** One port call, raced against the remaining drain deadline. A thrown error, an Err, or a
+   * missed deadline all count as unsettled. */
+  private async sealAndDrainOnce(
+    generation: SignalRunGeneration,
+    deadline: number,
+  ): Promise<boolean> {
+    const runtime = this.ctx.signalRuntime;
+    if (runtime === undefined) return false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const settled = await Promise.race([
+        runtime.sealAndDrain(generation),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(
+            () => reject(new SignalGenerationDrainError()),
+            Math.max(0, deadline - Date.now()),
+          );
+        }),
+      ]);
+      return settled.isOk();
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private classifySignalFailure(
+    guard: SignalInvocationGuard,
+    failure: Error,
+  ): Promise<Result<SignalExecutionFailure, Error>> {
+    return this.retrySignalState(() => guard.classifyFailure(failure));
+  }
+
+  private isSignalOrigin(threadId: string): boolean {
+    const thread = this.ctx.repos.thread.findById(threadId);
+    if (thread.isErr() || thread.value === null) return false;
+    const channel = this.ctx.repos.channel.findById(thread.value.channel_id);
+    return (
+      channel.isOk() &&
+      channel.value !== null &&
+      (channel.value.type === 'signal' ||
+        this.ctx.channelRegistry.get(channel.value.name)?.type === 'signal')
+    );
+  }
+
+  private signalOrigin(
+    item: QueueItem,
+  ): Result<Omit<SignalReplyIdentity, 'deliveryId' | 'kind'>, Error> {
+    const personaId = item.payload.personaId;
+    if (typeof personaId !== 'string') return err(new SignalCheckpointError('INVALID'));
+    return this.ctx.repos.thread.findById(item.threadId).andThen((thread) => {
+      if (thread === null) return err(new DeliveryCancelled());
+      return this.ctx.repos.channel.findById(thread.channel_id).andThen((channel) => {
+        if (channel === null || channel.type !== 'signal') return err(new NonRetryableRunError());
+        return parseSignalExternalId(thread.external_id).map((target) => ({
+          queueItemId: item.id,
+          threadId: item.threadId,
+          personaId,
+          channelName: channel.name,
+          accountUuid: target.accountUuid,
+          destination: thread.external_id,
+        }));
+      });
+    });
+  }
+
+  private resolveSignalReply(identity: SignalReplyIdentity): Result<SignalConnector, Error> {
+    if (this.ctx.signalRuntime === undefined) return err(new NonRetryableRunError());
+    const row = this.ctx.repos.queue.findById(identity.queueItemId);
+    if (row.isErr()) return err(row.error);
+    if (row.value === null) return err(new DeliveryCancelled());
+    const payload = parseSignalQueuePayload(row.value.payload);
+    if (payload.isErr()) return err(payload.error);
+    if (row.value.thread_id !== identity.threadId || payload.value.personaId !== identity.personaId)
+      return err(new NonRetryableRunError());
+    if (identity.kind === 'background') {
+      const notification = this.parseBackgroundTaskNotification({
+        ...rowToQueueItem(row.value),
+        payload: payload.value,
+      });
+      if (notification === null) return err(new SignalCheckpointError('INVALID'));
+      const current = this.ctx.repos.queue.inspectSignalDelivery(identity.queueItemId, Date.now());
+      if (current.isErr()) return err(current.error);
+      if (
+        current.value.kind === 'checkpoint' &&
+        current.value.checkpoint.body !== notification.content
+      )
+        return err(new SignalCheckpointError('INVALID'));
+    }
+    return this.ctx.repos.thread.findById(identity.threadId).andThen((thread) => {
+      if (thread === null || thread.external_id !== identity.destination)
+        return err(new NonRetryableRunError());
+      return this.ctx.repos.channel.findById(thread.channel_id).andThen((channel) => {
+        if (
+          channel === null ||
+          channel.name !== identity.channelName ||
+          channel.type !== 'signal' ||
+          channel.enabled !== 1
+        )
+          return err(new NonRetryableRunError());
+        const connector = this.ctx.channelRegistry.get(identity.channelName);
+        if (!(connector instanceof SignalConnector)) return err(new NonRetryableRunError());
+        const configured = this.ctx.config.channels.find(
+          (entry) => entry.name === identity.channelName,
+        );
+        if (configured === undefined || configured.type !== 'signal' || !configured.enabled)
+          return err(new NonRetryableRunError());
+        let stored: unknown;
+        try {
+          stored = JSON.parse(channel.config);
+        } catch {
+          return err(new ConfigError('Invalid Signal configuration'));
+        }
+        return parseSignalConfig(stored).andThen((config) => {
+          if (config.accountUuid !== identity.accountUuid) return err(this.signalAccountMismatch());
+          return selectSignalTarget(identity.destination, config).andThen(() =>
+            parseSignalConfig(configured.config).andThen((current) => {
+              if (current.accountUuid !== identity.accountUuid)
+                return err(this.signalAccountMismatch());
+              return selectSignalTarget(identity.destination, current).map(() => connector);
+            }),
+          );
+        });
+      });
+    });
+  }
+
+  /** Deliberate LOCAL no-send boundary for completed generation/fixed notification only.
+   * Current durable evidence and existing sender errors keep their identity/counts. Never invent
+   * a marker, checkpoint or UNKNOWN to make an unsavable final result provider-retryable. */
+  private async classifyUnsentSignalPreparation(
+    queueItemId: string,
+    failure: Error,
+  ): Promise<Error> {
+    const current = await this.retrySignalState(() =>
+      this.ctx.repos.queue.inspectSignalDelivery(queueItemId, Date.now()),
+    );
+    if (current.isErr()) return current.error;
+    if (current.value.kind !== 'ordinary' || failure instanceof SignalDeliveryError) return failure;
+    const reason =
+      failure instanceof SignalIdentityError
+        ? failure.reason === 'ACCOUNT_MISMATCH'
+          ? 'ACCOUNT_MISMATCH'
+          : 'INVALID_DESTINATION'
+        : failure instanceof ConfigError
+          ? 'UNAVAILABLE'
+          : failure instanceof SignalCheckpointError
+            ? failure.reason === 'TOO_LARGE'
+              ? 'OUTPUT_TOO_LARGE'
+              : failure.reason === 'EXPIRED'
+                ? 'CHECKPOINT_EXPIRED'
+                : 'CHECKPOINT_INVALID'
+            : undefined;
+    return reason === undefined
+      ? failure
+      : new SignalDeliveryError({
+          reason,
+          outcome: 'NOT_SENT',
+          acceptedChunks: 0,
+          currentChunkAcceptance: 'unwritten',
+          successCount: 0,
+          failureCount: 0,
+          retryScope: 'none',
+        });
+  }
+
+  private signalAccountMismatch(): SignalDeliveryError {
+    return new SignalDeliveryError({
+      reason: 'ACCOUNT_MISMATCH',
+      outcome: 'NOT_SENT',
+      acceptedChunks: 0,
+      currentChunkAcceptance: 'unwritten',
+      successCount: 0,
+      failureCount: 0,
+      retryScope: 'none',
+    });
+  }
+
+  /** Completed Signal generation without a saved reply still owns its original status write.
+   * Current reads and the write are synchronous on the shared run connection; no stale read
+   * crosses a retry or can overwrite cancellation. Absence never recreates purged work. */
+  private failUnpreparedSignalRun(
+    queueItemId: string,
+    runId: string,
+    failure: { ended_at: number; error: string },
+  ): Result<void, Error> {
+    try {
+      // Cancellation is a committed domain decision, not a rollback request. In particular,
+      // updateStatus may observe a deletion/cancellation performed by that same transaction.
+      return runResultTransaction(
+        (callback) => this.ctx.repos.run.transaction(callback),
+        (): Result<Result<void, DeliveryCancelled>, Error> => {
+          const queued = this.ctx.repos.queue.findById(queueItemId);
+          if (queued.isErr()) return err(queued.error);
+          if (queued.value === null) return ok(err(new DeliveryCancelled()));
+          const current = this.ctx.repos.run.findById(runId);
+          if (current.isErr()) return err(current.error);
+          if (current.value === null || current.value.status === 'cancelled')
+            return ok(err(new DeliveryCancelled()));
+          if (current.value.status === 'completed' || current.value.status === 'failed')
+            return ok(ok(undefined));
+          const updated = this.ctx.repos.run.updateStatus(runId, 'failed', failure);
+          if (updated.isErr()) return err(updated.error);
+          if (updated.value === null || updated.value.status === 'cancelled')
+            return ok(err(new DeliveryCancelled()));
+          return updated.value.status === 'failed' || updated.value.status === 'completed'
+            ? ok(ok(undefined))
+            : err(new DbError('Signal run status not settled'));
+        },
+      ).andThen((settled) => settled);
+    } catch {
+      return err(new SignalStateError('DATABASE'));
+    }
+  }
+
+  private persistSignalRunResult(generated: SignalRunResult): Result<void, Error> {
+    return this.ctx.repos.run.findById(generated.runId).andThen((run) => {
+      if (run === null || run.status === 'cancelled') return err(new DeliveryCancelled());
+      return this.ctx.repos.run
+        .updateTokens(generated.runId, {
+          input_tokens: generated.usage.inputTokens,
+          output_tokens: generated.usage.outputTokens,
+          cache_read_tokens: generated.usage.cacheReadTokens ?? 0,
+          cache_write_tokens: generated.usage.cacheWriteTokens ?? 0,
+          cost_usd: generated.usage.totalCostUsd ?? 0,
+        })
+        .andThen(() =>
+          generated.sessionId === undefined
+            ? ok(undefined)
+            : this.ctx.repos.run.updateSessionId(generated.runId, generated.sessionId),
+        );
+    });
+  }
+
+  /** Only a failure from THIS resolver attempt proves preparation stopped before formatting,
+   * TTL creation or persistence. Never retry arbitrary asynchronous preparation/sender errors. */
+  private async prepareSignalReply(
+    input: SignalReplyPreparation,
+    guard: SignalInvocationGuard,
+    generated?: SignalRunResult,
+  ): Promise<Result<SignalReplyDelivery, Error>> {
+    let resolutionFailure: Error | undefined;
+    const delivery = this.createSignalDelivery(generated, (identity) => {
+      const resolved = this.resolveSignalReply(identity);
+      resolutionFailure = resolved.isErr() ? resolved.error : undefined;
+      return resolved;
+    });
+    const isDatabaseResolutionFailure = (failure: Error): boolean =>
+      failure === resolutionFailure &&
+      failure instanceof DbError &&
+      (!(failure instanceof SignalStateError) || failure.reason === 'DATABASE');
+    for (let attempt = 0; ; attempt++) {
+      resolutionFailure = undefined;
+      const prepared = await delivery.prepare(input, guard);
+      if (prepared.isOk()) return ok(delivery);
+      if (!isDatabaseResolutionFailure(prepared.error)) return err(prepared.error);
+      await new Promise<void>((resolve) =>
+        setTimeout(resolve, Math.min(250 * 2 ** Math.min(attempt, 6), 10_000)),
+      );
+    }
+  }
+
+  private createSignalDelivery(
+    generated?: SignalRunResult,
+    resolve: (identity: SignalReplyIdentity) => Result<SignalConnector, Error> = (identity) =>
+      this.resolveSignalReply(identity),
+  ): SignalReplyDelivery {
+    return new SignalReplyDelivery({
+      queue: this.ctx.repos.queue,
+      audit: this.ctx.repos.audit,
+      logger: this.ctx.logger,
+      resolve,
+      persist: (phase, checkpoint): Result<void, Error> => {
+        if (phase === 'prepared') {
+          const runId = checkpoint.runId;
+          if (runId === undefined) return ok(undefined);
+          if (generated === undefined || generated.runId !== checkpoint.runId)
+            return err(new SignalStateError('CONFLICT'));
+          return this.persistSignalRunResult(generated);
+        }
+        const key: Result<string, Error> =
+          checkpoint.runId !== undefined
+            ? ok(`outbound:${checkpoint.runId}`)
+            : this.ctx.repos.queue.findById(checkpoint.queueItemId).andThen((row) => {
+                if (row === null) return err(new DeliveryCancelled());
+                return parseSignalQueuePayload(row.payload).andThen((payload) => {
+                  const notification = this.parseBackgroundTaskNotification({
+                    ...rowToQueueItem(row),
+                    payload,
+                  });
+                  return notification === null ||
+                    notification.content !== checkpoint.body ||
+                    payload.personaId !== checkpoint.personaId ||
+                    row.thread_id !== checkpoint.threadId
+                    ? err(new SignalCheckpointError('INVALID'))
+                    : ok(`background-task:${notification.taskId}:${notification.status}`);
+                });
+              });
+        return key
+          .andThen((idempotencyKey) =>
+            this.ctx.repos.message.insert({
+              id: uuidv4(),
+              thread_id: checkpoint.threadId,
+              direction: 'outbound',
+              content: JSON.stringify({ body: checkpoint.body }),
+              idempotency_key: idempotencyKey,
+              provider_id: null,
+              run_id: checkpoint.runId ?? null,
+            }),
+          )
+          .andThen(() =>
+            checkpoint.runId === undefined
+              ? ok(undefined)
+              : this.ctx.repos.run
+                  .updateStatus(checkpoint.runId, 'completed', { ended_at: Date.now() })
+                  .map(() => undefined),
+          );
+      },
+    });
+  }
+
+  private async sendSignalNotice(
+    item: QueueItem,
+    guard: SignalInvocationGuard | undefined,
+    body: string,
+  ): Promise<Result<void, Error>> {
+    const identity = this.signalOrigin(item);
+    if (identity.isErr()) return err(identity.error);
+    const resolved = this.resolveSignalReply({
+      ...identity.value,
+      deliveryId: 'notice-policy',
+      kind: 'reply',
+    });
+    if (resolved.isErr()) return err(resolved.error);
+    const configured = this.ctx.config.channels.find(
+      (entry) => entry.name === identity.value.channelName,
+    );
+    const config = parseSignalConfig(configured?.config);
+    if (config.isErr()) return err(config.error);
+    if (config.value.accountMode === 'personal') return ok(undefined);
+    if (guard === undefined) return err(new NonRetryableRunError());
+    try {
+      const sent = await guard.invoke(
+        {
+          deliveryId: uuidv4(),
+          purpose: 'progress',
+          accountUuid: identity.value.accountUuid,
+          destination: identity.value.destination,
+        },
+        (trustedDelivery) =>
+          resolved.value.send(identity.value.destination, { body, trustedDelivery }),
+      );
+      if (
+        sent.isErr() &&
+        sent.error instanceof SignalDeliveryError &&
+        sent.error.reason === 'STATE_WRITE_FAILED'
+      ) {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const repaired = resolved.value.retryStateWrites();
+            if (repaired.isOk()) break;
+          } catch {
+            // The original producer still owns the write; a thrown repair is not settlement.
+          }
+          await new Promise<void>((resolve) =>
+            setTimeout(resolve, Math.min(250 * 2 ** Math.min(attempt, 6), 10_000)),
+          );
+        }
+      }
+      return sent;
+    } catch (cause) {
+      return err(this.toError(cause));
+    }
   }
 
   private handleProviderToolEvent(
@@ -1504,9 +2220,24 @@ export class AgentRunner {
   }
 
   private async deliverBackgroundTaskNotification(
-    threadId: string,
+    item: QueueItem,
     notification: { content: string; taskId: string; status: string },
+    guard?: SignalInvocationGuard,
   ): Promise<Result<void, Error>> {
+    const threadId = item.threadId;
+    if (this.isSignalOrigin(threadId)) {
+      if (guard === undefined) return err(new NonRetryableRunError());
+      const origin = this.signalOrigin(item);
+      if (origin.isErr())
+        return err(await this.classifyUnsentSignalPreparation(item.id, origin.error));
+      const prepared = await this.prepareSignalReply(
+        { ...origin.value, deliveryId: uuidv4(), kind: 'background', body: notification.content },
+        guard,
+      );
+      return prepared.isErr()
+        ? err(await this.classifyUnsentSignalPreparation(item.id, prepared.error))
+        : await prepared.value.deliver(item.id, guard);
+    }
     const threadResult = this.ctx.repos.thread.findById(threadId);
     if (threadResult.isErr() || threadResult.value === null) {
       return err(new Error(`thread not found for id ${threadId}`));
@@ -1526,7 +2257,7 @@ export class AgentRunner {
       body: notification.content,
     });
     if (sendResult.isErr()) {
-      return err(new Error(`channel send failed: ${sendResult.error.message}`));
+      return err(this.channelSendError(sendResult.error));
     }
 
     this.ctx.repos.message.insert({
