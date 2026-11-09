@@ -19,6 +19,7 @@ import type {
 } from '../../core/database/repositories/thread-repository.js';
 import type { BindingRepository } from '../../core/database/repositories/binding-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
+import { signalToolFailure, type SignalToolExecutionRegistry } from './signal-tool-execution.js';
 
 /**
  * Returns the origin chat's external_id recorded in a dedicated schedule
@@ -98,6 +99,7 @@ export class ChannelSendHandler {
   constructor(
     private readonly deps: {
       channelRegistry: ChannelRegistry;
+      signalExecutions?: SignalToolExecutionRegistry;
       threadRepository: ThreadRepository;
       channelRepository?: Pick<ChannelRepository, 'findByName' | 'findById'>;
       messageRepository?: Pick<MessageRepository, 'insert'>;
@@ -186,6 +188,10 @@ export class ChannelSendHandler {
       return { requestId, tool: 'channel.send', status: 'error', error: error.message };
     }
 
+    const channelRow = this.deps.channelRepository?.findByName(channelId);
+    const isSignal = connector.type === 'signal' ||
+      (channelRow?.isOk() === true && channelRow.value?.type === 'signal');
+
     // Build the AgentOutput and call send
     const output = {
       body: content,
@@ -205,11 +211,15 @@ export class ChannelSendHandler {
     // PR #201 production rollout).
     const threadResult = this.deps.threadRepository.findById(context.threadId);
     if (threadResult.isErr()) {
+      if (isSignal) return { requestId, tool: 'channel.send', status: 'error',
+        error: 'Signal recipient resolution failed.', result: signalToolFailure(threadResult.error) };
       const msg = `channel.send: failed to resolve thread "${context.threadId}" — ${threadResult.error.message}`;
       this.deps.logger.error({ requestId, threadId: context.threadId, err: threadResult.error }, msg);
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
     if (!threadResult.value) {
+      if (isSignal) return { requestId, tool: 'channel.send', status: 'error',
+        error: 'Signal recipient resolution unavailable.', result: signalToolFailure() };
       const msg = `channel.send: thread "${context.threadId}" not found — cannot resolve recipient`;
       this.deps.logger.error({ requestId, threadId: context.threadId, channelId }, msg);
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
@@ -240,15 +250,27 @@ export class ChannelSendHandler {
         'channel.send: no recipient chat id. This run is on a schedule thread without an originExternalId (likely created from the CLI). ' +
         'Pass `externalChatId` explicitly, or use `channel.list` to discover available chats and `channel.broadcast` to fan out to all bound chats.';
       this.deps.logger.warn(
-        { requestId, threadId: context.threadId, channelId, threadExternalId: fallbackExternalId },
+        { requestId, threadId: context.threadId, channelId, threadExternalId: isSignal ? undefined : fallbackExternalId },
         'channel.send: missing valid recipient chat id',
       );
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
     }
 
-    const result = await connector.send(externalThreadId, output);
+    if (isSignal && this.deps.signalExecutions === undefined) {
+      return { requestId, tool: 'channel.send', status: 'error',
+        error: 'Signal send unavailable; no operation was queued.', result: signalToolFailure() };
+    }
+    const result = isSignal && this.deps.signalExecutions !== undefined
+      ? await this.deps.signalExecutions.invoke(context, connector, externalThreadId, output)
+      : await connector.send(externalThreadId, output);
 
     if (result.isErr()) {
+      if (isSignal) {
+        const failure = signalToolFailure(result.error);
+        this.deps.logger.warn({ requestId, channelId, reason: failure.reason }, 'channel.send: Signal operation refused');
+        return { requestId, tool: 'channel.send', status: 'error',
+          error: 'Signal send failed; inspect the structured outcome before another explicit call.', result: failure };
+      }
       const msg = `channel.send: failed to send message — ${result.error.message}`;
       this.deps.logger.error({ requestId, channelId, err: result.error }, msg);
       return { requestId, tool: 'channel.send', status: 'error', error: msg };
@@ -266,6 +288,7 @@ export class ChannelSendHandler {
       content,
       personaId: context.personaId,
       runThreadId: context.threadId,
+      signal: isSignal,
     });
 
     return {
@@ -291,6 +314,7 @@ export class ChannelSendHandler {
      * outbound into context.
      */
     runThreadId: string;
+    signal?: boolean;
   }): void {
     if (!this.deps.channelRepository || !this.deps.messageRepository) {
       return;
@@ -302,7 +326,7 @@ export class ChannelSendHandler {
         {
           requestId: input.requestId,
           channelName: input.channelName,
-          err: channelResult.isErr() ? channelResult.error : undefined,
+          err: !input.signal && channelResult.isErr() ? channelResult.error : undefined,
         },
         'channel.send: delivered message but failed to resolve channel for outbound persistence',
       );
@@ -336,7 +360,7 @@ export class ChannelSendHandler {
           requestId: input.requestId,
           runId: input.runId,
           threadId: targetThread.id,
-          err: insertResult.error,
+          err: input.signal ? undefined : insertResult.error,
         },
         'channel.send: delivered message but failed to persist outbound context',
       );
@@ -385,7 +409,7 @@ export class ChannelSendHandler {
    * bound to.
    */
   private shouldPersistForTarget(
-    input: { requestId: string; personaId: string },
+    input: { requestId: string; personaId: string; signal?: boolean },
     channelId: string,
     targetThread: ThreadRow,
   ): boolean {
@@ -402,7 +426,7 @@ export class ChannelSendHandler {
           requestId: input.requestId,
           channelId,
           threadId: targetThread.id,
-          err: scopedResult.error,
+          err: input.signal ? undefined : scopedResult.error,
         },
         'channel.send: skipping outbound persistence — binding lookup failed',
       );
@@ -431,7 +455,7 @@ export class ChannelSendHandler {
         {
           requestId: input.requestId,
           channelId,
-          err: defaultResult.error,
+          err: input.signal ? undefined : defaultResult.error,
         },
         'channel.send: skipping outbound persistence — default binding lookup failed',
       );
@@ -455,7 +479,7 @@ export class ChannelSendHandler {
   }
 
   private resolveTargetThread(
-    input: { requestId: string; externalThreadId: string },
+    input: { requestId: string; externalThreadId: string; signal?: boolean },
     channelId: string,
   ): ThreadRow | null {
     const existingResult = this.deps.threadRepository.findByExternalId(
@@ -467,8 +491,8 @@ export class ChannelSendHandler {
         {
           requestId: input.requestId,
           channelId,
-          externalThreadId: input.externalThreadId,
-          err: existingResult.error,
+          externalThreadId: input.signal ? undefined : input.externalThreadId,
+          err: input.signal ? undefined : existingResult.error,
         },
         'channel.send: delivered message but failed to resolve recipient thread for outbound persistence',
       );
@@ -501,8 +525,8 @@ export class ChannelSendHandler {
       {
         requestId: input.requestId,
         channelId,
-        externalThreadId: input.externalThreadId,
-        err: insertResult.error,
+        externalThreadId: input.signal ? undefined : input.externalThreadId,
+        err: input.signal ? undefined : insertResult.error,
       },
       'channel.send: delivered message but failed to create recipient thread for outbound persistence',
     );

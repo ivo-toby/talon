@@ -11,6 +11,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { ok, err } from 'neverthrow';
 import { ChannelBroadcastHandler } from '../../../../src/tools/host-tools/channel-broadcast.js';
+import { DbError } from '../../../../src/core/errors/error-types.js';
 
 function makeBindingRepo(rows: any[]) {
   return { findByPersona: vi.fn().mockReturnValue(ok(rows)) } as any;
@@ -50,6 +51,27 @@ const PERSONA_ID = 'persona-1';
 const RUN_ID = 'run-001';
 
 describe('ChannelBroadcastHandler', () => {
+  it('keeps the ordinary binding-failure error for non-Signal broadcasts when a Signal registry is wired', async () => {
+    const handler = new ChannelBroadcastHandler({
+      channelRegistry: { get: vi.fn() } as any,
+      signalExecutions: { invoke: vi.fn() } as any,
+      bindingRepository: { findByPersona: vi.fn().mockReturnValue(err(new DbError('disk I/O'))) } as any,
+      channelRepository: makeChannelRepo({}),
+      threadRepository: makeThreadRepo({}),
+      messageRepository: makeMessageRepo(),
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(
+      { content: 'morning briefing' },
+      { runId: RUN_ID, threadId: 'any', personaId: PERSONA_ID, requestId: 'req-1' },
+    );
+
+    expect(result.status).toBe('error');
+    expect(result.error).toBe('channel.broadcast: failed to load bindings — disk I/O');
+    expect(result.result).toBeUndefined();
+  });
+
   it('fans out to all bound threads and persists outbound on each', async () => {
     const bindings = [
       { id: 'b1', channel_id: 'chan-001', thread_id: 'thread-a', persona_id: PERSONA_ID, is_default: 0, created_at: 0, updated_at: 0 },
