@@ -47,7 +47,9 @@ export type ImageState = (typeof IMAGE_STATES)[number];
  *
  * - unsupported_mime: eligible image MIME is outside the supported formats
  * - count_limit: eligible Attachment exceeds the message's upload slots
- * - size_limit: declared or actual input bytes exceed the per-Image limit
+ * - size_limit: declared or actual input bytes exceed the per-Image limit, the
+ *   decoded pixel count exceeds the limit, or no normalized encode fits the
+ *   output byte limit
  * - animated: input is an animated image, including APNG
  * - download_failed: channel media fetch fails or times out
  * - conversion_failed: input cannot be decoded/normalized

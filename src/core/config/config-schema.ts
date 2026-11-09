@@ -531,6 +531,17 @@ export const ImagesConfigSchema = z.object({
   /** JPEG quality for Normalized files. */
   jpegQuality: z.number().int().min(1).max(100).default(85),
   /**
+   * Maximum decoded source pixels (width × height); larger sources are
+   * Rejected/size_limit before decoding (decompression-bomb guard).
+   */
+  maxInputPixels: z.number().int().min(1).default(100_000_000),
+  /**
+   * Maximum bytes of a Normalized file. Larger encodes are retried at lower
+   * quality, then a smaller edge; the default keeps the base64 form under the
+   * 5 MB per-image limit of Anthropic's API.
+   */
+  maxNormalizedBytes: z.number().int().min(1).default(3_750_000),
+  /**
    * How long Normalized files are retained; Image records and metadata survive.
    * Positive hours — fractional values are meaningful (e.g. 0.5), so this is the
    * one Images setting that is not required to be an integer.

@@ -915,7 +915,7 @@ describe('AgentRunnerConfigSchema', () => {
 // ---------------------------------------------------------------------------
 
 describe('ImagesConfigSchema', () => {
-  it('parses an empty object with the six approved defaults', () => {
+  it('parses an empty object with the approved defaults', () => {
     const result = ImagesConfigSchema.safeParse({});
     expect(result.success).toBe(true);
     if (result.success) {
@@ -931,6 +931,8 @@ describe('ImagesConfigSchema', () => {
         maxPerInspection: 5,
         maxEdge: 4096,
         jpegQuality: 85,
+        maxInputPixels: 100_000_000,
+        maxNormalizedBytes: 3_750_000,
         retentionHours: 24,
       });
     }
@@ -943,6 +945,8 @@ describe('ImagesConfigSchema', () => {
       maxPerInspection: 3,
       maxEdge: 2048,
       jpegQuality: 92,
+      maxInputPixels: 20_000_000,
+      maxNormalizedBytes: 1_000_000,
       retentionHours: 6,
     });
     expect(result.success).toBe(true);
@@ -953,6 +957,8 @@ describe('ImagesConfigSchema', () => {
         maxPerInspection: 3,
         maxEdge: 2048,
         jpegQuality: 92,
+        maxInputPixels: 20_000_000,
+        maxNormalizedBytes: 1_000_000,
         retentionHours: 6,
       });
     }
@@ -980,6 +986,14 @@ describe('ImagesConfigSchema', () => {
     expect(ImagesConfigSchema.safeParse({ maxInputBytes: -10485760 }).success).toBe(false);
     expect(ImagesConfigSchema.safeParse({ maxInputBytes: 1048576.5 }).success).toBe(false);
     expect(ImagesConfigSchema.safeParse({ maxInputBytes: '10485760' }).success).toBe(false);
+  });
+
+  it('rejects zero, negative, and fractional maxInputPixels and maxNormalizedBytes', () => {
+    for (const key of ['maxInputPixels', 'maxNormalizedBytes']) {
+      expect(ImagesConfigSchema.safeParse({ [key]: 0 }).success).toBe(false);
+      expect(ImagesConfigSchema.safeParse({ [key]: -1 }).success).toBe(false);
+      expect(ImagesConfigSchema.safeParse({ [key]: 1.5 }).success).toBe(false);
+    }
   });
 
   it('rejects zero, negative, and fractional maxPerMessage', () => {
@@ -1069,6 +1083,8 @@ describe('ImagesConfigSchema', () => {
         maxPerInspection: 5,
         maxEdge: 4096,
         jpegQuality: 85,
+        maxInputPixels: 100_000_000,
+        maxNormalizedBytes: 3_750_000,
         retentionHours: 24,
       });
     }

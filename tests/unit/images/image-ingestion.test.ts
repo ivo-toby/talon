@@ -126,6 +126,8 @@ function setup(normalize?: NormalizeFn): Fixture {
     maxPerInspection: 5,
     maxEdge: 512,
     jpegQuality: 85,
+    maxInputPixels: 50_000_000,
+    maxNormalizedBytes: 2_000_000,
     retentionHours: 24,
   };
 
@@ -1116,6 +1118,26 @@ describe('ImageIngestionCoordinator', () => {
       expect(image.state).toBe('unavailable');
       expect(image.unavailability_reason).toBe('expired');
       expect(image.rejection_reason).toBeNull();
+    });
+
+    it('rejects a too_large normalization as size_limit and passes the configured limits', async () => {
+      const { messageId } = seedCrashedAdmission({ retainSource: true });
+      let seen: { maxInputPixels?: number; maxOutputBytes?: number } = {};
+      f.normalize = async (source, options) => {
+        f.normalizeCalls.push({ source, tempFilePath: options.tempFilePath });
+        seen = { maxInputPixels: options.maxInputPixels, maxOutputBytes: options.maxOutputBytes };
+        return err({ code: 'too_large', retryable: false, message: 'over the pixel limit' });
+      };
+
+      const report = await f.coordinator.recoverPending({ messageId });
+      expect(report._unsafeUnwrap().enqueued).toBe(1);
+
+      expect(seen).toEqual({ maxInputPixels: 50_000_000, maxOutputBytes: 2_000_000 });
+      const [image] = imagesOf(f, messageId);
+      expect(image.state).toBe('rejected');
+      expect(image.rejection_reason).toBe('size_limit');
+      // Non-retryable: exactly one attempt.
+      expect(f.normalizeCalls).toHaveLength(1);
     });
 
     it('reverts publication when the rename itself crosses the processing deadline', async () => {

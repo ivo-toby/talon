@@ -67,6 +67,19 @@ export interface ImageNormalizationOptions {
   /** JPEG quality, 1–100. */
   jpegQuality: number;
   /**
+   * Maximum decoded source pixels (width × height). Checked from the header
+   * before any decode, and passed to sharp as `limitInputPixels`, so a small
+   * file that expands to a huge bitmap (decompression bomb) is refused.
+   * Defaults to {@link DEFAULT_MAX_INPUT_PIXELS}.
+   */
+  maxInputPixels?: number;
+  /**
+   * Maximum bytes of the Normalized JPEG. When the first encode is larger,
+   * quality and then the edge are stepped down until it fits, so every
+   * vision provider can accept the file. Unbounded when omitted.
+   */
+  maxOutputBytes?: number;
+  /**
    * Attempt-owned temporary file the Normalized JPEG is written to. The
    * caller owns this path (creation, publishing, and cleanup of leftovers).
    * The path is an opaque attempt-owned identifier — never a user filename
@@ -107,6 +120,8 @@ export interface ImageNormalizationResult {
  *   encoder failed on fixed input.
  * - `invalid_options`: options violate the contract (not a config-vs-content
  *   failure; surfaced immediately).
+ * - `too_large`: the source exceeds `maxInputPixels`, or no step of the
+ *   quality/edge ladder fits the output under `maxOutputBytes`.
  *
  * Operational (`retryable: true`):
  * - `timeout`: the native sharp timeout fired.
@@ -121,9 +136,20 @@ export type ImageNormalizationError =
   | { code: 'animated'; retryable: false; message: string }
   | { code: 'conversion_failed'; retryable: false; message: string }
   | { code: 'invalid_options'; retryable: false; message: string }
+  | { code: 'too_large'; retryable: false; message: string }
   | { code: 'timeout'; retryable: true; message: string }
   | { code: 'cancelled'; retryable: true; message: string }
   | { code: 'io'; retryable: true; message: string };
+
+/** Default decoded-pixel ceiling: well above 48 MP phone photos. */
+export const DEFAULT_MAX_INPUT_PIXELS = 100_000_000;
+
+/** Quality steps tried, in order, when the output is over `maxOutputBytes`. */
+const QUALITY_STEPS = [75, 65, 55] as const;
+/** Edge shrink factor per step once quality is at its floor. */
+const EDGE_STEP_FACTOR = 0.75;
+/** Smallest longest-edge the ladder will shrink to before giving up. */
+const MIN_LADDER_EDGE = 512;
 
 /** Formats the decoder is allowed to produce for an Image. */
 const SUPPORTED_FORMATS = new Set(['jpeg', 'png', 'webp']);
@@ -208,6 +234,14 @@ export async function normalizeImage(
       message: 'decoder reported no image dimensions',
     });
   }
+  const maxInputPixels = options.maxInputPixels ?? DEFAULT_MAX_INPUT_PIXELS;
+  if (width * height > maxInputPixels) {
+    return err({
+      code: 'too_large',
+      retryable: false,
+      message: `source is ${width}x${height}, over the ${maxInputPixels} pixel limit`,
+    });
+  }
 
   // -- EXIF before conversion (malformed EXIF never blocks conversion) ----
   const exifOutcome = await awaitOrAbort(extractImageExif(metadata.exif), options.signal);
@@ -229,55 +263,30 @@ export async function normalizeImage(
   // never a rejection out of normalizeImage. Encode to a buffer FIRST so
   // every decoder/encoder failure is sharp's, and the file write is ours
   // (real errno classification; see the module header trade-off).
-  let encodePromise: Promise<{ info: sharp.OutputInfo; data: Buffer }>;
-  try {
-    let pipeline = sharp(source)
-      .autoOrient()
-      .resize(options.maxEdge, options.maxEdge, {
-        fit: 'inside',
-        withoutEnlargement: true,
-      })
-      .flatten({ background: '#ffffff' })
-      .jpeg({ quality: options.jpegQuality });
-    if (options.timeoutSeconds !== undefined) {
-      pipeline = pipeline.timeout({ seconds: options.timeoutSeconds });
+  // The first encode uses the configured edge and quality. Only when the
+  // output exceeds `maxOutputBytes` does the ladder step quality down, then
+  // shrink the edge, re-encoding each time.
+  const ladder = encodeLadder(options.maxEdge, options.jpegQuality, options.maxOutputBytes);
+  let encoded: { info: sharp.OutputInfo; data: Buffer } | undefined;
+  for (const step of ladder) {
+    const attempt = await encodeOnce(source, step, maxInputPixels, options);
+    if (attempt.isErr()) {
+      return err(attempt.error);
     }
-    encodePromise = pipeline.toBuffer({ resolveWithObject: true });
-  } catch (cause) {
+    encoded = attempt.value;
+    if (options.maxOutputBytes === undefined || encoded.data.byteLength <= options.maxOutputBytes) {
+      break;
+    }
+    encoded = undefined;
+  }
+  if (encoded === undefined) {
     return err({
-      code: 'invalid_options',
+      code: 'too_large',
       retryable: false,
-      message: `sharp rejected the pipeline configuration (${errorName(cause)})`,
+      message: `normalized output does not fit under ${String(options.maxOutputBytes)} bytes`,
     });
   }
-  const outcome = options.signal
-    ? await raceWithAbort(encodePromise, options.signal)
-    : await settle(encodePromise);
-
-  if (outcome.type === 'aborted') {
-    // The late sharp encode has no destination: nothing is written after
-    // cancellation, so there is nothing to discard here either.
-    return cancelledError('attempt aborted during normalization');
-  }
-  // The signal may fire between settle and resumption; the output is then
-  // no longer admissible even though sharp finished first — never write it.
-  if (options.signal?.aborted) {
-    return cancelledError('attempt aborted as normalization finished');
-  }
-  if (outcome.type === 'error') {
-    return err(
-      classifySharpError(outcome.error, 'image could not be converted to JPEG'),
-    );
-  }
-
-  const info = outcome.value.info;
-  if (info.format !== 'jpeg' || info.width === undefined || info.height === undefined) {
-    return err({
-      code: 'conversion_failed',
-      retryable: false,
-      message: 'encoder did not report a JPEG output with dimensions',
-    });
-  }
+  const info = encoded.info;
 
   // -- Write the encoded JPEG to the attempt destination -------------------
   // Content failures are exhausted at this point, so every writeFile
@@ -288,7 +297,7 @@ export async function normalizeImage(
   // resolved, the file is removed; if it rejected, nothing was written).
   let writePromise: Promise<void>;
   try {
-    writePromise = fs.promises.writeFile(options.tempFilePath, outcome.value.data);
+    writePromise = fs.promises.writeFile(options.tempFilePath, encoded.data);
   } catch (cause) {
     // Synchronous launch failure on the destination.
     discardTemp(options.tempFilePath);
@@ -326,6 +335,101 @@ export async function normalizeImage(
     sourceDimensions: { width, height },
     ...(exif !== undefined ? { exif } : {}),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Encoding (one sharp pass per ladder step)
+// ---------------------------------------------------------------------------
+
+interface EncodeStep {
+  edge: number;
+  quality: number;
+}
+
+/**
+ * The encode attempts in order: the configured step, then lower qualities,
+ * then smaller edges at the lowest quality. A single step when no byte
+ * limit is set.
+ */
+function encodeLadder(maxEdge: number, jpegQuality: number, maxOutputBytes?: number): EncodeStep[] {
+  const steps: EncodeStep[] = [{ edge: maxEdge, quality: jpegQuality }];
+  if (maxOutputBytes === undefined) return steps;
+  let quality = jpegQuality;
+  for (const q of QUALITY_STEPS) {
+    if (q < quality) {
+      quality = q;
+      steps.push({ edge: maxEdge, quality });
+    }
+  }
+  let edge = maxEdge;
+  for (;;) {
+    edge = Math.floor(edge * EDGE_STEP_FACTOR);
+    if (edge < MIN_LADDER_EDGE) break;
+    steps.push({ edge, quality });
+  }
+  return steps;
+}
+
+/** Run one oriented/resized/flattened JPEG encode, fenced on cancellation. */
+async function encodeOnce(
+  source: Buffer,
+  step: EncodeStep,
+  maxInputPixels: number,
+  options: ImageNormalizationOptions,
+): Promise<Result<{ info: sharp.OutputInfo; data: Buffer }, ImageNormalizationError>> {
+  // Pipeline configuration (including sharp's synchronous timeout bounds)
+  // is contained: a synchronous throw becomes a typed invalid_options Result,
+  // never a rejection out of normalizeImage. Encode to a buffer FIRST so
+  // every decoder/encoder failure is sharp's, and the file write is ours
+  // (real errno classification; see the module header trade-off).
+  let encodePromise: Promise<{ info: sharp.OutputInfo; data: Buffer }>;
+  try {
+    let pipeline = sharp(source, { limitInputPixels: maxInputPixels })
+      .autoOrient()
+      .resize(step.edge, step.edge, {
+        fit: 'inside',
+        withoutEnlargement: true,
+      })
+      .flatten({ background: '#ffffff' })
+      .jpeg({ quality: step.quality });
+    if (options.timeoutSeconds !== undefined) {
+      pipeline = pipeline.timeout({ seconds: options.timeoutSeconds });
+    }
+    encodePromise = pipeline.toBuffer({ resolveWithObject: true });
+  } catch (cause) {
+    return err({
+      code: 'invalid_options',
+      retryable: false,
+      message: `sharp rejected the pipeline configuration (${errorName(cause)})`,
+    });
+  }
+  const outcome = options.signal
+    ? await raceWithAbort(encodePromise, options.signal)
+    : await settle(encodePromise);
+
+  if (outcome.type === 'aborted') {
+    // The late sharp encode has no destination: nothing is written after
+    // cancellation, so there is nothing to discard here either.
+    return cancelledError('attempt aborted during normalization');
+  }
+  // The signal may fire between settle and resumption; the output is then
+  // no longer admissible even though sharp finished first — never write it.
+  if (options.signal?.aborted) {
+    return cancelledError('attempt aborted as normalization finished');
+  }
+  if (outcome.type === 'error') {
+    return err(classifySharpError(outcome.error, 'image could not be converted to JPEG'));
+  }
+
+  const info = outcome.value.info;
+  if (info.format !== 'jpeg' || info.width === undefined || info.height === undefined) {
+    return err({
+      code: 'conversion_failed',
+      retryable: false,
+      message: 'encoder did not report a JPEG output with dimensions',
+    });
+  }
+  return ok(outcome.value);
 }
 
 // ---------------------------------------------------------------------------
@@ -398,6 +502,18 @@ function validateOptions(
   }
   if (!Number.isInteger(options.jpegQuality) || options.jpegQuality < 1 || options.jpegQuality > 100) {
     return { code: 'invalid_options', retryable: false, message: 'jpegQuality must be an integer from 1 to 100' };
+  }
+  if (
+    options.maxInputPixels !== undefined &&
+    (!Number.isInteger(options.maxInputPixels) || options.maxInputPixels < 1)
+  ) {
+    return { code: 'invalid_options', retryable: false, message: 'maxInputPixels must be a positive integer' };
+  }
+  if (
+    options.maxOutputBytes !== undefined &&
+    (!Number.isInteger(options.maxOutputBytes) || options.maxOutputBytes < 1)
+  ) {
+    return { code: 'invalid_options', retryable: false, message: 'maxOutputBytes must be a positive integer' };
   }
   if (typeof options.tempFilePath !== 'string' || options.tempFilePath.length === 0) {
     return { code: 'invalid_options', retryable: false, message: 'tempFilePath is required' };

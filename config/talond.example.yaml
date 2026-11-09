@@ -557,6 +557,8 @@ images:
   maxPerInspection: 5       # distinct current-thread Image IDs per Inspection
   maxEdge: 4096             # longest normalized edge in px; aspect kept, no upscale
   jpegQuality: 85           # 1-100
+  maxInputPixels: 100000000 # decoded source px; larger -> size_limit (bomb guard)
+  maxNormalizedBytes: 3750000 # normalized JPEG bytes; re-encoded smaller until it fits
   retentionHours: 24        # NORMALIZED FILE retention only — see below
 #
 # Retention is FILE-ONLY. After retentionHours the normalized JPEG is deleted

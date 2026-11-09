@@ -1875,6 +1875,8 @@ images:
   maxPerInspection: 5       # Image IDs per Inspection
   maxEdge: 4096             # longest normalized edge, pixels
   jpegQuality: 85           # 1-100
+  maxInputPixels: 100000000 # decoded source pixels (decompression-bomb guard)
+  maxNormalizedBytes: 3750000 # normalized JPEG bytes; fits Anthropic's 5 MB base64 limit
   retentionHours: 24        # normalized FILE retention only
 ```
 
@@ -1893,8 +1895,13 @@ large photo must arrive, send it as its own email, or use Telegram/WhatsApp.
 Accepted input is converted to **metadata-free JPEG**: EXIF is read first,
 orientation applied, the image scaled to fit inside `maxEdge` preserving aspect
 ratio (never cropped, never upscaled), alpha flattened onto white, then encoded
-at `jpegQuality`. Decoder input limits stay enabled and a conversion that trips
-one is `conversion_failed`.
+at `jpegQuality`. A source over `maxInputPixels` (width × height, read from the
+header before decoding) is Rejected / `size_limit`. If the JPEG comes out larger
+than `maxNormalizedBytes`, Talon re-encodes at quality 75, 65 and 55, then shrinks
+the longest edge by 25% per step (down to 512 px) until it fits, so every vision
+provider can accept it; an image that never fits is Rejected / `size_limit`. Other
+decoder input limits stay enabled and a conversion that trips one is
+`conversion_failed`.
 
 Normalized files live in the thread workspace and are deleted when they expire:
 
@@ -2001,7 +2008,7 @@ Rejection reasons are a closed list — no connector-specific values:
 | ------------------------- | -------------------------------------------------------------- |
 | `unsupported_mime`        | Eligible image MIME outside the supported formats               |
 | `count_limit`             | More eligible attachments than the message's upload slots       |
-| `size_limit`              | Declared or actual bytes exceed the per-Image limit             |
+| `size_limit`              | Bytes, decoded pixels, or the normalized JPEG exceed their limit |
 | `animated`                | Animated image, including APNG                                  |
 | `download_failed`         | Channel media fetch failed or timed out                         |
 | `conversion_failed`       | Input could not be decoded or normalized                        |

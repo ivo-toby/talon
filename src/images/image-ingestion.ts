@@ -966,6 +966,8 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
       const normalized = await this.normalize(bytes.value, {
         maxEdge: this.deps.imagesConfig.maxEdge,
         jpegQuality: this.deps.imagesConfig.jpegQuality,
+        maxInputPixels: this.deps.imagesConfig.maxInputPixels,
+        maxOutputBytes: this.deps.imagesConfig.maxNormalizedBytes,
         tempFilePath: tempPath,
         timeoutSeconds: Math.max(1, Math.ceil(Math.max(remainingMs, 1) / 1000)),
         signal,
@@ -1680,10 +1682,13 @@ export class ImageIngestionCoordinator implements ImageIngestionService {
   }
 
   private immediateRejectionReason(
-    code: 'unsupported_mime' | 'animated' | 'conversion_failed' | 'invalid_options',
+    code: 'unsupported_mime' | 'animated' | 'conversion_failed' | 'invalid_options' | 'too_large',
   ): ImageRejectionReason {
     if (code === 'unsupported_mime' || code === 'animated') {
       return code;
+    }
+    if (code === 'too_large') {
+      return 'size_limit';
     }
     return 'conversion_failed';
   }

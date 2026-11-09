@@ -87,8 +87,12 @@ export const IMAGE_SWEEP_INTERVAL_MS = 60_000;
  * admitted with recovery outstanding. The daemon retires the outstanding
  * work safely (fence + bounded stop + bounded drain); sweep state is
  * durable, so recovery resumes at the next boot.
+ *
+ * Kept above the 60 s per-Image normalization deadline (plus headroom for
+ * the cleanup scan), so a healthy recovery that re-normalizes one pending
+ * Image cannot abort the boot by itself.
  */
-export const IMAGE_STARTUP_RECOVERY_TIMEOUT_MS = 30_000;
+export const IMAGE_STARTUP_RECOVERY_TIMEOUT_MS = 90_000;
 
 /**
  * Grace window before a staging directory with no Image row is treated as an
