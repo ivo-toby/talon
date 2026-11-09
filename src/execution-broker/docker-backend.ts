@@ -1,0 +1,275 @@
+import { err, ok, type Result } from 'neverthrow';
+
+import { ExecutionBrokerError } from './errors.js';
+import { demuxDockerStream } from './docker-stream.js';
+import type { DockerBackendConfig, DockerEngineClient } from './docker-types.js';
+import type {
+  BackendCapabilities,
+  BackendExecRequest,
+  ContainerBackend,
+  ContainerSpec,
+  RawExecOutput,
+} from './types.js';
+
+/** Digest-pinned image reference: `<name>@sha256:<64 lowercase hex>`. Tags are rejected. */
+const IMAGE_DIGEST_RE = /^[^\s@]+@sha256:[0-9a-f]{64}$/;
+
+/** Non-root `uid:gid`. */
+const USER_RE = /^(\d+):(\d+)$/;
+
+/** Absolute path without ':' or whitespace, safe inside a `host:container:mode` bind string. */
+const BIND_PATH_RE = /^\/[^:\s]*$/;
+
+/** Container IDs we are willing to interpolate into a URL path segment. */
+const CONTAINER_ID_RE = /^[A-Za-z0-9_.-]+$/;
+
+const FIXED_CMD = ['sleep', 'infinity'];
+
+function invalidArgument(detail: string): ExecutionBrokerError {
+  return new ExecutionBrokerError('INVALID_ARGUMENT', detail);
+}
+
+function backendFailure(detail: string): ExecutionBrokerError {
+  return new ExecutionBrokerError('BACKEND_FAILURE', detail);
+}
+
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0;
+}
+
+function validateConfig(config: DockerBackendConfig): Result<void, ExecutionBrokerError> {
+  if (!IMAGE_DIGEST_RE.test(config.image)) {
+    return err(invalidArgument('worker image must be pinned by sha256 digest'));
+  }
+  const userMatch = USER_RE.exec(config.user);
+  if (!userMatch) {
+    return err(invalidArgument('worker user must be a numeric uid:gid pair'));
+  }
+  if (Number(userMatch[1]) === 0) {
+    return err(invalidArgument('worker user must not be root'));
+  }
+  if (!isPositiveInteger(config.memoryBytes)) {
+    return err(invalidArgument('memoryBytes must be a positive integer'));
+  }
+  if (!isPositiveInteger(config.pidsLimit)) {
+    return err(invalidArgument('pidsLimit must be a positive integer'));
+  }
+  if (!isPositiveInteger(config.nanoCpus)) {
+    return err(invalidArgument('nanoCpus must be a positive integer'));
+  }
+  if (!isPositiveInteger(config.tmpfsSizeBytes)) {
+    return err(invalidArgument('tmpfsSizeBytes must be a positive integer'));
+  }
+  return ok(undefined);
+}
+
+/** Container IDs come from callers and from the daemon; never let one shape a path traversal. */
+function validateContainerId(containerId: string): Result<void, ExecutionBrokerError> {
+  if (!CONTAINER_ID_RE.test(containerId) || containerId === '.' || containerId === '..') {
+    return err(invalidArgument('container id is not safe for a URL path'));
+  }
+  return ok(undefined);
+}
+
+/** Defensive JSON parse: any malformed body is a backend failure, never echoed. */
+function parseJsonBody(body: Buffer): Result<unknown, ExecutionBrokerError> {
+  try {
+    return ok(JSON.parse(body.toString('utf8')) as unknown);
+  } catch {
+    return err(backendFailure('docker engine returned a malformed JSON body'));
+  }
+}
+
+function asRecord(value: unknown): Result<Record<string, unknown>, ExecutionBrokerError> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return err(backendFailure('docker engine returned an unexpected JSON shape'));
+  }
+  return ok(value as Record<string, unknown>);
+}
+
+function readStringField(record: Record<string, unknown>, field: string): Result<string, ExecutionBrokerError> {
+  const value = record[field];
+  if (typeof value !== 'string' || value.length === 0) {
+    return err(backendFailure(`docker engine response is missing ${field}`));
+  }
+  return ok(value);
+}
+
+export function createDockerBackend(
+  client: DockerEngineClient,
+  config: DockerBackendConfig,
+): Result<ContainerBackend, ExecutionBrokerError> {
+  const validated = validateConfig(config);
+  if (validated.isErr()) {
+    return err(validated.error);
+  }
+
+  const backend: ContainerBackend = {
+    capabilities(): BackendCapabilities {
+      return { diskQuotaEnforced: config.diskQuotaEnforced };
+    },
+
+    async createContainer(spec: ContainerSpec): Promise<Result<{ containerId: string }, ExecutionBrokerError>> {
+      // A ':' or a relative path would let a path string add or change bind options.
+      const { hostPath, mountTarget } = spec.workspace;
+      if (!BIND_PATH_RE.test(hostPath) || !BIND_PATH_RE.test(mountTarget)) {
+        return err(invalidArgument('workspace paths must be absolute and must not contain a colon'));
+      }
+
+      const body = {
+        Image: config.image,
+        Cmd: [...FIXED_CMD],
+        User: config.user,
+        NetworkDisabled: true,
+        HostConfig: {
+          NetworkMode: 'none',
+          ReadonlyRootfs: true,
+          CapDrop: ['ALL'],
+          SecurityOpt: ['no-new-privileges'],
+          Binds: [`${spec.workspace.hostPath}:${spec.workspace.mountTarget}:${spec.workspace.mode}`],
+          Memory: config.memoryBytes,
+          PidsLimit: config.pidsLimit,
+          NanoCpus: config.nanoCpus,
+          Tmpfs: { '/tmp': `rw,noexec,nosuid,size=${config.tmpfsSizeBytes}` },
+        },
+      };
+
+      const created = await client.request({ method: 'POST', path: '/containers/create', body });
+      if (created.isErr()) {
+        return err(backendFailure('docker container create request failed'));
+      }
+      if (created.value.status !== 201) {
+        return err(backendFailure('docker container create was rejected'));
+      }
+
+      const parsed = asRecord(parseJsonBody(created.value.body).unwrapOr(null));
+      if (parsed.isErr()) {
+        return err(parsed.error);
+      }
+      const idResult = readStringField(parsed.value, 'Id');
+      if (idResult.isErr()) {
+        return err(idResult.error);
+      }
+      const containerId = idResult.value;
+      if (validateContainerId(containerId).isErr()) {
+        // The ID came from the daemon, so this is a backend problem, not caller input.
+        return err(backendFailure('docker engine returned an unusable container id'));
+      }
+
+      const started = await client.request({ method: 'POST', path: `/containers/${containerId}/start` });
+      const startFailed = started.isErr() || started.value.status !== 204;
+      if (startFailed) {
+        // Best-effort cleanup so a half-created container does not linger.
+        await client.request({ method: 'DELETE', path: `/containers/${containerId}?force=true&v=true` });
+        return err(backendFailure('docker container start was rejected'));
+      }
+
+      return ok({ containerId });
+    },
+
+    async exec(containerId: string, request: BackendExecRequest): Promise<Result<RawExecOutput, ExecutionBrokerError>> {
+      const idCheck = validateContainerId(containerId);
+      if (idCheck.isErr()) {
+        return err(idCheck.error);
+      }
+
+      const execCreated = await client.request({
+        method: 'POST',
+        path: `/containers/${containerId}/exec`,
+        body: {
+          Cmd: [...request.argv],
+          WorkingDir: request.cwd,
+          AttachStdout: true,
+          AttachStderr: true,
+          Tty: false,
+        },
+        signal: request.signal,
+      });
+      if (execCreated.isErr()) {
+        return err(backendFailure('docker exec create request failed'));
+      }
+      if (execCreated.value.status !== 201) {
+        return err(backendFailure('docker exec create was rejected'));
+      }
+
+      const parsed = asRecord(parseJsonBody(execCreated.value.body).unwrapOr(null));
+      if (parsed.isErr()) {
+        return err(parsed.error);
+      }
+      const idResult = readStringField(parsed.value, 'Id');
+      if (idResult.isErr()) {
+        return err(idResult.error);
+      }
+      const execId = idResult.value;
+      if (validateContainerId(execId).isErr()) {
+        return err(backendFailure('docker engine returned an unusable exec id'));
+      }
+
+      const started = await client.request({
+        method: 'POST',
+        path: `/exec/${execId}/start`,
+        body: { Detach: false, Tty: false },
+        signal: request.signal,
+      });
+      if (started.isErr()) {
+        return err(backendFailure('docker exec start request failed'));
+      }
+      if (started.value.status !== 200) {
+        return err(backendFailure('docker exec start was rejected'));
+      }
+
+      const demuxed = demuxDockerStream(started.value.body);
+      if (demuxed.isErr()) {
+        return err(demuxed.error);
+      }
+
+      const inspected = await client.request({
+        method: 'GET',
+        path: `/exec/${execId}/json`,
+        signal: request.signal,
+      });
+      if (inspected.isErr()) {
+        return err(backendFailure('docker exec inspect request failed'));
+      }
+      if (inspected.value.status !== 200) {
+        return err(backendFailure('docker exec inspect was rejected'));
+      }
+
+      const inspectRecord = asRecord(parseJsonBody(inspected.value.body).unwrapOr(null));
+      if (inspectRecord.isErr()) {
+        return err(inspectRecord.error);
+      }
+      const { ExitCode: exitCode, Running: running } = inspectRecord.value;
+      if (running === true) {
+        return err(backendFailure('docker exec still running after its stream ended'));
+      }
+      if (typeof exitCode !== 'number' || !Number.isInteger(exitCode)) {
+        return err(backendFailure('docker exec inspect is missing an integer exit code'));
+      }
+
+      return ok({ exitCode, stdout: demuxed.value.stdout, stderr: demuxed.value.stderr });
+    },
+
+    async removeContainer(containerId: string): Promise<Result<void, ExecutionBrokerError>> {
+      const idCheck = validateContainerId(containerId);
+      if (idCheck.isErr()) {
+        return err(idCheck.error);
+      }
+
+      const removed = await client.request({
+        method: 'DELETE',
+        path: `/containers/${containerId}?force=true&v=true`,
+      });
+      if (removed.isErr()) {
+        return err(backendFailure('docker container remove request failed'));
+      }
+      // 404 counts as success: cleanup must stay idempotent.
+      if (removed.value.status !== 204 && removed.value.status !== 404) {
+        return err(backendFailure('docker container remove was rejected'));
+      }
+      return ok(undefined);
+    },
+  };
+
+  return ok(backend);
+}

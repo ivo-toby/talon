@@ -10,3 +10,6 @@ export {
   parseExecuteInput,
 } from './allowlist.js';
 export { ExecutionBroker } from './lifecycle.js';
+export { demuxDockerStream } from './docker-stream.js';
+export { createDockerEngineClient } from './docker-client.js';
+export { createDockerBackend } from './docker-backend.js';
