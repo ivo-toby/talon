@@ -10,7 +10,8 @@ import { unlinkSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import net from 'node:net';
 import type Database from 'better-sqlite3';
-import type { DaemonContext } from '../daemon/daemon-context.js';
+import { err, ok, type Result } from 'neverthrow';
+import type { DaemonContext, SignalRunGeneration } from '../daemon/daemon-context.js';
 import type { ToolCallResult } from './tool-types.js';
 import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
@@ -62,11 +63,22 @@ interface RegisteredBridgeAuth {
   personaId: string;
 }
 
+/**
+ * Admission gate for one run's channel continuations (channel.send / channel.broadcast). Sealing
+ * refuses new admissions and waits for every admitted continuation to settle. Runs that never
+ * admitted a channel continuation have no gate, so sealing them resolves immediately.
+ */
+interface ChannelAdmissionGate {
+  sealed: boolean;
+  readonly admissions: Set<Promise<unknown>>;
+}
+
 export class HostToolsBridge {
   private server: net.Server | null = null;
   private readonly socketPath: string;
   private readonlyDb: Database.Database | null = null;
   private readonly bridgeAuthByRunId = new Map<string, RegisteredBridgeAuth>();
+  private readonly channelGates = new Map<string, ChannelAdmissionGate>();
   private scheduleHandler: ScheduleManageHandler;
   private channelHandler: ChannelSendHandler;
   private channelListHandler: ChannelListHandler;
@@ -94,6 +106,7 @@ export class HostToolsBridge {
 
     this.channelHandler = new ChannelSendHandler({
       channelRegistry: ctx.channelRegistry,
+      signalExecutions: ctx.signalRuntime?.executions,
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       messageRepository: ctx.repos.message,
@@ -111,6 +124,7 @@ export class HostToolsBridge {
 
     this.channelBroadcastHandler = new ChannelBroadcastHandler({
       channelRegistry: ctx.channelRegistry,
+      signalExecutions: ctx.signalRuntime?.executions,
       bindingRepository: ctx.repos.binding,
       channelRepository: ctx.repos.channel,
       threadRepository: ctx.repos.thread,
@@ -209,6 +223,12 @@ export class HostToolsBridge {
     personaId: string;
     bridgeSecret: string;
   }): void {
+    // A new secret is a new provider-attempt generation (the runner sealed and drained the previous
+    // one first). It gets its own admission gate: a sealed predecessor must never refuse its sends.
+    const previous = this.bridgeAuthByRunId.get(input.runId);
+    if (previous !== undefined && !bridgeSecretsMatch(previous.bridgeSecret, input.bridgeSecret)) {
+      this.channelGates.delete(input.runId);
+    }
     this.bridgeAuthByRunId.set(input.runId, {
       bridgeSecret: input.bridgeSecret,
       threadId: input.threadId,
@@ -218,6 +238,69 @@ export class HostToolsBridge {
 
   unregisterRunAuthentication(runId: string): void {
     this.bridgeAuthByRunId.delete(runId);
+    const gate = this.channelGates.get(runId);
+    if (gate !== undefined && gate.admissions.size === 0) this.channelGates.delete(runId);
+  }
+
+  /**
+   * Seals one foreground generation's channel admission and waits for its admitted continuations.
+   * Err when the bridge secret/thread/persona does not match the registered run; nothing is sealed.
+   * Ok with no registered run and no gate: nothing could have been admitted, so no wait happens.
+   * Idempotent: a repeated call re-waits on the same gate and never reopens it.
+   */
+  async sealSignalGeneration(generation: SignalRunGeneration): Promise<Result<void, Error>> {
+    const registered = this.bridgeAuthByRunId.get(generation.runId);
+    if (
+      registered !== undefined &&
+      (!bridgeSecretsMatch(registered.bridgeSecret, generation.bridgeSecret) ||
+        registered.threadId !== generation.threadId ||
+        registered.personaId !== generation.personaId)
+    ) {
+      return err(new Error('Signal generation does not match its registered run'));
+    }
+    let gate = this.channelGates.get(generation.runId);
+    if (gate === undefined) {
+      if (registered === undefined) return ok(undefined);
+      gate = { sealed: false, admissions: new Set() };
+      this.channelGates.set(generation.runId, gate);
+    }
+    gate.sealed = true;
+    await Promise.allSettled([...gate.admissions]);
+    return ok(undefined);
+  }
+
+  /** Channel continuations pass through the run's gate; a sealed run admits nothing further. */
+  private admitChannelContinuation(
+    tool: string,
+    context: ToolExecutionContext,
+    run: () => Promise<ToolCallResult>,
+  ): Promise<ToolCallResult> {
+    let gate = this.channelGates.get(context.runId);
+    if (gate === undefined) {
+      gate = { sealed: false, admissions: new Set() };
+      this.channelGates.set(context.runId, gate);
+    }
+    if (gate.sealed) {
+      return Promise.resolve({
+        requestId: context.requestId ?? 'unknown',
+        tool,
+        status: 'error',
+        error: 'Channel delivery is closed for this run',
+      });
+    }
+    const admitted = gate.admissions;
+    const admission = run();
+    admitted.add(admission);
+    const settle = (): void => {
+      admitted.delete(admission);
+      if (admitted.size > 0) return;
+      // A sealed gate stays until its run unregisters, so a later admission cannot reopen it.
+      const current = this.channelGates.get(context.runId);
+      if (current?.admissions === admitted && (!current.sealed || !this.bridgeAuthByRunId.has(context.runId)))
+        this.channelGates.delete(context.runId);
+    };
+    void admission.then(settle, settle);
+    return admission;
   }
 
   /** Starts listening on the Unix socket. Removes stale socket file if present. */
@@ -592,13 +675,17 @@ export class HostToolsBridge {
         return this.scheduleHandler.execute(args as unknown as ScheduleManageArgs, context);
 
       case 'channel.send':
-        return this.channelHandler.execute(args as unknown as ChannelSendArgs, context);
+        return this.admitChannelContinuation(tool, context, () =>
+          this.channelHandler.execute(args as unknown as ChannelSendArgs, context),
+        );
 
       case 'channel.list':
         return this.channelListHandler.execute(args as unknown as ChannelListArgs, context);
 
       case 'channel.broadcast':
-        return this.channelBroadcastHandler.execute(args as unknown as ChannelBroadcastArgs, context);
+        return this.admitChannelContinuation(tool, context, () =>
+          this.channelBroadcastHandler.execute(args as unknown as ChannelBroadcastArgs, context),
+        );
 
       case 'persona.send':
         if (!this.personaSendHandler) {

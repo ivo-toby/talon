@@ -16,10 +16,102 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import writeFileAtomic from 'write-file-atomic';
 import type pino from 'pino';
+import type { Result } from 'neverthrow';
 
-import { DaemonCommandSchema } from './daemon-ipc.js';
-import type { DaemonCommand, DaemonResponse } from './daemon-ipc.js';
+import { DaemonCommandSchema, SignalResumeRequestSchema, parseSignalStatusData, projectSignalConnectorStatus, projectSignalResumeResult } from './daemon-ipc.js';
+import type { DaemonCommand, DaemonResponse, SignalResumeData, SignalStatusData } from './daemon-ipc.js';
+import type { ChannelConnector } from '../channels/channel-types.js';
+import { SignalConnector } from '../channels/connectors/signal/signal-connector.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
+
+/** The only channel view the Signal IPC handlers need. */
+export interface SignalChannelLookup {
+  get(name: string): ChannelConnector | undefined;
+  listAll(): ChannelConnector[];
+}
+
+/**
+ * Privileged `signal-resume` handler. Authenticated by the local IPC transport only; it asserts
+ * external challenge resolution on the named connector and returns the projected outcome of THAT
+ * invocation. It never sends, replays, clears rate pauses or reads account keys.
+ */
+export async function handleSignalResumeCommand(
+  channels: SignalChannelLookup,
+  command: DaemonCommand,
+): Promise<DaemonResponse> {
+  const parsed = SignalResumeRequestSchema.safeParse(command.payload);
+  let data: SignalResumeData;
+  if (!parsed.success) {
+    data = { outcome: 'unavailable', reason: 'INVALID_REQUEST' };
+  } else {
+    const connector = channels.get(parsed.data.channel);
+    if (!(connector instanceof SignalConnector)) {
+      data = { outcome: 'unavailable', reason: 'NOT_FOUND' };
+    } else {
+      try {
+        data = projectSignalResumeResult(
+          await connector.resumeChallenge({ externalChallengeResolved: true }),
+        );
+      } catch {
+        data = { outcome: 'unavailable', reason: 'VERIFICATION_FAILED' };
+      }
+    }
+  }
+  return {
+    id: randomUUID(),
+    commandId: command.id,
+    success: data.outcome === 'verified',
+    data: data as Record<string, unknown>,
+  };
+}
+
+/** The only queue view the Signal status projection needs. */
+export interface SignalSavedSummarySource {
+  summarizeSavedSignalDeliveries(): Result<
+    { pending: number; terminal: number; reasons: readonly { reason: string; count: number }[] },
+    unknown
+  >;
+}
+
+/**
+ * Safe Signal status projection for the `status` command. Components that cannot be produced are
+ * omitted (never reported as healthy or zero): `channels` when any projected connector entry fails
+ * validation, `saved` when the repository summary is unavailable. Returns undefined when nothing is
+ * available, and when no Signal channel is configured or registered and nothing is saved.
+ */
+export function projectSignalStatus(
+  channels: SignalChannelLookup,
+  queue: SignalSavedSummarySource | undefined,
+  signalConfigured: boolean,
+): SignalStatusData | undefined {
+  const connectors = channels.listAll().filter((connector) => connector instanceof SignalConnector);
+  let projectedChannels: Record<string, unknown>[] | undefined = [];
+  for (const connector of connectors) {
+    const status = projectSignalConnectorStatus(connector.status());
+    if (status.isErr()) {
+      projectedChannels = undefined;
+      break;
+    }
+    projectedChannels.push({ channel: connector.name, ...status.value });
+  }
+  const summary = queue?.summarizeSavedSignalDeliveries();
+  const saved =
+    summary !== undefined && summary.isOk()
+      ? {
+          pending: summary.value.pending,
+          terminal: summary.value.terminal,
+          reasons: summary.value.reasons.map(({ reason, count }) => ({ reason, count })),
+        }
+      : undefined;
+  const hasSignal = signalConfigured || connectors.length > 0;
+  const hasSavedWork = saved !== undefined && saved.pending + saved.terminal > 0;
+  if (!hasSignal && !hasSavedWork) return undefined;
+  const parsed = parseSignalStatusData({
+    ...(saved !== undefined ? { saved } : {}),
+    ...(projectedChannels !== undefined && hasSignal ? { channels: projectedChannels } : {}),
+  });
+  return parsed.isOk() ? parsed.value : undefined;
+}
 
 // ---------------------------------------------------------------------------
 // Options

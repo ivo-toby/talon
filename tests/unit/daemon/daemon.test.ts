@@ -23,7 +23,7 @@ vi.mock('../../../src/core/config/config-loader.js', () => ({
 }));
 
 vi.mock('../../../src/daemon/lifecycle.js', () => ({
-  recoverFromCrash: vi.fn(),
+  recoverFromCrash: vi.fn().mockReturnValue(ok({ ordinaryReset: 0, interruptedInvocations: [] })),
   writePidFile: vi.fn(),
   removePidFile: vi.fn(),
 }));
@@ -31,6 +31,7 @@ vi.mock('../../../src/daemon/lifecycle.js', () => ({
 vi.mock('../../../src/channels/channel-setup.js', () => ({
   registerChannels: vi.fn(),
   injectSiblingBotIds: vi.fn(),
+  signalRepositoriesFor: vi.fn(() => ({ accounts: {}, leases: {} })),
 }));
 
 vi.mock('../../../src/subagents/codex-sandbox-runner-readiness.js', async (importOriginal) => {
@@ -141,6 +142,9 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       startProcessing: vi.fn(),
       stopProcessing: vi.fn(),
       stats: vi.fn().mockReturnValue({ pending: 0, claimed: 0, processing: 0, deadLetter: 0 }),
+      quiesceClaims: vi.fn(),
+      quiesceAndDrainClaims: vi.fn().mockResolvedValue(undefined),
+      resumeClaims: vi.fn(),
     } as any,
     scheduler: {
       start: vi.fn(),
@@ -683,6 +687,93 @@ describe('TalondDaemon', () => {
 
       expect(result.isOk()).toBe(true);
       expect(daemon.state).toBe('running');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Saved Signal delivery wiring and status
+  // -------------------------------------------------------------------------
+
+  describe('saved Signal delivery wiring', () => {
+    it('starts queue processing with a separate saved-delivery handler', async () => {
+      const ctx = setupSuccessfulBootstrap();
+      await daemon.start('/config.yaml');
+
+      const [handler, savedHandler] = vi.mocked(ctx.queueManager.startProcessing).mock.calls[0]!;
+      expect(typeof handler).toBe('function');
+      expect(typeof savedHandler).toBe('function');
+    });
+  });
+
+  describe('status signal block', () => {
+    const signalChannel = {
+      name: 'signal-main',
+      type: 'signal',
+      enabled: true,
+      config: {},
+    };
+    async function status(ctx: DaemonContext): Promise<Record<string, unknown>> {
+      await daemon.start('/config.yaml');
+      const response = await (
+        daemon as unknown as { handleIpcCommand: (command: unknown) => Promise<{ data?: Record<string, unknown> }> }
+      ).handleIpcCommand({ id: '00000000-0000-4000-8000-000000000001', command: 'status' });
+      expect(ctx).toBeDefined();
+      return response.data ?? {};
+    }
+
+    it('omits the signal block when no Signal channel is configured', async () => {
+      const base = makeMockContext();
+      const ctx = setupSuccessfulBootstrap({
+        repos: {
+          ...base.repos,
+          queue: {
+            summarizeSavedSignalDeliveries: vi.fn().mockReturnValue(ok({ pending: 0, terminal: 0, reasons: [] })),
+          } as never,
+        },
+      });
+
+      expect(await status(ctx)).not.toHaveProperty('signal');
+    });
+
+    it('maps the repository saved-delivery summary into the safe DTO', async () => {
+      const summarize = vi.fn().mockReturnValue(
+        ok({
+          pending: 2,
+          terminal: 1,
+          reasons: [{ reason: 'CHECKPOINT_EXPIRED', count: 1 }],
+        }),
+      );
+      const base = makeMockContext();
+      const ctx = setupSuccessfulBootstrap({
+        config: { ...base.config, channels: [signalChannel] } as never,
+        repos: { ...base.repos, queue: { summarizeSavedSignalDeliveries: summarize } as never },
+      });
+
+      const data = await status(ctx);
+
+      expect(summarize).toHaveBeenCalled();
+      expect(data.signal).toEqual({
+        saved: { pending: 2, terminal: 1, reasons: [{ reason: 'CHECKPOINT_EXPIRED', count: 1 }] },
+        channels: [],
+      });
+    });
+
+    it('omits saved (never reports zeros) when the repository summary is unavailable', async () => {
+      const base = makeMockContext();
+      const ctx = setupSuccessfulBootstrap({
+        config: { ...base.config, channels: [signalChannel] } as never,
+        repos: {
+          ...base.repos,
+          queue: {
+            summarizeSavedSignalDeliveries: vi.fn().mockReturnValue(err(new Error('invalid reserved state'))),
+          } as never,
+        },
+      });
+
+      const data = (await status(ctx)).signal as Record<string, unknown>;
+
+      expect(data).toEqual({ channels: [] });
+      expect(data).not.toHaveProperty('saved');
     });
   });
 });

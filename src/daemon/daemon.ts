@@ -23,11 +23,21 @@ import { bootstrap } from './daemon-bootstrap.js';
 import { AgentRunner } from './agent-runner.js';
 import { writePidFile, removePidFile } from './lifecycle.js';
 import { WatchdogNotifier } from './watchdog.js';
-import { registerChannels, injectSiblingBotIds } from '../channels/channel-setup.js';
+import {
+  registerChannels,
+  injectSiblingBotIds,
+  signalRepositoriesFor,
+} from '../channels/channel-setup.js';
+import { SignalConnector } from '../channels/connectors/signal/signal-connector.js';
 
 import type { DaemonContext } from './daemon-context.js';
+import type { ChannelConnector } from '../channels/channel-types.js';
 import type { DaemonState, DaemonHealth } from './daemon-types.js';
-import { DaemonIpcServer } from '../ipc/daemon-ipc-server.js';
+import {
+  DaemonIpcServer,
+  handleSignalResumeCommand,
+  projectSignalStatus,
+} from '../ipc/daemon-ipc-server.js';
 import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
@@ -41,9 +51,21 @@ export interface TalondDaemonDeps {
   waitForCodexSandboxRunner?: typeof waitForCodexSandboxRunner;
 }
 
+/** Bounded in-line repair attempts (retry state writes, then stop again) for one Signal connector per reload. */
+export const RELOAD_SIGNAL_STOP_ATTEMPTS = 3;
+
+/** Delay before a pending reload (a Signal connector that could not be stopped cleanly) retries itself. */
+export const RELOAD_RETRY_MS = 30_000;
+
 export class TalondDaemon {
   private _state: DaemonState = 'stopped';
   private startedAt: number | null = null;
+  /** Monotonic Signal registry generation; bumped by every successful channel replacement. */
+  private signalGeneration = 1;
+  /** Tail of the serialized reload chain: SIGHUP and IPC reloads never interleave. */
+  private reloadChain: Promise<unknown> = Promise.resolve();
+  /** Automatic retry of a reload left pending by an unclean Signal stop. */
+  private reloadRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private ctx: DaemonContext | null = null;
   private agentRunner: AgentRunner | null = null;
@@ -141,7 +163,14 @@ export class TalondDaemon {
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
     // 5. Start queue processing.
-    this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
+    // Saved Signal checkpoints go to a delivery-only handler. AgentRunner.run enters the invocation
+    // guard first, which routes a checkpoint to SignalReplyDelivery.deliver and never to the provider;
+    // without this handler every deferred checkpoint would only be re-deferred until it expires.
+    // The runner is read lazily: reload replaces it and the loop keeps these closures.
+    this.ctx.queueManager.startProcessing(
+      (item) => this.agentRunner!.run(item),
+      (item) => this.agentRunner!.run(item),
+    );
 
     // 6. Start scheduler.
     this.ctx.scheduler.start();
@@ -197,6 +226,7 @@ export class TalondDaemon {
 
     this._state = 'stopping';
     this.logger.info('daemon: stopping');
+    this.clearReloadRetry();
 
     if (this.watchdog !== null) {
       this.watchdog.notifyStopping();
@@ -321,7 +351,18 @@ export class TalondDaemon {
   // Reload
   // ---------------------------------------------------------------------------
 
-  async reload(configPath?: string): Promise<Result<void, DaemonError>> {
+  /**
+   * Hot-reloads configuration. Reloads (SIGHUP, IPC, automatic pending retry) are serialized on one
+   * chain: a later request starts only after the earlier one settled, so two channel generations
+   * can never be replaced concurrently.
+   */
+  reload(configPath?: string): Promise<Result<void, DaemonError>> {
+    const run = this.reloadChain.then(() => this.performReload(configPath));
+    this.reloadChain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async performReload(configPath?: string): Promise<Result<void, DaemonError>> {
     if (this._state !== 'running' || this.ctx === null) {
       return err(
         new DaemonError(`Cannot reload daemon in state '${this._state}' (expected 'running')`),
@@ -348,15 +389,6 @@ export class TalondDaemon {
     const oldConfig = this.ctx.config;
 
     this.logger.info({ configPath: effectivePath }, 'daemon: applying hot-reload');
-
-    // Log level — apply immediately.
-    if (newConfig.logLevel !== oldConfig.logLevel) {
-      this.logger.info(
-        { from: oldConfig.logLevel, to: newConfig.logLevel },
-        'daemon: log level changed — applying immediately',
-      );
-      this.logger.level = newConfig.logLevel;
-    }
 
     // Channel diff.
     this.logChannelDiff(oldConfig, newConfig);
@@ -389,13 +421,7 @@ export class TalondDaemon {
       );
     }
 
-    // Reload personas.
-    const personaReload = await this.ctx.personaLoader.loadFromConfig(newConfig.personas);
-    if (personaReload.isErr()) {
-      return err(new DaemonError(`Failed to reload personas: ${personaReload.error.message}`));
-    }
-
-    // Reload skills.
+    // Skills load is pure (nothing is applied yet): a failure here leaves everything untouched.
     const skillLoader = new SkillLoader(this.logger);
     const loadedSkillsResult = await skillLoader.loadFromPersonaConfig(
       newConfig.personas,
@@ -406,57 +432,49 @@ export class TalondDaemon {
         new DaemonError(`Failed to reload skills: ${loadedSkillsResult.error.message}`),
       );
     }
-    // Update loadedSkills in-place on the context (mutable field for reload).
-    (this.ctx as unknown as { loadedSkills: DaemonContext['loadedSkills'] }).loadedSkills =
-      loadedSkillsResult.value;
 
-    // Rebuild MCP registrations.
-    if (this.mcpRegistry !== null) {
-      await this.mcpRegistry.stopAll();
-    }
-    this.mcpRegistry = new McpRegistry(this.logger);
-    for (const skill of this.ctx.loadedSkills) {
-      for (const server of skill.resolvedMcpServers) {
-        try {
-          this.mcpRegistry.register(server.name, server.config);
-        } catch (cause) {
-          this.logger.warn(
-            { mcpServer: server.name, cause: String(cause) },
-            'daemon: failed to register MCP server definition',
-          );
-        }
-      }
-    }
-    await this.mcpRegistry.startAll();
+    // Everything global (personas, skills, MCP, runner, config, log level) is applied only after the
+    // old Signal connectors stopped cleanly, and is followed by the channel replacement. A Signal stop
+    // that cannot complete leaves ALL of it unapplied and reports the reload as pending with an
+    // automatic retry.
+    const quiesced = this.ctx.queueManager;
+    quiesced.quiesceClaims();
 
-    // Reconfigure channels: stop all → unregister → re-register → start.
-    await this.ctx.channelRegistry.stopAll();
-    for (const connector of this.ctx.channelRegistry.listAll()) {
-      this.ctx.channelRegistry.unregister(connector.name);
+    const connectors = this.ctx.channelRegistry.listAll();
+    const stopped = await this.stopSignalConnectors(connectors);
+    if (stopped.isErr()) {
+      this.scheduleReloadRetry(effectivePath);
+      return err(stopped.error);
     }
-    registerChannels(newConfig, this.ctx.channelRegistry, {
-      channelRepo: this.ctx.repos.channel,
-      bindingRepo: this.ctx.repos.binding,
-      personaRepo: this.ctx.repos.persona,
-      messagePipeline: this.ctx.messagePipeline,
-      logger: this.logger,
-    });
-    try {
-      await this.ctx.channelRegistry.startAll();
-      this.logger.info('daemon: all channel connectors started');
-    } catch (cause) {
-      this.logger.error(
-        { cause },
-        'daemon: one or more channel connectors failed to start — continuing without them',
-      );
+    if (this._state !== 'running' || this.ctx === null) {
+      return err(new DaemonError('Reload abandoned: daemon is no longer running'));
     }
-    injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
+    await this.stopOtherConnectors(connectors);
+
+    const applied = await this.applyGlobalReload(newConfig, loadedSkillsResult.value);
+    if (applied.isErr()) {
+      // Nothing global changed past the failure point; restore a working generation from the old config.
+      await this.replaceRegistry(oldConfig, connectors);
+      quiesced.resumeClaims();
+      return err(applied.error);
+    }
+
+    await this.replaceRegistry(newConfig, connectors);
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
     this.agentRunner = new AgentRunner(this.ctx);
 
-    // Update config snapshot.
+    // Update config snapshot and log level.
     (this.ctx as { config: TalondConfig }).config = newConfig;
+    if (newConfig.logLevel !== oldConfig.logLevel) {
+      this.logger.info(
+        { from: oldConfig.logLevel, to: newConfig.logLevel },
+        'daemon: log level changed — applying',
+      );
+      this.logger.level = newConfig.logLevel;
+    }
+    this.clearReloadRetry();
+    quiesced.resumeClaims();
 
     this.logger.info('daemon: hot-reload complete');
     return ok(undefined);
@@ -474,6 +492,16 @@ export class TalondDaemon {
       case 'status': {
         const healthData = this.health();
         const runRepo = this.ctx?.repos.run ?? null;
+        const signalStatus =
+          this.ctx === null
+            ? undefined
+            : projectSignalStatus(
+                this.ctx.channelRegistry,
+                this.ctx.repos.queue,
+                this.ctx.config.channels.some(
+                  (channel) => channel.enabled && channel.type === 'signal',
+                ),
+              );
         const tokenUsage24h =
           runRepo === null
             ? undefined
@@ -504,8 +532,16 @@ export class TalondDaemon {
               this.ctx?.config.channels.filter((channel) => channel.enabled).length ?? 0,
             deadLetterCount: healthData.queueStats.deadLetter,
             ...(tokenUsage24h !== undefined ? { tokenUsage24h } : {}),
+            ...(signalStatus !== undefined ? { signal: signalStatus } : {}),
           },
         };
+      }
+
+      case 'signal-resume': {
+        if (!this.ctx) {
+          return { id: responseId, commandId: command.id, success: false, error: 'Daemon not running' };
+        }
+        return handleSignalResumeCommand(this.ctx.channelRegistry, command);
       }
 
       case 'reload': {
@@ -601,6 +637,144 @@ export class TalondDaemon {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * Stops every Signal connector with `stopWithResult` (which drains only the active send RPC, capped at
+   * 30 s, and forces UNKNOWN at the limit). A connector whose stop Result is Err keeps its ownership:
+   * repair its state writes (DB only) and stop it again, a bounded number of times. Queue dispatch is
+   * NOT waited for: active providers may finish and save while claims are quiesced.
+   * Err means replacement is withheld and nothing was applied.
+   */
+  private async stopSignalConnectors(
+    connectors: readonly ChannelConnector[],
+  ): Promise<Result<void, DaemonError>> {
+    let remaining = connectors.filter(
+      (connector): connector is SignalConnector => connector instanceof SignalConnector,
+    );
+    for (let attempt = 0; attempt < RELOAD_SIGNAL_STOP_ATTEMPTS && remaining.length > 0; attempt++) {
+      const results = await Promise.all(
+        remaining.map(async (connector) => {
+          const first = await connector.stopWithResult();
+          if (first.isOk()) return { connector, ok: true };
+          try {
+            connector.retryStateWrites();
+          } catch {
+            // The producer still owns the write; a thrown repair is not a settled stop.
+          }
+          return { connector, ok: (await connector.stopWithResult()).isOk() };
+        }),
+      );
+      remaining = results.filter((entry) => !entry.ok).map((entry) => entry.connector);
+    }
+    if (remaining.length > 0) {
+      this.logger.error(
+        { count: remaining.length },
+        'daemon: reload pending — a Signal connector did not stop cleanly; claims stay quiesced, retrying',
+      );
+      return err(
+        new DaemonError(
+          'Reload pending: a Signal connector did not stop cleanly; automatic retry scheduled',
+        ),
+      );
+    }
+    return ok(undefined);
+  }
+
+  private async stopOtherConnectors(connectors: readonly ChannelConnector[]): Promise<void> {
+    for (const connector of connectors) {
+      if (connector instanceof SignalConnector) continue;
+      try {
+        await connector.stop();
+      } catch (cause) {
+        this.logger.error({ cause, channelName: connector.name }, 'daemon: error stopping channel connector');
+      }
+    }
+  }
+
+  /** Personas, skills and MCP are swapped together; the runner and config snapshot follow the channels. */
+  private async applyGlobalReload(
+    newConfig: TalondConfig,
+    loadedSkills: DaemonContext['loadedSkills'],
+  ): Promise<Result<void, DaemonError>> {
+    const ctx = this.ctx!;
+    const personaReload = await ctx.personaLoader.loadFromConfig(newConfig.personas);
+    if (personaReload.isErr()) {
+      return err(new DaemonError(`Failed to reload personas: ${personaReload.error.message}`));
+    }
+    // Update loadedSkills in-place on the context (mutable field for reload).
+    (ctx as unknown as { loadedSkills: DaemonContext['loadedSkills'] }).loadedSkills = loadedSkills;
+
+    // Rebuild MCP registrations.
+    if (this.mcpRegistry !== null) {
+      await this.mcpRegistry.stopAll();
+    }
+    this.mcpRegistry = new McpRegistry(this.logger);
+    for (const skill of ctx.loadedSkills) {
+      for (const server of skill.resolvedMcpServers) {
+        try {
+          this.mcpRegistry.register(server.name, server.config);
+        } catch (cause) {
+          this.logger.warn(
+            { mcpServer: server.name, cause: String(cause) },
+            'daemon: failed to register MCP server definition',
+          );
+        }
+      }
+    }
+    await this.mcpRegistry.startAll();
+    return ok(undefined);
+  }
+
+  /** Unregisters the stopped generation, registers and starts the next one, and bumps the generation. */
+  private async replaceRegistry(
+    config: TalondConfig,
+    stopped: readonly ChannelConnector[],
+  ): Promise<void> {
+    const ctx = this.ctx!;
+    const generation = this.signalGeneration + 1;
+    for (const connector of stopped) {
+      ctx.channelRegistry.unregister(connector.name);
+    }
+    registerChannels(config, ctx.channelRegistry, {
+      channelRepo: ctx.repos.channel,
+      bindingRepo: ctx.repos.binding,
+      personaRepo: ctx.repos.persona,
+      messagePipeline: ctx.messagePipeline,
+      logger: this.logger,
+      signal: {
+        ...signalRepositoriesFor(ctx.db),
+        queue: ctx.repos.queue,
+        generation,
+      },
+    });
+    try {
+      await ctx.channelRegistry.startAll();
+      this.logger.info('daemon: all channel connectors started');
+    } catch (cause) {
+      this.logger.error(
+        { cause },
+        'daemon: one or more channel connectors failed to start — continuing without them',
+      );
+    }
+    injectSiblingBotIds(ctx.channelRegistry, this.logger);
+    this.signalGeneration = generation;
+  }
+
+  private scheduleReloadRetry(configPath: string): void {
+    if (this.reloadRetryTimer !== null) return;
+    const timer = setTimeout(() => {
+      this.reloadRetryTimer = null;
+      if (this._state === 'running') void this.reload(configPath);
+    }, RELOAD_RETRY_MS);
+    timer.unref();
+    this.reloadRetryTimer = timer;
+  }
+
+  private clearReloadRetry(): void {
+    if (this.reloadRetryTimer === null) return;
+    clearTimeout(this.reloadRetryTimer);
+    this.reloadRetryTimer = null;
+  }
 
   private logChannelDiff(oldConfig: TalondConfig, newConfig: TalondConfig): void {
     const oldNames = new Set(oldConfig.channels.map((c) => c.name));

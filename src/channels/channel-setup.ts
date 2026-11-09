@@ -8,6 +8,7 @@
 
 import { v4 as uuidv4 } from 'uuid';
 import type pino from 'pino';
+import type Database from 'better-sqlite3';
 import type { TalondConfig, BindingConfig } from '../core/config/config-types.js';
 import type { ChannelRepository } from '../core/database/repositories/channel-repository.js';
 import type { BindingRepository } from '../core/database/repositories/binding-repository.js';
@@ -16,6 +17,47 @@ import type { ChannelRegistry } from './channel-registry.js';
 import type { ChannelConnector, InboundEvent } from './channel-types.js';
 import type { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { createConnector } from '../daemon/channel-factory.js';
+import { SignalConnector } from './connectors/signal/signal-connector.js';
+import type { SignalConnectorDependencies } from './connectors/signal/signal-connector.js';
+import { parseSignalConfig, type SignalConfig } from './connectors/signal/signal-config.js';
+import { SignalDeviceRegistry } from './connectors/signal/signal-device-registry.js';
+import { SignalAccountStateRepository } from '../core/database/repositories/signal-account-state-repository.js';
+import { SignalDestinationLeaseRepository } from '../core/database/repositories/signal-destination-lease-repository.js';
+import type { QueueRepository } from '../core/database/repositories/queue-repository.js';
+
+/**
+ * Shared Signal wiring for one configuration generation. Every Signal channel in the
+ * generation receives the SAME device registry; repositories share the daemon's SQLite connection.
+ */
+export interface SignalSetupWiring {
+  readonly accounts: SignalAccountStateRepository;
+  readonly leases: SignalDestinationLeaseRepository;
+  readonly queue: QueueRepository;
+  readonly generation: number;
+}
+
+/**
+ * The Signal account-state and destination-lease repositories for one SQLite connection. Cached
+ * per connection so bootstrap and every reload share the SAME objects: the connector owner guard
+ * is keyed by the accounts repository instance.
+ */
+const signalRepositoryCache = new WeakMap<
+  Database.Database,
+  { accounts: SignalAccountStateRepository; leases: SignalDestinationLeaseRepository }
+>();
+export function signalRepositoriesFor(db: Database.Database): {
+  accounts: SignalAccountStateRepository;
+  leases: SignalDestinationLeaseRepository;
+} {
+  const cached = signalRepositoryCache.get(db);
+  if (cached !== undefined) return cached;
+  const created = {
+    accounts: new SignalAccountStateRepository(db),
+    leases: new SignalDestinationLeaseRepository(db),
+  };
+  signalRepositoryCache.set(db, created);
+  return created;
+}
 
 /** Dependencies needed to register channels. */
 export interface ChannelSetupDeps {
@@ -24,6 +66,84 @@ export interface ChannelSetupDeps {
   readonly personaRepo: PersonaRepository;
   readonly messagePipeline: MessagePipeline;
   readonly logger: pino.Logger;
+  /** Absent means Signal channels are not registered (no shared wiring to construct them with). */
+  readonly signal?: SignalSetupWiring;
+}
+
+/** Per-generation Signal wiring: dependencies by channel name and the refresh router for the generation. */
+interface SignalGenerationWiring {
+  readonly dependencies: Map<string, SignalConnectorDependencies>;
+  /** Records the connector that owns an account in THIS generation (called when it is constructed). */
+  readonly own: (connector: SignalConnector) => void;
+}
+
+/**
+ * Builds the per-channel Signal dependencies for one generation. Every instance that shares an
+ * account ACI with another enabled instance is rejected (the spec rejects duplicate receive
+ * ownership rather than racing for it) before any connector is constructed or started; instances
+ * of other accounts are unaffected. Log lines carry channel names only, never account identifiers.
+ *
+ * `requestDeviceRefresh` routes a foreign author ACI to that generation's owning connector. The
+ * registry has already coalesced the request; the owner enforces its own persisted budget.
+ */
+function buildSignalDependencies(
+  channels: readonly { name: string; type: string; config: Record<string, unknown> }[],
+  wiring: SignalSetupWiring,
+  logger: pino.Logger,
+): SignalGenerationWiring {
+  const parsedChannels: { name: string; config: SignalConfig }[] = [];
+  const claims = new Map<string, number>();
+  for (const channel of channels) {
+    if (channel.type !== 'signal') continue;
+    const parsed = parseSignalConfig(channel.config);
+    if (parsed.isErr()) {
+      logger.warn({ channelName: channel.name }, 'channel-setup: invalid Signal configuration; skipping');
+      continue;
+    }
+    claims.set(parsed.value.accountUuid, (claims.get(parsed.value.accountUuid) ?? 0) + 1);
+    parsedChannels.push({ name: channel.name, config: parsed.value });
+  }
+  const accepted: { name: string; config: SignalConfig }[] = [];
+  for (const entry of parsedChannels) {
+    if ((claims.get(entry.config.accountUuid) ?? 0) > 1) {
+      logger.warn(
+        { channelName: entry.name },
+        'channel-setup: duplicate Signal account ownership; rejecting this instance',
+      );
+      continue;
+    }
+    accepted.push(entry);
+  }
+  const dependencies = new Map<string, SignalConnectorDependencies>();
+  const owners = new Map<string, SignalConnector>();
+  const own = (connector: SignalConnector): void => {
+    const accountUuid = accepted.find((entry) => entry.name === connector.name)?.config.accountUuid;
+    if (accountUuid !== undefined) owners.set(accountUuid, connector);
+  };
+  if (accepted.length === 0) return { dependencies, own };
+  const registry = SignalDeviceRegistry.create(
+    wiring.generation,
+    accepted.map((entry) => entry.config),
+  );
+  if (registry.isErr()) {
+    logger.warn('channel-setup: Signal device registry rejected; skipping all Signal channels');
+    return { dependencies, own };
+  }
+  const requestDeviceRefresh = (accountUuid: string): void => {
+    const owner = owners.get(accountUuid);
+    if (owner === undefined) return;
+    void owner.requestVerificationRefresh().catch(() => undefined);
+  };
+  for (const entry of accepted) {
+    dependencies.set(entry.name, {
+      accounts: wiring.accounts,
+      leases: wiring.leases,
+      queue: wiring.queue,
+      registry: registry.value,
+      requestDeviceRefresh,
+    });
+  }
+  return { dependencies, own };
 }
 
 /**
@@ -46,13 +166,28 @@ export function registerChannels(
   deps: ChannelSetupDeps,
 ): void {
   const { channelRepo, bindingRepo, personaRepo, messagePipeline, logger } = deps;
+  const enabledChannels = config.channels.filter((channel) => channel.enabled);
+  const signalWiring: SignalGenerationWiring =
+    deps.signal === undefined
+      ? { dependencies: new Map<string, SignalConnectorDependencies>(), own: () => undefined }
+      : buildSignalDependencies(enabledChannels, deps.signal, logger);
+  const signalDependencies = signalWiring.dependencies;
 
-  for (const channelConfig of config.channels.filter((channel) => channel.enabled)) {
+  for (const channelConfig of enabledChannels) {
+    const signal = signalDependencies.get(channelConfig.name);
+    if (channelConfig.type === 'signal' && signal === undefined) {
+      logger.warn(
+        { channelName: channelConfig.name },
+        'channel-setup: Signal channel not registered (no shared wiring or rejected)',
+      );
+      continue;
+    }
     const connector = createConnector(
       channelConfig.type,
       channelConfig.name,
       channelConfig.config,
       logger,
+      signal,
     );
     if (connector === null) {
       logger.warn(
@@ -100,15 +235,21 @@ export function registerChannels(
       }
     }
 
-    connector.onMessage((event: InboundEvent) => {
-      const pipelineResult = messagePipeline.handleInboundEvent(event);
-      if (pipelineResult.isErr()) {
-        logger.error(
-          { channelName: event.channelName, err: pipelineResult.error.message },
-          'channel-setup: inbound message pipeline failed',
-        );
-      }
-    });
+    if (connector instanceof SignalConnector) {
+      signalWiring.own(connector);
+      // Signal delivers only through the Result-returning receipt path; ordinary onMessage stays unchanged.
+      connector.onMessageWithReceipt((event) => messagePipeline.handleInboundEventWithReceipt(event));
+    } else {
+      connector.onMessage((event: InboundEvent) => {
+        const pipelineResult = messagePipeline.handleInboundEvent(event);
+        if (pipelineResult.isErr()) {
+          logger.error(
+            { channelName: event.channelName, err: pipelineResult.error.message },
+            'channel-setup: inbound message pipeline failed',
+          );
+        }
+      });
+    }
 
     channelRegistry.register(connector);
   }
