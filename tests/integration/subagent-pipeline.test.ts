@@ -45,7 +45,10 @@ describe('Sub-agent pipeline integration', () => {
       `
       export async function run(ctx, input) {
         const { ok } = await import('neverthrow');
-        return ok({ summary: 'Echoed: ' + input.message, data: { echo: input.message } });
+        return ok({
+          summary: 'Echoed: ' + input.message,
+          data: { echo: input.message, runId: ctx.runId ?? null },
+        });
       }
       `,
     );
@@ -83,10 +86,12 @@ describe('Sub-agent pipeline integration', () => {
     };
     const runner = new SubAgentRunner(agentMap, mockResolver as any, mockServices, logger);
 
-    // 3. Execute
+    // 3. Execute with a trusted run identity (as forwarded from the
+    //    host-tool ToolExecutionContext; model-authored input cannot set it).
     const result = await runner.execute('echo-agent', { message: 'hello' }, {
       threadId: 'thread-1',
       personaId: 'persona-1',
+      runId: 'run-trusted-1',
       personaSubagents: ['echo-agent'],
       personaCapabilities: { allow: [], requireApproval: [] },
     });
@@ -94,7 +99,7 @@ describe('Sub-agent pipeline integration', () => {
     expect(result.isOk()).toBe(true);
     const value = result._unsafeUnwrap();
     expect(value.summary).toBe('Echoed: hello');
-    expect(value.data).toEqual({ echo: 'hello' });
+    expect(value.data).toEqual({ echo: 'hello', runId: 'run-trusted-1' });
   });
 
   it('rejects execution when persona lacks assignment', async () => {

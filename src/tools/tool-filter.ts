@@ -50,6 +50,10 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'execution.env', internalName: 'execution.env', mcpName: 'execution_env' },
   { capabilityPrefix: 'subagent.invoke', internalName: 'subagent.invoke', mcpName: 'subagent_invoke' },
   { capabilityPrefix: 'subagent.background', internalName: 'subagent.background', mcpName: 'background_agent' },
+  // Text-only Image/Finding discovery. The capability prefix gates the tool;
+  // the handler re-checks `image.read:thread` and the thread itself, so this
+  // entry is exposure, not authorization.
+  { capabilityPrefix: 'image.read', internalName: 'image.lookup', mcpName: 'image_lookup' },
 ];
 
 /** Derived lookup: MCP tool name → internal tool name. Used by bridge and MCP server. */
@@ -144,6 +148,17 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     mcpName: 'background_agent',
     labels: [
       { label: 'subagent.background', description: 'Launch background agent tasks' },
+    ],
+  },
+  {
+    toolPrefix: 'image.read',
+    mcpName: 'image_lookup',
+    labels: [
+      {
+        label: 'image.read:thread',
+        description:
+          'List the current thread\'s Images and read their saved Findings (text only: no pixels, paths, model calls, or downloads)',
+      },
     ],
   },
 ];

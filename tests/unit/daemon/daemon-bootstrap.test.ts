@@ -7,9 +7,12 @@
  * bootstrap produces a fully populated DaemonContext.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { ok, err } from 'neverthrow';
 import type pino from 'pino';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Module-level mocks
@@ -46,6 +49,9 @@ vi.mock('../../../src/core/database/repositories/index.js', () => ({
   BindingRepository: vi.fn().mockImplementation(() => ({})),
   MemoryRepository: vi.fn().mockImplementation(() => ({})),
   A2ATaskRepository: vi.fn().mockImplementation(() => ({})),
+  ImageRepository: vi.fn().mockImplementation(() => ({})),
+  ImageIngestionRepository: vi.fn().mockImplementation(() => ({})),
+  FindingRepository: vi.fn().mockImplementation(() => ({})),
 }));
 
 vi.mock('../../../src/core/database/repositories/audit-repository.js', () => ({
@@ -96,6 +102,27 @@ vi.mock('../../../src/channels/channel-setup.js', () => ({
 
 vi.mock('../../../src/pipeline/message-pipeline.js', () => ({
   MessagePipeline: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock('../../../src/images/image-store.js', () => ({
+  ImageStore: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock('../../../src/images/image-ingestion.js', () => ({
+  ImageIngestionCoordinator: vi.fn().mockImplementation(() => ({
+    recoverPending: vi.fn().mockResolvedValue(ok({ inspected: 0, enqueued: 0, skipped: 0, failed: 0 })),
+  })),
+}));
+
+vi.mock('../../../src/images/image-service.js', () => ({
+  ImageService: vi.fn().mockImplementation(() => ({})),
+}));
+
+vi.mock('../../../src/images/image-lifecycle.js', () => ({
+  ImageLifecycleManager: vi.fn().mockImplementation(() => ({
+    start: vi.fn(),
+    stop: vi.fn().mockResolvedValue(undefined),
+  })),
 }));
 
 vi.mock('../../../src/queue/queue-manager.js', () => ({
@@ -168,9 +195,20 @@ import { SkillLoader } from '../../../src/skills/skill-loader.js';
 import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
 import { recoverFromCrash } from '../../../src/daemon/lifecycle.js';
 import { registerChannels } from '../../../src/channels/channel-setup.js';
+import { MessagePipeline } from '../../../src/pipeline/message-pipeline.js';
 import { BackgroundTaskRepository } from '../../../src/core/database/repositories/index.js';
+import { ImageStore } from '../../../src/images/image-store.js';
+import { ImageIngestionCoordinator } from '../../../src/images/image-ingestion.js';
+import { ImageService } from '../../../src/images/image-service.js';
+import { RepositoryAuditStore } from '../../../src/core/database/repositories/audit-repository.js';
+import { ImageLifecycleManager } from '../../../src/images/image-lifecycle.js';
 import { BackgroundAgentManager } from '../../../src/subagents/background/background-agent-manager.js';
 import { ExecutionEnvManager } from '../../../src/execution-env/execution-env-manager.js';
+import { FindingRepository } from '../../../src/core/database/repositories/index.js';
+import {
+  DaemonImageContextSource,
+  ImageLookupAccessAdapter,
+} from '../../../src/daemon/image-context-source.js';
 import { createDiscardLogger } from './helpers.js';
 import { createObservabilityService } from '../../../src/observability/langfuse/index.js';
 
@@ -277,6 +315,14 @@ function makeConfig(overrides: Record<string, unknown> = {}): unknown {
       },
     },
     subagents: {},
+    images: {
+      maxInputBytes: 10_485_760,
+      maxPerMessage: 5,
+      maxPerInspection: 5,
+      maxEdge: 4096,
+      jpegQuality: 85,
+      retentionHours: 24,
+    },
     ...overrides,
   };
 }
@@ -594,6 +640,14 @@ describe('bootstrap', () => {
       expect(ctx.repos.run).toBeDefined();
       expect(ctx.repos.binding).toBeDefined();
       expect(ctx.repos.memory).toBeDefined();
+      expect(ctx.repos.image).toBeDefined();
+      expect(ctx.repos.imageIngestion).toBeDefined();
+      expect(ctx.imageStore).toBeDefined();
+      expect(ctx.imageIngestionCoordinator).toBeDefined();
+      expect(ctx.imageAccess).toBeDefined();
+      expect(ctx.imageLifecycle).toBeDefined();
+      // ADR-0002 context reads are wired, not left optional.
+      expect(ctx.imageContextSource).toBeDefined();
       expect(ctx.channelRegistry).toBeDefined();
       expect(ctx.queueManager).toBeDefined();
       expect(ctx.scheduler).toBeDefined();
@@ -684,7 +738,9 @@ describe('bootstrap', () => {
       // Bootstrap may augment langfuse config with auto-resolved release version (F9).
       // Use objectContaining to verify the base config is passed through unchanged.
       expect(createObservabilityService).toHaveBeenCalledWith(
-        expect.objectContaining(config.langfuse as Record<string, unknown>),
+        expect.objectContaining(
+          (config as { langfuse: Record<string, unknown> }).langfuse,
+        ),
         logger,
       );
       expect(result._unsafeUnwrap().observability).toBe(observability);
@@ -704,12 +760,42 @@ describe('bootstrap', () => {
 
       expect(result.isOk()).toBe(true);
       expect(HostToolsBridge).toHaveBeenCalledOnce();
-      // Verify bridge was constructed with the context object.
+      // Verify bridge was constructed with the context object AND the real
+      // image lookup services — without the second argument `image_lookup`
+      // stays disabled for every persona.
       expect(HostToolsBridge).toHaveBeenCalledWith(
         expect.objectContaining({ dataDir: '/tmp/test-data' }),
+        expect.objectContaining({
+          images: expect.any(Object),
+          findings: expect.any(Object),
+        }),
       );
       const ctx = result._unsafeUnwrap();
       expect(ctx.hostToolsBridge).toBeDefined();
+    });
+
+    it('wires the Image/Finding context sources over the shipped image services', async () => {
+      setupSuccessfulMocks();
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+
+      // The same ADR-0002 port the AgentRunner is constructed with, and the
+      // same Finding ledger the bridge reads, are built from this context's
+      // repositories — no separate in-memory state.
+      expect(ctx.imageContextSource).toBeInstanceOf(DaemonImageContextSource);
+      const [, lookupServices] = vi.mocked(HostToolsBridge).mock.calls[0]! as [
+        unknown,
+        { images: unknown; findings: unknown },
+      ];
+      expect(lookupServices.images).toBeInstanceOf(ImageLookupAccessAdapter);
+      // The Finding ledger handed to the bridge is the canonical repository,
+      // not a per-tool copy (constructed exactly once per bootstrap).
+      expect(lookupServices.findings).toBeTypeOf('object');
+      expect(lookupServices.findings).not.toBeNull();
+      expect(FindingRepository).toHaveBeenCalledOnce();
     });
 
     it('constructs background task persistence and background agent manager', async () => {
@@ -1225,6 +1311,59 @@ describe('bootstrap', () => {
       expect(registerChannels).toHaveBeenCalledOnce();
     });
 
+    it('wires the image subsystem into the pipeline and does not start the lifecycle', async () => {
+      setupSuccessfulMocks();
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      const ctx = result._unsafeUnwrap();
+
+      // Store is rooted at the data dir; the port and lifecycle share it.
+      expect(ImageStore).toHaveBeenCalledWith('/tmp/test-data');
+      const imageServiceDeps = vi.mocked(ImageService).mock.calls.at(-1)![0];
+      expect(imageServiceDeps).toEqual(
+        expect.objectContaining({
+          imageRepo: ctx.repos.image,
+          store: ctx.imageStore,
+        }),
+      );
+      // P2-7: read-triggered mutations audit through the SAME shared
+      // AuditStore instance (built over the audit repository).
+      const auditStoreInstances = vi
+        .mocked(RepositoryAuditStore)
+        .mock.results.map((r) => r.value);
+      expect(auditStoreInstances).toContain(imageServiceDeps.auditStore);
+      expect(RepositoryAuditStore).toHaveBeenCalledWith(ctx.repos.audit);
+      expect(ImageIngestionCoordinator).toHaveBeenCalledWith(
+        expect.objectContaining({
+          queueManager: ctx.queueManager,
+          imageRepo: ctx.repos.image,
+          ingestionRepo: ctx.repos.imageIngestion,
+          store: ctx.imageStore,
+          imagesConfig: expect.objectContaining({ retentionHours: 24 }),
+        }),
+      );
+      expect(ImageLifecycleManager).toHaveBeenCalledWith(
+        expect.objectContaining({
+          coordinator: ctx.imageIngestionCoordinator,
+          imageRepo: ctx.repos.image,
+          store: ctx.imageStore,
+          dataDir: '/tmp/test-data',
+        }),
+      );
+
+      // The pipeline receives the coordinator as its image ingestion service
+      // (8th constructor argument), so image-bearing inbound events admit
+      // durable Images.
+      const pipelineArgs = vi.mocked(MessagePipeline).mock.calls[0]!;
+      expect(pipelineArgs[7]).toBe(ctx.imageIngestionCoordinator);
+
+      // Bootstrap must NOT start the lifecycle; the daemon orchestrator
+      // starts it before channels come up.
+      expect(ctx.imageLifecycle.start).not.toHaveBeenCalled();
+    });
+
     it('binds the session summarizer with the manifest maxTokens budget', async () => {
       const summarizerRun = vi.fn().mockResolvedValue(ok({
         summary: 'Summarized.',
@@ -1424,6 +1563,212 @@ describe('bootstrap', () => {
         vi.doUnmock('../../../src/subagents/model-resolver.js');
         vi.resetModules();
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Vision chain gate + Inspection service reachability (TASK-014)
+  //
+  // These fixtures drive the REAL merge order (built-in → cwd/subagents →
+  // dataDir/subagents) by writing an actual `dataDir/subagents/vision` agent
+  // on disk, so the assertion is about the merged chain the runner would
+  // resolve — not a standalone predicate.
+  // -------------------------------------------------------------------------
+
+  describe('vision model chain gate', () => {
+    let tempDataDir: string | undefined;
+
+    /**
+     * Creates a temp dataDir whose `subagents/vision` manifest replaces the
+     * built-in vision sub-agent with the given model provider.
+     */
+    function writeVisionOverride(
+      provider: string,
+      modelName: string,
+    ): string {
+      tempDataDir = mkdtempSync(join(tmpdir(), 'talon-vision-chain-'));
+      const agentDir = join(tempDataDir, 'subagents', 'vision');
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(
+        join(agentDir, 'subagent.yaml'),
+        [
+          'name: vision',
+          'version: 9.9.9',
+          'description: Custom vision replacement used by the merged-chain gate test',
+          'model:',
+          `  provider: ${provider}`,
+          `  name: ${modelName}`,
+          '  maxTokens: 4096',
+          'timeoutMs: 60000',
+          '',
+        ].join('\n'),
+      );
+      writeFileSync(
+        join(agentDir, 'index.js'),
+        'export async function run() {\n  return { summary: "must never run" };\n}\n',
+      );
+      return tempDataDir;
+    }
+
+    afterEach(() => {
+      if (tempDataDir) {
+        rmSync(tempDataDir, { recursive: true, force: true });
+        tempDataDir = undefined;
+      }
+    });
+
+    it('accepts the built-in vision chain and proceeds to channel registration', async () => {
+      setupSuccessfulMocks();
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(registerChannels).toHaveBeenCalledOnce();
+    });
+
+    it('fails startup when a dataDir manifest replaces vision with a text-only model', async () => {
+      const { db, observability } = setupSuccessfulMocks();
+      const dataDir = writeVisionOverride('claude-code', 'claude-opus-4-7');
+      // loadConfig is mocked, so the returned config decides dataDir.
+      vi.mocked(loadConfig).mockReturnValue(ok(makeConfig({ dataDir }) as any));
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isErr()).toBe(true);
+      const message = result._unsafeUnwrapErr().message;
+      expect(message).toContain('Invalid vision model chain');
+      expect(message).toContain('claude-code/claude-opus-4-7 (manifest)');
+      // The merged winner replaced the built-in anthropic chain, so no
+      // inference entry may appear as the offending line.
+      expect(message).not.toContain('anthropic/');
+      // Fail closed before any channel work.
+      expect(registerChannels).not.toHaveBeenCalled();
+      expect(db.close).toHaveBeenCalledOnce();
+      expect(observability.shutdown).toHaveBeenCalledOnce();
+    });
+
+    it('fails startup when a configured vision override injects a text-only entry', async () => {
+      const { db, observability } = setupSuccessfulMocks();
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(
+          makeConfig({
+            subagents: {
+              vision: { model: [{ provider: 'claude-code', name: 'claude-sonnet-4-6' }] },
+            },
+          }) as any,
+        ),
+      );
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isErr()).toBe(true);
+      const message = result._unsafeUnwrapErr().message;
+      expect(message).toContain('Invalid vision model chain');
+      expect(message).toContain('claude-code/claude-sonnet-4-6 (override)');
+      expect(registerChannels).not.toHaveBeenCalled();
+      expect(db.close).toHaveBeenCalledOnce();
+      expect(observability.shutdown).toHaveBeenCalledOnce();
+    });
+
+    it('accepts a custom dataDir vision manifest that keeps an inference provider', async () => {
+      setupSuccessfulMocks();
+      const dataDir = writeVisionOverride('ollama', 'llava-unicom-mini');
+      vi.mocked(loadConfig).mockReturnValue(ok(makeConfig({ dataDir }) as any));
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(registerChannels).toHaveBeenCalledOnce();
+    });
+  });
+
+  describe('Inspection service reachability', () => {
+    it('supplies the Finding ledger and configured Inspection ceiling to the sub-agent services', async () => {
+      const runnerCtorArgs: unknown[][] = [];
+      vi.doMock('../../../src/subagents/subagent-runner.js', async (importOriginal) => {
+        const actual = await importOriginal<typeof import('../../../src/subagents/subagent-runner.js')>();
+        return {
+          ...actual,
+          SubAgentRunner: class extends actual.SubAgentRunner {
+            constructor(...args: ConstructorParameters<typeof actual.SubAgentRunner>) {
+              super(...args);
+              runnerCtorArgs.push(args);
+            }
+          },
+        };
+      });
+      vi.resetModules();
+
+      try {
+        const { loadConfig: isolatedLoadConfig } = await import('../../../src/core/config/config-loader.js');
+        const { createDatabase: isolatedCreateDatabase } = await import('../../../src/core/database/connection.js');
+        const { runMigrations: isolatedRunMigrations } = await import('../../../src/core/database/migrations/runner.js');
+        const { createObservabilityService: isolatedCreateObservabilityService } = await import('../../../src/observability/langfuse/index.js');
+        const isolatedRepos = await import('../../../src/core/database/repositories/index.js');
+        const { ImageService: isolatedImageService } = await import('../../../src/images/image-service.js');
+        const { bootstrap: isolatedBootstrap } = await import('../../../src/daemon/daemon-bootstrap.js');
+
+        const db = makeMockDb();
+        const observability = {
+          observe: vi.fn(),
+          observeWithTraceparent: vi.fn(),
+          shutdown: vi.fn().mockResolvedValue(undefined),
+        };
+        vi.mocked(isolatedLoadConfig).mockReturnValue(
+          ok(
+            makeConfig({
+              images: {
+                maxInputBytes: 10_485_760,
+                maxPerMessage: 5,
+                maxPerInspection: 3,
+                maxEdge: 4096,
+                jpegQuality: 85,
+                retentionHours: 24,
+              },
+            }) as any,
+          ),
+        );
+        vi.mocked(isolatedCreateDatabase).mockReturnValue(ok(db as any));
+        vi.mocked(isolatedRunMigrations).mockReturnValue(ok(1));
+        vi.mocked(isolatedCreateObservabilityService).mockResolvedValue(observability as any);
+
+        const result = await isolatedBootstrap('/config.yaml', logger);
+        expect(result.isOk()).toBe(true);
+
+        expect(runnerCtorArgs).toHaveLength(1);
+        const services = runnerCtorArgs[0]?.[2] as {
+          images?: unknown;
+          findings?: unknown;
+          imageInspectionLimits?: { maxPerInspection: number };
+        };
+
+        // ImageAccess port reaches the runner (wired by TASK-010/014).
+        expect(services.images).toBeInstanceOf(Object);
+        expect(isolatedImageService).toHaveBeenCalled();
+
+        // Canonical Finding ledger reaches the runner, constructed over the
+        // daemon's own database handle.
+        expect(services.findings).toBeInstanceOf(Object);
+        expect(isolatedRepos.FindingRepository).toHaveBeenCalledWith(db);
+        expect(services.findings).toBe(
+          vi.mocked(isolatedRepos.FindingRepository).mock.results[0]?.value,
+        );
+
+        // The ceiling comes from the validated images config section.
+        expect(services.imageInspectionLimits).toEqual({ maxPerInspection: 3 });
+      } finally {
+        vi.doUnmock('../../../src/subagents/subagent-runner.js');
+        vi.resetModules();
+      }
+    });
+
+    it('constructs the Finding repository over the opened database', async () => {
+      const { db } = setupSuccessfulMocks();
+
+      const result = await bootstrap('/config.yaml', logger);
+
+      expect(result.isOk()).toBe(true);
+      expect(FindingRepository).toHaveBeenCalledWith(db);
     });
   });
 });

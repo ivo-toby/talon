@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
+import pino from 'pino';
 import { ok, err } from 'neverthrow';
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
@@ -83,6 +84,136 @@ describe('QueueManager', () => {
         ids.add(item.id);
       }
       expect(ids.size).toBe(10);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // enqueueWithCommit
+  // -------------------------------------------------------------------------
+
+  describe('enqueueWithCommit', () => {
+    /** Logger capturing emitted lines so success-log timing is observable. */
+    function capturingLogger(): { logger: pino.Logger; lines: string[] } {
+      const lines: string[] = [];
+      const logger = pino({ level: 'info' }, { write: (chunk: unknown) => lines.push(String(chunk)) });
+      return { logger, lines };
+    }
+
+    function companionInsert(messageId: string) {
+      return db
+        .prepare(
+          `INSERT INTO messages (id, thread_id, direction, content, idempotency_key, provider_id, run_id, created_at)
+           VALUES (?, ?, 'inbound', 'companion', ?, 'p', NULL, 1700000000000)`,
+        )
+        .run(messageId, threadId, `key-${messageId}`).changes;
+    }
+
+    function countQueueItems(): number {
+      return (
+        db.prepare('SELECT COUNT(*) AS n FROM queue_items').get() as { n: number }
+      ).n;
+    }
+
+    it('commits the queue item and the companion write together', () => {
+      const result = manager.enqueueWithCommit(threadId, 'message', { a: 1 }, undefined, () => {
+        companionInsert('companion-msg');
+        return ok(true);
+      });
+
+      expect(result.isOk()).toBe(true);
+      const { item, value } = result._unsafeUnwrap();
+      expect(value).toBe(true);
+      expect(item.threadId).toBe(threadId);
+      expect(countQueueItems()).toBe(1);
+      const message = db
+        .prepare('SELECT id FROM messages WHERE id = ?')
+        .get('companion-msg');
+      expect(message).toBeDefined();
+    });
+
+    it('rolls back BOTH the queue item and the companion write when the companion fails', () => {
+      const result = manager.enqueueWithCommit(threadId, 'message', { a: 1 }, undefined, () => {
+        companionInsert('companion-msg');
+        return err(new Error('companion failed'));
+      });
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('companion failed');
+      // No queue item and no companion row: the transaction rolled back.
+      expect(countQueueItems()).toBe(0);
+      expect(db.prepare('SELECT id FROM messages WHERE id = ?').get('companion-msg')).toBeUndefined();
+    });
+
+    it('logs success only after the transaction commits', () => {
+      const { logger, lines } = capturingLogger();
+      const managerWithLog = new QueueManager(queueRepo, threadRepo, DEFAULT_CONFIG, logger);
+
+      managerWithLog.enqueueWithCommit(threadId, 'message', {}, undefined, () => ok(undefined));
+      expect(lines.some((line) => line.includes('queue item enqueued'))).toBe(true);
+
+      lines.length = 0;
+      managerWithLog.enqueueWithCommit(threadId, 'message', {}, undefined, () =>
+        err(new Error('boom')),
+      );
+      // A rolled back enqueue must NOT claim success in the log.
+      expect(lines.some((line) => line.includes('queue item enqueued'))).toBe(false);
+      managerWithLog.stopProcessing();
+    });
+
+    it('returns QueueError for a non-existent thread without logging success', () => {
+      const { logger, lines } = capturingLogger();
+      const managerWithLog = new QueueManager(queueRepo, threadRepo, DEFAULT_CONFIG, logger);
+
+      const result = managerWithLog.enqueueWithCommit(uuid(), 'message', {}, undefined, () =>
+        ok(undefined),
+      );
+      expect(result.isErr()).toBe(true);
+      expect(countQueueItems()).toBe(0);
+      expect(lines.some((line) => line.includes('queue item enqueued'))).toBe(false);
+      managerWithLog.stopProcessing();
+    });
+
+    it('rejects nested invocation inside an enclosing ledger transaction without enqueueing or logging', () => {
+      const { logger, lines } = capturingLogger();
+      const managerWithLog = new QueueManager(queueRepo, threadRepo, DEFAULT_CONFIG, logger);
+
+      // Nested ownership would silently join the enclosing transaction and
+      // its post-commit success log could fire for an enclosing rollback.
+      // The helper must refuse the call instead.
+      const outer = db.transaction(() => {
+        const nested = managerWithLog.enqueueWithCommit(
+          threadId,
+          'message',
+          {},
+          undefined,
+          () => ok(undefined),
+        );
+        expect(nested.isErr()).toBe(true);
+        expect(nested._unsafeUnwrapErr().message).toContain('enclosing transaction');
+        return 'outer-done';
+      });
+      outer();
+
+      expect(countQueueItems()).toBe(0);
+      expect(lines.some((line) => line.includes('queue item enqueued'))).toBe(false);
+      managerWithLog.stopProcessing();
+    });
+
+    it('emits no success log when the enclosing transaction rolls back after a rejected nested call', () => {
+      const { logger, lines } = capturingLogger();
+      const managerWithLog = new QueueManager(queueRepo, threadRepo, DEFAULT_CONFIG, logger);
+
+      const outer = db.transaction(() => {
+        managerWithLog.enqueueWithCommit(threadId, 'message', {}, undefined, () => ok(undefined));
+        // The enclosing ledger transaction fails and rolls everything back.
+        throw new Error('enclosing ledger rollback');
+      });
+      expect(() => outer()).toThrow('enclosing ledger rollback');
+
+      expect(countQueueItems()).toBe(0);
+      // Critically: no success claim was logged for the rolled-back scope.
+      expect(lines.some((line) => line.includes('queue item enqueued'))).toBe(false);
+      managerWithLog.stopProcessing();
     });
   });
 

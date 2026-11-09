@@ -46,6 +46,7 @@ vi.mock('../../../src/skills/skill-loader.js', () => ({
 import { TalondDaemon } from '../../../src/daemon/daemon.js';
 import { bootstrap } from '../../../src/daemon/daemon-bootstrap.js';
 import { loadConfig } from '../../../src/core/config/config-loader.js';
+import { registerChannels } from '../../../src/channels/channel-setup.js';
 import { ConfigError } from '../../../src/core/errors/index.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { createDiscardLogger } from './helpers.js';
@@ -130,8 +131,21 @@ function makeMockContext(configOverrides: Record<string, unknown> = {}): DaemonC
     backgroundAgentManager: { shutdown: vi.fn() } as any,
     contextAssembler: {} as any,
     hostToolsBridge: { path: '/tmp/host-tools.sock', start: vi.fn(), stop: vi.fn() } as any,
+    imageStore: {} as any,
+    imageIngestionCoordinator: {
+      fenceAdmissions: vi.fn(),
+      drainActiveIngestion: vi.fn().mockResolvedValue({ drained: 0, abandoned: 0 }),
+      abandonActiveIngestion: vi.fn().mockResolvedValue({ retired: 0, stagingCleaned: 0, stagingFailed: 0 }),
+    } as any,
+    imageAccess: {} as any,
+    imageLifecycle: {
+      start: vi.fn().mockResolvedValue({ completed: true, timedOut: false, report: null }),
+      stop: vi.fn().mockResolvedValue({ drained: true }),
+    } as any,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(), child: vi.fn().mockReturnThis() } as any,
-  };
+    // Partial mock: only the fields exercised by reload/start/stop paths are
+    // populated; the assertion keeps the historical mock shape compiling.
+  } as unknown as DaemonContext;
 }
 
 function setupSuccessfulStart(configOverrides: Record<string, unknown> = {}) {
@@ -262,6 +276,65 @@ describe('TalondDaemon.reload()', () => {
   // -------------------------------------------------------------------------
   // Log level changes
   // -------------------------------------------------------------------------
+
+  describe('images config', () => {
+    const startupImages = {
+      maxInputBytes: 10_485_760,
+      maxPerMessage: 5,
+      maxPerInspection: 5,
+      maxEdge: 4096,
+      jpegQuality: 85,
+      retentionHours: 72,
+    };
+
+    it('keeps the running image limits for rebuilt connectors and warns', async () => {
+      const ctx = setupSuccessfulStart({ images: startupImages });
+      const logger = createDiscardLogger('silent');
+      const localDaemon = new TalondDaemon(logger);
+      await localDaemon.start('/config.yaml');
+      const warn = vi.spyOn(logger, 'warn');
+      vi.mocked(registerChannels).mockClear();
+
+      const changed = { ...startupImages, maxInputBytes: 20_971_520, maxPerMessage: 10 };
+      vi.mocked(loadConfig).mockReturnValue(ok(makeConfig({ images: changed }) as any));
+
+      const result = await localDaemon.reload('/config.yaml');
+      expect(result.isOk()).toBe(true);
+
+      const passed = vi.mocked(registerChannels).mock.calls[0]?.[0] as { images: unknown };
+      expect(passed.images).toEqual(startupImages);
+      expect((ctx.config as unknown as { images: unknown }).images).toEqual(startupImages);
+      expect(
+        warn.mock.calls.some(
+          (args) => typeof args[0] === 'string' && args[0].includes('images config changed'),
+        ),
+      ).toBe(true);
+      warn.mockRestore();
+
+      await localDaemon.stop();
+    });
+
+    it('does not warn when images config is unchanged', async () => {
+      setupSuccessfulStart({ images: startupImages });
+      const logger = createDiscardLogger('silent');
+      const localDaemon = new TalondDaemon(logger);
+      await localDaemon.start('/config.yaml');
+      const warn = vi.spyOn(logger, 'warn');
+
+      vi.mocked(loadConfig).mockReturnValue(
+        ok(makeConfig({ images: { ...startupImages } }) as any),
+      );
+      await localDaemon.reload('/config.yaml');
+
+      expect(
+        warn.mock.calls.some(
+          (args) => typeof args[0] === 'string' && args[0].includes('images config changed'),
+        ),
+      ).toBe(false);
+      warn.mockRestore();
+      await localDaemon.stop();
+    });
+  });
 
   describe('log level changes', () => {
     it('updates logger level when logLevel changes', async () => {

@@ -26,6 +26,18 @@ export abstract class BaseRepository {
 
   constructor(protected readonly db: Database.Database) {}
 
+  /**
+   * True while this connection is inside a transaction or savepoint callback.
+   *
+   * Exposed so coordinators that own multi-repository transactions can refuse
+   * APIs whose durability guarantee assumes a top-level (autocommit-started)
+   * transaction — a nested call degrades to a savepoint and could report
+   * success for work an enclosing rollback later erases.
+   */
+  public get inTransaction(): boolean {
+    return this.db.inTransaction;
+  }
+
   /** Returns the current time as Unix epoch milliseconds, strictly monotonic. */
   protected now(): number {
     const wall = Date.now();

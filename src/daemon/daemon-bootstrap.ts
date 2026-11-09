@@ -33,6 +33,9 @@ import {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  ImageRepository,
+  ImageIngestionRepository,
+  FindingRepository,
 } from '../core/database/repositories/index.js';
 import { buildAgentCardRegistry, A2ATaskMapper, A2AServer } from '../a2a/index.js';
 
@@ -62,6 +65,8 @@ import { ModelResolver } from '../subagents/model-resolver.js';
 import {
   buildSubAgentModelChain,
   runSubAgentModelChain,
+  validateVisionModelChain,
+  VISION_SUBAGENT_NAME,
 } from '../subagents/subagent-model-chain.js';
 import { ClaudeCodeProvider } from '../providers/claude-code-provider.js';
 import { GeminiCliProvider } from '../providers/gemini-cli-provider.js';
@@ -77,6 +82,14 @@ import { createObservabilityService } from '../observability/langfuse/index.js';
 import { NoopObservabilityService } from '../observability/langfuse/noop-observability.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import { OAuthTokenStore } from '../auth/oauth-token-store.js';
+import { ImageStore } from '../images/image-store.js';
+import { ImageIngestionCoordinator } from '../images/image-ingestion.js';
+import { ImageService } from '../images/image-service.js';
+import { ImageLifecycleManager } from '../images/image-lifecycle.js';
+import {
+  DaemonImageContextSource,
+  ImageLookupAccessAdapter,
+} from './image-context-source.js';
 
 // ---------------------------------------------------------------------------
 // Bootstrap
@@ -167,11 +180,52 @@ export async function bootstrap(
     binding: new BindingRepository(db),
     memory: new MemoryRepository(db),
     a2aTask: new A2ATaskRepository(db),
+    image: new ImageRepository(db),
+    imageIngestion: new ImageIngestionRepository(db),
   };
+
+  // Canonical Finding ledger (TASK-011 contract). Deliberately NOT part of
+  // `repos`/DaemonContext: Findings are written only by the vision sub-agent
+  // through the SubAgentServices bundle below, so no consumer needs the
+  // repository on the context yet. Keeping it local avoids implying that
+  // foreground agents can persist Findings without an Inspection.
+  const findingRepository = new FindingRepository(db);
 
   // 5. Audit logger
   const auditStore = new RepositoryAuditStore(repos.audit);
   const auditLogger = new AuditLogger(logger, auditStore);
+
+  // 5a. Durable image subsystem (TASK-010). The store and the ImageAccess
+  //     port implementation need no running services, so they are built here;
+  //     the ingestion coordinator and the recovery/retention lifecycle join
+  //     once the queue manager exists (step 12). The lifecycle is started by
+  //     the daemon orchestrator, never here.
+  const imageStore = new ImageStore(dataDir);
+  const imageAccess = new ImageService({
+    imageRepo: repos.image,
+    store: imageStore,
+    logger,
+    // P2-7: read-triggered durable transitions and deletions audit through
+    // the same store as the lifecycle sweep.
+    auditStore,
+  });
+
+  // ADR-0002 context reads over the same records: the agent runner, context
+  // assembler, and context roller get refreshed Image descriptors and canonical
+  // Findings through `imageContextSource`, and `image_lookup` gets its
+  // thread-scoped page reads through the lookup adapter. Both delegate every
+  // availability decision to the ImageService above.
+  const imageContextSource = new DaemonImageContextSource({
+    imageRepo: repos.image,
+    imageAccess,
+    findings: findingRepository,
+    logger,
+  });
+  const imageLookupAccess = new ImageLookupAccessAdapter({
+    imageRepo: repos.image,
+    imageAccess,
+    logger,
+  });
 
   // 6. Thread workspace
   const threadWorkspace = new ThreadWorkspace(dataDir);
@@ -304,6 +358,35 @@ export async function bootstrap(
     }
   }
 
+  // Fail-closed vision chain gate (TASK-014). Validated against the MERGED
+  // agent map — built-in, then cwd/subagents, then dataDir/subagents — so a
+  // custom manifest that replaces the built-in vision sub-agent with a
+  // text-only model (claude-code, codex-sandbox, or any other non-inference
+  // adapter) fails startup here instead of silently degrading an Inspection
+  // into a text-only answer. Custom cwd/dataDir manifests bypass the
+  // config-load check in config-schema.ts, so this merged-chain validation is
+  // the only gate that sees them. Runs before any channel work: an invalid
+  // vision chain must never reach a running pipeline. When no `vision`
+  // sub-agent is present at all (built-in load failure surfaced as a warning
+  // above), persona assignment fails explicitly at invoke time with
+  // "Unknown sub-agent" — other sub-agents keep working.
+  const visionAgent = mergedAgentMap.get(VISION_SUBAGENT_NAME);
+  if (visionAgent) {
+    const visionChainResult = validateVisionModelChain(
+      visionAgent,
+      config.subagents?.[VISION_SUBAGENT_NAME],
+    );
+    if (visionChainResult.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Invalid vision model chain: ${visionChainResult.error.message}`,
+          visionChainResult.error,
+        ),
+      );
+    }
+  }
+
   let modelResolver: ModelResolver | null = null;
   if (mergedAgentMap.size > 0) {
     const agentMap = mergedAgentMap;
@@ -324,6 +407,16 @@ export async function bootstrap(
         messages: repos.message,
         runs: repos.run,
         queue: repos.queue,
+        // Runtime ImageAccess port for the vision sub-agent (and later
+        // lookup/descriptor consumers). Reaching these services is NOT a
+        // capability grant: a persona still needs `subagent.invoke` plus an
+        // explicit assignment before the runner dispatches to `vision`.
+        images: imageAccess,
+        // Canonical Finding ledger — every successful Inspection is persisted
+        // here against the trusted run/thread/image provenance.
+        findings: findingRepository,
+        // Inspection ceiling from the validated `images` config section.
+        imageInspectionLimits: { maxPerInspection: config.images.maxPerInspection },
         logger,
       },
       logger,
@@ -548,6 +641,31 @@ export async function bootstrap(
   // 12. Queue manager
   const queueManager = new QueueManager(repos.queue, repos.thread, config.queue, logger);
 
+  // 12a. Image ingestion coordinator + recovery/retention lifecycle.
+  // The coordinator re-resolves pending admissions against the original
+  // durable admission clock; the lifecycle drives it at startup (via the
+  // daemon orchestrator) and at most every 60 seconds, then expires and
+  // cleans up owned content. Neither is started here.
+  const imageIngestionCoordinator = new ImageIngestionCoordinator({
+    messageRepo: repos.message,
+    imageRepo: repos.image,
+    ingestionRepo: repos.imageIngestion,
+    queueManager,
+    store: imageStore,
+    threadRepo: repos.thread,
+    channelRepo: repos.channel,
+    imagesConfig: config.images,
+    logger,
+  });
+  const imageLifecycle = new ImageLifecycleManager({
+    coordinator: imageIngestionCoordinator,
+    imageRepo: repos.image,
+    store: imageStore,
+    dataDir,
+    auditStore,
+    logger,
+  });
+
   let executionEnvManager: ExecutionEnvManager | null = null;
   if (config.sprites.enabled) {
     executionEnvManager = new ExecutionEnvManager({
@@ -607,6 +725,9 @@ export async function bootstrap(
   );
 
   // 15. Message pipeline and channel registration
+  // The pipeline receives the ingestion coordinator so image-bearing inbound
+  // events admit durable Images; text-only events take the exact same path
+  // as before.
   const router = new ChannelRouter(repos.binding, logger);
   const messagePipeline = new MessagePipeline(
     repos.message,
@@ -616,6 +737,7 @@ export async function bootstrap(
     router,
     auditLogger,
     logger,
+    imageIngestionCoordinator,
   );
 
   registerChannels(config, channelRegistry, {
@@ -674,9 +796,17 @@ export async function bootstrap(
     logger,
     a2aServer,
     a2aTaskMapper,
+    imageStore,
+    imageIngestionCoordinator,
+    imageAccess,
+    imageLifecycle,
+    imageContextSource,
   } as Omit<DaemonContext, 'hostToolsBridge'> & { hostToolsBridge?: HostToolsBridge };
 
-  const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext);
+  const hostToolsBridge = new HostToolsBridge(partialCtx as DaemonContext, {
+    images: imageLookupAccess,
+    findings: findingRepository,
+  });
   backgroundAgentManager?.setHostToolsBridge(hostToolsBridge);
   partialCtx.hostToolsBridge = hostToolsBridge;
   const ctx = partialCtx as DaemonContext;

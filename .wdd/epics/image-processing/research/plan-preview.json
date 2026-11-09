@@ -1,0 +1,78 @@
+{
+  "maxConcurrent": 3,
+  "note": "projected admission order; rounds are a view, not a gate",
+  "rounds": [
+    {
+      "round": 1,
+      "tasks": [
+        "TASK-001"
+      ]
+    },
+    {
+      "round": 2,
+      "tasks": [
+        "TASK-002",
+        "TASK-003",
+        "TASK-012"
+      ]
+    },
+    {
+      "round": 3,
+      "tasks": [
+        "TASK-004",
+        "TASK-005",
+        "TASK-011"
+      ]
+    },
+    {
+      "round": 4,
+      "tasks": [
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ]
+    },
+    {
+      "round": 5,
+      "tasks": [
+        "TASK-009",
+        "TASK-013",
+        "TASK-015"
+      ]
+    },
+    {
+      "round": 6,
+      "tasks": [
+        "TASK-010",
+        "TASK-016"
+      ]
+    },
+    {
+      "round": 7,
+      "tasks": [
+        "TASK-014",
+        "TASK-017"
+      ]
+    },
+    {
+      "round": 8,
+      "tasks": [
+        "TASK-018",
+        "TASK-021"
+      ]
+    },
+    {
+      "round": 9,
+      "tasks": [
+        "TASK-019"
+      ]
+    },
+    {
+      "round": 10,
+      "tasks": [
+        "TASK-020"
+      ]
+    }
+  ],
+  "scope": "SCOPE-image-processing"
+}

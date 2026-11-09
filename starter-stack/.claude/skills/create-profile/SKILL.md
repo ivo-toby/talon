@@ -90,8 +90,21 @@ Use these exact labels.
 | search, fetch, http, api | `net.http` | |
 | queue async work, background jobs | `subagent.background` | |
 | ask another agent inline, specialist consultation | `subagent.invoke` | |
+| image, photo, screenshot, what does this show | `image.read:thread` | |
 | schedule, cron, recurring tasks | | `schedule.manage` |
 | query, database, SQL | | `db.query` |
+
+`image.read:thread` exposes `image_lookup`: text-only discovery of the thread's
+Images and saved Findings. It never returns pixels, never calls a model, and needs
+no credentials, so it is safe to grant on its own.
+
+If the persona should actually answer what an image shows, capability labels are
+not enough — it also needs `subagent.invoke` **and** `vision` listed under the
+persona's `subagents` key in `talond.yaml`. There is no `talonctl add-persona`
+flag for sub-agent assignment, so edit the config (or note it in the summary for
+the user to add afterwards). Pixels go only to the `vision` sub-agent; the persona
+itself remains text-only. Warn that uploaded GPS/EXIF and Findings persist after
+the image file expires (default 24h) and can appear in replies.
 
 **Provider-native**
 

@@ -122,12 +122,17 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       channel: {} as any,
       persona: {} as any,
       backgroundTask: {} as any,
+      executionEnv: {} as any,
+      executionEnvCheckpoint: {} as any,
       schedule: {} as any,
       audit: {} as any,
       message: {} as any,
       run: { aggregateByPeriod: vi.fn().mockReturnValue(ok({ total_input_tokens: 0, total_output_tokens: 0, total_cost_usd: 0 })) } as any,
       binding: {} as any,
       memory: {} as any,
+      a2aTask: {} as any,
+      image: {} as any,
+      imageIngestion: {} as any,
     },
     channelRegistry: {
       startAll: vi.fn().mockResolvedValue(undefined),
@@ -149,6 +154,8 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
     personaLoader: {
       loadFromConfig: vi.fn().mockResolvedValue(ok(undefined)),
     } as any,
+    // Required by DaemonContext; the start/stop tests never resolve a provider.
+    providerRegistry: {} as any,
     sessionTracker: {
       clearAll: vi.fn(),
       getSessionId: vi.fn(),
@@ -169,9 +176,25 @@ function makeMockContext(overrides: Partial<DaemonContext> = {}): DaemonContext 
       observeWithTraceparent: vi.fn(),
     } as any,
     hostToolsBridge: { path: '/tmp/host-tools.sock', start: vi.fn(), stop: vi.fn() } as any,
+    oauthTokenStore: {} as any,
+    a2aServer: null,
+    a2aTaskMapper: null,
+    imageStore: {} as any,
+    imageIngestionCoordinator: {
+      fenceAdmissions: vi.fn(),
+      drainActiveIngestion: vi.fn().mockResolvedValue({ drained: 0, abandoned: 0 }),
+      abandonActiveIngestion: vi.fn().mockResolvedValue({ retired: 0, stagingCleaned: 0, stagingFailed: 0 }),
+    } as any,
+    imageAccess: {} as any,
+    imageLifecycle: {
+      start: vi.fn().mockResolvedValue({ completed: true, timedOut: false, report: null }),
+      stop: vi.fn().mockResolvedValue({ drained: true }),
+    } as any,
     logger: mockLogger as any,
     ...overrides,
-  };
+    // The overrides spread widens required properties to `| undefined` under
+    // exactOptionalPropertyTypes; callers always pass well-formed overrides.
+  } as unknown as DaemonContext;
 }
 
 /**
@@ -261,6 +284,85 @@ describe('TalondDaemon', () => {
       await daemon.start('/config.yaml');
 
       expect(ctx.channelRegistry.startAll).toHaveBeenCalledOnce();
+    });
+
+    it('starts the image lifecycle before any channel connector starts', async () => {
+      const ctx = setupSuccessfulBootstrap();
+
+      await daemon.start('/config.yaml');
+
+      expect(ctx.imageLifecycle.start).toHaveBeenCalledOnce();
+      // Recovery must see crash leftovers before new admissions arrive.
+      expect(vi.mocked(ctx.imageLifecycle.start).mock.invocationCallOrder[0]).toBeLessThan(
+        vi.mocked(ctx.channelRegistry.startAll).mock.invocationCallOrder[0],
+      );
+    });
+
+    it('does not start channel connectors until image startup recovery settles', async () => {
+      // P1-1: invocation order alone is not enough — the daemon must AWAIT
+      // the startup pass, so channels cannot admit events while recovery is
+      // still resolving crash leftovers.
+      let resolveStartup: ((value: unknown) => void) | null = null;
+      const imageLifecycle = {
+        start: vi.fn().mockReturnValue(
+          new Promise((resolve) => {
+            resolveStartup = resolve;
+          }),
+        ),
+        stop: vi.fn().mockResolvedValue({ drained: true }),
+      } as any;
+      const ctx = setupSuccessfulBootstrap({ imageLifecycle });
+
+      const starting = daemon.start('/config.yaml');
+      await vi.waitFor(() => expect(imageLifecycle.start).toHaveBeenCalledOnce());
+      await Promise.resolve();
+
+      // Recovery was invoked but has NOT settled: no channel may accept
+      // image-bearing events yet.
+      expect(resolveStartup).not.toBeNull();
+      expect(ctx.channelRegistry.startAll).not.toHaveBeenCalled();
+
+      resolveStartup!({ completed: true, timedOut: false, report: null });
+      const result = await starting;
+
+      expect(result.isOk()).toBe(true);
+      expect(ctx.channelRegistry.startAll).toHaveBeenCalledOnce();
+    });
+
+    it('fails the boot closed when startup recovery times out', async () => {
+      // F1: a wedged startup recovery must NEVER start channels. The
+      // daemon retires the outstanding image work (fence admissions,
+      // bounded sweep stop, bounded delivery drain) and aborts the boot
+      // with a startup error before channelRegistry.startAll().
+      const imageLifecycle = {
+        start: vi
+          .fn()
+          .mockResolvedValue({ completed: false, timedOut: true, report: null }),
+        stop: vi.fn().mockResolvedValue({ drained: false }),
+      } as any;
+      const ctx = setupSuccessfulBootstrap({ imageLifecycle });
+
+      const result = await daemon.start('/config.yaml');
+
+      expect(result.isOk()).toBe(false);
+      // The boot gate is fail-closed: no channel connector starts while
+      // image startup recovery is outstanding.
+      expect(ctx.channelRegistry.startAll).not.toHaveBeenCalled();
+      // Outstanding work was retired safely before teardown.
+      expect(ctx.imageIngestionCoordinator.fenceAdmissions).toHaveBeenCalledOnce();
+      expect(imageLifecycle.stop).toHaveBeenCalledOnce();
+      expect(ctx.imageIngestionCoordinator.drainActiveIngestion).toHaveBeenCalledOnce();
+      // R1: retirement runs UNCONDITIONALLY — the wedged startup recovery
+      // is not tracked in activeDeliveries, so the drain reported
+      // abandoned: 0 and the retire step may still not be skipped. It
+      // must complete before the database closes.
+      expect(ctx.imageIngestionCoordinator.abandonActiveIngestion).toHaveBeenCalledOnce();
+      expect(
+        ctx.imageIngestionCoordinator.abandonActiveIngestion.mock.invocationCallOrder[0],
+      ).toBeLessThan(ctx.db.close.mock.invocationCallOrder[0]);
+      // Resources taken before the gate are released and the DB closed.
+      expect(ctx.hostToolsBridge.stop).toHaveBeenCalled();
+      expect(ctx.db.close).toHaveBeenCalledOnce();
     });
 
     it('injects sibling bot IDs after starting channel connectors', async () => {
@@ -531,6 +633,115 @@ describe('TalondDaemon', () => {
 
       expect(observability.shutdown).toHaveBeenCalledOnce();
       expect(observability.shutdown.mock.invocationCallOrder[0]).toBeLessThan(
+        db.close.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('drains the image lifecycle before closing the database', async () => {
+      const imageLifecycle = {
+        start: vi.fn().mockResolvedValue({ completed: true, timedOut: false, report: null }),
+        stop: vi.fn().mockResolvedValue({ drained: true }),
+      } as any;
+      const db = { close: vi.fn() } as any;
+      const ctx = setupSuccessfulBootstrap({ imageLifecycle, db });
+      await daemon.start('/config.yaml');
+
+      await daemon.stop();
+
+      expect(imageLifecycle.stop).toHaveBeenCalledOnce();
+      // No image sweep may write through a closed database.
+      expect(imageLifecycle.stop.mock.invocationCallOrder[0]).toBeLessThan(
+        db.close.mock.invocationCallOrder[0],
+      );
+      // Channels stop first so no new admissions race the final drain.
+      expect(vi.mocked(ctx.channelRegistry.stopAll).mock.invocationCallOrder[0]).toBeLessThan(
+        imageLifecycle.stop.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('fences admissions and drains active ingestion before closing the database', async () => {
+      // P1-2: shutdown must fence new image admissions and AWAIT in-flight
+      // ingestion (admission → publication → commit-together enqueue) —
+      // not just lifecycle sweeps — before db.close().
+      const order: string[] = [];
+      let releaseDrain: (() => void) | null = null;
+      const drainGate = new Promise<void>((resolve) => {
+        releaseDrain = resolve;
+      });
+      const imageIngestionCoordinator = {
+        fenceAdmissions: vi.fn(() => {
+          order.push('fence');
+        }),
+        drainActiveIngestion: vi.fn(async () => {
+          order.push('drain-start');
+          await drainGate;
+          order.push('drain-done');
+          return { drained: 1, abandoned: 0 };
+        }),
+        abandonActiveIngestion: vi.fn(async () => {
+          order.push('abandon');
+          return { retired: 0, stagingCleaned: 0, stagingFailed: 0 };
+        }),
+      } as any;
+      const imageLifecycle = {
+        start: vi.fn().mockResolvedValue({ completed: true, timedOut: false, report: null }),
+        stop: vi.fn(async () => {
+          order.push('sweep-stop');
+          return { drained: true };
+        }),
+      } as any;
+      const db = {
+        close: vi.fn(() => {
+          order.push('close');
+        }),
+      } as any;
+      setupSuccessfulBootstrap({ imageIngestionCoordinator, imageLifecycle, db });
+      await daemon.start('/config.yaml');
+
+      const stopping = daemon.stop();
+      await vi.waitFor(() =>
+        expect(imageIngestionCoordinator.drainActiveIngestion).toHaveBeenCalledOnce(),
+      );
+
+      // While ingestion is still in flight the database stays open and no
+      // new admission is accepted (fence already set).
+      expect(imageIngestionCoordinator.fenceAdmissions).toHaveBeenCalledOnce();
+      expect(db.close).not.toHaveBeenCalled();
+
+      releaseDrain!();
+      await stopping;
+
+      // R1: retirement runs UNCONDITIONALLY before closure — lifecycle
+      // recovery continuations are not tracked in activeDeliveries, so
+      // even a drain that abandoned nothing may not skip the retire step.
+      expect(order).toEqual([
+        'fence',
+        'sweep-stop',
+        'drain-start',
+        'drain-done',
+        'abandon',
+        'close',
+      ]);
+      expect(imageIngestionCoordinator.abandonActiveIngestion).toHaveBeenCalledOnce();
+    });
+
+    it('retires continuations of ingestion that outlive the shutdown drain, before closing', async () => {
+      // F3: retirement is in-memory only — durable rows stay untouched for
+      // next-boot recovery; the daemon just must not close the DB under a
+      // live continuation that could still write.
+      const imageIngestionCoordinator = {
+        fenceAdmissions: vi.fn(),
+        drainActiveIngestion: vi.fn().mockResolvedValue({ drained: 0, abandoned: 2 }),
+        abandonActiveIngestion: vi.fn().mockResolvedValue({ retired: 2, stagingCleaned: 0, stagingFailed: 0 }),
+      } as any;
+      const db = { close: vi.fn() } as any;
+      setupSuccessfulBootstrap({ imageIngestionCoordinator, db });
+      await daemon.start('/config.yaml');
+
+      await daemon.stop();
+
+      expect(imageIngestionCoordinator.abandonActiveIngestion).toHaveBeenCalledOnce();
+      expect(imageIngestionCoordinator.abandonActiveIngestion.mock.invocationCallOrder[0]).toBeLessThan(
         db.close.mock.invocationCallOrder[0],
       );
     });
