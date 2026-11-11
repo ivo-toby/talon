@@ -9,6 +9,6 @@
 export { QueueItemStatus, type QueueItem } from './queue-types.js';
 export { calculateBackoff } from './retry-strategy.js';
 export { DeadLetterHandler } from './dead-letter.js';
-export { QueueProcessor } from './queue-processor.js';
+export { QueueProcessor, QueueDeferral } from './queue-processor.js';
 export { QueueManager, type QueueConfig, type QueueStats } from './queue-manager.js';
 export { rowToQueueItem } from './queue-mapper.js';

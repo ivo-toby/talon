@@ -14,8 +14,10 @@ import type {
 import { EMPTY_LIVE_BLOCK, orderLiveDescriptors, renderLiveImageDescriptors } from './context-assembler.js';
 import type { RotationImageContext } from './context-roller.js';
 import type { QueueItem } from '../queue/queue-types.js';
+import { QueueDeferral } from '../queue/queue-processor.js';
 import { filterAllowedMcpTools, HOST_TOOL_REGISTRY } from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
+import { buildPersonaRosterAppendix } from '../personas/persona-roster.js';
 import { hasOAuthMcpAuth, resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import {
@@ -65,12 +67,20 @@ export class AgentRunner {
    * (no live descriptors, no history projections).
    */
   private readonly imageContextSource?: ImageContextSource;
+  /** Abort callbacks for in-flight A2A runs, keyed by task ID. */
+  private readonly a2aAborts: Map<string, () => void>;
 
   constructor(
     ctx: DaemonContext,
-    options?: { queryTimeoutMs?: number; imageContextSource?: ImageContextSource },
+    options?: {
+      queryTimeoutMs?: number;
+      imageContextSource?: ImageContextSource;
+      /** Shared registry so aborts survive AgentRunner rebuilds on hot reload. */
+      a2aAborts?: Map<string, () => void>;
+    },
   ) {
     this.ctx = ctx;
+    this.a2aAborts = options?.a2aAborts ?? new Map<string, () => void>();
     this.queryTimeoutMs = options?.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
     this.imageContextSource = options?.imageContextSource;
   }
@@ -160,6 +170,44 @@ export class AgentRunner {
         : null;
     const isA2ATask = a2aTaskId !== null;
     const isScheduleTask = item.type === 'schedule';
+
+    // A2A lifecycle gate: never run (or retry) a task that is missing or already
+    // terminal (canceled/failed/completed), and respect per-target concurrency
+    // by deferring (without consuming a queue attempt) until admitted.
+    if (a2aTaskId !== null) {
+      const taskLookup = this.ctx.repos.a2aTask.findById(a2aTaskId);
+      if (taskLookup.isErr()) {
+        return err(new Error(`failed to load A2A task ${a2aTaskId}: ${taskLookup.error.message}`));
+      }
+      const taskRow = taskLookup.value;
+      if (
+        !taskRow ||
+        taskRow.state === 'completed' ||
+        taskRow.state === 'failed' ||
+        taskRow.state === 'canceled'
+      ) {
+        this.ctx.logger.info(
+          { a2aTaskId, state: taskRow?.state ?? 'missing', itemId: item.id },
+          'agent-runner: A2A task missing or terminal, skipping run',
+        );
+        return ok(undefined);
+      }
+      const admit = this.ctx.repos.a2aTask.tryAdmit(
+        a2aTaskId,
+        this.ctx.config.a2a.maxConcurrentPerTarget,
+      );
+      if (admit.isErr()) {
+        return err(new Error(`failed to admit A2A task ${a2aTaskId}: ${admit.error.message}`));
+      }
+      if (admit.value === 'wait') {
+        return err(
+          new QueueDeferral(`A2A task ${a2aTaskId} waiting for a free slot on ${taskRow.target_persona}`, 2000),
+        );
+      }
+      if (admit.value === 'terminal' || admit.value === 'missing') {
+        return ok(undefined);
+      }
+    }
 
     const personaId = typeof item.payload.personaId === 'string' ? item.payload.personaId : null;
     if (personaId === null) {
@@ -334,32 +382,36 @@ export class AgentRunner {
     });
 
     if (runInsert.isErr()) {
-      // Mark A2A task as failed — run record creation failed, so the task cannot proceed.
-      if (isA2ATask && a2aTaskId) {
-        this.ctx.repos.a2aTask
-          .markFailed(a2aTaskId, 'RUN_INSERT_ERROR', runInsert.error.message)
-          .mapErr((e) => {
-            this.ctx.logger.warn(
-              { a2aTaskId, err: e.message },
-              'agent-runner: failed to mark A2A task as failed after run insert error',
-            );
-          });
+      // Run record creation failed. Fail the task only if this is the final attempt.
+      if (this.failA2ATask(a2aTaskId, 'RUN_INSERT_ERROR', runInsert.error.message, item) === 'already-terminal') {
+        return ok(undefined);
       }
       return err(new Error(`failed to create run record: ${runInsert.error.message}`));
     }
 
-    // Mark A2A task as 'working' now that a run record exists.
+    // Record the run on the A2A task ('working' is already set by tryAdmit).
     if (isA2ATask && a2aTaskId) {
-      this.ctx.repos.a2aTask.markWorking(a2aTaskId, runId).mapErr((e) => {
+      const working = this.ctx.repos.a2aTask.markWorking(a2aTaskId, runId);
+      if (working.isErr()) {
         this.ctx.logger.warn(
-          { a2aTaskId, runId, err: e.message },
+          { a2aTaskId, runId, err: working.error.message },
           'agent-runner: failed to mark A2A task as working',
         );
-      });
+      } else if (!working.value) {
+        // Canceled/terminal between admission and run start: do not run.
+        this.ctx.repos.run.updateStatus(runId, 'failed', {
+          ended_at: Date.now(),
+          error: 'A2A task no longer active',
+        });
+        return ok(undefined);
+      }
     }
 
     const content = typeof item.payload.content === 'string' ? item.payload.content : '';
     let runFinalized = false;
+    // Set when an A2A run ended after its task became terminal (e.g. canceled):
+    // the queue item must complete rather than retry.
+    let a2aSuppressRetry = false;
     const bridgeSecret = generateBridgeSecret();
     this.ctx.hostToolsBridge.registerRunAuthentication?.({
       runId,
@@ -673,6 +725,12 @@ export class AgentRunner {
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,
                 allowedMcpTools,
+                buildPersonaRosterAppendix(
+                  this.ctx.personaLoader,
+                  allowedMcpTools,
+                  loadedPersona.config.name ?? personaName,
+                  loadedPersona.resolvedCapabilities,
+                ),
               );
               const systemPromptParts = [
                 personaRuntimeContext.personaPrompt,
@@ -680,7 +738,10 @@ export class AgentRunner {
                 channelContext,
                 timeContext,
               ];
-              if (!resumeSessionId && !isScheduleTask) {
+              // A2A delegations are isolated: they receive only the delegated
+              // message (plus the persona's own prompt), never the source
+              // thread's summary, recent messages or image inventory/Findings.
+              if (!resumeSessionId && !isScheduleTask && !isA2ATask) {
                 // Fresh-session image replay is independent of the current
                 // message's live association: foreground messages without a
                 // messageId (e.g. background-agent completion notices) still
@@ -1016,8 +1077,23 @@ export class AgentRunner {
                     );
                   });
 
+                  // A2A cancellation: rejecting this promise aborts the in-flight
+                  // run through the same cleanup path as a timeout.
+                  let abortReject: ((reason: Error) => void) | undefined;
+                  const abortPromise = new Promise<never>((_, reject) => {
+                    abortReject = reject;
+                  });
+                  abortPromise.catch(() => {});
+                  if (isA2ATask && a2aTaskId) {
+                    this.a2aAborts.set(a2aTaskId, () => abortReject?.(new Error('A2A task canceled')));
+                    const stateNow = this.ctx.repos.a2aTask.findById(a2aTaskId);
+                    if (stateNow.isOk() && stateNow.value?.state === 'canceled') {
+                      abortReject?.(new Error('A2A task canceled'));
+                    }
+                  }
+
                   try {
-                    await Promise.race([queryPromise, timeoutPromise]);
+                    await Promise.race([queryPromise, timeoutPromise, abortPromise]);
                   } catch (cause) {
                     // Abort the in-flight provider stream to prevent leaked work
                     if (activeIterator?.return) {
@@ -1037,6 +1113,7 @@ export class AgentRunner {
                     throw new AgentQueryAttemptError(message, resumeSessionId, sawEvents);
                   } finally {
                     clearTimeout(timeoutId!);
+                    if (isA2ATask && a2aTaskId) this.a2aAborts.delete(a2aTaskId);
                   }
 
                   this.finishProviderToolObservations(
@@ -1171,12 +1248,19 @@ export class AgentRunner {
 
             if (isA2ATask && a2aTaskId) {
               // A2A collaboration task: store result in a2a_tasks, skip channel send.
-              this.ctx.repos.a2aTask.markCompleted(a2aTaskId, fullOutputText).mapErr((e) => {
+              const completed = this.ctx.repos.a2aTask.markCompleted(a2aTaskId, fullOutputText);
+              if (completed.isErr()) {
                 this.ctx.logger.warn(
-                  { a2aTaskId, runId, err: e.message },
+                  { a2aTaskId, runId, err: completed.error.message },
                   'agent-runner: failed to mark A2A task as completed',
                 );
-              });
+              } else if (!completed.value) {
+                // Canceled while running: result is discarded, nothing is sent.
+                this.ctx.logger.info(
+                  { a2aTaskId, runId },
+                  'agent-runner: A2A task already terminal (canceled?), discarding result',
+                );
+              }
               this.ctx.logger.info(
                 { runId, a2aTaskId, outputLength: fullOutputText.length },
                 'agent-sdk: A2A task completed, result stored (no channel send)',
@@ -1389,16 +1473,13 @@ export class AgentRunner {
               ended_at: Date.now(),
               error: error.message,
             });
-            // Mark A2A task as failed on agent execution error.
+            // Fail the A2A task only when the failure is final (last queue attempt).
+            // If it was already canceled, the run ends quietly with no retry.
             if (isA2ATask && a2aTaskId) {
-              this.ctx.repos.a2aTask
-                .markFailed(a2aTaskId, 'EXECUTION_ERROR', error.message)
-                .mapErr((e) => {
-                  this.ctx.logger.warn(
-                    { a2aTaskId, runId, err: e.message },
-                    'agent-runner: failed to mark A2A task as failed',
-                  );
-                });
+              const outcome = this.failA2ATask(a2aTaskId, 'EXECUTION_ERROR', error.message, item);
+              if (outcome === 'already-terminal') {
+                a2aSuppressRetry = true;
+              }
             }
             runFinalized = true;
             throw error;
@@ -1414,6 +1495,12 @@ export class AgentRunner {
           ended_at: Date.now(),
           error: error.message,
         });
+        if (isA2ATask && this.failA2ATask(a2aTaskId, 'EXECUTION_ERROR', error.message, item) === 'already-terminal') {
+          a2aSuppressRetry = true;
+        }
+      }
+      if (a2aSuppressRetry) {
+        return ok(undefined);
       }
       return err(error);
     } finally {
@@ -1614,14 +1701,41 @@ export class AgentRunner {
    * Marks an A2A task as failed if a task ID is present.
    * Safe to call even when the task ID is null (non-A2A items).
    */
-  private failA2ATask(a2aTaskId: string | null, errorCode: string, message: string): void {
-    if (!a2aTaskId) return;
-    this.ctx.repos.a2aTask.markFailed(a2aTaskId, errorCode, message).mapErr((e) => {
+  private failA2ATask(
+    a2aTaskId: string | null,
+    errorCode: string,
+    message: string,
+    item?: QueueItem,
+  ): 'failed' | 'retry' | 'already-terminal' | 'none' {
+    if (!a2aTaskId) return 'none';
+    const repo = this.ctx.repos.a2aTask;
+    const existing = repo.findById(a2aTaskId);
+    if (existing.isOk() && existing.value) {
+      const st = existing.value.state;
+      if (st === 'completed' || st === 'failed' || st === 'canceled') return 'already-terminal';
+    }
+    // Only final failures are terminal; otherwise the task stays non-terminal
+    // (working) and the queue retry re-enters via tryAdmit. Config errors pass
+    // no item and are always final.
+    const isFinal = !item || item.attempts + 1 >= item.maxAttempts;
+    if (!isFinal) return 'retry';
+    const result = repo.markFailed(a2aTaskId, errorCode, message);
+    if (result.isErr()) {
       this.ctx.logger.warn(
-        { a2aTaskId, errorCode, err: e.message },
+        { a2aTaskId, errorCode, err: result.error.message },
         'agent-runner: failed to mark A2A task as failed',
       );
-    });
+      return 'failed';
+    }
+    return result.value ? 'failed' : 'already-terminal';
+  }
+
+  /** Aborts the in-flight run of an A2A task (used when the task is canceled). */
+  abortA2ATask(taskId: string): boolean {
+    const abort = this.a2aAborts.get(taskId);
+    if (!abort) return false;
+    abort();
+    return true;
   }
 
   private parseBackgroundTaskNotification(item: QueueItem): {

@@ -796,6 +796,7 @@ export async function bootstrap(
     logger,
     a2aServer,
     a2aTaskMapper,
+    a2aCardRegistry,
     imageStore,
     imageIngestionCoordinator,
     imageAccess,

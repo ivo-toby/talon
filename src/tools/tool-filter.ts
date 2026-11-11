@@ -11,7 +11,9 @@
  * The mapping uses the domain + action portion of the capability label to
  * match against known host tool names. The scope portion (after `:`) is
  * ignored for tool-level filtering — it is used for finer-grained access
- * control within handlers (e.g., which channels can be sent to).
+ * control within handlers (e.g., which channels can be sent to). An unscoped
+ * label grants the tool exactly like `:*` does. The one scope enforced today is
+ * `persona.send:<persona-name>` (see `personas/persona-delegation.ts`).
  */
 
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
@@ -43,6 +45,7 @@ export const HOST_TOOL_REGISTRY: ReadonlyArray<{
   { capabilityPrefix: 'channel.send', internalName: 'channel.broadcast', mcpName: 'channel_broadcast' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.send', mcpName: 'persona_send' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.task_status', mcpName: 'persona_task_status' },
+  { capabilityPrefix: 'persona.send', internalName: 'persona.task_cancel', mcpName: 'persona_task_cancel' },
   { capabilityPrefix: 'persona.send', internalName: 'persona.list', mcpName: 'persona_list' },
   { capabilityPrefix: 'memory.access', internalName: 'memory.access', mcpName: 'memory_access' },
   { capabilityPrefix: 'net.http', internalName: 'net.http', mcpName: 'net_http' },
@@ -112,7 +115,8 @@ export const CAPABILITY_DESCRIPTIONS: ReadonlyArray<{
     toolPrefix: 'persona.send',
     mcpName: 'persona_send',
     labels: [
-      { label: 'persona.send:*', description: 'Send tasks to any persona and discover available personas for delegation' },
+      { label: 'persona.send:*', description: 'Send tasks to any persona, discover available personas for delegation, and follow or cancel your delegated tasks (persona_task_status, persona_task_cancel)' },
+      { label: 'persona.send:<persona-name>', description: 'Restrict delegation to that one persona (e.g. persona.send:researcher); list several to allow several. persona_send and persona_list only offer the allowed personas; the task status/cancel tools stay available' },
     ],
   },
   {

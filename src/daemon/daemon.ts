@@ -30,6 +30,7 @@ import type { DaemonState, DaemonHealth } from './daemon-types.js';
 import { DaemonIpcServer } from '../ipc/daemon-ipc-server.js';
 import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
+import { buildAgentCardRegistry } from '../a2a/persona-agent-card.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 import { waitForCodexSandboxRunner } from '../subagents/codex-sandbox-runner-readiness.js';
 
@@ -41,6 +42,9 @@ export interface TalondDaemonDeps {
   waitForCodexSandboxRunner?: typeof waitForCodexSandboxRunner;
 }
 
+/** How often the A2A reaper runs while the daemon is up. */
+const A2A_REAPER_INTERVAL_MS = 60_000;
+
 export class TalondDaemon {
   private _state: DaemonState = 'stopped';
   private startedAt: number | null = null;
@@ -50,6 +54,9 @@ export class TalondDaemon {
   private ipcServer: DaemonIpcServer | null = null;
   private watchdog: WatchdogNotifier | null = null;
   private mcpRegistry: McpRegistry | null = null;
+  private a2aReaperTimer: ReturnType<typeof setInterval> | null = null;
+  /** Abort registry shared across AgentRunner rebuilds (hot reload). */
+  private readonly a2aAborts = new Map<string, () => void>();
 
   private readonly waitForCodexSandboxRunner: typeof waitForCodexSandboxRunner;
 
@@ -127,6 +134,10 @@ export class TalondDaemon {
     // descriptors, fresh-session replay, and rotation projections are real.
     this.agentRunner = new AgentRunner(this.ctx, {
       imageContextSource: this.ctx.imageContextSource,
+      a2aAborts: this.a2aAborts,
+    });
+    this.ctx.a2aTaskMapper?.setAbortHook((taskId) => {
+      this.a2aAborts.get(taskId)?.();
     });
     this.ctx.hostToolsBridge.start();
 
@@ -222,6 +233,12 @@ export class TalondDaemon {
     // Inject sibling bot IDs for multi-connector self-filtering.
     injectSiblingBotIds(this.ctx.channelRegistry, this.logger);
 
+    // 4a. Reap stale A2A tasks (orphaned by purge/crash, or past TTL) before
+    // dispatch starts, then keep reaping periodically.
+    this.reapA2ATasks();
+    this.a2aReaperTimer = setInterval(() => this.reapA2ATasks(), A2A_REAPER_INTERVAL_MS);
+    this.a2aReaperTimer.unref();
+
     // 5. Start queue processing.
     this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
 
@@ -272,6 +289,21 @@ export class TalondDaemon {
   // Stop
   // ---------------------------------------------------------------------------
 
+  /** Runs one A2A reaper pass; never throws. */
+  private reapA2ATasks(): void {
+    try {
+      const result = this.ctx?.a2aTaskMapper?.reapStaleTasks();
+      if (result === undefined) return;
+      if (result.isErr()) {
+        this.logger.warn({ err: result.error.message }, 'daemon: A2A reaper failed');
+      } else if (result.value.length > 0) {
+        this.logger.info({ count: result.value.length }, 'daemon: A2A reaper cleaned stale tasks');
+      }
+    } catch (cause) {
+      this.logger.warn({ cause: String(cause) }, 'daemon: A2A reaper threw');
+    }
+  }
+
   async stop(): Promise<void> {
     if (this._state === 'stopped' || this._state === 'stopping') {
       return;
@@ -279,6 +311,11 @@ export class TalondDaemon {
 
     this._state = 'stopping';
     this.logger.info('daemon: stopping');
+
+    if (this.a2aReaperTimer !== null) {
+      clearInterval(this.a2aReaperTimer);
+      this.a2aReaperTimer = null;
+    }
 
     if (this.watchdog !== null) {
       this.watchdog.notifyStopping();
@@ -539,6 +576,14 @@ export class TalondDaemon {
       return err(new DaemonError(`Failed to reload personas: ${personaReload.error.message}`));
     }
 
+    // Rebuild the A2A agent-card registry in place (shared Map instance held by
+    // A2ATaskMapper and A2AServer) so newly added personas are routable.
+    if (this.ctx.a2aCardRegistry) {
+      const rebuilt = buildAgentCardRegistry(personaReload.value);
+      this.ctx.a2aCardRegistry.clear();
+      for (const [name, card] of rebuilt) this.ctx.a2aCardRegistry.set(name, card);
+    }
+
     // Reload skills.
     const skillLoader = new SkillLoader(this.logger);
     const loadedSkillsResult = await skillLoader.loadFromPersonaConfig(
@@ -599,6 +644,7 @@ export class TalondDaemon {
     // Rebuild AgentRunner so it picks up the new loadedSkills.
     this.agentRunner = new AgentRunner(this.ctx, {
       imageContextSource: this.ctx.imageContextSource,
+      a2aAborts: this.a2aAborts,
     });
 
     // Update config snapshot.
@@ -729,6 +775,58 @@ export class TalondDaemon {
           commandId: command.id,
           success: true,
           data: { purged: purgeResult.value, statuses: requestedStatuses },
+        };
+      }
+
+      case 'a2a-cancel': {
+        // Runs inside the daemon so cancelTask's abort hook can stop an
+        // in-flight run (a CLI-side DB cancel cannot).
+        const mapper = this.ctx?.a2aTaskMapper ?? null;
+        if (!mapper) {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: 'A2A is not available in this daemon',
+          };
+        }
+        const taskId = typeof command.payload?.taskId === 'string' ? command.payload.taskId.trim() : '';
+        if (taskId === '') {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: 'a2a-cancel requires payload.taskId',
+          };
+        }
+        const reason =
+          typeof command.payload?.reason === 'string' && command.payload.reason.trim() !== ''
+            ? command.payload.reason.trim()
+            : 'canceled via talonctl';
+
+        const before = mapper.getTaskStatus(taskId);
+        if (before.isErr()) {
+          return { id: responseId, commandId: command.id, success: false, error: before.error.message };
+        }
+        if (before.value === null) {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: true,
+            data: { taskId, found: false, canceled: false },
+          };
+        }
+        const cancelResult = mapper.cancelTask(taskId, reason);
+        if (cancelResult.isErr()) {
+          return { id: responseId, commandId: command.id, success: false, error: cancelResult.error.message };
+        }
+        const after = mapper.getTaskStatus(taskId);
+        const state = after.isOk() && after.value ? after.value.state : before.value.state;
+        return {
+          id: responseId,
+          commandId: command.id,
+          success: true,
+          data: { taskId, found: true, canceled: cancelResult.value, state },
         };
       }
 

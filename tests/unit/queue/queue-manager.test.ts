@@ -353,4 +353,143 @@ describe('QueueManager', () => {
       expect(maxConcurrent).toBeLessThanOrEqual(DEFAULT_CONFIG.concurrencyLimit);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // runWithSlotReleased
+  // -------------------------------------------------------------------------
+
+  describe('runWithSlotReleased', () => {
+    type Internals = {
+      activeCount: number;
+      suspendedCount: number;
+      tick(handler: (item: QueueItem) => Promise<ReturnType<typeof ok<void, Error>>>): Promise<void>;
+    };
+    const internals = (m: QueueManager): Internals => m as unknown as Internals;
+    const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
+
+    it('frees a slot while fn runs and restores it afterwards', async () => {
+      internals(manager).activeCount = 2;
+      let during = -1;
+      await manager.runWithSlotReleased(async () => {
+        during = internals(manager).suspendedCount;
+      });
+      expect(during).toBe(1);
+      expect(internals(manager).suspendedCount).toBe(0);
+    });
+
+    it('restores the slot and rethrows when fn throws', async () => {
+      internals(manager).activeCount = 1;
+      await expect(
+        manager.runWithSlotReleased(async () => {
+          throw new Error('boom');
+        }),
+      ).rejects.toThrow('boom');
+      expect(internals(manager).suspendedCount).toBe(0);
+    });
+
+    it('returns the value produced by fn', async () => {
+      internals(manager).activeCount = 1;
+      await expect(manager.runWithSlotReleased(async () => 42)).resolves.toBe(42);
+    });
+
+    it('never frees more slots than there are active items (clamp)', async () => {
+      // No active items: a caller that holds no slot frees nothing.
+      const handler = vi.fn(async () => ok(undefined));
+      const other = seedThread(db);
+      manager.enqueue(threadId, 'message', {});
+      manager.enqueue(other, 'message', {});
+      let gate!: () => void;
+      const gated = new Promise<void>((r) => {
+        gate = r;
+      });
+      const waiting = manager.runWithSlotReleased(() => gated);
+      await internals(manager).tick(handler);
+      // Limit is 2 and nothing is active: exactly 2 dispatched, not 3.
+      expect(handler).toHaveBeenCalledTimes(2);
+      gate();
+      await waiting;
+      expect(internals(manager).suspendedCount).toBe(0);
+    });
+
+    it('counts concurrent waiters with the same key only once', async () => {
+      internals(manager).activeCount = 2;
+      let gate!: () => void;
+      const gated = new Promise<void>((r) => {
+        gate = r;
+      });
+      const a = manager.runWithSlotReleased(() => gated, 'run-1');
+      const b = manager.runWithSlotReleased(() => gated, 'run-1');
+      expect(internals(manager).suspendedCount).toBe(1);
+      const c = manager.runWithSlotReleased(() => gated, 'run-2');
+      expect(internals(manager).suspendedCount).toBe(2);
+      gate();
+      await Promise.all([a, b, c]);
+      expect(internals(manager).suspendedCount).toBe(0);
+    });
+
+    it('lets a second item dispatch while the first (concurrencyLimit=1) is waiting', async () => {
+      const single = new QueueManager(
+        queueRepo,
+        threadRepo,
+        { ...DEFAULT_CONFIG, concurrencyLimit: 1 },
+        createTestLogger(),
+      );
+      const other = seedThread(db);
+      single.enqueue(threadId, 'message', { n: 1 });
+      single.enqueue(other, 'message', { n: 2 });
+
+      let release!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const started: number[] = [];
+      const handler = async (item: QueueItem): Promise<ReturnType<typeof ok<void, Error>>> => {
+        const n = (item.payload as { n: number }).n;
+        started.push(n);
+        if (n === 1) {
+          await single.runWithSlotReleased(() => gate, 'run-1');
+        }
+        return ok(undefined);
+      };
+
+      const first = (single as unknown as Internals).tick(handler);
+      await flush();
+      expect(started).toEqual([1]);
+
+      // Parent is waiting: its slot is free, so the child item is dispatched.
+      await (single as unknown as Internals).tick(handler);
+      expect(started).toEqual([1, 2]);
+
+      release();
+      await first;
+    });
+
+    it('does not dispatch a second item while the first holds its slot', async () => {
+      const single = new QueueManager(
+        queueRepo,
+        threadRepo,
+        { ...DEFAULT_CONFIG, concurrencyLimit: 1 },
+        createTestLogger(),
+      );
+      const other = seedThread(db);
+      single.enqueue(threadId, 'message', { n: 1 });
+      single.enqueue(other, 'message', { n: 2 });
+      let release!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const started: number[] = [];
+      const handler = async (item: QueueItem): Promise<ReturnType<typeof ok<void, Error>>> => {
+        started.push((item.payload as { n: number }).n);
+        await gate;
+        return ok(undefined);
+      };
+      const first = (single as unknown as Internals).tick(handler);
+      await flush();
+      await (single as unknown as Internals).tick(handler);
+      expect(started).toEqual([1]);
+      release();
+      await first;
+    });
+  });
 });

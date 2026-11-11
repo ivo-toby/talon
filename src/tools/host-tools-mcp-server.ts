@@ -377,17 +377,28 @@ const TOOLS = [
   },
   {
     name: 'persona_send',
-    description: 'Send a task to another persona via the A2A layer',
+    description:
+      'Delegate a self-contained task to another persona, which has its own system prompt, skills and tools, '
+      + 'keeping that work out of your own context. The target sees ONLY `message`: no conversation history, summary, '
+      + 'images or findings from this thread, so write a complete brief (goal, relevant facts and identifiers, constraints, '
+      + 'expected output format). Use persona_list to pick a target (only the personas listed there are allowed). Tasks sent to a busy persona are queued, not rejected. '
+      + 'Set await_reply to wait for the result, which comes back as text in `result`; the wait (including any queue time) is '
+      + 'capped by timeout_ms (max 1800000 ms, default 300000). '
+      + 'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
+      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled"; '
+      + 'stop it yourself with persona_task_cancel. '
+      + 'A "failed" state is final (no automatic retry); you decide whether to resend.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         target_persona: {
           type: 'string' as const,
-          description: 'Target persona name from talond.yaml',
+          description: 'Name of the persona to delegate to, exactly as returned by persona_list',
         },
         message: {
           type: 'string' as const,
-          description: 'Text task to send to the target persona',
+          description:
+            'Complete, self-contained brief for the target persona. It is the only thing the target sees: include the goal, all relevant facts and identifiers, constraints, and the output format you expect.',
         },
         await_reply: {
           type: 'boolean' as const,
@@ -395,7 +406,12 @@ const TOOLS = [
         },
         timeout_ms: {
           type: 'integer' as const,
-          description: 'Optional synchronous wait timeout in milliseconds. Default: 300000 (5 minutes).',
+          description: 'Optional synchronous wait timeout in milliseconds. Max: 1800000 (30 minutes). Default: 300000 (5 minutes).',
+        },
+        cancel_on_timeout: {
+          type: 'boolean' as const,
+          description:
+            'With await_reply: cancel the delegated task if the wait times out. Default: false (task keeps running and can be fetched via persona_task_status).',
         },
       },
       required: ['target_persona', 'message'],
@@ -403,7 +419,8 @@ const TOOLS = [
   },
   {
     name: 'persona_task_status',
-    description: 'Fetch the status or final result of a delegated task created via persona_send',
+    description:
+      'Fetch the status or final result of a task created via persona_send, e.g. after a "timeout". Use wait_ms to wait for completion. States: submitted/working (not done), completed (text in `result`), failed and canceled (both final; you decide whether to resend).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -414,6 +431,28 @@ const TOOLS = [
         wait_ms: {
           type: 'integer' as const,
           description: 'Optional wait time in milliseconds for the task to reach a terminal state. Default: 0.',
+        },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'persona_task_cancel',
+    description:
+      'Cancel a task you delegated via persona_send, e.g. after a "timeout" or when the work is no longer needed. '
+      + 'A queued task is dropped and a running one is stopped. Only tasks you submitted in this conversation can be canceled. '
+      + 'Returns { task_id, state, canceled }: canceled=true means this call canceled it; canceled=false means it had already '
+      + 'finished and `state` is its real final state (completed/failed/canceled), so use persona_task_status to read the result.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        task_id: {
+          type: 'string' as const,
+          description: 'Task ID returned by persona_send',
+        },
+        reason: {
+          type: 'string' as const,
+          description: 'Optional short reason, recorded on the canceled task',
         },
       },
       required: ['task_id'],
@@ -613,7 +652,8 @@ const TOOLS = [
   },
   {
     name: 'persona_list',
-    description: 'List all personas available for delegation via persona_send',
+    description:
+      'List the personas you can delegate to via persona_send. Returns the name, description and skills of each persona (excluding yourself).',
     inputSchema: { type: 'object' as const, properties: {}, required: [] },
   },
   IMAGE_LOOKUP_TOOL,

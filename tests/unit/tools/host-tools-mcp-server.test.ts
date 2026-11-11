@@ -166,3 +166,34 @@ describe('MCP exposure and call gating', () => {
     expect(gate.ok).toBe(false);
   });
 });
+
+describe('persona delegation tool definitions', () => {
+  it('persona_send explains isolation, results, failure and discovery', () => {
+    const tool = findTool('persona_send');
+    expect(tool.description).toContain('ONLY `message`');
+    expect(tool.description).toContain('persona_list');
+    expect(tool.description).toContain('queued');
+    expect(tool.description).toContain('cancel_on_timeout');
+    expect(tool.description).toContain('`result`');
+    expect(tool.description).toContain('"failed" state is final');
+    expect(tool.inputSchema.properties.message.description).toContain('only thing the target sees');
+    expect(tool.inputSchema.properties.target_persona.description).toContain('persona_list');
+  });
+
+  it('persona_list and persona_task_status describe what they return', () => {
+    expect(findTool('persona_list').description).toContain('name, description and skills');
+    expect(findTool('persona_task_status').description).toContain('wait_ms');
+  });
+
+  it('persona_task_cancel is defined with task_id required and explains canceled=false', () => {
+    const tool = findTool('persona_task_cancel');
+    expect(tool.inputSchema.required).toEqual(['task_id']);
+    expect(Object.keys(tool.inputSchema.properties).sort()).toEqual(['reason', 'task_id']);
+    expect(tool.description).toContain('canceled=false');
+    expect(tool.description).toContain('persona_send');
+  });
+
+  it('persona_send points at persona_task_cancel in its timeout guidance', () => {
+    expect(findTool('persona_send').description).toContain('persona_task_cancel');
+  });
+});

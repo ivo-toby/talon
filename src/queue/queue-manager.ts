@@ -74,6 +74,10 @@ export class QueueManager {
   private readonly deadLetterHandler: DeadLetterHandler;
   private loopTimer: ReturnType<typeof setInterval> | null = null;
   private activeCount = 0;
+  /** Slots released by runs that are waiting on delegated work. */
+  private suspendedCount = 0;
+  /** Concurrent waiter count per key (run id) so one run frees at most one slot. */
+  private readonly suspendedKeys = new Map<string, number>();
 
   constructor(
     private readonly queueRepo: QueueRepository,
@@ -305,9 +309,59 @@ export class QueueManager {
     };
   }
 
+  /**
+   * Runs `fn` while the caller's queue slot is made available to other items.
+   *
+   * Used by long waits (A2A await_reply / task_status polling) executed from
+   * inside a queue-dispatched run: the waiting parent would otherwise hold a
+   * slot while its delegated children cannot get one. The slot is restored in
+   * `finally`; the waiter resuming may briefly oversubscribe the limit.
+   *
+   * The released count is clamped to the number of active items, so it can
+   * never go negative or exceed `activeCount`. When `key` is given (e.g. the
+   * run id), only the first concurrent waiter for that key frees a slot, so
+   * parallel tool calls from one run cannot free more than the one slot it
+   * holds. Callers that do not hold a slot must not call this.
+   */
+  async runWithSlotReleased<T>(fn: () => Promise<T>, key?: string): Promise<T> {
+    const holders = key === undefined ? 0 : (this.suspendedKeys.get(key) ?? 0);
+    if (key !== undefined) {
+      this.suspendedKeys.set(key, holders + 1);
+    }
+    // Only the first waiter for a key frees a slot.
+    const freesSlot = holders === 0;
+    if (freesSlot) {
+      this.suspendedCount++;
+    }
+    try {
+      return await fn();
+    } finally {
+      let restore = freesSlot;
+      if (key !== undefined) {
+        const remaining = (this.suspendedKeys.get(key) ?? 1) - 1;
+        if (remaining <= 0) {
+          this.suspendedKeys.delete(key);
+          // Last waiter for the key ends: restore the one slot it freed.
+          restore = true;
+        } else {
+          this.suspendedKeys.set(key, remaining);
+          restore = false;
+        }
+      }
+      if (restore) {
+        this.suspendedCount = Math.max(0, this.suspendedCount - 1);
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
+
+  /** Number of slots currently released by waiting runs, clamped to [0, activeCount]. */
+  private get effectiveSuspended(): number {
+    return Math.min(Math.max(0, this.suspendedCount), this.activeCount);
+  }
 
   /**
    * Single processing loop tick: dispatches items up to the concurrency limit.
@@ -315,7 +369,7 @@ export class QueueManager {
   private async tick(
     handler: (item: QueueItem) => Promise<Result<void, Error>>,
   ): Promise<void> {
-    const slots = this.config.concurrencyLimit - this.activeCount;
+    const slots = this.config.concurrencyLimit - (this.activeCount - this.effectiveSuspended);
     if (slots <= 0) {
       return;
     }

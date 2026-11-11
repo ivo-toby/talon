@@ -30,6 +30,8 @@ import type { ResolvedCapabilities } from './persona-types.js';
  * since the canonical format requires a scope.
  */
 const CAPABILITY_WITH_SCOPE_RE = /^\w+\.\w+:(?:\w+|\*)$/;
+/** `persona.send:<persona-name>`: persona names are free-form, so allow hyphens and dots. */
+const PERSONA_SEND_SCOPED_RE = /^persona\.send:[^\s:]+$/;
 const CAPABILITY_WITHOUT_SCOPE_RE = /^\w+\.\w+$/;
 
 /**
@@ -59,7 +61,7 @@ export function validateCapabilityLabels(capabilities: ResolvedCapabilities): {
   ];
 
   for (const { label, list } of allLabels) {
-    if (CAPABILITY_WITH_SCOPE_RE.test(label)) {
+    if (CAPABILITY_WITH_SCOPE_RE.test(label) || PERSONA_SEND_SCOPED_RE.test(label)) {
       // Fully valid — no warning needed.
       continue;
     }

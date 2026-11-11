@@ -22,6 +22,14 @@ describe('formatCapabilities()', () => {
     expect(output).toContain('net.http:egress');
   });
 
+  it('documents scoped persona.send labels and the cancel tool', () => {
+    const output = formatCapabilities();
+
+    expect(output).toContain('persona.send:*');
+    expect(output).toContain('persona.send:<persona-name>');
+    expect(output).toContain('persona_task_cancel');
+  });
+
   it('includes usage instructions', () => {
     const output = formatCapabilities();
 

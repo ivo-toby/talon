@@ -155,4 +155,36 @@ describe('PersonaTaskStatusHandler', () => {
     expect(failed.status).toBe('error');
     expect(failed.error).toMatch(/failed to load task task-123/);
   });
+
+  it('wraps the polling wait in waitScope and passes the context', async () => {
+    const taskMapper = makeTaskMapper();
+    (taskMapper.getTaskStatus as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      ok(makeTaskStatus({ state: 'completed', result: { text: 'done' } })),
+    );
+    const waitScope = vi.fn(async (fn: () => Promise<unknown>) => fn());
+    const handler = new PersonaTaskStatusHandler({
+      taskMapper,
+      logger: makeLogger(),
+      waitScope: waitScope as never,
+    });
+    const ctx = makeContext();
+
+    const result = await handler.execute({ task_id: 'task-123', wait_ms: 50 }, ctx);
+
+    expect(waitScope).toHaveBeenCalledTimes(1);
+    expect(waitScope).toHaveBeenCalledWith(expect.any(Function), ctx);
+    expect(result.status).toBe('success');
+  });
+
+  it('does not use waitScope for an immediate status read', async () => {
+    const waitScope = vi.fn();
+    const handler = new PersonaTaskStatusHandler({
+      taskMapper: makeTaskMapper(),
+      logger: makeLogger(),
+      waitScope: waitScope as never,
+    });
+    await handler.execute({ task_id: 'task-123' }, makeContext());
+    await handler.execute({ task_id: 'task-123', wait_ms: 0 }, makeContext());
+    expect(waitScope).not.toHaveBeenCalled();
+  });
 });

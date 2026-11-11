@@ -676,6 +676,114 @@ describe('HostToolsBridge', () => {
       expect(response.error).toBe('Invalid JSON');
     });
 
+    it('wires A2A waitScope to release the queue slot only for queue-dispatched runs', async () => {
+      const runWithSlotReleased = vi.fn(async (fn: () => Promise<unknown>) => fn());
+      const a2aCtx = {
+        ...mockCtx,
+        a2aTaskMapper: {} as any,
+        queueManager: { runWithSlotReleased } as any,
+        repos: { ...mockCtx.repos, a2aTask: {} as any },
+      } as any;
+      bridge = new HostToolsBridge(a2aCtx);
+      const scope = (bridge as any).personaSendHandler.deps.waitScope as (
+        fn: () => Promise<string>,
+        context: Record<string, unknown>,
+      ) => Promise<string>;
+      const statusScope = (bridge as any).personaTaskStatusHandler.deps.waitScope;
+      expect(statusScope).toBe(scope);
+
+      await expect(
+        scope(async () => 'queued', { runId: 'run-001', threadId: 't', personaId: 'p' }),
+      ).resolves.toBe('queued');
+      expect(runWithSlotReleased).toHaveBeenCalledWith(expect.any(Function), 'run-001');
+
+      runWithSlotReleased.mockClear();
+      await expect(
+        scope(async () => 'bg', { runId: 'task-1', threadId: 't', personaId: 'p', backgroundTaskId: 'task-1' }),
+      ).resolves.toBe('bg');
+      expect(runWithSlotReleased).not.toHaveBeenCalled();
+    });
+
+    describe('persona.send scopes (host-side enforcement)', () => {
+      const context = {
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        requestId: 'req-001',
+      };
+
+      async function startWithScopes(allow: string[]) {
+        const submitTask = vi.fn().mockReturnValue(ok({ taskId: 'task-1', state: 'submitted' }));
+        const cancelTask = vi.fn().mockReturnValue(ok(true));
+        const getTaskStatus = vi.fn().mockReturnValue(ok({
+          taskId: 'task-1',
+          state: 'submitted',
+          sourcePersona: 'test',
+          targetPersona: 'researcher',
+          threadId: 'thread-001',
+          submittedAt: 1,
+          updatedAt: 1,
+        }));
+        const scopedCtx = {
+          ...mockCtx,
+          a2aTaskMapper: { submitTask, cancelTask, getTaskStatus } as any,
+          queueManager: { runWithSlotReleased: vi.fn(async (fn: () => Promise<unknown>) => fn()) } as any,
+          repos: { ...mockCtx.repos, a2aTask: {} as any },
+          personaLoader: {
+            listNames: vi.fn().mockReturnValue(['test', 'researcher', 'coder', 'admin']),
+            getById: vi.fn().mockReturnValue(ok({ config: { name: 'test' } })),
+            getByName: vi.fn().mockImplementation((name: string) => ok({
+              config: { name, skills: [] },
+              resolvedCapabilities: { allow, requireApproval: [] },
+            })),
+          } as any,
+        } as any;
+        bridge = new HostToolsBridge(scopedCtx);
+        registerActiveRunAuth();
+        bridge.start();
+        await waitForSocket(bridge.path);
+        return { submitTask, cancelTask };
+      }
+
+      const call = (tool: string, args: Record<string, unknown>) =>
+        sendRequest(bridge.path, { id: randomUUID(), tool, args, context });
+
+      it('submits to a scoped target and rejects any other before submitting', async () => {
+        const { submitTask } = await startWithScopes(['persona.send:researcher', 'persona.send:coder']);
+
+        const allowed = await call('persona_send', { target_persona: 'researcher', message: 'hi' });
+        expect((allowed.result as any).status).toBe('success');
+        expect(submitTask).toHaveBeenCalledTimes(1);
+        expect(submitTask.mock.calls[0][0].sourcePersona).toBe('test');
+
+        const denied = await call('persona_send', { target_persona: 'admin', message: 'hi' });
+        expect((denied.result as any).status).toBe('error');
+        expect((denied.result as any).error).toContain('Allowed targets: coder, researcher.');
+        expect(submitTask).toHaveBeenCalledTimes(1);
+      });
+
+      it('allows any target with persona.send:*', async () => {
+        const { submitTask } = await startWithScopes(['persona.send:*']);
+        const res = await call('persona_send', { target_persona: 'admin', message: 'hi' });
+        expect((res.result as any).status).toBe('success');
+        expect(submitTask).toHaveBeenCalledTimes(1);
+      });
+
+      it('persona_list shows only allowed targets', async () => {
+        await startWithScopes(['persona.send:researcher']);
+        const res = await call('persona_list', {});
+        expect(((res.result as any).result as Array<{ name: string }>).map((c) => c.name)).toEqual(['researcher']);
+      });
+
+      it('persona_task_cancel stays available with a scoped label and cancels the caller\'s task', async () => {
+        const { cancelTask } = await startWithScopes(['persona.send:researcher']);
+        const res = await call('persona_task_cancel', { task_id: 'task-1', reason: 'not needed' });
+        expect((res.result as any).status).toBe('success');
+        expect((res.result as any).result).toEqual({ task_id: 'task-1', state: 'canceled', canceled: true });
+        expect(cancelTask).toHaveBeenCalledWith('task-1', 'not needed');
+      });
+    });
+
     it('dispatches memory.access to the memory handler', async () => {
       bridge = new HostToolsBridge(mockCtx);
       registerActiveRunAuth();

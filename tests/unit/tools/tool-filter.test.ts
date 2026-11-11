@@ -143,18 +143,19 @@ describe('filterAllowedMcpTools', () => {
       requireApproval: [],
     };
     const result = filterAllowedMcpTools(caps);
-    expect(result).toHaveLength(14);
+    expect(result).toHaveLength(15);
     expect(result).toContain('image_lookup');
     expect(result).toContain('background_agent');
     expect(result).toContain('persona_send');
     expect(result).toContain('persona_task_status');
+    expect(result).toContain('persona_task_cancel');
     expect(result).toContain('persona_list');
     expect(result).toContain('execution_env');
     expect(result).toContain('channel_list');
     expect(result).toContain('channel_broadcast');
   });
 
-  it('maps persona.send capability to persona_send, persona_task_status, and persona_list MCP tools', () => {
+  it('maps persona.send capability to persona_send, persona_task_status, persona_task_cancel, and persona_list MCP tools', () => {
     const caps: ResolvedCapabilities = {
       allow: ['persona.send:*'],
       requireApproval: [],
@@ -162,8 +163,13 @@ describe('filterAllowedMcpTools', () => {
     const result = filterAllowedMcpTools(caps);
     expect(result).toContain('persona_send');
     expect(result).toContain('persona_task_status');
+    expect(result).toContain('persona_task_cancel');
     expect(result).toContain('persona_list');
-    expect(result).toHaveLength(3);
+    expect(result).toHaveLength(4);
+
+    // A scoped label exposes the same tool set (scope is enforced in the handlers).
+    expect(filterAllowedMcpTools({ allow: ['persona.send:researcher'], requireApproval: [] }).sort())
+      .toEqual([...result].sort());
   });
 
   it('maps subagent.background capability to background_agent MCP tool', () => {
@@ -317,14 +323,15 @@ describe('isToolAllowed', () => {
 // ---------------------------------------------------------------------------
 
 describe('ALL_HOST_TOOLS', () => {
-  it('contains all fourteen host tools', () => {
-    expect(ALL_HOST_TOOLS).toHaveLength(14);
+  it('contains all fifteen host tools', () => {
+    expect(ALL_HOST_TOOLS).toHaveLength(15);
     expect(ALL_HOST_TOOLS).toContain('schedule.manage');
     expect(ALL_HOST_TOOLS).toContain('channel.send');
     expect(ALL_HOST_TOOLS).toContain('channel.list');
     expect(ALL_HOST_TOOLS).toContain('channel.broadcast');
     expect(ALL_HOST_TOOLS).toContain('persona.send');
     expect(ALL_HOST_TOOLS).toContain('persona.task_status');
+    expect(ALL_HOST_TOOLS).toContain('persona.task_cancel');
     expect(ALL_HOST_TOOLS).toContain('persona.list');
     expect(ALL_HOST_TOOLS).toContain('memory.access');
     expect(ALL_HOST_TOOLS).toContain('net.http');
