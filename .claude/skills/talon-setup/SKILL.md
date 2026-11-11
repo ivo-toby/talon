@@ -104,7 +104,10 @@ What would you like to do?
   h) Show current config summary
   i) Test a provider
   j) Check environment variables
+  k) Optimize personas (move prompt content to skills or other personas)
 ```
+
+For option k, invoke the `/optimize-personas` skill.
 
 ## Skill formats
 
@@ -263,6 +266,27 @@ Ask: **"Let's create a persona. What should this agent be called?"**
    - For each selected: `npx talonctl bind --persona <name> --channel <channel>`
 
 Ask: **"Add another persona?"** Loop until done.
+
+#### Where prompt content belongs
+
+Use this rule when you write a prompt for a persona. Apply it from top to
+bottom and stop at the first row that fits.
+
+| Content | Place |
+|---|---|
+| Identity, tone, user preferences, privacy and safety rules | `system.md` or a personality file |
+| Knowledge or a procedure that only some tasks need | Skill of the same persona |
+| Work that needs a different model, different capabilities or mounts, or that runs in parallel or in the background | Separate persona |
+| One step with fixed input and fixed output | Sub-agent |
+
+`system.md` and the personality files go into the prompt on each run. A skill
+adds only its name and description until the agent loads it. A separate persona
+costs a handoff, and it sees only the `message` of the `persona_send` call.
+
+If the setup has two or more personas, tell the user about the
+`/optimize-personas` skill. It audits a setup that has real usage and proposes
+moves between personality files, skills, and personas. Do not run it during a
+first setup.
 
 ### Step 5b: Capability configuration
 

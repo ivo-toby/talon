@@ -73,7 +73,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 
 ### Database
 
-Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`.
+Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`. Later migrations in the same folder add more tables, among them `background_tasks` (003) and `a2a_tasks` (007).
 
 Image tables (migrations `014-image-ledger.sql`, `015-finding-ledger.sql`, `016-image-ingestion-route.sql`): `images` (unique `id` and `(message_id, ordinal)`), `image_ingestions` (per owning message, no queue FK so completion survives queue-item deletion), `image_source_messages`, `image_admission_records`, `findings` + `finding_images`.
 

@@ -106,6 +106,21 @@ Built-in sub-agents in this repo:
 
 Any loaded persona can also act as a background-agent profile. When a foreground agent calls `background_agent` with `action: "profiles"`, Talon returns persona names plus the optional description parsed from each persona's `system.md` frontmatter.
 
+## Where prompt content belongs
+
+`system.md` and each file in `personality/` go into the system prompt on each run. A skill adds only its name and description until the agent calls `skill_load`. Use this rule from top to bottom and stop at the first row that fits.
+
+| Content | Place |
+|---|---|
+| Identity, tone, user preferences, privacy and safety rules | `system.md` or a personality file |
+| Knowledge or a procedure that only some tasks need | Skill of the same persona |
+| Work that needs a different model, different capabilities or mounts, or that runs in parallel or in the background | Separate persona |
+| One step with fixed input and fixed output | Sub-agent |
+
+A separate persona costs a handoff and a model call, and it sees only the `message` of the `persona_send` call. A background agent without a `profile` gets the full prompt of the persona that owns the thread, so a lean persona as profile keeps background agents small.
+
+The `optimize-personas` skill in `.claude/skills/` and `.agents/skills/` audits a setup that has real usage. It measures the always-loaded files, reads run counts from the database, and proposes moves that you approve one at a time.
+
 ## Bindings
 
 Personas are routed to channels through `bindings`:
