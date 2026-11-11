@@ -166,3 +166,22 @@ describe('MCP exposure and call gating', () => {
     expect(gate.ok).toBe(false);
   });
 });
+
+describe('persona delegation tool definitions', () => {
+  it('persona_send explains isolation, results, failure and discovery', () => {
+    const tool = findTool('persona_send');
+    expect(tool.description).toContain('ONLY `message`');
+    expect(tool.description).toContain('persona_list');
+    expect(tool.description).toContain('queued');
+    expect(tool.description).toContain('cancel_on_timeout');
+    expect(tool.description).toContain('`result`');
+    expect(tool.description).toContain('"failed" state is final');
+    expect(tool.inputSchema.properties.message.description).toContain('only thing the target sees');
+    expect(tool.inputSchema.properties.target_persona.description).toContain('persona_list');
+  });
+
+  it('persona_list and persona_task_status describe what they return', () => {
+    expect(findTool('persona_list').description).toContain('name, description and skills');
+    expect(findTool('persona_task_status').description).toContain('wait_ms');
+  });
+});

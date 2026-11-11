@@ -255,7 +255,9 @@ Ask: **"Let's create a persona. What should this agent be called?"**
    - **"Any specific constraints?"** (optional)
 4. Generate a system prompt from the answers
 5. Show it to the user for review
-6. Write the approved prompt to `personas/{name}/system.md`
+6. Write the approved prompt to `personas/{name}/system.md`, starting with YAML
+   frontmatter containing a one-line `description:` (what tasks to delegate to
+   this persona); other personas use it to choose `persona_send` targets
 7. Ask which channels to bind:
    - Run: `npx talonctl list-channels` to show options
    - For each selected: `npx talonctl bind --persona <name> --channel <channel>`

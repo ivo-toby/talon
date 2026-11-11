@@ -3202,6 +3202,47 @@ describe('AgentRunner', () => {
       expect(systemPrompt).toContain('Available channels');
     });
 
+    describe('persona roster', () => {
+      function setupRoster(allow: string[]): void {
+        (runner as any).ctx.toolInstructions = new Map([
+          ['persona.send', '## Persona Delegation\n\nDelegate things.'],
+        ]);
+        const personas: Record<string, any> = {
+          main: {
+            config: { name: 'main', model: 'claude-sonnet-4-20250514', skills: [], capabilities: { allow: [] } },
+            systemPromptContent: 'You are a test bot.',
+            resolvedCapabilities: { allow, requireApproval: [] },
+          },
+          reviewer: {
+            config: { name: 'reviewer', skills: [], capabilities: { allow: [] } },
+            description: 'Reviews code for security issues',
+            resolvedCapabilities: { allow: [], requireApproval: [] },
+          },
+        };
+        const loader = (runner as any).ctx.personaLoader;
+        loader.getByName.mockImplementation((name: string) => ok(personas[name] ?? personas.main));
+        loader.listNames = vi.fn().mockReturnValue(['reviewer', 'main']);
+      }
+
+      it('appends the roster (excluding self) when persona_send is allowed', async () => {
+        setupRoster(['persona.send:*']);
+        await runner.run(makeQueueItem());
+        const queryCall = mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } };
+        const systemPrompt = queryCall.options.systemPrompt;
+        expect(systemPrompt).toContain('## Persona Delegation');
+        expect(systemPrompt).toContain('Available personas:\n- reviewer: Reviews code for security issues');
+        expect(systemPrompt).not.toContain('- main:');
+      });
+
+      it('omits the roster when persona_send is not allowed', async () => {
+        setupRoster(['memory.access']);
+        await runner.run(makeQueueItem());
+        const queryCall = mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } };
+        expect(queryCall.options.systemPrompt).not.toContain('Available personas:');
+        expect(queryCall.options.systemPrompt).not.toContain('Persona Delegation');
+      });
+    });
+
     it('includes personalityContent between system prompt and channel context', async () => {
       // Override personaLoader to return a persona with personalityContent.
       (runner as any).ctx.personaLoader.getByName.mockReturnValue(

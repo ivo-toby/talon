@@ -8,8 +8,8 @@
  * that stale/unloaded personas are never advertised.
  */
 
-import fs from 'node:fs';
 import type pino from 'pino';
+import { getPersonaDescription } from '../../personas/persona-description.js';
 import type { PersonaLoader } from '../../personas/persona-loader.js';
 import type { ToolCallResult, ToolManifest } from '../tool-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
@@ -30,7 +30,8 @@ export interface PersonaCard {
 export class PersonaListHandler {
   static readonly manifest: ToolManifest = {
     name: 'persona.list',
-    description: 'Lists available personas for delegation via persona_send.',
+    description:
+      'Lists the personas you can delegate to via persona_send: name, description and skills of each.',
     capabilities: ['persona.send:*'],
     executionLocation: 'host',
   };
@@ -41,20 +42,6 @@ export class PersonaListHandler {
       logger: pino.Logger;
     },
   ) {}
-
-  private readDescription(systemPromptFile: string | null | undefined): string | null {
-    if (!systemPromptFile) return null;
-    try {
-      const content = fs.readFileSync(systemPromptFile, 'utf-8');
-      for (const line of content.split('\n')) {
-        const trimmed = line.replace(/^#+\s*/, '').trim();
-        if (trimmed) return trimmed;
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  }
 
   async execute(_args: PersonaListArgs, context: ToolExecutionContext): Promise<ToolCallResult> {
     const requestId = context.requestId ?? 'unknown';
@@ -77,7 +64,7 @@ export class PersonaListHandler {
         const loadedResult = this.deps.personaLoader.getByName(name);
         const loaded = loadedResult.isOk() && loadedResult.value ? loadedResult.value : null;
         const skills = loaded ? loaded.config.skills : [];
-        const description = this.readDescription(loaded?.config.systemPromptFile);
+        const description = getPersonaDescription(loaded);
         return { name, description, skills };
       });
 

@@ -131,7 +131,10 @@ Default to no skills unless the user explicitly asks for one.
 Generate a 1-2 sentence description of the persona's purpose and strengths.
 This is written as YAML frontmatter in `system.md` and exposed via the
 `background_agent profiles` action so that agents can discover available
-profiles at runtime.
+profiles at runtime. It is also what other personas see when choosing a
+`persona_send` delegation target (roster in their system prompt and
+`persona_list`), so state what tasks the persona should receive and what it
+returns.
 
 Good descriptions are specific enough to differentiate profiles:
 

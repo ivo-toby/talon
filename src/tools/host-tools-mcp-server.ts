@@ -378,20 +378,26 @@ const TOOLS = [
   {
     name: 'persona_send',
     description:
-      'Send a task to another persona via the A2A layer. Tasks sent to a busy persona are queued, not rejected. '
-      + 'Set await_reply to wait for the result; the wait is capped by timeout_ms (max 1800000 ms, default 300000). '
-      + 'If the result state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
-      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled".',
+      'Delegate a self-contained task to another persona, which has its own system prompt, skills and tools, '
+      + 'keeping that work out of your own context. The target sees ONLY `message`: no conversation history, summary, '
+      + 'images or findings from this thread, so write a complete brief (goal, relevant facts and identifiers, constraints, '
+      + 'expected output format). Use persona_list to pick a target. Tasks sent to a busy persona are queued, not rejected. '
+      + 'Set await_reply to wait for the result, which comes back as text in `result`; the wait (including any queue time) is '
+      + 'capped by timeout_ms (max 1800000 ms, default 300000). '
+      + 'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
+      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled". '
+      + 'A "failed" state is final (no automatic retry); you decide whether to resend.',
     inputSchema: {
       type: 'object' as const,
       properties: {
         target_persona: {
           type: 'string' as const,
-          description: 'Target persona name from talond.yaml',
+          description: 'Name of the persona to delegate to, exactly as returned by persona_list',
         },
         message: {
           type: 'string' as const,
-          description: 'Text task to send to the target persona',
+          description:
+            'Complete, self-contained brief for the target persona. It is the only thing the target sees: include the goal, all relevant facts and identifiers, constraints, and the output format you expect.',
         },
         await_reply: {
           type: 'boolean' as const,
@@ -412,7 +418,8 @@ const TOOLS = [
   },
   {
     name: 'persona_task_status',
-    description: 'Fetch the status or final result of a delegated task created via persona_send',
+    description:
+      'Fetch the status or final result of a task created via persona_send, e.g. after a "timeout". Use wait_ms to wait for completion. States: submitted/working (not done), completed (text in `result`), failed and canceled (both final; you decide whether to resend).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -622,7 +629,8 @@ const TOOLS = [
   },
   {
     name: 'persona_list',
-    description: 'List all personas available for delegation via persona_send',
+    description:
+      'List the personas you can delegate to via persona_send. Returns the name, description and skills of each persona (excluding yourself).',
     inputSchema: { type: 'object' as const, properties: {}, required: [] },
   },
   IMAGE_LOOKUP_TOOL,

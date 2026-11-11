@@ -17,6 +17,7 @@ import type { QueueItem } from '../queue/queue-types.js';
 import { QueueDeferral } from '../queue/queue-processor.js';
 import { filterAllowedMcpTools, HOST_TOOL_REGISTRY } from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
+import { buildPersonaRosterAppendix } from '../personas/persona-roster.js';
 import { hasOAuthMcpAuth, resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import {
@@ -724,6 +725,11 @@ export class AgentRunner {
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,
                 allowedMcpTools,
+                buildPersonaRosterAppendix(
+                  this.ctx.personaLoader,
+                  allowedMcpTools,
+                  loadedPersona.config.name ?? personaName,
+                ),
               );
               const systemPromptParts = [
                 personaRuntimeContext.personaPrompt,

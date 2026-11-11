@@ -61,14 +61,16 @@ function makeLoadedPersona(overrides: Partial<LoadedPersona> = {}): LoadedPerson
   };
 }
 
-function makePersonaLoader(personas: Array<{ id?: string; name: string; skills: string[] }>): PersonaLoader {
+function makePersonaLoader(
+  personas: Array<{ id?: string; name: string; skills: string[]; extra?: Partial<LoadedPersona> }>,
+): PersonaLoader {
   const names = personas.map((p) => p.name);
   return {
     listNames: vi.fn().mockReturnValue(names),
     getByName: vi.fn().mockImplementation((name: string) => {
       const found = personas.find((p) => p.name === name);
       if (!found) return ok(undefined);
-      return ok(makeLoadedPersona({ config: makePersonaConfig({ name, skills: found.skills }) }));
+      return ok(makeLoadedPersona({ config: makePersonaConfig({ name, skills: found.skills }), ...found.extra }));
     }),
     getById: vi.fn().mockImplementation((id: string) => {
       const found = personas.find((p) => p.id === id);
@@ -175,5 +177,30 @@ describe('PersonaListHandler — only live personas shown', () => {
     const names = (result.result as Array<{ name: string }>).map((c) => c.name);
     expect(names).not.toContain('stale-persona');
     expect(names).toContain('researcher');
+  });
+});
+
+describe('PersonaListHandler — description', () => {
+  async function describeOf(extra: Partial<LoadedPersona>): Promise<string | null> {
+    const loader = makePersonaLoader([{ id: 'p2', name: 'other', skills: [], extra }]);
+    const handler = new PersonaListHandler({ personaLoader: loader, logger: makeLogger() });
+    const result = await handler.execute({}, makeContext({ personaId: 'p1' }));
+    return (result.result as Array<{ description: string | null }>)[0]!.description;
+  }
+
+  it('prefers the frontmatter description', async () => {
+    expect(
+      await describeOf({ description: 'Reviews code', systemPromptContent: '# Other heading' }),
+    ).toBe('Reviews code');
+  });
+
+  it('falls back to the first content line, skipping frontmatter', async () => {
+    expect(
+      await describeOf({ systemPromptContent: '---\nname: x\n---\n\n## You review code\nMore' }),
+    ).toBe('You review code');
+  });
+
+  it('falls back to the first content line when there is no frontmatter', async () => {
+    expect(await describeOf({ systemPromptContent: '\n# Helper\nbody' })).toBe('Helper');
   });
 });

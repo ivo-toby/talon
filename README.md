@@ -3456,6 +3456,16 @@ Lifecycle guarantees:
 - **Stale tasks are reaped.** At startup and every 60 seconds, tasks whose queue item is gone, completed or dead-lettered are marked `failed` (`ORPHANED`), and tasks older than `taskTtlMinutes` are canceled.
 - **Hot reload** rebuilds the agent cards, so a persona added by `talonctl reload` is routable immediately. Changes to the `a2a:` limits themselves need a restart.
 
+### Persona discovery
+
+Delegating personas find targets through the `description:` key in the target's `system.md` frontmatter. It appears in two places: an "Available personas:" roster appended to the persona-delegation instructions in the system prompt of every persona allowed `persona_send` (one line per other loaded persona, sorted by name, descriptions cut to 200 characters, at most 30 entries, rebuilt on hot reload), and the `persona_list` tool (name, description, skills). Without a `description:`, both fall back to the first line of the prompt body; a persona with neither shows a reminder to add one in the roster. Write it so a caller can tell when to delegate to this persona:
+
+```markdown
+---
+description: "Code reviewer: security and performance review of diffs and PRs; returns findings ranked by severity"
+---
+```
+
 ### Agent-facing flow
 
 The normal synchronous pattern is:
