@@ -381,11 +381,12 @@ const TOOLS = [
       'Delegate a self-contained task to another persona, which has its own system prompt, skills and tools, '
       + 'keeping that work out of your own context. The target sees ONLY `message`: no conversation history, summary, '
       + 'images or findings from this thread, so write a complete brief (goal, relevant facts and identifiers, constraints, '
-      + 'expected output format). Use persona_list to pick a target. Tasks sent to a busy persona are queued, not rejected. '
+      + 'expected output format). Use persona_list to pick a target (only the personas listed there are allowed). Tasks sent to a busy persona are queued, not rejected. '
       + 'Set await_reply to wait for the result, which comes back as text in `result`; the wait (including any queue time) is '
       + 'capped by timeout_ms (max 1800000 ms, default 300000). '
       + 'If the state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
-      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled". '
+      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled"; '
+      + 'stop it yourself with persona_task_cancel. '
       + 'A "failed" state is final (no automatic retry); you decide whether to resend.',
     inputSchema: {
       type: 'object' as const,
@@ -430,6 +431,28 @@ const TOOLS = [
         wait_ms: {
           type: 'integer' as const,
           description: 'Optional wait time in milliseconds for the task to reach a terminal state. Default: 0.',
+        },
+      },
+      required: ['task_id'],
+    },
+  },
+  {
+    name: 'persona_task_cancel',
+    description:
+      'Cancel a task you delegated via persona_send, e.g. after a "timeout" or when the work is no longer needed. '
+      + 'A queued task is dropped and a running one is stopped. Only tasks you submitted in this conversation can be canceled. '
+      + 'Returns { task_id, state, canceled }: canceled=true means this call canceled it; canceled=false means it had already '
+      + 'finished and `state` is its real final state (completed/failed/canceled), so use persona_task_status to read the result.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        task_id: {
+          type: 'string' as const,
+          description: 'Task ID returned by persona_send',
+        },
+        reason: {
+          type: 'string' as const,
+          description: 'Optional short reason, recorded on the canceled task',
         },
       },
       required: ['task_id'],

@@ -336,7 +336,9 @@ scheduler:
 # Agent-to-agent (A2A) limits.
 #
 # Talon uses the Google A2A task model (in-process only) so personas can
-# delegate tasks to each other (see `persona_send` / `persona_task_status` host tools). These
+# delegate tasks to each other (see `persona_send` / `persona_task_status` / `persona_task_cancel`
+# host tools; a persona's `persona.send:<persona-name>` capability labels limit which personas it may
+# delegate to, `persona.send:*` allows any). These
 # knobs cap how aggressive that delegation is allowed to be.
 #
 # Defaults shown below match the built-in values — omit the entire block to

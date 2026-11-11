@@ -11,6 +11,11 @@ import type { A2ATaskRow, A2ATaskState } from '../../a2a/a2a-types.js';
 import type { A2ATaskRepository } from '../../core/database/repositories/a2a-task-repository.js';
 import type { PersonaRepository } from '../../core/database/repositories/persona-repository.js';
 import { ToolError } from '../../core/errors/error-types.js';
+import {
+  allowedDelegationTargets,
+  describeDelegationTargets,
+} from '../../personas/persona-delegation.js';
+import type { ResolvedCapabilities } from '../../personas/persona-types.js';
 import type { ToolCallResult, ToolManifest } from '../tool-types.js';
 import type { ToolExecutionContext } from './channel-send.js';
 import {
@@ -66,6 +71,11 @@ export class PersonaSendHandler {
       taskRepo: A2ATaskRepository;
       personaRepo: PersonaRepository;
       logger: pino.Logger;
+      /**
+       * Resolves the CALLING persona's capabilities on the host from the trusted
+       * run context (fail-closed). Used to enforce `persona.send:<name>` scopes.
+       */
+      resolveCapabilities: (personaId: string) => ResolvedCapabilities;
       maxWaitMs?: number;
       pollIntervalMs?: number;
       /**
@@ -101,6 +111,22 @@ export class PersonaSendHandler {
     if (sourcePersona.isErr()) {
       this.deps.logger.error({ requestId, personaId: context.personaId }, sourcePersona.error.message);
       return this.errorResult(requestId, sourcePersona.error.message);
+    }
+
+    // Host-side scope enforcement from the caller's own resolved capabilities,
+    // before anything is persisted or queued. A delegated persona's own
+    // persona_send runs through here with ITS capabilities, so hops cannot widen
+    // the set of reachable personas.
+    const allowedTargets = allowedDelegationTargets(this.deps.resolveCapabilities(context.personaId));
+    if (allowedTargets !== 'all' && !allowedTargets.has(validatedArgs.value.target_persona)) {
+      const message =
+        `persona.send: delegating to "${validatedArgs.value.target_persona}" is not allowed for this persona. `
+        + `Allowed targets: ${describeDelegationTargets(allowedTargets)}.`;
+      this.deps.logger.warn(
+        { requestId, personaId: context.personaId, targetPersona: validatedArgs.value.target_persona },
+        'persona.send: rejected target outside persona.send scope',
+      );
+      return this.errorResult(requestId, message);
     }
 
     const submitResult = this.deps.taskMapper.submitTask({

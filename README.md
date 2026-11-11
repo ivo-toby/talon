@@ -1018,7 +1018,8 @@ prompt a user or block execution.
 | Capability               | Description                                                                 |
 | ------------------------ | --------------------------------------------------------------------------- |
 | `channel.send:<channel>` | Send messages to a specific channel                                         |
-| `persona.send:*`         | Delegate to another persona, list personas, and fetch delegated task status |
+| `persona.send:*`         | Delegate to any persona, list personas, and fetch or cancel delegated tasks |
+| `persona.send:<persona>` | Delegate only to that persona (repeat the label for several); same list/status/cancel tools |
 | `schedule.manage`        | Create/modify/delete scheduled tasks                                        |
 | `memory.access`          | Read/write per-thread structured memory                                     |
 | `net.http`               | Fetch external URLs                                                         |
@@ -2508,6 +2509,7 @@ npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
 | ----------------------------- | --------------------------------------------------- |
 | `a2a list`                    | List A2A tasks with optional filters                |
 | `a2a send <target> <message>` | Submit a manual A2A task to a persona (for testing) |
+| `a2a cancel <taskId>`         | Cancel an A2A task (aborts an in-flight run when talond is running) |
 
 **`a2a list`** options:
 
@@ -2525,11 +2527,21 @@ npx talonctl whatsapp-auth --auth-dir ./baileys-auth --timeout 180
 | `--source <persona>` | Source persona name | `cli`         |
 | `--config <path>`    | Path to talond.yaml | `talond.yaml` |
 
+**`a2a cancel`** options:
+
+| Option            | Description                                                             | Default            |
+| ----------------- | ----------------------------------------------------------------------- | ------------------ |
+| `--reason <text>` | Reason recorded on the canceled task                                    | `canceled via talonctl` |
+| `--ipc-dir <path>`| Daemon IPC directory                                                    | `data/ipc/daemon`  |
+| `--timeout <ms>`  | How long to wait for the daemon before falling back to the database     | `5000`             |
+| `--config <path>` | Path to talond.yaml (used for the database fallback)                    | `talond.yaml`      |
+
 ```bash
 npx talonctl a2a list
 npx talonctl a2a list --status working --target software-engineer
 npx talonctl a2a send software-engineer "Review the latest PR"
 npx talonctl a2a send software-engineer "Run tests" --source james
+npx talonctl a2a cancel 2b004602-b6ac-4dec-bd7b-f88e0565a16a --reason "superseded"
 ```
 
 ### Doctor Checks
@@ -2664,6 +2676,7 @@ Agents interact with the host through a small set of MCP tools exposed over a Un
 | `channel_broadcast`   | Fan out a message to every chat the persona is bound to; skips channel-default bindings (no `thread_id`) with a warning |
 | `persona_send`        | Submit a delegated A2A task to another persona                           |
 | `persona_task_status` | Fetch the status or result of a delegated A2A task                       |
+| `persona_task_cancel` | Cancel a delegated A2A task you submitted (queued or running)            |
 | `persona_list`        | List personas available for delegation                                   |
 | `memory_access`       | Read/write per-thread memory                                             |
 | `net_http`            | Fetch external URLs                                                      |
@@ -3410,13 +3423,29 @@ Talon uses the task model of [Google's A2A protocol](https://google.github.io/A2
 
 Each persona is automatically discoverable as an A2A agent with a card describing its capabilities, skills, and endpoint. When persona A needs to delegate work to persona B, it submits a task via the internal A2A server. The task is persisted to the `a2a_tasks` table, enqueued as a `collaboration` queue item, and processed by the daemon exactly like any other message — but against the target persona's full model configuration.
 
-For agent-facing delegation, Talon exposes three host tools behind the same capability family:
+For agent-facing delegation, Talon exposes four host tools behind the same capability family:
 
 - `persona_send` submits a delegated task
 - `persona_task_status` fetches the current status or final result later
-- `persona_list` lists available target personas
+- `persona_task_cancel` cancels a task the calling persona delegated (a queued task is dropped, an in-flight run is aborted). It returns `{ task_id, state, canceled }`; `canceled: false` means the task had already finished and `state` is its real final state. A persona can only cancel tasks it submitted itself in its current thread
+- `persona_list` lists the target personas the caller may delegate to
 
-All three are granted by the same capability label: `persona.send:*`. No separate capability is needed for task status lookups.
+All four are granted by the same capability family: `persona.send:*` or a scoped `persona.send:<persona-name>`. No separate capability is needed for status lookups or cancellation.
+
+#### Restricting delegation targets
+
+`persona.send:*` lets a persona delegate to any persona. To limit it, list one `persona.send:<persona-name>` label per allowed target instead:
+
+```yaml
+personas:
+  - name: coordinator
+    capabilities:
+      allow:
+        - persona.send:researcher
+        - persona.send:code-reviewer
+```
+
+`coordinator` can now delegate only to `researcher` and `code-reviewer`. `persona_send` rejects any other target before anything is queued, with an error that names the allowed targets, and `persona_list` and the "Available personas:" roster in the system prompt show only those two. The check runs in the daemon from the calling persona's own capabilities, so a delegated persona's `persona_send` is limited by its own labels, not its caller's. `persona_task_status` and `persona_task_cancel` stay available with any `persona.send` label. A wildcard wins over scoped labels, an unscoped `persona.send` behaves like `persona.send:*` (as an unscoped label does for every other tool), labels in `requireApproval` count the same as `allow`, and names are matched exactly (case-sensitive). A scoped name that matches no configured persona is logged as a warning at load and never matches.
 
 ```
 Persona A (source)
@@ -3475,7 +3504,7 @@ The normal synchronous pattern is:
 3. If the sync wait expires, the caller receives a structured timeout response with the `task_id`
 4. The caller can then use `persona_task_status` to poll or wait for the final result without querying the raw database
 
-`persona_send` waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms` (max 30 minutes). After a `timeout` result the delegated task keeps running; set `cancel_on_timeout: true` to cancel it instead (a pending task is dropped, an in-flight run is aborted). `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state.
+`persona_send` waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms` (max 30 minutes). After a `timeout` result the delegated task keeps running; set `cancel_on_timeout: true` to cancel it instead (a pending task is dropped, an in-flight run is aborted). `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state. To stop a delegation you no longer need, call `persona_task_cancel` with its `task_id`.
 
 Timeouts to keep aligned: the wait includes time the task spends queued behind other tasks for the same persona, and it counts toward the calling persona's own `queryTimeoutMinutes` (default 10). For delegations that can take longer than 5 minutes, raise `timeout_ms` and the orchestrating persona's `queryTimeoutMinutes` together, or send without `await_reply` and collect the result with `persona_task_status`.
 
@@ -3523,6 +3552,18 @@ talonctl a2a send software-engineer "Run the test suite" --source james
 ```
 
 `a2a send` inserts a task directly into the database and enqueues it for processing. If the daemon is running, the task will be picked up immediately. If not, it will be processed on next daemon start.
+
+**Cancel a task:**
+
+```bash
+# Cancel by full task ID (as printed by `a2a send` and shown in persona_send results)
+talonctl a2a cancel 2b004602-b6ac-4dec-bd7b-f88e0565a16a
+
+# Record why
+talonctl a2a cancel 2b004602-b6ac-4dec-bd7b-f88e0565a16a --reason "superseded"
+```
+
+`a2a cancel` asks the running daemon (IPC command `a2a-cancel`) so an in-flight run is aborted; if the daemon does not answer within `--timeout`, it cancels directly in the database (a queued task is dropped; no run can be in flight without a daemon). It prints `canceled`, `already <state>` for a finished task (exit 0), or `task not found` (exit 1). The full task ID is required: `a2a list` shows only the first 8 characters, so read the full ID from the database or the `persona_send` result.
 
 ### Configuration
 

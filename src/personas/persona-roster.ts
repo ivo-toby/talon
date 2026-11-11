@@ -4,6 +4,8 @@
 
 import type { PersonaLoader } from './persona-loader.js';
 import { getPersonaDescription } from './persona-description.js';
+import { filterDelegationTargets } from './persona-delegation.js';
+import type { ResolvedCapabilities } from './persona-types.js';
 
 export const ROSTER_MAX_PERSONAS = 30;
 export const ROSTER_MAX_DESCRIPTION_CHARS = 200;
@@ -51,15 +53,17 @@ export function renderPersonaRoster(
 /**
  * Builds the roster from the live loader (reflects hot reload). Returns the
  * appendix map for `resolveToolInstructions`, or `undefined` when
- * `persona_send` is not among the allowed tools.
+ * `persona_send` is not among the allowed tools. Only personas the caller may
+ * delegate to (`persona.send` scopes in `capabilities`) are listed.
  */
 export function buildPersonaRosterAppendix(
   loader: Pick<PersonaLoader, 'listNames' | 'getByName'>,
   allowedMcpTools: readonly string[],
   selfName: string,
+  capabilities: ResolvedCapabilities,
 ): Record<string, string> | undefined {
   if (!allowedMcpTools.includes('persona_send')) return undefined;
-  const personas = loader.listNames().map((name) => {
+  const personas = filterDelegationTargets(capabilities, loader.listNames()).map((name) => {
     const loaded = loader.getByName(name);
     const persona = loaded.isOk() ? loaded.value : undefined;
     return { name, description: getPersonaDescription(persona) };

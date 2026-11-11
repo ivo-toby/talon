@@ -17,7 +17,7 @@ import { z } from 'zod';
 // ---------------------------------------------------------------------------
 
 /** Union of all supported daemon control commands. */
-export type DaemonCommandType = 'status' | 'reload' | 'shutdown' | 'queue-purge';
+export type DaemonCommandType = 'status' | 'reload' | 'shutdown' | 'queue-purge' | 'a2a-cancel';
 
 /** A command sent by `talonctl` to the running `talond` process. */
 export interface DaemonCommand {
@@ -54,7 +54,7 @@ export interface DaemonResponse {
 /** Zod schema for validating serialised {@link DaemonCommand} objects. */
 export const DaemonCommandSchema = z.object({
   id: z.uuid(),
-  command: z.enum(['status', 'reload', 'shutdown', 'queue-purge']),
+  command: z.enum(['status', 'reload', 'shutdown', 'queue-purge', 'a2a-cancel']),
   payload: z.record(z.string(), z.unknown()).optional(),
 });
 

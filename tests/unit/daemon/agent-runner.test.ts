@@ -3234,6 +3234,22 @@ describe('AgentRunner', () => {
         expect(systemPrompt).not.toContain('- main:');
       });
 
+      it('lists only scoped delegation targets in the roster', async () => {
+        setupRoster(['persona.send:nobody']);
+        await runner.run(makeQueueItem());
+        const queryCall = mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } };
+        const systemPrompt = queryCall.options.systemPrompt;
+        expect(systemPrompt).toContain('## Persona Delegation');
+        expect(systemPrompt).toContain('Available personas: none');
+        expect(systemPrompt).not.toContain('- reviewer:');
+
+        mockQuery.mockClear();
+        setupRoster(['persona.send:reviewer']);
+        await runner.run(makeQueueItem());
+        const scoped = (mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } }).options.systemPrompt;
+        expect(scoped).toContain('Available personas:\n- reviewer: Reviews code for security issues');
+      });
+
       it('omits the roster when persona_send is not allowed', async () => {
         setupRoster(['memory.access']);
         await runner.run(makeQueueItem());

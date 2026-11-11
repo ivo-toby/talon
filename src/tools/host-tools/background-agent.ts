@@ -297,6 +297,7 @@ export class BackgroundAgentHandler {
         this.deps.personaLoader,
         allowedMcpTools,
         loadedPersona.config.name ?? targetPersonaName,
+        loadedPersona.resolvedCapabilities,
       ),
     );
 

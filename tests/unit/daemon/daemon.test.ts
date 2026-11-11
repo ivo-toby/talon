@@ -896,4 +896,86 @@ describe('TalondDaemon', () => {
       expect(daemon.state).toBe('running');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // a2a-cancel IPC command
+  // -------------------------------------------------------------------------
+
+  describe('a2a-cancel IPC command', () => {
+    const command = (payload?: Record<string, unknown>) => ({
+      id: '11111111-1111-4111-8111-111111111111',
+      command: 'a2a-cancel' as const,
+      ...(payload ? { payload } : {}),
+    });
+    const handle = (payload?: Record<string, unknown>) =>
+      (daemon as any).handleIpcCommand(command(payload)) as Promise<{
+        success: boolean;
+        error?: string;
+        data?: Record<string, unknown>;
+      }>;
+
+    function mapper(overrides: Record<string, unknown> = {}) {
+      return {
+        getTaskStatus: vi.fn().mockReturnValue(ok({ taskId: 't1', state: 'working' })),
+        cancelTask: vi.fn().mockReturnValue(ok(true)),
+        setAbortHook: vi.fn(),
+        reapStaleTasks: vi.fn().mockReturnValue(ok([])),
+        ...overrides,
+      };
+    }
+
+    it('cancels through the task mapper (so the abort hook can stop a run)', async () => {
+      const a2aTaskMapper = mapper();
+      a2aTaskMapper.getTaskStatus
+        .mockReturnValueOnce(ok({ taskId: 't1', state: 'working' }))
+        .mockReturnValueOnce(ok({ taskId: 't1', state: 'canceled' }));
+      setupSuccessfulBootstrap({ a2aTaskMapper: a2aTaskMapper as any });
+      await daemon.start('/config.yaml');
+
+      const response = await handle({ taskId: 't1', reason: 'because' });
+
+      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'because');
+      expect(response.success).toBe(true);
+      expect(response.data).toEqual({ taskId: 't1', found: true, canceled: true, state: 'canceled' });
+    });
+
+    it('reports an already-terminal task as canceled=false with its real state', async () => {
+      const a2aTaskMapper = mapper({
+        getTaskStatus: vi.fn().mockReturnValue(ok({ taskId: 't1', state: 'completed' })),
+        cancelTask: vi.fn().mockReturnValue(ok(false)),
+      });
+      setupSuccessfulBootstrap({ a2aTaskMapper: a2aTaskMapper as any });
+      await daemon.start('/config.yaml');
+
+      const response = await handle({ taskId: 't1' });
+
+      expect(a2aTaskMapper.cancelTask).toHaveBeenCalledWith('t1', 'canceled via talonctl');
+      expect(response.data).toEqual({ taskId: 't1', found: true, canceled: false, state: 'completed' });
+    });
+
+    it('reports an unknown task as found=false without canceling', async () => {
+      const a2aTaskMapper = mapper({ getTaskStatus: vi.fn().mockReturnValue(ok(null)) });
+      setupSuccessfulBootstrap({ a2aTaskMapper: a2aTaskMapper as any });
+      await daemon.start('/config.yaml');
+
+      const response = await handle({ taskId: 'nope' });
+
+      expect(response.success).toBe(true);
+      expect(response.data).toEqual({ taskId: 'nope', found: false, canceled: false });
+      expect(a2aTaskMapper.cancelTask).not.toHaveBeenCalled();
+    });
+
+    it('fails without a taskId, and when A2A is unavailable', async () => {
+      setupSuccessfulBootstrap({ a2aTaskMapper: mapper() as any });
+      await daemon.start('/config.yaml');
+      expect((await handle({})).success).toBe(false);
+      await daemon.stop();
+
+      setupSuccessfulBootstrap({ a2aTaskMapper: null });
+      await daemon.start('/config.yaml');
+      const response = await handle({ taskId: 't1' });
+      expect(response.success).toBe(false);
+      expect(response.error).toContain('A2A is not available');
+    });
+  });
 });

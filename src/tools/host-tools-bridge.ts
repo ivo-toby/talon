@@ -19,6 +19,7 @@ import { ChannelListHandler, type ChannelListArgs } from './host-tools/channel-l
 import { ChannelBroadcastHandler, type ChannelBroadcastArgs } from './host-tools/channel-broadcast.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
 import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
+import { PersonaTaskCancelHandler, type PersonaTaskCancelArgs } from './host-tools/persona-task-cancel.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
@@ -89,6 +90,7 @@ export class HostToolsBridge {
   private channelBroadcastHandler: ChannelBroadcastHandler;
   private personaSendHandler: PersonaSendHandler | null = null;
   private personaTaskStatusHandler: PersonaTaskStatusHandler | null = null;
+  private personaTaskCancelHandler: PersonaTaskCancelHandler | null = null;
   private personaListHandler: PersonaListHandler;
   private httpHandler: HttpProxyHandler;
   private dbHandler: DbQueryHandler;
@@ -152,7 +154,13 @@ export class HostToolsBridge {
         taskRepo: ctx.repos.a2aTask,
         personaRepo: ctx.repos.persona,
         logger: ctx.logger,
+        resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
         waitScope,
+      });
+      this.personaTaskCancelHandler = new PersonaTaskCancelHandler({
+        taskMapper: ctx.a2aTaskMapper,
+        personaRepo: ctx.repos.persona,
+        logger: ctx.logger,
       });
       this.personaTaskStatusHandler = new PersonaTaskStatusHandler({
         taskMapper: ctx.a2aTaskMapper,
@@ -164,6 +172,7 @@ export class HostToolsBridge {
     this.personaListHandler = new PersonaListHandler({
       personaLoader: ctx.personaLoader,
       logger: ctx.logger,
+      resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
     });
 
     this.httpHandler = new HttpProxyHandler({
@@ -664,6 +673,17 @@ export class HostToolsBridge {
           };
         }
         return this.personaTaskStatusHandler.execute(args as unknown as PersonaTaskStatusArgs, context);
+
+      case 'persona.task_cancel':
+        if (!this.personaTaskCancelHandler) {
+          return {
+            requestId: context.requestId ?? 'unknown',
+            tool,
+            status: 'error',
+            error: 'A2A task mapper not initialized',
+          };
+        }
+        return this.personaTaskCancelHandler.execute(args as unknown as PersonaTaskCancelArgs, context);
 
       case 'persona.list':
         return this.personaListHandler.execute({}, context);

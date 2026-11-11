@@ -48,7 +48,7 @@ import { listThreadsCommand } from './commands/list-threads.js';
 import { resetProviderAffinityCommand } from './commands/reset-provider-affinity.js';
 import { whatsappAuthCommand } from './commands/whatsapp-auth.js';
 import { setCapabilitiesCommand } from './commands/set-capabilities.js';
-import { a2aListCommand, a2aSendCommand } from './commands/a2a.js';
+import { a2aCancelCommand, a2aListCommand, a2aSendCommand } from './commands/a2a.js';
 
 // Load .env before anything else so ${VAR} substitution works in config.
 const envPath = resolve(process.env.TALOND_ENV_FILE || '.env');
@@ -949,6 +949,28 @@ a2a
         targetPersona,
         message,
         sourcePersona: opts.source,
+      });
+    },
+  );
+
+a2a
+  .command('cancel <taskId>')
+  .description('Cancel an A2A task (stops an in-flight run when talond is running)')
+  .option('--reason <text>', 'Reason recorded on the canceled task')
+  .option('--ipc-dir <path>', 'IPC directory (overrides config default)')
+  .option('--timeout <ms>', 'Milliseconds to wait for the daemon before falling back to the database', '5000')
+  .option('--config <path>', 'Path to talond.yaml', DEFAULT_CONFIG_PATH)
+  .action(
+    async (
+      taskId: string,
+      opts: { reason?: string; ipcDir?: string; timeout: string; config: string },
+    ) => {
+      await a2aCancelCommand({
+        configPath: opts.config,
+        taskId,
+        reason: opts.reason,
+        ipcDir: opts.ipcDir,
+        timeoutMs: parseInt(opts.timeout, 10),
       });
     },
   );

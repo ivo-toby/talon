@@ -184,4 +184,16 @@ describe('persona delegation tool definitions', () => {
     expect(findTool('persona_list').description).toContain('name, description and skills');
     expect(findTool('persona_task_status').description).toContain('wait_ms');
   });
+
+  it('persona_task_cancel is defined with task_id required and explains canceled=false', () => {
+    const tool = findTool('persona_task_cancel');
+    expect(tool.inputSchema.required).toEqual(['task_id']);
+    expect(Object.keys(tool.inputSchema.properties).sort()).toEqual(['reason', 'task_id']);
+    expect(tool.description).toContain('canceled=false');
+    expect(tool.description).toContain('persona_send');
+  });
+
+  it('persona_send points at persona_task_cancel in its timeout guidance', () => {
+    expect(findTool('persona_send').description).toContain('persona_task_cancel');
+  });
 });

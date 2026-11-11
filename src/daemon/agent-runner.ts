@@ -729,6 +729,7 @@ export class AgentRunner {
                   this.ctx.personaLoader,
                   allowedMcpTools,
                   loadedPersona.config.name ?? personaName,
+                  loadedPersona.resolvedCapabilities,
                 ),
               );
               const systemPromptParts = [

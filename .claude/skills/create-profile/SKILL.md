@@ -90,6 +90,7 @@ Use these exact labels.
 | search, fetch, http, api | `net.http` | |
 | queue async work, background jobs | `subagent.background` | |
 | ask another agent inline, specialist consultation | `subagent.invoke` | |
+| delegate to / hand work to another persona | `persona.send:<persona-name>` (one label per allowed target; `persona.send:*` for any) | |
 | image, photo, screenshot, what does this show | `image.read:thread` | |
 | schedule, cron, recurring tasks | | `schedule.manage` |
 | query, database, SQL | | `db.query` |

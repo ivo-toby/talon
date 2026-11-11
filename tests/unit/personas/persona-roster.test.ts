@@ -65,6 +65,8 @@ describe('renderPersonaRoster', () => {
   });
 });
 
+const ALL = { allow: ['persona.send:*'], requireApproval: [] };
+
 describe('buildPersonaRosterAppendix', () => {
   const loader = {
     listNames: () => ['me', 'b'],
@@ -72,12 +74,46 @@ describe('buildPersonaRosterAppendix', () => {
   } as never;
 
   it('returns undefined when persona_send is not allowed', () => {
-    expect(buildPersonaRosterAppendix(loader, ['persona_list'], 'me')).toBeUndefined();
+    expect(buildPersonaRosterAppendix(loader, ['persona_list'], 'me', ALL)).toBeUndefined();
   });
 
   it('keys the roster by the persona.send prefix', () => {
-    expect(buildPersonaRosterAppendix(loader, ['persona_send'], 'me')).toEqual({
+    expect(buildPersonaRosterAppendix(loader, ['persona_send'], 'me', ALL)).toEqual({
       'persona.send': 'Available personas:\n- b: Bee',
+    });
+  });
+
+  describe('scoped delegation targets', () => {
+    const wide = {
+      listNames: () => ['me', 'b', 'c', 'd'],
+      getByName: (n: string) => ok({ description: `desc ${n}` }),
+    } as never;
+
+    it('lists only personas named by scoped labels', () => {
+      expect(
+        buildPersonaRosterAppendix(wide, ['persona_send'], 'me', {
+          allow: ['persona.send:b', 'persona.send:d'],
+          requireApproval: [],
+        }),
+      ).toEqual({ 'persona.send': 'Available personas:\n- b: desc b\n- d: desc d' });
+    });
+
+    it('reports none when no scoped name is loaded', () => {
+      const out = buildPersonaRosterAppendix(wide, ['persona_send'], 'me', {
+        allow: ['persona.send:ghost'],
+        requireApproval: [],
+      });
+      expect(out?.['persona.send']).toMatch(/^Available personas: none/);
+    });
+
+    it('lists all other personas for persona.send:* and unscoped persona.send', () => {
+      for (const label of ['persona.send:*', 'persona.send']) {
+        const out = buildPersonaRosterAppendix(wide, ['persona_send'], 'me', {
+          allow: [label],
+          requireApproval: [],
+        });
+        expect(out?.['persona.send']).toBe('Available personas:\n- b: desc b\n- c: desc c\n- d: desc d');
+      }
     });
   });
 });

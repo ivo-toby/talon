@@ -778,6 +778,58 @@ export class TalondDaemon {
         };
       }
 
+      case 'a2a-cancel': {
+        // Runs inside the daemon so cancelTask's abort hook can stop an
+        // in-flight run (a CLI-side DB cancel cannot).
+        const mapper = this.ctx?.a2aTaskMapper ?? null;
+        if (!mapper) {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: 'A2A is not available in this daemon',
+          };
+        }
+        const taskId = typeof command.payload?.taskId === 'string' ? command.payload.taskId.trim() : '';
+        if (taskId === '') {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: 'a2a-cancel requires payload.taskId',
+          };
+        }
+        const reason =
+          typeof command.payload?.reason === 'string' && command.payload.reason.trim() !== ''
+            ? command.payload.reason.trim()
+            : 'canceled via talonctl';
+
+        const before = mapper.getTaskStatus(taskId);
+        if (before.isErr()) {
+          return { id: responseId, commandId: command.id, success: false, error: before.error.message };
+        }
+        if (before.value === null) {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: true,
+            data: { taskId, found: false, canceled: false },
+          };
+        }
+        const cancelResult = mapper.cancelTask(taskId, reason);
+        if (cancelResult.isErr()) {
+          return { id: responseId, commandId: command.id, success: false, error: cancelResult.error.message };
+        }
+        const after = mapper.getTaskStatus(taskId);
+        const state = after.isOk() && after.value ? after.value.state : before.value.state;
+        return {
+          id: responseId,
+          commandId: command.id,
+          success: true,
+          data: { taskId, found: true, canceled: cancelResult.value, state },
+        };
+      }
+
       default: {
         const unknownCommand = command.command;
         return {
