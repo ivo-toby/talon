@@ -87,6 +87,11 @@ summary of the content.
 Read the usage from the database. The path comes from `storage.path` in
 `talond.yaml` (default `data/talond.sqlite`). Open it read-only.
 
+The tables `background_tasks` and `a2a_tasks` and the column `runs.model_name`
+come from later migrations. If a query fails with `no such table` or
+`no such column`, the database is behind on migrations. Tell the user to run
+`npx talonctl migrate`, and continue without that evidence.
+
 Runs and input tokens per persona, last 30 days:
 
 ```bash
