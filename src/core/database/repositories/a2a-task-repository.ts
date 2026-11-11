@@ -140,7 +140,7 @@ export class A2ATaskRepository extends BaseRepository {
     this.countOlderSubmittedStmt = db.prepare(`
       SELECT COUNT(*) as count FROM a2a_tasks
       WHERE target_persona = @target AND state = 'submitted'
-        AND (submitted_at < @submitted_at OR (submitted_at = @submitted_at AND id < @id))
+        AND rowid < (SELECT rowid FROM a2a_tasks WHERE id = @id)
     `);
 
     this.admitStmt = db.prepare(`
@@ -262,7 +262,8 @@ export class A2ATaskRepository extends BaseRepository {
    * - terminal    -> 'terminal'
    * - 'submitted' -> admitted (and set to 'working') iff
    *     (other tasks for the target running) + (older submitted tasks for the target) < limit,
-   *   else 'wait' (FIFO fairness by submitted_at then id).
+   *   else 'wait'. FIFO by insertion order (rowid), which matches queue dispatch
+   *   order even when several tasks are submitted in the same millisecond.
    * - unknown id  -> 'missing'
    */
   tryAdmit(
@@ -278,11 +279,7 @@ export class A2ATaskRepository extends BaseRepository {
         if (row.state === 'input-required') return 'admitted';
         const running = (this.countOthersRunningStmt.get({ target: row.target_persona, id: row.id }) as { count: number }).count;
         const older = (
-          this.countOlderSubmittedStmt.get({
-            target: row.target_persona,
-            submitted_at: row.submitted_at,
-            id: row.id,
-          }) as { count: number }
+          this.countOlderSubmittedStmt.get({ target: row.target_persona, id: row.id }) as { count: number }
         ).count;
         if (running + older >= maxConcurrentPerTarget) return 'wait';
         this.admitStmt.run({ id: row.id, now: this.now() });
