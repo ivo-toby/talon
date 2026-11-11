@@ -48,6 +48,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import { AgentRunner } from '../../../src/daemon/agent-runner.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { type QueueItem, QueueItemStatus } from '../../../src/queue/queue-types.js';
+import { QueueDeferral } from '../../../src/queue/queue-processor.js';
 import { ProviderRegistry } from '../../../src/providers/provider-registry.js';
 import { ClaudeCodeProvider } from '../../../src/providers/claude-code-provider.js';
 import type {
@@ -72,6 +73,20 @@ function makeQueueItem(overrides: Record<string, unknown> = {}): QueueItem {
     updatedAt: Date.now(),
     ...overrides,
   } as QueueItem;
+}
+
+function makeA2ATaskRepoMock(
+  overrides: Record<string, unknown> = {},
+  state: string = 'submitted',
+): Record<string, any> {
+  return {
+    findById: vi.fn().mockReturnValue(ok({ id: 'a2a-task', state, target_persona: 'TestBot' })),
+    tryAdmit: vi.fn().mockReturnValue(ok('admitted')),
+    markWorking: vi.fn().mockReturnValue(ok(true)),
+    markCompleted: vi.fn().mockReturnValue(ok(true)),
+    markFailed: vi.fn().mockReturnValue(ok(true)),
+    ...overrides,
+  };
 }
 
 const GENERATION_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
@@ -126,6 +141,7 @@ function makeMockContext(): DaemonContext {
   return {
     db: {} as any,
     config: {
+      a2a: { maxConcurrentPerTarget: 1 },
       agentRunner: {
         defaultProvider: 'claude-code',
         providers: {
@@ -2303,11 +2319,7 @@ describe('AgentRunner', () => {
         },
         isError: false,
       });
-      (ctx.repos as any).a2aTask = {
-        markWorking: vi.fn().mockReturnValue(ok(undefined)),
-        markCompleted: vi.fn().mockReturnValue(ok(undefined)),
-        markFailed: vi.fn().mockReturnValue(ok(undefined)),
-      };
+      (ctx.repos as any).a2aTask = makeA2ATaskRepoMock();
       vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('source-thread-session');
       vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok('db-source-thread-session'));
       ctx.providerRegistry = {
@@ -2364,6 +2376,155 @@ describe('AgentRunner', () => {
         'a2a-task-1',
         'A2A worker output',
       );
+      // Context isolation: no source-thread summary / recent messages / image replay.
+      expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+      expect(ctx.observability.observe).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
+        expect.any(Function),
+      );
+    });
+
+    describe('A2A lifecycle', () => {
+      const a2aItem = (overrides: Record<string, unknown> = {}, payload: Record<string, unknown> = {}) =>
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            personaId: 'persona-001',
+            kind: 'a2a_task',
+            taskId: 'a2a-task-x',
+            content: 'Do the thing',
+            ...payload,
+          },
+          ...overrides,
+        });
+
+      const useFailingSdkProvider = (): void => {
+        ctx.providerRegistry = {
+          getDefault: vi.fn().mockReturnValue({
+            provider: {
+              name: 'failing-cli',
+              createExecutionStrategy: () => ({
+                type: 'cli' as const,
+                supportsSessionResumption: false as const,
+                run: vi.fn().mockRejectedValue(new Error('boom')),
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({ inputTokens: 0, metrics: {} }),
+            },
+            config: makeAgentRunnerProviderConfig(),
+          }),
+        } as any;
+      };
+
+      it.each(['completed', 'failed', 'canceled'])(
+        'skips a %s task with ok and does not run',
+        async (state) => {
+          (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({}, state);
+          const result = await runner.run(a2aItem());
+          expect(result.isOk()).toBe(true);
+          expect(ctx.repos.run.insert).not.toHaveBeenCalled();
+          expect((ctx.repos as any).a2aTask.tryAdmit).not.toHaveBeenCalled();
+        },
+      );
+
+      it('skips a missing task with ok', async () => {
+        (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({
+          findById: vi.fn().mockReturnValue(ok(null)),
+        });
+        const result = await runner.run(a2aItem());
+        expect(result.isOk()).toBe(true);
+        expect(ctx.repos.run.insert).not.toHaveBeenCalled();
+      });
+
+      it('defers with QueueDeferral when admission says wait', async () => {
+        (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({
+          tryAdmit: vi.fn().mockReturnValue(ok('wait')),
+        });
+        const result = await runner.run(a2aItem());
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr()).toBeInstanceOf(QueueDeferral);
+        expect(ctx.repos.run.insert).not.toHaveBeenCalled();
+        expect((ctx.repos as any).a2aTask.tryAdmit).toHaveBeenCalledWith('a2a-task-x', 1);
+      });
+
+      it('leaves the task non-terminal on a non-final execution failure', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        useFailingSdkProvider();
+        const result = await runner.run(a2aItem({ attempts: 0, maxAttempts: 3 }));
+        expect(result.isErr()).toBe(true);
+        expect(repo.markFailed).not.toHaveBeenCalled();
+      });
+
+      it('marks the task failed on a final execution failure', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        useFailingSdkProvider();
+        const result = await runner.run(a2aItem({ attempts: 2, maxAttempts: 3 }));
+        expect(result.isErr()).toBe(true);
+        expect(repo.markFailed).toHaveBeenCalledWith('a2a-task-x', 'EXECUTION_ERROR', expect.any(String));
+      });
+
+      it('returns ok (no retry) when the task was canceled during the run', async () => {
+        const findById = vi
+          .fn()
+          .mockReturnValueOnce(ok({ id: 'a2a-task-x', state: 'working', target_persona: 'TestBot' }))
+          .mockReturnValue(ok({ id: 'a2a-task-x', state: 'canceled', target_persona: 'TestBot' }));
+        const repo = makeA2ATaskRepoMock({ findById }, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        useFailingSdkProvider();
+        const result = await runner.run(a2aItem({ attempts: 2, maxAttempts: 3 }));
+        expect(result.isOk()).toBe(true);
+        expect(repo.markFailed).not.toHaveBeenCalled();
+      });
+
+      it('fails a task immediately (config error) when the persona is missing', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'submitted');
+        (ctx.repos as any).a2aTask = repo;
+        vi.mocked(ctx.repos.persona.findById).mockReturnValue(ok(null) as any);
+        const result = await runner.run(a2aItem({ attempts: 0, maxAttempts: 3 }));
+        expect(result.isErr()).toBe(true);
+        expect(repo.markFailed).toHaveBeenCalledWith('a2a-task-x', 'PERSONA_NOT_FOUND', expect.any(String));
+        // A retry then sees a terminal task and is a no-op.
+        (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({}, 'failed');
+        expect((await runner.run(a2aItem({ attempts: 1, maxAttempts: 3 }))).isOk()).toBe(true);
+      });
+
+      it('aborts an in-flight run via abortA2ATask', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        let started!: () => void;
+        const startedP = new Promise<void>((r) => (started = r));
+        ctx.providerRegistry = {
+          getDefault: vi.fn().mockReturnValue({
+            provider: {
+              name: 'hang-cli',
+              createExecutionStrategy: () => ({
+                type: 'cli' as const,
+                supportsSessionResumption: false as const,
+                run: vi.fn().mockImplementation(() => {
+                  started();
+                  return new Promise(() => {});
+                }),
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({ inputTokens: 0, metrics: {} }),
+            },
+            config: makeAgentRunnerProviderConfig(),
+          }),
+        } as any;
+        const running = runner.run(a2aItem({ attempts: 2, maxAttempts: 3 }));
+        await startedP;
+        // Cancellation flips the task state, then aborts the run.
+        repo.findById.mockReturnValue(ok({ id: 'a2a-task-x', state: 'canceled', target_persona: 'TestBot' }));
+        expect(runner.abortA2ATask('a2a-task-x')).toBe(true);
+        const result = await running;
+        expect(result.isOk()).toBe(true);
+        expect(repo.markFailed).not.toHaveBeenCalled();
+        expect(runner.abortA2ATask('a2a-task-x')).toBe(false);
+      });
     });
 
     it('ignores source-thread provider affinity for A2A tasks and uses the delegated persona provider', async () => {
@@ -2376,11 +2537,7 @@ describe('AgentRunner', () => {
         },
         isError: false,
       });
-      (ctx.repos as any).a2aTask = {
-        markWorking: vi.fn().mockReturnValue(ok(undefined)),
-        markCompleted: vi.fn().mockReturnValue(ok(undefined)),
-        markFailed: vi.fn().mockReturnValue(ok(undefined)),
-      };
+      (ctx.repos as any).a2aTask = makeA2ATaskRepoMock();
       vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
         ok({
           config: {

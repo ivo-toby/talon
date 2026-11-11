@@ -23,6 +23,8 @@ import {
   MAX_HOPS,
   MAX_CONCURRENT_PER_TARGET,
   DEFAULT_A2A_MAX_ATTEMPTS,
+  DEFAULT_A2A_MAX_QUEUED_PER_TARGET,
+  DEFAULT_A2A_TASK_TTL_MINUTES,
 } from '../../a2a/a2a-types.js';
 
 // ---------------------------------------------------------------------------
@@ -422,15 +424,19 @@ export const A2AConfigSchema = z.object({
   maxHops: z.number().int().min(1).max(32).default(MAX_HOPS),
   /**
    * Maximum number of in-flight (submitted/working/input-required) A2A tasks
-   * targeting a single persona. Additional submissions are rejected until one
-   * completes. Set higher to allow parallel delegation to the same persona.
+   * targeting a single persona that may RUN at once. Additional submissions wait
+   * in a FIFO backlog (see maxQueuedPerTarget) until a slot frees up.
    */
   maxConcurrentPerTarget: z.number().int().min(1).max(100).default(MAX_CONCURRENT_PER_TARGET),
   /**
-   * Max queue retry attempts for collaboration queue items before they move
-   * to the dead-letter queue.
+   * Max queue attempts for collaboration queue items before they move to the
+   * dead-letter queue. Default 1: runs with side effects are not blindly re-run.
    */
   maxAttempts: z.number().int().min(1).max(20).default(DEFAULT_A2A_MAX_ATTEMPTS),
+  /** Max tasks waiting (submitted) for a single target persona; further submissions are rejected. */
+  maxQueuedPerTarget: z.number().int().min(0).max(1000).default(DEFAULT_A2A_MAX_QUEUED_PER_TARGET),
+  /** Non-terminal tasks older than this many minutes are canceled by the reaper. */
+  taskTtlMinutes: z.number().int().min(1).max(1440).default(DEFAULT_A2A_TASK_TTL_MINUTES),
 });
 
 // ---------------------------------------------------------------------------

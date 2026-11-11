@@ -3404,7 +3404,7 @@ Talon's data model supports supervisor/worker patterns via `parent_run_id` in th
 
 ## Agent-to-Agent Communication (A2A)
 
-Talon implements [Google's A2A protocol](https://google.github.io/A2A/) for internal persona-to-persona task routing. Any persona can delegate a task to another persona without human involvement, enabling supervisor/worker workflows and specialised delegation chains.
+Talon uses the task model of [Google's A2A protocol](https://google.github.io/A2A/) for internal persona-to-persona task routing. It is in-process only and not wire-compatible: there is no network endpoint, only `tasks/send` and `tasks/get` exist, and there is no streaming. Any persona can delegate a task to another persona without human involvement, enabling supervisor/worker workflows and specialised delegation chains.
 
 ### How it works
 
@@ -3439,12 +3439,22 @@ a2a_tasks (completed / failed)
 
 | State            | Meaning                                       |
 | ---------------- | --------------------------------------------- |
-| `submitted`      | Task accepted, enqueued for processing        |
-| `working`        | AgentRunner has started processing            |
-| `input-required` | Target persona is waiting for clarification   |
-| `completed`      | Target persona finished and returned a result |
-| `failed`         | Processing failed with an error code          |
-| `canceled`       | Task was canceled before completion           |
+| `submitted`      | Task accepted, waiting for a free slot on the target persona |
+| `working`        | Admitted; AgentRunner is processing                           |
+| `input-required` | Reserved; never set by the current implementation            |
+| `completed`      | Target persona finished and returned a result                |
+| `failed`         | Final failure, with an error code                            |
+| `canceled`       | Canceled (await timeout with `cancel_on_timeout`, or TTL)    |
+
+Lifecycle guarantees:
+
+- **Terminal states are final.** `completed`, `failed` and `canceled` are never overwritten, and a queue item whose task is terminal is skipped instead of run.
+- **Busy personas queue, they do not reject.** At most `maxConcurrentPerTarget` tasks run per target persona; further tasks stay `submitted` and are admitted in submission order. A submit is rejected only when the backlog for that persona reaches `maxQueuedPerTarget`, or when it would create a delegation cycle (the target is already running an ancestor of this task and would wait on itself).
+- **`failed` means final.** With `maxAttempts > 1` a task stays `working` across queue retries and is only marked `failed` on the last attempt.
+- **Delegated runs are isolated.** The target persona receives only the delegated `message` plus its own system prompt, skills and tools. It gets no summary, recent messages, images or Findings from the source thread, so put everything it needs in `message`.
+- **Waiting does not hold a queue slot.** A run blocked in `persona_send` (`await_reply`) or `persona_task_status` (`wait_ms`) releases its `queue.concurrencyLimit` slot until it resumes, so delegated children can always be dispatched.
+- **Stale tasks are reaped.** At startup and every 60 seconds, tasks whose queue item is gone, completed or dead-lettered are marked `failed` (`ORPHANED`), and tasks older than `taskTtlMinutes` are canceled.
+- **Hot reload** rebuilds the agent cards, so a persona added by `talonctl reload` is routable immediately. Changes to the `a2a:` limits themselves need a restart.
 
 ### Agent-facing flow
 
@@ -3455,7 +3465,9 @@ The normal synchronous pattern is:
 3. If the sync wait expires, the caller receives a structured timeout response with the `task_id`
 4. The caller can then use `persona_task_status` to poll or wait for the final result without querying the raw database
 
-`persona_send` now waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms`. `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state.
+`persona_send` waits up to 5 minutes by default when `await_reply: true`. You can override that with `timeout_ms` (max 30 minutes). After a `timeout` result the delegated task keeps running; set `cancel_on_timeout: true` to cancel it instead (a pending task is dropped, an in-flight run is aborted). `persona_task_status` supports an optional `wait_ms` parameter for polling until the task reaches a terminal state.
+
+Timeouts to keep aligned: the wait includes time the task spends queued behind other tasks for the same persona, and it counts toward the calling persona's own `queryTimeoutMinutes` (default 10). For delegations that can take longer than 5 minutes, raise `timeout_ms` and the orchestrating persona's `queryTimeoutMinutes` together, or send without `await_reply` and collect the result with `persona_task_status`.
 
 Examples:
 
@@ -3505,22 +3517,30 @@ talonctl a2a send software-engineer "Run the test suite" --source james
 ### Configuration
 
 A2A runtime limits live under the top-level `a2a:` block in `talond.yaml`. All
-three keys are optional and fall back to the built-in defaults shown below:
+keys are optional and fall back to the built-in defaults shown below:
 
 ```yaml
 a2a:
   maxHops: 4 # max delegation chain depth (1..32)
-  maxConcurrentPerTarget: 1 # max in-flight tasks per target persona (1..100)
-  maxAttempts: 3 # max queue retries before dead-letter (1..20)
+  maxConcurrentPerTarget: 1 # tasks that may run at once per target persona (1..100)
+  maxQueuedPerTarget: 10 # tasks that may wait per target persona (0..1000)
+  maxAttempts: 1 # queue attempts before dead-letter (1..20)
+  taskTtlMinutes: 60 # non-terminal tasks older than this are canceled (1..1440)
 ```
 
 - **`maxHops`** — a task is rejected when its incoming `hopCount >= maxHops`.
   Raise this if your supervisor/worker chains genuinely need more depth.
-- **`maxConcurrentPerTarget`** — admission control at submission time. Submissions
-  beyond the cap fail with a "Max allowed" error. Raise this to allow parallel
-  fan-out to the same persona.
-- **`maxAttempts`** — retry budget for the `collaboration` queue items that
-  carry A2A tasks. After this many failures the item is dead-lettered.
+- **`maxConcurrentPerTarget`** — how many tasks may run at once for one target
+  persona. Tasks beyond the cap wait in submission order. Raise this to allow
+  parallel fan-out to the same persona.
+- **`maxQueuedPerTarget`** — how many tasks may wait for one target persona.
+  Submissions beyond it are rejected with a "Max queued" error.
+- **`maxAttempts`** — attempt budget for the `collaboration` queue items that
+  carry A2A tasks. The default of 1 means a failed run is not re-run blindly:
+  the calling agent sees `failed` and decides whether to resend. Raising it
+  re-runs the whole delegated task, including its side effects.
+- **`taskTtlMinutes`** — upper bound on how long a task may stay non-terminal
+  before the reaper cancels it.
 
 ### Milestone 1 scope
 
@@ -3528,9 +3548,10 @@ The current implementation covers:
 
 - Internal-only task routing (no external HTTP exposure)
 - Single-hop and multi-hop delegation (configurable via `a2a.maxHops`, default 4)
-- Concurrency admission per target persona (configurable via
-  `a2a.maxConcurrentPerTarget`, default 1)
-- Configurable queue retry budget (`a2a.maxAttempts`, default 3)
+- Per-target concurrency with a bounded FIFO backlog (`a2a.maxConcurrentPerTarget`,
+  default 1; `a2a.maxQueuedPerTarget`, default 10)
+- Configurable queue attempt budget (`a2a.maxAttempts`, default 1)
+- Cancellation, stale-task reaping and a task TTL (`a2a.taskTtlMinutes`, default 60)
 - Full task lifecycle tracking in `a2a_tasks` table
 - Agent card discovery per persona
 - CLI commands for listing and submitting tasks

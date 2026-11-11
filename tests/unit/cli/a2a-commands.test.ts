@@ -6,6 +6,7 @@ import { ChannelRepository } from '../../../src/core/database/repositories/chann
 import { ThreadRepository } from '../../../src/core/database/repositories/thread-repository.js';
 import { A2ATaskRepository } from '../../../src/core/database/repositories/a2a-task-repository.js';
 import { listA2ATasks, sendA2ATask } from '../../../src/cli/commands/a2a.js';
+import { defaultA2ALimits } from '../../../src/a2a/a2a-types.js';
 import { createTestDb, uuid } from '../core/database/repositories/helpers.js';
 
 // ---------------------------------------------------------------------------
@@ -184,14 +185,23 @@ describe('sendA2ATask()', () => {
       .toThrow(/Unknown target persona/);
   });
 
-  it('throws when target persona already has an active task', () => {
+  it('queues a second task for a busy target instead of rejecting it', () => {
     seedPersona(db, 'busy-bot');
 
-    // First task succeeds
-    sendA2ATask({ db, targetPersona: 'busy-bot', message: 'First task' });
+    const first = sendA2ATask({ db, targetPersona: 'busy-bot', message: 'First task' });
+    const second = sendA2ATask({ db, targetPersona: 'busy-bot', message: 'Second task' });
 
-    // Second should be rejected
-    expect(() => sendA2ATask({ db, targetPersona: 'busy-bot', message: 'Second task' }))
-      .toThrow(/already has .* active task/);
+    expect(second.state).toBe('submitted');
+    expect(second.taskId).not.toBe(first.taskId);
+  });
+
+  it('rejects once the queued backlog for the target is full', () => {
+    seedPersona(db, 'busy-bot');
+    const limits = { ...defaultA2ALimits(), maxQueuedPerTarget: 1 };
+
+    sendA2ATask({ db, targetPersona: 'busy-bot', message: 'First task', limits });
+    expect(() =>
+      sendA2ATask({ db, targetPersona: 'busy-bot', message: 'Second task', limits }),
+    ).toThrow(/queued task/);
   });
 });

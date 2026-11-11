@@ -16,6 +16,21 @@ import { type QueueItem } from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
 
 /**
+ * Sentinel error a handler may return to defer an item without consuming a
+ * retry attempt (e.g. waiting for A2A admission). The item returns to
+ * 'pending' and is retried after `delayMs`. Deferral never dead-letters.
+ */
+export class QueueDeferral extends Error {
+  constructor(
+    message: string,
+    public readonly delayMs: number = 2000,
+  ) {
+    super(message);
+    this.name = 'QueueDeferral';
+  }
+}
+
+/**
  * Processes queue items with retry and dead-letter support.
  *
  * Key invariants:
@@ -179,6 +194,20 @@ export class QueueProcessor {
           this.logger.error(
             { err: completeResult.error, itemId: item.id },
             'processNext: failed to complete item',
+          );
+        }
+      } else if (handlerResult.error instanceof QueueDeferral) {
+        const deferral = handlerResult.error;
+        const deferResult = this.queueRepo.defer(item.id, Date.now() + deferral.delayMs);
+        if (deferResult.isErr()) {
+          this.logger.error(
+            { err: deferResult.error, itemId: item.id },
+            'processNext: failed to defer item',
+          );
+        } else {
+          this.logger.debug(
+            { itemId: item.id, delayMs: deferral.delayMs, reason: deferral.message },
+            'queue item deferred',
           );
         }
       } else {

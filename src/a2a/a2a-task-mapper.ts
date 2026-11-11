@@ -20,6 +20,7 @@ import {
   type A2AAgentCard,
   type A2ATaskPayload,
   type A2ATaskStatus,
+  type A2ATaskRow,
   type A2ALimits,
   defaultA2ALimits,
 } from './a2a-types.js';
@@ -45,6 +46,9 @@ export interface SubmitTaskInput {
   traceId?: string;
 }
 
+/** Grace period on updated_at before a task with a finished queue item is treated as orphaned. */
+const ORPHAN_GRACE_MS = 60_000;
+
 // ---------------------------------------------------------------------------
 // A2ATaskMapper
 // ---------------------------------------------------------------------------
@@ -55,6 +59,7 @@ export interface SubmitTaskInput {
  */
 export class A2ATaskMapper {
   private readonly limits: A2ALimits;
+  private abortHook: ((taskId: string) => void) | null = null;
 
   constructor(
     private readonly taskRepo: A2ATaskRepository,
@@ -66,6 +71,11 @@ export class A2ATaskMapper {
     limits?: A2ALimits,
   ) {
     this.limits = limits ?? defaultA2ALimits();
+  }
+
+  /** Registers a hook invoked when a task is canceled so an in-flight run can be aborted. */
+  setAbortHook(hook: ((taskId: string) => void) | null): void {
+    this.abortHook = hook;
   }
 
   // ---------------------------------------------------------------------------
@@ -80,7 +90,8 @@ export class A2ATaskMapper {
    * 2. Check hop limit
    * 3. Verify target persona exists in registry and DB
    * 4. Verify source thread exists
-   * 5. Check concurrency admission control
+   * 5. Check queued-backlog bound and delegation cycles (concurrency itself is
+   *    enforced at dispatch time via A2ATaskRepository.tryAdmit; excess tasks wait)
    * 6. Persist the task record as 'submitted'
    * 7. Enqueue a 'collaboration' queue item
    * 8. Attach the queue item ID to the task record
@@ -161,17 +172,49 @@ export class A2ATaskMapper {
 
     try {
       this.taskRepo.transaction(() => {
-        // 6. Concurrency admission inside the transaction (atomic with the insert).
-        const activeResult = this.taskRepo.countActiveByTarget(targetPersona);
-        if (activeResult.isErr()) {
-          txError = new A2AError(`Failed to check concurrency for ${targetPersona}: ${activeResult.error.message}`);
-          throw activeResult.error;
+        // 6a. Bounded backlog: reject when too many tasks already wait for this target.
+        const queuedResult = this.taskRepo.countQueuedByTarget(targetPersona);
+        if (queuedResult.isErr()) {
+          txError = new A2AError(`Failed to check backlog for ${targetPersona}: ${queuedResult.error.message}`);
+          throw queuedResult.error;
         }
-        if (activeResult.value >= this.limits.maxConcurrentPerTarget) {
+        if (queuedResult.value >= this.limits.maxQueuedPerTarget) {
           txError = new A2AError(
-            `Target persona ${targetPersona} already has ${activeResult.value} active task(s). Max allowed: ${this.limits.maxConcurrentPerTarget}`,
+            `Target persona ${targetPersona} already has ${queuedResult.value} queued task(s). Max queued: ${this.limits.maxQueuedPerTarget}`,
           );
           throw new Error(txError.message);
+        }
+
+        // 6b. Delegation cycle: if non-terminal ancestors already occupy the target's
+        // concurrency slots, this task would wait on a persona that is itself waiting
+        // on this task — a guaranteed deadlock.
+        if (parentTaskId) {
+          let busyAncestors = 0;
+          let cursor: string | null = parentTaskId;
+          for (let i = 0; cursor && i <= this.limits.maxHops + 1; i++) {
+            const ancestorResult = this.taskRepo.findById(cursor);
+            if (ancestorResult.isErr()) {
+              txError = new A2AError(`Failed to inspect delegation chain: ${ancestorResult.error.message}`);
+              throw ancestorResult.error;
+            }
+            const ancestor: A2ATaskRow | null = ancestorResult.value;
+            if (!ancestor) break;
+            if (
+              ancestor.target_persona === targetPersona &&
+              ancestor.state !== 'completed' &&
+              ancestor.state !== 'failed' &&
+              ancestor.state !== 'canceled'
+            ) {
+              busyAncestors++;
+            }
+            cursor = ancestor.parent_task_id;
+          }
+          if (busyAncestors >= this.limits.maxConcurrentPerTarget) {
+            txError = new A2AError(
+              `Task rejected: delegation cycle — persona ${targetPersona} is busy running an ancestor task that is waiting on this one`,
+            );
+            throw new Error(txError.message);
+          }
         }
 
         // 7. Persist the task as 'submitted' with the full request payload for audit.
@@ -234,6 +277,100 @@ export class A2ATaskMapper {
       submittedAt: now,
       updatedAt: now,
     });
+  }
+
+  /**
+   * Cancels a non-terminal task. Returns Ok(true) if this call canceled it,
+   * Ok(false) if it was already terminal or unknown. On success the pending
+   * queue item (if not yet claimed) is canceled best-effort and the abort hook
+   * is invoked so an in-flight run stops.
+   */
+  cancelTask(taskId: string, reason: string): Result<boolean, A2AError> {
+    const found = this.taskRepo.findById(taskId);
+    if (found.isErr()) {
+      return err(new A2AError(`Failed to load task ${taskId}: ${found.error.message}`));
+    }
+    const row = found.value;
+    if (!row) return ok(false);
+
+    const result = this.taskRepo.markCanceled(taskId, reason);
+    if (result.isErr()) {
+      return err(new A2AError(`Failed to cancel task ${taskId}: ${result.error.message}`));
+    }
+    if (!result.value) return ok(false);
+
+    if (row.queue_item_id) {
+      const cancelResult = this.queueRepo.cancelPending(row.queue_item_id);
+      if (cancelResult.isErr()) {
+        this.logger.warn(
+          { taskId, queueItemId: row.queue_item_id, err: cancelResult.error.message },
+          'Failed to cancel queue item for canceled A2A task',
+        );
+      }
+    }
+    if (this.abortHook) {
+      try {
+        this.abortHook(taskId);
+      } catch (cause) {
+        this.logger.warn({ taskId, err: String(cause) }, 'A2A abort hook threw');
+      }
+    }
+    this.logger.info({ taskId, reason }, 'A2A task canceled');
+    return ok(true);
+  }
+
+  /**
+   * Reaps stale non-terminal tasks.
+   *
+   * (a) Orphans: no queue item attached, queue item row gone, or queue item
+   *     completed/dead_letter (and task untouched for >= 60s) -> failed ORPHANED.
+   * (b) Tasks older than `taskTtlMinutes` since submission -> canceled ('ttl expired').
+   *
+   * Tasks whose queue item is pending/claimed/processing/failed and within TTL are left alone.
+   *
+   * @returns IDs of the tasks that were reaped by this call.
+   */
+  reapStaleTasks(now: number = Date.now()): Result<string[], A2AError> {
+    const listResult = this.taskRepo.findNonTerminalWithQueueStatus();
+    if (listResult.isErr()) {
+      return err(new A2AError(`Failed to list non-terminal tasks: ${listResult.error.message}`));
+    }
+    const ttlMs = this.limits.taskTtlMinutes * 60_000;
+    const reaped: string[] = [];
+
+    for (const row of listResult.value) {
+      const queueGone =
+        row.queue_item_id === null ||
+        row.queue_status === null ||
+        row.queue_status === 'completed' ||
+        row.queue_status === 'dead_letter';
+
+      if (queueGone && now - row.updated_at >= ORPHAN_GRACE_MS) {
+        const failed = this.taskRepo.markFailed(
+          row.id,
+          'ORPHANED',
+          'Task has no live queue item (queue purged, dead-lettered, or daemon crashed)',
+        );
+        if (failed.isOk() && failed.value) {
+          reaped.push(row.id);
+          this.logger.warn({ taskId: row.id, queueStatus: row.queue_status }, 'Reaped orphaned A2A task');
+        } else if (failed.isErr()) {
+          this.logger.error({ taskId: row.id, err: failed.error.message }, 'Failed to reap orphaned A2A task');
+        }
+        continue;
+      }
+
+      if (now - row.submitted_at >= ttlMs) {
+        const canceled = this.cancelTask(row.id, 'ttl expired');
+        if (canceled.isOk() && canceled.value) {
+          reaped.push(row.id);
+          this.logger.warn({ taskId: row.id }, 'Reaped expired A2A task');
+        } else if (canceled.isErr()) {
+          this.logger.error({ taskId: row.id, err: canceled.error.message }, 'Failed to cancel expired A2A task');
+        }
+      }
+    }
+    return ok(reaped);
   }
 
   /**

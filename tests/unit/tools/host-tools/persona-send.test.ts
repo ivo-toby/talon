@@ -91,6 +91,7 @@ function makeTaskRow(overrides: Partial<A2ATaskRow> = {}): A2ATaskRow {
 
 function makeTaskMapper(): A2ATaskMapper {
   return {
+    cancelTask: vi.fn().mockReturnValue(ok(true)),
     submitTask: vi.fn().mockReturnValue(
       ok({
         taskId: 'task-123',
@@ -333,5 +334,168 @@ describe('PersonaSendHandler — timeout and errors', () => {
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/timeout_ms must be a positive integer/);
     expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+});
+
+const TIMEOUT_TEXT =
+  'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.';
+
+describe('PersonaSendHandler — cancel_on_timeout', () => {
+  function setup(rowSequence: A2ATaskRow[] | null = null) {
+    vi.useFakeTimers();
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const findById = taskRepo.findById as unknown as ReturnType<typeof vi.fn>;
+    findById.mockReturnValue(ok(makeTaskRow({ state: 'working' })));
+    if (rowSequence) {
+      for (const row of rowSequence) findById.mockReturnValueOnce(ok(row));
+    }
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo,
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      maxWaitMs: 100,
+      pollIntervalMs: 10,
+    });
+    return { taskMapper, taskRepo, handler };
+  }
+
+  it('cancels the task and returns canceled when the wait times out', async () => {
+    const { taskMapper, handler } = setup();
+    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+
+    expect(taskMapper.cancelTask).toHaveBeenCalledWith('task-123', 'await_reply timed out');
+    expect(result.status).toBe('success');
+    expect(result.result).toMatchObject({ task_id: 'task-123', state: 'canceled' });
+    expect((result.result as { error: string }).error).toMatch(/canceled/);
+  });
+
+  it('returns the real terminal output when cancelTask reports it already finished', async () => {
+    const { taskMapper, taskRepo, handler } = setup();
+    (taskMapper.cancelTask as unknown as ReturnType<typeof vi.fn>).mockReturnValue(ok(false));
+    const findById = taskRepo.findById as unknown as ReturnType<typeof vi.fn>;
+    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(95);
+    findById.mockReturnValue(
+      ok(makeTaskRow({ state: 'completed', result_payload: JSON.stringify({ text: 'late result' }) })),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    const result = await p;
+
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'late result' });
+  });
+
+  it('notes the cancel failure in the timeout output when cancelTask errors', async () => {
+    const { taskMapper, handler } = setup();
+    (taskMapper.cancelTask as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      err(new A2AError('db locked')),
+    );
+    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+
+    expect(result.status).toBe('success');
+    expect(result.result).toMatchObject({ task_id: 'task-123', state: 'timeout' });
+    expect((result.result as { error: string }).error).toContain(TIMEOUT_TEXT);
+    expect((result.result as { error: string }).error).toMatch(/db locked/);
+  });
+
+  it('does not cancel by default', async () => {
+    const { taskMapper, handler } = setup();
+    const p = handler.execute(makeArgs({ await_reply: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+
+    expect(taskMapper.cancelTask).not.toHaveBeenCalled();
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'timeout', error: TIMEOUT_TEXT });
+  });
+
+  it('does not cancel when the task completes before the timeout', async () => {
+    const { taskMapper, handler } = setup([
+      makeTaskRow({ state: 'completed', result_payload: JSON.stringify({ text: 'ok' }) }),
+    ]);
+    const result = await handler.execute(
+      makeArgs({ await_reply: true, cancel_on_timeout: true }),
+      makeContext(),
+    );
+    expect(taskMapper.cancelTask).not.toHaveBeenCalled();
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'ok' });
+  });
+
+  it('rejects a non-boolean cancel_on_timeout before submitting', async () => {
+    const taskMapper = makeTaskMapper();
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo: makeTaskRepo(),
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+    });
+    const result = await handler.execute(
+      makeArgs({ await_reply: true, cancel_on_timeout: 'yes' as unknown as boolean }),
+      makeContext(),
+    );
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/cancel_on_timeout must be a boolean/);
+    expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('includes the stored reason when the awaited task is already canceled', async () => {
+    const { handler } = setup([makeTaskRow({ state: 'canceled', error_message: 'canceled by operator' })]);
+    const result = await handler.execute(makeArgs({ await_reply: true }), makeContext());
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'canceled', error: 'canceled by operator' });
+  });
+});
+
+describe('PersonaSendHandler — waitScope', () => {
+  it('wraps only the polling, not submission, and passes the context', async () => {
+    const order: string[] = [];
+    const taskMapper = makeTaskMapper();
+    (taskMapper.submitTask as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push('submit');
+      return ok({ taskId: 'task-123', state: 'submitted' });
+    });
+    const taskRepo = makeTaskRepo();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push('poll');
+      return ok(makeTaskRow({ state: 'completed', result_payload: JSON.stringify({ text: 'done' }) }));
+    });
+    const waitScope = vi.fn(async (fn: () => Promise<unknown>) => {
+      order.push('scope-start');
+      try {
+        return await fn();
+      } finally {
+        order.push('scope-end');
+      }
+    });
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo,
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      waitScope: waitScope as never,
+    });
+    const ctx = makeContext();
+
+    const result = await handler.execute(makeArgs({ await_reply: true }), ctx);
+
+    expect(order).toEqual(['submit', 'scope-start', 'poll', 'scope-end']);
+    expect(waitScope).toHaveBeenCalledWith(expect.any(Function), ctx);
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'done' });
+  });
+
+  it('is not used for fire-and-forget sends', async () => {
+    const waitScope = vi.fn();
+    const handler = new PersonaSendHandler({
+      taskMapper: makeTaskMapper(),
+      taskRepo: makeTaskRepo(),
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      waitScope: waitScope as never,
+    });
+    await handler.execute(makeArgs(), makeContext());
+    expect(waitScope).not.toHaveBeenCalled();
   });
 });

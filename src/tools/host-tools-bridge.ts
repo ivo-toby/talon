@@ -140,15 +140,24 @@ export class HostToolsBridge {
     });
 
     if (ctx.a2aTaskMapper) {
+      // Long A2A waits release the caller's queue slot, but only for runs that
+      // actually hold one. Background-agent runs (backgroundTaskId set) are not
+      // queue-dispatched, so they must not free a slot.
+      const waitScope = <T>(fn: () => Promise<T>, context: ToolExecutionContext): Promise<T> =>
+        context.backgroundTaskId
+          ? fn()
+          : ctx.queueManager.runWithSlotReleased(fn, context.runId);
       this.personaSendHandler = new PersonaSendHandler({
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
         personaRepo: ctx.repos.persona,
         logger: ctx.logger,
+        waitScope,
       });
       this.personaTaskStatusHandler = new PersonaTaskStatusHandler({
         taskMapper: ctx.a2aTaskMapper,
         logger: ctx.logger,
+        waitScope,
       });
     }
 

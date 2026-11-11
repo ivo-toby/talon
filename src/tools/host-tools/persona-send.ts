@@ -28,6 +28,7 @@ export interface PersonaSendArgs {
   message: string;
   await_reply?: boolean;
   timeout_ms?: number;
+  cancel_on_timeout?: boolean;
 }
 
 type PersonaSendState = A2ATaskState | 'timeout';
@@ -41,6 +42,9 @@ interface PersonaSendOutput {
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const TERMINAL_STATES = new Set<A2ATaskState>(['completed', 'failed', 'canceled', 'input-required']);
+
+const TIMEOUT_MESSAGE =
+  'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -64,6 +68,11 @@ export class PersonaSendHandler {
       logger: pino.Logger;
       maxWaitMs?: number;
       pollIntervalMs?: number;
+      /**
+       * Wraps the waiting/polling portion so the caller's queue slot can be
+       * released while it waits. Never wraps task submission.
+       */
+      waitScope?: <T>(fn: () => Promise<T>, context: ToolExecutionContext) => Promise<T>;
     },
   ) {}
 
@@ -119,10 +128,12 @@ export class PersonaSendHandler {
       });
     }
 
-    const awaitedResult = await this.pollUntilTerminal(
-      submitResult.value.taskId,
-      resolvePersonaTaskWaitMs(validatedArgs.value.timeout_ms, this.deps.maxWaitMs),
-    );
+    const taskId = submitResult.value.taskId;
+    const maxWaitMs = resolvePersonaTaskWaitMs(validatedArgs.value.timeout_ms, this.deps.maxWaitMs);
+    const cancelOnTimeout = validatedArgs.value.cancel_on_timeout ?? false;
+    const poll = (): Promise<Result<PersonaSendOutput, ToolError>> =>
+      this.pollUntilTerminal(taskId, maxWaitMs, cancelOnTimeout);
+    const awaitedResult = this.deps.waitScope ? await this.deps.waitScope(poll, context) : await poll();
     if (awaitedResult.isErr()) {
       this.deps.logger.error({ requestId, taskId: submitResult.value.taskId }, awaitedResult.error.message);
       return this.errorResult(requestId, awaitedResult.error.message);
@@ -144,6 +155,10 @@ export class PersonaSendHandler {
       return err(new ToolError('persona.send: await_reply must be a boolean'));
     }
 
+    if (args.cancel_on_timeout !== undefined && typeof args.cancel_on_timeout !== 'boolean') {
+      return err(new ToolError('persona.send: cancel_on_timeout must be a boolean'));
+    }
+
     if (
       args.timeout_ms !== undefined
       && (!Number.isInteger(args.timeout_ms) || args.timeout_ms <= 0 || args.timeout_ms > PERSONA_TASK_WAIT_MAX_MS)
@@ -159,6 +174,7 @@ export class PersonaSendHandler {
       target_persona: args.target_persona.trim(),
       message: args.message.trim(),
       await_reply: args.await_reply ?? false,
+      cancel_on_timeout: args.cancel_on_timeout ?? false,
       ...(args.timeout_ms !== undefined ? { timeout_ms: args.timeout_ms } : {}),
     });
   }
@@ -181,6 +197,7 @@ export class PersonaSendHandler {
   private async pollUntilTerminal(
     taskId: string,
     maxWaitMs: number = PERSONA_SEND_DEFAULT_MAX_WAIT_MS,
+    cancelOnTimeout = false,
   ): Promise<Result<PersonaSendOutput, ToolError>> {
     const pollIntervalMs = this.deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     const deadline = Date.now() + maxWaitMs;
@@ -209,13 +226,48 @@ export class PersonaSendHandler {
       await sleep(Math.min(pollIntervalMs, remaining));
     }
 
-    // TODO: cancel the in-flight task when polling times out to avoid orphaned A2A runs.
-    // Requires a task cancellation API in A2ATaskMapper.
+    if (cancelOnTimeout) {
+      return this.cancelAfterTimeout(taskId);
+    }
+
     return ok({
       task_id: taskId,
       state: 'timeout',
-      error: 'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.',
+      error: TIMEOUT_MESSAGE,
     });
+  }
+
+  private cancelAfterTimeout(taskId: string): Result<PersonaSendOutput, ToolError> {
+    const reason = 'await_reply timed out';
+    const cancelResult = this.deps.taskMapper.cancelTask(taskId, reason);
+    if (cancelResult.isErr()) {
+      return ok({
+        task_id: taskId,
+        state: 'timeout',
+        error: `${TIMEOUT_MESSAGE} Cancellation was requested but failed: ${cancelResult.error.message}`,
+      });
+    }
+
+    if (cancelResult.value) {
+      return ok({
+        task_id: taskId,
+        state: 'canceled',
+        error: `Timed out waiting for delegated persona reply; the delegated task was canceled (${reason}).`,
+      });
+    }
+
+    // Task reached a terminal state before it could be canceled: report the real outcome.
+    const rowResult = this.deps.taskRepo.findById(taskId);
+    if (rowResult.isErr()) {
+      return err(new ToolError(`persona.send: failed to load task ${taskId}: ${rowResult.error.message}`));
+    }
+    if (!rowResult.value) {
+      return err(new ToolError(`persona.send: task ${taskId} not found after submission`));
+    }
+    if (TERMINAL_STATES.has(rowResult.value.state)) {
+      return ok(this.toOutput(rowResult.value));
+    }
+    return ok({ task_id: taskId, state: 'timeout', error: TIMEOUT_MESSAGE });
   }
 
   private toOutput(row: A2ATaskRow): PersonaSendOutput {
@@ -236,7 +288,15 @@ export class PersonaSendHandler {
       };
     }
 
-    // covers 'canceled' and 'input-required'
+    if (row.state === 'canceled') {
+      return {
+        task_id: row.id,
+        state: 'canceled',
+        ...(row.error_message ? { error: row.error_message } : {}),
+      };
+    }
+
+    // covers 'input-required'
     return {
       task_id: row.id,
       state: row.state,

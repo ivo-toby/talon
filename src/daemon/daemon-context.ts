@@ -50,6 +50,7 @@ import type { ContextAssembler, ImageContextSource } from './context-assembler.j
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
+import type { A2AAgentCard } from '../a2a/a2a-types.js';
 import type { OAuthTokenStore } from '../auth/oauth-token-store.js';
 import type { ImageStore } from '../images/image-store.js';
 import type { ImageIngestionCoordinator } from '../images/image-ingestion.js';
@@ -124,6 +125,11 @@ export interface DaemonContext {
   readonly toolInstructions: Map<string, string>;
   readonly a2aServer: A2AServer | null;
   readonly a2aTaskMapper: A2ATaskMapper | null;
+  /**
+   * Agent-card registry shared by the A2A server and mapper. Rebuilt IN PLACE
+   * (clear + repopulate) on hot reload so new personas become routable.
+   */
+  readonly a2aCardRegistry?: Map<string, A2AAgentCard>;
   // Durable image subsystem (TASK-010): store, ingestion coordinator,
   // the ImageAccess port implementation, and the startup/periodic
   // recovery + retention lifecycle.

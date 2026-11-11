@@ -33,6 +33,11 @@ export class A2ATaskRepository extends BaseRepository {
   private readonly markFailedStmt: Database.Statement;
   private readonly markCanceledStmt: Database.Statement;
   private readonly countActiveByTargetStmt: Database.Statement;
+  private readonly countQueuedByTargetStmt: Database.Statement;
+  private readonly findNonTerminalStmt: Database.Statement;
+  private readonly countOthersRunningStmt: Database.Statement;
+  private readonly countOlderSubmittedStmt: Database.Statement;
+  private readonly admitStmt: Database.Statement;
   private readonly findAllStmt: Database.Statement;
   private readonly findAllByStateStmt: Database.Statement;
   private readonly findAllByTargetStmt: Database.Statement;
@@ -76,10 +81,12 @@ export class A2ATaskRepository extends BaseRepository {
       WHERE id = @id
     `);
 
+    // All lifecycle transitions are guarded in SQL: terminal states
+    // (completed/failed/canceled) are never overwritten.
     this.markWorkingStmt = db.prepare(`
       UPDATE a2a_tasks
       SET state = 'working', run_id = @run_id, updated_at = @updated_at
-      WHERE id = @id
+      WHERE id = @id AND state IN ('submitted', 'working')
     `);
 
     this.markCompletedStmt = db.prepare(`
@@ -88,7 +95,7 @@ export class A2ATaskRepository extends BaseRepository {
           result_payload = @result_payload,
           completed_at = @completed_at,
           updated_at = @updated_at
-      WHERE id = @id
+      WHERE id = @id AND state IN ('submitted', 'working')
     `);
 
     this.markFailedStmt = db.prepare(`
@@ -96,14 +103,49 @@ export class A2ATaskRepository extends BaseRepository {
       SET state = 'failed',
           error_code = @error_code,
           error_message = @error_message,
-          updated_at = @updated_at
-      WHERE id = @id
+          completed_at = @now,
+          updated_at = @now
+      WHERE id = @id AND state IN ('submitted', 'working', 'input-required')
     `);
 
     this.markCanceledStmt = db.prepare(`
       UPDATE a2a_tasks
-      SET state = 'canceled', updated_at = @updated_at
-      WHERE id = @id
+      SET state = 'canceled',
+          error_code = 'CANCELED',
+          error_message = @reason,
+          completed_at = @now,
+          updated_at = @now
+      WHERE id = @id AND state IN ('submitted', 'working', 'input-required')
+    `);
+
+    this.countQueuedByTargetStmt = db.prepare(`
+      SELECT COUNT(*) as count FROM a2a_tasks
+      WHERE target_persona = ? AND state = 'submitted'
+    `);
+
+    this.findNonTerminalStmt = db.prepare(`
+      SELECT t.*, q.status AS queue_status
+      FROM a2a_tasks t
+      LEFT JOIN queue_items q ON q.id = t.queue_item_id
+      WHERE t.state IN ('submitted', 'working', 'input-required')
+      ORDER BY t.submitted_at ASC
+    `);
+
+    this.countOthersRunningStmt = db.prepare(`
+      SELECT COUNT(*) as count FROM a2a_tasks
+      WHERE target_persona = @target AND id != @id
+        AND state IN ('working', 'input-required')
+    `);
+
+    this.countOlderSubmittedStmt = db.prepare(`
+      SELECT COUNT(*) as count FROM a2a_tasks
+      WHERE target_persona = @target AND state = 'submitted'
+        AND (submitted_at < @submitted_at OR (submitted_at = @submitted_at AND id < @id))
+    `);
+
+    this.admitStmt = db.prepare(`
+      UPDATE a2a_tasks SET state = 'working', updated_at = @now
+      WHERE id = @id AND state = 'submitted'
     `);
 
     this.countActiveByTargetStmt = db.prepare(`
@@ -161,70 +203,96 @@ export class A2ATaskRepository extends BaseRepository {
   }
 
   /**
-   * Transitions the task to 'working' state, recording the run ID.
+   * Records the run ID and (re)asserts 'working'. Only valid from
+   * 'submitted'/'working'. Returns Ok(true) if transitioned, Ok(false) if the
+   * task is terminal or unknown (no-op).
    */
-  markWorking(taskId: string, runId: string): Result<void, DbError> {
-    try {
-      const result = this.markWorkingStmt.run({ id: taskId, run_id: runId, updated_at: this.now() });
-      if (result.changes === 0) {
-        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
-      }
-      return ok(undefined);
-    } catch (cause) {
-      return err(
-        new DbError(
-          `Failed to mark A2A task ${taskId} as working: ${String(cause)}`,
-          cause instanceof Error ? cause : undefined,
-        ),
-      );
-    }
+  markWorking(taskId: string, runId: string): Result<boolean, DbError> {
+    return this.guarded(`mark A2A task ${taskId} as working`, () =>
+      this.markWorkingStmt.run({ id: taskId, run_id: runId, updated_at: this.now() }).changes > 0,
+    );
   }
 
   /**
-   * Transitions the task to 'completed' state with the result text.
+   * Transitions the task to 'completed' with the result text. Only valid from
+   * 'submitted'/'working'. Ok(false) if already terminal or unknown.
    */
-  markCompleted(taskId: string, resultText: string): Result<void, DbError> {
-    try {
+  markCompleted(taskId: string, resultText: string): Result<boolean, DbError> {
+    return this.guarded(`mark A2A task ${taskId} as completed`, () => {
       const now = this.now();
-      const result = this.markCompletedStmt.run({
-        id: taskId,
-        result_payload: JSON.stringify({ text: resultText }),
-        completed_at: now,
-        updated_at: now,
-      });
-      if (result.changes === 0) {
-        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
-      }
-      return ok(undefined);
-    } catch (cause) {
-      return err(
-        new DbError(
-          `Failed to mark A2A task ${taskId} as completed: ${String(cause)}`,
-          cause instanceof Error ? cause : undefined,
-        ),
+      return (
+        this.markCompletedStmt.run({
+          id: taskId,
+          result_payload: JSON.stringify({ text: resultText }),
+          completed_at: now,
+          updated_at: now,
+        }).changes > 0
       );
-    }
+    });
   }
 
   /**
-   * Transitions the task to 'failed' state with an error code and message.
+   * Transitions a non-terminal task to 'failed'. Ok(false) if already terminal or unknown.
    */
-  markFailed(taskId: string, errorCode: string, errorMessage: string): Result<void, DbError> {
-    try {
-      const result = this.markFailedStmt.run({
+  markFailed(taskId: string, errorCode: string, errorMessage: string): Result<boolean, DbError> {
+    return this.guarded(`mark A2A task ${taskId} as failed`, () =>
+      this.markFailedStmt.run({
         id: taskId,
         error_code: errorCode,
         error_message: errorMessage,
-        updated_at: this.now(),
+        now: this.now(),
+      }).changes > 0,
+    );
+  }
+
+  /**
+   * Transitions a non-terminal task to 'canceled', recording the reason as
+   * error_code 'CANCELED' / error_message. Ok(false) if already terminal or unknown.
+   */
+  markCanceled(taskId: string, reason: string): Result<boolean, DbError> {
+    return this.guarded(`mark A2A task ${taskId} as canceled`, () =>
+      this.markCanceledStmt.run({ id: taskId, reason, now: this.now() }).changes > 0,
+    );
+  }
+
+  /**
+   * Atomically decides whether a task may start running (single transaction).
+   *
+   * - 'working'   -> 'admitted' (retry / crash-recovery re-entry)
+   * - terminal    -> 'terminal'
+   * - 'submitted' -> admitted (and set to 'working') iff
+   *     (other tasks for the target running) + (older submitted tasks for the target) < limit,
+   *   else 'wait' (FIFO fairness by submitted_at then id).
+   * - unknown id  -> 'missing'
+   */
+  tryAdmit(
+    taskId: string,
+    maxConcurrentPerTarget: number,
+  ): Result<'admitted' | 'wait' | 'terminal' | 'missing', DbError> {
+    try {
+      const run = this.db.transaction((): 'admitted' | 'wait' | 'terminal' | 'missing' => {
+        const row = this.findByIdStmt.get(taskId) as A2ATaskRow | undefined;
+        if (!row) return 'missing';
+        if (row.state === 'working') return 'admitted';
+        if (row.state === 'completed' || row.state === 'failed' || row.state === 'canceled') return 'terminal';
+        if (row.state === 'input-required') return 'admitted';
+        const running = (this.countOthersRunningStmt.get({ target: row.target_persona, id: row.id }) as { count: number }).count;
+        const older = (
+          this.countOlderSubmittedStmt.get({
+            target: row.target_persona,
+            submitted_at: row.submitted_at,
+            id: row.id,
+          }) as { count: number }
+        ).count;
+        if (running + older >= maxConcurrentPerTarget) return 'wait';
+        this.admitStmt.run({ id: row.id, now: this.now() });
+        return 'admitted';
       });
-      if (result.changes === 0) {
-        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
-      }
-      return ok(undefined);
+      return ok(run());
     } catch (cause) {
       return err(
         new DbError(
-          `Failed to mark A2A task ${taskId} as failed: ${String(cause)}`,
+          `Failed to admit A2A task ${taskId}: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );
@@ -232,22 +300,42 @@ export class A2ATaskRepository extends BaseRepository {
   }
 
   /**
-   * Transitions the task to 'canceled' state.
+   * Returns all non-terminal tasks joined with their queue item status
+   * (`queue_status` is null when no queue item is attached or the row is gone).
+   * Used by the reaper.
    */
-  markCanceled(taskId: string): Result<void, DbError> {
+  findNonTerminalWithQueueStatus(): Result<Array<A2ATaskRow & { queue_status: string | null }>, DbError> {
     try {
-      const result = this.markCanceledStmt.run({ id: taskId, updated_at: this.now() });
-      if (result.changes === 0) {
-        return err(new DbError(`Task not found or already in terminal state: ${taskId}`));
-      }
-      return ok(undefined);
+      return ok(this.findNonTerminalStmt.all() as Array<A2ATaskRow & { queue_status: string | null }>);
     } catch (cause) {
       return err(
         new DbError(
-          `Failed to mark A2A task ${taskId} as canceled: ${String(cause)}`,
+          `Failed to list non-terminal A2A tasks: ${String(cause)}`,
           cause instanceof Error ? cause : undefined,
         ),
       );
+    }
+  }
+
+  /** Returns the count of tasks waiting ('submitted') for the target persona. */
+  countQueuedByTarget(targetPersona: string): Result<number, DbError> {
+    try {
+      return ok((this.countQueuedByTargetStmt.get(targetPersona) as { count: number }).count);
+    } catch (cause) {
+      return err(
+        new DbError(
+          `Failed to count queued A2A tasks for persona ${targetPersona}: ${String(cause)}`,
+          cause instanceof Error ? cause : undefined,
+        ),
+      );
+    }
+  }
+
+  private guarded(what: string, fn: () => boolean): Result<boolean, DbError> {
+    try {
+      return ok(fn());
+    } catch (cause) {
+      return err(new DbError(`Failed to ${what}: ${String(cause)}`, cause instanceof Error ? cause : undefined));
     }
   }
 

@@ -676,6 +676,34 @@ describe('HostToolsBridge', () => {
       expect(response.error).toBe('Invalid JSON');
     });
 
+    it('wires A2A waitScope to release the queue slot only for queue-dispatched runs', async () => {
+      const runWithSlotReleased = vi.fn(async (fn: () => Promise<unknown>) => fn());
+      const a2aCtx = {
+        ...mockCtx,
+        a2aTaskMapper: {} as any,
+        queueManager: { runWithSlotReleased } as any,
+        repos: { ...mockCtx.repos, a2aTask: {} as any },
+      } as any;
+      bridge = new HostToolsBridge(a2aCtx);
+      const scope = (bridge as any).personaSendHandler.deps.waitScope as (
+        fn: () => Promise<string>,
+        context: Record<string, unknown>,
+      ) => Promise<string>;
+      const statusScope = (bridge as any).personaTaskStatusHandler.deps.waitScope;
+      expect(statusScope).toBe(scope);
+
+      await expect(
+        scope(async () => 'queued', { runId: 'run-001', threadId: 't', personaId: 'p' }),
+      ).resolves.toBe('queued');
+      expect(runWithSlotReleased).toHaveBeenCalledWith(expect.any(Function), 'run-001');
+
+      runWithSlotReleased.mockClear();
+      await expect(
+        scope(async () => 'bg', { runId: 'task-1', threadId: 't', personaId: 'p', backgroundTaskId: 'task-1' }),
+      ).resolves.toBe('bg');
+      expect(runWithSlotReleased).not.toHaveBeenCalled();
+    });
+
     it('dispatches memory.access to the memory handler', async () => {
       bridge = new HostToolsBridge(mockCtx);
       registerActiveRunAuth();

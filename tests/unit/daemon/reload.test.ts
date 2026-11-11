@@ -726,4 +726,49 @@ describe('TalondDaemon.reload()', () => {
       }
     });
   });
+
+  // -------------------------------------------------------------------------
+  // A2A agent-card registry
+  // -------------------------------------------------------------------------
+
+  describe('A2A agent-card registry', () => {
+    const persona = (name: string) =>
+      ({
+        config: {
+          name,
+          model: 'm',
+          skills: [],
+          capabilities: { allow: [], requireApproval: [] },
+        },
+      }) as any;
+
+    it('rebuilds the shared registry in place from the reloaded personas', async () => {
+      const ctx = setupSuccessfulStart();
+      const registry = new Map<string, any>([['old-persona', { id: 'old-persona' }]]);
+      (ctx as any).a2aCardRegistry = registry;
+      await daemon.start('/config.yaml');
+
+      vi.mocked(ctx.personaLoader.loadFromConfig).mockResolvedValue(
+        ok([persona('alpha'), persona('beta')]) as any,
+      );
+      vi.mocked(loadConfig).mockReturnValue(ok(makeConfig() as any));
+
+      const result = await daemon.reload('/config.yaml');
+
+      expect(result.isOk()).toBe(true);
+      // Same Map instance, repopulated.
+      expect((ctx as any).a2aCardRegistry).toBe(registry);
+      expect([...registry.keys()].sort()).toEqual(['alpha', 'beta']);
+      expect(registry.get('alpha').url).toBe('/a2a/agents/alpha');
+    });
+
+    it('runs the A2A reaper at startup and clears its timer on stop', async () => {
+      const ctx = setupSuccessfulStart();
+      const reapStaleTasks = vi.fn().mockReturnValue(ok([]));
+      (ctx as any).a2aTaskMapper = { reapStaleTasks, setAbortHook: vi.fn() };
+      await daemon.start('/config.yaml');
+      expect(reapStaleTasks).toHaveBeenCalledTimes(1);
+      await daemon.stop();
+    });
+  });
 });

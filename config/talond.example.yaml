@@ -335,8 +335,8 @@ scheduler:
 
 # Agent-to-agent (A2A) limits.
 #
-# Talon implements the Google A2A protocol so personas can delegate tasks to
-# each other (see `persona_send` / `persona_task_status` host tools). These
+# Talon uses the Google A2A task model (in-process only) so personas can
+# delegate tasks to each other (see `persona_send` / `persona_task_status` host tools). These
 # knobs cap how aggressive that delegation is allowed to be.
 #
 # Defaults shown below match the built-in values — omit the entire block to
@@ -346,13 +346,20 @@ a2a:
   # runaway delegation loops. A task is rejected when `hopCount >= maxHops`.
   # Bounded to 1..32.
   maxHops: 4
-  # Maximum in-flight A2A tasks targeting a single persona at once. Additional
-  # submissions are rejected until one finishes. Raise this to allow parallel
-  # delegation to the same target. Bounded to 1..100.
+  # Maximum A2A tasks that may RUN at once for a single target persona.
+  # Additional submissions wait in submission order. Raise this to allow
+  # parallel delegation to the same target. Bounded to 1..100.
   maxConcurrentPerTarget: 1
-  # Max queue retry attempts for A2A `collaboration` queue items before they
-  # move to the dead-letter queue. Bounded to 1..20.
-  maxAttempts: 3
+  # Maximum A2A tasks that may WAIT for a single target persona. Submissions
+  # beyond it are rejected. Bounded to 0..1000.
+  maxQueuedPerTarget: 10
+  # Max queue attempts for A2A `collaboration` queue items before they move to
+  # the dead-letter queue. 1 = a failed run is never re-run blindly; the
+  # calling agent sees `failed` and decides. Bounded to 1..20.
+  maxAttempts: 1
+  # Non-terminal A2A tasks older than this are canceled by the reaper.
+  # Bounded to 1..1440.
+  taskTtlMinutes: 60
 
 auth:
   mode: subscription

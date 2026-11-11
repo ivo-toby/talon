@@ -377,7 +377,11 @@ const TOOLS = [
   },
   {
     name: 'persona_send',
-    description: 'Send a task to another persona via the A2A layer',
+    description:
+      'Send a task to another persona via the A2A layer. Tasks sent to a busy persona are queued, not rejected. '
+      + 'Set await_reply to wait for the result; the wait is capped by timeout_ms (max 1800000 ms, default 300000). '
+      + 'If the result state is "timeout", the delegated task keeps running: fetch it later with persona_task_status, '
+      + 'unless cancel_on_timeout was set, in which case it is canceled and the state is "canceled".',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -395,7 +399,12 @@ const TOOLS = [
         },
         timeout_ms: {
           type: 'integer' as const,
-          description: 'Optional synchronous wait timeout in milliseconds. Default: 300000 (5 minutes).',
+          description: 'Optional synchronous wait timeout in milliseconds. Max: 1800000 (30 minutes). Default: 300000 (5 minutes).',
+        },
+        cancel_on_timeout: {
+          type: 'boolean' as const,
+          description:
+            'With await_reply: cancel the delegated task if the wait times out. Default: false (task keeps running and can be fetched via persona_task_status).',
         },
       },
       required: ['target_persona', 'message'],
