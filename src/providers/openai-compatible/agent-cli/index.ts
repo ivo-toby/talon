@@ -27,6 +27,7 @@ import {
   type SerializableMcpServer,
 } from './mcp-tool-limits.js';
 import { runResponsesLoop } from './responses-api.js';
+import { buildSandboxEnv } from './safe-env.js';
 
 const DEFAULT_MAX_STEPS = 1000;
 type OpenAiCompatibleApiMode = 'chat-completions' | 'responses';
@@ -179,7 +180,8 @@ async function main(): Promise<void> {
     const input = parseInput(await readStdin());
     installStreamOptionsInterceptor(input.baseUrl);
 
-    // OAuth-backed MCP runs must not expose these unrestricted local tools.
+    // These tools run with host authority (uncontained filesystem, local shell).
+    // Disabled when the persona sets nativeTools: false or OAuth MCP is mounted.
     const workspaceToolsConfig: WorkspaceToolsConfig = {
       mastra_workspace_list_files: { maxOutputTokens: 2000 },
       mastra_workspace_read_file: { maxOutputTokens: 3000 },
@@ -202,7 +204,8 @@ async function main(): Promise<void> {
         }),
         sandbox: new LocalSandbox({
           workingDirectory: input.cwd,
-          env: process.env,
+          // Allowlisted only — never hand the model-driven shell the full env.
+          env: buildSandboxEnv(process.env),
         }),
         tools: workspaceToolsConfig,
       });

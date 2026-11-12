@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 import { err, ok, type Result } from 'neverthrow';
 import type { ProviderConfig, ReasoningEffort } from '../core/config/config-types.js';
 import { BackgroundAgentError } from '../core/errors/error-types.js';
+import { buildWrapperEnv, normalizeEnvPassthrough } from './openai-compatible/agent-cli/safe-env.js';
 import type {
   AgentProvider,
   AgentRunInput,
@@ -299,12 +300,11 @@ export class OpenAiCompatibleProvider implements AgentProvider {
     }
 
     const invocation = invocationResult.value;
+    // Never merge process.env here: the wrapper exposes a model-driven shell,
+    // and everything in its environment is reachable from there.
     const child = spawn(invocation.command, invocation.args, {
       cwd: invocation.cwd,
-      env: {
-        ...process.env,
-        ...(invocation.env ?? {}),
-      },
+      env: { ...(invocation.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -547,7 +547,11 @@ export class OpenAiCompatibleProvider implements AgentProvider {
       command: this.config.command,
       args: scriptArgs,
       stdin: JSON.stringify(payload),
-      env: input.traceparent ? { TALOND_TRACEPARENT: input.traceparent } : undefined,
+      env: {
+        ...buildWrapperEnv(process.env, normalizeEnvPassthrough(this.config.options?.envPassthrough)),
+        ...(input.traceparent ? { TALOND_TRACEPARENT: input.traceparent } : {}),
+      },
+      inheritEnv: false,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
       cleanupPaths: options.cleanupPaths,

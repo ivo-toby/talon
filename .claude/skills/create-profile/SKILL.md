@@ -77,6 +77,8 @@ Examples:
 
 **`backgroundModel`** *(optional)* — model passed to the background provider. Paired with `backgroundProvider`; the daemon refuses to start if `backgroundModel` is set without `backgroundProvider`. Useful for sending background work to a more capable model than the foreground.
 
+**`nativeTools`** *(optional, default `true`)* — set to `false` when the persona will talk to untrusted users (public bots, shared channels, anyone outside `allowedSenders`). It disables provider-native shell/filesystem tools (Claude Bash/Read/Write, Mastra workspace tools, Gemini core tools). Those tools run with host authority and can reach other threads, the database, channel auth state and `.env`. The restriction also applies to background agents this persona spawns, including other profiles. `codex-cli` cannot honor it, so the daemon refuses to start if the persona's `provider` or `backgroundProvider` is codex-cli. Ask: **"Will anyone other than you (or trusted people) talk to this persona?"** If yes → `nativeTools: false`.
+
 ### Capabilities
 
 Use these exact labels.

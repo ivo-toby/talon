@@ -128,6 +128,8 @@ When the list is omitted or empty, all senders are accepted.
 
 > **Strongly recommended**: Always configure `allowedSenders` for production use. An open WhatsApp bot can be abused by anyone who discovers the number.
 
+> **Public bot (no `allowedSenders`)?** Set `nativeTools: false` on every persona bound to this channel. Without it, a visitor can use prompt injection to make the agent's native shell/filesystem tools read other visitors' conversations and the daemon's secrets. Also keep `channel.send`, `channel.list`, `channel.broadcast`, `db.query`, `persona.send` (A2A delegation runs under the target persona's own tool settings) and `subagent.background` out of that persona's capabilities. See README "Provider-native tools" and issue #320 for the remaining public-bot hardening.
+
 ## Step 5: Verify (Baileys)
 
 > Send a WhatsApp message to the connected number from an **allowed** phone. You should get a response within a few seconds. Then send from a phone that is **not** in `allowedSenders` and confirm the message is dropped (check logs for "message from disallowed sender, dropping").

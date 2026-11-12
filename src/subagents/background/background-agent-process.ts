@@ -8,6 +8,8 @@ export interface BackgroundAgentProcessOptions {
   cwd: string;
   stdin: string;
   env?: Record<string, string>;
+  /** When false, spawn with `env` only instead of merging it over `process.env`. */
+  inheritEnv?: boolean;
   timeoutMs: number;
 }
 
@@ -40,10 +42,13 @@ export class BackgroundAgentProcess {
     try {
       const child = spawn(this.options.command, this.options.args, {
         cwd: this.options.cwd,
-        env: {
-          ...process.env,
-          ...(this.options.env ?? {}),
-        },
+        env:
+          this.options.inheritEnv === false
+            ? { ...(this.options.env ?? {}) }
+            : {
+                ...process.env,
+                ...(this.options.env ?? {}),
+              },
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       this.child = child;

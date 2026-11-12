@@ -130,6 +130,12 @@ export interface PreparedProviderInvocation {
   args: string[];
   stdin: string;
   env?: Record<string, string>;
+  /**
+   * When false, the process is spawned with `env` only instead of
+   * `process.env` merged with `env`. Use for runtimes that expose a
+   * model-driven shell so daemon secrets are not inherited.
+   */
+  inheritEnv?: boolean;
   cwd: string;
   timeoutMs: number;
   cleanupPaths: string[];

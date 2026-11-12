@@ -833,6 +833,82 @@ describe('OpenAiCompatibleProvider', () => {
     expect(payload).not.toHaveProperty('maxSteps');
   });
 
+  describe('wrapper environment isolation', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('background invocation carries an allowlisted env and opts out of process.env inheritance', () => {
+      vi.stubEnv('TALON_TEST_DAEMON_SECRET', 'leak-me');
+      vi.stubEnv('PATH', '/usr/bin');
+      const result = makeProvider().prepareBackgroundInvocation({
+        prompt: 'hi',
+        systemPrompt: 's',
+        mcpServers: {},
+        cwd: '/tmp',
+        timeoutMs: 10_000,
+        traceparent: '00-abc-def-01',
+      });
+      const invocation = result._unsafeUnwrap();
+      expect(invocation.inheritEnv).toBe(false);
+      expect(invocation.env).toMatchObject({ PATH: '/usr/bin', TALOND_TRACEPARENT: '00-abc-def-01' });
+      expect(invocation.env).not.toHaveProperty('TALON_TEST_DAEMON_SECRET');
+    });
+
+    it('forwards operator-listed envPassthrough names only', () => {
+      vi.stubEnv('TALON_TEST_DAEMON_SECRET', 'leak-me');
+      vi.stubEnv('TALON_TEST_ALLOWED', 'ok');
+      const provider = new OpenAiCompatibleProvider({
+        enabled: true,
+        command: 'node',
+        contextWindowTokens: 256_000,
+        options: {
+          defaultModel: 'qwen3-coder:30b',
+          baseUrl: 'http://127.0.0.1:11434/v1',
+          envPassthrough: ['TALON_TEST_ALLOWED'],
+        },
+      });
+      const env = provider
+        .prepareBackgroundInvocation({
+          prompt: 'hi',
+          systemPrompt: 's',
+          mcpServers: {},
+          cwd: '/tmp',
+          timeoutMs: 10_000,
+        })
+        ._unsafeUnwrap().env;
+      expect(env?.TALON_TEST_ALLOWED).toBe('ok');
+      expect(env).not.toHaveProperty('TALON_TEST_DAEMON_SECRET');
+    });
+
+    it('foreground spawn does not merge process.env into the wrapper environment', async () => {
+      vi.stubEnv('TALON_TEST_DAEMON_SECRET', 'leak-me');
+      vi.mocked(mockedSpawn).mockImplementation((() =>
+        makeFakeChild({
+          stdoutLines: [
+            JSON.stringify({ type: 'result', output: 'ok', usage: { inputTokens: 1, outputTokens: 1 } }),
+          ],
+        })) as unknown as typeof mockedSpawn);
+
+      for await (const _event of makeProvider().createExecutionStrategy().run({
+        threadId: 'thread-test',
+        prompt: 'hello',
+        systemPrompt: 'system',
+        mcpServers: {},
+        cwd: '/tmp',
+        model: 'qwen3-coder:30b',
+        maxTurns: 10,
+        timeoutMs: 5_000,
+      })) {
+        void _event;
+      }
+
+      const spawnOptions = vi.mocked(mockedSpawn).mock.calls.at(-1)?.[2] as { env?: Record<string, string> };
+      expect(spawnOptions.env).toBeDefined();
+      expect(spawnOptions.env).not.toHaveProperty('TALON_TEST_DAEMON_SECRET');
+    });
+  });
+
   it('emits an error stream event containing stderr when the wrapper exits non-zero', async () => {
     vi.mocked(mockedSpawn).mockImplementation((() =>
       makeFakeChild({

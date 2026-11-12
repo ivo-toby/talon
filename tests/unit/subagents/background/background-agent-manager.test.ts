@@ -231,6 +231,48 @@ describe('BackgroundAgentManager', () => {
     ).toBe(true);
   });
 
+  it('disables native tools when the spawn input opts out, without OAuth MCP servers', async () => {
+    const manager = createManager();
+
+    await manager.spawn({ ...spawnInput, disableNativeTools: true });
+
+    expect(
+      prepareBackgroundInvocation.mock.calls[0][0].disableNativeShellAndFilesystemTools,
+    ).toBe(true);
+  });
+
+  it('keeps native tools enabled by default when there is no opt-out and no OAuth', async () => {
+    const manager = createManager();
+
+    await manager.spawn(spawnInput);
+
+    expect(
+      prepareBackgroundInvocation.mock.calls[0][0].disableNativeShellAndFilesystemTools,
+    ).toBeUndefined();
+  });
+
+  it('forwards inheritEnv: false from the provider invocation to the process factory', async () => {
+    prepareBackgroundInvocation.mockReturnValueOnce(
+      ok({
+        command: 'node',
+        args: ['wrapper.js'],
+        stdin: '{}',
+        env: { PATH: '/usr/bin' },
+        inheritEnv: false,
+        cwd: '/workspace/repo',
+        timeoutMs: 30 * 60 * 1000,
+        cleanupPaths: [],
+      }),
+    );
+    const manager = createManager();
+
+    await manager.spawn(spawnInput);
+
+    expect(processFactory).toHaveBeenCalledWith(
+      expect.objectContaining({ inheritEnv: false, env: expect.objectContaining({ PATH: '/usr/bin' }) }),
+    );
+  });
+
   it('passes server entries through unchanged when no oauthTokenStore is wired', async () => {
     // The token store is optional so existing test scaffolds + setups
     // without it keep working. Entries with `auth` still get forwarded;
