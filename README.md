@@ -84,6 +84,7 @@ integration, or automation is safe without your configuration and review.
 - **WhatsApp** — WhatsApp Web bridge via Baileys, supports dedicated number or self-chat mode
 - **Email** — IMAP polling + SMTP send (imapflow / nodemailer), thread tracking via References / In-Reply-To headers _(IMAP polling verified against a live KPN mailbox; SMTP send not yet verified live)_
 - **Browser voice** — Opt-in authenticated WebRTC sessions at `/voice/`, backed by the durable queue and configured persona policy
+- **Incoming SIP boundary** — Separately opt-in Standard Webhooks receiver with server-verified Asterisk caller authority and durable at-most-once decision ownership
 
 ### Agent System
 
@@ -2743,17 +2744,35 @@ The daemon selects the browser transport and live engine from trusted
 configuration and denies required capabilities that are unsupported or
 unknown before creating a provider session. Browser readiness still requires
 the real RTC connection and the engine's readiness event; a server-side
-connected status alone does not mark the call ready. The production browser
-path remains WebRTC.
+connected status alone does not mark the call ready. Incoming SIP uses a
+verified provider-owned session reference and a lifecycle-only transport for
+provider-terminated media; it does not add a browser audio bridge or playback
+evidence. The production browser path remains WebRTC.
 
 The delegation offset is a capture boundary, not an utterance cutoff. Only
 event-identified native input/output transcript deltas with valid explicit
 `start_ms` and `end_ms` can carry atomic chunk timing across that boundary;
 missing or legacy timing remains fail-closed at capture.
 
-Browser login retention and the live-call lifetime remain separate controls;
-the [browser voice guide](docs/guides/voice.mdx) and
-[voice configuration reference](docs/reference/config-schema.mdx)
+Incoming SIP is a separate disabled-by-default boundary under `voice.sip`. It
+verifies Talon's Standard Webhooks HMAC delivery before parsing. The provider
+path has no browser cookie, browser CSRF, SSO, or Basic-auth login. The signed
+`webhook-id` identifies the delivery for deduplication; the body event `id` is
+validated independently and need not match it. The receiver then requires a
+distinct server-verified Ed25519 caller assertion mapped from an authenticated
+Asterisk endpoint. Caller ID, `From`, `To`, and ordinary SIP headers never
+choose the owner or persona. The durable receiver bounds raw requests and
+pending work, reserves delivery/session/grant decisions atomically, persists an
+attempt marker before the one existing-session accept callback, attaches the
+same Live sideband, and leaves timeouts or crashes as unknown without retry.
+The raw-body read has an absolute 5-second timeout, so trickle bytes do not
+extend it; terminal request paths clean up listeners and release pending
+capacity.
+See the [incoming SIP/Asterisk guide](docs/guides/voice-asterisk.mdx)
+for the ordered operator setup, reference signer, proxy routing, local echo,
+and bounded provider-test boundary. This does not install a PBX, provision
+keys, or place a paid call. Browser login retention and the live-call lifetime
+remain separate controls; the guide and [voice configuration reference](docs/reference/config-schema.mdx)
 describe both.
 
 On page load, the browser first checks the cookie with the read-only

@@ -177,30 +177,7 @@ export class VoiceAuthRepository extends BaseRepository {
   createSession(input: VoiceAuthSessionInsert): Result<VoiceAuthSessionRow, DbError> {
     try {
       const row = this.runTransaction(() => {
-        let allocator = this.db
-          .prepare('SELECT next_revision FROM voice_auth_revision_allocator WHERE id = 1')
-          .get() as { next_revision: number } | undefined;
-        const historical = this.db
-          .prepare('SELECT COALESCE(MAX(login_revision), 0) AS max_revision FROM voice_sessions')
-          .get() as { max_revision: number };
-        const minimumNext = historical.max_revision + 1;
-        if (!allocator) {
-          this.db
-            .prepare(
-              `INSERT INTO voice_auth_revision_allocator (id, next_revision)
-               VALUES (1, ?)`,
-            )
-            .run(minimumNext);
-          allocator = { next_revision: minimumNext };
-        }
-        const loginRevision = Math.max(allocator.next_revision, minimumNext);
-        this.db
-          .prepare(
-            `UPDATE voice_auth_revision_allocator
-                SET next_revision = ?
-              WHERE id = 1`,
-          )
-          .run(loginRevision + 1);
+        const loginRevision = allocateSharedVoiceRevision(this.db);
         const persisted: VoiceAuthSessionRow = {
           id: input.id,
           session_token_hash: input.sessionTokenHash,
@@ -340,10 +317,22 @@ export class VoiceAuthRepository extends BaseRepository {
 
   private runTransaction<T>(operation: () => T): T {
     const database = this.db as Database.Database & {
-      transaction?: <Value>(fn: () => Value) => () => Value;
+      inTransaction?: boolean;
     };
-    if (typeof database.transaction === 'function') return database.transaction(operation)();
-    return operation();
+    if (database.inTransaction) return operation();
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      const value = operation();
+      database.exec('COMMIT');
+      return value;
+    } catch (cause) {
+      try {
+        database.exec('ROLLBACK');
+      } catch {
+        // Preserve the original error when rollback itself fails.
+      }
+      throw cause;
+    }
   }
 
   private dbError(operation: string, cause: unknown): DbError {
@@ -354,6 +343,61 @@ export class VoiceAuthRepository extends BaseRepository {
 /** Hash a transient cookie/header value for durable lookup. */
 export function hashVoiceAuthToken(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('base64url');
+}
+
+/**
+ * Allocate a revision shared by browser login grants and SIP grants.
+ *
+ * Callers must invoke this while holding their admission transaction. The
+ * allocator is intentionally kept in the existing browser-auth table so a
+ * browser/SIP restart cannot recycle a revision or create a cross-transport
+ * collision.
+ */
+export function allocateSharedVoiceRevision(database: Database.Database): number {
+  const allocator = database
+    .prepare('SELECT next_revision FROM voice_auth_revision_allocator WHERE id = 1')
+    .get() as { next_revision: number } | undefined;
+  const maxRevision = Math.max(
+    maxRevisionFromTable(database, 'voice_auth_sessions', 'login_revision'),
+    maxRevisionFromTable(database, 'voice_sessions', 'login_revision'),
+    maxRevisionFromTable(database, 'voice_sip_authority_grants', 'revision'),
+  );
+  const minimumNext = maxRevision + 1;
+  const nextRevision = Math.max(allocator?.next_revision ?? minimumNext, minimumNext);
+  if (!allocator) {
+    database
+      .prepare(
+        `INSERT INTO voice_auth_revision_allocator (id, next_revision)
+         VALUES (1, ?)`,
+      )
+      .run(nextRevision + 1);
+  } else {
+    database
+      .prepare(
+        `UPDATE voice_auth_revision_allocator
+            SET next_revision = ?
+          WHERE id = 1`,
+      )
+      .run(nextRevision + 1);
+  }
+  return nextRevision;
+}
+
+function maxRevisionFromTable(
+  database: Database.Database,
+  table: string,
+  column: string,
+): number {
+  try {
+    const row = database
+      .prepare(`SELECT COALESCE(MAX(${column}), 0) AS max_revision FROM ${table}`)
+      .get() as { max_revision: number };
+    return row.max_revision;
+  } catch {
+    // The shared allocator is also used by migrations/tests that may run
+    // before the SIP table exists. Its absence contributes no revision.
+    return 0;
+  }
 }
 
 /** Derive the stored native scrypt verifier for a configured access token. */

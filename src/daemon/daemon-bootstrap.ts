@@ -121,12 +121,18 @@ import {
 } from '../voice/voice-adapters.js';
 import { createVoiceAuthorization } from '../voice/voice-authorization.js';
 import { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
+import { VoiceSipRepository } from '../core/database/repositories/voice-sip-repository.js';
+import { ConfiguredSipAuthorizationResolver } from '../voice/transports/sip/sip-authorization.js';
+import { SipIngressService, type SipCallControlResult } from '../voice/transports/sip/sip-ingress-service.js';
+import { SipTransport } from '../voice/transports/sip/sip-transport.js';
+import { SipWebhookServer } from '../voice/transports/sip/sip-webhook-server.js';
 import { VoiceTelemetry } from '../voice/voice-telemetry.js';
 import type {
   VoiceOwnerContext,
   VoicePolicySnapshot,
   VoiceResult,
   VoiceSessionRecord,
+  VoiceTransport,
 } from '../voice/voice-types.js';
 import { ImageStore } from '../images/image-store.js';
 import { ImageIngestionCoordinator } from '../images/image-ingestion.js';
@@ -740,8 +746,11 @@ export async function bootstrap(
   let voiceOutputSink: VoiceOutputSink | null = null;
   let voiceSessionService: DurableVoiceSessionService | null = null;
   let voiceProvider: OpenAiLiveVoiceProvider | null = null;
-  let voiceTransport: BrowserVoiceTransport | null = null;
+  let voiceTransport: VoiceTransport | null = null;
+  let voiceSipTransport: SipTransport | null = null;
   let voiceServer: BrowserVoiceServer | null = null;
+  let voiceSipIngress: SipIngressService | null = null;
+  let voiceSipWebhookServer: SipWebhookServer | null = null;
   let voiceTelemetry: VoiceTelemetry | null = null;
   let voiceChannelId: string | null = null;
   const voiceRuntimeConfig = { current: config };
@@ -749,11 +758,15 @@ export async function bootstrap(
   const daemonContextRef: {
     current?: Pick<DaemonContext, 'loadedSkills'>;
   } = {};
-  if (config.voice?.enabled) {
+  if (config.voice?.enabled || config.voice?.sip?.enabled) {
     const voicePersonaName = config.voice.persona ?? config.personas[0]?.name;
     if (!voicePersonaName) {
       await cleanupBootstrapFailure(db, observability, logger);
-      return err(new DaemonError('voice.persona is required when voice.enabled is true'));
+      return err(
+        new DaemonError(
+          'voice.persona is required when browser voice or incoming SIP is enabled',
+        ),
+      );
     }
     const loadedVoicePersona = personaLoader.getByName(voicePersonaName);
     if (loadedVoicePersona.isErr() || !loadedVoicePersona.value) {
@@ -792,7 +805,7 @@ export async function bootstrap(
       config.voice.accessToken ??
       config.auth.providers[config.voice.accessTokenRef]?.apiKey ??
       config.auth.apiKey;
-    if (!voiceAccessToken) {
+    if (config.voice.enabled && !voiceAccessToken) {
       await cleanupBootstrapFailure(db, observability, logger);
       return err(new DaemonError('voice.accessToken or its configured auth provider is required'));
     }
@@ -808,15 +821,17 @@ export async function bootstrap(
       providerTypes,
       provenMcpServers,
     });
-    const voiceAuthRepository = new VoiceAuthRepository(db);
-    voiceAuth = new IndexedVoiceAuth({
-      accessToken: voiceAccessToken,
-      ownerId: `voice:${voicePersonaName}`,
-      repository: voiceAuthRepository,
-    });
-    if (voiceAuth.initializationResult.isErr()) {
-      await cleanupBootstrapFailure(db, observability, logger);
-      return err(new DaemonError('Failed to initialize browser voice authentication'));
+    if (config.voice.enabled) {
+      const voiceAuthRepository = new VoiceAuthRepository(db);
+      voiceAuth = new IndexedVoiceAuth({
+        accessToken: voiceAccessToken!,
+        ownerId: `voice:${voicePersonaName}`,
+        repository: voiceAuthRepository,
+      });
+      if (voiceAuth.initializationResult.isErr()) {
+        await cleanupBootstrapFailure(db, observability, logger);
+        return err(new DaemonError('Failed to initialize browser voice authentication'));
+      }
     }
     const voiceBackendModel = loadedVoicePersona.value.config.model;
     const voiceLiveModel = config.voice.model ?? 'gpt-live-1';
@@ -903,28 +918,43 @@ export async function bootstrap(
       telemetry: voiceTelemetry,
       logger,
     });
-    voiceTransport = new BrowserVoiceTransport();
-    const voiceAdapterSelection = createVoiceAdapterSelection({
-      transport: voiceTransport,
-      engine: voiceProvider,
-    });
-    if (voiceAdapterSelection.isErr()) {
+    const browserVoiceTransport = config.voice.enabled ? new BrowserVoiceTransport() : null;
+    voiceSipTransport = config.voice.sip?.enabled ? new SipTransport() : null;
+    voiceTransport = browserVoiceTransport ?? voiceSipTransport;
+    if (!voiceTransport) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('No voice transport is enabled'));
+    }
+    const browserAdapterSelection = browserVoiceTransport
+      ? createVoiceAdapterSelection({ transport: browserVoiceTransport, engine: voiceProvider })
+      : null;
+    const sipAdapterSelection = voiceSipTransport
+      ? createVoiceAdapterSelection({ transport: voiceSipTransport, engine: voiceProvider })
+      : null;
+    if (browserAdapterSelection?.isErr() || sipAdapterSelection?.isErr()) {
       await cleanupBootstrapFailure(db, observability, logger);
       return err(new DaemonError('Configured voice transport and engine capabilities are not proven'));
+    }
+    const voiceAdapterSelection = browserAdapterSelection ?? sipAdapterSelection;
+    if (!voiceAdapterSelection || voiceAdapterSelection.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(new DaemonError('Configured voice adapter selection is unavailable'));
     }
     const voiceCallAdmission = new VoiceCallAdmission(config.voice.maxConcurrentSessions, {
       maxSessionCreations: config.voice.maxSessionCreations,
       sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
     });
-    const voiceAuthorization = createVoiceAuthorization({
-      resolve: (owner) => voiceAuth!.resolveResult(owner).map((session) => session?.owner),
-      revoke: (owner) => {
-        const resolved = voiceAuth!.resolveResult(owner);
-        if (resolved.isErr()) return err(resolved.error);
-        if (!resolved.value) return err(new PolicyError('Voice grant is missing or revoked'));
-        return voiceAuth!.revoke(resolved.value);
-      },
-    });
+    const voiceAuthorization = voiceAuth
+      ? createVoiceAuthorization({
+          resolve: (owner) => voiceAuth!.resolveResult(owner).map((session) => session?.owner),
+          revoke: (owner) => {
+            const resolved = voiceAuth!.resolveResult(owner);
+            if (resolved.isErr()) return err(resolved.error);
+            if (!resolved.value) return err(new PolicyError('Voice grant is missing or revoked'));
+            return voiceAuth!.revoke(resolved.value);
+          },
+        })
+      : undefined;
     const voiceChannel = registerVoiceChannel(
       {
         channelRepo: repos.channel,
@@ -940,12 +970,20 @@ export async function bootstrap(
     }
     voiceChannelId = voiceChannel.value;
     const voiceExecutionGate = (input: VoiceExecutionGateInput): VoiceResult<void> => {
-      if (!voiceAuth!.resolve(input.owner)) {
-        return err(new PolicyError('Voice login is no longer active'));
-      }
       const sessionResult = voiceStore.findSession(input.request.sessionId);
       if (sessionResult.isErr()) return err(sessionResult.error);
       if (!sessionResult.value) return err(new PolicyError('Voice session was not found'));
+      if (
+        sessionResult.value.transport === 'sip'
+          ? !voiceSipIngress?.isProviderSessionActive(
+              sessionResult.value.providerSessionId ?? '',
+              input.owner,
+              Date.now(),
+            )
+          : !voiceAuth?.resolve(input.owner)
+      ) {
+        return err(new PolicyError('Voice login is no longer active'));
+      }
       const current = captureVoicePolicy(input.owner);
       if (current.isErr()) return err(current.error);
       const eligible = voicePolicy!.checkExecution({
@@ -968,6 +1006,16 @@ export async function bootstrap(
     voiceOutputSink = new VoiceOutputSink(voiceStore, (result) => {
       voiceBackendBridge?.notifyResult(result);
     }, { telemetry: voiceTelemetry });
+    const configuredVoiceTransports = new Map<string, VoiceTransport>();
+    if (browserVoiceTransport) configuredVoiceTransports.set('webrtc', browserVoiceTransport);
+    if (voiceSipTransport) configuredVoiceTransports.set('sip', voiceSipTransport);
+    const configuredVoiceSelections = new Map<string, typeof voiceAdapterSelection.value>();
+    if (browserAdapterSelection?.isOk()) {
+      configuredVoiceSelections.set('webrtc', browserAdapterSelection.value);
+    }
+    if (sipAdapterSelection?.isOk()) {
+      configuredVoiceSelections.set('sip', sipAdapterSelection.value);
+    }
     voiceSessionService = new DurableVoiceSessionService({
       store: voiceStore,
       provider: voiceProvider,
@@ -986,9 +1034,25 @@ export async function bootstrap(
       generation: (): number => voiceGeneration.value,
       capturePolicy: captureVoicePolicy,
       currentPolicy: currentVoicePolicy,
-      isOwnerActive: (owner): boolean => voiceAuth?.resolve(owner) !== undefined,
+      isOwnerActive: (owner): boolean =>
+        voiceAuth ? voiceAuth.resolve(owner) !== undefined : true,
       authorization: voiceAuthorization,
       adapterSelection: voiceAdapterSelection.value,
+      transports: configuredVoiceTransports,
+      adapterSelections: configuredVoiceSelections,
+      isIncomingOwnerActive: (owner, providerSessionId): boolean =>
+        voiceSipIngress?.isProviderSessionActive(providerSessionId, owner) ?? false,
+      onIncomingAccepted: (callId): VoiceResult<boolean> => {
+        const accepted = voiceSipIngress?.markAccepted(callId);
+        if (!accepted) return err(new PolicyError('Incoming SIP ingress is unavailable'));
+        return accepted;
+      },
+      onIncomingClosed: (callId): void => {
+        const closed = voiceSipIngress?.markClosed(callId);
+        if (closed?.isErr()) {
+          logger.warn({ callId, cause: closed.error }, 'voice: failed to record SIP closure');
+        }
+      },
       callAdmission: voiceCallAdmission,
       maxSessionLifetimeMs: config.voice.maxSessionLifetimeMs,
       maxContextChars: config.voice.maxContextChars,
@@ -996,26 +1060,90 @@ export async function bootstrap(
       telemetry: voiceTelemetry,
       logger,
     });
-    const publicOrigins = [...config.voice.allowedOrigins];
-    if (config.voice.publicHost) publicOrigins.push(`https://${config.voice.publicHost}`);
-    voiceServer = new BrowserVoiceServer(
-      {
-        accessToken: voiceAccessToken,
-        host: config.voice.host,
-        port: config.voice.port,
-        staticDirectory: join(import.meta.dirname, '../voice/web'),
-        allowedOrigins: publicOrigins.length > 0 ? publicOrigins : undefined,
-        allowedTransportTypes: config.voice.allowedTransportTypes,
-        maxConcurrentSessions: config.voice.maxConcurrentSessions,
-        maxSessionCreations: config.voice.maxSessionCreations,
-        sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
-        heartbeatIntervalMs: config.voice.heartbeatIntervalMs,
-      },
-      { sessionService: voiceSessionService, auth: voiceAuth, telemetry: voiceTelemetry, logger },
-    );
+    if (config.voice.enabled) {
+      const publicOrigins = [...config.voice.allowedOrigins];
+      if (config.voice.publicHost) publicOrigins.push(`https://${config.voice.publicHost}`);
+      voiceServer = new BrowserVoiceServer(
+        {
+          accessToken: voiceAccessToken!,
+          host: config.voice.host,
+          port: config.voice.port,
+          staticDirectory: join(import.meta.dirname, '../voice/web'),
+          allowedOrigins: publicOrigins.length > 0 ? publicOrigins : undefined,
+          allowedTransportTypes: config.voice.allowedTransportTypes,
+          maxConcurrentSessions: config.voice.maxConcurrentSessions,
+          maxSessionCreations: config.voice.maxSessionCreations,
+          sessionCreationWindowMs: config.voice.sessionCreationWindowMs,
+          heartbeatIntervalMs: config.voice.heartbeatIntervalMs,
+        },
+        { sessionService: voiceSessionService, auth: voiceAuth!, telemetry: voiceTelemetry, logger },
+      );
+    }
     logger.info(
       { persona: voicePersonaName, provider: voiceProviderName },
       'bootstrap: browser voice runtime initialized',
+    );
+  }
+
+  // Incoming SIP is an independent, disabled-by-default boundary. It may be
+  // enabled without browser voice, but it never infers caller identity from
+  // the provider delivery or ordinary SIP headers.
+  if (config.voice?.sip?.enabled) {
+    const sipConfig = config.voice.sip;
+    const sipResolver = new ConfiguredSipAuthorizationResolver({
+      issuer: sipConfig.issuer,
+      audience: sipConfig.audience,
+      publicKeys: sipConfig.publicKeys,
+      endpointMappings: sipConfig.endpointMappings,
+      revokedIssuers: sipConfig.revokedIssuers,
+      revokedKeyIds: sipConfig.revokedKeyIds,
+    });
+    voiceSipIngress = new SipIngressService({
+      repository: new VoiceSipRepository(db),
+      authorization: sipResolver,
+      deliveryReplayWindowMs: sipConfig.deliveryReplayWindowMs,
+      acceptCall: async (input): Promise<SipCallControlResult> => {
+        if (!voiceSessionService) return { outcome: 'unknown' as const };
+        const accepted = await voiceSessionService.acceptIncomingSession({
+          callId: input.callId,
+          providerSessionId: input.providerSessionId,
+          owner: {
+            ownerId: input.grant.owner_id,
+            loginRevision: input.grant.revision,
+          },
+          personaId: input.grant.persona_id,
+          admissionExpiresAt: input.grant.expires_at * 1_000,
+        });
+        if (accepted.isOk()) return { outcome: 'accepted' as const };
+        return classifySipAcceptanceFailure(accepted.error);
+      },
+    });
+    const standardWebhookSecret =
+      sipConfig.standardWebhookSecret ??
+      config.auth.providers[sipConfig.standardWebhookSecretRef]?.apiKey ??
+      config.auth.apiKey;
+    voiceSipWebhookServer = new SipWebhookServer({
+      enabled: true,
+      host: sipConfig.host,
+      port: sipConfig.port,
+      path: sipConfig.path,
+      standardWebhookSecret,
+      maxRequestBytes: sipConfig.maxRequestBytes,
+      timestampToleranceSeconds: sipConfig.timestampToleranceSeconds,
+    }, { ingress: voiceSipIngress });
+    const reconciledSip = voiceSipIngress.reconcileInterruptedAttempts();
+    if (reconciledSip.isErr()) {
+      await cleanupBootstrapFailure(db, observability, logger);
+      return err(
+        new DaemonError(
+          `Failed to reconcile incoming SIP state: ${reconciledSip.error.message}`,
+          reconciledSip.error,
+        ),
+      );
+    }
+    logger.info(
+      { host: sipConfig.host, port: sipConfig.port, path: sipConfig.path },
+      'bootstrap: incoming SIP ingress initialized',
     );
   }
 
@@ -1217,6 +1345,8 @@ export async function bootstrap(
     voiceProvider,
     voiceTransport,
     voiceServer,
+    voiceSipIngress,
+    voiceSipWebhookServer,
     voiceTelemetry,
     voiceRuntimeConfig,
     voiceGeneration,
@@ -1240,6 +1370,33 @@ export async function bootstrap(
   logger.info('bootstrap: context ready');
 
   return ok(ctx);
+}
+
+function classifySipAcceptanceFailure(error: unknown): SipCallControlResult {
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly reason?: unknown;
+    readonly status?: unknown;
+  };
+  // A durable registration failure means the provider may already have
+  // accepted the call. Keep the outcome unknown so no retry or false terminal
+  // rejection can orphan an active provider session.
+  if (candidate.code === 'DB_ERROR') return { outcome: 'unknown' };
+  if (candidate.reason === 'http') {
+    const status = typeof candidate.status === 'number' ? candidate.status : undefined;
+    return status !== undefined && status >= 400 && status < 500 && ![408, 409, 429].includes(status)
+      ? { outcome: 'rejected' }
+      : { outcome: 'unknown' };
+  }
+  if (
+    candidate.reason === 'invalid_request' ||
+    candidate.reason === 'unsupported_transport' ||
+    candidate.reason === 'configuration'
+  ) {
+    return { outcome: 'rejected' };
+  }
+  if (candidate.reason !== undefined) return { outcome: 'unknown' };
+  return { outcome: 'rejected' };
 }
 
 async function cleanupBootstrapFailure(

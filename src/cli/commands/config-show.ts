@@ -28,7 +28,7 @@ export interface ConfigShowOptions {
 const SECRET_KEYS = new Set([
   'token', 'botToken', 'appToken', 'authToken', 'accessToken', 'refreshToken',
   'password', 'accountSid', 'apiKey', 'secret', 'secretKey',
-  'signingSecret', 'clientSecret', 'privateKey', 'webhookSecret',
+  'signingSecret', 'clientSecret', 'privateKey', 'webhookSecret', 'standardWebhookSecret',
   'encryptionKey', 'encryptionSecret',
 ]);
 
