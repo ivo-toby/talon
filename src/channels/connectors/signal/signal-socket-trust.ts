@@ -58,7 +58,10 @@ export function validateSignalSocket(
       const valid =
         !stats.isSymbolicLink() &&
         (isSocket
-          ? stats.isSocket() && stats.uid === uid && mode === 0o600n
+          ? stats.isSocket() &&
+            stats.uid === uid &&
+            (mode & 0o7077n) === 0n &&
+            (mode & 0o600n) === 0o600n
           : stats.isDirectory() &&
             (isParent
               ? stats.uid === uid && mode === 0o700n

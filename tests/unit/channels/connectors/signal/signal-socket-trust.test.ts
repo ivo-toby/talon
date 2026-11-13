@@ -53,7 +53,15 @@ describe('signal-socket-trust', () => {
     expect(validateSignalSocket(socketPath)._unsafeUnwrapErr().reason).toBe('UNTRUSTED_SOCKET');
   });
 
-  it.each([0o666, 0o660, 0o640, 0o700])(
+  it.each([0o600, 0o700])('accepts owner-only socket mode %s', async (mode) => {
+    await listen();
+    fs.chmodSync(socketPath, mode);
+    const snapshot = validateSignalSocket(socketPath)._unsafeUnwrap();
+    expect(snapshot.entries.at(-1)?.mode & 0o777n).toBe(BigInt(mode));
+    expect(validateSignalSocket(socketPath, snapshot).isOk()).toBe(true);
+  });
+
+  it.each([0o666, 0o660, 0o640, 0o606, 0o755, 0o777])(
     'rejects socket mode %s without repairing it',
     async (mode) => {
       await listen();
@@ -63,12 +71,47 @@ describe('signal-socket-trust', () => {
     },
   );
 
+  it.each([0o400, 0o500])(
+    'rejects owner-read-only socket mode %s, which the owner cannot connect through',
+    async (mode) => {
+      await listen();
+      fs.chmodSync(socketPath, mode);
+      expect(validateSignalSocket(socketPath)._unsafeUnwrapErr().reason).toBe('UNTRUSTED_SOCKET');
+      expect(fs.lstatSync(socketPath).mode & 0o777).toBe(mode);
+    },
+  );
+
+  it.each([0o4600, 0o2600, 0o1600, 0o4700, 0o2700, 0o1700])(
+    'rejects socket with special bits in mode %s',
+    async (mode) => {
+      await listen();
+      fs.chmodSync(socketPath, mode);
+      expect(validateSignalSocket(socketPath)._unsafeUnwrapErr().reason).toBe('UNTRUSTED_SOCKET');
+      expect(fs.lstatSync(socketPath).mode & 0o7777).toBe(mode);
+    },
+  );
+
   it('rejects writable ancestors even with a private immediate parent', async () => {
     const inner = join(directory, 'private');
     fs.mkdirSync(inner, { mode: 0o700 });
     socketPath = join(inner, 'rpc.sock');
     await listen();
     fs.chmodSync(directory, 0o1777);
+    expect(validateSignalSocket(socketPath)._unsafeUnwrapErr().reason).toBe('UNTRUSTED_SOCKET');
+  });
+
+  it('rejects a group-readable immediate parent even when the socket is owner-only', async () => {
+    await listen();
+    fs.chmodSync(directory, 0o750);
+    expect(validateSignalSocket(socketPath)._unsafeUnwrapErr().reason).toBe('UNTRUSTED_SOCKET');
+  });
+
+  it('rejects a group-writable ancestor even with an owner-only socket and parent', async () => {
+    const inner = join(directory, 'private');
+    fs.mkdirSync(inner, { mode: 0o700 });
+    socketPath = join(inner, 'rpc.sock');
+    await listen();
+    fs.chmodSync(directory, 0o770);
     expect(validateSignalSocket(socketPath)._unsafeUnwrapErr().reason).toBe('UNTRUSTED_SOCKET');
   });
 
