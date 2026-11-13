@@ -48,6 +48,8 @@ All config mutations go through these commands:
 | `npx talonctl test-provider --name <n>` | Test a provider works |
 | `npx talonctl list-providers` | Show all providers |
 | `npx talonctl list-channels` | Show channels |
+| `npx talonctl signal-resume --channel <n> --external-challenge-resolved` | Verify an externally resolved Signal challenge (never sends or replays) |
+| `npx talonctl queue-purge [--statuses <list>] [--all]` | Cancel selected queued/saved deliveries (does not unsend) |
 | `npx talonctl list-personas` | Show personas |
 | `npx talonctl list-skills` | Show skills |
 | `npx talonctl list-schedules` | Show scheduled tasks |
@@ -225,7 +227,8 @@ c) Discord
 d) WhatsApp
 e) Email
 f) Terminal (for CLI chat)
-g) Skip for now
+g) Signal (signal-cli bridge, text only)
+h) Skip for now
 ```
 
 Invoke the matching per-channel skill for the full setup walkthrough:
@@ -238,8 +241,17 @@ Invoke the matching per-channel skill for the full setup walkthrough:
 | WhatsApp | `/add-whatsapp` |
 | Email | `/add-email` |
 | Terminal | `/add-terminal` |
+| Signal | `/add-signal` |
 
 Each skill handles: bot/app creation, credentials, config, env vars, verification, and troubleshooting.
+
+**Signal** is different from the token-based channels. Summarize it this way before you invoke `/add-signal`:
+- Choose **personal** (link signal-cli as an extra device on the operator's own account; Note to Self and selected chats are commands) or **dedicated** (a separate account; the bot replies from that identity). Talon needs no extra account.
+- The operator installs signal-cli 0.14.9 (JRE 25 where the JVM distribution applies) and runs it as a supervised bridge. Talon does not install, register, link, or launch it.
+- Talon connects to a private Unix socket in a directory owned by the same UID as talond (parent 0700). The socket is owner-only: 0600 or 0700, with no group or other bits. Never `/tmp`.
+- Text only. No attachments in either direction.
+- Validate with fakes first (`npm run build`, then `.agents/skills/run-talon-smoke/scripts/run-talon-smoke.sh fake --no-build`). Live validation with a real account is a separate step and has not been run by this skill.
+- No secrets in chat, captures, or logs: linking URIs, QR codes, verification codes, and challenge tokens stay in the operator's terminal.
 
 Ask: **"Add another channel?"** Loop until done.
 

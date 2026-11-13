@@ -129,11 +129,35 @@ at a time.
 | `add-slack` | "add slack", "connect slack" |
 | `add-discord` | "add discord", "connect discord" |
 | `add-whatsapp` | "add whatsapp", "connect whatsapp" |
+| `add-signal` | "add signal", "connect signal", "signal channel" |
 | `add-email` | "add email", "connect email" |
 | `add-terminal` | "add terminal", "cli chat", "talonctl chat" |
 | `create-profile` | "create a profile", "add a persona", "new background agent" |
 | `create-personality` | "create a personality", "add personality files" |
 | `manage-schedules` | "manage schedules", "add a schedule", "cron job" |
+
+### Signal (optional, operator-run bridge)
+
+Signal uses a [signal-cli](https://github.com/AsamK/signal-cli) **0.14.9**
+bridge that you run and supervise on the host. Talon does not install, register,
+link, or start any Signal service, and this stack has no signal-cli container.
+The `add-signal` skill walks through the account setup.
+
+Only the bridge's private socket directory may be mounted into `talond`. Never
+mount the signal-cli key or data directory, and never install signal-cli in the
+image. The container gets no signal-cli authority.
+
+Socket rules Talon checks before every connection:
+
+- The socket's parent directory is exactly `0700` and owned by your user.
+- The socket is owned by your user and is `0600` or `0700`. Any group or other
+  bit is refused as `UNTRUSTED_SOCKET`.
+
+The bundled `docker-compose.yaml` does not mount the socket. To give the
+`talond` container access, add a bind mount of the private directory to the
+`talond` service's `volumes`, then recreate the container with
+`docker compose up -d talond`. The `add-signal` skill has the exact snippet and
+the verification steps.
 
 These skills are **not** loaded by the Talon daemon — they are for the
 operator's local Claude Code session. They know the bundle layout, use the

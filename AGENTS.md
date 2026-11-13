@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## What is Talon?
 
-Talon (`talond`) is a self-hosted autonomous AI agent daemon (~22K lines TypeScript). It receives messages from humans across multiple channels (Telegram, Slack, Discord, WhatsApp, Email, Terminal), processes them through a durable queue, runs agents through a provider layer (Codex default, with Gemini CLI and Codex CLI supported), executes tools through capability-gated host-tools, and sends responses back. All data stays on the operator's hardware.
+Talon (`talond`) is a self-hosted autonomous AI agent daemon (~22K lines TypeScript). It receives messages from humans across multiple channels (Telegram, Slack, Discord, WhatsApp, Signal, Email, Terminal), processes them through a durable queue, runs agents through a provider layer (Codex default, with Gemini CLI and Codex CLI supported), executes tools through capability-gated host-tools, and sends responses back. All data stays on the operator's hardware.
 
 ## Build & Development Commands
 
@@ -38,7 +38,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Module    | Path                       | Purpose                                                                                                                    |
 | --------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | Daemon    | `src/daemon/`              | Lifecycle state machine, agent runner, bootstrap, watchdog                                                                 |
-| Channels  | `src/channels/connectors/` | 7 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, email, terminal                                 |
+| Channels  | `src/channels/connectors/` | 8 adapters: telegram, slack, discord, whatsapp-business, whatsapp-baileys, signal, email, terminal                        |
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                                                                         |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter                                                          |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                                                                                      |
@@ -66,12 +66,13 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 - **Lazy skill loading** — only skill name + description injected into system prompts. Full content loaded on demand via `skill_load` tool (in-process MCP server for Codex SDK, external MCP server for Gemini CLI, Codex CLI, and openai-compatible). Per-skill `eager: true` opt-in in frontmatter forces the body into the system prompt at startup (use for reflexive skills on small models). Background agents use eager loading.
 - **Internal MCP server prefix** — `__talond_` prefix is reserved for internal MCP servers (`__talond_host_tools`, `__talond_skill_loader`). User-defined servers with this prefix are rejected.
 - **Per-server MCP request timeout and tool-output cap** — each MCP server entry in `skills/<skill>/mcp/<server>.json` may carry `timeoutMs` (integer ≥ 1000; omitted → Mastra 60 000 ms default; the outer query timeout still wins) and `toolOutputCap` (integer ≥ 0; `0` disables excerpting for that server only; omitted → provider-level `toolOutputCap` fallback → 4 000; provider-level `0` disables only the fallback, explicit positive per-server caps still apply). These are run-local model-history metadata, not network-byte or full-output memory bounds: when any effective MCP cap is positive, MCP results (including zero-cap servers) are stored in a shared run-local in-memory store, retrievable via `fetch_tool_output` in up to 8 000 content-character slices (framing additional) when available; with all effective caps at `0` no wrapper/recovery is injected; if a discovered MCP tool already owns the reserved `fetch_tool_output` name, Talon skips the synthetic recovery (delegating to the MCP tool and logging a warning) instead of overwriting it. Only the Mastra / OpenAI-compatible path (both chat-completions and Responses modes) honors the metadata; native CLI serializers (Claude, Gemini, Codex CLI) omit it. Built-in workspace file/shell tools are unaffected. `talonctl add-mcp` accepts `--timeout-ms` / `--tool-output-cap` with strict decimal safe-integer validation; `add-mcp` rejects duplicate server names, so existing servers are edited in place in the skill JSON.
-- **Multi-connector** — Multiple connector instances of the same channel type are supported. Channels are keyed by `name` (unique), not `type`. Slack and Discord filter all bot messages at the platform level; Telegram filters sibling Talon bot IDs injected at startup; WhatsApp Baileys uses JID-based self-filtering. WhatsApp Business has no bot-self filtering.
+- **Multi-connector** — Multiple connector instances of the same channel type are supported. Channels are keyed by `name` (unique), not `type`. Slack and Discord filter all bot messages at the platform level; Telegram filters sibling Talon bot IDs injected at startup; WhatsApp Baileys uses JID-based self-filtering. WhatsApp Business has no bot-self filtering. Signal filters by verified provenance (see below).
+- **Signal channel** — `signal` connectors talk to an externally supervised signal-cli v0.14.9 bridge over a local Unix socket (`src/channels/connectors/signal/`); talond never installs, registers, or supervises signal-cli and never reads account keys. Each named instance binds one account; two enabled instances resolving to the same account UUID are both rejected. Personal mode accepts operator commands only from verified linked devices, so Talon's own sends are filtered by device provenance rather than text. Saved reply delivery keeps provider runs from being repeated to recover a send (`signal_account_state`, `signal_destination_leases`). Operator reference: `docs/signal-channel.md`.
 - **Per-persona background-agent override** — personas may set `backgroundProvider` and `backgroundModel` to route their background runs through a different runtime than the foreground `provider`. Validated at config load: `backgroundProvider` must be enabled under `backgroundAgent.providers`. When unset, the persona's foreground `provider` is used iff it is enabled in the background registry; otherwise the daemon falls back to `backgroundAgent.defaultProvider`.
 
 ### Database
 
-Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`.
+Schema in `src/core/database/migrations/001-initial-schema.sql`. Key tables: `channels`, `personas`, `bindings` (channel↔persona routing), `threads`, `messages`, `queue_items`, `runs`, `schedules`, `memory_items`, `artifacts`, `audit_log`, `tool_results`. Signal adds `signal_account_state` and `signal_destination_leases` (migration `014-signal-state.sql`).
 
 Table names to know: `memory_items` (not `memory`), `schedules` (column `expression` not `cron_expression`).
 
@@ -179,6 +180,7 @@ rtk lsof -nP -iTCP:17701 -sTCP:LISTEN
 - `selfdoc.md` — Architecture overview written as self-documentation
 - `BOARD.md` — Project task tracking
 - `config/talond.example.yaml` — Full config reference
+- `docs/signal-channel.md` — Signal operator reference (account modes, trust boundary, delivery and retention limits)
 - `templates/assistant/system.md` — Default persona system prompt template
 
 ## Workflow
