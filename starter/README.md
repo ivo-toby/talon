@@ -172,9 +172,14 @@ signal-cli in the image. The container gets no signal-cli authority.
 
 Socket rules Talon checks before every connection:
 
-- The socket's parent directory is exactly `0700` and owned by your user.
-- The socket is owned by your user and is `0600` or `0700`. Any group or other
-  bit is refused as `UNTRUSTED_SOCKET`.
+- The socket's parent directory is owned by the same numeric UID as talond and
+  has mode `0700`. In this Docker starter, talond runs as UID 1000 in the
+  container, so the bridge must run as UID 1000 too.
+- The socket is a Unix socket owned by that UID, with no group or other
+  permission bits. Mode `0600` or `0700` is accepted. Any group or other bit is
+  refused as `UNTRUSTED_SOCKET`.
+- Every ancestor up to `/` is owned by that UID or by root, with no group or
+  world write permission.
 
 The bundled `docker-compose.yaml` does not mount the socket. To give the
 `talond` container access, add a bind mount of the private directory to the
