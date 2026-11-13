@@ -76,6 +76,42 @@ channels:
   #     appToken: ${SLACK_DEV_APP_TOKEN}
   #     signingSecret: ${SLACK_DEV_SIGNING_SECRET}
 
+  # Signal via an externally supervised signal-cli v0.14.9 bridge (text only).
+  # talond connects to the bridge's local Unix socket; it does not install,
+  # register, or supervise signal-cli. Operator reference: docs/signal-channel.md
+  # Bridge data dir and socket must be private to talond's UID (no /tmp).
+  #
+  # Personal mode (your existing account, linked as an extra device):
+  # - name: signal-personal
+  #   type: signal
+  #   enabled: true
+  #   config:
+  #     accountMode: personal
+  #     socketPath: /run/user/1000/talon-signal/signal.sock
+  #     account: '+15555550100'         # E.164 hint; accountUuid is authoritative
+  #     accountUuid: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+  #     deviceId: 2                     # linked device, not primary (1)
+  #     deviceCreatedTimestamp: 1767225600000
+  #     allowedDmPeers: []              # empty: no DMs selected
+  #     allowedSenders: []              # empty: nobody authorized
+  #     allowedGroups: []               # empty: no groups selected
+  #     triggerPrefix: '!talon'         # quoted: unquoted ! is a YAML tag
+  #
+  # Dedicated mode (separate agent account):
+  # - name: signal-agent
+  #   type: signal
+  #   enabled: true
+  #   config:
+  #     accountMode: dedicated
+  #     socketPath: /run/user/1000/talon-signal/signal.sock
+  #     account: '+15555550199'
+  #     accountUuid: '11111111-2222-4333-8444-555555555555'
+  #     deviceId: 1
+  #     allowedDmPeers: []
+  #     allowedSenders: []
+  #     allowedGroups: []
+  #     triggerPrefix: '!talon'
+
 # Personas can also be used as profiles for background agents.
 # When spawning a background agent with profile="<name>", the named persona's
 # system prompt, model, provider, and skills are used instead of the spawning
