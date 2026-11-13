@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { ok, err } from 'neverthrow';
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
 import { DeadLetterHandler } from '../../../src/queue/dead-letter.js';
-import { QueueProcessor } from '../../../src/queue/queue-processor.js';
+import { QueueProcessor, QueueDeferral } from '../../../src/queue/queue-processor.js';
 import { calculateBackoff } from '../../../src/queue/retry-strategy.js';
 import { QueueItemStatus, type QueueItem } from '../../../src/queue/queue-types.js';
 import { createTestDb, createTestLogger, seedThread, enqueueItem, uuid } from './helpers.js';
@@ -455,5 +455,36 @@ describe('QueueProcessor', () => {
     };
     expect(row.status).toBe('dead_letter');
     expect(row.error).toBe('VOICE_QUEUE_FAILURE_SENTINEL');
+  });
+
+  // -------------------------------------------------------------------------
+  // QueueDeferral
+  // -------------------------------------------------------------------------
+
+  describe('processNext — QueueDeferral', () => {
+    it('defers without consuming an attempt and never dead-letters', async () => {
+      const itemId = enqueueItem(repo, threadId, { max_attempts: 1 });
+      const before = Date.now();
+
+      for (let i = 0; i < 3; i++) {
+        // Make the item eligible again for the next iteration.
+        db.prepare('UPDATE queue_items SET next_retry_at = NULL WHERE id = ?').run(itemId);
+        const claimed = await processor.processNext(async () => err(new QueueDeferral('wait', 5000)));
+        expect(claimed?.id).toBe(itemId);
+      }
+
+      const row = repo.findById(itemId)._unsafeUnwrap()!;
+      expect(row.status).toBe('pending');
+      expect(row.attempts).toBe(0);
+      expect(row.next_retry_at).toBeGreaterThanOrEqual(before + 5000);
+      expect(repo.findDeadLetter()._unsafeUnwrap()).toHaveLength(0);
+    });
+
+    it('does not redeliver a deferred item before its delay elapses', async () => {
+      enqueueItem(repo, threadId);
+      await processor.processNext(async () => err(new QueueDeferral('wait', 60_000)));
+      const again = await processor.processNext(async () => ok(undefined));
+      expect(again).toBeNull();
+    });
   });
 });

@@ -1,0 +1,666 @@
+{
+  "kind": "wdd_plan",
+  "schemaVersion": 1,
+  "scope": {
+    "baseRef": "wdd/image-processing",
+    "id": "SCOPE-image-processing",
+    "maxConcurrent": 3,
+    "reconcileEveryNMerges": 3,
+    "reviewPolicy": "always"
+  },
+  "tasks": [
+    {
+      "conflictDomains": [
+        "src/images/image-types.ts",
+        "src/channels/channel-types.ts",
+        "src/core/config/*.ts",
+        "tests/unit/core/config/config-schema*.test.ts",
+        "tests/unit/images/image-types.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-3",
+        "spec.md#AC-5",
+        "spec.md#AC-16",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [],
+      "id": "TASK-001",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-001.md",
+      "title": "Image configuration and inbound contracts"
+    },
+    {
+      "conflictDomains": [
+        "src/core/database/migrations/*",
+        "src/core/database/repositories/*",
+        "tests/unit/core/database/repositories/image*.test.ts",
+        "tests/unit/core/database/migrations/runner.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-16",
+        "spec.md#AC-20",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-001"
+      ],
+      "id": "TASK-002",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-002.md",
+      "title": "Durable Images and pending Ingestion repositories"
+    },
+    {
+      "conflictDomains": [
+        "package.json",
+        "package-lock.json",
+        "src/images/image-store.ts",
+        "src/images/image-normalizer.ts",
+        "src/images/image-metadata.ts",
+        "src/memory/thread-workspace.ts",
+        "tests/unit/images/image-store.test.ts",
+        "tests/unit/images/image-normalizer.test.ts",
+        "tests/unit/images/image-metadata.test.ts",
+        "tests/fixtures/images/**"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-4",
+        "spec.md#AC-8",
+        "spec.md#AC-14",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "research/normalization-probe.mjs",
+        "research/normalization-probe-result.json",
+        "research/source-manifest.json",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-001"
+      ],
+      "id": "TASK-003",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-003.md",
+      "title": "Owned image files and JPEG normalization"
+    },
+    {
+      "conflictDomains": [
+        "src/images/image-selection.ts",
+        "src/images/image-transport.ts",
+        "tests/unit/images/image-selection.test.ts",
+        "tests/unit/images/image-transport.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-001",
+        "TASK-003"
+      ],
+      "id": "TASK-004",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-004.md",
+      "title": "Shared image selection and bounded media staging"
+    },
+    {
+      "conflictDomains": [
+        "src/pipeline/*.ts",
+        "src/images/image-ingestion.ts",
+        "src/queue/queue-manager.ts",
+        "src/channels/channel-setup.ts",
+        "tests/unit/pipeline/**",
+        "tests/unit/images/image-ingestion.test.ts",
+        "tests/unit/queue/queue-manager.test.ts",
+        "tests/unit/channels/channel-setup.test.ts",
+        "tests/integration/subagent-pipeline.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-14",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "spec.md#AC-20",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-002",
+        "TASK-003"
+      ],
+      "id": "TASK-005",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-005.md",
+      "title": "Atomic image Admission and queue completion"
+    },
+    {
+      "conflictDomains": [
+        "src/channels/connectors/telegram/**",
+        "tests/unit/channels/connectors/telegram/**"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-8",
+        "spec.md#AC-16",
+        "research/source-manifest.json",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-004"
+      ],
+      "id": "TASK-006",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-006.md",
+      "title": "Telegram photo and image-document ingestion"
+    },
+    {
+      "conflictDomains": [
+        "src/channels/connectors/whatsapp-baileys/**",
+        "tests/unit/channels/connectors/whatsapp-baileys/**"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-8",
+        "spec.md#AC-16",
+        "research/source-manifest.json",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-004"
+      ],
+      "id": "TASK-007",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-007.md",
+      "title": "Baileys streamed image ingestion"
+    },
+    {
+      "conflictDomains": [
+        "src/channels/connectors/whatsapp-business/**",
+        "tests/unit/channels/connectors/whatsapp-business/**",
+        ".wdd/epics/image-processing/research/whatsapp-business-verified-contract.md"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-8",
+        "spec.md#AC-16",
+        "research/whatsapp-business-prerequisite.md",
+        "research/source-manifest.json",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-004"
+      ],
+      "id": "TASK-008",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-008.md",
+      "title": "WhatsApp Business verified media ingestion"
+    },
+    {
+      "conflictDomains": [
+        "src/channels/connectors/email/**",
+        "tests/unit/channels/connectors/email/**"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-1",
+        "spec.md#AC-2",
+        "spec.md#AC-3",
+        "spec.md#AC-8",
+        "spec.md#AC-16",
+        "research/source-manifest.json",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-004"
+      ],
+      "id": "TASK-009",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-009.md",
+      "title": "Email image attachments after authorization"
+    },
+    {
+      "conflictDomains": [
+        "src/images/image-lifecycle.ts",
+        "src/images/image-service.ts",
+        "src/channels/channel-setup.ts",
+        "src/channels/index.ts",
+        "src/daemon/channel-factory.ts",
+        "src/daemon/daemon*.ts",
+        "tests/unit/images/image-lifecycle.test.ts",
+        "tests/unit/images/image-service.test.ts",
+        "tests/unit/daemon/daemon-bootstrap.test.ts",
+        "tests/unit/daemon/channel-factory.test.ts",
+        "tests/unit/daemon/daemon.test.ts",
+        "tests/unit/channels/channel-setup.test.ts",
+        "tests/integration/image-ingestion-runtime.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-1",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-8",
+        "spec.md#AC-14",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "spec.md#AC-20",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008",
+        "TASK-009"
+      ],
+      "id": "TASK-010",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-010.md",
+      "title": "Ingestion runtime integration and retention recovery"
+    },
+    {
+      "conflictDomains": [
+        "src/images/finding-types.ts",
+        "src/core/database/migrations/*",
+        "src/core/database/repositories/*",
+        "tests/unit/core/database/repositories/finding-repository.test.ts",
+        "tests/unit/core/database/migrations/runner.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-9",
+        "spec.md#AC-12",
+        "spec.md#AC-13",
+        "spec.md#AC-19",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-002"
+      ],
+      "id": "TASK-011",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-011.md",
+      "title": "Canonical Finding persistence"
+    },
+    {
+      "conflictDomains": [
+        "src/subagents/model-resolver.ts",
+        "src/subagents/subagent-model-chain.ts",
+        "src/subagents/subagent-types.ts",
+        "src/subagents/subagent-runner.ts",
+        "src/subagents/index.ts",
+        "src/tools/host-tools/subagent-invoke.ts",
+        "src/core/config/*.ts",
+        "tests/unit/subagents/model-resolver.test.ts",
+        "tests/unit/subagents/subagent-model-chain.test.ts",
+        "tests/unit/subagents/subagent-runner.test.ts",
+        "tests/unit/core/config/config-schema-subagents.test.ts",
+        "tests/unit/tools/subagent-invoke.test.ts",
+        "tests/integration/subagent-pipeline.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-10",
+        "spec.md#AC-11",
+        "spec.md#AC-12",
+        "spec.md#AC-15",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-001"
+      ],
+      "id": "TASK-012",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-012.md",
+      "title": "Vision model-chain validation and trusted run context"
+    },
+    {
+      "conflictDomains": [
+        "src/subagents/default/vision/**",
+        "tests/unit/subagents/vision.test.ts",
+        "src/subagents/subagent-types.ts",
+        "src/subagents/index.ts",
+        "tests/unit/subagents/subagent-runner.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-9",
+        "spec.md#AC-10",
+        "spec.md#AC-11",
+        "spec.md#AC-13",
+        "spec.md#AC-14",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "research/source-manifest.json",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-003",
+        "TASK-011",
+        "TASK-012"
+      ],
+      "id": "TASK-013",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-013.md",
+      "title": "One-shot vision Inspection implementation"
+    },
+    {
+      "conflictDomains": [
+        "src/daemon/daemon-bootstrap.ts",
+        "src/daemon/daemon-types.ts",
+        "src/subagents/subagent-loader.ts",
+        "tests/unit/daemon/daemon-bootstrap.test.ts",
+        "tests/unit/subagents/subagent-loader.test.ts",
+        "tests/integration/vision-inspection-runtime.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-9",
+        "spec.md#AC-11",
+        "spec.md#AC-12",
+        "spec.md#AC-13",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-010",
+        "TASK-011",
+        "TASK-012",
+        "TASK-013"
+      ],
+      "id": "TASK-014",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-014.md",
+      "title": "Inspection daemon integration"
+    },
+    {
+      "conflictDomains": [
+        "src/images/image-context-projection.ts",
+        "tests/unit/images/image-context-projection.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-8",
+        "spec.md#AC-13",
+        "spec.md#AC-15",
+        "spec.md#AC-18",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-002",
+        "TASK-011"
+      ],
+      "id": "TASK-015",
+      "model": null,
+      "reviewModel": null,
+      "risk": "normal",
+      "specPath": "tasks/TASK-015.md",
+      "title": "Bounded descriptor and Finding projections"
+    },
+    {
+      "conflictDomains": [
+        "src/tools/host-tools/image-lookup.ts",
+        "tests/unit/tools/host-tools/image-lookup.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-10",
+        "spec.md#AC-12",
+        "spec.md#AC-13",
+        "spec.md#AC-14",
+        "spec.md#AC-19",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-015"
+      ],
+      "id": "TASK-016",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-016.md",
+      "title": "Thread-scoped model-free image_lookup handler"
+    },
+    {
+      "conflictDomains": [
+        "src/tools/tool-filter.ts",
+        "src/tools/host-tools-bridge.ts",
+        "src/tools/host-tools-mcp-server.ts",
+        "src/tools/host-tools/index.ts",
+        "templates/tool-instructions/image.read.md",
+        "templates/tool-instructions/subagent.invoke.md",
+        "tests/unit/tools/tool-filter.test.ts",
+        "tests/unit/tools/host-tools-bridge.test.ts",
+        "tests/unit/tools/host-tools-mcp-server.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-10",
+        "spec.md#AC-12",
+        "spec.md#AC-15",
+        "spec.md#AC-18",
+        "spec.md#AC-19",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-016"
+      ],
+      "id": "TASK-017",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-017.md",
+      "title": "Lookup tool exposure and agent instructions"
+    },
+    {
+      "conflictDomains": [
+        "src/daemon/agent-runner.ts",
+        "src/daemon/context-assembler.ts",
+        "src/daemon/context-roller.ts",
+        "tests/unit/daemon/agent-runner.test.ts",
+        "tests/unit/daemon/context-assembler.test.ts",
+        "tests/unit/daemon/context-roller.test.ts",
+        "tests/unit/providers/codex-cli-provider.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-12",
+        "spec.md#AC-13",
+        "spec.md#AC-14",
+        "spec.md#AC-15",
+        "spec.md#AC-18",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-015",
+        "TASK-017"
+      ],
+      "id": "TASK-018",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-018.md",
+      "title": "Live image descriptors and fresh-session context"
+    },
+    {
+      "conflictDomains": [
+        "src/daemon/daemon-bootstrap.ts",
+        "src/daemon/daemon-types.ts",
+        "tests/unit/daemon/daemon-bootstrap.test.ts",
+        "tests/integration/e2e/image-processing.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-1",
+        "spec.md#AC-6",
+        "spec.md#AC-7",
+        "spec.md#AC-9",
+        "spec.md#AC-11",
+        "spec.md#AC-12",
+        "spec.md#AC-13",
+        "spec.md#AC-14",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "spec.md#AC-18",
+        "spec.md#AC-19",
+        "spec.md#AC-20",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-014",
+        "TASK-017",
+        "TASK-018"
+      ],
+      "id": "TASK-019",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-019.md",
+      "title": "Replay and lookup runtime integration and epic proof"
+    },
+    {
+      "conflictDomains": [
+        "README.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "config/talond.example.yaml",
+        "templates/assistant/system.md",
+        ".agents/skills/*/SKILL.md",
+        ".claude/skills/*/SKILL.md"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-3",
+        "spec.md#AC-8",
+        "spec.md#AC-12",
+        "spec.md#AC-14",
+        "spec.md#AC-17",
+        "spec.md#AC-18",
+        "spec.md#AC-19",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-019",
+        "TASK-021"
+      ],
+      "id": "TASK-020",
+      "model": null,
+      "reviewModel": null,
+      "risk": "normal",
+      "specPath": "tasks/TASK-020.md",
+      "title": "Image feature documentation in both agent trees"
+    },
+    {
+      "conflictDomains": [
+        "deploy/Dockerfile",
+        ".github/workflows/release.yaml",
+        "tests/unit/deploy/dockerfile.test.ts"
+      ],
+      "context": [
+        "design.md",
+        "shared-context/image-processing-domain.md",
+        "shared-context/contract-inventory.md",
+        "spec.md#AC-15",
+        "spec.md#AC-16",
+        "spec.md#AC-17",
+        "research/plan-execution-guidance.md"
+      ],
+      "dependsOn": [
+        "TASK-003",
+        "TASK-017"
+      ],
+      "id": "TASK-021",
+      "model": null,
+      "reviewModel": null,
+      "risk": "high",
+      "specPath": "tasks/TASK-021.md",
+      "title": "Sharp native packaging and image tool instructions"
+    }
+  ]
+}

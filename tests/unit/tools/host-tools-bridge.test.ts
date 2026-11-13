@@ -8,10 +8,29 @@ import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { HostToolsBridge } from '../../../src/tools/host-tools-bridge.js';
+import type {
+  ImageLookupServices,
+} from '../../../src/tools/host-tools-bridge.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import type { ScheduleRepository } from '../../../src/core/database/repositories/schedule-repository.js';
 import type { ChannelRegistry } from '../../../src/channels/channel-registry.js';
-import { ok } from 'neverthrow';
+import type {
+  ImageLookupAccess,
+  ImageLookupFindings,
+  ImagePage,
+} from '../../../src/tools/host-tools/image-lookup.js';
+import type {
+  FindingPage,
+  FindingRecord,
+  FindingRow,
+} from '../../../src/core/database/repositories/finding-repository.js';
+import { DbError } from '../../../src/core/errors/error-types.js';
+import type {
+  ImageAccessError,
+  ImageAvailability,
+  ImageDescriptor,
+} from '../../../src/images/image-types.js';
+import { ok, err, type Result } from 'neverthrow';
 import { createVoiceObservationContext } from '../../../src/observability/langfuse/voice-observation.js';
 
 // Mock createDatabase so it doesn't try to open a real file for the readonly connection.
@@ -76,6 +95,92 @@ function waitForSocket(socketPath: string, maxMs = 2000): Promise<void> {
     };
     check();
   });
+}
+
+// ---------------------------------------------------------------------------
+// image.lookup fixtures (deterministic port fakes; no database, no pixels)
+// ---------------------------------------------------------------------------
+
+function makeImageDescriptor(overrides: Partial<ImageDescriptor> = {}): ImageDescriptor {
+  return {
+    imageId: 'img-0001',
+    threadId: 'thread-001',
+    messageId: 'msg-0001',
+    ordinal: 0,
+    receivedAt: 1_700_000_100_000,
+    expiresAt: 1_700_003_700_000,
+    state: 'available',
+    filename: 'photo.jpg',
+    mimeType: 'image/jpeg',
+    dimensions: { width: 1600, height: 1200 },
+    ...overrides,
+  } as ImageDescriptor;
+}
+
+function available(descriptor: ImageDescriptor): Result<ImageAvailability, ImageAccessError> {
+  return ok({ state: 'available', available: true, expiresAt: descriptor.expiresAt });
+}
+
+/** Minimal Image port fake: one descriptor, never opens a file. */
+function makeImageAccess(descriptor: ImageDescriptor): ImageLookupAccess {
+  const access: Partial<ImageLookupAccess> = {
+    getAvailability: vi
+      .fn()
+      .mockImplementation((): Promise<Result<ImageAvailability, ImageAccessError>> =>
+        Promise.resolve(available(descriptor)),
+      ),
+    resolveImage: vi
+      .fn()
+      .mockImplementation((): Promise<Result<ImageDescriptor, ImageAccessError>> =>
+        Promise.resolve(ok(descriptor)),
+      ),
+    // A text lookup must never open a file; reaching this fake is a failure.
+    fetchInspectionBytes: vi
+      .fn()
+      .mockImplementation((): Promise<Result<never, ImageAccessError>> =>
+        Promise.resolve(err({ code: 'storage_failed', message: 'pixel load is forbidden' })),
+      ),
+    findThreadPage: vi
+      .fn()
+      .mockImplementation((): Promise<Result<ImagePage, ImageAccessError>> =>
+        Promise.resolve(ok({ images: [descriptor], nextAnchor: null })),
+      ),
+  };
+  return access as ImageLookupAccess;
+}
+
+function makeFindingRecord(): FindingRecord {
+  const finding = {
+    id: 'fnd-0001',
+    run_id: 'run-001',
+    thread_id: 'thread-001',
+    question: 'What does the dialog say?',
+    answer: 'It reports a disk quota error.',
+    extracted_text: 'DISK_QUOTA_EXCEEDED',
+    uncertainty: null,
+    model_name: 'claude-haiku-4-5-20251001',
+    usage_input_tokens: 1200,
+    usage_output_tokens: 64,
+    usage_cache_read_tokens: null,
+    usage_cache_write_tokens: null,
+    created_at: 1_700_000_200_000,
+  } as FindingRow;
+  return { finding, imageIds: ['img-0001'] };
+}
+
+function makeFindingsPort(record: FindingRecord): ImageLookupFindings {
+  const findings: Partial<ImageLookupFindings> = {
+    findPage: vi
+      .fn()
+      .mockReturnValue(ok<FindingPage, DbError>({ findings: [record], nextAnchor: null })),
+    findByIdInThread: vi.fn().mockImplementation(
+      (findingId: string, threadId: string): Result<FindingRecord | null, DbError> =>
+        findingId === record.finding.id && threadId === 'thread-001'
+          ? ok(record)
+          : ok(null),
+    ),
+  };
+  return findings as ImageLookupFindings;
 }
 
 describe('HostToolsBridge', () => {
@@ -981,6 +1086,114 @@ describe('HostToolsBridge', () => {
       expect(response.error).toBe('Invalid JSON');
     });
 
+    it('wires A2A waitScope to release the queue slot only for queue-dispatched runs', async () => {
+      const runWithSlotReleased = vi.fn(async (fn: () => Promise<unknown>) => fn());
+      const a2aCtx = {
+        ...mockCtx,
+        a2aTaskMapper: {} as any,
+        queueManager: { runWithSlotReleased } as any,
+        repos: { ...mockCtx.repos, a2aTask: {} as any },
+      } as any;
+      bridge = new HostToolsBridge(a2aCtx);
+      const scope = (bridge as any).personaSendHandler.deps.waitScope as (
+        fn: () => Promise<string>,
+        context: Record<string, unknown>,
+      ) => Promise<string>;
+      const statusScope = (bridge as any).personaTaskStatusHandler.deps.waitScope;
+      expect(statusScope).toBe(scope);
+
+      await expect(
+        scope(async () => 'queued', { runId: 'run-001', threadId: 't', personaId: 'p' }),
+      ).resolves.toBe('queued');
+      expect(runWithSlotReleased).toHaveBeenCalledWith(expect.any(Function), 'run-001');
+
+      runWithSlotReleased.mockClear();
+      await expect(
+        scope(async () => 'bg', { runId: 'task-1', threadId: 't', personaId: 'p', backgroundTaskId: 'task-1' }),
+      ).resolves.toBe('bg');
+      expect(runWithSlotReleased).not.toHaveBeenCalled();
+    });
+
+    describe('persona.send scopes (host-side enforcement)', () => {
+      const context = {
+        runId: 'run-001',
+        threadId: 'thread-001',
+        personaId: 'persona-001',
+        requestId: 'req-001',
+      };
+
+      async function startWithScopes(allow: string[]) {
+        const submitTask = vi.fn().mockReturnValue(ok({ taskId: 'task-1', state: 'submitted' }));
+        const cancelTask = vi.fn().mockReturnValue(ok(true));
+        const getTaskStatus = vi.fn().mockReturnValue(ok({
+          taskId: 'task-1',
+          state: 'submitted',
+          sourcePersona: 'test',
+          targetPersona: 'researcher',
+          threadId: 'thread-001',
+          submittedAt: 1,
+          updatedAt: 1,
+        }));
+        const scopedCtx = {
+          ...mockCtx,
+          a2aTaskMapper: { submitTask, cancelTask, getTaskStatus } as any,
+          queueManager: { runWithSlotReleased: vi.fn(async (fn: () => Promise<unknown>) => fn()) } as any,
+          repos: { ...mockCtx.repos, a2aTask: {} as any },
+          personaLoader: {
+            listNames: vi.fn().mockReturnValue(['test', 'researcher', 'coder', 'admin']),
+            getById: vi.fn().mockReturnValue(ok({ config: { name: 'test' } })),
+            getByName: vi.fn().mockImplementation((name: string) => ok({
+              config: { name, skills: [] },
+              resolvedCapabilities: { allow, requireApproval: [] },
+            })),
+          } as any,
+        } as any;
+        bridge = new HostToolsBridge(scopedCtx);
+        registerActiveRunAuth();
+        bridge.start();
+        await waitForSocket(bridge.path);
+        return { submitTask, cancelTask };
+      }
+
+      const call = (tool: string, args: Record<string, unknown>) =>
+        sendRequest(bridge.path, { id: randomUUID(), tool, args, context });
+
+      it('submits to a scoped target and rejects any other before submitting', async () => {
+        const { submitTask } = await startWithScopes(['persona.send:researcher', 'persona.send:coder']);
+
+        const allowed = await call('persona_send', { target_persona: 'researcher', message: 'hi' });
+        expect((allowed.result as any).status).toBe('success');
+        expect(submitTask).toHaveBeenCalledTimes(1);
+        expect(submitTask.mock.calls[0][0].sourcePersona).toBe('test');
+
+        const denied = await call('persona_send', { target_persona: 'admin', message: 'hi' });
+        expect((denied.result as any).status).toBe('error');
+        expect((denied.result as any).error).toContain('Allowed targets: coder, researcher.');
+        expect(submitTask).toHaveBeenCalledTimes(1);
+      });
+
+      it('allows any target with persona.send:*', async () => {
+        const { submitTask } = await startWithScopes(['persona.send:*']);
+        const res = await call('persona_send', { target_persona: 'admin', message: 'hi' });
+        expect((res.result as any).status).toBe('success');
+        expect(submitTask).toHaveBeenCalledTimes(1);
+      });
+
+      it('persona_list shows only allowed targets', async () => {
+        await startWithScopes(['persona.send:researcher']);
+        const res = await call('persona_list', {});
+        expect(((res.result as any).result as Array<{ name: string }>).map((c) => c.name)).toEqual(['researcher']);
+      });
+
+      it('persona_task_cancel stays available with a scoped label and cancels the caller\'s task', async () => {
+        const { cancelTask } = await startWithScopes(['persona.send:researcher']);
+        const res = await call('persona_task_cancel', { task_id: 'task-1', reason: 'not needed' });
+        expect((res.result as any).status).toBe('success');
+        expect((res.result as any).result).toEqual({ task_id: 'task-1', state: 'canceled', canceled: true });
+        expect(cancelTask).toHaveBeenCalledWith('task-1', 'not needed');
+      });
+    });
+
     it('dispatches memory.access to the memory handler', async () => {
       bridge = new HostToolsBridge(mockCtx);
       registerActiveRunAuth();
@@ -1241,6 +1454,208 @@ describe('HostToolsBridge', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe('image.lookup exposure and dispatch', () => {
+    const grantImageRead = (): void => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: ['image.read:thread'],
+          requireApproval: [],
+        },
+      } as any));
+    };
+
+    const imageServices = (): ImageLookupServices => ({
+      images: makeImageAccess(makeImageDescriptor()),
+      findings: makeFindingsPort(makeFindingRecord()),
+    });
+
+    it('dispatches image_lookup (MCP name) to the injected services and returns the descriptor', async () => {
+      grantImageRead();
+      bridge = new HostToolsBridge(mockCtx, imageServices());
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'image_lookup',
+        args: { operation: 'get_image', imageId: 'img-0001' },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-image-lookup',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('success');
+      expect((response.result as any)?.result).toEqual({
+        image: expect.objectContaining({ imageId: 'img-0001', state: 'available' }),
+      });
+    });
+
+    it('also dispatches the internal name image.lookup, still capability-gated', async () => {
+      grantImageRead();
+      bridge = new HostToolsBridge(mockCtx, imageServices());
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'image.lookup',
+        args: { operation: 'list_findings' },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-image-lookup-internal',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('success');
+      expect((response.result as any)?.result).toEqual({
+        findings: [
+          expect.objectContaining({ findingId: 'fnd-0001', question: expect.any(String) }),
+        ],
+        nextCursor: null,
+      });
+    });
+
+    it('denies image_lookup for a persona without image.read (no capability = no tool)', async () => {
+      // mockCtx.personaLoader grants schedule/channel/memory/net/db/execution/
+      // background — but NOT image.read:thread.
+      bridge = new HostToolsBridge(mockCtx, imageServices());
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'image_lookup',
+        args: { operation: 'list_images' },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-image-lookup-denied',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('error');
+      expect((response.result as any)?.error).toContain('not allowed');
+    });
+
+    it('denies the internal name image.lookup the same way (no bypass by name)', async () => {
+      bridge = new HostToolsBridge(mockCtx, imageServices());
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'image.lookup',
+        args: { operation: 'list_images' },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-image-lookup-denied-internal',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('error');
+      expect((response.result as any)?.error).toContain('not allowed');
+    });
+
+    it('exposes image.lookup under requireApproval and still dispatches it', async () => {
+      vi.mocked(mockCtx.personaLoader.getByName).mockReturnValue(ok({
+        config: { skills: [] },
+        resolvedCapabilities: {
+          allow: [],
+          requireApproval: ['image.read:thread'],
+        },
+      } as any));
+      bridge = new HostToolsBridge(mockCtx, imageServices());
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'image_lookup',
+        args: { operation: 'get_finding', findingId: 'fnd-0001' },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-image-lookup-approval',
+        },
+      });
+
+      expect((response.result as any)?.status).toBe('success');
+      expect((response.result as any)?.result).toEqual({
+        finding: expect.objectContaining({ findingId: 'fnd-0001', answer: expect.any(String) }),
+      });
+    });
+
+    it('fails explicitly when the persona has image.read but no lookup services are wired', async () => {
+      grantImageRead();
+      // No second constructor argument: the final wiring (TASK-019) has not run.
+      bridge = new HostToolsBridge(mockCtx);
+      registerActiveRunAuth();
+      bridge.start();
+      await waitForSocket(bridge.path);
+
+      const response = await sendRequest(bridge.path, {
+        id: randomUUID(),
+        tool: 'image_lookup',
+        args: { operation: 'list_images' },
+        bridgeSecret: validBridgeSecret,
+        context: {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-image-lookup-missing-service',
+        },
+      });
+
+      const result = response.result as any;
+      expect(result?.status).toBe('error');
+      expect(result?.error).toContain('not initialized');
+      // No fabricated empty success.
+      expect(result?.result).toBeUndefined();
+      expect(result?.result?.images).toBeUndefined();
+    });
+
+    it('re-checks the capability in-handler even when the bridge gate is bypassed', async () => {
+      // Persona without image.read, but call the handler entry directly (the
+      // internal dispatch path) with services present. The handler must still
+      // refuse: capability is re-validated per call, not trusted from exposure.
+      bridge = new HostToolsBridge(mockCtx, imageServices());
+
+      const result = await (bridge as any).dispatch(
+        'image.lookup',
+        { operation: 'list_images' },
+        {
+          runId: 'run-001',
+          threadId: 'thread-001',
+          personaId: 'persona-001',
+          requestId: 'req-image-lookup-recheck',
+        },
+      );
+
+      expect(result.status).toBe('error');
+      expect(result.error).toContain('image.read:thread');
     });
   });
 });

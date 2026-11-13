@@ -48,6 +48,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import { AgentRunner } from '../../../src/daemon/agent-runner.js';
 import type { DaemonContext } from '../../../src/daemon/daemon-context.js';
 import { type QueueItem, QueueItemStatus } from '../../../src/queue/queue-types.js';
+import { QueueDeferral } from '../../../src/queue/queue-processor.js';
 import { ProviderRegistry } from '../../../src/providers/provider-registry.js';
 import { ClaudeCodeProvider } from '../../../src/providers/claude-code-provider.js';
 import type {
@@ -77,6 +78,20 @@ function makeQueueItem(overrides: Record<string, unknown> = {}): QueueItem {
     updatedAt: Date.now(),
     ...overrides,
   } as QueueItem;
+}
+
+function makeA2ATaskRepoMock(
+  overrides: Record<string, unknown> = {},
+  state: string = 'submitted',
+): Record<string, any> {
+  return {
+    findById: vi.fn().mockReturnValue(ok({ id: 'a2a-task', state, target_persona: 'TestBot' })),
+    tryAdmit: vi.fn().mockReturnValue(ok('admitted')),
+    markWorking: vi.fn().mockReturnValue(ok(true)),
+    markCompleted: vi.fn().mockReturnValue(ok(true)),
+    markFailed: vi.fn().mockReturnValue(ok(true)),
+    ...overrides,
+  };
 }
 
 const GENERATION_TRACEPARENT = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
@@ -131,6 +146,7 @@ function makeMockContext(): DaemonContext {
   return {
     db: {} as any,
     config: {
+      a2a: { maxConcurrentPerTarget: 1 },
       agentRunner: {
         defaultProvider: 'claude-code',
         providers: {
@@ -925,6 +941,7 @@ describe('AgentRunner', () => {
         expect.objectContaining({ rawMetric: 80_000 }),
         0.4,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'voice' }),
       );
       expect(JSON.stringify(ctx.observability.observe.mock.calls)).not.toContain(
@@ -1010,6 +1027,7 @@ describe('AgentRunner', () => {
         },
         0.4,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
@@ -1057,6 +1075,7 @@ describe('AgentRunner', () => {
         },
         0.39,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
@@ -1169,6 +1188,7 @@ describe('AgentRunner', () => {
         },
         0.5,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
@@ -1280,6 +1300,7 @@ describe('AgentRunner', () => {
         },
         0.5,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
@@ -1402,6 +1423,7 @@ describe('AgentRunner', () => {
         },
         0.75,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
@@ -1528,6 +1550,7 @@ describe('AgentRunner', () => {
         },
         0.8,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
@@ -1674,6 +1697,7 @@ describe('AgentRunner', () => {
         },
         0.75,
         'session-summarizer',
+        undefined,
         expect.objectContaining({ privacy: 'nonvoice' }),
       );
     });
@@ -3350,11 +3374,7 @@ describe('AgentRunner', () => {
         },
         isError: false,
       });
-      (ctx.repos as any).a2aTask = {
-        markWorking: vi.fn().mockReturnValue(ok(undefined)),
-        markCompleted: vi.fn().mockReturnValue(ok(undefined)),
-        markFailed: vi.fn().mockReturnValue(ok(undefined)),
-      };
+      (ctx.repos as any).a2aTask = makeA2ATaskRepoMock();
       vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('source-thread-session');
       vi.mocked(ctx.repos.run.getLatestSessionId).mockReturnValue(ok('db-source-thread-session'));
       ctx.providerRegistry = {
@@ -3411,6 +3431,155 @@ describe('AgentRunner', () => {
         'a2a-task-1',
         'A2A worker output',
       );
+      // Context isolation: no source-thread summary / recent messages / image replay.
+      expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+      expect(ctx.observability.observe).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'retriever', name: 'previous-context' }),
+        expect.any(Function),
+      );
+    });
+
+    describe('A2A lifecycle', () => {
+      const a2aItem = (overrides: Record<string, unknown> = {}, payload: Record<string, unknown> = {}) =>
+        makeQueueItem({
+          type: 'collaboration',
+          payload: {
+            personaId: 'persona-001',
+            kind: 'a2a_task',
+            taskId: 'a2a-task-x',
+            content: 'Do the thing',
+            ...payload,
+          },
+          ...overrides,
+        });
+
+      const useFailingSdkProvider = (): void => {
+        ctx.providerRegistry = {
+          getDefault: vi.fn().mockReturnValue({
+            provider: {
+              name: 'failing-cli',
+              createExecutionStrategy: () => ({
+                type: 'cli' as const,
+                supportsSessionResumption: false as const,
+                run: vi.fn().mockRejectedValue(new Error('boom')),
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({ inputTokens: 0, metrics: {} }),
+            },
+            config: makeAgentRunnerProviderConfig(),
+          }),
+        } as any;
+      };
+
+      it.each(['completed', 'failed', 'canceled'])(
+        'skips a %s task with ok and does not run',
+        async (state) => {
+          (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({}, state);
+          const result = await runner.run(a2aItem());
+          expect(result.isOk()).toBe(true);
+          expect(ctx.repos.run.insert).not.toHaveBeenCalled();
+          expect((ctx.repos as any).a2aTask.tryAdmit).not.toHaveBeenCalled();
+        },
+      );
+
+      it('skips a missing task with ok', async () => {
+        (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({
+          findById: vi.fn().mockReturnValue(ok(null)),
+        });
+        const result = await runner.run(a2aItem());
+        expect(result.isOk()).toBe(true);
+        expect(ctx.repos.run.insert).not.toHaveBeenCalled();
+      });
+
+      it('defers with QueueDeferral when admission says wait', async () => {
+        (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({
+          tryAdmit: vi.fn().mockReturnValue(ok('wait')),
+        });
+        const result = await runner.run(a2aItem());
+        expect(result.isErr()).toBe(true);
+        expect(result._unsafeUnwrapErr()).toBeInstanceOf(QueueDeferral);
+        expect(ctx.repos.run.insert).not.toHaveBeenCalled();
+        expect((ctx.repos as any).a2aTask.tryAdmit).toHaveBeenCalledWith('a2a-task-x', 1);
+      });
+
+      it('leaves the task non-terminal on a non-final execution failure', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        useFailingSdkProvider();
+        const result = await runner.run(a2aItem({ attempts: 0, maxAttempts: 3 }));
+        expect(result.isErr()).toBe(true);
+        expect(repo.markFailed).not.toHaveBeenCalled();
+      });
+
+      it('marks the task failed on a final execution failure', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        useFailingSdkProvider();
+        const result = await runner.run(a2aItem({ attempts: 2, maxAttempts: 3 }));
+        expect(result.isErr()).toBe(true);
+        expect(repo.markFailed).toHaveBeenCalledWith('a2a-task-x', 'EXECUTION_ERROR', expect.any(String));
+      });
+
+      it('returns ok (no retry) when the task was canceled during the run', async () => {
+        const findById = vi
+          .fn()
+          .mockReturnValueOnce(ok({ id: 'a2a-task-x', state: 'working', target_persona: 'TestBot' }))
+          .mockReturnValue(ok({ id: 'a2a-task-x', state: 'canceled', target_persona: 'TestBot' }));
+        const repo = makeA2ATaskRepoMock({ findById }, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        useFailingSdkProvider();
+        const result = await runner.run(a2aItem({ attempts: 2, maxAttempts: 3 }));
+        expect(result.isOk()).toBe(true);
+        expect(repo.markFailed).not.toHaveBeenCalled();
+      });
+
+      it('fails a task immediately (config error) when the persona is missing', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'submitted');
+        (ctx.repos as any).a2aTask = repo;
+        vi.mocked(ctx.repos.persona.findById).mockReturnValue(ok(null) as any);
+        const result = await runner.run(a2aItem({ attempts: 0, maxAttempts: 3 }));
+        expect(result.isErr()).toBe(true);
+        expect(repo.markFailed).toHaveBeenCalledWith('a2a-task-x', 'PERSONA_NOT_FOUND', expect.any(String));
+        // A retry then sees a terminal task and is a no-op.
+        (ctx.repos as any).a2aTask = makeA2ATaskRepoMock({}, 'failed');
+        expect((await runner.run(a2aItem({ attempts: 1, maxAttempts: 3 }))).isOk()).toBe(true);
+      });
+
+      it('aborts an in-flight run via abortA2ATask', async () => {
+        const repo = makeA2ATaskRepoMock({}, 'working');
+        (ctx.repos as any).a2aTask = repo;
+        let started!: () => void;
+        const startedP = new Promise<void>((r) => (started = r));
+        ctx.providerRegistry = {
+          getDefault: vi.fn().mockReturnValue({
+            provider: {
+              name: 'hang-cli',
+              createExecutionStrategy: () => ({
+                type: 'cli' as const,
+                supportsSessionResumption: false as const,
+                run: vi.fn().mockImplementation(() => {
+                  started();
+                  return new Promise(() => {});
+                }),
+              }),
+              prepareBackgroundInvocation: vi.fn(),
+              parseBackgroundResult: vi.fn(),
+              estimateContextUsage: vi.fn().mockReturnValue({ inputTokens: 0, metrics: {} }),
+            },
+            config: makeAgentRunnerProviderConfig(),
+          }),
+        } as any;
+        const running = runner.run(a2aItem({ attempts: 2, maxAttempts: 3 }));
+        await startedP;
+        // Cancellation flips the task state, then aborts the run.
+        repo.findById.mockReturnValue(ok({ id: 'a2a-task-x', state: 'canceled', target_persona: 'TestBot' }));
+        expect(runner.abortA2ATask('a2a-task-x')).toBe(true);
+        const result = await running;
+        expect(result.isOk()).toBe(true);
+        expect(repo.markFailed).not.toHaveBeenCalled();
+        expect(runner.abortA2ATask('a2a-task-x')).toBe(false);
+      });
     });
 
     it('ignores source-thread provider affinity for A2A tasks and uses the delegated persona provider', async () => {
@@ -3423,11 +3592,7 @@ describe('AgentRunner', () => {
         },
         isError: false,
       });
-      (ctx.repos as any).a2aTask = {
-        markWorking: vi.fn().mockReturnValue(ok(undefined)),
-        markCompleted: vi.fn().mockReturnValue(ok(undefined)),
-        markFailed: vi.fn().mockReturnValue(ok(undefined)),
-      };
+      (ctx.repos as any).a2aTask = makeA2ATaskRepoMock();
       vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
         ok({
           config: {
@@ -4181,6 +4346,63 @@ describe('AgentRunner', () => {
 
       expect(systemPrompt).toContain('You are a test bot.');
       expect(systemPrompt).toContain('Available channels');
+    });
+
+    describe('persona roster', () => {
+      function setupRoster(allow: string[]): void {
+        (runner as any).ctx.toolInstructions = new Map([
+          ['persona.send', '## Persona Delegation\n\nDelegate things.'],
+        ]);
+        const personas: Record<string, any> = {
+          main: {
+            config: { name: 'main', model: 'claude-sonnet-4-20250514', skills: [], capabilities: { allow: [] } },
+            systemPromptContent: 'You are a test bot.',
+            resolvedCapabilities: { allow, requireApproval: [] },
+          },
+          reviewer: {
+            config: { name: 'reviewer', skills: [], capabilities: { allow: [] } },
+            description: 'Reviews code for security issues',
+            resolvedCapabilities: { allow: [], requireApproval: [] },
+          },
+        };
+        const loader = (runner as any).ctx.personaLoader;
+        loader.getByName.mockImplementation((name: string) => ok(personas[name] ?? personas.main));
+        loader.listNames = vi.fn().mockReturnValue(['reviewer', 'main']);
+      }
+
+      it('appends the roster (excluding self) when persona_send is allowed', async () => {
+        setupRoster(['persona.send:*']);
+        await runner.run(makeQueueItem());
+        const queryCall = mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } };
+        const systemPrompt = queryCall.options.systemPrompt;
+        expect(systemPrompt).toContain('## Persona Delegation');
+        expect(systemPrompt).toContain('Available personas:\n- reviewer: Reviews code for security issues');
+        expect(systemPrompt).not.toContain('- main:');
+      });
+
+      it('lists only scoped delegation targets in the roster', async () => {
+        setupRoster(['persona.send:nobody']);
+        await runner.run(makeQueueItem());
+        const queryCall = mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } };
+        const systemPrompt = queryCall.options.systemPrompt;
+        expect(systemPrompt).toContain('## Persona Delegation');
+        expect(systemPrompt).toContain('Available personas: none');
+        expect(systemPrompt).not.toContain('- reviewer:');
+
+        mockQuery.mockClear();
+        setupRoster(['persona.send:reviewer']);
+        await runner.run(makeQueueItem());
+        const scoped = (mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } }).options.systemPrompt;
+        expect(scoped).toContain('Available personas:\n- reviewer: Reviews code for security issues');
+      });
+
+      it('omits the roster when persona_send is not allowed', async () => {
+        setupRoster(['memory.access']);
+        await runner.run(makeQueueItem());
+        const queryCall = mockQuery.mock.calls[0]![0] as { options: { systemPrompt: string } };
+        expect(queryCall.options.systemPrompt).not.toContain('Available personas:');
+        expect(queryCall.options.systemPrompt).not.toContain('Persona Delegation');
+      });
     });
 
     it('includes personalityContent between system prompt and channel context', async () => {
@@ -5446,5 +5668,344 @@ describe('AgentRunner', () => {
       const toolDescriptions = sendBodies.filter((b) => b.startsWith('💾') || b.startsWith('🔧'));
       expect(toolDescriptions).toHaveLength(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Image-aware foreground context (ADR-0002)
+//
+// Live current-message descriptors ride the provider prompt once, per
+// attempt; full inventory + Finding projections are built ONLY for fresh
+// sessions (via the assembler) and rotation (via the roller). Lookup hint
+// exposure comes from the actual capability-filtered tool set.
+// ---------------------------------------------------------------------------
+
+import { LIVE_IMAGE_SECTION_HEADER, type ImageContextSource } from '../../../src/daemon/context-assembler.js';
+import type { ImageDescriptor } from '../../../src/images/image-types.js';
+import type { Finding } from '../../../src/images/finding-types.js';
+
+function makeDescriptor(
+  overrides: Partial<ImageDescriptor> & { imageId: string },
+): ImageDescriptor {
+  return {
+    threadId: 'thread-001',
+    messageId: 'msg-001',
+    ordinal: 0,
+    receivedAt: 1_700_000_000_000,
+    expiresAt: 1_700_000_003_600_000,
+    state: 'available',
+    mimeType: 'image/png',
+    ...overrides,
+  };
+}
+
+function makeFindingRecord(overrides: Partial<Finding> & { findingId: string }): Finding {
+  return {
+    threadId: 'thread-001',
+    runId: 'run-001',
+    imageIds: ['img-a'],
+    question: 'What is in this image?',
+    answer: 'A sunset over the harbour.',
+    createdAt: 1_700_000_000_000,
+    modelName: 'vision-model-1',
+    ...overrides,
+  };
+}
+
+function makeImageSource(
+  overrides: Partial<ImageContextSource> = {},
+): ImageContextSource & {
+  resolveMessageDescriptors: ReturnType<typeof vi.fn>;
+  listThreadDescriptors: ReturnType<typeof vi.fn>;
+  listThreadFindings: ReturnType<typeof vi.fn>;
+} {
+  return {
+    resolveMessageDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+    listThreadDescriptors: vi.fn().mockResolvedValue([] as ImageDescriptor[]),
+    listThreadFindings: vi.fn().mockResolvedValue([] as Finding[]),
+    ...overrides,
+  } as any;
+}
+
+describe('AgentRunner image-aware context (ADR-0002)', () => {
+  let ctx: DaemonContext;
+  let imageSource: ReturnType<typeof makeImageSource>;
+  let runner: AgentRunner;
+
+  beforeEach(() => {
+    ctx = makeMockContext();
+    imageSource = makeImageSource();
+    runner = new AgentRunner(ctx, { imageContextSource: imageSource });
+    vi.clearAllMocks();
+    mockQuery.mockReset();
+    mockQuery.mockReturnValue(makeAgentStream());
+  });
+
+  it('appends live Image descriptors to the provider prompt without altering stored queue text', async () => {
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-second', ordinal: 1 }),
+      makeDescriptor({ imageId: 'img-first', ordinal: 0, filename: 'first.png' }),
+    ]);
+    const item = makeQueueItem({ messageId: 'msg-001' });
+
+    const result = await runner.run(item);
+
+    expect(result.isOk()).toBe(true);
+    expect(imageSource.resolveMessageDescriptors).toHaveBeenCalledWith({
+      threadId: 'thread-001',
+      messageId: 'msg-001',
+    });
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toContain('Hello agent');
+    expect(prompt).toContain(LIVE_IMAGE_SECTION_HEADER);
+    // Source order is preserved via ordinal even when the port returns shuffled rows.
+    expect(prompt.indexOf('img img-first ')).toBeLessThan(prompt.indexOf('img img-second '));
+    expect(prompt).toContain('file="first.png"');
+    // The live prompt carries only this message's descriptors, not an inventory.
+    expect(prompt).not.toContain('Image inventory:');
+    // Stored queue text stays exactly as persisted.
+    expect(item.payload.content).toBe('Hello agent');
+  });
+
+  it('builds the fresh-session inventory and Findings projection through the assembler', async () => {
+    const inventory = [
+      makeDescriptor({ imageId: 'img-current', ordinal: 0 }),
+      makeDescriptor({ imageId: 'img-older', ordinal: 0, messageId: 'msg-older' }),
+    ];
+    const findings = [makeFindingRecord({ findingId: 'find-1' })];
+    imageSource.resolveMessageDescriptors.mockResolvedValue([inventory[0]]);
+    imageSource.listThreadDescriptors.mockResolvedValue(inventory);
+    imageSource.listThreadFindings.mockResolvedValue(findings);
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    // Findings queries carry no message-cutoff parameter: they are
+    // independent of the message rotation boundary by construction.
+    expect(imageSource.listThreadFindings).toHaveBeenCalledWith('thread-001');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      expect.objectContaining({
+        excludeMessageId: 'msg-001',
+        images: expect.objectContaining({
+          live: expect.objectContaining({ imageIds: ['img-current'], selectedCount: 1 }),
+          inventoryDescriptors: inventory,
+          findings,
+          imageLookupExposed: false,
+        }),
+      }),
+    );
+  });
+
+  it('does not query image lists on resumed text-only turns', async () => {
+    vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resume-session');
+    const item = makeQueueItem();
+
+    await runner.run(item);
+
+    expect(imageSource.resolveMessageDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadFindings).not.toHaveBeenCalled();
+    expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+  });
+
+  it('injects live descriptors but no inventory on a resumed first-image turn', async () => {
+    vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('resume-session');
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-new' }),
+    ]);
+    imageSource.listThreadDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-new' }),
+      makeDescriptor({ imageId: 'img-ancient', messageId: 'msg-ancient' }),
+    ]);
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toContain('img img-new ');
+    expect(prompt).not.toContain('img img-ancient ');
+    expect(prompt).not.toContain('Image inventory:');
+    // Resumed turns never rebuild fresh history.
+    expect(imageSource.listThreadDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadFindings).not.toHaveBeenCalled();
+    expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+  });
+
+  it('rebuilds live descriptors on every provider attempt of a retry', async () => {
+    vi.mocked(ctx.sessionTracker.getSessionId).mockReturnValue('stale-session');
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-retry' }),
+    ]);
+    mockQuery
+      .mockImplementationOnce(() => {
+        throw new Error('Session not found');
+      })
+      .mockReturnValueOnce(makeAgentStream());
+
+    const result = await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    const first = mockQuery.mock.calls[0]![0] as { prompt: string };
+    const second = mockQuery.mock.calls[1]![0] as { prompt: string };
+    expect(first.prompt).toContain('img img-retry ');
+    expect(second.prompt).toContain('img img-retry ');
+    expect(imageSource.resolveMessageDescriptors).toHaveBeenCalledTimes(2);
+    expect(imageSource.resolveMessageDescriptors).toHaveBeenNthCalledWith(2, {
+      threadId: 'thread-001',
+      messageId: 'msg-001',
+    });
+  });
+
+  it('keeps scheduled runs free of image context', async () => {
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-nope' }),
+    ]);
+
+    await runner.run(makeQueueItem({ type: 'schedule', messageId: 'msg-001' }));
+
+    expect(imageSource.resolveMessageDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadFindings).not.toHaveBeenCalled();
+    expect(ctx.contextAssembler.assemble).not.toHaveBeenCalled();
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+  });
+
+  it('replays inventory and Findings on a fresh session for a message without a messageId', async () => {
+    // Review r1 P2-3: background-agent completion notices enqueue
+    // foreground message items with no messageId. Fresh-session replay must
+    // not depend on live association: the inventory + Findings projection
+    // is still rebuilt with an EMPTY live block.
+    const inventory = [makeDescriptor({ imageId: 'img-older', messageId: 'msg-older' })];
+    const findings = [makeFindingRecord({ findingId: 'find-late' })];
+    imageSource.listThreadDescriptors.mockResolvedValue(inventory);
+    imageSource.listThreadFindings.mockResolvedValue(findings);
+
+    await runner.run(makeQueueItem());
+
+    expect(imageSource.resolveMessageDescriptors).not.toHaveBeenCalled();
+    expect(imageSource.listThreadDescriptors).toHaveBeenCalledWith('thread-001');
+    expect(imageSource.listThreadFindings).toHaveBeenCalledWith('thread-001');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      expect.objectContaining({
+        images: expect.objectContaining({
+          live: expect.objectContaining({ text: '', imageIds: [], selectedCount: 0 }),
+          inventoryDescriptors: inventory,
+          findings,
+          imageLookupExposed: false,
+        }),
+      }),
+    );
+    // No live block is injected into the prompt for an image-less message.
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+  });
+
+  it('derives image_lookup exposure from the actual filtered tool set', async () => {
+    vi.mocked(ctx.personaLoader.getByName).mockReturnValue(
+      ok({
+        config: { model: 'claude-sonnet-4-20250514', skills: [], capabilities: { allow: ['image.read'] } },
+        systemPromptContent: 'You are a test bot.',
+        resolvedCapabilities: {
+          allow: ['image.read:thread', 'channel.send:*', 'memory.access', 'schedule.manage'],
+          requireApproval: [],
+        },
+      } as any),
+    );
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      expect.objectContaining({
+        images: expect.objectContaining({ imageLookupExposed: true }),
+      }),
+    );
+  });
+
+  it('degrades to a descriptor-less prompt when live resolution rejects', async () => {
+    imageSource.resolveMessageDescriptors.mockRejectedValue(new Error('images db down'));
+
+    const result = await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-001', messageId: 'msg-001' }),
+      expect.stringContaining('live image descriptor resolution failed'),
+    );
+  });
+
+  it('assembles without image projections when inventory queries reject', async () => {
+    imageSource.resolveMessageDescriptors.mockResolvedValue([
+      makeDescriptor({ imageId: 'img-live' }),
+    ]);
+    imageSource.listThreadDescriptors.mockRejectedValue(new Error('inventory read failed'));
+
+    const result = await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    // The live block still rides the prompt; only history projection degrades.
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toContain('img img-live ');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      { excludeMessageId: 'msg-001' },
+    );
+    expect(ctx.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ threadId: 'thread-001' }),
+      expect.stringContaining('image context fetch failed'),
+    );
+  });
+
+  it('passes the image rotation context to the legacy roller when wired', async () => {
+    ctx.contextRoller = {
+      checkAndRotate: vi.fn().mockResolvedValue(undefined),
+    } as any;
+    mockQuery.mockReturnValue(
+      makeAgentStream({
+        usage: {
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_read_input_tokens: 80_000,
+          cache_creation_input_tokens: 2_000,
+        },
+      }),
+    );
+
+    await runner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(ctx.contextRoller.checkAndRotate).toHaveBeenCalledWith(
+      'thread-001',
+      'persona-001',
+      expect.objectContaining({ rawMetric: 80_000, rawMetricName: 'cache_read_input_tokens' }),
+      0.4,
+      'session-summarizer',
+      expect.objectContaining({ source: imageSource, imageLookupExposed: false }),
+      expect.objectContaining({ privacy: 'nonvoice' }),
+    );
+  });
+
+  it('runs without any image source wired exactly as before', async () => {
+    const plainRunner = new AgentRunner(ctx);
+
+    const result = await plainRunner.run(makeQueueItem({ messageId: 'msg-001' }));
+
+    expect(result.isOk()).toBe(true);
+    const { prompt } = mockQuery.mock.calls[0]![0] as { prompt: string };
+    expect(prompt).toBe('Hello agent');
+    expect(ctx.contextAssembler.assemble).toHaveBeenCalledWith(
+      'thread-001',
+      expect.any(Number),
+      { excludeMessageId: 'msg-001' },
+    );
   });
 });

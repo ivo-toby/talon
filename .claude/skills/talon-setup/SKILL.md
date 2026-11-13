@@ -104,7 +104,10 @@ What would you like to do?
   h) Show current config summary
   i) Test a provider
   j) Check environment variables
+  k) Optimize personas (move prompt content to skills or other personas)
 ```
+
+For option k, invoke the `/optimize-personas` skill.
 
 ## Skill formats
 
@@ -255,12 +258,35 @@ Ask: **"Let's create a persona. What should this agent be called?"**
    - **"Any specific constraints?"** (optional)
 4. Generate a system prompt from the answers
 5. Show it to the user for review
-6. Write the approved prompt to `personas/{name}/system.md`
+6. Write the approved prompt to `personas/{name}/system.md`, starting with YAML
+   frontmatter containing a one-line `description:` (what tasks to delegate to
+   this persona); other personas use it to choose `persona_send` targets
 7. Ask which channels to bind:
    - Run: `npx talonctl list-channels` to show options
    - For each selected: `npx talonctl bind --persona <name> --channel <channel>`
 
 Ask: **"Add another persona?"** Loop until done.
+
+#### Where prompt content belongs
+
+Use this rule when you write a prompt for a persona. Apply it from top to
+bottom and stop at the first row that fits.
+
+| Content | Place |
+|---|---|
+| Identity, tone, user preferences, privacy and safety rules | `system.md` or a personality file |
+| Knowledge or a procedure that only some tasks need | Skill of the same persona |
+| Work that needs a different model, different capabilities or mounts, or that runs in parallel or in the background | Separate persona |
+| One step with fixed input and fixed output | Sub-agent |
+
+`system.md` and the personality files go into the prompt on each run. A skill
+adds only its name and description until the agent loads it. A separate persona
+costs a handoff, and it sees only the `message` of the `persona_send` call.
+
+If the setup has two or more personas, tell the user about the
+`/optimize-personas` skill. It audits a setup that has real usage and proposes
+moves between personality files, skills, and personas. Do not run it during a
+first setup.
 
 ### Step 5b: Capability configuration
 
@@ -276,10 +302,64 @@ If yes, help the user decide which to add or remove:
 
 - For agents that should message other channels: `npx talonctl set-capabilities --persona <name> --add "channel.send:*"`
 - For agents that need database access: `npx talonctl set-capabilities --persona <name> --add "db.query:own"`
+- For agents that delegate to other personas: `npx talonctl set-capabilities --persona <name> --add "persona.send:<target-persona>"` (one label per allowed target, so the persona can only delegate to those; `persona.send:*` allows any persona). The same label also grants `persona_list`, `persona_task_status` and `persona_task_cancel`. An unknown target name only logs a warning at startup
 - For agents that run background tasks: `npx talonctl set-capabilities --persona <name> --add "subagent.background"`
 - For agents that invoke sub-agents: `npx talonctl set-capabilities --persona <name> --add "subagent.invoke"`
+- For agents that should discuss uploaded images: `npx talonctl set-capabilities --persona <name> --add "subagent.invoke:*"` — plus `vision` in that persona's `subagents` list; see **Image handling** below
 
 Repeat for each persona.
+
+**Image handling** is a two-part Inspection setup plus one independent lookup
+grant. None of it happens automatically on upgrade.
+
+An **Inspection** needs exactly two things — the shipped `vision` manifest declares
+`requiredCapabilities: []`, so no image capability is involved:
+
+1. `vision` listed under the persona's `subagents` key in `talond.yaml`. There is
+   no `talonctl` flag for persona sub-agent assignment, so edit the config.
+2. `subagent.invoke` — the existing capability on the invoke tool:
+
+```bash
+npx talonctl set-capabilities --persona <name> --add "subagent.invoke:*"
+```
+
+`image.read:thread` is a **separate** permission, not part of an Inspection. It
+exposes `image_lookup`, the model-free reader for the thread's Images and saved
+Findings; it needs no vision assignment, never calls a model, and downloads
+nothing, so it is safe to grant where you would not grant vision. Recommended (so
+the persona can re-read an existing Finding instead of paying for a repeat
+Inspection), but optional:
+
+```bash
+npx talonctl set-capabilities --persona <name> --add "image.read:thread"
+```
+
+Uploads are ingested and described regardless of all of the above. When confirming
+setup, mention that:
+
+- Pixels go only to the `vision` sub-agent; the main persona stays text-only.
+- Only `anthropic` / `openai` / `google` / `ollama` may be in the vision chain;
+  a text-only override is rejected at config load, not skipped.
+- Normalized image files are deleted after `images.retentionHours` (default 24h),
+  but Image records, GPS/EXIF and Findings persist until separately deleted and
+  may appear in replies — including in admitted group chats.
+- Inspections work from normal messages and scheduled tasks, not from background
+  agents (those are refused before any model is called).
+- The defaults in the `images:` block suit most setups. If the operator wants to
+  tune it: `maxInputPixels` (default 100 MP, a decompression-bomb guard, max
+  ~268 MP) and `maxNormalizedBytes` (default 3.75 MB; lower it if the vision
+  provider has a smaller per-image limit — oversized images are re-encoded smaller
+  automatically). Any `images` change needs a daemon restart; `talonctl reload`
+  keeps the running values. See `config/talond.example.yaml`.
+- On a sequential connector an image-bearing message delays other traffic on that
+  connector — Telegram polling is the example, waiting up to ~120 seconds (a fixed
+  60-second remote-fetch budget plus a separate 60-second normalization deadline).
+  WhatsApp handles each chat in order but chats in parallel, so a text sent right
+  after a photo waits for that photo while other chats keep flowing; a downloaded
+  WhatsApp image still carries the same per-message 60-second fetch + 60-second
+  normalization budgets. Email does no remote fetch — its bytes
+  already arrived with the message — so only the shared 60-second normalization
+  deadline applies there.
 
 ### Step 6: Scheduled tasks
 

@@ -101,6 +101,19 @@ config:
 
 Without this, anyone who emails the address can interact with the bot.
 
+`allowedSenders` is matched against the `From` header, which any sender can forge. Also set `requireDmarcPass: true` together with `trustedAuthServId` so the bot only accepts mail your provider authenticated with DMARC. Without `trustedAuthServId`, `requireDmarcPass` drops all mail.
+
+`trustedAuthServId` is the authserv-id your provider writes at the start of its `Authentication-Results` / `ARC-Authentication-Results` header. To find it, send a test mail to the bot from an address you control, open the raw source in your mailbox, and read the first host name after `i=1;` in the `ARC-Authentication-Results` line (or after the header name if there is no `i=` tag). KPN mail uses `mx.kpnmail.nl`.
+
+```yaml
+config:
+  # ... smtp/imap settings ...
+  allowedSenders:
+    - "user1@example.com"
+  requireDmarcPass: true
+  trustedAuthServId: "mx.kpnmail.nl"   # KPN example; use your provider's value
+```
+
 ## Phase 5: Bind a Persona
 
 ```bash
@@ -134,6 +147,56 @@ If it doesn't work:
 journalctl --user -u talond -f
 ```
 
+## Images (optional)
+
+Email image attachments are ingested automatically. To let the bound persona
+answer what a picture shows it needs exactly two things — existing personas gain
+neither on upgrade:
+
+```bash
+npx talonctl set-capabilities --persona <persona> --add subagent.invoke:*
+```
+
+plus `vision` in that persona's `subagents` list in `talond.yaml`. The shipped
+`vision` manifest declares `requiredCapabilities: []`, so no image capability is
+part of an Inspection. Pixels go only to the `vision` sub-agent; the persona stays
+text-only.
+
+Separately, `image.read:thread` is an **independent** model-free lookup grant for
+the thread's Images and saved Findings (`image_lookup`) — recommended, not required
+for Inspections.
+
+Email-specific behaviour, which differs sharply from chat channels:
+
+- **Only attached images count.** A part must carry an image MIME type. Parts with
+  an absent or non-image MIME are excluded silently and use no upload slot.
+- **Images embedded in the HTML body are never ingested.** Related CID content
+  (`cid:` imagery inside an HTML body) and inline parts without a filename are
+  excluded silently. An inline part **with** a filename counts as a normal
+  attachment — that is how Apple Mail (macOS/iOS) attaches photos.
+- **The practical size limit is far below `images.maxInputBytes`.** Email's
+  unchanged 10 MiB cap applies to the **whole message** — encoding, headers, body
+  and every part combined. Base64 leaves roughly **7.5 MiB or less** for one
+  decoded image once overhead is counted, so a photo that fits the 10 MiB image
+  setting can still be lost. Oversized whole emails keep the existing pre-ingestion
+  skipping behaviour: Talon never sees them.
+- **Authorization still gates everything.** Mail is fetched and MIME-parsed before
+  sender checks so parts can be classified, but parts from an unauthorized sender
+  are never normalized into Images — so with `requireDmarcPass: true` a
+  non-DMARC message contributes no Images, same as no reply.
+- Normalized files are deleted after `images.retentionHours` (default 24h).
+  Image records, GPS/EXIF and saved Findings persist beyond that. Mail is the
+  recommended channel when metadata matters, because attached originals are less
+  likely to be recompressed than chat photos — but preservation is still not
+  guaranteed; missing values stay unknown.
+- **Polling is sequential, but email performs no image fetch.** The bytes are
+  already in hand: IMAP retrieves the whole message within the 10 MiB input cap and
+  decodes the attachments before the connector plans any media, so there is nothing
+  left to download and **the remote-fetch budget never applies to email**. While an
+  image-bearing mail is normalized, this connector delivers nothing else, and the
+  only image deadline is the shared 60-second normalization one (at most 3 attempts
+  per Image) — plus ordinary IMAP polling latency, which is not an image budget.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -142,8 +205,12 @@ journalctl --user -u talond -f
 | SMTP auth failed | Use app-specific password, not account password |
 | Gmail: "Application-specific password required" | Enable 2FA, then create an app password |
 | Long delay before response | Default polling is 30s; lower `pollingIntervalMs` for faster response |
-| Bot replies to spam | Add `allowedSenders` to config |
+| Bot replies to spam | Add `allowedSenders` to config, and set `requireDmarcPass: true` so forged From headers are rejected |
+| Bot ignores mail that looks legitimate | With `requireDmarcPass: true`, mail without a `dmarc=pass` result from `trustedAuthServId` is dropped; set `trustedAuthServId` to the value from the message's `ARC-Authentication-Results` header and check the logs for "failed DMARC check" |
 | HTML formatting broken | Talon sends HTML emails; check if email client renders HTML |
+| Attachment ignored | `cid:` images embedded in the HTML body (and filename-less inline parts) are excluded by design; ask the user to attach the file as a regular attachment with an image MIME type |
+| Large photo never arrives | Email's 10 MiB cap covers the whole encoded message, so base64 leaves roughly 7.5 MiB or less per decoded image. Send it as its own email, or use Telegram/WhatsApp |
+| Image missing on a DMARC-gated mailbox | Parts from a sender that fails the DMARC check are never normalized into Images; see the `requireDmarcPass` / `trustedAuthServId` notes above |
 
 ## Config Reference
 
@@ -166,8 +233,10 @@ channels:
       smtpSecure: false                    # Required (false for port 587, true for 465)
       # General
       fromAddress: "Talon <bot@gmail.com>" # Required
-      allowedSenders:                      # Optional — restrict who can email the bot
+      allowedSenders:                      # Optional — restrict who can email the bot (matched against the forgeable From header)
         - "user@example.com"
+      requireDmarcPass: true               # Optional (default: false) — accept mail only if the trusted provider reports dmarc=pass for the sender's domain; requires trustedAuthServId
+      trustedAuthServId: "mx.kpnmail.nl"   # Required with requireDmarcPass — your provider's authserv-id from Authentication-Results / ARC-Authentication-Results (KPN: mx.kpnmail.nl)
       pollingIntervalMs: 30000             # Optional (default: 30000 = 30s)
       mailbox: "INBOX"                     # Optional (default: INBOX)
 ```
@@ -176,5 +245,5 @@ channels:
 
 - Inbound: polls IMAP at configurable intervals (default 30s)
 - Outbound: sends via SMTP with HTML formatting
-- Threading: uses Message-ID / In-Reply-To headers to maintain conversation threads
-- Each sender email address maps to one Talon thread
+- Threading: uses Message-ID / References / In-Reply-To headers to maintain conversation threads; replies carry the matching `Re:` subject
+- Each conversation (root of the References chain) maps to one Talon thread per sender address

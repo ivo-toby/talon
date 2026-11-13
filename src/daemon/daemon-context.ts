@@ -27,6 +27,8 @@ import type {
   BindingRepository,
   MemoryRepository,
   A2ATaskRepository,
+  ImageRepository,
+  ImageIngestionRepository,
 } from '../core/database/repositories/index.js';
 import type { ChannelRegistry } from '../channels/channel-registry.js';
 import type { QueueManager } from '../queue/queue-manager.js';
@@ -44,10 +46,11 @@ import type { BackgroundAgentManager } from '../subagents/background/background-
 import type { ExecutionEnvManager } from '../execution-env/execution-env-manager.js';
 import type { ProviderRegistry } from '../providers/provider-registry.js';
 import type { ContextRoller } from './context-roller.js';
-import type { ContextAssembler } from './context-assembler.js';
+import type { ContextAssembler, ImageContextSource } from './context-assembler.js';
 import type { ObservabilityService } from '../observability/langfuse/observability-types.js';
 import type { A2AServer } from '../a2a/a2a-server.js';
 import type { A2ATaskMapper } from '../a2a/a2a-task-mapper.js';
+import type { A2AAgentCard } from '../a2a/a2a-types.js';
 import type { OAuthTokenStore } from '../auth/oauth-token-store.js';
 import type { DurableVoiceStore } from '../voice/voice-store.js';
 import type { DurableVoiceBackendBridge } from '../voice/voice-backend-bridge.js';
@@ -57,6 +60,10 @@ import type { DurableVoiceSessionService, IndexedVoiceAuth } from '../voice/voic
 import type { LiveVoiceProvider, VoiceTransport } from '../voice/voice-types.js';
 import type { BrowserVoiceServer } from '../voice/transports/browser/browser-server.js';
 import type { VoiceTelemetry } from '../voice/voice-telemetry.js';
+import type { ImageStore } from '../images/image-store.js';
+import type { ImageIngestionCoordinator } from '../images/image-ingestion.js';
+import type { ImageAccess } from '../images/image-types.js';
+import type { ImageLifecycleManager } from '../images/image-lifecycle.js';
 
 // ---------------------------------------------------------------------------
 // Repository bundle
@@ -78,6 +85,8 @@ export interface DaemonRepos {
   readonly binding: BindingRepository;
   readonly memory: MemoryRepository;
   readonly a2aTask: A2ATaskRepository;
+  readonly image: ImageRepository;
+  readonly imageIngestion: ImageIngestionRepository;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,4 +146,22 @@ export interface DaemonContext {
   readonly voiceTelemetry: VoiceTelemetry | null;
   readonly voiceRuntimeConfig?: { current: TalondConfig };
   readonly voiceGeneration?: { value: number };
+  /**
+   * Agent-card registry shared by the A2A server and mapper. Rebuilt IN PLACE
+   * (clear + repopulate) on hot reload so new personas become routable.
+   */
+  readonly a2aCardRegistry?: Map<string, A2AAgentCard>;
+  // Durable image subsystem (TASK-010): store, ingestion coordinator,
+  // the ImageAccess port implementation, and the startup/periodic
+  // recovery + retention lifecycle.
+  readonly imageStore: ImageStore;
+  readonly imageIngestionCoordinator: ImageIngestionCoordinator;
+  readonly imageAccess: ImageAccess;
+  readonly imageLifecycle: ImageLifecycleManager;
+  /**
+   * Refreshed Image/Finding reads for ADR-0002 context replay (live
+   * descriptors, thread inventory, canonical Findings). Passed to AgentRunner
+   * at construction; ContextRoller receives it per rotation call.
+   */
+  readonly imageContextSource: ImageContextSource;
 }

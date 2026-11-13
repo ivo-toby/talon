@@ -150,6 +150,24 @@ export interface WhatsAppWebhookPayload {
 // ---------------------------------------------------------------------------
 
 /**
+ * The verified direct response envelope of the media-ID lookup
+ * `GET /{apiVersion}/{media-id}`. There is NO `data`/`ok`/`result` wrapper —
+ * the fields sit at the top level. See the verified contract report
+ * (`whatsapp-business-verified-contract.md`) for the source citations.
+ *
+ * `file_size` is documented as a string (e.g. `"9517907"`) but is accepted as
+ * either a number or a numeric string; callers normalize it.
+ */
+export interface WhatsAppMediaEnvelope {
+  messaging_product?: string;
+  url?: string;
+  mime_type?: string;
+  sha256?: string;
+  file_size?: string | number;
+  id?: string;
+}
+
+/**
  * Result of a WhatsApp Cloud API send message call.
  */
 export interface WhatsAppSendResult {

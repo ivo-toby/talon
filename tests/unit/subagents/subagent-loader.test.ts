@@ -8,9 +8,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { SubAgentLoader } from '../../../src/subagents/subagent-loader.js';
+import {
+  validateVisionModelChain,
+  VISION_SUBAGENT_NAME,
+} from '../../../src/subagents/subagent-model-chain.js';
+import { isInferenceProvider } from '../../../src/subagents/model-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -335,5 +341,75 @@ requiresEnv:
     } finally {
       delete process.env[envKey];
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Built-in vision discovery (TASK-014)
+  // -------------------------------------------------------------------------
+
+  describe('built-in sub-agents', () => {
+    /** The daemon's built-in directory (`src/subagents/default`). */
+    const builtinDir = fileURLToPath(new URL('../../../src/subagents/default/', import.meta.url));
+
+    it('finds the built-in vision sub-agent with a vision-capable chain', async () => {
+      const loader = new SubAgentLoader(makeLogger());
+
+      const result = await loader.loadAll(builtinDir);
+
+      expect(result.isOk()).toBe(true);
+      const agents = result._unsafeUnwrap();
+      const vision = agents.find((agent) => agent.manifest.name === VISION_SUBAGENT_NAME);
+
+      expect(vision).toBeDefined();
+      // Entry point and prompts are present, so the runner can dispatch to it.
+      expect(typeof vision!.run).toBe('function');
+      expect(vision!.promptContents.join(' ')).not.toBe('');
+      // The shipped manifest chain (no overrides) is accepted by the same
+      // validator the daemon runs at startup.
+      expect(validateVisionModelChain(vision!, undefined).isOk()).toBe(true);
+      expect(isInferenceProvider(vision!.manifest.model.provider)).toBe(true);
+    });
+
+    it('grants the vision sub-agent no capabilities of its own', async () => {
+      const loader = new SubAgentLoader(makeLogger());
+
+      const agents = (await loader.loadAll(builtinDir))._unsafeUnwrap();
+      const vision = agents.find((agent) => agent.manifest.name === VISION_SUBAGENT_NAME)!;
+
+      // Reaching the Image/Finding services is wiring, not authorization:
+      // persona `subagent.invoke` + explicit assignment stay the gates, so the
+      // manifest itself must not carry capability labels (e.g. `image.read`).
+      expect(vision.manifest.requiredCapabilities).toEqual([]);
+    });
+
+    it('loads a text-only custom vision manifest, leaving rejection to chain validation', async () => {
+      // The loader stays provider-agnostic; a manifest-level text-only model
+      // is only caught by validateVisionModelChain — which is why bootstrap
+      // must run that check over the merged map before any channel work.
+      const root = makeTempDir();
+      try {
+        const agentDir = join(root, VISION_SUBAGENT_NAME);
+        mkdirSync(agentDir, { recursive: true });
+        writeManifest(agentDir, `name: ${VISION_SUBAGENT_NAME}
+version: "0.1.0"
+description: Text-only custom vision replacement
+model:
+  provider: claude-code
+  name: claude-opus-4-7`);
+        writeEntryPoint(agentDir);
+
+        const loader = new SubAgentLoader(makeLogger());
+        const loaded = (await loader.loadAll(root))._unsafeUnwrap();
+        expect(loaded).toHaveLength(1);
+
+        const validation = validateVisionModelChain(loaded[0]!, undefined);
+        expect(validation.isErr()).toBe(true);
+        expect(validation._unsafeUnwrapErr().message).toContain(
+          'claude-code/claude-opus-4-7 (manifest)',
+        );
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
   });
 });

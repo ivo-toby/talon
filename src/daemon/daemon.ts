@@ -35,6 +35,7 @@ import type { DaemonState, DaemonHealth } from './daemon-types.js';
 import { DaemonIpcServer } from '../ipc/daemon-ipc-server.js';
 import type { DaemonCommand, DaemonResponse } from '../ipc/daemon-ipc.js';
 import type { TalondConfig } from '../core/config/config-types.js';
+import { buildAgentCardRegistry } from '../a2a/persona-agent-card.js';
 import { ensureOwnerOnlyDir } from '../core/fs/private-paths.js';
 import { waitForCodexSandboxRunner } from '../subagents/codex-sandbox-runner-readiness.js';
 
@@ -46,6 +47,9 @@ export interface TalondDaemonDeps {
   waitForCodexSandboxRunner?: typeof waitForCodexSandboxRunner;
 }
 
+/** How often the A2A reaper runs while the daemon is up. */
+const A2A_REAPER_INTERVAL_MS = 60_000;
+
 export class TalondDaemon {
   private _state: DaemonState = 'stopped';
   private startedAt: number | null = null;
@@ -55,6 +59,9 @@ export class TalondDaemon {
   private ipcServer: DaemonIpcServer | null = null;
   private watchdog: WatchdogNotifier | null = null;
   private mcpRegistry: McpRegistry | null = null;
+  private a2aReaperTimer: ReturnType<typeof setInterval> | null = null;
+  /** Abort registry shared across AgentRunner rebuilds (hot reload). */
+  private readonly a2aAborts = new Map<string, () => void>();
 
   private readonly waitForCodexSandboxRunner: typeof waitForCodexSandboxRunner;
 
@@ -103,7 +110,7 @@ export class TalondDaemon {
         startupTimeoutMs: codexRunner.startupTimeoutMs,
       });
       if (runnerReady.isErr()) {
-        return this.failStartup(runnerReady.error, 'Failed to start Codex sandbox runner dependency');
+        return this.failStartup('Failed to start Codex sandbox runner dependency', runnerReady.error);
       }
       this.logger.info(
         { endpoint: new URL(codexRunner.endpoint).origin },
@@ -128,11 +135,96 @@ export class TalondDaemon {
     await this.mcpRegistry.startAll();
 
     // 3. Create the agent runner and start the host-tools bridge.
+    // ADR-0002: the runner needs the refreshed Image/Finding source so live
+    // descriptors, fresh-session replay, and rotation projections are real.
     this.agentRunner = new AgentRunner(this.ctx, {
+      imageContextSource: this.ctx.imageContextSource,
+      a2aAborts: this.a2aAborts,
       voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
       voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
     });
+    this.ctx.a2aTaskMapper?.setAbortHook((taskId) => {
+      this.a2aAborts.get(taskId)?.();
+    });
     this.ctx.hostToolsBridge.start();
+
+    // 3a. Run the durable-image startup recovery + retention pass and AWAIT
+    // it BEFORE any channel can admit new image-bearing events: pending
+    // admissions are re-resolved against their original admission clock (no
+    // redelivery, no deadline reset), expired Available content is retired,
+    // and owned orphan files are cleaned. The wait is bounded, and the
+    // bound FAILS THE BOOT CLOSED (F1): if recovery is still outstanding
+    // when it elapses, channels are NEVER started — an Image must not be
+    // admitted before crash leftovers are resolved. The outstanding work
+    // is retired safely (fence admissions, bounded sweep stop, bounded
+    // delivery drain with continuation retirement); sweep state is durable,
+    // so recovery resumes at the next boot.
+    const imageStartup = await this.ctx.imageLifecycle.start();
+    if (imageStartup.timedOut) {
+      this.logger.error(
+        { op: 'image_startup_recovery', code: 'BOOT_ABORTED_RECOVERY_TIMEOUT' },
+        'daemon: image startup recovery did not settle within the bound; aborting boot before any channel starts (fail closed)',
+      );
+      try {
+        this.ctx.imageIngestionCoordinator.fenceAdmissions();
+      } catch (cause) {
+        this.logger.error({ cause }, 'daemon: error fencing image admissions during boot abort');
+      }
+      try {
+        await this.ctx.imageLifecycle.stop();
+      } catch (cause) {
+        this.logger.error({ cause }, 'daemon: error stopping image lifecycle during boot abort');
+      }
+      try {
+        const drained = await this.ctx.imageIngestionCoordinator.drainActiveIngestion();
+        // R1: retire continuations UNCONDITIONALLY before closure — the
+        // startup-recovery continuation is not tracked in
+        // activeDeliveries, so gating on the drain result would let a
+        // wedged recovery with zero deliveries resume against a closed
+        // database. No-op when nothing is live; also completes tracked
+        // staging cleanup before the database closes (R2).
+        const retired = await this.ctx.imageIngestionCoordinator.abandonActiveIngestion();
+        if (drained.abandoned > 0 || retired.retired > 0) {
+          this.logger.warn(
+            {
+              op: 'image_boot_abort_drain',
+              abandoned: drained.abandoned,
+              retired: retired.retired,
+              stagingCleaned: retired.stagingCleaned,
+              stagingFailed: retired.stagingFailed,
+            },
+            'daemon: image work outlived the boot-abort bounds; continuations retired before closure',
+          );
+        }
+      } catch (cause) {
+        this.logger.error({ cause }, 'daemon: error draining image ingestion during boot abort');
+      }
+      // Release the resources already acquired above this point, then
+      // abort. Channels, queue processing, IPC, and the watchdog have not
+      // started yet, so nothing else needs unwinding.
+      try {
+        await this.mcpRegistry.stopAll();
+      } catch (cause) {
+        this.logger.warn({ cause }, 'daemon: failed to stop MCP servers after startup abort');
+      }
+      try {
+        this.ctx.hostToolsBridge.stop();
+      } catch (cause) {
+        this.logger.warn({ cause }, 'daemon: failed to stop host-tools bridge after startup abort');
+      }
+      return this.failStartup(
+        'Image startup recovery did not complete within the bound',
+        new DaemonError('boot aborted: image startup recovery outstanding (fail closed; channels not started)'),
+      );
+    } else if (imageStartup.report?.recoveryError) {
+      // Diagnostics string stays in this log-free return value; the log
+      // line below carries only that a retry is scheduled (P2-5: no
+      // persisted error messages from the image subsystem).
+      this.logger.warn(
+        { op: 'image_startup_recovery', code: 'RETRY_SCHEDULED' },
+        'daemon: image startup recovery pass failed; periodic sweeps will retry',
+      );
+    }
 
     // 4. Start channel connectors (non-fatal).
     try {
@@ -153,11 +245,17 @@ export class TalondDaemon {
         await this.ctx.voiceServer.start(this.ctx.config.voice.host, this.ctx.config.voice.port);
       } catch (cause) {
         return this.failStartup(
-          cause instanceof Error ? cause : new Error(String(cause)),
           'Failed to start browser voice server',
+          cause instanceof Error ? cause : new Error(String(cause)),
         );
       }
     }
+
+    // 4a. Reap stale A2A tasks (orphaned by purge/crash, or past TTL) before
+    // dispatch starts, then keep reaping periodically.
+    this.reapA2ATasks();
+    this.a2aReaperTimer = setInterval(() => this.reapA2ATasks(), A2A_REAPER_INTERVAL_MS);
+    this.a2aReaperTimer.unref();
 
     // 5. Start queue processing.
     this.ctx.queueManager.startProcessing((item) => this.agentRunner!.run(item));
@@ -209,6 +307,21 @@ export class TalondDaemon {
   // Stop
   // ---------------------------------------------------------------------------
 
+  /** Runs one A2A reaper pass; never throws. */
+  private reapA2ATasks(): void {
+    try {
+      const result = this.ctx?.a2aTaskMapper?.reapStaleTasks();
+      if (result === undefined) return;
+      if (result.isErr()) {
+        this.logger.warn({ err: result.error.message }, 'daemon: A2A reaper failed');
+      } else if (result.value.length > 0) {
+        this.logger.info({ count: result.value.length }, 'daemon: A2A reaper cleaned stale tasks');
+      }
+    } catch (cause) {
+      this.logger.warn({ cause: String(cause) }, 'daemon: A2A reaper threw');
+    }
+  }
+
   async stop(): Promise<void> {
     if (this._state === 'stopped' || this._state === 'stopping') {
       return;
@@ -216,6 +329,11 @@ export class TalondDaemon {
 
     this._state = 'stopping';
     this.logger.info('daemon: stopping');
+
+    if (this.a2aReaperTimer !== null) {
+      clearInterval(this.a2aReaperTimer);
+      this.a2aReaperTimer = null;
+    }
 
     if (this.watchdog !== null) {
       this.watchdog.notifyStopping();
@@ -253,6 +371,61 @@ export class TalondDaemon {
       } catch (cause) {
         this.logger.warn({ cause }, 'daemon: failed to shut down observability');
       }
+
+      // Fence and drain ALL image work BEFORE the database closes (P1-2,
+      // F3, F4):
+      // 1) fence new ingestion admissions (no durable admission exists for
+      //    a fenced delivery — the source must resend after restart),
+      // 2) fence sweeps and drain the in-flight lifecycle pass BOUNDED; a
+      //    wedged pass is fenced internally from further ledger writes,
+      // 3) drain delivery-owned ingestion (admission → publication →
+      //    commit-together enqueue) so no write hits a closed DB.
+      // Anything still live at the drain bound is RETIRED in memory — the
+      // recovery table is authoritative, so NO row is terminally marked:
+      // pending Ingestion rows and retained sources stay exactly as they
+      // are and next-boot recovery resolves them with canonical
+      // precedence, exactly once.
+      try {
+        this.ctx.imageIngestionCoordinator.fenceAdmissions();
+      } catch (cause) {
+        this.logger.error({ cause }, 'daemon: error fencing image admissions');
+      }
+      try {
+        const swept = await this.ctx.imageLifecycle.stop();
+        if (!swept.drained) {
+          this.logger.warn(
+            { op: 'image_shutdown', code: 'LIFECYCLE_PASS_WEDGED_AFTER_BOUND' },
+            'daemon: image lifecycle pass outlived the shutdown bound; its remaining phases are fenced from ledger writes',
+          );
+        }
+      } catch (cause) {
+        this.logger.error({ cause }, 'daemon: error draining image lifecycle');
+      }
+      try {
+        const drained = await this.ctx.imageIngestionCoordinator.drainActiveIngestion();
+        // R1: retire continuations UNCONDITIONALLY before closure (no-op
+        // when empty). Lifecycle-owned recovery is not tracked in
+        // activeDeliveries; the previous `abandoned > 0` guard let a
+        // wedged recovery skip retirement and resume against a closed
+        // database. Retirement also completes tracked staging cleanup
+        // before SQLite closes (R2).
+        const retired = await this.ctx.imageIngestionCoordinator.abandonActiveIngestion();
+        if (drained.abandoned > 0 || retired.retired > 0) {
+          this.logger.warn(
+            {
+              op: 'image_shutdown_drain',
+              code: 'CONTINUATIONS_RETIRED_AFTER_BOUND',
+              abandoned: drained.abandoned,
+              retired: retired.retired,
+              stagingCleaned: retired.stagingCleaned,
+              stagingFailed: retired.stagingFailed,
+            },
+            'daemon: image ingestion outlived the shutdown drain; continuations retired without durable changes — the recovery table stays authoritative for next boot',
+          );
+        }
+      } catch (cause) {
+        this.logger.error({ cause }, 'daemon: error draining image ingestion');
+      }
     }
 
     if (this.ipcServer !== null) {
@@ -281,10 +454,7 @@ export class TalondDaemon {
     this.logger.info('daemon: stopped');
   }
 
-  private async failStartup(
-    cause: Error,
-    message = 'Failed to start daemon',
-  ): Promise<Result<void, DaemonError>> {
+  private async failStartup(message: string, cause: Error): Promise<Result<void, DaemonError>> {
     const context = this.ctx;
     this.ctx = null;
     this.agentRunner = null;
@@ -341,9 +511,7 @@ export class TalondDaemon {
       }
     }
 
-    return err(
-      new DaemonError(`${message}: ${cause.message}`, cause),
-    );
+    return err(new DaemonError(`${message}: ${cause.message}`, cause));
   }
 
   // ---------------------------------------------------------------------------
@@ -397,8 +565,17 @@ export class TalondDaemon {
       );
     }
 
-    const newConfig = configResult.value;
     const oldConfig = this.ctx.config;
+    // Image settings are fixed for the life of the process: the ingestion
+    // coordinator, normalizer, retention timer and vision limits captured them
+    // at bootstrap. Keep the running values so rebuilt connectors cannot select
+    // or fetch under limits the coordinator would then reject.
+    const newConfig: TalondConfig = { ...configResult.value, images: oldConfig.images };
+    if (JSON.stringify(oldConfig.images) !== JSON.stringify(configResult.value.images)) {
+      this.logger.warn(
+        'daemon: reload — images config changed; restart required to apply (running limits kept)',
+      );
+    }
 
     // Freeze voice admission and invalidate browser auth before personas,
     // skills, or MCP definitions become mutable. This preserves the policy
@@ -493,6 +670,14 @@ export class TalondDaemon {
       return err(new DaemonError(`Failed to reload personas: ${personaReload.error.message}`));
     }
 
+    // Rebuild the A2A agent-card registry in place (shared Map instance held by
+    // A2ATaskMapper and A2AServer) so newly added personas are routable.
+    if (this.ctx.a2aCardRegistry) {
+      const rebuilt = buildAgentCardRegistry(personaReload.value);
+      this.ctx.a2aCardRegistry.clear();
+      for (const [name, card] of rebuilt) this.ctx.a2aCardRegistry.set(name, card);
+    }
+
     // Reload skills.
     const skillLoader = new SkillLoader(this.logger);
     const loadedSkillsResult = await skillLoader.loadFromPersonaConfig(
@@ -568,6 +753,8 @@ export class TalondDaemon {
 
     // Rebuild AgentRunner so it picks up the new loadedSkills.
     this.agentRunner = new AgentRunner(this.ctx, {
+      imageContextSource: this.ctx.imageContextSource,
+      a2aAborts: this.a2aAborts,
       voiceOutputSink: this.ctx.voiceOutputSink ?? undefined,
       voiceExecutionGate: this.ctx.voiceBackendBridge?.beforeProvider.bind(this.ctx.voiceBackendBridge),
     });
@@ -708,6 +895,58 @@ export class TalondDaemon {
           commandId: command.id,
           success: true,
           data: { purged: purgeResult.value, statuses: requestedStatuses },
+        };
+      }
+
+      case 'a2a-cancel': {
+        // Runs inside the daemon so cancelTask's abort hook can stop an
+        // in-flight run (a CLI-side DB cancel cannot).
+        const mapper = this.ctx?.a2aTaskMapper ?? null;
+        if (!mapper) {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: 'A2A is not available in this daemon',
+          };
+        }
+        const taskId = typeof command.payload?.taskId === 'string' ? command.payload.taskId.trim() : '';
+        if (taskId === '') {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: false,
+            error: 'a2a-cancel requires payload.taskId',
+          };
+        }
+        const reason =
+          typeof command.payload?.reason === 'string' && command.payload.reason.trim() !== ''
+            ? command.payload.reason.trim()
+            : 'canceled via talonctl';
+
+        const before = mapper.getTaskStatus(taskId);
+        if (before.isErr()) {
+          return { id: responseId, commandId: command.id, success: false, error: before.error.message };
+        }
+        if (before.value === null) {
+          return {
+            id: responseId,
+            commandId: command.id,
+            success: true,
+            data: { taskId, found: false, canceled: false },
+          };
+        }
+        const cancelResult = mapper.cancelTask(taskId, reason);
+        if (cancelResult.isErr()) {
+          return { id: responseId, commandId: command.id, success: false, error: cancelResult.error.message };
+        }
+        const after = mapper.getTaskStatus(taskId);
+        const state = after.isOk() && after.value ? after.value.state : before.value.state;
+        return {
+          id: responseId,
+          commandId: command.id,
+          success: true,
+          data: { taskId, found: true, canceled: cancelResult.value, state },
         };
       }
 

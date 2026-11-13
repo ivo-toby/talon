@@ -9,15 +9,25 @@ import { ok, err, type Result } from 'neverthrow';
 import { z } from 'zod';
 
 import type { DaemonContext } from './daemon-context.js';
-import type { AssembledContext } from './context-assembler.js';
+import type {
+  AssembleImageContext,
+  AssembledContext,
+  ImageContextSource,
+  LiveImageDescriptorBlock,
+} from './context-assembler.js';
+import { EMPTY_LIVE_BLOCK, orderLiveDescriptors, renderLiveImageDescriptors } from './context-assembler.js';
+import type { RotationImageContext } from './context-roller.js';
 import type { ContextRollerDiagnostics } from './context-roller.js';
 import type { QueueItem } from '../queue/queue-types.js';
+import { QueueDeferral } from '../queue/queue-processor.js';
 import {
   filterAllowedMcpTools,
   filterVoiceMcpTools,
+  HOST_TOOL_REGISTRY,
   MCP_TO_INTERNAL,
 } from '../tools/tool-filter.js';
 import { resolveToolInstructions } from '../tools/tool-instructions.js';
+import { buildPersonaRosterAppendix } from '../personas/persona-roster.js';
 import { hasOAuthMcpAuth, resolveMcpServers } from '../mcp/resolve-mcp-servers.js';
 import { buildPersonaRuntimeContext } from '../personas/persona-runtime-context.js';
 import {
@@ -73,6 +83,9 @@ class AgentQueryAttemptError extends Error {
 
 export interface AgentRunnerOptions {
   queryTimeoutMs?: number;
+  imageContextSource?: ImageContextSource;
+  /** Shared registry so aborts survive AgentRunner rebuilds on hot reload. */
+  a2aAborts?: Map<string, () => void>;
   voiceOutputSink?: VoiceOutputSink;
   voiceExecutionGate?: VoiceExecutionGate;
 }
@@ -89,13 +102,85 @@ export class AgentRunner {
   private readonly voiceOutputSink?: VoiceOutputSink;
   private readonly voiceExecutionGate?: VoiceExecutionGate;
   private readonly voiceTelemetry?: VoiceTelemetry;
+  /**
+   * Optional refreshed Image/Finding source (ADR-0002). Wiring supplies this
+   * in the daemon bootstrap; without it the runner behaves exactly as before
+   * (no live descriptors, no history projections).
+   */
+  private readonly imageContextSource?: ImageContextSource;
+  /** Abort callbacks for in-flight A2A runs, keyed by task ID. */
+  private readonly a2aAborts: Map<string, () => void>;
 
   constructor(ctx: DaemonContext, options?: AgentRunnerOptions) {
     this.ctx = ctx;
+    this.a2aAborts = options?.a2aAborts ?? new Map<string, () => void>();
     this.queryTimeoutMs = options?.queryTimeoutMs ?? DEFAULT_QUERY_TIMEOUT_MS;
     this.voiceOutputSink = options?.voiceOutputSink;
     this.voiceExecutionGate = options?.voiceExecutionGate;
     this.voiceTelemetry = ctx.voiceTelemetry ?? undefined;
+    this.imageContextSource = options?.imageContextSource;
+  }
+
+  /**
+   * Actual `image_lookup` exposure for this run: resolved through the real
+   * TASK-017 registry entry and the persona's capability-filtered tool set,
+   * never predicted from a hardcoded capability string. Personas without the
+   * capability receive neutral omission notices everywhere.
+   */
+  private imageLookupExposure(allowedMcpTools: readonly string[]): boolean {
+    const entry = HOST_TOOL_REGISTRY.find((toolEntry) => toolEntry.internalName === 'image.lookup');
+    return entry !== undefined && allowedMcpTools.includes(entry.mcpName);
+  }
+
+  /** Rotation-time image replay material; absent when no source is wired. */
+  private imageRotationContext(imageLookupExposed: boolean): RotationImageContext | undefined {
+    return this.imageContextSource === undefined
+      ? undefined
+      : { source: this.imageContextSource, imageLookupExposed };
+  }
+
+  /**
+   * Resolve the live current-message Image descriptors (ADR-0002).
+   *
+   * The association is rebuilt from the trusted (thread, message) pair on
+   * every provider attempt, so a queue/provider retry re-derives the block
+   * under the existing live-message retry semantics — no exactly-once claim
+   * about provider session logs. Scheduled runs and A2A delegations receive
+   * no descriptors (their existing context isolation is preserved), and the
+   * stored message/queue text is never modified here. Resolution failures
+   * degrade to a descriptor-less prompt with a warning. Availability is
+   * refreshed by the source; pixel bytes never enter this path.
+   */
+  private async resolveLiveImageDescriptors(
+    item: QueueItem,
+    isDelegatedOrScheduled: boolean,
+    imageLookupExposed: boolean,
+  ): Promise<LiveImageDescriptorBlock | undefined> {
+    if (
+      this.imageContextSource === undefined ||
+      isDelegatedOrScheduled ||
+      item.type !== 'message' ||
+      typeof item.messageId !== 'string' ||
+      item.messageId.length === 0
+    ) {
+      return undefined;
+    }
+    try {
+      const descriptors = await this.imageContextSource.resolveMessageDescriptors({
+        threadId: item.threadId,
+        messageId: item.messageId,
+      });
+      return renderLiveImageDescriptors(
+        orderLiveDescriptors(descriptors, item.threadId),
+        imageLookupExposed,
+      );
+    } catch (cause) {
+      this.ctx.logger.warn(
+        { threadId: item.threadId, messageId: item.messageId, err: cause },
+        'agent-runner: live image descriptor resolution failed; continuing without image block',
+      );
+      return undefined;
+    }
   }
 
   /**
@@ -121,6 +206,44 @@ export class AgentRunner {
         : null;
     const isA2ATask = a2aTaskId !== null;
     const isScheduleTask = item.type === 'schedule';
+
+    // A2A lifecycle gate: never run (or retry) a task that is missing or already
+    // terminal (canceled/failed/completed), and respect per-target concurrency
+    // by deferring (without consuming a queue attempt) until admitted.
+    if (a2aTaskId !== null) {
+      const taskLookup = this.ctx.repos.a2aTask.findById(a2aTaskId);
+      if (taskLookup.isErr()) {
+        return err(new Error(`failed to load A2A task ${a2aTaskId}: ${taskLookup.error.message}`));
+      }
+      const taskRow = taskLookup.value;
+      if (
+        !taskRow ||
+        taskRow.state === 'completed' ||
+        taskRow.state === 'failed' ||
+        taskRow.state === 'canceled'
+      ) {
+        this.ctx.logger.info(
+          { a2aTaskId, state: taskRow?.state ?? 'missing', itemId: item.id },
+          'agent-runner: A2A task missing or terminal, skipping run',
+        );
+        return ok(undefined);
+      }
+      const admit = this.ctx.repos.a2aTask.tryAdmit(
+        a2aTaskId,
+        this.ctx.config.a2a.maxConcurrentPerTarget,
+      );
+      if (admit.isErr()) {
+        return err(new Error(`failed to admit A2A task ${a2aTaskId}: ${admit.error.message}`));
+      }
+      if (admit.value === 'wait') {
+        return err(
+          new QueueDeferral(`A2A task ${a2aTaskId} waiting for a free slot on ${taskRow.target_persona}`, 2000),
+        );
+      }
+      if (admit.value === 'terminal' || admit.value === 'missing') {
+        return ok(undefined);
+      }
+    }
 
     const isVoicePayload = item.type === 'collaboration' && item.payload?.kind === 'voice_backend';
     const voiceRequest = isVoicePayload ? this.parseVoiceBackendRequest(item) : null;
@@ -360,16 +483,9 @@ export class AgentRunner {
       if (isVoiceTask) {
         this.recordVoiceFailure(voiceSink, voiceRequest, 'VOICE_EXECUTION_FAILED');
       }
-      // Mark A2A task as failed — run record creation failed, so the task cannot proceed.
-      if (isA2ATask && a2aTaskId) {
-        this.ctx.repos.a2aTask
-          .markFailed(a2aTaskId, 'RUN_INSERT_ERROR', runInsert.error.message)
-          .mapErr((e) => {
-            this.ctx.logger.warn(
-              { a2aTaskId, err: e.message },
-              'agent-runner: failed to mark A2A task as failed after run insert error',
-            );
-          });
+      // Run record creation failed. Fail the task only if this is the final attempt.
+      if (this.failA2ATask(a2aTaskId, 'RUN_INSERT_ERROR', runInsert.error.message, item) === 'already-terminal') {
+        return ok(undefined);
       }
       return err(new Error(`failed to create run record: ${runInsert.error.message}`));
     }
@@ -387,14 +503,22 @@ export class AgentRunner {
       }
     }
 
-    // Mark A2A task as 'working' now that a run record exists.
+    // Record the run on the A2A task ('working' is already set by tryAdmit).
     if (isA2ATask && a2aTaskId) {
-      this.ctx.repos.a2aTask.markWorking(a2aTaskId, runId).mapErr((e) => {
+      const working = this.ctx.repos.a2aTask.markWorking(a2aTaskId, runId);
+      if (working.isErr()) {
         this.ctx.logger.warn(
-          { a2aTaskId, runId, err: e.message },
+          { a2aTaskId, runId, err: working.error.message },
           'agent-runner: failed to mark A2A task as working',
         );
-      });
+      } else if (!working.value) {
+        // Canceled/terminal between admission and run start: do not run.
+        this.ctx.repos.run.updateStatus(runId, 'failed', {
+          ended_at: Date.now(),
+          error: 'A2A task no longer active',
+        });
+        return ok(undefined);
+      }
     }
 
     const content = isVoiceTask
@@ -428,6 +552,9 @@ export class AgentRunner {
       ...(voiceObservation ? { voiceObservation } : {}),
     };
     let runFinalized = false;
+    // Set when an A2A run ended after its task became terminal (e.g. canceled):
+    // the queue item must complete rather than retry.
+    let a2aSuppressRetry = false;
     const bridgeSecret = generateBridgeSecret();
     this.ctx.hostToolsBridge.registerRunAuthentication?.({
       runId,
@@ -576,6 +703,12 @@ export class AgentRunner {
               'agent-sdk: persona tool restrictions applied',
             );
 
+            // Derived once per run from the actual filtered tool set; used by
+            // the live descriptor block, fresh-session history projections,
+            // and the rotation projection so every omission notice agrees on
+            // whether `image_lookup` is nameable for this persona.
+            const imageLookupExposed = this.imageLookupExposure(allowedMcpTools);
+
             // Resolve channel connector early so we can send typing indicators.
             const threadResult = this.ctx.repos.thread.findById(item.threadId);
             const channelRow =
@@ -658,7 +791,10 @@ export class AgentRunner {
             const freshSessionRecentMessageCount = enabledContextManagement
               ? enabledContextManagement.recentMessageCount
               : (contextManagement?.recentMessageCount ?? DEFAULT_FRESH_SESSION_RECENT_MESSAGES);
-            const getPreviousContext = async (): Promise<AssembledContext> => {
+            const getPreviousContext = async (imageReplay: {
+              live: LiveImageDescriptorBlock;
+              imageLookupExposed: boolean;
+            }): Promise<AssembledContext> => {
               if (!previousContextResolved) {
                 previousContext = await observeRun(
                   {
@@ -668,7 +804,33 @@ export class AgentRunner {
                       threadId: item.threadId,
                     },
                   },
-                  (retrieverObservation) => {
+                  async (retrieverObservation) => {
+                    // Full Image inventory + canonical Findings are queried
+                    // ONLY for fresh-session history (this function is not
+                    // called on resumed turns). Queries are independent of
+                    // the message rotation cutoff: Findings from failed runs
+                    // or arriving during summarizer latency stay visible.
+                    // Failures degrade to a projection-less assembly.
+                    let images: AssembleImageContext | undefined;
+                    if (this.imageContextSource !== undefined) {
+                      try {
+                        const [inventoryDescriptors, findings] = await Promise.all([
+                          this.imageContextSource.listThreadDescriptors(item.threadId),
+                          this.imageContextSource.listThreadFindings(item.threadId),
+                        ]);
+                        images = {
+                          live: imageReplay.live,
+                          inventoryDescriptors,
+                          findings,
+                          imageLookupExposed: imageReplay.imageLookupExposed,
+                        };
+                      } catch (cause) {
+                        this.ctx.logger.warn(
+                          { threadId: item.threadId, err: cause },
+                          'agent-runner: image context fetch failed; continuing without image projections',
+                        );
+                      }
+                    }
                     // Exclude the message being processed (if any) from the
                     // "Recent Messages" block. That message is already passed
                     // as the live prompt (`content`), and re-echoing it in
@@ -681,6 +843,7 @@ export class AgentRunner {
                       {
                         excludeMessageId: item.messageId,
                         ...(isVoiceTask ? { excludeVoiceSessionId: voiceRequest.sessionId } : {}),
+                        ...(images ? { images } : {}),
                       },
                     );
                     retrieverObservation.update({
@@ -737,9 +900,32 @@ export class AgentRunner {
               usage: AgentUsage;
               lastStepUsage: AgentUsage | undefined;
             }> => {
+              // ADR-0002: current-message Image descriptors are appended to
+              // the LIVE prompt for every foreground provider, on every
+              // provider attempt (retries rebuild the association from the
+              // trusted message ID). Provider history then contains them
+              // naturally; resumed text-only turns add no inventory or
+              // Finding projection. The stored message/queue text stays
+              // exactly as persisted.
+              const liveImages = await this.resolveLiveImageDescriptors(
+                item,
+                isA2ATask || isScheduleTask,
+                imageLookupExposed,
+              );
+              const livePrompt =
+                liveImages !== undefined && liveImages.text.length > 0
+                  ? `${content}\n\n${liveImages.text}`
+                  : content;
+
               const toolInstructionsBlock = resolveToolInstructions(
                 this.ctx.toolInstructions,
                 allowedMcpTools,
+                buildPersonaRosterAppendix(
+                  this.ctx.personaLoader,
+                  allowedMcpTools,
+                  loadedPersona.config.name ?? personaName,
+                  loadedPersona.resolvedCapabilities,
+                ),
               );
               const systemPromptParts = [
                 personaRuntimeContext.personaPrompt,
@@ -755,8 +941,22 @@ export class AgentRunner {
                     ]
                   : []),
               ];
-              if (!resumeSessionId && !isScheduleTask) {
-                const previous = await getPreviousContext();
+              // A2A delegations are isolated: they receive only the delegated
+              // message (plus the persona's own prompt), never the source
+              // thread's summary, recent messages or image inventory/Findings.
+              if (!resumeSessionId && !isScheduleTask && !isA2ATask) {
+                // Fresh-session image replay is independent of the current
+                // message's live association: foreground messages without a
+                // messageId (e.g. background-agent completion notices) still
+                // receive the bounded inventory + Findings projection with
+                // an EMPTY live block. Schedule/delegation isolation is
+                // unchanged (live blocks stay gated in
+                // resolveLiveImageDescriptors; schedules never reach this
+                // branch).
+                const previous = await getPreviousContext({
+                  live: liveImages ?? EMPTY_LIVE_BLOCK,
+                  imageLookupExposed,
+                });
                 if (previous.text) {
                   systemPromptParts.push(previous.text);
                 }
@@ -769,7 +969,7 @@ export class AgentRunner {
                   type: 'generation',
                   name: 'provider-attempt',
                   input: {
-                    prompt: voiceObservation ? '[voice context redacted]' : content,
+                    prompt: voiceObservation ? '[voice context redacted]' : livePrompt,
                     systemPrompt: voiceObservation
                       ? '[voice system prompt redacted]'
                       : systemPrompt,
@@ -973,7 +1173,7 @@ export class AgentRunner {
 
                   const queryInput = {
                     threadId: item.threadId,
-                    prompt: content,
+                    prompt: livePrompt,
                     systemPrompt,
                     mcpServers: resolvedMcpServers,
                     ...(disableNativeShellAndFilesystemTools
@@ -1199,8 +1399,23 @@ export class AgentRunner {
                     }, queryTimeoutMs);
                   });
 
+                  // A2A cancellation: rejecting this promise aborts the in-flight
+                  // run through the same cleanup path as a timeout.
+                  let abortReject: ((reason: Error) => void) | undefined;
+                  const abortPromise = new Promise<never>((_, reject) => {
+                    abortReject = reject;
+                  });
+                  abortPromise.catch(() => {});
+                  if (isA2ATask && a2aTaskId) {
+                    this.a2aAborts.set(a2aTaskId, () => abortReject?.(new Error('A2A task canceled')));
+                    const stateNow = this.ctx.repos.a2aTask.findById(a2aTaskId);
+                    if (stateNow.isOk() && stateNow.value?.state === 'canceled') {
+                      abortReject?.(new Error('A2A task canceled'));
+                    }
+                  }
+
                   try {
-                    await Promise.race([queryPromise, timeoutPromise]);
+                    await Promise.race([queryPromise, timeoutPromise, abortPromise]);
                   } catch (cause) {
                     queryCancelled = true;
                     // Abort the in-flight provider stream to prevent leaked work
@@ -1226,6 +1441,7 @@ export class AgentRunner {
                     );
                   } finally {
                     clearTimeout(timeoutId!);
+                    if (isA2ATask && a2aTaskId) this.a2aAborts.delete(a2aTaskId);
                   }
 
                   this.finishProviderToolObservations(
@@ -1390,12 +1606,19 @@ export class AgentRunner {
               }
             } else if (isA2ATask && a2aTaskId) {
               // A2A collaboration task: store result in a2a_tasks, skip channel send.
-              this.ctx.repos.a2aTask.markCompleted(a2aTaskId, fullOutputText).mapErr((e) => {
+              const completed = this.ctx.repos.a2aTask.markCompleted(a2aTaskId, fullOutputText);
+              if (completed.isErr()) {
                 this.ctx.logger.warn(
-                  { a2aTaskId, runId, err: e.message },
+                  { a2aTaskId, runId, err: completed.error.message },
                   'agent-runner: failed to mark A2A task as completed',
                 );
-              });
+              } else if (!completed.value) {
+                // Canceled while running: result is discarded, nothing is sent.
+                this.ctx.logger.info(
+                  { a2aTaskId, runId },
+                  'agent-runner: A2A task already terminal (canceled?), discarding result',
+                );
+              }
               this.ctx.logger.info(
                 { runId, a2aTaskId, outputLength: fullOutputText.length },
                 'agent-sdk: A2A task completed, result stored (no channel send)',
@@ -1502,6 +1725,8 @@ export class AgentRunner {
                     // Route to observational memory path when configured with
                     // session-observer; otherwise use the legacy summarizer.
                     const useOM = enabledContextManagement.summarizer === 'session-observer';
+                    // Undefined when no image source is wired.
+                    const rotationImage = this.imageRotationContext(imageLookupExposed);
                     const rotation = useOM
                       ? await this.ctx.contextRoller.checkAndRotateOM(
                           item.threadId,
@@ -1517,6 +1742,7 @@ export class AgentRunner {
                           threadResult.isOk() && threadResult.value
                             ? threadResult.value.channel_id
                             : undefined,
+                          rotationImage,
                           rotationDiagnostics,
                         )
                       : await this.ctx.contextRoller.checkAndRotate(
@@ -1525,6 +1751,7 @@ export class AgentRunner {
                           contextUsagePayload,
                           enabledContextManagement.thresholdRatio,
                           enabledContextManagement.summarizer,
+                          rotationImage,
                           rotationDiagnostics,
                         );
 
@@ -1624,16 +1851,13 @@ export class AgentRunner {
               ended_at: Date.now(),
               error: isVoiceTask ? this.voiceErrorDetail(error) : error.message,
             });
-            // Mark A2A task as failed on agent execution error.
+            // Fail the A2A task only when the failure is final (last queue attempt).
+            // If it was already canceled, the run ends quietly with no retry.
             if (isA2ATask && a2aTaskId) {
-              this.ctx.repos.a2aTask
-                .markFailed(a2aTaskId, 'EXECUTION_ERROR', error.message)
-                .mapErr((e) => {
-                  this.ctx.logger.warn(
-                    { a2aTaskId, runId, err: e.message },
-                    'agent-runner: failed to mark A2A task as failed',
-                  );
-                });
+              const outcome = this.failA2ATask(a2aTaskId, 'EXECUTION_ERROR', error.message, item);
+              if (outcome === 'already-terminal') {
+                a2aSuppressRetry = true;
+              }
             }
             runFinalized = true;
             throw error;
@@ -1649,6 +1873,12 @@ export class AgentRunner {
           ended_at: Date.now(),
           error: isVoiceTask ? this.voiceErrorDetail(error) : error.message,
         });
+        if (isA2ATask && this.failA2ATask(a2aTaskId, 'EXECUTION_ERROR', error.message, item) === 'already-terminal') {
+          a2aSuppressRetry = true;
+        }
+      }
+      if (a2aSuppressRetry) {
+        return ok(undefined);
       }
       return err(error);
     } finally {
@@ -1932,14 +2162,41 @@ export class AgentRunner {
    * Marks an A2A task as failed if a task ID is present.
    * Safe to call even when the task ID is null (non-A2A items).
    */
-  private failA2ATask(a2aTaskId: string | null, errorCode: string, message: string): void {
-    if (!a2aTaskId) return;
-    this.ctx.repos.a2aTask.markFailed(a2aTaskId, errorCode, message).mapErr((e) => {
+  private failA2ATask(
+    a2aTaskId: string | null,
+    errorCode: string,
+    message: string,
+    item?: QueueItem,
+  ): 'failed' | 'retry' | 'already-terminal' | 'none' {
+    if (!a2aTaskId) return 'none';
+    const repo = this.ctx.repos.a2aTask;
+    const existing = repo.findById(a2aTaskId);
+    if (existing.isOk() && existing.value) {
+      const st = existing.value.state;
+      if (st === 'completed' || st === 'failed' || st === 'canceled') return 'already-terminal';
+    }
+    // Only final failures are terminal; otherwise the task stays non-terminal
+    // (working) and the queue retry re-enters via tryAdmit. Config errors pass
+    // no item and are always final.
+    const isFinal = !item || item.attempts + 1 >= item.maxAttempts;
+    if (!isFinal) return 'retry';
+    const result = repo.markFailed(a2aTaskId, errorCode, message);
+    if (result.isErr()) {
       this.ctx.logger.warn(
-        { a2aTaskId, errorCode, err: e.message },
+        { a2aTaskId, errorCode, err: result.error.message },
         'agent-runner: failed to mark A2A task as failed',
       );
-    });
+      return 'failed';
+    }
+    return result.value ? 'failed' : 'already-terminal';
+  }
+
+  /** Aborts the in-flight run of an A2A task (used when the task is canceled). */
+  abortA2ATask(taskId: string): boolean {
+    const abort = this.a2aAborts.get(taskId);
+    if (!abort) return false;
+    abort();
+    return true;
   }
 
   private parseVoiceBackendRequest(item: QueueItem): VoiceBackendRequest | null {

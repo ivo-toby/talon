@@ -21,16 +21,20 @@ import {
   type ChannelBroadcastArgs,
 } from './host-tools/channel-broadcast.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
-import {
-  PersonaTaskStatusHandler,
-  type PersonaTaskStatusArgs,
-} from './host-tools/persona-task-status.js';
+import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
+import { PersonaTaskCancelHandler, type PersonaTaskCancelArgs } from './host-tools/persona-task-cancel.js';
 import { PersonaListHandler } from './host-tools/persona-list.js';
 import { HttpProxyHandler, type HttpProxyArgs } from './host-tools/http-proxy.js';
 import { DbQueryHandler, type DbQueryArgs } from './host-tools/db-query.js';
 import { MemoryAccessHandler, type MemoryAccessArgs } from './host-tools/memory-access.js';
 import { SubAgentInvokeHandler, type SubAgentInvokeArgs } from './host-tools/subagent-invoke.js';
 import { BackgroundAgentHandler, type BackgroundAgentArgs } from './host-tools/background-agent.js';
+import {
+  ImageLookupHandler,
+  type ImageLookupAccess,
+  type ImageLookupArgs,
+  type ImageLookupFindings,
+} from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
 import { filterVoiceMcpTools, isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
@@ -77,6 +81,16 @@ interface RegisteredBridgeAuth {
   trustedTraceparent?: string;
 }
 
+/**
+ * Runtime services `image.lookup` needs, injected by the final daemon wiring
+ * (TASK-019). Persona repository and loader come from the daemon context; only
+ * the thread-scoped Image and Finding reads are injected here.
+ */
+export interface ImageLookupServices {
+  images: ImageLookupAccess;
+  findings: ImageLookupFindings;
+}
+
 export class HostToolsBridge {
   private server: net.Server | null = null;
   private readonly socketPath: string;
@@ -89,6 +103,7 @@ export class HostToolsBridge {
   private channelBroadcastHandler: ChannelBroadcastHandler;
   private personaSendHandler: PersonaSendHandler | null = null;
   private personaTaskStatusHandler: PersonaTaskStatusHandler | null = null;
+  private personaTaskCancelHandler: PersonaTaskCancelHandler | null = null;
   private personaListHandler: PersonaListHandler;
   private httpHandler: HttpProxyHandler;
   private dbHandler: DbQueryHandler;
@@ -96,8 +111,12 @@ export class HostToolsBridge {
   private subagentHandler: SubAgentInvokeHandler | null = null;
   private backgroundAgentHandler: BackgroundAgentHandler | null = null;
   private executionEnvHandler: ExecutionEnvHandler | null = null;
+  private imageLookupHandler: ImageLookupHandler | null = null;
 
-  constructor(private readonly ctx: DaemonContext) {
+  constructor(
+    private readonly ctx: DaemonContext,
+    imageLookupServices?: ImageLookupServices,
+  ) {
     this.socketPath = resolve(join(ctx.dataDir, 'host-tools.sock'));
     this.dispatchLogger = createVoiceDispatchLogger(ctx.logger);
     const handlerLogger = this.dispatchLogger.logger;
@@ -138,21 +157,37 @@ export class HostToolsBridge {
     });
 
     if (ctx.a2aTaskMapper) {
+      // Long A2A waits release the caller's queue slot, but only for runs that
+      // actually hold one. Background-agent runs (backgroundTaskId set) are not
+      // queue-dispatched, so they must not free a slot.
+      const waitScope = <T>(fn: () => Promise<T>, context: ToolExecutionContext): Promise<T> =>
+        context.backgroundTaskId
+          ? fn()
+          : ctx.queueManager.runWithSlotReleased(fn, context.runId);
       this.personaSendHandler = new PersonaSendHandler({
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
+        personaRepo: ctx.repos.persona,
+        logger: handlerLogger,
+        resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
+        waitScope,
+      });
+      this.personaTaskCancelHandler = new PersonaTaskCancelHandler({
+        taskMapper: ctx.a2aTaskMapper,
         personaRepo: ctx.repos.persona,
         logger: handlerLogger,
       });
       this.personaTaskStatusHandler = new PersonaTaskStatusHandler({
         taskMapper: ctx.a2aTaskMapper,
         logger: handlerLogger,
+        waitScope,
       });
     }
 
     this.personaListHandler = new PersonaListHandler({
       personaLoader: ctx.personaLoader,
       logger: handlerLogger,
+      resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
     });
 
     this.httpHandler = new HttpProxyHandler({
@@ -213,6 +248,20 @@ export class HostToolsBridge {
       this.executionEnvHandler = new ExecutionEnvHandler({
         executionEnvManager: ctx.executionEnvManager,
         logger: handlerLogger,
+      });
+    }
+
+    // image.lookup is read-only and model-free, but it still needs real
+    // thread-scoped Image/Finding reads. Until the final wiring (TASK-019)
+    // supplies them the handler stays null and dispatch fails explicitly
+    // rather than fabricating an empty result.
+    if (imageLookupServices) {
+      this.imageLookupHandler = new ImageLookupHandler({
+        images: imageLookupServices.images,
+        findings: imageLookupServices.findings,
+        personaRepository: ctx.repos.persona,
+        personaLoader: ctx.personaLoader,
+        logger: ctx.logger,
       });
     }
   }
@@ -778,6 +827,17 @@ export class HostToolsBridge {
           context,
         );
 
+      case 'persona.task_cancel':
+        if (!this.personaTaskCancelHandler) {
+          return {
+            requestId: context.requestId ?? 'unknown',
+            tool,
+            status: 'error',
+            error: 'A2A task mapper not initialized',
+          };
+        }
+        return this.personaTaskCancelHandler.execute(args as unknown as PersonaTaskCancelArgs, context);
+
       case 'persona.list':
         return this.personaListHandler.execute({}, context);
 
@@ -822,6 +882,17 @@ export class HostToolsBridge {
           };
         }
         return this.executionEnvHandler.execute(args as unknown as ExecutionEnvArgs, context);
+
+      case 'image.lookup':
+        if (!this.imageLookupHandler) {
+          return {
+            requestId: context.requestId ?? 'unknown',
+            tool,
+            status: 'error',
+            error: 'Image lookup service not initialized',
+          };
+        }
+        return this.imageLookupHandler.execute(args as unknown as ImageLookupArgs, context);
 
       default:
         return {

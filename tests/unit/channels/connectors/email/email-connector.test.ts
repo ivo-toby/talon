@@ -318,14 +318,19 @@ describe('EmailConnector feedInbound()', () => {
     expect(received[0].senderId).toBe('alice@example.com');
   });
 
-  it('attaches the raw email as event.raw', async () => {
+  it('attaches the raw email (attachment-stripped defensive copy) as event.raw', async () => {
     const received: InboundEvent[] = [];
     connector.onMessage(async (e) => { received.push(e); });
 
     const email = makeEmail();
     await connector.feedInbound(email);
 
-    expect(received[0].raw).toBe(email);
+    // Raw carries the parsed metadata, but as a copy with the `attachments`
+    // field stripped: buffers travel ONLY in the explicit event `attachments`
+    // field and must never be reachable through `raw`.
+    expect(received[0].raw).not.toBe(email);
+    expect(received[0].raw).toEqual({ ...email, attachments: undefined });
+    expect(received[0].raw).not.toHaveProperty('attachments');
   });
 
   it('logs a warning but does not throw when no handler is registered', async () => {

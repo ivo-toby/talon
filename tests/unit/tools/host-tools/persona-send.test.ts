@@ -19,6 +19,7 @@ import type { A2ATaskMapper } from '../../../../src/a2a/a2a-task-mapper.js';
 import type { A2ATaskRow } from '../../../../src/a2a/a2a-types.js';
 import type { A2ATaskRepository } from '../../../../src/core/database/repositories/a2a-task-repository.js';
 import type { PersonaRepository, PersonaRow } from '../../../../src/core/database/repositories/persona-repository.js';
+import type { ResolvedCapabilities } from '../../../../src/personas/persona-types.js';
 import { A2AError } from '../../../../src/core/errors/error-types.js';
 
 function makeLogger() {
@@ -91,6 +92,7 @@ function makeTaskRow(overrides: Partial<A2ATaskRow> = {}): A2ATaskRow {
 
 function makeTaskMapper(): A2ATaskMapper {
   return {
+    cancelTask: vi.fn().mockReturnValue(ok(true)),
     submitTask: vi.fn().mockReturnValue(
       ok({
         taskId: 'task-123',
@@ -118,6 +120,8 @@ function makePersonaRepo(): PersonaRepository {
   } as unknown as PersonaRepository;
 }
 
+const allCaps = (): ResolvedCapabilities => ({ allow: ['persona.send:*'], requireApproval: [] });
+
 afterEach(() => {
   vi.useRealTimers();
 });
@@ -133,7 +137,7 @@ describe('PersonaSendHandler — success', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute(makeArgs(), makeContext());
 
@@ -171,6 +175,7 @@ describe('PersonaSendHandler — success', () => {
       );
 
     const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
       personaRepo,
@@ -203,6 +208,7 @@ describe('PersonaSendHandler — success', () => {
     );
 
     const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
       personaRepo,
@@ -235,7 +241,7 @@ describe('PersonaSendHandler — hop count propagation', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
 
     await handler.execute(makeArgs(), makeContext({ a2aHopCount: 0 }));
 
@@ -248,7 +254,7 @@ describe('PersonaSendHandler — hop count propagation', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
 
     await handler.execute(makeArgs(), makeContext({ a2aTaskId: 'parent-task-456' }));
 
@@ -270,6 +276,7 @@ describe('PersonaSendHandler — timeout and errors', () => {
     );
 
     const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
       taskMapper,
       taskRepo,
       personaRepo,
@@ -298,7 +305,7 @@ describe('PersonaSendHandler — timeout and errors', () => {
       err(new A2AError('Unknown target persona: ghost')),
     );
 
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute(makeArgs({ target_persona: 'ghost' }), makeContext());
 
@@ -310,7 +317,7 @@ describe('PersonaSendHandler — timeout and errors', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute(makeArgs({ message: '   ' }), makeContext());
 
@@ -323,7 +330,7 @@ describe('PersonaSendHandler — timeout and errors', () => {
     const taskMapper = makeTaskMapper();
     const taskRepo = makeTaskRepo();
     const personaRepo = makePersonaRepo();
-    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger() });
+    const handler = new PersonaSendHandler({ taskMapper, taskRepo, personaRepo, logger: makeLogger(), resolveCapabilities: allCaps });
 
     const result = await handler.execute(
       makeArgs({ await_reply: true, timeout_ms: 0 }),
@@ -333,5 +340,257 @@ describe('PersonaSendHandler — timeout and errors', () => {
     expect(result.status).toBe('error');
     expect(result.error).toMatch(/timeout_ms must be a positive integer/);
     expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+});
+
+const TIMEOUT_TEXT =
+  'Timed out waiting for delegated persona reply. The delegated task may still complete asynchronously. Use persona_task_status with this task_id to fetch the final result later.';
+
+describe('PersonaSendHandler — cancel_on_timeout', () => {
+  function setup(rowSequence: A2ATaskRow[] | null = null) {
+    vi.useFakeTimers();
+    const taskMapper = makeTaskMapper();
+    const taskRepo = makeTaskRepo();
+    const findById = taskRepo.findById as unknown as ReturnType<typeof vi.fn>;
+    findById.mockReturnValue(ok(makeTaskRow({ state: 'working' })));
+    if (rowSequence) {
+      for (const row of rowSequence) findById.mockReturnValueOnce(ok(row));
+    }
+    const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
+      taskMapper,
+      taskRepo,
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      maxWaitMs: 100,
+      pollIntervalMs: 10,
+    });
+    return { taskMapper, taskRepo, handler };
+  }
+
+  it('cancels the task and returns canceled when the wait times out', async () => {
+    const { taskMapper, handler } = setup();
+    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+
+    expect(taskMapper.cancelTask).toHaveBeenCalledWith('task-123', 'await_reply timed out');
+    expect(result.status).toBe('success');
+    expect(result.result).toMatchObject({ task_id: 'task-123', state: 'canceled' });
+    expect((result.result as { error: string }).error).toMatch(/canceled/);
+  });
+
+  it('returns the real terminal output when cancelTask reports it already finished', async () => {
+    const { taskMapper, taskRepo, handler } = setup();
+    (taskMapper.cancelTask as unknown as ReturnType<typeof vi.fn>).mockReturnValue(ok(false));
+    const findById = taskRepo.findById as unknown as ReturnType<typeof vi.fn>;
+    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(95);
+    findById.mockReturnValue(
+      ok(makeTaskRow({ state: 'completed', result_payload: JSON.stringify({ text: 'late result' }) })),
+    );
+    await vi.advanceTimersByTimeAsync(10);
+    const result = await p;
+
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'late result' });
+  });
+
+  it('notes the cancel failure in the timeout output when cancelTask errors', async () => {
+    const { taskMapper, handler } = setup();
+    (taskMapper.cancelTask as unknown as ReturnType<typeof vi.fn>).mockReturnValue(
+      err(new A2AError('db locked')),
+    );
+    const p = handler.execute(makeArgs({ await_reply: true, cancel_on_timeout: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+
+    expect(result.status).toBe('success');
+    expect(result.result).toMatchObject({ task_id: 'task-123', state: 'timeout' });
+    expect((result.result as { error: string }).error).toContain(TIMEOUT_TEXT);
+    expect((result.result as { error: string }).error).toMatch(/db locked/);
+  });
+
+  it('does not cancel by default', async () => {
+    const { taskMapper, handler } = setup();
+    const p = handler.execute(makeArgs({ await_reply: true }), makeContext());
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await p;
+
+    expect(taskMapper.cancelTask).not.toHaveBeenCalled();
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'timeout', error: TIMEOUT_TEXT });
+  });
+
+  it('does not cancel when the task completes before the timeout', async () => {
+    const { taskMapper, handler } = setup([
+      makeTaskRow({ state: 'completed', result_payload: JSON.stringify({ text: 'ok' }) }),
+    ]);
+    const result = await handler.execute(
+      makeArgs({ await_reply: true, cancel_on_timeout: true }),
+      makeContext(),
+    );
+    expect(taskMapper.cancelTask).not.toHaveBeenCalled();
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'ok' });
+  });
+
+  it('rejects a non-boolean cancel_on_timeout before submitting', async () => {
+    const taskMapper = makeTaskMapper();
+    const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
+      taskMapper,
+      taskRepo: makeTaskRepo(),
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+    });
+    const result = await handler.execute(
+      makeArgs({ await_reply: true, cancel_on_timeout: 'yes' as unknown as boolean }),
+      makeContext(),
+    );
+    expect(result.status).toBe('error');
+    expect(result.error).toMatch(/cancel_on_timeout must be a boolean/);
+    expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('includes the stored reason when the awaited task is already canceled', async () => {
+    const { handler } = setup([makeTaskRow({ state: 'canceled', error_message: 'canceled by operator' })]);
+    const result = await handler.execute(makeArgs({ await_reply: true }), makeContext());
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'canceled', error: 'canceled by operator' });
+  });
+});
+
+describe('PersonaSendHandler — waitScope', () => {
+  it('wraps only the polling, not submission, and passes the context', async () => {
+    const order: string[] = [];
+    const taskMapper = makeTaskMapper();
+    (taskMapper.submitTask as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push('submit');
+      return ok({ taskId: 'task-123', state: 'submitted' });
+    });
+    const taskRepo = makeTaskRepo();
+    (taskRepo.findById as unknown as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      order.push('poll');
+      return ok(makeTaskRow({ state: 'completed', result_payload: JSON.stringify({ text: 'done' }) }));
+    });
+    const waitScope = vi.fn(async (fn: () => Promise<unknown>) => {
+      order.push('scope-start');
+      try {
+        return await fn();
+      } finally {
+        order.push('scope-end');
+      }
+    });
+    const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
+      taskMapper,
+      taskRepo,
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      waitScope: waitScope as never,
+    });
+    const ctx = makeContext();
+
+    const result = await handler.execute(makeArgs({ await_reply: true }), ctx);
+
+    expect(order).toEqual(['submit', 'scope-start', 'poll', 'scope-end']);
+    expect(waitScope).toHaveBeenCalledWith(expect.any(Function), ctx);
+    expect(result.result).toEqual({ task_id: 'task-123', state: 'completed', result: 'done' });
+  });
+
+  it('is not used for fire-and-forget sends', async () => {
+    const waitScope = vi.fn();
+    const handler = new PersonaSendHandler({
+      resolveCapabilities: allCaps,
+      taskMapper: makeTaskMapper(),
+      taskRepo: makeTaskRepo(),
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      waitScope: waitScope as never,
+    });
+    await handler.execute(makeArgs(), makeContext());
+    expect(waitScope).not.toHaveBeenCalled();
+  });
+});
+
+describe('PersonaSendHandler — persona.send scopes', () => {
+  function build(caps: ResolvedCapabilities) {
+    const taskMapper = makeTaskMapper();
+    const resolveCapabilities = vi.fn().mockReturnValue(caps);
+    const handler = new PersonaSendHandler({
+      taskMapper,
+      taskRepo: makeTaskRepo(),
+      personaRepo: makePersonaRepo(),
+      logger: makeLogger(),
+      resolveCapabilities,
+    });
+    return { taskMapper, resolveCapabilities, handler };
+  }
+
+  it('allows a target named by a scoped label', async () => {
+    const { taskMapper, handler, resolveCapabilities } = build({
+      allow: ['persona.send:researcher'],
+      requireApproval: [],
+    });
+
+    const result = await handler.execute(makeArgs({ target_persona: 'researcher' }), makeContext());
+
+    expect(result.status).toBe('success');
+    expect(taskMapper.submitTask).toHaveBeenCalledTimes(1);
+    // Capabilities are resolved from the trusted context persona, never from args.
+    expect(resolveCapabilities).toHaveBeenCalledWith('persona-001');
+  });
+
+  it('rejects a target outside the scoped labels before submitting, naming the allowed targets', async () => {
+    const { taskMapper, handler } = build({
+      allow: ['persona.send:researcher', 'persona.send:coder'],
+      requireApproval: [],
+    });
+
+    const result = await handler.execute(makeArgs({ target_persona: 'admin' }), makeContext());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('"admin"');
+    expect(result.error).toContain('Allowed targets: coder, researcher.');
+    expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('allows several scoped targets', async () => {
+    const { taskMapper, handler } = build({
+      allow: ['persona.send:researcher'],
+      requireApproval: ['persona.send:coder'],
+    });
+
+    expect((await handler.execute(makeArgs({ target_persona: 'researcher' }), makeContext())).status).toBe('success');
+    expect((await handler.execute(makeArgs({ target_persona: 'coder' }), makeContext())).status).toBe('success');
+    expect(taskMapper.submitTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('allows any target with persona.send:* and with an unscoped persona.send', async () => {
+    for (const label of ['persona.send:*', 'persona.send']) {
+      const { taskMapper, handler } = build({ allow: [label], requireApproval: [] });
+      const result = await handler.execute(makeArgs({ target_persona: 'anyone' }), makeContext());
+      expect(result.status).toBe('success');
+      expect(taskMapper.submitTask).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('fails closed when the caller has no persona.send label', async () => {
+    const { taskMapper, handler } = build({ allow: [], requireApproval: [] });
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('Allowed targets: none.');
+    expect(taskMapper.submitTask).not.toHaveBeenCalled();
+  });
+
+  it('uses the capabilities of the persona in the context on A2A hops', async () => {
+    const { resolveCapabilities, handler } = build({ allow: ['persona.send:coder'], requireApproval: [] });
+
+    const result = await handler.execute(
+      makeArgs({ target_persona: 'researcher' }),
+      makeContext({ personaId: 'delegated-persona', a2aHopCount: 1, a2aTaskId: 'parent-task' }),
+    );
+
+    expect(result.status).toBe('error');
+    expect(resolveCapabilities).toHaveBeenCalledWith('delegated-persona');
   });
 });

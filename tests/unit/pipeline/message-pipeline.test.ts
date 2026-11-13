@@ -543,4 +543,146 @@ describe('MessagePipeline', () => {
       expect(result._unsafeUnwrapErr().code).toBe('PIPELINE_ERROR');
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Image ingestion path (coordinator injected)
+  // -------------------------------------------------------------------------
+
+  describe('image ingestion path', () => {
+    const imageAttachment = {
+      filename: 'a.png',
+      mimeType: 'image/png',
+      data: Buffer.from('BYTES'),
+      size: 5,
+    };
+
+    let ingestion: { ingestMessage: ReturnType<typeof vi.fn> };
+    let imgPipeline: MessagePipeline;
+
+    beforeEach(() => {
+      ingestion = { ingestMessage: vi.fn() };
+      imgPipeline = new MessagePipeline(
+        mocks.messageRepo,
+        mocks.threadRepo,
+        mocks.channelRepo,
+        mocks.queueManager,
+        mocks.router,
+        mocks.auditLogger,
+        silentLogger(),
+        ingestion as unknown as import('../../../src/images/image-ingestion.js').ImageIngestionService,
+      );
+      vi.mocked(mocks.channelRepo.findByName).mockReturnValue(ok(makeChannelRow()));
+      vi.mocked(mocks.threadRepo.findByExternalId).mockReturnValue(ok(makeThreadRow()));
+      vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok('persona-uuid-1'));
+    });
+
+    it('delegates image-bearing events to the coordinator and bypasses the text writes', async () => {
+      ingestion.ingestMessage.mockResolvedValue(ok('enqueued'));
+
+      const result = await imgPipeline.handleInboundEvent(
+        makeEvent({ attachments: [imageAttachment] }),
+      );
+
+      expect(result._unsafeUnwrap()).toBe('enqueued');
+      expect(ingestion.ingestMessage).toHaveBeenCalledTimes(1);
+      const request = ingestion.ingestMessage.mock.calls[0][0];
+      expect(request.channelId).toBe('chan-uuid-1');
+      expect(request.channelName).toBe('test-bot');
+      expect(request.externalMessageId).toBe('idempotency-key-001');
+      expect(request.externalChatId).toBe('ext-thread-001');
+      expect(request.threadId).toBe('thread-uuid-1');
+      expect(request.personaId).toBe('persona-uuid-1');
+      expect(request.attachments).toHaveLength(1);
+      expect(request.message.content).toBe('Hello pipeline!');
+      // The request carries no queue-payload view: completion payloads are
+      // rebuilt by the coordinator from the committed Message row and the
+      // route persisted with the Ingestion.
+      expect(request.queuePayload).toBeUndefined();
+      // The text path must stay fully bypassed for image events.
+      expect(mocks.messageRepo.existsByIdempotencyKey).not.toHaveBeenCalled();
+      expect(mocks.messageRepo.insert).not.toHaveBeenCalled();
+      expect(mocks.queueManager.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('does not involve the coordinator for text-only events', async () => {
+      vi.mocked(mocks.messageRepo.existsByIdempotencyKey).mockReturnValue(false);
+      vi.mocked(mocks.messageRepo.insert).mockReturnValue(ok(makeMessageRow()));
+      vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
+
+      const result = await imgPipeline.handleInboundEvent(makeEvent());
+
+      expect(result._unsafeUnwrap()).toBe('enqueued');
+      expect(ingestion.ingestMessage).not.toHaveBeenCalled();
+    });
+
+    it('keeps the plain text path when no coordinator is injected', async () => {
+      vi.mocked(mocks.messageRepo.existsByIdempotencyKey).mockReturnValue(false);
+      vi.mocked(mocks.messageRepo.insert).mockReturnValue(ok(makeMessageRow()));
+      vi.mocked(mocks.queueManager.enqueue).mockReturnValue(ok(makeQueueItem()));
+
+      const result = await pipeline.handleInboundEvent(
+        makeEvent({ attachments: [imageAttachment] }),
+      );
+
+      expect(result._unsafeUnwrap()).toBe('enqueued');
+      expect(mocks.messageRepo.insert).toHaveBeenCalled();
+      expect(mocks.queueManager.enqueue).toHaveBeenCalled();
+    });
+
+    it('maps no_persona with the audit record and passes personaId null', async () => {
+      vi.mocked(mocks.router.resolvePersona).mockReturnValue(ok(null));
+      ingestion.ingestMessage.mockResolvedValue(ok('no_persona'));
+
+      const result = await imgPipeline.handleInboundEvent(
+        makeEvent({ attachments: [imageAttachment] }),
+      );
+
+      expect(result._unsafeUnwrap()).toBe('no_persona');
+      expect(ingestion.ingestMessage.mock.calls[0][0].personaId).toBeNull();
+      expect(imgPipeline.stats().noPersona).toBe(1);
+      expect(mocks.auditLogger.logChannelSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          threadId: 'thread-uuid-1',
+          action: 'pipeline.message.dropped',
+          details: expect.objectContaining({ reason: 'no_persona' }),
+        }),
+      );
+    });
+
+    it('maps the duplicate outcome to the duplicate counter', async () => {
+      ingestion.ingestMessage.mockResolvedValue(ok('duplicate'));
+
+      const result = await imgPipeline.handleInboundEvent(
+        makeEvent({ attachments: [imageAttachment] }),
+      );
+
+      expect(result._unsafeUnwrap()).toBe('duplicate');
+      expect(imgPipeline.stats().duplicates).toBe(1);
+    });
+
+    it('propagates coordinator failures as PipelineError and counts an error', async () => {
+      ingestion.ingestMessage.mockResolvedValue(err(new PipelineError('ingestion exploded')));
+
+      const result = await imgPipeline.handleInboundEvent(
+        makeEvent({ attachments: [imageAttachment] }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(result._unsafeUnwrapErr().message).toContain('ingestion exploded');
+      expect(imgPipeline.stats().errors).toBe(1);
+    });
+
+    it('reports persona resolution failures before consulting the coordinator', async () => {
+      vi.mocked(mocks.router.resolvePersona).mockReturnValue(
+        err(new ChannelError('binding lookup failed')),
+      );
+
+      const result = await imgPipeline.handleInboundEvent(
+        makeEvent({ attachments: [imageAttachment] }),
+      );
+
+      expect(result.isErr()).toBe(true);
+      expect(ingestion.ingestMessage).not.toHaveBeenCalled();
+    });
+  });
 });

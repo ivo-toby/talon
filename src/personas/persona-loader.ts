@@ -19,6 +19,7 @@ import { PersonaError } from '../core/errors/index.js';
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
 import type { PersonaConfig } from '../core/config/config-types.js';
 import { mergeCapabilities, validateCapabilityLabels } from './capability-merger.js';
+import { unknownDelegationTargets } from './persona-delegation.js';
 import { PersonaFrontmatterSchema } from './persona-schema.js';
 import type { LoadedPersona, ResolvedCapabilities } from './persona-types.js';
 
@@ -69,6 +70,18 @@ export class PersonaLoader {
         return err(result.error);
       }
       loaded.push(result.value);
+    }
+
+    // Cross-persona check: a scoped `persona.send:<name>` that names no
+    // configured persona can never match. Warn only, like label validation.
+    const knownNames = new Set(configs.map((c) => c.name));
+    for (const persona of loaded) {
+      for (const unknown of unknownDelegationTargets(persona.resolvedCapabilities, knownNames)) {
+        this.logger.warn(
+          { persona: persona.config.name, target: unknown },
+          `Capability "persona.send:${unknown}" names an unknown persona; it will never match`,
+        );
+      }
     }
 
     return ok(loaded);

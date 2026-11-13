@@ -9,3 +9,8 @@
 
 export { WhatsAppBaileysConnector } from './whatsapp-baileys-connector.js';
 export type { WhatsAppBaileysConfig } from './whatsapp-baileys-types.js';
+export type {
+  BaileysImageIngestOptions,
+  BaileysMediaOpener,
+  BaileysMediaTransferFetch,
+} from './whatsapp-baileys-images.js';

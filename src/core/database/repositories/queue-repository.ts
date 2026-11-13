@@ -232,6 +232,46 @@ export class QueueRepository extends BaseRepository {
     }
   }
 
+  /**
+   * Puts a claimed item back to 'pending' with a retry time WITHOUT consuming
+   * an attempt. Used for deferrals (e.g. A2A admission wait). Never dead-letters.
+   * Returns Ok(true) if the item was deferred (it must currently be claimed/processing).
+   */
+  defer(id: string, nextRetryAt: number): Result<boolean, DbError> {
+    try {
+      const result = this.db
+        .prepare(
+          `UPDATE queue_items
+           SET status = 'pending', next_retry_at = @next_retry_at, claimed_at = NULL, updated_at = @now
+           WHERE id = @id AND status IN ('claimed', 'processing')`,
+        )
+        .run({ id, next_retry_at: nextRetryAt, now: this.now() });
+      return ok(result.changes > 0);
+    } catch (cause) {
+      return err(new DbError(`Failed to defer queue item: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
+  /**
+   * Cancels an item that has not been claimed yet: if it is 'pending' or
+   * 'failed' (awaiting retry) it is marked 'completed' with error 'canceled'
+   * so it is never dispatched. Returns Ok(true) if it changed.
+   */
+  cancelPending(id: string): Result<boolean, DbError> {
+    try {
+      const result = this.db
+        .prepare(
+          `UPDATE queue_items
+           SET status = 'completed', error = 'canceled', next_retry_at = NULL, updated_at = @now
+           WHERE id = @id AND status IN ('pending', 'failed')`,
+        )
+        .run({ id, now: this.now() });
+      return ok(result.changes > 0);
+    } catch (cause) {
+      return err(new DbError(`Failed to cancel queue item: ${String(cause)}`, cause instanceof Error ? cause : undefined));
+    }
+  }
+
   /** Moves a queue item directly to dead_letter state. */
   markDeadLetter(id: string, errorMessage: string): Result<void, DbError> {
     try {

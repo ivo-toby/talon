@@ -44,6 +44,14 @@ import {
 export interface SubAgentInvokeContext {
   threadId: string;
   personaId: string;
+  /**
+   * Trusted run identity from the host-tool `ToolExecutionContext`.
+   * Callers pass it through verbatim; it must never be sourced from
+   * model-authored tool arguments and the runner never guesses an active
+   * run. Optional so existing subagents keep working; run-provenance
+   * consumers (vision Findings) reject its absence themselves.
+   */
+  runId?: string;
   personaSubagents: string[];
   personaCapabilities: ResolvedCapabilities;
   traceparent?: string;
@@ -189,6 +197,7 @@ export class SubAgentRunner {
       createContext: ({ model, entry, abortSignal, providerOptions }) => ({
         threadId: ctx.threadId,
         personaId: ctx.personaId,
+        runId: ctx.runId,
         systemPrompt,
         model,
         maxOutputTokens: entry.maxTokens,

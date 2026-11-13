@@ -1,0 +1,37 @@
+{
+  "findings": [
+    {
+      "code": "enumerated_domains",
+      "message": "TASK-012 lists 5 individual files under src/subagents/ \u2014 consider the glob src/subagents/** unless another task must write there concurrently.",
+      "severity": "warning",
+      "task": "TASK-012"
+    },
+    {
+      "code": "coarse_domain",
+      "message": "domain 'src/daemon/daemon*.ts' on TASK-010 overlaps 3 other tasks \u2014 it will serialize them all; narrow it to what the task actually writes.",
+      "severity": "warning",
+      "task": "TASK-010"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `src/images/**` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `src/channels/*.ts` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `src/tools/host-tools/*.ts` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `tests/unit/**` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    }
+  ],
+  "strict": false
+}

@@ -1,0 +1,82 @@
+{
+  "approvedBy": "Ivo",
+  "base": {
+    "action": "created",
+    "baseRef": "wdd/image-processing",
+    "baseSha": "dcb64620ca310c5e4baf230100c8166b6c16d84d",
+    "from": "feat/image-processing"
+  },
+  "created": true,
+  "diff": {
+    "added": [
+      "TASK-001",
+      "TASK-002",
+      "TASK-003",
+      "TASK-004",
+      "TASK-005",
+      "TASK-006",
+      "TASK-007",
+      "TASK-008",
+      "TASK-009",
+      "TASK-010",
+      "TASK-011",
+      "TASK-012",
+      "TASK-013",
+      "TASK-014",
+      "TASK-015",
+      "TASK-016",
+      "TASK-017",
+      "TASK-018",
+      "TASK-019",
+      "TASK-020",
+      "TASK-021"
+    ],
+    "removed": [],
+    "scope": {
+      "baseRef": "wdd/image-processing",
+      "id": "SCOPE-image-processing",
+      "maxConcurrent": 3,
+      "reconcileEveryNMerges": 3,
+      "reviewPolicy": "always"
+    },
+    "updated": []
+  },
+  "dryRun": false,
+  "duplicate": false,
+  "lint": [
+    {
+      "code": "enumerated_domains",
+      "message": "TASK-012 lists 5 individual files under src/subagents/ \u2014 consider the glob src/subagents/** unless another task must write there concurrently.",
+      "severity": "warning",
+      "task": "TASK-012"
+    },
+    {
+      "code": "coarse_domain",
+      "message": "domain 'src/daemon/daemon*.ts' on TASK-010 overlaps 3 other tasks \u2014 it will serialize them all; narrow it to what the task actually writes.",
+      "severity": "warning",
+      "task": "TASK-010"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `src/images/**` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `src/channels/*.ts` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `src/tools/host-tools/*.ts` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    },
+    {
+      "code": "unowned_surface",
+      "message": "design.md lists integration surface `tests/unit/**` but no task's conflictDomains cover it \u2014 a surface with producers and no owning task is a design error.",
+      "severity": "warning"
+    }
+  ],
+  "revision": 9,
+  "scope": "SCOPE-image-processing"
+}
