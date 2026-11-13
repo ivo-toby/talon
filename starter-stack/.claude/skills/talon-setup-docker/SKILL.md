@@ -111,6 +111,7 @@ installed `talonctl` if `./install.sh` has been run):
 | `talonctl list-channels` | Configured channels |
 | `talonctl add-channel --name <n> --type <t>` | Add a channel |
 | `talonctl remove-channel --name <n>` | Remove a channel |
+| `talonctl signal-resume --channel <n> --external-challenge-resolved` | Verify an externally resolved Signal challenge (never sends or replays) |
 | `talonctl list-personas` | Configured personas |
 | `talonctl add-persona --name <n>` | Scaffold a persona dir + add to config |
 | `talonctl remove-persona --name <n>` | Remove a persona |
@@ -180,6 +181,7 @@ which env var the user needs to fill:
 | WhatsApp Baileys | (no env, uses QR-code auth at first boot) |
 | Email | IMAP/SMTP credentials (see add-email skill) |
 | Terminal | `TERMINAL_TOKEN` (just `talonctl chat`) |
+| Signal | No env var. Socket-based: the signal-cli bridge runs on the host and the container mounts only its private socket directory (see `/add-signal`, Docker variant) |
 
 Plus the provider env from step 1 (e.g. `ANTHROPIC_API_KEY` for Claude).
 The image includes GitHub CLI (`gh`). If the user wants authenticated GitHub
@@ -306,6 +308,11 @@ Once boot is verified, anything else uses `talonctl`:
 
 - **Add another channel** — invoke the matching channel skill (`/add-slack`,
   `/add-discord`, etc.) OR `talonctl add-channel` directly.
+- **Signal** — invoke `/add-signal`. In the Docker bundle the signal-cli bridge stays
+  on the host (version 0.14.9, operator-supervised), and the `talond` service gets one
+  extra bind mount of the private socket *directory*. Never mount the signal-cli data
+  or key directory, and the container gets no signal-cli authority. Text only. Recreate
+  the container with `docker compose up -d talond` after the mount change.
 - **Add another persona** — `talonctl add-persona --name <n>`, then edit
   the generated `personas/<name>/system.md`.
 - **Bind persona ↔ channel** — `talonctl bind --persona <p> --channel <c>`.
@@ -319,6 +326,32 @@ Once boot is verified, anything else uses `talonctl`:
 - **Add MCP servers** — `talonctl add-mcp …`. Pre-built MCP servers for
   Atlassian, Gmail, Slack, etc. are documented in
   `starter/docs/troubleshooting.md` and the upstream MCP server registry.
+
+When an MCP server returns large results or makes slow calls, add per-server
+limits with `--timeout-ms` (integer ≥ 1000; omitted → Mastra 60 000 ms default;
+outer query timeout still wins) and `--tool-output-cap` (integer ≥ 0; `0`
+disables excerpting for that server only; precedence: server > provider >
+4 000; provider-level `0` disables only the fallback). These are stored under
+`config` in the skill's MCP JSON as `timeoutMs` / `toolOutputCap`. Only the
+Mastra / OpenAI-compatible provider honors them; native Claude, Gemini, and
+Codex CLI runs omit the metadata, so the limits have no effect there. They
+bound MCP model-history injection, not network bytes: when any effective MCP
+cap is positive, MCP results (also zero-cap servers) stay in a run-local
+in-memory store retrievable via `fetch_tool_output` in up to 8 000
+content-character slices (framing additional) when available — a discovered
+MCP tool that already owns that reserved name takes it and the synthetic
+recovery is skipped; with all effective MCP caps at `0` no wrapper/recovery
+is injected. Built-in file/shell tools are unchanged.
+For an existing server, edit only the two numeric keys under `config` in the
+mounted skill JSON directly (preserving name/URL/transport/headers/env/auth)
+— `add-mcp` rejects duplicate names. The repository Glean definition
+(`skills/glean/mcp/glean.json`) pre-sets `timeoutMs: 180000` /
+`toolOutputCap: 12000`, but that file is git-ignored and NOT packaged in the
+Docker image or either starter bundle; a rebuild does not update a Glean JSON
+you already copied into your mounted `skills/` tree. Add or replace the two
+keys under `config` in your existing copy (preserve your real URL/auth); any
+release claiming bundled Glean limit defaults is a release blocker until
+packaging bundles the skill.
 
 Each mutation modifies `config/talond.yaml`. The daemon **does not
 auto-reload** — after a mutation, tell the user to apply it:
