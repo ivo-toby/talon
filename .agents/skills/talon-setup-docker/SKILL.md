@@ -357,26 +357,8 @@ network namespace as `talond`, or configure `voice.host` with a reachable
 container interface or `0.0.0.0` and restrict the published network path.
 Preserve `Host` and `Origin` and send `X-Forwarded-Proto: https`. Run
 `talonctl doctor` after the config change and open
-`https://<publicHost>/voice/`. Incoming SIP is a separate disabled-by-default
-boundary; when enabled it accepts the existing provider-created GPT-Live
-session after independent caller proof and uses the same backend queue. It
-requires an explicit operator decision and an authenticated Asterisk setup
-described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
-This setup skill does not install a PBX, provision keys or trunks, or place a
-paid call.
-
-If the transport choice is not already specified, ask separately: **"Do you
-want to enable the incoming SIP boundary now?"** Continue only for an explicit
-choice. Follow the guide's ordered
-steps for the provider-assigned PJSIP contact, Ed25519 signer and permissions,
-server-owned endpoint mapping, separate webhook/live-provider secrets, proxy
-routes to the two listeners, local echo, media/NAT checks, and one bounded
-provider test. The Docker bundle does not contain a working PBX or provider
-trunk; do not invent provider domains or credentials. Keep the signer private
-key and Asterisk environment outside the Talon container unless the operator
-has deliberately designed that deployment boundary. The linked guide shows
-`npx talonctl` for a source checkout; in this Docker bundle use the host
-`talonctl` wrapper and its configured container path instead.
+`https://<publicHost>/voice/`. Physical-phone and paid live-provider
+verification remain separate acceptance steps.
 
 The browser login form leaves `Keep me signed in for one year` unchecked. The
 default omitted/false `rememberMe` value keeps a fixed 15-minute grant; the

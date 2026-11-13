@@ -12,7 +12,6 @@ import { QueueManager } from '../../../../src/queue/queue-manager.js';
 import { DurableVoiceBackendBridge } from '../../../../src/voice/voice-backend-bridge.js';
 import { VoiceOutputSink } from '../../../../src/voice/voice-output-sink.js';
 import { DurableVoiceStore } from '../../../../src/voice/voice-store.js';
-import { SipTransport } from '../../../../src/voice/transports/sip/sip-transport.js';
 import { VoicePolicy } from '../../../../src/voice/voice-policy.js';
 import { createVoiceAdapterSelection } from '../../../../src/voice/voice-adapters.js';
 import {
@@ -171,23 +170,6 @@ class FakeProvider implements LiveVoiceProvider {
   closeSession(_providerSessionId: string) {
     this.closeCount += 1;
     return Promise.resolve(ok(undefined));
-  }
-
-  acceptIncomingSession(
-    input: import('../../../../src/voice/voice-types.js').LiveVoiceIncomingSessionRequest,
-  ) {
-    return Promise.resolve(
-      ok({
-        providerSessionId: input.providerSessionId,
-        client: {
-          transport: 'sip' as const,
-          sessionId: input.sessionId,
-          providerSessionId: input.providerSessionId,
-          answer: { type: 'sip' as const, reference: input.providerSessionId },
-          expiresAt: input.sessionExpiresAt,
-        },
-      } satisfies LiveVoiceSession),
-    );
   }
 }
 
@@ -379,8 +361,6 @@ interface HarnessOptions {
   liveModel?: string;
   usdPerMinute?: number;
   isOwnerActive?: (owner: { ownerId: string; loginRevision: number }) => boolean;
-  incomingTransport?: VoiceTransport;
-  isIncomingOwnerActive?: (owner: { ownerId: string; loginRevision: number }, providerSessionId: string) => boolean;
   logger?: pino.Logger;
 }
 
@@ -417,10 +397,6 @@ function createHarness(options: HarnessOptions = {}): FakeVoiceHarness | Provide
     options.transport ?? new BrowserVoiceTransport({ now: () => 20 });
   const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
   if (adapterSelection.isErr()) throw adapterSelection.error;
-  const incomingAdapterSelection = options.incomingTransport
-    ? createVoiceAdapterSelection({ transport: options.incomingTransport, engine: provider })
-    : undefined;
-  if (incomingAdapterSelection?.isErr()) throw incomingAdapterSelection.error;
   const policy = new VoicePolicy({
     providerTypes: new Map([['agent-provider', 'openai-compatible']]),
   });
@@ -458,19 +434,6 @@ function createHarness(options: HarnessOptions = {}): FakeVoiceHarness | Provide
     capturePolicy,
     currentPolicy: () => capturePolicy(),
     isOwnerActive: options.isOwnerActive,
-    ...(options.incomingTransport
-      ? { transports: new Map([['sip' as const, options.incomingTransport]]) }
-      : {}),
-    ...(incomingAdapterSelection?.isOk()
-      ? { adapterSelections: new Map([['sip' as const, incomingAdapterSelection.value]]) }
-      : {}),
-    isIncomingOwnerActive: options.isIncomingOwnerActive,
-    ...(options.incomingTransport
-      ? {
-          onIncomingAccepted: () => ok(true),
-          onIncomingClosed: () => undefined,
-        }
-      : {}),
     adapterSelection: adapterSelection.value,
     usdPerMinute: options.usdPerMinute,
     logger: options.logger,
@@ -1641,52 +1604,6 @@ describe('browser voice lifecycle composition', () => {
       ]),
     );
     active = true;
-    await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
-  });
-
-  it('suppresses SIP result speech after the incoming provider authority expires', async () => {
-    let incomingActive = true;
-    const provider = new FakeProvider('provider-sip-session');
-    const harness = createHarness({
-      provider,
-      incomingTransport: new SipTransport({ now: () => 20 }),
-      isIncomingOwnerActive: (_owner, providerSessionId) =>
-        incomingActive && providerSessionId === 'provider-sip-session',
-    });
-    db = harness.db;
-    const accepted = await harness.service.acceptIncomingSession({
-      owner: harness.owner,
-      callId: 'incoming-call-1',
-      providerSessionId: 'provider-sip-session',
-      personaId: 'persona-1',
-      admissionExpiresAt: Date.now() + 60_000,
-    });
-    expect(accepted.isOk()).toBe(true);
-    const sessionId = accepted._unsafeUnwrap().session.id;
-    await harness.service.receiveProviderEvent({
-      sessionId,
-      providerSessionId: 'provider-sip-session',
-      event: {
-        kind: 'delegation',
-        eventId: 'event-sip-authority-result',
-        sequence: 1,
-        proposal: { providerDelegationId: 'provider-sip-authority', offsetMs: 0, receivedAt: 30 },
-      },
-    });
-    const admitted = harness.store.readSession(sessionId)._unsafeUnwrap();
-    const delegationId = admitted?.delegations[0]?.id;
-    expect(delegationId).toBeDefined();
-
-    incomingActive = false;
-    const final = harness.sink.final(delegationId!, 'The expired SIP result is retained.', 40);
-    expect(final.isOk()).toBe(true);
-    await waitFor(() => {
-      const projection = harness.store.readSession(sessionId);
-      return projection.isOk() && projection.value?.outputs.some(
-        (output) => output.text === 'The expired SIP result is retained.',
-      );
-    });
-    expect(provider.sideband.commands).not.toContain('The expired SIP result is retained.');
     await harness.service.closeSession(harness.owner, sessionId, { reason: 'hangup' });
   });
 

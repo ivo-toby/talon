@@ -361,25 +361,12 @@ namespace, set `voice.host` to a reachable interface address or `0.0.0.0` and
 restrict network access. Preserve `Host` and `Origin`, send
 `X-Forwarded-Proto: https`, set `publicHost` to the public hostname, then run
 `npx talonctl doctor --config talond.yaml` and open
-`https://<publicHost>/voice/`. Incoming SIP is a separate disabled-by-default
-boundary; when enabled it accepts the existing provider-created GPT-Live
-session after independent caller proof and uses the same backend queue. The
-webhook delivery ID and body event ID are independent; an OpenAI dashboard
-test without Asterisk caller proof is still rejected and does not start a call. It
-requires an explicit operator decision and an authenticated Asterisk setup
-described in the [incoming SIP guide](../../../docs/guides/voice-asterisk.mdx).
-This setup skill does not install a PBX, provision keys or trunks, or place a
-paid call.
+`https://<publicHost>/voice/`. Physical-phone and live paid-provider
+verification are separate acceptance steps.
 
-If the transport choice is not already specified, ask separately: **"Do you
-want to enable the incoming SIP boundary now?"** Continue only for an explicit
-choice. Follow the guide's ordered
-steps for the provider-assigned PJSIP contact, Ed25519 signer and permissions,
-server-owned endpoint mapping, separate webhook/live-provider secrets, proxy
-routes, local echo, media/NAT checks, and one bounded provider test. Do not
-invent provider domains or credentials. Use the deployment's actual config
-path; the CLI default is `talond.yaml` (or `TALOND_CONFIG_PATH`), while
-`config/talond.example.yaml` is only a repository example.
+Use the deployment's actual config path; the CLI default is `talond.yaml` (or
+`TALOND_CONFIG_PATH`), while `config/talond.example.yaml` is only a repository
+example.
 
 Voice backend failures keep the user-facing error generic. For troubleshooting,
 inspect the failed run’s `error` field: when available it includes only allowlisted
