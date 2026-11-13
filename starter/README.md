@@ -63,7 +63,7 @@ claude
 Then in Claude Code:
 
 - `/talon-setup-docker` — top-level guided setup (docker-aware)
-- `/add-telegram`, `/add-slack`, `/add-discord`, `/add-whatsapp`, `/add-email`, `/add-terminal` — add channels
+- `/add-telegram`, `/add-slack`, `/add-discord`, `/add-whatsapp`, `/add-signal`, `/add-email`, `/add-terminal` — add channels
 - `/create-profile` — create a new persona
 - `/create-personality` — customize a persona's voice and tone
 - `/manage-schedules` — set up scheduled agent runs
@@ -158,6 +158,29 @@ enabled; do not run a `codex-runner` Node process on the host.
 
 Add a `codex-sandbox` sub-agent model override as shown in the main
 [Subscription-backed sub-agents guide](https://github.com/ivo-toby/talon/blob/main/README.md#subscription-backed-sub-agents), then restart `talond`.
+
+## Signal (optional, operator-run bridge)
+
+Talon connects to Signal through a [signal-cli](https://github.com/AsamK/signal-cli)
+**0.14.9** bridge that you run and supervise on the host. Talon does not install,
+register, link, or start any Signal service, and the bundle has no signal-cli
+container. The `/add-signal` skill walks through the account setup.
+
+The bridge's private socket directory is the only Signal path the container may
+see. Do not mount the signal-cli key or data directory, and do not install
+signal-cli in the image. The container gets no signal-cli authority.
+
+Socket rules Talon checks before every connection:
+
+- The socket's parent directory is exactly `0700` and owned by your user.
+- The socket is owned by your user and is `0600` or `0700`. Any group or other
+  bit is refused as `UNTRUSTED_SOCKET`.
+
+The bundled `docker-compose.yaml` does not mount the socket. To give the
+`talond` container access, add a bind mount of the private directory to the
+`talond` service's `volumes`, then recreate the container with
+`docker compose up -d talond`. The `/add-signal` skill has the exact snippet and
+the verification steps.
 
 ## Sharing files with the agent
 

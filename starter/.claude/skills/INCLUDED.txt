@@ -13,6 +13,7 @@ add-telegram
 add-slack
 add-discord
 add-whatsapp
+add-signal
 add-email
 add-terminal
 
