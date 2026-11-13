@@ -151,7 +151,7 @@ function buildSignalDependencies(
  *
  * For each enabled channel:
  * 1. Creates a connector instance via the channel factory
- * 2. Ensures a channel row exists in the database
+ * 2. Ensures a channel row exists in the database and its stored config matches the current config
  * 3. Creates a default channel→persona binding if none exists
  * 4. Wires the inbound message handler to the pipeline
  * 5. Registers the connector in the registry
@@ -197,18 +197,34 @@ export function registerChannels(
       continue;
     }
 
-    // Ensure the channel exists in the database.
+    // Ensure the channel exists in the database and its stored config matches the current config.
+    // Reply paths (e.g. the Signal target check) read the stored row, so a stale row would refuse
+    // destinations that the live config already allows.
     const existing = channelRepo.findByName(channelConfig.name);
+    const configJson = JSON.stringify(channelConfig.config);
     let channelId: string;
     if (existing.isOk() && existing.value !== null) {
       channelId = existing.value.id;
+      if (existing.value.config !== configJson || existing.value.type !== channelConfig.type) {
+        const refreshed = channelRepo.update(channelId, {
+          type: channelConfig.type,
+          config: configJson,
+        });
+        if (refreshed.isErr()) {
+          // Content-free: the config and the DB error may both carry account identifiers.
+          logger.warn(
+            { channelName: channelConfig.name, channelType: channelConfig.type },
+            'channel-setup: failed to refresh stored channel config; keeping stored row',
+          );
+        }
+      }
     } else {
       channelId = uuidv4();
       channelRepo.insert({
         id: channelId,
         type: channelConfig.type,
         name: channelConfig.name,
-        config: JSON.stringify(channelConfig.config),
+        config: configJson,
         credentials_ref: null,
         enabled: 1,
       });

@@ -7,6 +7,8 @@ import { BindingRepository } from '../../../src/core/database/repositories/bindi
 import { reconcileBindings, registerChannels } from '../../../src/channels/channel-setup.js';
 import { ChannelRegistry } from '../../../src/channels/channel-registry.js';
 import { SignalConnector } from '../../../src/channels/connectors/signal/signal-connector.js';
+import { parseSignalConfig } from '../../../src/channels/connectors/signal/signal-config.js';
+import { selectSignalTarget } from '../../../src/channels/connectors/signal/signal-target.js';
 import { SignalAccountStateRepository } from '../../../src/core/database/repositories/signal-account-state-repository.js';
 import { SignalDestinationLeaseRepository } from '../../../src/core/database/repositories/signal-destination-lease-repository.js';
 import { QueueRepository } from '../../../src/core/database/repositories/queue-repository.js';
@@ -167,7 +169,7 @@ describe('reconcileBindings()', () => {
 describe('registerChannels Signal wiring', () => {
   const firstAccount = 'aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb';
   const secondAccount = 'cccccccc-1111-2222-3333-dddddddddddd';
-  const signal = (name: string, accountUuid: string) => ({
+  const signal = (name: string, accountUuid: string, allowedGroups?: string[]) => ({
     name,
     type: 'signal',
     enabled: true,
@@ -177,6 +179,7 @@ describe('registerChannels Signal wiring', () => {
       account: '+12025550123',
       accountUuid,
       deviceId: 1,
+      ...(allowedGroups === undefined ? {} : { allowedGroups }),
     },
   });
   const configWith = (channels: unknown[]): TalondConfig =>
@@ -347,6 +350,67 @@ describe('registerChannels Signal wiring', () => {
     });
 
     expect(registry.get('signal-main')).toBeUndefined();
+  });
+
+  it('rewrites the stored channel config on reload so replies see an expanded allowlist', () => {
+    registerChannels(configWith([signal('signal-main', firstAccount)]), registry, deps);
+    registry.unregister('signal-main');
+    const expanded = signal('signal-main', firstAccount, ['QQ==', 'Qg==']);
+
+    registerChannels(configWith([expanded]), registry, deps);
+
+    const stored = deps.channelRepo.findByName('signal-main')._unsafeUnwrap()!;
+    expect(JSON.parse(stored.config)).toEqual(expanded.config);
+    // The runner's stored-row half of the reply check must now accept the newly allowed group.
+    const parsed = parseSignalConfig(JSON.parse(stored.config))._unsafeUnwrap();
+    expect(selectSignalTarget(
+        `signal:v1:${firstAccount}:group:${Buffer.from('Qg==', 'base64').toString('base64url')}`,
+        parsed,
+      ).isOk()).toBe(true);
+  });
+
+  it('rewrites the stored channel row for non-Signal channels on reload', () => {
+    const terminal = (port: number) => ({
+      name: 'terminal-main',
+      type: 'terminal',
+      enabled: true,
+      config: { port, token: 'token-a' },
+    });
+    registerChannels(configWith([terminal(7777)]), registry, deps);
+    registry.unregister('terminal-main');
+
+    registerChannels(configWith([terminal(7778)]), registry, deps);
+
+    const stored = deps.channelRepo.findByName('terminal-main')._unsafeUnwrap()!;
+    expect(JSON.parse(stored.config)).toEqual({ port: 7778, token: 'token-a' });
+  });
+
+  it('does not rewrite the stored row when the config is unchanged', () => {
+    registerChannels(configWith([signal('signal-main', firstAccount)]), registry, deps);
+    registry.unregister('signal-main');
+    const updateSpy = vi.spyOn(deps.channelRepo, 'update');
+
+    registerChannels(configWith([signal('signal-main', firstAccount)]), registry, deps);
+
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(registry.get('signal-main')).toBeInstanceOf(SignalConnector);
+  });
+
+  it('never overwrites a stored row with the config of a rejected duplicate-account instance', () => {
+    registerChannels(configWith([signal('signal-one', firstAccount)]), registry, deps);
+    const before = deps.channelRepo.findByName('signal-one')._unsafeUnwrap()!.config;
+
+    registerChannels(
+      configWith([
+        signal('signal-one', firstAccount, ['QQ==']),
+        signal('signal-dup', firstAccount, ['Qg==']),
+      ]),
+      registry,
+      deps,
+    );
+
+    expect(deps.channelRepo.findByName('signal-one')._unsafeUnwrap()!.config).toBe(before);
+    expect(deps.channelRepo.findByName('signal-dup')._unsafeUnwrap()).toBeNull();
   });
 });
 
