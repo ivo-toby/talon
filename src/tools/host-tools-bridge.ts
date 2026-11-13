@@ -16,7 +16,10 @@ import type { ToolExecutionContext } from './host-tools/channel-send.js';
 import { ScheduleManageHandler, type ScheduleManageArgs } from './host-tools/schedule-manage.js';
 import { ChannelSendHandler, type ChannelSendArgs } from './host-tools/channel-send.js';
 import { ChannelListHandler, type ChannelListArgs } from './host-tools/channel-list.js';
-import { ChannelBroadcastHandler, type ChannelBroadcastArgs } from './host-tools/channel-broadcast.js';
+import {
+  ChannelBroadcastHandler,
+  type ChannelBroadcastArgs,
+} from './host-tools/channel-broadcast.js';
 import { PersonaSendHandler, type PersonaSendArgs } from './host-tools/persona-send.js';
 import { PersonaTaskStatusHandler, type PersonaTaskStatusArgs } from './host-tools/persona-task-status.js';
 import { PersonaTaskCancelHandler, type PersonaTaskCancelArgs } from './host-tools/persona-task-cancel.js';
@@ -33,16 +36,22 @@ import {
   type ImageLookupFindings,
 } from './host-tools/image-lookup.js';
 import { ExecutionEnvHandler, type ExecutionEnvArgs } from './host-tools/execution-env.js';
-import { isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
+import { filterVoiceMcpTools, isToolAllowed, MCP_TO_INTERNAL } from './tool-filter.js';
 import { createDatabase } from '../core/database/connection.js';
 import type { ResolvedCapabilities } from '../personas/persona-types.js';
 import { formatMissingTalonSkillError } from '../skills/skill-runtime-text.js';
 import { getHostToolRequestTimeoutMs } from './tool-timeouts.js';
 import { bridgeSecretsMatch } from './host-tools-bridge-auth.js';
 import {
-  ensureOwnerOnlyDirSync,
-  ensureOwnerOnlyFile,
-} from '../core/fs/private-paths.js';
+  createVoiceSafeLogger,
+  createVoiceDispatchLogger,
+  isVoiceObservationContext,
+  observeVoiceSafely,
+  type VoiceObservationContext,
+  type VoicePrivacyClassification,
+} from '../observability/langfuse/voice-observation.js';
+import type { ObservationHandle } from '../observability/langfuse/observability-types.js';
+import { ensureOwnerOnlyDirSync, ensureOwnerOnlyFile } from '../core/fs/private-paths.js';
 
 /** NDJSON request shape from MCP server. */
 interface BridgeRequest {
@@ -67,6 +76,9 @@ interface RegisteredBridgeAuth {
   bridgeSecret: string;
   threadId: string;
   personaId: string;
+  deniedToolNames: ReadonlySet<string>;
+  voiceObservation?: VoiceObservationContext;
+  trustedTraceparent?: string;
 }
 
 /**
@@ -84,6 +96,7 @@ export class HostToolsBridge {
   private readonly socketPath: string;
   private readonlyDb: Database.Database | null = null;
   private readonly bridgeAuthByRunId = new Map<string, RegisteredBridgeAuth>();
+  private readonly dispatchLogger: ReturnType<typeof createVoiceDispatchLogger>;
   private scheduleHandler: ScheduleManageHandler;
   private channelHandler: ChannelSendHandler;
   private channelListHandler: ChannelListHandler;
@@ -105,13 +118,15 @@ export class HostToolsBridge {
     imageLookupServices?: ImageLookupServices,
   ) {
     this.socketPath = resolve(join(ctx.dataDir, 'host-tools.sock'));
+    this.dispatchLogger = createVoiceDispatchLogger(ctx.logger);
+    const handlerLogger = this.dispatchLogger.logger;
 
     this.scheduleHandler = new ScheduleManageHandler({
       scheduleRepository: ctx.repos.schedule,
       threadRepository: ctx.repos.thread,
       channelRepository: ctx.repos.channel,
       personaRepository: ctx.repos.persona,
-      logger: ctx.logger,
+      logger: handlerLogger,
     });
 
     this.channelHandler = new ChannelSendHandler({
@@ -121,14 +136,14 @@ export class HostToolsBridge {
       messageRepository: ctx.repos.message,
       bindingRepository: ctx.repos.binding,
       sessionTracker: ctx.sessionTracker,
-      logger: ctx.logger,
+      logger: handlerLogger,
     });
 
     this.channelListHandler = new ChannelListHandler({
       bindingRepository: ctx.repos.binding,
       channelRepository: ctx.repos.channel,
       threadRepository: ctx.repos.thread,
-      logger: ctx.logger,
+      logger: handlerLogger,
     });
 
     this.channelBroadcastHandler = new ChannelBroadcastHandler({
@@ -138,7 +153,7 @@ export class HostToolsBridge {
       threadRepository: ctx.repos.thread,
       messageRepository: ctx.repos.message,
       sessionTracker: ctx.sessionTracker,
-      logger: ctx.logger,
+      logger: handlerLogger,
     });
 
     if (ctx.a2aTaskMapper) {
@@ -153,30 +168,30 @@ export class HostToolsBridge {
         taskMapper: ctx.a2aTaskMapper,
         taskRepo: ctx.repos.a2aTask,
         personaRepo: ctx.repos.persona,
-        logger: ctx.logger,
+        logger: handlerLogger,
         resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
         waitScope,
       });
       this.personaTaskCancelHandler = new PersonaTaskCancelHandler({
         taskMapper: ctx.a2aTaskMapper,
         personaRepo: ctx.repos.persona,
-        logger: ctx.logger,
+        logger: handlerLogger,
       });
       this.personaTaskStatusHandler = new PersonaTaskStatusHandler({
         taskMapper: ctx.a2aTaskMapper,
-        logger: ctx.logger,
+        logger: handlerLogger,
         waitScope,
       });
     }
 
     this.personaListHandler = new PersonaListHandler({
       personaLoader: ctx.personaLoader,
-      logger: ctx.logger,
+      logger: handlerLogger,
       resolveCapabilities: (personaId) => this.resolvePersonaCapabilities(personaId),
     });
 
     this.httpHandler = new HttpProxyHandler({
-      logger: ctx.logger,
+      logger: handlerLogger,
       allowedDomains: [],
     });
 
@@ -196,12 +211,12 @@ export class HostToolsBridge {
 
     this.dbHandler = new DbQueryHandler({
       db: this.readonlyDb ?? ctx.db,
-      logger: ctx.logger,
+      logger: handlerLogger,
     });
 
     this.memoryHandler = new MemoryAccessHandler({
       memoryRepository: ctx.repos.memory,
-      logger: ctx.logger,
+      logger: handlerLogger,
     });
 
     if (ctx.subAgentRunner) {
@@ -209,7 +224,7 @@ export class HostToolsBridge {
         runner: ctx.subAgentRunner,
         personaLoader: ctx.personaLoader,
         personaRepository: ctx.repos.persona,
-        logger: ctx.logger,
+        logger: handlerLogger,
       });
     }
 
@@ -225,14 +240,14 @@ export class HostToolsBridge {
         contextAssembler: ctx.contextAssembler,
         loadedSkills: ctx.loadedSkills,
         toolInstructions: ctx.toolInstructions,
-        logger: ctx.logger,
+        logger: handlerLogger,
       });
     }
 
     if (ctx.executionEnvManager) {
       this.executionEnvHandler = new ExecutionEnvHandler({
         executionEnvManager: ctx.executionEnvManager,
-        logger: ctx.logger,
+        logger: handlerLogger,
       });
     }
 
@@ -260,12 +275,34 @@ export class HostToolsBridge {
     threadId: string;
     personaId: string;
     bridgeSecret: string;
+    /** Trusted server-side deny list for runs without an approval channel. */
+    deniedToolNames?: readonly string[];
+    /** Trusted server-owned context for voice trace redaction/correlation. */
+    voiceObservation?: VoiceObservationContext;
+    /** Trusted parent span created by the server for this run. */
+    traceparent?: string;
   }): void {
     this.bridgeAuthByRunId.set(input.runId, {
       bridgeSecret: input.bridgeSecret,
       threadId: input.threadId,
       personaId: input.personaId,
+      deniedToolNames: new Set(
+        (input.deniedToolNames ?? []).map((toolName) => TOOL_NAME_MAP[toolName] ?? toolName),
+      ),
+      ...(input.voiceObservation ? { voiceObservation: input.voiceObservation } : {}),
+      ...(input.traceparent ? { trustedTraceparent: input.traceparent } : {}),
     });
+  }
+
+  /** Bind a provider observation parent after the generation span is created. */
+  setRunAuthenticationTraceparent(runId: string, traceparent: string | null): void {
+    const registered = this.bridgeAuthByRunId.get(runId);
+    if (!registered) return;
+    if (traceparent) {
+      registered.trustedTraceparent = traceparent;
+    } else {
+      delete registered.trustedTraceparent;
+    }
   }
 
   unregisterRunAuthentication(runId: string): void {
@@ -390,34 +427,69 @@ export class HostToolsBridge {
       return;
     }
 
+    const authenticatedContext = this.getAuthenticatedContext(context);
+
     const normalizedTool = TOOL_NAME_MAP[tool] || tool;
+    const loggedToolName = authenticatedContext.voiceObservation ? 'voice-tool' : normalizedTool;
+    const dispatchPrivacy = this.getDispatchPrivacy(authenticatedContext);
+    const requestLogger = this.dispatchLogger.logger;
 
     try {
       if (normalizedTool === 'skill.load') {
-        const result = await this.dispatch(normalizedTool, args, context);
+        const result = await this.dispatchLogger.run(dispatchPrivacy, () =>
+          this.dispatch(normalizedTool, args, authenticatedContext),
+        );
         this.sendResponse(socket, { id, result });
         return;
       }
 
-      const result = await this.ctx.observability.observeWithTraceparent(
-        context.traceparent,
-        {
-          type: 'tool',
-          name: normalizedTool,
-          input: args,
-          metadata: {
-            runId: context.runId,
-            threadId: context.threadId,
-            personaId: context.personaId,
-            requestId: context.requestId ?? null,
-          },
+      const observationInput = {
+        type: 'tool' as const,
+        name: normalizedTool,
+        input: args,
+        metadata: {
+          runId: context.runId,
+          threadId: context.threadId,
+          personaId: context.personaId,
+          requestId: context.requestId ?? null,
         },
-        async (toolObservation) => {
+      };
+      const dispatchTool = async (toolObservation: ObservationHandle): Promise<ToolCallResult> => {
+        return await this.dispatchLogger.run(dispatchPrivacy, async () => {
+          const registered = this.bridgeAuthByRunId.get(context.runId);
+          const resolvedCaps = this.resolvePersonaCapabilities(
+            authenticatedContext.personaId,
+            authenticatedContext.voiceObservation,
+          );
+          const deniedToolNames = new Set(registered?.deniedToolNames);
+          if (isVoiceObservationContext(authenticatedContext.voiceObservation)) {
+            for (const deniedTool of filterVoiceMcpTools(resolvedCaps).deniedMcpTools) {
+              deniedToolNames.add(TOOL_NAME_MAP[deniedTool] ?? deniedTool);
+            }
+          }
+          if (deniedToolNames.has(normalizedTool)) {
+            const toolResult: ToolCallResult = {
+              requestId: context.requestId ?? 'unknown',
+              tool: normalizedTool,
+              status: 'error',
+              error: `Tool "${normalizedTool}" requires approval and is unavailable for voice execution`,
+            };
+            toolObservation.update({
+              output: toolResult,
+              level: 'ERROR',
+              statusMessage: toolResult.error,
+            });
+            requestLogger.warn(
+              { runId: context.runId, tool: loggedToolName },
+              'host-tools-bridge: rejected approval-gated voice tool call',
+            );
+            return toolResult;
+          }
+
           // Defense-in-depth: enforce persona capabilities at the bridge level.
           // Even if the MCP server somehow exposes a disallowed tool, the bridge
           // will reject it here. Uses fail-closed semantics — if the persona
           // cannot be resolved, no tools are allowed.
-          const resolvedCaps = this.resolvePersonaCapabilities(context.personaId);
           if (!isToolAllowed(normalizedTool, resolvedCaps)) {
             const toolResult: ToolCallResult = {
               requestId: context.requestId ?? 'unknown',
@@ -430,8 +502,8 @@ export class HostToolsBridge {
               level: 'ERROR',
               statusMessage: toolResult.error,
             });
-            this.ctx.logger.warn(
-              { personaId: context.personaId, tool: normalizedTool },
+            requestLogger.warn(
+              { personaId: context.personaId, tool: loggedToolName },
               'host-tools-bridge: rejected disallowed tool call',
             );
             return toolResult;
@@ -442,11 +514,11 @@ export class HostToolsBridge {
 
           try {
             const toolResult = await Promise.race([
-              this.dispatch(normalizedTool, args, context),
+              this.dispatch(normalizedTool, args, authenticatedContext),
               new Promise<never>((_, reject) => {
                 timeoutId = setTimeout(() => {
-                  this.ctx.logger.warn(
-                    { id, tool: normalizedTool },
+                  requestLogger.warn(
+                    { id, tool: loggedToolName },
                     'host-tools-bridge: request timed out',
                   );
                   reject(new Error('Request timeout'));
@@ -473,8 +545,21 @@ export class HostToolsBridge {
               clearTimeout(timeoutId);
             }
           }
-        },
-      );
+        });
+      };
+      const result = authenticatedContext.voiceObservation
+        ? await observeVoiceSafely({
+            service: this.ctx.observability,
+            traceparent: authenticatedContext.traceparent,
+            input: observationInput,
+            context: authenticatedContext.voiceObservation,
+            callback: dispatchTool,
+          })
+        : await this.ctx.observability.observeWithTraceparent(
+            authenticatedContext.traceparent,
+            observationInput,
+            dispatchTool,
+          );
       this.sendResponse(socket, { id, result });
     } catch (err) {
       this.sendResponse(socket, {
@@ -496,14 +581,23 @@ export class HostToolsBridge {
 
     const registered = this.bridgeAuthByRunId.get(context.runId);
     if (!registered || !bridgeSecretsMatch(registered.bridgeSecret, bridgeSecret)) {
-      this.ctx.logger.warn(
-        {
-          runId: context.runId,
-          threadId: context.threadId,
-          personaId: context.personaId,
-        },
-        'host-tools-bridge: rejected request with invalid bridge secret',
-      );
+      if (registered?.voiceObservation) {
+        createVoiceSafeLogger(this.ctx.logger).warn(
+          { voice: true, errorCategory: 'policy' },
+          'host-tools-bridge: rejected voice request with invalid bridge secret',
+        );
+      } else {
+        this.ctx.logger.warn(
+          registered
+            ? {
+                runId: context.runId,
+                threadId: registered.threadId,
+                personaId: registered.personaId,
+              }
+            : { errorCategory: 'policy' },
+          'host-tools-bridge: rejected request with invalid bridge secret',
+        );
+      }
       return 'Invalid bridge secret';
     }
 
@@ -514,9 +608,39 @@ export class HostToolsBridge {
       return `Bridge persona mismatch for run "${context.runId}"`;
     }
 
+    const suppliedContext = context as unknown as Record<string, unknown>;
+    const forgedKeys = [
+      'voiceObservation',
+      'voiceRedaction',
+      'redactVoice',
+      'correlation',
+      'callId',
+      'delegationId',
+      'queueItemId',
+    ];
+    if (forgedKeys.some((key) => Object.prototype.hasOwnProperty.call(suppliedContext, key))) {
+      return 'Voice observation context is server-owned';
+    }
+
     return context.backgroundTaskId
       ? this.validateBackgroundTaskContext(context.backgroundTaskId, context)
       : this.validateRunContext(context);
+  }
+
+  private getAuthenticatedContext(context: ToolExecutionContext): ToolExecutionContext {
+    const registered = this.bridgeAuthByRunId.get(context.runId);
+    if (!registered?.voiceObservation) return context;
+
+    return {
+      ...context,
+      voiceObservation: registered.voiceObservation,
+      traceparent: registered.trustedTraceparent,
+    };
+  }
+
+  private getDispatchPrivacy(context: ToolExecutionContext): VoicePrivacyClassification {
+    if (context.voiceObservation === undefined) return 'nonvoice';
+    return isVoiceObservationContext(context.voiceObservation) ? 'voice' : 'unknown';
   }
 
   private validateRunContext(context: ToolExecutionContext): string | null {
@@ -582,13 +706,19 @@ export class HostToolsBridge {
    * The MCP server layer already filters tools at listing time, so this is a
    * defense-in-depth measure.
    */
-  private resolvePersonaCapabilities(personaId: string): ResolvedCapabilities {
+  private resolvePersonaCapabilities(
+    personaId: string,
+    voiceObservation?: VoiceObservationContext,
+  ): ResolvedCapabilities {
+    const logger = this.dispatchLogger.logger;
     try {
       const personaRowResult = this.ctx.repos.persona.findById(personaId);
       if (personaRowResult.isErr() || personaRowResult.value === null) {
-        this.ctx.logger.warn(
-          { personaId },
-          'host-tools-bridge: persona not found in DB, failing closed (no tools allowed)',
+        logger.warn(
+          voiceObservation ? { voice: true, errorCategory: 'unknown' } : { personaId },
+          voiceObservation
+            ? 'host-tools-bridge: persona lookup failed, failing closed (no tools allowed)'
+            : 'host-tools-bridge: persona not found in DB, failing closed (no tools allowed)',
         );
         return { allow: [], requireApproval: [] };
       }
@@ -596,17 +726,28 @@ export class HostToolsBridge {
       const personaName = personaRowResult.value.name;
       const loadedResult = this.ctx.personaLoader.getByName(personaName);
       if (loadedResult.isErr() || loadedResult.value === undefined) {
-        this.ctx.logger.warn(
-          { personaId, personaName },
-          'host-tools-bridge: loaded persona not found, failing closed (no tools allowed)',
+        logger.warn(
+          voiceObservation
+            ? { voice: true, errorCategory: 'unknown' }
+            : { personaId, personaName },
+          voiceObservation
+            ? 'host-tools-bridge: loaded persona lookup failed, failing closed (no tools allowed)'
+            : 'host-tools-bridge: loaded persona not found, failing closed (no tools allowed)',
         );
         return { allow: [], requireApproval: [] };
       }
 
       return loadedResult.value.resolvedCapabilities;
     } catch (err) {
-      this.ctx.logger.error(
-        { personaId, err },
+      logger.error(
+        voiceObservation
+          ? {
+              voice: true,
+              ...(voiceObservation.runId ? { runId: voiceObservation.runId } : {}),
+              ...(voiceObservation.threadId ? { threadId: voiceObservation.threadId } : {}),
+              errorCategory: 'unknown',
+            }
+          : { personaId, err },
         'host-tools-bridge: error resolving persona capabilities, failing closed (no tools allowed)',
       );
       return { allow: [], requireApproval: [] };
@@ -618,6 +759,7 @@ export class HostToolsBridge {
     args: Record<string, unknown>,
     context: ToolExecutionContext,
   ): Promise<ToolCallResult> {
+    const logger = this.dispatchLogger.logger;
     if (tool === 'skill.load') {
       const name = typeof args.name === 'string' ? args.name : '';
       const content = this.resolveSkillContent(context.personaId, name);
@@ -630,7 +772,12 @@ export class HostToolsBridge {
           error: formatMissingTalonSkillError(name, available),
         };
       }
-      this.ctx.logger.info({ skill: name, runId: context.runId }, 'skill.loaded via bridge');
+      logger.info(
+        context.voiceObservation
+          ? { voice: true, runId: context.runId, skill: 'voice-skill' }
+          : { skill: name, runId: context.runId },
+        'skill.loaded via bridge',
+      );
       return {
         requestId: context.requestId ?? 'unknown',
         tool,
@@ -650,7 +797,10 @@ export class HostToolsBridge {
         return this.channelListHandler.execute(args as unknown as ChannelListArgs, context);
 
       case 'channel.broadcast':
-        return this.channelBroadcastHandler.execute(args as unknown as ChannelBroadcastArgs, context);
+        return this.channelBroadcastHandler.execute(
+          args as unknown as ChannelBroadcastArgs,
+          context,
+        );
 
       case 'persona.send':
         if (!this.personaSendHandler) {
@@ -672,7 +822,10 @@ export class HostToolsBridge {
             error: 'A2A task mapper not initialized',
           };
         }
-        return this.personaTaskStatusHandler.execute(args as unknown as PersonaTaskStatusArgs, context);
+        return this.personaTaskStatusHandler.execute(
+          args as unknown as PersonaTaskStatusArgs,
+          context,
+        );
 
       case 'persona.task_cancel':
         if (!this.personaTaskCancelHandler) {
@@ -717,10 +870,7 @@ export class HostToolsBridge {
             error: 'Background agent system not initialized',
           };
         }
-        return this.backgroundAgentHandler.execute(
-          args as unknown as BackgroundAgentArgs,
-          context,
-        );
+        return this.backgroundAgentHandler.execute(args as unknown as BackgroundAgentArgs, context);
 
       case 'execution.env':
         if (!this.executionEnvHandler) {

@@ -149,6 +149,113 @@ describe('ChannelSendHandler — success', () => {
     expect(connector.send).toHaveBeenCalledWith('ext-001', expect.objectContaining({ body: 'Hello from persona!' }));
   });
 
+  it('uses one stable messageId for connector delivery and outbound persistence', async () => {
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: {
+        findById: vi.fn().mockReturnValue(ok({
+          id: 'thread-001',
+          external_id: 'ext-001',
+          channel_id: 'chan-001',
+          metadata: '{}',
+        })),
+        findByExternalId: vi.fn().mockReturnValue(ok({
+          id: 'thread-001',
+          external_id: 'ext-001',
+          channel_id: 'chan-001',
+          metadata: '{}',
+          created_at: 0,
+          updated_at: 0,
+        })),
+      } as any,
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      logger: makeLogger(),
+    });
+
+    const result = await handler.execute(makeArgs(), makeContext());
+
+    expect(result.status).toBe('success');
+    const connectorOutput = vi.mocked(connector.send).mock.calls[0]?.[1] as { messageId?: string };
+    const persistedMessage = vi.mocked(messageRepo.insert).mock.calls[0]?.[0] as { id?: string };
+    expect(connectorOutput.messageId).toBeDefined();
+    expect(connectorOutput.messageId).toBe(persistedMessage.id);
+  });
+
+  it('uses the trusted context runId for sourceRunId', async () => {
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository: makeThreadRepo(),
+      logger: makeLogger(),
+    });
+    const args = {
+      ...makeArgs(),
+      sourceRunId: 'attacker-supplied-source-run-id',
+      runId: 'attacker-supplied-run-id',
+    } as ChannelSendArgs;
+
+    await handler.execute(args, makeContext({ runId: 'trusted-context-run-id' }));
+
+    const output = vi.mocked(connector.send).mock.calls[0]?.[1] as {
+      messageId?: string;
+      sourceRunId?: string;
+      runId?: string;
+    };
+    expect(output.sourceRunId).toBe('trusted-context-run-id');
+    expect(output.sourceRunId).not.toBe('attacker-supplied-source-run-id');
+    expect(output.runId).toBeUndefined();
+    expect(output.messageId).toBeDefined();
+  });
+
+  it('keeps same-text deliveries distinct', async () => {
+    const messageRepo = makeMessageRepo();
+    const connector = makeConnector(ok(undefined));
+    const registry = makeRegistry(connector);
+    const threadRepository = {
+      findById: vi.fn().mockReturnValue(ok({
+        id: 'thread-001',
+        external_id: 'ext-001',
+        channel_id: 'chan-001',
+        metadata: '{}',
+      })),
+      findByExternalId: vi.fn().mockReturnValue(ok({
+        id: 'thread-001',
+        external_id: 'ext-001',
+        channel_id: 'chan-001',
+        metadata: '{}',
+        created_at: 0,
+        updated_at: 0,
+      })),
+    } as any;
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      threadRepository,
+      channelRepository: makeChannelRepo(),
+      messageRepository: messageRepo,
+      logger: makeLogger(),
+    });
+
+    await handler.execute(makeArgs({ content: 'same text' }), makeContext({ requestId: 'req-001' }));
+    await handler.execute(makeArgs({ content: 'same text' }), makeContext({ requestId: 'req-002' }));
+
+    const firstId = vi.mocked(messageRepo.insert).mock.calls[0]?.[0].id;
+    const secondId = vi.mocked(messageRepo.insert).mock.calls[1]?.[0].id;
+    expect(firstId).toBeDefined();
+    expect(secondId).toBeDefined();
+    expect(secondId).not.toBe(firstId);
+    expect(vi.mocked(connector.send).mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ messageId: firstId }),
+    );
+    expect(vi.mocked(connector.send).mock.calls[1]?.[1]).toEqual(
+      expect.objectContaining({ messageId: secondId }),
+    );
+  });
+
   it('passes replyTo in the output metadata', async () => {
     const connector = makeConnector(ok(undefined));
     const registry = makeRegistry(connector);

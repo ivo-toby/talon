@@ -14,6 +14,7 @@ import {
   QueueConfigSchema,
   SchedulerConfigSchema,
   AuthConfigSchema,
+  VoiceConfigSchema,
   AgentRunnerConfigSchema,
   BackgroundAgentConfigSchema,
   ProviderConfigSchema,
@@ -538,6 +539,29 @@ describe('AuthConfigSchema', () => {
   it('rejects an unknown auth mode', () => {
     const result = AuthConfigSchema.safeParse({ mode: 'oauth' });
     expect(result.success).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// VoiceConfigSchema
+// ---------------------------------------------------------------------------
+
+describe('VoiceConfigSchema', () => {
+  it('leaves the operator voice rate optional without a default', () => {
+    const result = VoiceConfigSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.usdPerMinute).toBeUndefined();
+  });
+
+  it('accepts zero and finite non-negative rates', () => {
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: 0 }).success).toBe(true);
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: 0.06 }).success).toBe(true);
+  });
+
+  it('rejects negative and non-finite rates', () => {
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: -0.01 }).success).toBe(false);
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: Number.POSITIVE_INFINITY }).success).toBe(false);
+    expect(VoiceConfigSchema.safeParse({ usdPerMinute: Number.NaN }).success).toBe(false);
   });
 });
 
@@ -1268,6 +1292,29 @@ describe('TalondConfigSchema', () => {
       expect(result.data.sprites.resourceLimits.diskGb).toBe(40);
       expect(result.data.langfuse.release).toBe('abcdef1234');
     }
+  });
+
+  it('rejects an ordinary browser-voice channel when voice is enabled', () => {
+    const result = TalondConfigSchema.safeParse({
+      voice: { enabled: true },
+      channels: [{ type: 'terminal', name: 'browser-voice' }],
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({ path: ['channels', 0, 'name'] }),
+      );
+    }
+  });
+
+  it('allows an ordinary browser-voice channel while voice is disabled', () => {
+    const result = TalondConfigSchema.safeParse({
+      voice: { enabled: false },
+      channels: [{ type: 'terminal', name: 'browser-voice' }],
+    });
+
+    expect(result.success).toBe(true);
   });
 
   it('accepts openai-compatible provider options for both main and background agents', () => {

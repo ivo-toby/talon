@@ -12,6 +12,11 @@ import { QueueError } from '../core/errors/index.js';
 import type { QueueRepository } from '../core/database/repositories/queue-repository.js';
 import { type QueueItem } from './queue-types.js';
 import { rowToQueueItem } from './queue-mapper.js';
+import {
+  classifyQueueRow,
+  logQueueDiagnostic,
+  type QueueDiagnosticResolver,
+} from './queue-processor.js';
 
 /**
  * Handles dead-letter queue operations.
@@ -24,6 +29,7 @@ export class DeadLetterHandler {
   constructor(
     private readonly queueRepo: QueueRepository,
     private readonly logger: pino.Logger,
+    private readonly diagnosticResolver?: QueueDiagnosticResolver,
   ) {}
 
   /**
@@ -37,17 +43,33 @@ export class DeadLetterHandler {
    * @returns Ok(void) on success, or a QueueError if the operation fails.
    */
   moveToDeadLetter(itemId: string, reason: string): Result<void, QueueError> {
+    const rowResult = this.queueRepo.findById(itemId);
+    const privacy = rowResult.isOk() && rowResult.value
+      ? classifyQueueRow(this.diagnosticResolver, rowResult.value)
+      : 'unknown';
     const result = this.queueRepo.markDeadLetter(itemId, reason);
     if (result.isErr()) {
       const queueErr = new QueueError(
         `Failed to move item ${itemId} to dead letter: ${result.error.message}`,
         result.error,
       );
-      this.logger.error({ itemId, reason, err: queueErr }, 'dead-letter move failed');
+      logQueueDiagnostic(
+        this.logger,
+        privacy,
+        'error',
+        { itemId, reason, err: queueErr },
+        'dead-letter move failed',
+      );
       return err(queueErr);
     }
 
-    this.logger.warn({ itemId, reason }, 'queue item moved to dead letter');
+    logQueueDiagnostic(
+      this.logger,
+      privacy,
+      'warn',
+      { itemId, reason },
+      'queue item moved to dead letter',
+    );
     return ok(undefined);
   }
 
@@ -63,7 +85,7 @@ export class DeadLetterHandler {
         `Failed to list dead-letter items: ${result.error.message}`,
         result.error,
       );
-      this.logger.error({ err: queueErr }, 'dead-letter list failed');
+      logQueueDiagnostic(this.logger, 'unknown', 'error', { err: queueErr }, 'dead-letter list failed');
       return err(queueErr);
     }
 

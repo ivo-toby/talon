@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ok } from 'neverthrow';
+import { err, ok } from 'neverthrow';
 import { BackgroundAgentHandler } from '../../../src/tools/host-tools/background-agent.js';
 import type {
   BackgroundTask,
   BackgroundTaskResult,
 } from '../../../src/subagents/background/background-agent-types.js';
+import { createVoiceObservationContext } from '../../../src/observability/langfuse/voice-observation.js';
 
 function makeLogger() {
   return {
@@ -220,6 +221,75 @@ describe('BackgroundAgentHandler', () => {
     expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).toContain('search-skill');
     expect(backgroundAgentManager.spawn.mock.calls[0][0].personaPrompt).not.toContain(
       'Skill instructions.',
+    );
+  });
+
+  it('forwards only the authenticated voice observation context to the manager', async () => {
+    const { handler, backgroundAgentManager } = createHandler();
+    const voiceObservation = createVoiceObservationContext({
+      callId: 'voice-call-1',
+      delegationId: 'voice-delegation-1',
+      runId: 'voice-run-1',
+      threadId: 'thread-1',
+      personaId: 'persona-1',
+    });
+
+    await handler.execute(
+      { action: 'spawn', prompt: 'VOICE_SENTINEL background work' },
+      {
+        runId: 'run-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-voice-1',
+        voiceObservation,
+      },
+    );
+
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({ voiceObservation }),
+    );
+  });
+
+  it('derives voice worker access and denials from the selected profile', async () => {
+    const { handler, backgroundAgentManager, deps } = createHandler();
+    deps.personaLoader.getByName = vi.fn().mockReturnValue(
+      ok({
+        config: { skills: [] },
+        systemPromptContent: 'Voice worker profile.',
+        personalityContent: null,
+        resolvedCapabilities: {
+          allow: ['memory.access', 'channel.send:*'],
+          requireApproval: ['memory.access'],
+        },
+      }),
+    );
+    const voiceObservation = createVoiceObservationContext({
+      callId: 'voice-call-profile',
+      runId: 'voice-run-profile',
+      threadId: 'thread-1',
+      personaId: 'persona-1',
+    });
+
+    const result = await handler.execute(
+      { action: 'spawn', prompt: 'Run the selected voice profile.' },
+      {
+        runId: 'run-profile',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+        requestId: 'req-profile',
+        voiceObservation,
+      },
+    );
+
+    expect(result.status).toBe('success');
+    expect(backgroundAgentManager.spawn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedMcpTools: expect.arrayContaining(['channel_send', 'channel_list', 'channel_broadcast']),
+        deniedMcpTools: ['memory_access'],
+      }),
+    );
+    expect(backgroundAgentManager.spawn.mock.calls[0]?.[0].allowedMcpTools).not.toContain(
+      'memory_access',
     );
   });
 
@@ -465,6 +535,45 @@ describe('BackgroundAgentHandler', () => {
     expect(result.error).toContain('does not belong to the current thread');
     expect(backgroundAgentManager.getResult).not.toHaveBeenCalled();
   });
+
+  it.each(['status', 'cancel', 'result'] as const)(
+    'redacts ownership repository errors for voice %s calls',
+    async (action) => {
+      const { handler, backgroundAgentManager, deps } = createHandler();
+      const sentinel = `VOICE_OWNERSHIP_${action.toUpperCase()}_REPOSITORY_SENTINEL`;
+      backgroundAgentManager.getTask.mockReturnValueOnce(err(new Error(sentinel) as any));
+      const voiceObservation = createVoiceObservationContext({
+        callId: 'voice-call-1',
+        runId: 'run-voice-1',
+        threadId: 'thread-1',
+        personaId: 'persona-1',
+      });
+
+      const result = await handler.execute(
+        { action, taskId: 'task-1' },
+        {
+          runId: 'run-voice-1',
+          threadId: 'thread-1',
+          personaId: 'persona-1',
+          requestId: `req-${action}`,
+          voiceObservation,
+        },
+      );
+
+      expect(result.status).toBe('error');
+      expect(result.error).toBe(sentinel);
+      expect(JSON.stringify(deps.logger.warn.mock.calls)).not.toContain(sentinel);
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          voice: true,
+          runId: 'run-voice-1',
+          threadId: 'thread-1',
+          errorCategory: 'unknown',
+        }),
+        'background-agent: failed to load task for ownership check',
+      );
+    },
+  );
 
   describe('profile parameter', () => {
     it('spawns with profile persona when a valid profile name is given', async () => {

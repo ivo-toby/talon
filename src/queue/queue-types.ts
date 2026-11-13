@@ -54,3 +54,17 @@ export interface QueueItem {
   /** Unix epoch ms when the item was last modified. */
   updatedAt: number;
 }
+
+/**
+ * Returns true for the durable voice work payload written by VoiceStore.
+ * Voice work is stored as collaboration data for queue compatibility, but it
+ * must be claimed through VoiceStore's compare-and-set boundary.
+ */
+export function isVoiceQueuePayload(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'kind' in payload &&
+    (payload as { kind?: unknown }).kind === 'voice_backend'
+  );
+}

@@ -42,6 +42,7 @@ Channel Connector → MessagePipeline (normalize, dedup, route, persist)
 | Pipeline  | `src/pipeline/`            | Inbound normalization, dedup, routing, persistence                  |
 | Queue     | `src/queue/`               | Durable SQLite queue, retry with exponential backoff, dead-letter   |
 | Scheduler | `src/scheduler/`           | Cron/interval/one-shot task execution                               |
+| Voice     | `src/voice/`               | Optional browser voice: authentication, WebRTC transport, live provider, durable lifecycle, queue bridge (details in `AGENTS.md` and `docs/guides/voice.mdx`) |
 | Memory    | `src/memory/`              | Per-thread fact/summary/note storage + context assembly             |
 | Tools     | `src/tools/`               | 15 host-tools + capability-based filtering via `tool-filter.ts`     |
 | MCP       | `src/mcp/`                 | MCP server registry and lifecycle                                   |

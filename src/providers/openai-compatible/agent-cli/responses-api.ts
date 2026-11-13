@@ -185,8 +185,11 @@ async function postResponsesRequest(
   });
   if (!response.ok) {
     const detail = await response.text().catch(() => '');
-    throw new Error(
-      `Responses API request failed with HTTP ${response.status}: ${detail || response.statusText}`,
+    throw Object.assign(
+      new Error(
+        `Responses API request failed with HTTP ${response.status}: ${detail || response.statusText}`,
+      ),
+      { statusCode: response.status },
     );
   }
 

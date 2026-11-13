@@ -833,6 +833,40 @@ describe('OpenAiCompatibleProvider', () => {
     expect(payload).not.toHaveProperty('maxSteps');
   });
 
+  it('preserves safe diagnostics from serialized wrapper error events', async () => {
+    vi.mocked(mockedSpawn).mockImplementation((() =>
+      makeFakeChild({
+        stdoutLines: [
+          JSON.stringify({
+            type: 'error',
+            message: 'private payload',
+            diagnostic: {
+              category: 'rate-limit',
+              httpStatus: 429,
+              stage: 'wrapper-stream',
+              code: 'private payload',
+              headers: 'private payload',
+            },
+          }),
+        ],
+      })) as unknown as typeof mockedSpawn);
+    const events: AgentStreamEvent[] = [];
+    for await (const event of makeProvider().createExecutionStrategy().run({
+      threadId: 'thread-test',
+      prompt: 'hello',
+      systemPrompt: 'system',
+      mcpServers: {},
+      cwd: '/tmp',
+      model: 'test',
+    }))
+      events.push(event);
+    expect(events.find((event) => event.type === 'error')).toEqual({
+      type: 'error',
+      message: 'private payload',
+      diagnostic: { category: 'rate-limit', httpStatus: 429, stage: 'wrapper-stream' },
+    });
+  });
+
   it('emits an error stream event containing stderr when the wrapper exits non-zero', async () => {
     vi.mocked(mockedSpawn).mockImplementation((() =>
       makeFakeChild({

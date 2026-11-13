@@ -10,12 +10,17 @@ import { v4 as uuidv4 } from 'uuid';
 import type pino from 'pino';
 import type { TalondConfig, BindingConfig } from '../core/config/config-types.js';
 import type { ChannelRepository } from '../core/database/repositories/channel-repository.js';
+import type { ThreadRepository } from '../core/database/repositories/thread-repository.js';
+import { err, ok, type Result } from 'neverthrow';
+import { DbError } from '../core/errors/error-types.js';
 import type { BindingRepository } from '../core/database/repositories/binding-repository.js';
 import type { PersonaRepository } from '../core/database/repositories/persona-repository.js';
 import type { ChannelRegistry } from './channel-registry.js';
 import type { ChannelConnector, InboundEvent } from './channel-types.js';
 import type { MessagePipeline } from '../pipeline/message-pipeline.js';
 import { createConnector } from '../daemon/channel-factory.js';
+import { BrowserVoiceConnector } from './connectors/browser-voice.js';
+import type { VoiceSessionService } from '../voice/voice-types.js';
 
 /** Dependencies needed to register channels. */
 export interface ChannelSetupDeps {
@@ -24,6 +29,139 @@ export interface ChannelSetupDeps {
   readonly personaRepo: PersonaRepository;
   readonly messagePipeline: MessagePipeline;
   readonly logger: pino.Logger;
+}
+
+/** Durable logical channel identity used by browservoice threads. */
+export const BROWSER_VOICE_CHANNEL_NAME = 'browser-voice';
+export const BROWSER_VOICE_CHANNEL_TYPE = 'voice';
+
+export interface VoiceChannelSetupDeps {
+  readonly channelRepo: ChannelRepository;
+  readonly logger: pino.Logger;
+  readonly bindingRepo?: Pick<BindingRepository, 'findDefaultForChannel' | 'insert' | 'updatePersona'>;
+  readonly personaId?: string;
+}
+
+export interface VoiceConnectorSetupDeps extends VoiceChannelSetupDeps {
+  readonly channelRegistry: ChannelRegistry;
+  readonly threadRepository: Pick<ThreadRepository, 'findByExternalId'>;
+  readonly sessionService: Pick<VoiceSessionService, 'notifyThread'>;
+}
+
+/**
+ * Registers the browservoice logical channel without creating a connector.
+ * Only sanitized metadata is persisted; access tokens stay in config/auth.
+ */
+export function registerVoiceChannel(
+  deps: VoiceChannelSetupDeps,
+  name = BROWSER_VOICE_CHANNEL_NAME,
+): Result<string, DbError> {
+  const existing = deps.channelRepo.findByName(name);
+  if (existing.isErr()) return err(existing.error);
+  if (existing.value) {
+    if (existing.value.type !== BROWSER_VOICE_CHANNEL_TYPE) {
+      return err(
+        new DbError(
+          `Channel name "${name}" is already used by ${existing.value.type}; refusing to adopt it for browser voice`,
+        ),
+      );
+    }
+    const updated = deps.channelRepo.update(existing.value.id, {
+      type: BROWSER_VOICE_CHANNEL_TYPE,
+      config: '{}',
+      credentials_ref: null,
+      enabled: 1,
+    });
+    if (updated.isErr()) return err(updated.error);
+    const binding = ensureVoiceBinding(deps, updated.value?.id ?? existing.value.id);
+    if (binding.isErr()) return err(binding.error);
+    deps.logger.info({ channelName: name }, 'channel-setup: browser voice channel reconciled');
+    return okChannelId(updated.value?.id ?? existing.value.id);
+  }
+
+  const inserted = deps.channelRepo.insert({
+    id: uuidv4(),
+    type: BROWSER_VOICE_CHANNEL_TYPE,
+    name,
+    config: '{}',
+    credentials_ref: null,
+    enabled: 1,
+  });
+  if (inserted.isErr()) return err(inserted.error);
+  const binding = ensureVoiceBinding(deps, inserted.value.id);
+  if (binding.isErr()) return err(binding.error);
+  deps.logger.info({ channelName: name }, 'channel-setup: browser voice channel registered');
+  return okChannelId(inserted.value.id);
+}
+
+function ensureVoiceBinding(
+  deps: VoiceChannelSetupDeps,
+  channelId: string,
+): Result<void, DbError> {
+  if (!deps.bindingRepo || !deps.personaId) return ok(undefined);
+  const existing = deps.bindingRepo.findDefaultForChannel(channelId);
+  if (existing.isErr()) return err(existing.error);
+  if (existing.value) {
+    if (existing.value.persona_id !== deps.personaId) {
+      const updated = deps.bindingRepo.updatePersona(existing.value.id, deps.personaId);
+      if (updated.isErr()) return err(updated.error);
+    }
+    return ok(undefined);
+  }
+  const inserted = deps.bindingRepo.insert({
+    id: uuidv4(),
+    channel_id: channelId,
+    thread_id: null,
+    persona_id: deps.personaId,
+    is_default: 1,
+  });
+  if (inserted.isErr()) return err(inserted.error);
+  return ok(undefined);
+}
+
+/** Register the outbound browservoice connector after the session service exists. */
+export function registerVoiceConnector(
+  deps: VoiceConnectorSetupDeps,
+  name = BROWSER_VOICE_CHANNEL_NAME,
+): Result<void, DbError> {
+  const channel = deps.channelRepo.findByName(name);
+  if (channel.isErr()) return err(channel.error);
+  if (!channel.value) return err(new DbError(`Browser voice channel "${name}" was not found`));
+  if (channel.value.type !== BROWSER_VOICE_CHANNEL_TYPE) {
+    return err(
+      new DbError(
+        `Channel name "${name}" is already used by ${channel.value.type}; refusing to register browser voice`,
+      ),
+    );
+  }
+  const existingConnector = deps.channelRegistry.get(name);
+  if (existingConnector) {
+    if (
+      existingConnector.type !== BROWSER_VOICE_CHANNEL_TYPE ||
+      !(existingConnector instanceof BrowserVoiceConnector)
+    ) {
+      return err(
+        new DbError(`Channel connector "${name}" is not the browser voice connector`),
+      );
+    }
+    return ok(undefined);
+  }
+
+  deps.channelRegistry.register(
+    new BrowserVoiceConnector({
+      channelId: channel.value.id,
+      name,
+      threadRepository: deps.threadRepository,
+      sessionService: deps.sessionService,
+      logger: deps.logger,
+    }),
+  );
+  deps.logger.info({ channelName: name }, 'channel-setup: browser voice connector registered');
+  return ok(undefined);
+}
+
+function okChannelId(id: string): Result<string, DbError> {
+  return ok(id);
 }
 
 /**

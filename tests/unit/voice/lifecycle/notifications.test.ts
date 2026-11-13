@@ -1,0 +1,647 @@
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
+import pino from 'pino';
+import { afterEach, describe, expect, it } from 'vitest';
+import { err, ok } from '../../../../src/core/types/result.js';
+import { PolicyError } from '../../../../src/core/errors/error-types.js';
+import { ChannelRepository } from '../../../../src/core/database/repositories/channel-repository.js';
+import { BindingRepository } from '../../../../src/core/database/repositories/binding-repository.js';
+import { runMigrations } from '../../../../src/core/database/migrations/runner.js';
+import { MessageRepository } from '../../../../src/core/database/repositories/message-repository.js';
+import { QueueRepository } from '../../../../src/core/database/repositories/queue-repository.js';
+import { RunRepository } from '../../../../src/core/database/repositories/run-repository.js';
+import { ThreadRepository } from '../../../../src/core/database/repositories/thread-repository.js';
+import { ChannelRegistry } from '../../../../src/channels/channel-registry.js';
+import { registerVoiceConnector } from '../../../../src/channels/channel-setup.js';
+import { ChannelSendHandler } from '../../../../src/tools/host-tools/channel-send.js';
+import { DurableVoiceBackendBridge } from '../../../../src/voice/voice-backend-bridge.js';
+import { createVoiceAdapterSelection } from '../../../../src/voice/voice-adapters.js';
+import { VoicePolicy } from '../../../../src/voice/voice-policy.js';
+import {
+  BrowserVoiceTransport,
+  DurableVoiceSessionService,
+} from '../../../../src/voice/voice-session-service.js';
+import { DurableVoiceStore } from '../../../../src/voice/voice-store.js';
+import type {
+  LiveVoiceProvider,
+  LiveVoiceSession,
+  LiveVoiceSideband,
+  LiveVoiceCommand,
+  VoiceContextSnapshot,
+  VoiceEventHandler,
+  VoiceUnsubscribe,
+} from '../../../../src/voice/voice-types.js';
+
+const TEST_VOICE_CAPABILITIES = {
+  audio_streaming: 'supported',
+  interruptions: 'supported',
+  delegation: 'supported',
+  transcript_stability: 'supported',
+  usage_reporting: 'supported',
+} as const;
+
+class FakeSideband implements LiveVoiceSideband {
+  readonly providerSessionId = 'provider-session-1';
+  readonly commands: LiveVoiceCommand[] = [];
+  readonly contexts = new Map<string, VoiceContextSnapshot>();
+  readonly invalidContexts = new Set<string>();
+  sendError = false;
+
+  contextForDelegation(providerDelegationId: string): VoiceContextSnapshot | null {
+    if (this.invalidContexts.has(providerDelegationId)) return null;
+    return this.contexts.get(providerDelegationId) ?? null;
+  }
+
+  setContext(providerDelegationId: string, context: VoiceContextSnapshot): void {
+    this.contexts.set(providerDelegationId, context);
+    this.invalidContexts.delete(providerDelegationId);
+  }
+
+  invalidateContext(providerDelegationId: string): void {
+    this.invalidContexts.add(providerDelegationId);
+  }
+
+  send(command: LiveVoiceCommand) {
+    if (this.sendError) return Promise.resolve(err(new PolicyError('sideband unavailable')));
+    this.commands.push(command);
+    return Promise.resolve(ok(undefined));
+  }
+
+  onEvent(_handler: VoiceEventHandler<import('../../../../src/voice/voice-types.js').LiveVoiceEvent>): VoiceUnsubscribe {
+    return () => undefined;
+  }
+
+  close(_graceful: boolean) {
+    return Promise.resolve(ok(undefined));
+  }
+}
+
+class FakeProvider implements LiveVoiceProvider {
+  readonly name = 'openai-live';
+  readonly capabilities = TEST_VOICE_CAPABILITIES;
+  readonly sideband = new FakeSideband();
+  createCount = 0;
+  closeCount = 0;
+
+  createSession(input: import('../../../../src/voice/voice-types.js').LiveVoiceSessionRequest) {
+    this.createCount += 1;
+    const session: LiveVoiceSession = {
+      providerSessionId: 'provider-session-1',
+      client: {
+        transport: input.transport.type,
+        sessionId: input.sessionId,
+        providerSessionId: 'provider-session-1',
+        answer: { type: input.transport.type, sdp: 'answer' },
+        expiresAt: Date.now() + 60_000,
+      },
+    };
+    return Promise.resolve(ok(session));
+  }
+
+  attachSideband(_session: LiveVoiceSession) {
+    return Promise.resolve(ok(this.sideband));
+  }
+
+  closeSession(_providerSessionId: string) {
+    this.closeCount += 1;
+    return Promise.resolve(ok(undefined));
+  }
+}
+
+function createHarness(options: { readonly ownerActive?: () => boolean } = {}) {
+  const db = new Database(':memory:');
+  db.pragma('foreign_keys = ON');
+  const migrations = runMigrations(
+    db,
+    join(import.meta.dirname, '../../../../src/core/database/migrations'),
+  );
+  if (migrations.isErr()) throw new Error(migrations.error.message);
+  db.prepare(
+    `INSERT INTO channels (id, type, name, config, enabled, created_at, updated_at)
+     VALUES ('voice-channel', 'voice', 'browser-voice', '{}', 1, 1, 1)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO personas (id, name, model, skills, capabilities, mounts, created_at, updated_at)
+     VALUES ('persona-1', 'voice-persona', 'model', '[]', '{}', '[]', 1, 1)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO bindings (id, channel_id, thread_id, persona_id, is_default, created_at, updated_at)
+     VALUES ('binding-1', 'voice-channel', NULL, 'persona-1', 1, 1, 1)`,
+  ).run();
+  const queue = new QueueRepository(db);
+  const threads = new ThreadRepository(db);
+  const messages = new MessageRepository(db);
+  const store = new DurableVoiceStore(db, queue);
+  const bridge = new DurableVoiceBackendBridge(store, queue, { now: () => 20 });
+  const provider = new FakeProvider();
+  const transport = new BrowserVoiceTransport({ now: () => 20 });
+  const adapterSelection = createVoiceAdapterSelection({ transport, engine: provider });
+  if (adapterSelection.isErr()) throw adapterSelection.error;
+  const policy = new VoicePolicy({
+    providerTypes: new Map([['agent-provider', 'openai-compatible']]),
+  });
+  const owner = { ownerId: 'owner-1', loginRevision: 1 };
+  const capturePolicy = () =>
+    policy.capture({
+      generation: 1,
+      ownerId: owner.ownerId,
+      personaId: 'persona-1',
+      providerName: 'agent-provider',
+      modelName: 'voice-model',
+      voiceName: 'marin',
+      capabilityNames: [],
+      allowedToolNames: [],
+      allowedMcpServerNames: [],
+      nativeToolNames: [],
+      requireApproval: false,
+      loginRevision: owner.loginRevision,
+    });
+  const service = new DurableVoiceSessionService({
+    store,
+    provider,
+    transport,
+    adapterSelection: adapterSelection.value,
+    backendBridge: bridge,
+    policy,
+    threadRepository: threads,
+    messageRepository: messages,
+    channelId: 'voice-channel',
+    personaId: 'persona-1',
+    modelName: 'voice-model',
+    instructions: 'voice instructions',
+    voiceName: 'marin',
+    capturePolicy,
+    currentPolicy: () => capturePolicy(),
+    isOwnerActive: options.ownerActive,
+  });
+  return { db, messages, owner, provider, service, store, threads };
+}
+
+describe('voice channel notifications', () => {
+  let db: Database.Database | undefined;
+
+  afterEach(() => {
+    db?.close();
+    db = undefined;
+  });
+
+  it('speaks through the existing live session without creating a delegation', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    expect(created.isOk()).toBe(true);
+    const session = created._unsafeUnwrap().session;
+    const events: string[] = [];
+    const notificationIds: string[] = [];
+    harness.service.subscribe(harness.owner, session.id, (event) => {
+      events.push(event.kind);
+      if (event.kind === 'notification') notificationIds.push(event.notification.id);
+    });
+
+    const notified = await harness.service.notifyThread({
+      threadId: session.threadId,
+      text: 'The scheduled result is ready.',
+    });
+
+    const result = notified._unsafeUnwrap();
+    expect(result).toMatchObject({ sessionId: session.id, speechRequested: true });
+    expect(result.notificationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(notificationIds).toEqual([result.notificationId]);
+    expect(harness.provider.sideband.commands).toEqual([
+      expect.objectContaining({
+        kind: 'instruction',
+        delegationId: null,
+        content: 'The scheduled result is ready.',
+      }),
+    ]);
+    expect(events).toContain('notification');
+    expect(harness.service.status(harness.owner, session.id)._unsafeUnwrap()?.delegations).toEqual([]);
+  });
+
+  it('retains normal outbound messages after hangup and never opens another provider session', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    const closed = await harness.service.closeSession(harness.owner, session.id, { reason: 'hangup' });
+    expect(closed.isOk()).toBe(true);
+    const commandCount = harness.provider.sideband.commands.length;
+    const providerCreates = harness.provider.createCount;
+
+    const retained = await harness.service.notifyThread({
+      threadId: session.threadId,
+      text: 'This is retained for the next authenticated visit.',
+    });
+    harness.messages.insert({
+      id: 'message-1',
+      thread_id: session.threadId,
+      direction: 'outbound',
+      content: JSON.stringify({ body: 'This is retained for the next authenticated visit.' }),
+      idempotency_key: 'background:task-1:completed',
+      provider_id: null,
+      run_id: null,
+    });
+
+    expect(retained._unsafeUnwrap()).toMatchObject({ sessionId: session.id, notificationId: expect.any(String), speechRequested: false });
+    expect(harness.provider.sideband.commands).toHaveLength(commandCount);
+    expect(harness.provider.createCount).toBe(providerCreates);
+    expect(harness.service.status(harness.owner, session.id)._unsafeUnwrap()?.notifications).toEqual([
+      expect.objectContaining({ text: 'This is retained for the next authenticated visit.' }),
+    ]);
+    expect(harness.service.status({ ownerId: 'other-owner', loginRevision: 1 }, session.id)._unsafeUnwrap()).toBeNull();
+  });
+
+  it('finds retained notifications beyond mixed voice history and caps them chronologically', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+
+    const retained = harness.messages.insert({
+      id: 'notification-before-voice-history',
+      thread_id: session.threadId,
+      direction: 'outbound',
+      content: JSON.stringify({ body: 'Retained before voice history.' }),
+      idempotency_key: 'notification:before-voice-history',
+      provider_id: null,
+      run_id: null,
+    });
+    expect(retained.isOk()).toBe(true);
+
+    for (let index = 0; index < 101; index += 1) {
+      const transcript = harness.messages.insert({
+        id: `history-transcript-${index}`,
+        thread_id: session.threadId,
+        direction: 'inbound',
+        content: JSON.stringify({
+          body: `Transcript ${index}.`,
+          voice: {
+            kind: 'transcript',
+            sessionId: session.id,
+            fragmentId: `history-transcript-fragment-${index}`,
+            role: 'user',
+            state: 'completed',
+            sequence: index,
+          },
+        }),
+        idempotency_key: `history:transcript:${index}`,
+        provider_id: `history-transcript-fragment-${index}`,
+        run_id: null,
+      });
+      expect(transcript.isOk()).toBe(true);
+
+      const backendResult = harness.messages.insert({
+        id: `history-backend-result-${index}`,
+        thread_id: session.threadId,
+        direction: 'outbound',
+        content: JSON.stringify({
+          body: `Backend result ${index}.`,
+          voice: {
+            kind: 'backend_result',
+            sessionId: session.id,
+            delegationId: `history-delegation-${index}`,
+            outputId: `history-output-${index}`,
+            execution: 'succeeded',
+            resultKind: 'final',
+            verified: true,
+          },
+        }),
+        idempotency_key: `history:backend-result:${index}`,
+        provider_id: `history-output-${index}`,
+        run_id: null,
+      });
+      expect(backendResult.isOk()).toBe(true);
+    }
+
+    const commandCount = harness.provider.sideband.commands.length;
+    const providerCreates = harness.provider.createCount;
+    const status = harness.service.status(harness.owner, session.id)._unsafeUnwrap();
+    expect(status?.notifications).toEqual([
+      expect.objectContaining({
+        id: 'notification-before-voice-history',
+        text: 'Retained before voice history.',
+      }),
+    ]);
+    expect(harness.provider.sideband.commands).toHaveLength(commandCount);
+    expect(harness.provider.createCount).toBe(providerCreates);
+    expect(harness.service.status({ ownerId: 'other-owner', loginRevision: 1 }, session.id)._unsafeUnwrap()).toBeNull();
+
+    for (let index = 0; index < 101; index += 1) {
+      const notification = harness.messages.insert({
+        id: `retained-notification-${index}`,
+        thread_id: session.threadId,
+        direction: 'outbound',
+        content: JSON.stringify({ body: `Retained notification ${index}.` }),
+        idempotency_key: `notification:retained:${index}`,
+        provider_id: null,
+        run_id: null,
+      });
+      expect(notification.isOk()).toBe(true);
+    }
+
+    const capped = harness.service.status(harness.owner, session.id)._unsafeUnwrap();
+    const notifications = capped?.notifications ?? [];
+    expect(notifications).toHaveLength(100);
+    expect(notifications.map((notification) => notification.id)).toEqual(
+      Array.from({ length: 100 }, (_, index) => `retained-notification-${index + 1}`),
+    );
+    expect(notifications.map((notification) => notification.createdAt)).toEqual(
+      [...notifications.map((notification) => notification.createdAt)].sort((left, right) => left - right),
+    );
+    expect(harness.provider.sideband.commands).toHaveLength(commandCount);
+    expect(harness.provider.createCount).toBe(providerCreates);
+  });
+
+  it('persists a background notification after login expiry without requesting speech', async () => {
+    let ownerActive = true;
+    const harness = createHarness({ ownerActive: () => ownerActive });
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    ownerActive = false;
+
+    const registry = new ChannelRegistry(pino({ level: 'silent' }));
+    const registered = registerVoiceConnector({
+      channelRegistry: registry,
+      channelRepo: new ChannelRepository(harness.db),
+      threadRepository: harness.threads,
+      sessionService: harness.service,
+      logger: pino({ level: 'silent' }),
+    });
+    expect(registered.isOk()).toBe(true);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      channelRepository: new ChannelRepository(harness.db),
+      messageRepository: harness.messages,
+      bindingRepository: new BindingRepository(harness.db),
+      threadRepository: harness.threads,
+      logger: pino({ level: 'silent' }),
+    });
+
+    const sent = await handler.execute(
+      { channelId: 'browser-voice', content: 'The background task is complete.' },
+      { runId: 'run-expired-login', threadId: session.threadId, personaId: 'persona-1', requestId: 'request-expired-login' },
+    );
+
+    expect(sent.status).toBe('success');
+    expect(harness.provider.sideband.commands).toHaveLength(0);
+    const rows = harness.messages.findByThread(session.threadId, 10, 0)._unsafeUnwrap();
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]?.content ?? '{}')).toEqual({ body: 'The background task is complete.' });
+  });
+
+  it('retains a notification when the live sideband is unavailable', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    harness.provider.sideband.sendError = true;
+
+    const notified = await harness.service.notifyThread({
+      threadId: session.threadId,
+      text: 'Retain this while speech is unavailable.',
+    });
+
+    expect(notified._unsafeUnwrap()).toMatchObject({ sessionId: session.id, notificationId: expect.any(String), speechRequested: false });
+    expect(harness.provider.sideband.commands).toHaveLength(0);
+  });
+
+  it('uses the normal message identity for live and retained same-text notifications', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    const eventIds: string[] = [];
+    harness.service.subscribe(harness.owner, session.id, (event) => {
+      if (event.kind === 'notification') eventIds.push(event.notification.id);
+    });
+    const channelRepository = new ChannelRepository(harness.db);
+    const registry = new ChannelRegistry(pino({ level: 'silent' }));
+    const registered = registerVoiceConnector({
+      channelRegistry: registry,
+      channelRepo: channelRepository,
+      threadRepository: harness.threads,
+      sessionService: harness.service,
+      logger: pino({ level: 'silent' }),
+    });
+    expect(registered.isOk()).toBe(true);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      channelRepository,
+      messageRepository: harness.messages,
+      bindingRepository: new BindingRepository(harness.db),
+      threadRepository: harness.threads,
+      logger: pino({ level: 'silent' }),
+    });
+
+    const first = await handler.execute(
+      { channelId: 'browser-voice', content: 'Same text twice.' },
+      { runId: 'run-same-text-1', threadId: session.threadId, personaId: 'persona-1', requestId: 'request-same-text-1' },
+    );
+    const second = await handler.execute(
+      { channelId: 'browser-voice', content: 'Same text twice.' },
+      { runId: 'run-same-text-2', threadId: session.threadId, personaId: 'persona-1', requestId: 'request-same-text-2' },
+    );
+    expect(first.status).toBe('success');
+    expect(second.status).toBe('success');
+
+    const rows = harness.messages.findByThread(session.threadId, 10, 0)._unsafeUnwrap();
+    const status = harness.service.status(harness.owner, session.id)._unsafeUnwrap();
+    const retainedIds = status?.notifications?.map((notification) => notification.id) ?? [];
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
+    expect(new Set(eventIds)).toEqual(new Set(rows.map((row) => row.id)));
+    expect(new Set(retainedIds)).toEqual(new Set(rows.map((row) => row.id)));
+  });
+
+  it('retains stale voice channel output without speaking it, while background output still speaks', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const session = created._unsafeUnwrap().session;
+    const providerDelegationId = 'provider-stale-channel-send';
+    harness.provider.sideband.setContext(providerDelegationId, {
+      version: 1,
+      digest: 'digest-book-friday',
+      capturedAt: 30,
+      text: 'Book Friday.',
+      fragments: [],
+      truncated: false,
+    });
+    const admitted = await harness.service.receiveProviderEvent({
+      sessionId: session.id,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'delegation',
+        eventId: 'event-stale-channel-send',
+        sequence: 1,
+        proposal: { providerDelegationId, offsetMs: 0, receivedAt: 30 },
+      },
+    });
+    expect(admitted.isOk()).toBe(true);
+    const admittedProjection = harness.store.readSession(session.id)._unsafeUnwrap();
+    const delegation = admittedProjection?.delegations[0];
+    expect(delegation).toBeDefined();
+    const running = harness.store.recordBackendResult({
+      delegationId: delegation!.id,
+      outputId: 'voice-progress-stale-channel-send',
+      kind: 'progress',
+      execution: 'running',
+      output: {
+        execution: 'running',
+        delivery: 'not_requested',
+        providerAcknowledgement: 'not_sent',
+        playback: 'not_started',
+      },
+      occurredAt: 40,
+    });
+    expect(running.isOk()).toBe(true);
+
+    const runInserted = new RunRepository(harness.db).insert({
+      id: 'voice-run-stale-channel-send',
+      thread_id: session.threadId,
+      persona_id: 'persona-1',
+      provider_name: 'agent-provider',
+      model_name: 'voice-model',
+      sandbox_id: null,
+      session_id: null,
+      status: 'running',
+      parent_run_id: null,
+      queue_item_id: delegation!.queueItemId ?? null,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      cache_write_tokens: 0,
+      cost_usd: 0,
+      error: null,
+      started_at: 40,
+      ended_at: null,
+    });
+    expect(runInserted.isOk()).toBe(true);
+    expect(harness.store.findDelegationByRunId('voice-run-stale-channel-send')._unsafeUnwrap()?.id).toBe(
+      delegation!.id,
+    );
+
+    harness.provider.sideband.invalidateContext(providerDelegationId);
+    const correction = await harness.service.receiveProviderEvent({
+      sessionId: session.id,
+      providerSessionId: 'provider-session-1',
+      event: {
+        kind: 'transcript',
+        eventId: 'event-stale-channel-send-correction',
+        sequence: 2,
+        fragment: {
+          id: 'utterance-stale-channel-send-correction',
+          role: 'user',
+          kind: 'correction',
+          sequence: 2,
+          text: 'No Thursday.',
+          receivedAt: 50,
+        },
+      },
+    });
+    expect(correction.isOk()).toBe(true);
+    expect(harness.provider.sideband.commands).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: 'The earlier request is already running. Its result will be retained, but it will not answer your correction. Please repeat the corrected request.',
+        }),
+      ]),
+    );
+
+    const channelRepository = new ChannelRepository(harness.db);
+    const registry = new ChannelRegistry(pino({ level: 'silent' }));
+    const registered = registerVoiceConnector({
+      channelRegistry: registry,
+      channelRepo: channelRepository,
+      threadRepository: harness.threads,
+      sessionService: harness.service,
+      logger: pino({ level: 'silent' }),
+    });
+    expect(registered.isOk()).toBe(true);
+    const handler = new ChannelSendHandler({
+      channelRegistry: registry,
+      channelRepository,
+      messageRepository: harness.messages,
+      bindingRepository: new BindingRepository(harness.db),
+      threadRepository: harness.threads,
+      logger: pino({ level: 'silent' }),
+    });
+
+    const beforeStaleSend = harness.provider.sideband.commands.length;
+    const staleSent = await handler.execute(
+      { channelId: 'browser-voice', content: 'Booked Friday via channel_send.' },
+      {
+        runId: 'voice-run-stale-channel-send',
+        threadId: session.threadId,
+        personaId: 'persona-1',
+        requestId: 'request-stale-channel-send',
+      },
+    );
+    expect(staleSent.status).toBe('success');
+    expect(harness.provider.sideband.commands.slice(beforeStaleSend)).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ content: 'Booked Friday via channel_send.' }),
+      ]),
+    );
+
+    const beforeBackgroundSend = harness.provider.sideband.commands.length;
+    const backgroundSent = await handler.execute(
+      { channelId: 'browser-voice', content: 'Independent background update.' },
+      {
+        runId: 'background-run-1',
+        threadId: session.threadId,
+        personaId: 'persona-1',
+        requestId: 'request-background-1',
+      },
+    );
+    expect(backgroundSent.status).toBe('success');
+    expect(harness.provider.sideband.commands.slice(beforeBackgroundSend)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          content: 'Independent background update.',
+          delegationId: null,
+        }),
+      ]),
+    );
+
+    const rows = harness.messages.findByThread(session.threadId, 10, 0)._unsafeUnwrap();
+    const notificationRows = rows.filter((row) => !JSON.parse(row.content).voice);
+    expect(notificationRows).toHaveLength(2);
+    expect(notificationRows.map((row) => JSON.parse(row.content))).toEqual(
+      expect.arrayContaining([
+        { body: 'Booked Friday via channel_send.' },
+        { body: 'Independent background update.' },
+      ]),
+    );
+    expect(rows).toHaveLength(3);
+  });
+
+  it('rejects unbounded notification text', async () => {
+    const harness = createHarness();
+    db = harness.db;
+    const created = await harness.service.createSession(harness.owner, {
+      transport: { type: 'webrtc', sdp: 'offer' },
+    });
+    const result = await harness.service.notifyThread({
+      threadId: created._unsafeUnwrap().session.threadId,
+      text: 'x'.repeat(16_001),
+    });
+    expect(result.isErr()).toBe(true);
+    expect(result._unsafeUnwrapErr().message).toContain('bounded delivery limit');
+  });
+});
