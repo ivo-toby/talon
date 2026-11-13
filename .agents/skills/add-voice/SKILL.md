@@ -33,7 +33,13 @@ npx talonctl config-show --config "$CONFIG_PATH"
 
 Choose the persona first. Its configured provider must be enabled; the
 provider's normal OAuth and native-tool restrictions remain in force. This
-skill configures the browser WebRTC path.
+skill configures the browser WebRTC path. Incoming SIP is a separate
+advanced boundary, disabled by default. When enabled, it accepts the existing
+provider-created GPT-Live session after independent caller proof, reuses the
+normal persona/queue/backend path, and keeps provider media outside Talon. It
+does not provision Asterisk, keys, trunks, or paid calls; use the [incoming SIP
+guide](../../../docs/guides/voice-asterisk.mdx) only for an explicitly
+authorised operator setup.
 
 Ask: **"Which existing persona should browser voice use?"**
 
@@ -122,6 +128,30 @@ reachable interface or `0.0.0.0` and restrict network access. Preserve the
 public `Host` and `Origin` headers and send `X-Forwarded-Proto: https`; this is
 required for secure cookie and same-origin decisions. `publicHost` contributes
 the matching `https://` origin but does not change the listener address.
+
+## Optional incoming SIP
+
+If the transport choice is not already specified, ask one separate question:
+**"Do you also want to enable the incoming SIP boundary?"** Leave
+`voice.sip.enabled` false unless the operator explicitly chooses it. If the
+answer is yes, stop the browser-only walkthrough and follow
+the [ordered incoming SIP/Asterisk guide](../../../docs/guides/voice-asterisk.mdx)
+from start to finish. It covers the operator-owned provider contact and trunk,
+Ed25519 key and signer environment, `publicKeys`/`endpointMappings`, separate
+webhook and live-provider secrets, the two listener proxy routes, local echo,
+network/media checks, and the bounded provider test. This skill must not invent
+a provider contact, install a PBX, provision a trunk, or place a paid call.
+
+Use the same actual config path throughout. `talonctl` defaults to
+`talond.yaml` (or the `TALOND_CONFIG_PATH` value), while
+`config/talond.example.yaml` is only a repository example. The guide's
+validation commands are:
+
+```bash
+npx talonctl doctor --config "$CONFIG_PATH"
+npx talonctl env-check --config "$CONFIG_PATH"
+npx talonctl config-show --config "$CONFIG_PATH"
+```
 
 ## Validate
 

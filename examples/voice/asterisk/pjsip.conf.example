@@ -1,0 +1,22 @@
+; Reference only. Replace placeholders through an operator-owned deployment
+; process. Do not copy credentials into Talon's YAML or this example.
+
+[talon-live-auth]
+type=auth
+auth_type=userpass
+username=REPLACE_WITH_OPERATOR_PROVISIONED_USERNAME
+password=REPLACE_WITH_OPERATOR_PROVISIONED_PASSWORD
+
+[talon-live-aor]
+type=aor
+contact=sip:REPLACE_WITH_PROVIDER_CONTACT
+
+[talon-live]
+type=endpoint
+transport=transport-udp
+context=talon-incoming
+disallow=all
+allow=opus
+auth=talon-live-auth
+aors=talon-live-aor
+direct_media=no
